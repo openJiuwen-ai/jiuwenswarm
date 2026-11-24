@@ -1609,6 +1609,17 @@ def _group_chat_input(request: Any, text: Any) -> dict | None:
     return payload
 
 
+def _schedule_group_auto_reply(session_id: str, group_input: dict) -> None:
+    """Hand an accepted, unmentioned user message to the group's judge model."""
+    try:
+        from jiuwenswarm.server.runtime.group_auto_reply import schedule
+
+        schedule(session_id, str(group_input["client_message_id"]))
+    except Exception:
+        # The message is already archived; a failed judgement must not fail its acceptance.
+        logger.warning("[TeamHelpers] group auto reply was not scheduled session_id=%s", session_id, exc_info=True)
+
+
 async def _record_group_organization_plan(session_id: str, group_input: dict) -> str | None:
     """Record coordination state without changing the message or its mentions."""
     plan = None
@@ -4864,6 +4875,7 @@ async def _process_team_message_stream(
                         is_complete=False,
                     )
                     if not group_input["mentions"]:
+                        _schedule_group_auto_reply(session_id, group_input)
                         await _release_team_round(
                             team_manager,
                             session_id,
@@ -5154,6 +5166,7 @@ async def _process_team_message_stream(
                                     "client_message_id",
                                 )
                                 if identity == group_input["client_message_id"]:
+                                    _schedule_group_auto_reply(session_id, group_input)
                                     yield _team_processing_done_chunk(
                                         rid,
                                         channel_id,
@@ -5823,6 +5836,16 @@ async def _consume_stream_with_query(
                         backend = await resolve_group_backend(group)
                         if backend is not None:
                             await sync_group_roster(group, backend)
+                            try:
+                                from jiuwenswarm.server.runtime.group_auto_reply import recover_group
+
+                                # Notifications decided while this runtime was away are delivered now.
+                                await recover_group(session_id)
+                            except Exception:
+                                logger.warning(
+                                    "[TeamHelpers] group auto reply recovery failed session_id=%s",
+                                    session_id, exc_info=True,
+                                )
                     await tm.attach_distributed_hooks_for_runner_runtime(
                         team_name=ready_team_name,
                         session_id=session_id,

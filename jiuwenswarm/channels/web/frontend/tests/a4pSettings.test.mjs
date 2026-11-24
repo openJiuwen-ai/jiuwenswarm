@@ -56,7 +56,8 @@ async function mount(options, run) {
   globalThis.document = dom.window.document;
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const calls = [],
-    saves = [];
+    saves = [],
+    reads = [];
   let config = { enabled: options.enabled ?? true };
   globalThis.a4pFixture = {
     session: options.session === undefined ? 'session' : options.session,
@@ -65,16 +66,15 @@ async function mount(options, run) {
       request: async (method, params) => {
         calls.push(method);
         if (method === 'a4p.config.get') {
+          reads.push(params);
           if (options.rejectConfig) throw new Error('config unavailable');
           return { ...config };
         }
         if (method === 'a4p.config.update') {
-          const { session_id, ...update } = params;
-          assert.equal(session_id, 'session');
-          saves.push(update);
+          saves.push(params);
           if (options.rejectUpdate) throw new Error('update failed');
-          if (options.update) return options.update(update);
-          config = { ...config, ...update };
+          if (options.update) return options.update(params);
+          config = { ...config, ...params };
           return config;
         }
         throw new Error(`Unexpected RPC: ${method}`);
@@ -95,6 +95,7 @@ async function mount(options, run) {
       click,
       render,
       calls,
+      reads,
       saves,
       dom,
     });
@@ -160,29 +161,33 @@ test('pending update blocks the toggle and applies canonical response', async ()
   );
 });
 
-test('missing session blocks config requests', async () => {
-  await mount({ session: null }, async ({ get, calls }) => {
-    assert.deepEqual(calls, []);
-    assert.equal(get('enabled').disabled, true);
-    assert.equal(get('register'), null);
+test('no active conversation is required to load or update the config', async () => {
+  await mount({ session: null }, async ({ get, click, reads, saves }) => {
+    assert.deepEqual(reads, [{}]);
+    assert.equal(get('enabled').disabled, false);
+    await click('enabled');
+    assert.deepEqual(saves, [{ enabled: false }]);
   });
 });
 
-test('session switch ignores a stale update response', async () => {
+test('switching from a draft conversation keeps the pending config update', async () => {
   let resolve;
   await mount(
     {
+      session: 'new',
       update: () =>
         new Promise((r) => {
           resolve = r;
         }),
     },
-    async ({ get, click, render }) => {
+    async ({ get, click, render, reads }) => {
       await click('enabled');
       a4pFixture.session = 'next-session';
       await render();
+      assert.deepEqual(reads, [{}]);
+      assert.equal(get('enabled').disabled, true);
       await act(async () => resolve({ enabled: false }));
-      assert.equal(get('enabled').getAttribute('aria-checked'), 'true');
+      assert.equal(get('enabled').getAttribute('aria-checked'), 'false');
     },
   );
 });

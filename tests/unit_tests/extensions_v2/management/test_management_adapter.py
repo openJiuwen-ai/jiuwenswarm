@@ -22,8 +22,8 @@ from openjiuwen.core.extension import (
 )
 from openjiuwen.core.extension.management import QueryResult
 
+from e2a.agent_compat import e2a_to_agent_request
 from e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.schema.agent import AgentRef, AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.management import adapter as adapter_module

@@ -150,7 +150,8 @@ def test_failed_records_release_locals_before_background_sink(failure, record_ma
         def emit(self, record):
             raw_frames.append(record.exc_info is not None)
             started.set()
-            assert release.wait(5)
+            # The test releases the sink in finally, after garbage collection.
+            release.wait()
             output.append(logging.Formatter().format(record))
 
     class Payload:
@@ -176,7 +177,7 @@ def test_failed_records_release_locals_before_background_sink(failure, record_ma
 
     try:
         reference = produce()
-        assert started.wait(1)
+        assert started.wait(5)
         gc.collect()
         assert reference() is None
     finally:

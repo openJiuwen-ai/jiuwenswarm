@@ -502,3 +502,26 @@ _EVENT_CASES = json.loads((Path(__file__).resolve().parents[4] / "jiuwenswarm/ch
 @pytest.mark.parametrize("case", _EVENT_CASES)
 def test_shared_browser_event_cases(case):
     assert validate_event_data(case["component"], case["event"], case["data"], case["props"]) is case["allowed"]
+
+
+@pytest.mark.parametrize("props,valid", [
+    ({"src": "https://example.com"}, True),
+    ({"src": "https://example.com", "permissions": []}, True),
+    ({"src": "https://example.com", "icon": "video", "permissions": [
+        "clipboard-write", "fullscreen", "camera", "microphone", "display-capture", "autoplay", "future-feature",
+    ]}, True),
+    ({"src": "/preview", "permissions": "fullscreen"}, False),
+    ({"src": "/preview", "permissions": ["fullscreen *"]}, False),
+    ({"src": "/preview", "permissions": ["fullscreen; autoplay"]}, False),
+    ({"src": "/preview", "permissions": ["fullscreen\n"]}, False),
+    ({"src": "/preview", "permissions": [""]}, False),
+    ({"src": "/preview", "permissions": ["fullscreen", "fullscreen"]}, True),
+    ({"srcDoc": "<p>Preview</p>", "permissions": ["fullscreen"]}, True),
+    ({"srcDoc": "<p>Preview</p>", "permissions": "fullscreen"}, True),
+])
+def test_iframe_permission_contract(props, valid):
+    root = RenderNode("Iframe", {"title": "Editor", **props})
+    assert validate_root(root).ok is valid
+    if valid and "srcDoc" in props:
+        assert node_to_payload(root)["props"] == {"title": "Editor", "srcDoc": props["srcDoc"]}
+        assert root.props["permissions"] == props["permissions"]

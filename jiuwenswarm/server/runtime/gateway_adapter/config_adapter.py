@@ -229,6 +229,31 @@ class ConfigAdapter(GatewayAdapter):
                 get_config,
                 update_preferred_language_in_config,
             )
+            from jiuwenswarm.enterprise.edition import is_enterprise
+
+            # 企业版 locale 在 Gateway 终结（写 user_preference），AS 不再写 yaml。
+            if is_enterprise():
+                from jiuwenswarm.enterprise.config.preferred_language import (
+                    resolve_preferred_language_async,
+                )
+                from jiuwenswarm.enterprise.tenant.tenant_identity import extract_triple
+
+                _g, _b, user_id = extract_triple(request)
+                if request.req_method == ReqMethod.LOCALE_GET_CONF:
+                    lang = await resolve_preferred_language_async(user_id)
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=True,
+                        payload={"preferred_language": lang},
+                        metadata=request.metadata,
+                    )
+                return build_error_response(
+                    request,
+                    "enterprise locale.set_conf is handled by Gateway; "
+                    "AgentServer does not write preferred_language",
+                    code="NOT_SUPPORTED",
+                )
 
             if request.req_method == ReqMethod.LOCALE_GET_CONF:
                 lang = str(get_config().get("preferred_language") or "zh").strip().lower()

@@ -1,3 +1,4 @@
+import { localizedText } from '../../types/pluginPackage';
 import type {
   Subagent,
   SubagentActivity,
@@ -92,6 +93,12 @@ function normalizeError(value: unknown, rawStatus: string, rawMessage: unknown, 
   };
 }
 
+export function resolveSubagentDisplayName(subagent: Subagent, language: string): string {
+  const displayLanguage = /^en(?:[-_]|$)/i.test(language) ? 'en' : 'zh';
+  const names = subagent.display_name_i18n;
+  return (names && localizedText(names, displayLanguage)) || subagent.display_name;
+}
+
 export function normalizeSubagent(value: unknown, sessionId?: string): Subagent | null {
   const raw = asRecord(value);
   if (!raw) return null;
@@ -101,6 +108,10 @@ export function normalizeSubagent(value: unknown, sessionId?: string): Subagent 
   if (sessionId && parentSessionId && parentSessionId !== sessionId) return null;
   const description = asString(raw.description);
   const displayName = asString(raw.display_name ?? raw.displayName) ?? description ?? subagentId;
+  const displayNames = asRecord(raw.display_name_i18n ?? raw.displayNameI18n);
+  const zh = asString(displayNames?.zh);
+  const en = asString(displayNames?.en);
+  const avatar = asString(raw.avatar);
   const rawStatus = (asString(raw.status) ?? '').toLowerCase();
   const turnOutcome = normalizeTurnOutcome(raw.turn_outcome ?? raw.turnOutcome);
   const lifecycle = normalizeLifecycle(raw.lifecycle);
@@ -117,6 +128,8 @@ export function normalizeSubagent(value: unknown, sessionId?: string): Subagent 
     parent_session_id: parentSessionId,
     subagent_type: asString(raw.subagent_type ?? raw.subagentType) ?? '',
     display_name: displayName,
+    ...(zh || en ? { display_name_i18n: { zh: zh || en || displayName, en: en || zh || displayName } } : {}),
+    ...(avatar && /^data:image\/(?:webp|svg\+xml);base64,[A-Za-z0-9+/]+={0,2}$/.test(avatar) ? { avatar } : {}),
     role: asString(raw.role) ?? '',
     task_description: asString(raw.task_description ?? raw.taskDescription) ?? '',
     status,

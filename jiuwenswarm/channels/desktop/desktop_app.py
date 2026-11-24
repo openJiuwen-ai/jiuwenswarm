@@ -53,6 +53,8 @@ from jiuwenswarm.common.startup_diagnostics import (
 from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
     get_config_dir,
+    ensure_gateway_config,
+    get_gateway_config_dir,
     get_infra_data_dir,
     get_logs_dir,
     prepare_local_gateway_config,
@@ -572,6 +574,8 @@ def _build_child_env(
     else:
         env.pop("JIUWENSWARM_DESKTOP_TOKEN", None)
     env["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
+    if name == "gateway":
+        env["JIUWENSWARM_GATEWAY_CONFIG_DIR"] = str(get_gateway_config_dir())
     # Desktop now starts Gateway directly, so preserve the original launcher
     # command here instead of relying on jiuwenswarm.app to add it. The
     # updater inherits this value from Gateway when it constructs a restart.
@@ -1631,6 +1635,7 @@ class DesktopRuntime:
             # 在 Desktop 进程中只做一次工作区迁移/补齐，随后直接拉起
             # AgentServer 与 Gateway。跳过 app supervisor 可省去一个冻结 EXE。
             prepare_runtime_workspace()
+            ensure_gateway_config()
             recovery_process = self._start_managed_process(
                 "recovery", _build_child_command("recovery")
             )

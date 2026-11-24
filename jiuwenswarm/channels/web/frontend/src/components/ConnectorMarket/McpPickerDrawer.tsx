@@ -102,7 +102,11 @@ export function McpPickerDrawer({
       const assetId = mcp.hubAssetId || mcp.id;
       setInstallingId(mcp.id);
       clearConnectorError();
-      const response = await installPackage(assetId);
+      const response = await installPackage(assetId, {
+        sourceId: mcp.sourceId,
+        versionId: mcp.version,
+        packageName: mcp.runtimePackageName || mcp.name,
+      });
       setInstallingId(null);
       // 安装请求落定即刷新列表（对齐旧面板 resolved 后无条件 loadMcps）：需凭据分支若用户
       // 取消授权弹窗，卡片也能立即看到已安装态，而不是停留在「安装」按钮。失败（response

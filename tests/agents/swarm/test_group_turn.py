@@ -364,3 +364,89 @@ async def test_mailbox_organizations_keep_batch_order_and_do_not_parse_body(tmp_
     ctx.inputs = UserMessageInputs(parts=['An internal reminder quoting:\n' + inbound('b')])
     await turns.bind_consumed_group_turn(ctx, source, 'session', 'business', GROUP)
     assert ctx.extra[turns.TURN_KEY].client_message_id == 'client-a'
+
+
+@pytest.mark.asyncio
+async def test_notified_member_gets_a_direct_turn_without_being_mentioned(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime import group_auto_reply
+
+    notified = {("session", "plain", "business")}
+    monkeypatch.setattr(group_auto_reply, "is_notified", lambda *key: key in notified)
+    # The notified message mentions two other teams; a notification never forms an organization.
+    source = backend(tmp_path, [row("plain", []), row("others", ["architecture", "writer"])])
+
+    turn = await turns.resolve_group_turn(source, "session", "business", GROUP, [notice("plain")])
+    assert (turn.route, turn.client_message_id, turn.mixed_mentions) == ("direct", "client-plain", False)
+
+    for member, message in (("architecture", "plain"), ("business", "others")):
+        unknown = await turns.resolve_group_turn(source, "session", member, GROUP, [notice(message)])
+        assert unknown.route == "unknown"
+
+
+def test_public_broadcast_is_verified_by_mention_or_notification(monkeypatch):
+    from jiuwenswarm.server.runtime import group_auto_reply
+
+    monkeypatch.setattr(group_auto_reply, "is_notified", lambda *key: key == ("session", "m1", "writer"))
+    message = SimpleNamespace(team_name="team", from_member_name="user", broadcast=True, message_id="m1")
+    meta = {"type": "group_chat", "client_message_id": "client", "mentions": []}
+
+    assert turns._verified_public_broadcast(message, meta, "m1", "writer", "team", "session")
+    assert not turns._verified_public_broadcast(message, meta, "m1", "business", "team", "session")
+    assert not turns._verified_public_broadcast(message, meta, "m1", "writer", "team")
+    assert not turns._verified_public_broadcast(message, {**meta, "mentions": None}, "m1", "writer", "team", "session")
+
+
+def _joint(monkeypatch, members, registered=True):
+    from jiuwenswarm.agents.swarm import group_route
+    from jiuwenswarm.server.runtime import group_auto_reply
+
+    monkeypatch.setattr(group_auto_reply, "organization_members",
+                        lambda session, message: members if (session, message) == ("session", "plain") else [])
+    monkeypatch.setattr(group_auto_reply, "is_notified", lambda *key: key == ("session", "plain", members[0]))
+    monkeypatch.setattr(group_route, "candidate", lambda session, plan: (
+        {"members": members, "owner_member": members[0], "status": "pending"}
+        if registered and (session, plan) == ("session", "client-plain") else None))
+
+
+@pytest.mark.asyncio
+async def test_joint_decision_gives_every_chosen_team_an_organization_turn(tmp_path, monkeypatch):
+    _joint(monkeypatch, ["business", "architecture"])
+    source = backend(tmp_path, [row("plain", []), row("other", [])])
+
+    # The Owner is woken by its notification, the other team by the Owner's private notice.
+    for member in ("business", "architecture"):
+        turn = await turns.resolve_group_turn(source, "session", member, GROUP, [notice("plain")])
+        assert (turn.route, turn.client_message_id) == ("organization", "client-plain")
+    for member, message in (("writer", "plain"), ("architecture", "other")):
+        assert (await turns.resolve_group_turn(source, "session", member, GROUP, [notice(message)])).route == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_auto_notified_mailbox_uses_the_turn_session_without_a_backend_session_attribute(tmp_path, monkeypatch):
+    _joint(monkeypatch, ["business", "architecture"])
+    source, _ = await mailbox_backend(tmp_path, monkeypatch, [row("plain", [])])
+    assert not hasattr(source, "group_session_id")
+    ctx = AgentCallbackContext(agent=None, inputs=UserMessageInputs(parts=[inbound("plain")]))
+    await turns.bind_consumed_group_turn(ctx, source, "session", "business", GROUP)
+    turn = ctx.extra[turns.TURN_KEY]
+    assert (turn.client_message_id, turn.route) == ("client-plain", "organization")
+
+
+@pytest.mark.asyncio
+async def test_joint_decision_without_its_candidate_forms_no_organization(tmp_path, monkeypatch):
+    _joint(monkeypatch, ["business", "architecture"], registered=False)
+    source = backend(tmp_path, [row("plain", [])])
+
+    owner = await turns.resolve_group_turn(source, "session", "business", GROUP, [notice("plain")])
+    other = await turns.resolve_group_turn(source, "session", "architecture", GROUP, [notice("plain")])
+    assert (owner.route, other.route) == ("direct", "unknown")
+
+
+def test_public_broadcast_is_verified_for_a_team_in_a_joint_decision(monkeypatch):
+    _joint(monkeypatch, ["business", "architecture"])
+    message = SimpleNamespace(team_name="team", from_member_name="user", broadcast=True, message_id="plain")
+    meta = {"type": "group_chat", "client_message_id": "client-plain", "mentions": []}
+
+    assert turns._verified_public_broadcast(message, meta, "plain", "architecture", "team", "session")
+    assert not turns._verified_public_broadcast(message, meta, "plain", "writer", "team", "session")
+    assert not turns._verified_public_broadcast(message, meta, "plain", "architecture", "team")

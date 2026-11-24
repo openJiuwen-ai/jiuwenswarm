@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any
 
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
@@ -288,7 +288,7 @@ class AgentTaskExecutor:
         )
 
     async def answer(self, task):
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from e2a.gateway_normalize import e2a_from_agent_fields
 
         request = self.answer_input(task).to_agent_request()
         client = (
@@ -436,7 +436,7 @@ class AgentTaskExecutor:
         return {"status": "completed", "result": result, "settled": True}
 
     async def _send_cancel_request(self, task):
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
         client = (

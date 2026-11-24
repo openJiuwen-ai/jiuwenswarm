@@ -58,6 +58,11 @@ from e2a.wire_codec import (
     encode_agent_response_for_wire,
     encode_json_parse_error_wire,
 )
+from e2a.gateway_normalize import (
+    E2A_FALLBACK_FAILED_KEY,
+    E2A_INTERNAL_CONTEXT_KEY,
+    E2A_LEGACY_AGENT_REQUEST_KEY,
+)
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
@@ -102,11 +107,6 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.request_ext import lift_from_metadata, reset_ext
-from jiuwenswarm.common.e2a.gateway_normalize import (
-    E2A_FALLBACK_FAILED_KEY,
-    E2A_INTERNAL_CONTEXT_KEY,
-    E2A_LEGACY_AGENT_REQUEST_KEY,
-)
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.log_preview import preview_text
@@ -169,6 +169,10 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
 )
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+from jiuwenswarm.server.heartbeat_push import (
+    merge_heartbeat_push_metadata,
+    should_skip_heartbeat_push,
+)
 from jiuwenswarm.server.middleware.chat import (
     should_trigger_before_chat_request,
     trigger_before_chat_request,
@@ -3386,6 +3390,43 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
+            params = request.params if isinstance(request.params, dict) else {}
+            channels = params.get("channels")
+            try:
+                from jiuwenswarm.common.config import apply_channel_config_snapshot
+
+                applied = await asyncio.to_thread(apply_channel_config_snapshot, channels)
+                if applied:
+                    ok, payload = True, {"applied": True}
+                else:
+                    ok, payload = False, {
+                        "applied": False,
+                        "error": "channel snapshot was not applied",
+                        "code": "BAD_REQUEST",
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[AgentServer] channel config sync failed: %s",
+                    type(exc).__name__,
+                )
+                ok, payload = False, {
+                    "applied": False,
+                    "error": "channel config sync failed",
+                    "code": "INTERNAL_ERROR",
+                }
+            response = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=ok,
+                payload=payload,
+                metadata=request.metadata,
+            )
+            async with send_lock:
+                await send_wire_payload(
+                    ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+                )
+            return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_PREPARE:
             params = request.params if isinstance(request.params, dict) else {}
             agent_id = params.get("agent_id")
@@ -3520,6 +3561,11 @@ class AgentWebSocketServer:
                 return
 
             if await self._handle_lifecycle_request(ws, request, send_lock):
+                return
+            # A4P configuration belongs to the application. A legacy client
+            # may still provide a session ID, even for an archived session.
+            if request.req_method in {ReqMethod.A4P_CONFIG_GET, ReqMethod.A4P_CONFIG_UPDATE}:
+                await self._handle_a4p_request(ws, request, send_lock)
                 return
             from jiuwenswarm.server.runtime.session.lifecycle import (
                 LifecycleError,
@@ -4212,7 +4258,8 @@ class AgentWebSocketServer:
         ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
         """
         params = request.params if isinstance(request.params, dict) else {}
-        if params.get("intent", "cancel") == "cancel" and request.session_id:
+        session_cancel = params.get("intent", "cancel") == "cancel" and bool(request.session_id)
+        if session_cancel:
             # Colleague cancellation is additive: it must never block the existing
             # expert / organization stop below, and groups without colleagues skip it.
             try:
@@ -4229,9 +4276,26 @@ class AgentWebSocketServer:
                     "[AgentWebSocketServer] SwarmChat colleague stop failed; continuing group cancel: session=%s",
                     request.session_id, exc_info=True,
                 )
-        if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
+        organization_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
+        targeted_stop = not organization_stop and self._is_targeted_expert_cancel_request(request)
+        scoped_stop = organization_stop or targeted_stop or bool(str(params.get("target_request_id") or "").strip())
+        if session_cancel and not scoped_stop and not self._is_client_disconnect_cancel_request(request):
+            # Also additive: a whole-group stop withdraws judgements and notifications nobody consumed yet.
+            try:
+                from jiuwenswarm.server.runtime import group_auto_reply
+                from jiuwenswarm.server.runtime.group_service import read_group
+
+                group = read_group(request.session_id)
+                if group is not None:
+                    await group_auto_reply.stop(group)
+            except Exception:
+                logger.warning(
+                    "[AgentWebSocketServer] Group auto-reply stop failed; continuing group cancel: session=%s",
+                    request.session_id, exc_info=True,
+                )
+        if organization_stop:
             resp = await self._cancel_organization(request)
-        elif self._is_targeted_expert_cancel_request(request):
+        elif targeted_stop:
             resp = await self._cancel_targeted_expert(request)
         else:
             from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
@@ -4777,6 +4841,7 @@ class AgentWebSocketServer:
         channel_id = request.channel_id or "web"
         params = request.params if isinstance(request.params, dict) else {}
         prompt = str(params.get("content") or params.get("query") or "")
+        route_metadata = dict(request.metadata or {})
         await self.send_push(
             {
                 "request_id": request.request_id,
@@ -4834,6 +4899,18 @@ class AgentWebSocketServer:
                         or payload.get("message")
                         or "Runtime execution failed"
                     )
+                pushed_event_type = (
+                    str(payload.get("event_type") or "")
+                    if isinstance(payload, dict)
+                    else ""
+                )
+                # IM channels do not render runtime telemetry; forwarding it
+                # duplicates the answer that chat.final already delivered.
+                if should_skip_heartbeat_push(
+                    pushed_event_type,
+                    event.channel_id or channel_id,
+                ):
+                    continue
                 is_processing_start = (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.processing_status"
@@ -4854,10 +4931,8 @@ class AgentWebSocketServer:
                         "payload": payload,
                         "agent_ref": event.agent_ref,
                         "is_complete": event.is_complete,
-                        "metadata": (
-                            event.metadata
-                            if event.metadata is not None
-                            else request.metadata
+                        "metadata": merge_heartbeat_push_metadata(
+                            route_metadata, event.metadata
                         ),
                     }
                 )
@@ -4978,6 +5053,11 @@ class AgentWebSocketServer:
                 error="target Session ownership changed before execution",
             )
 
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language_async,
+        )
+
+        preferred_lang = await resolve_preferred_language_async(stored_user_id or None)
         cross_session = {
             "message_id": record.message_id,
             "source_session_id": record.source_session_id,
@@ -4987,7 +5067,7 @@ class AgentWebSocketServer:
             "chain_id": record.chain_id,
             "parent_message_id": record.parent_message_id,
             "hop_count": record.hop_count,
-            "language": str(get_config().get("preferred_language") or "zh"),
+            "language": preferred_lang,
         }
         params: dict[str, Any] = {
             "query": record.content,
@@ -11047,7 +11127,8 @@ class AgentWebSocketServer:
     ) -> None:
         """Handle ``mcp.list`` RPC: list marketplace MCPs (read-only).
 
-        filter: builtin(预置目录) | local(已连接预置 + 全部自定义)。兜底 builtin。
+        filter: builtin(单机广场) | hub(企业远端广场) | local(我的)。
+        单机省略时由 marketplace 默认 builtin；企业必须显式 hub|local。
         web 不转发此入口（网关本地已处理），保留只为语义对齐。
         """
         try:
@@ -11055,14 +11136,14 @@ class AgentWebSocketServer:
                 list_mcps_with_hub,
             )
             params = request.params or {}
-            filter_val = str(params.get("filter") or "builtin").strip().lower() or "builtin"
-            if filter_val not in ("builtin", "local"):
-                filter_val = "builtin"
+            filter_val = str(params.get("filter") or "").strip().lower() or None
             items = await list_mcps_with_hub(
                 filter_val,
                 cache_mode=params.get("cache_mode"),
                 refresh=params.get("refresh") is True,
                 query=str(params.get("query") or ""),
+                source_id=str(params.get("source_id") or "").strip() or None,
+                metadata=request.metadata if isinstance(request.metadata, dict) else None,
             )
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -11092,7 +11173,11 @@ class AgentWebSocketServer:
             name = str(params.get("id") or params.get("name") or "").strip()
             if not name:
                 raise ValueError("mcp id or name is required")
-            item = await show_mcp_with_hub(name)
+            item = await show_mcp_with_hub(
+                name,
+                source_id=str(params.get("source_id") or "").strip() or None,
+                metadata=request.metadata if isinstance(request.metadata, dict) else None,
+            )
             if item is None:
                 raise KeyError(f"mcp '{name}' not found")
             # Connected MCP but ToolMgr returned no tools: fall back to a
@@ -11177,8 +11262,15 @@ class AgentWebSocketServer:
             from jiuwenswarm.server.runtime.mcp.marketplace import install_hub_mcp
             from jiuwenswarm.server.runtime.mcp.registry import CliConnectError
 
-            asset_id = str((request.params or {}).get("id") or "").strip()
-            item = await install_hub_mcp(asset_id)
+            params = request.params or {}
+            asset_id = str(params.get("id") or "").strip()
+            item = await install_hub_mcp(
+                asset_id,
+                source_id=str(params.get("source_id") or "").strip() or None,
+                version_id=str(params.get("version_id") or "").strip() or None,
+                package_name=str(params.get("package_name") or "").strip() or None,
+                metadata=request.metadata if isinstance(request.metadata, dict) else None,
+            )
             name = str(item.get("name") or "").strip()
             # Connect failure is non-fatal after a successful download.
             try:
@@ -14283,6 +14375,7 @@ class AgentWebSocketServer:
                     role_instructions=params.get("role_instructions", ""),
                     npc_team=params.get("npc_team"),
                     role_tools=params.get("tools"),
+                    npc_session=params.get("npc_session", False),
                 )
             )
             params.pop("_work_mode_explicit", None)
@@ -14308,6 +14401,8 @@ class AgentWebSocketServer:
             if result.execution_profile != "default":
                 payload["execution_profile"] = result.execution_profile
                 payload["mode"] = result.canonical_mode
+            if result.npc_session:
+                payload["npc_session"] = True
             if result.explicit_id_compatibility:
                 payload.update(
                     {

@@ -16,11 +16,13 @@ import { readStoredSessionId } from './authClient';
 import i18n from '../i18n';
 import { appendRuntimeScopeQuery } from './runtimeScope';
 import { withExpertUiLanguage } from './expertUiLanguage';
+import { withSwarmChatSurface } from './swarmChatSurface';
 import { GoalRecord } from '../types/goal';
 import { createSessionEventGate } from './sessionEventGate';
 import { RuntimeResume } from './runtimeResume';
 import { useChatStore } from '../stores/chatStore';
 import { browserClientCapabilities } from '../features/webui/client/browserClient.ts';
+import { shouldReportWorkerInterruption } from '../features/interruptSettleGuard';
 
 type RuntimeResumeQuery = ReturnType<RuntimeResume['queries']>[number];
 type RuntimeRecoveryMetadata = Pick<Session, 'status' | 'is_processing'> & { runtime?: Record<string, unknown> };
@@ -43,6 +45,7 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_RECOVERY_ATTEMPTS = 3;
 const MIN_RECOVERY_RETRY_MS = 1000;
+
 const MAX_RECOVERY_RETRY_MS = 30_000;
 
 /** 暂停期间暂存、恢复后回放的流式事件 */
@@ -369,7 +372,7 @@ class WebClient {
       type: 'req',
       id,
       method,
-      params: withExpertUiLanguage(method, params),
+      params: withSwarmChatSurface(method, withExpertUiLanguage(method, params)),
       ...(options.isStream ? { is_stream: true } : {}),
     });
 
@@ -479,7 +482,7 @@ class WebClient {
       type: 'req',
       id: this.generateRequestId(),
       method,
-      params: params ?? {},
+      params: withSwarmChatSurface(method, params) ?? {},
       ...(options.isStream ? { is_stream: true } : {}),
     });
 
@@ -743,7 +746,15 @@ class WebClient {
             },
           });
         }
-        if (runtime.interrupted === true) {
+        const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
+        // A worker-instance mismatch invalidates the resume cursor and requires
+        // a history reload, but an idle session was not interrupted. Treat the
+        // snapshot as an execution failure only while work is still active.
+        if (shouldReportWorkerInterruption(
+          runtime.interrupted === true,
+          runtime.is_processing === true,
+          localRuntime?.foregroundIsProcessing === true,
+        )) {
           this.dispatchEvent({
             type: 'event',
             event: 'chat.error',
@@ -756,7 +767,6 @@ class WebClient {
           });
         }
         if (runtime.history_required === true) {
-          const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
           for (const dispatch of dispatches) {
             const interactions = Array.isArray(dispatch.pending_interactions) ? dispatch.pending_interactions : [];
             for (const interaction of interactions) {

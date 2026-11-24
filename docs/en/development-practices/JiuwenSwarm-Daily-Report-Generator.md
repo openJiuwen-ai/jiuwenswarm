@@ -259,7 +259,7 @@ This skill collects data by running Python scripts (Git, mailbox, memory, todos)
 - **Git commits**: `git log` on repo `D:/Download/jiuwenswarm`
 - **Mailbox stats**: IMAP to `zxworkem@163.com` (requires mailbox authorization code)
 - **Memory**: daily files under `workspace/agent/memory/`
-- **Todos**: `todo.md` under `workspace/session/`
+- **Todos**: `workspace/todo/{session_id}/todo.json` (legacy `sessions/*/todo.md` still supported)
 
 ### Manual trigger
 
@@ -290,7 +290,7 @@ cd D:/Download/jiuwenswarm && python workspace/agent/skills/daily-report/run_rep
    - **Git**: `git log` for commits and churn
    - **Email**: IMAP stats (if mail is configured)
    - **Memory**: work notes from memory files
-   - **Todos**: task state from `todo.md`
+   - **Todos**: task state from `workspace/todo/{session_id}/todo.json`
 4. Wait until the script finishes and read its output.
 5. Send the report content to the user.
 
@@ -1587,7 +1587,7 @@ This chapter integrates the complete implementation of the work analysis engine 
 | **Git repository** | `git log` command | Repository path: `D:/Download/jiuwenswarm` |
 | **NetEase email** | IMAP protocol | `.env`: `EMAIL_ADDRESS`, `EMAIL_TOKEN` |
 | **Memory system** | Read MD files | `workspace/agent/memory/YYYY-MM-DD.md` |
-| **To-do items** | Parse todo.md | `workspace/session/*/todo.md` |
+| **To-do items** | Parse todo.json | `workspace/todo/*/todo.json` (legacy `sessions/*/todo.md` supported) |
 
 ### 5.2 Execution Method
 **Important**: This skill collects data by executing a Python script, and must be executed using `mcp_exec_command`:

@@ -79,7 +79,9 @@ export function FilePreviewContent({
     [file, isJson],
   );
   const binaryPreviewUrl = useMemo(
-    () => (file?.downloadUrl ? inlineDownloadUrl(file.downloadUrl, 'http://localhost') : null),
+    () => (file?.downloadUrl
+      ? inlineDownloadUrl(file.downloadUrl, typeof window === 'undefined' ? 'http://localhost' : window.location.origin)
+      : null),
     [file?.downloadUrl],
   );
 

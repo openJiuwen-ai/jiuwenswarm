@@ -65,6 +65,7 @@ _ensure_req_method("JIUWENMATE_CONNECTION_ATTACH", "jiuwenmate.connection.attach
 _ensure_req_method("JIUWENMATE_COLLEAGUE_CONNECTIONS", "jiuwenmate.colleague.connections")
 _ensure_req_method("JIUWENMATE_COLLEAGUE_REMOVE", "jiuwenmate.colleague.remove")
 _ensure_req_method("JIUWENMATE_FEISHU_PREPARE", "jiuwenmate.feishu.prepare")
+_ensure_req_method("JIUWENMATE_CHANNEL_CONFIG_SYNC", "jiuwenmate.channel_config.sync")
 _ensure_req_method("JIUWENMATE_DELIVERY_ACK", "jiuwenmate.delivery.ack")
 _ensure_req_method("JIUWENMATE_THINKING_NOTICE_ACK", "jiuwenmate.thinking_notice.ack")
 _ensure_req_method("JIUWENMATE_GROUP_RESPONSE", "jiuwenmate.group.response")
@@ -145,6 +146,7 @@ _ensure_req_method("TRAJECTORY_RAW_GET", "trajectory.raw.get")
 _ensure_req_method("TRAJECTORY_ARCHIVE_OPEN", "trajectory.archive.open")
 _ensure_req_method("TRAJECTORY_BLOB_READ", "trajectory.blob.read")
 _ensure_req_method("TRAJECTORY_BLOB_CLOSE", "trajectory.blob.close")
+_ensure_req_method("MCP_SOURCES_PROVIDERS", "mcp.sources.providers")
 # Enterprise verify still registers these wire methods in HANDLERS / adapters,
 # but the pinned openjiuwen-protocol revision does not ship them yet. Without
 # ensure, importing dispatch crashes the runtime worker and HTTP :8766 never

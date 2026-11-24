@@ -129,7 +129,7 @@ async def test_adapter_can_refresh_again_after_runtime_close():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("remote", [False, True])
 async def test_status_is_proxied_to_owning_worker_in_both_gateway_modes(monkeypatch, remote):
-    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+    from e2a.agent_compat import e2a_to_agent_request
     from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
     from agent_gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry

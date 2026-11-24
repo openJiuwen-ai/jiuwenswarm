@@ -343,7 +343,7 @@ async def test_config_status_rpc_uses_backend_directory(monkeypatch, moa_config)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("remote", [False, True])
 async def test_web_status_rpc_dispatches_through_e2a(monkeypatch, moa_config, remote):
-    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+    from e2a.agent_compat import e2a_to_agent_request
     from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
     from agent_gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry

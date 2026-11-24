@@ -28,11 +28,13 @@ from jiuwenswarm.channels.desktop.office_addins.registration import (
     MacRegistration,
     WpsRegistration,
 )
-from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
+from jiuwenswarm.channels.web.app_web import _is_loopback_name, _SpaStaticHandler
 
 ROOT = Path(__file__).resolve().parents[4]
-NOT_INSTALLED = {"installed": False, "problems": [], "apps": dict.fromkeys(HOSTS, "not_installed")}
-WPS_NOT_INSTALLED = {"installed": False, "problems": [], "apps": dict.fromkeys(WPS_TYPES, "not_installed")}
+NOT_INSTALLED = {"installed": False, "problems": [], "apps": dict.fromkeys(HOSTS, "not_installed"), "required": {}}
+WPS_NOT_INSTALLED = {
+    "installed": False, "problems": [], "apps": dict.fromkeys(WPS_TYPES, "not_installed"), "required": {},
+}
 TOKEN = "desktop-token"
 COOKIE = f"__wsdt={TOKEN}"
 # What the desktop window's own page sends with a POST.
@@ -104,7 +106,8 @@ def _upstream_gateway() -> Iterator[int]:
 
 
 @contextmanager
-def _desktop(tmp_path: Path, *, desktop_mode: bool = True) -> Iterator[Desktop]:
+def _desktop(tmp_path: Path, *, desktop_mode: bool = True, token: str = TOKEN) -> Iterator[Desktop]:
+    """``token``: empty for web mode, as ``jiuwenswarm-start`` serves the page."""
     dist = tmp_path / "dist"
     (dist / "office").mkdir(parents=True)
     (dist / "index.html").write_text("<!doctype html><title>app</title>", encoding="utf-8")
@@ -130,7 +133,7 @@ def _desktop(tmp_path: Path, *, desktop_mode: bool = True) -> Iterator[Desktop]:
         tls = TlsFiles(tmp_path / "data" / "office-addin" / "tls")
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         if desktop_mode:
-            Handler.desktop_token = TOKEN
+            Handler.desktop_token = token
             Handler.desktop_cookie_name = "__wsdt"
             registrations = {app: MacRegistration(home, app) for app in HOSTS}
             registrations.update({app: WpsRegistration(home, WPS_MAC_EDITIONS, app) for app in WPS_TYPES})
@@ -182,6 +185,27 @@ def test_routes_need_the_desktop_cookie(tmp_path: Path) -> None:
         assert body == {"suites": {"office": NOT_INSTALLED, "wps": WPS_NOT_INSTALLED}}
 
 
+def test_web_mode_offers_the_add_ins_to_this_machines_page_only(tmp_path: Path) -> None:
+    with _desktop(tmp_path, token="") as web:
+        status, body = _request(web.http_port, "GET", "/desktop-api/office-addins")
+        assert status == 200
+        assert body == {"suites": {"office": NOT_INSTALLED, "wps": WPS_NOT_INSTALLED}}
+        # A site that points its own name at 127.0.0.1 still sends that name.
+        rebound = {"Host": f"attacker.example:{web.http_port}", "Sec-Fetch-Site": "same-origin"}
+        assert _request(web.http_port, "GET", "/desktop-api/office-addins", rebound)[0] == 404
+        assert _request(web.http_port, "POST", "/desktop-api/office-addins/office/install", rebound)[0] == 404
+        cross_site = {"Sec-Fetch-Site": "cross-site"}
+        assert _request(web.http_port, "POST", "/desktop-api/office-addins/office/install", cross_site)[0] == 404
+        assert not MacRegistration(web.home, "powerpoint").path.exists()
+
+
+@pytest.mark.parametrize(("host", "offered"), [
+    ("localhost", True), ("127.0.0.1", True), ("::1", True), ("0.0.0.0", False), ("workswarm.example.com", False),
+])
+def test_web_mode_offers_the_add_ins_only_when_it_listens_on_the_loopback(host: str, offered: bool) -> None:
+    assert _is_loopback_name(host) is offered
+
+
 @pytest.mark.parametrize("site", [{"Sec-Fetch-Site": "same-site"}, {}], ids=["another page", "no fetch metadata"])
 def test_only_the_desktop_page_can_install(tmp_path: Path, site: dict[str, str]) -> None:
     with _desktop(tmp_path) as desktop:
@@ -215,7 +239,9 @@ def test_install_serves_the_pane_over_https_and_tunnels_ws(tmp_path: Path) -> No
         status, body = _request(
             desktop.http_port, "POST", "/desktop-api/office-addins/office/install", PAGE,
         )
-        assert (status, body) == (200, {"installed": True, "problems": [], "apps": dict.fromkeys(HOSTS, "installed")})
+        assert (status, body) == (200, {
+            "installed": True, "problems": [], "apps": dict.fromkeys(HOSTS, "installed"), "required": {},
+        })
         manifest = MacRegistration(desktop.home, "powerpoint").path.read_text(encoding="utf-8")
         assert f"{desktop.listener.origin}/office/taskpane.powerpoint.html" in manifest
 

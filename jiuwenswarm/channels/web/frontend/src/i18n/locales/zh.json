@@ -118,6 +118,7 @@
     "processing": "处理中…",
     "retry": "重试",
     "selectedCount": "已选 {{count}} 个",
+    "noMatches": "没有匹配项",
     "editMenu": {
       "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
@@ -131,7 +132,11 @@
     "unavailable": "界面内容暂时无法显示，请稍后重试或重新生成结果。",
     "unavailableTitle": "界面内容暂时无法显示",
     "retry": "请稍后重试或重新生成结果",
-    "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}"
+    "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}",
+    "multipleChoice": {
+      "maxSelections": "{{description}}（最多选 {{count}} 项）",
+      "searchPlaceholder": "搜索选项"
+    }
   },
   "webui": {
     "entryLabel": "应用界面",
@@ -151,6 +156,7 @@
     "sessions": "会话",
     "cron": "定时任务",
     "skills": "技能",
+    "rea": "逆向工程",
     "connectorMarket": "扩展",
     "more": "更多",
     "settings": "设置",
@@ -193,7 +199,6 @@
       "directory": "应用目录",
       "packageSize": "包大小",
       "sourceSize": "源文件大小",
-      "requiresProject": "需要项目",
       "permissions": "权限",
       "serverScript": "包含服务脚本"
     },
@@ -205,7 +210,7 @@
     "updateConfirm": "更新 {{name}} 到 v{{version}}{{size}}？将停止正在运行的实例，备份当前完整工作目录（含本地编辑），并将 data/ 和 Git 仓库复制到新版本。",
     "installServerWarning": "该应用包含 scripts/app_server.py，将在本机启动服务进程。",
     "installPermissions": "声明权限：{{list}}",
-    "installProjectNote": "该应用运行期需要项目上下文，将使用应用自己的项目。",
+    "installProjectNote": "安装时会为应用创建或绑定项目，供运行和编辑会话使用。",
     "installDirPrompt": "选择安装目录（留空使用默认目录）：",
     "installDirLabel": "安装目录（服务端路径）",
     "installDirHint": "目录位于运行后端服务的机器；最终会安装到该目录下的应用名子目录。",
@@ -219,6 +224,7 @@
     "updateSuccess": "已更新 {{name}}",
     "updateBackupSuccess": "已更新 {{name}}。旧工作目录备份在 {{path}}",
     "runDisabled": "当前部署禁止运行 Hub 应用随包携带的服务器脚本。",
+    "projectUnavailable": "无法为应用绑定可用项目，请检查项目后重试。",
     "alreadyInstalled": "该版本已安装",
     "alreadyLatest": "已是最新版本",
     "installCancelling": "正在取消安装…",
@@ -259,7 +265,8 @@
     "editSessionTitle": "编辑 {{name}}",
     "reloadPreview": "重新加载应用预览",
     "reloadFailed": "重新加载应用预览失败",
-    "editPrompt": "帮我修改应用“{{name}}”，源码入口：{{entryPath}}\n请保留应用已有的数据和存档。我要修改的内容是：",
+    "editPrompt": "帮我修改应用“{{name}}”（v{{version}}）。\n应用简介：{{description}}\n源码入口：{{entryPath}}\n\n请先阅读现有代码和数据，保留已有的数据与存档。建议按以下步骤进行：\n1. 说明当前实现、入口文件和关键数据；\n2. 按我的需求做最小修改并自测；\n3. 需要发布新版本时提醒我。\n我要修改的内容是：",
+    "noDescription": "暂无简介",
     "expandPane": "展开应用面板",
     "restorePane": "恢复分栏",
     "hidePane": "收起应用面板",
@@ -296,7 +303,8 @@
       "installed": "已安装",
       "notInstalled": "未安装",
       "needsRepair": "需修复",
-      "notFound": "未检测到"
+      "notFound": "未检测到",
+      "outdated": "版本过低"
     },
     "sections": {
       "about": "基本信息",
@@ -363,6 +371,7 @@
       "stale_origin": "加载项还指向旧的地址。点「修复」更新。"
     },
     "appsNotFound": "未检测到 {{apps}}。装好并打开一次后，回到这里安装。",
+    "appOutdated": "{{app}} 版本过低，升级到 {{version}} 或更高版本后，回到这里安装。",
     "listSeparator": "、",
     "errors": {
       "actionFailed": "操作没有完成，请重试。"
@@ -980,7 +989,6 @@
       "affinityCapability": "此服务支持 Ascend KV-Cache 算力亲和",
       "affinityCapabilityDescription": "仅适用于已适配 agent_hint 协议的自定义服务。此项是人工声明，普通连通性测试不验证亲和能力。",
       "affinityAutoDisabled": "模型配置已保存；控制模型不再支持算力亲和，已自动关闭。若提示需要重启，请重启后使用。",
-
       "customModels": "自定义模型",
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
@@ -1252,6 +1260,7 @@
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "rsi": "RSI 递归自我改进",
+      "rea": "逆向工程",
       "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
       "teamOrganization": "Swarm Organization",
@@ -1559,6 +1568,10 @@
       "rsi_enabled": {
         "title": "启用 RSI",
         "description": "显示侧边栏「RSI」入口，可创建并查看 Harness 优化和产物优化（论文、程序）的 RSI 任务；关闭后隐藏该入口。"
+      },
+      "rea_enabled": {
+        "title": "启用逆向",
+        "description": "显示侧边栏「逆向」入口，可安装并配置 REA 逆向工程能力；关闭后隐藏该入口。"
       },
       "cua_agent_enabled": {
         "title": "启用电脑操控",
@@ -2005,7 +2018,8 @@
       "showSessions": "展开会话栏",
       "hideTasks": "收起任务栏",
       "showTasks": "展开任务栏"
-    }
+    },
+    "retentionRunning": "轨迹保留清理正在进行，请稍后重试。"
   },
   "teams": {
     "title": "团队管理",
@@ -2276,6 +2290,7 @@
         "WAITING_SOURCES": "等待成果",
         "CLAIMED": "已认领",
         "IN_PROGRESS": "进行中",
+        "OWNER_STOPPED": "已停止",
         "COMPLETED": "已完成",
         "FAILED": "失败"
       },
@@ -2289,6 +2304,7 @@
       "displayName": "名称",
       "description": "描述",
       "ownerTeam": "主团",
+      "summaryTeam": "汇总团队",
       "teams": "团队",
       "leadTeam": "Team",
       "leadMember": "Leader",
@@ -2323,6 +2339,22 @@
     "pickTitle": "选择素材",
     "referHint": "输入框里输入 @ 引用",
     "reference": "已引用"
+  },
+  "assetTransfer": {
+    "errors": {
+      "notFound": "资产或指定版本不存在",
+      "exportForbidden": "未安装或受限的资产不可导出",
+      "invalidPackage": "资产包无效：缺少清单文件或包结构不合法",
+      "unsafePath": "资产包包含符号链接或非法路径，已拒绝",
+      "credentialDetected": "资产文件中检测到明文敏感凭证，请清理后重试",
+      "limitExceeded": "文件数量、单文件或压缩包体积超出限制",
+      "alreadyExists": "同 id 资产已存在，不支持覆盖，请先删除或改名",
+      "builtinReadOnly": "与系统内置资产冲突，不可覆盖",
+      "uploadFailed": "文件上传失败，请重试",
+      "downloadFailed": "导出包下载失败，请重新导出或稍后重试",
+      "saveFailed": "文件保存失败，请重试",
+      "requestFailed": "请求失败，请重试"
+    }
   },
   "artifacts": {
     "title": "所有产物",
@@ -2386,9 +2418,10 @@
     }
   },
   "chat": {
+    "npcSessionLabel": "NPC",
+    "npcSessionReadOnly": "这是应用的 NPC 会话。请在应用内继续对话。",
     "recordingInProgress": "正在录音，点击停止后转写。",
     "toolResultLabel": "工具结果",
-    "teamReceiving": "正在接收中...",
     "duplexControls": {
       "sharingVideo": "WorkSwarm 正在接收共享画面",
       "screenOrWindow": "屏幕或窗口",
@@ -2472,7 +2505,10 @@
       "providerRefusal": "话题推荐暂不可用，请前往设置检查。",
       "openSettings": "去设置看看",
       "trySettings": "去试试",
-      "disabledHintWithCards": "想让话题更懂你，可以去设置-常规里打开。"
+      "disabledHintWithCards": "想让话题更懂你，可以去设置-常规里打开。",
+      "newsReport": "资讯",
+      "recent": "近期",
+      "openOriginal": "打开原文：{{source}}"
     },
     "promptSuggestionBox": {
       "label": "下一步：",
@@ -2721,7 +2757,36 @@
     "selectTeamMembers": "选择团队成员",
     "noTeamMembersAvailable": "暂无可选择的团队成员",
     "moaReferenceRunning": "正在运行参考模型…",
-    "moaVerifying": "正在评估任务执行进展…"
+    "moaVerifying": "正在评估任务执行进展…",
+    "sessionNotReady": "会话未就绪，请稍后重试",
+    "slash": {
+      "forkFailed": "分叉会话失败，请稍后再试。",
+      "compactBusy": "压缩已在进行中，请稍候。",
+      "compactNoop": "上下文已是最优，无需压缩。",
+      "compactDone": "✓ 上下文已压缩：{{after}}K / {{before}}K tokens（节省 {{rate}}%）",
+      "compactIncomplete": "压缩未完成，请稍后再试。",
+      "compactFailed": "压缩失败：网络异常或请求超时。",
+      "planTeamUnsupported": "计划模式仅对单 agent 开放，集群会话不支持。",
+      "goalNone": "当前会话没有持续目标。",
+      "goalCurrent": "当前目标（{{status}}）：{{objective}}",
+      "goalStatus": {
+        "active": "进行中",
+        "paused": "已暂停",
+        "completed": "已完成",
+        "blocked": "已阻塞"
+      },
+      "goalUsage": "用法：/goal [set <目标>|pause|resume|clear]",
+      "goalNeedSession": "请先开始一个对话再控制持续目标。",
+      "goalBusy": "对话进行中，暂时无法设置目标，请等待执行结束。",
+      "goalPlanActive": "计划模式正在进行，请先退出计划模式再设置目标。",
+      "goalClearBusy": "目标正在执行中，暂时无法清除，请先暂停或等待执行结束。",
+      "goalFailed": "目标命令执行失败，请稍后再试。",
+      "persistExistingSession": "Persist Session 只能在创建新会话时开启，并且创建后不可更改。请点击“新建任务”后再使用 /persist <任务>。",
+      "persistUsage": "用法：/persist <任务>"
+    },
+    "sessionTaskCompleted": "会话任务：【{{description}}】已完成",
+    "receiving": "正在接收中...",
+    "evolutionUnavailableInMode": "{{mode}} 模式下演进功能不可用。"
   },
   "autoHarness": {
     "busy": "当前已有 Auto-Harness 任务在运行",
@@ -2762,9 +2827,6 @@
       "publish": "发布 PR",
       "learnings": "总结经验"
     }
-  },
-  "evolve": {
-    "unsupportedMode": "{{mode}} 模式下演进功能不可用。"
   },
   "connection": {
     "connected": "已连接",
@@ -2907,6 +2969,7 @@
   },
   "sessionSidebar": {
     "newSession": "新会话",
+    "comboboxOptions": "{{label}}选项",
     "enterpriseContext": {
       "user": "用户",
       "userContext": "用户上下文",
@@ -4027,6 +4090,10 @@
       "install": "安装",
       "installing": "安装中...",
       "uninstall": "卸载",
+      "exportSkill": "导出",
+      "exportingSkill": "正在导出 {{name}}…",
+      "exportSuccess": "已导出 {{name}}",
+      "exportCancelled": "已取消导出",
       "uninstalling": "卸载中...",
       "update": "更新",
       "importLocal": "导入本地技能",
@@ -4289,7 +4356,7 @@
     },
     "graph": {
       "orchestration": {
-        "description": "开启后，会为已安装的技能构建技能图谱（消耗Token），并在执行任务时基于图谱自动选择、组合和编排技能，提高任务执行效率；关闭后将不再进行技能编排，已构建的技能图谱不会删除。",
+        "description": "开启后可构建编排图谱（消耗 Token），用于规划技能工作流和专家之间的产物交接。",
         "graphDefinition": "技能图谱就像一张技能关系地图：每个点代表一个技能，点之间的线表示它们可以配合使用。",
         "saving": "正在保存…",
         "saveFailed": "技能编排开关保存失败，请稍后重试。",
@@ -5280,6 +5347,7 @@
     }
   },
   "network": {
+    "proxyRoutingError": "接口未命中后端服务（返回了 HTML 页面，状态码 {{status}}）。请检查后端服务是否启动，以及统一门户接口前缀代理是否配置正确。",
     "wsError": "WebSocket 连接异常",
     "connectionClosedWithCode": "连接已关闭 ({{code}})",
     "connectionClosed": "连接已关闭",
@@ -5303,6 +5371,7 @@
     "recognitionUnsupported": "浏览器不支持语音识别",
     "recordingUnsupported": "浏览器不支持麦克风录音",
     "synthesisUnsupported": "浏览器不支持语音合成",
+    "codeBlockOmitted": "代码块已省略",
     "errors": {
       "noSpeech": "未检测到语音",
       "noMic": "未检测到麦克风",
@@ -5853,6 +5922,11 @@
       "mcp": "搜索连接器",
       "my": "搜索我的扩展"
     },
+    "sources": {
+      "tabsLabel": "连接器目录来源",
+      "noSources": "暂无可用连接器源",
+      "loadFailed": "加载连接器源失败"
+    },
     "statusFilter": {
       "all": "全部",
       "pending": "待安装/连接",
@@ -5907,6 +5981,8 @@
       "use": "使用",
       "useNotWired": "该功能尚未接入，请在会话输入框的\"+\"面板里选用",
       "install": "安装",
+      "update": "更新",
+      "updateNotSupportedYet": "连接器升级功能尚未接入，暂不可用",
       "installing": "安装中",
       "connecting": "连接中",
       "disconnecting": "解绑中",
@@ -6090,6 +6166,24 @@
     }
   },
   "auth": {
+    "startup": {
+      "manager": "【正式身份认证模式，依赖manager ID认证服务】",
+      "simulate": "【登录认证模拟调试模式已开启】使用默认 Agent 上下文候选值"
+    },
+    "errors": {
+      "authorizeFailed": "获取授权地址失败",
+      "authorizeMalformed": "授权地址返回不完整",
+      "authorizeUnavailable": "无法获取授权地址，请稍后重试",
+      "loginFailed": "登录失败，请重试",
+      "statusFailed": "获取登录状态失败",
+      "modelsFailed": "获取模型列表失败",
+      "quotaFailed": "获取额度失败"
+    },
+    "manager": {
+      "networkFailed": "网络请求失败：{{message}}",
+      "contextFailed": "加载 Agent 上下文失败",
+      "switchClusterFailed": "切换集群失败"
+    },
     "huawei": {
       "title": "登录华为账号",
       "subtitle": "登录后即可使用账号提供的模型，无需配置 API Key。",
@@ -6564,12 +6658,292 @@
     "forkFromSession": "从会话 {{name}} 分叉",
     "forkChildSession": "分叉产生的子会话",
     "executorOrchestration": "【{{name}} 的编排 · {{workflow}}】",
-    "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}"
+    "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}",
+    "sectionResult": "结果",
+    "iterationRound": "第{{index}}轮",
+    "iterationDotTitle": "第{{index}}轮 · {{status}}",
+    "iterationCount": "×{{count}}轮",
+    "formatToggleFormatted": "格式化",
+    "formatToggleRaw": "原始"
   },
   "a4pSettings": {
     "title": "A4P 预授权",
     "enableTitle": "启用 A4P 预授权",
     "description": "允许批量预授权当前会话和定时任务所需的权限。开启后，定时任务运行时也接入权限审批。仅在“默认权限”模式下生效。"
+  },
+  "reaSetup": {
+    "pageTitle": "逆向工程",
+    "pageSubtitle": "完成环境配置后，在任务中调用 REA MCP 使用逆向能力。",
+    "emptyTitle": "您还没有安装逆向工程环境",
+    "installOneClick": "一键安装",
+    "preparingEnvironment": "正在准备逆向工程环境",
+    "progressHint": "首次配置约需 3–5 分钟，完成后可随时查看详情。",
+    "enhancedProgressHint": "增强能力配置预计需要 {{range}}，完成后可随时查看详情。",
+    "enhancedEstimateFallback": "30–40 分钟",
+    "cancelInstall": "取消安装",
+    "installingComponents": "正在安装工具链组件",
+    "componentCountHint": "共 {{count}} 个组件，可执行组件会按依赖关系并行安装。",
+    "completedCount": "已完成 {{completed}} / {{total}} 项",
+    "progressMetrics": {
+      "completed": "已完成",
+      "items": "项",
+      "remaining": "预计剩余",
+      "minutes": "分钟",
+      "seconds": "秒"
+    },
+    "estimating": "正在估算剩余时间",
+    "installProgress": "安装进度",
+    "installComponents": "安装组件",
+    "environmentTitle": "环境配置",
+    "baseGroup": "基础环境",
+    "enhancedGroup": "增强能力",
+    "enhancedGroupOptional": "增强能力（可选）",
+    "continueInstall": "继续安装",
+    "goUse": "去调用",
+    "viewDetails": "查看详情",
+    "gotIt": "知道了",
+    "memberDetails": "组件情况",
+    "installCancelled": "安装已取消。",
+    "mcpDetailsTitle": "REA MCP 详情",
+    "tools": "工具数量",
+    "inventoryGroups": "工具组 / 工具可用项",
+    "state": "状态",
+    "close": "关闭",
+    "checking": "检测中…",
+    "checkEnvironment": "检测环境",
+    "checkingEnvironment": "正在重新检测本机环境",
+    "collapse": "收起",
+    "expand": "展开",
+    "stepState": {
+      "pending": "等待",
+      "running": "进行中",
+      "succeeded": "已完成",
+      "failed": "失败",
+      "skipped": "已跳过"
+    },
+    "configurationGuide": "配置指南",
+    "confirm": "确定",
+    "groupState": {
+      "complete": "已完成",
+      "partial": "部分安装",
+      "installing": "安装中"
+    },
+    "stats": {
+      "all": "全部",
+      "installed": "已安装",
+      "installing": "安装中",
+      "uninstalled": "未安装",
+      "failed": "安装失败",
+      "check": "检测"
+    },
+    "visualState": {
+      "available": "可用",
+      "installing": "安装中",
+      "detecting": "检测中",
+      "needsAction": "需配置",
+      "detected": "已检测",
+      "unsupported": "当前不适用",
+      "notInstalled": "未安装",
+      "downloaded": "已下载未安装",
+      "partial": "部分可用",
+      "failed": "安装失败"
+    },
+    "cardDetail": {
+      "node": "Node {{version}}｜npm {{npmVersion}}｜npx 可用",
+      "runtime": "REA {{version}} 运行时响应正常",
+      "mcp": "{{count}} 个工具可用",
+      "mcpVerified": "工具合同与运行时状态已校验",
+      "members": "{{ready}}/{{total}} 个依赖已就绪",
+      "scenarios": "{{count}} 项需场景",
+      "unsupported": "{{count}} 项当前不适用"
+    },
+    "baseLabel": {
+      "node": "Node.js 与 npm/npx",
+      "runtime": "REA 运行时",
+      "mcp": "REA MCP"
+    },
+    "capability": {
+      "ghidra": "Ghidra",
+      "ghidraDesc": "原生反编译与函数分析",
+      "ida": "IDA",
+      "idaDesc": "商业反编译与交互分析",
+      "kuna": "Kuna",
+      "kunaDesc": "开源二进制反编译",
+      "hopper": "Hopper",
+      "hopperDesc": "macOS / Linux 原生反汇编",
+      "android": "Android 工具链",
+      "androidDesc": "JADX、ADB、Apktool",
+      "apple": "Apple 平台支持",
+      "appleDesc": "macOS native utilities",
+      "dynamic": "动态分析",
+      "dynamicDesc": "Frida、调试器、Cutter、浏览器与运行时观察",
+      "networkFirmware": "网络与固件",
+      "networkFirmwareDesc": "PCAP、代理抓包、固件与信号证据",
+      "scriptFormats": "脚本与格式",
+      "scriptFormatsDesc": "pwntools、WASM、JavaScript 恢复与底层格式",
+      "jeb": "JEB Android",
+      "jebDesc": "商业 Android 反编译与交互分析"
+    },
+    "capabilityHover": {
+      "ghidra": "适合查看程序结构和函数逻辑。",
+      "ida": "适合深入分析商业软件。",
+      "kuna": "适合免费查看程序逻辑。",
+      "hopper": "适合分析 Apple 平台程序。",
+      "android": "适合查看 Android 应用。",
+      "jeb": "适合深入分析 Android 应用。",
+      "apple": "适合分析 Apple 平台程序。",
+      "dynamic": "适合观察程序运行时的行为。",
+      "networkFirmware": "适合分析网络流量和设备固件。",
+      "scriptFormats": "适合处理脚本、网页和多种文件格式。"
+    },
+    "capabilityHint": {
+      "available": "这个能力已经准备好，可以直接使用。",
+      "installing": "正在准备这个能力。",
+      "detecting": "基础环境完成后会自动检测这个能力。",
+      "needsAction": "还需要补充外部软件或账号信息。",
+      "detected": "已经找到所需软件，还需要完成配置。",
+      "unsupported": "当前系统不支持这个能力。",
+      "notInstalled": "这个能力还没有安装。",
+      "downloaded": "安装包已下载，还需要完成安装。",
+      "partial": "部分工具已经可用，可以完成一些相关任务。",
+      "failed": "上次安装没有完成，可以重新检测。"
+    },
+    "memberState": {
+      "available": "可用",
+      "installing": "安装中",
+      "detecting": "等待检测",
+      "needsAction": "需要配置",
+      "detected": "已找到，尚未配置",
+      "unsupported": "当前系统不支持",
+      "notInstalled": "尚未安装",
+      "downloaded": "已下载，尚未安装",
+      "partial": "部分可用",
+      "failed": "安装或验证失败"
+    },
+    "groups": {
+      "native": "原生静态分析",
+      "android": "Android 工具链",
+      "network": "网络与数据分析",
+      "dynamic": "脚本与动态分析"
+    },
+    "guide": {
+      "title": "任务指南",
+      "installTitle": "第一步：一键安装环境",
+      "enhanceTitle": "第二步：补充增强能力",
+      "callTitle": "第三步：调用 REA MCP 完成任务",
+      "step1": "01 添加任务目标",
+      "step1Desc": "在对话框中添加想要分析的目标程序",
+      "step2": "02 调用 REA MCP",
+      "step2Desc": "调用 REA MCP，使用逆向分析能力",
+      "step3": "03 确认需求",
+      "step3Desc": "输入提示词，描述逆向工程的详细需求",
+      "actionPrompt": "使用 REA 分析目标程序，启动逆向调查。",
+      "prompt1": "用 REA 分析目标程序，启动逆向调查",
+      "prompt2": "用 REA 反编译当前模块，还原业务逻辑",
+      "prompt3": "用 REA 生成并导出逆向分析报告"
+    },
+    "eyebrow": "实验能力 · 逆向工程",
+    "title": "REA 逆向工程",
+    "description": "先安装最小可运行的 REA 基础能力，验证 MCP 后再决定是否按当前操作系统安装增强分析引擎。自动安装、手动授权和平台不支持项会分开处理，互不阻塞。",
+    "scanning": "正在扫描本机能力",
+    "ready": "基础能力已就绪",
+    "notReady": "基础能力未就绪",
+    "readyHint": "REA MCP 已通过握手，可直接开始逆向任务。",
+    "notReadyHint": "先完成 Node、REA 包和 MCP 三项最小依赖。",
+    "platform": "当前平台",
+    "parallelHint": "独立组件按依赖波次并行",
+    "baseTitle": "基础能力",
+    "baseHint": "这是启动 REA 的最小必需链路；每一步都依赖前一步，避免在未验证 MCP 时提前安装增强组件。",
+    "enhancedTitle": "增强能力",
+    "enhancedHint": "按当前操作系统生成计划。Java 完成后，Ghidra 与 JADX 并行；ADB、Apktool 和 PCAP 也会并行安装。",
+    "enhancedBlocked": "基础能力就绪后再生成增强能力计划。",
+    "enhancedNone": "当前平台没有可用的增强能力。",
+    "autoQueue": "自动安装队列",
+    "manualQueue": "需要你操作",
+    "unsupportedQueue": "当前平台不支持",
+    "planSummary": "安装计划",
+    "parallelExplainer": "增强安装会先并行执行无依赖组件，再并行执行依赖 Java 的组件。手动配置项不会阻塞自动队列。",
+    "installBase": "一键安装基础能力",
+    "installEnhanced": "安装增强能力",
+    "installing": "正在安装并验证",
+    "baseInstalling": "基础安装",
+    "enhancedInstalling": "增强安装",
+    "onePrimaryHint": "主流程只保留一个主要操作；诊断和修复是辅助入口。",
+    "decisionTitle": "是否安装增强能力？",
+    "decisionDescription": "增强能力预计耗时 30–40 分钟，安装后可扩展分析范围。为了不占用你的时间，只有点击“继续安装”才会开始；也可以稍后从环境配置中再次安装。",
+    "autoCount": "{{count}} 项可自动安装",
+    "manualCount": "{{count}} 项需要手动配置",
+    "continueEnhance": "继续安装",
+    "skipEnhance": "暂不安装",
+    "coreOnly": "已保留可用的 REA 基础能力。你仍可从上方增强计划启动安装或配置。",
+    "resultTitle": "安装结果",
+    "baseResultTitle": "基础能力已完成并通过验证",
+    "enhancedResultTitle": "增强能力处理完成",
+    "installPartial": "安装已完成，但部分验证未通过",
+    "toolCount": "已发现 {{count}} 个 MCP 工具",
+    "errorTitle": "安装遇到问题",
+    "recheck": "重新扫描",
+    "elapsed": "已用时 {{count}} 秒",
+    "stage": "阶段：{{stage}}",
+    "theoreticalTime": "理论耗时 {{range}}",
+    "downloadSource": "下载源",
+    "downloaded": "已下载",
+    "speed": "速度 {{speed}}",
+    "remaining": "预计剩余 {{time}}",
+    "stepStatus": {
+      "pending": "等待",
+      "running": "进行中",
+      "succeeded": "完成",
+      "failed": "失败",
+      "skipped": "已跳过"
+    },
+    "status": {
+      "ready": "已就绪",
+      "planned": "待安装",
+      "missing": "缺失",
+      "needsAction": "需要配置",
+      "unsupported": "不支持"
+    },
+    "resultState": {
+      "installed": "已安装",
+      "reused": "已复用",
+      "needs_action": "需要配置",
+      "unsupported": "不支持",
+      "skipped": "已跳过",
+      "failed": "失败"
+    },
+    "configure": "配置",
+    "viewGuide": "查看说明",
+    "configureTitle": "配置 {{name}}",
+    "configureHint": "按步骤完成外部软件操作，然后在这里应用本机配置。",
+    "configSummary": {
+      "ida": "在 IDA 软件中完成登录，获得许可证，下载 JSON 文件或复制代码。"
+    },
+    "unsupportedGuide": "当前系统不支持使用这个能力。你仍可查看官方说明，但无法在本机配置。",
+    "prerequisites": "开始前",
+    "stepsTitle": "操作步骤",
+    "officialLinks": "官方入口",
+    "manualCommands": "可选命令",
+    "copy": "复制",
+    "copied": "已复制",
+    "chooseFile": "选择文件",
+    "chooseDirectory": "选择目录",
+    "required": "必填",
+    "optional": "可选",
+    "applyConfiguration": "应用配置",
+    "configuring": "正在配置",
+    "secretWarning": "请勿粘贴账号密码、许可证密钥或其他敏感凭据。商业软件授权应在软件自身界面完成。",
+    "stages": {
+      "queued": "排队",
+      "starting": "准备安装",
+      "resolving_node": "检查 Node.js",
+      "preparing_rea": "准备 REA 依赖",
+      "writing_config": "写入 MCP 配置",
+      "verifying_mcp": "验证 REA MCP",
+      "final_scan": "刷新最终状态",
+      "completed": "完成",
+      "failed": "失败"
+    }
   },
   "a4pAuthorization": {
     "expandParams": "展开 {{name}} 的参数",
@@ -7594,6 +7968,21 @@
       "in_progress": "执行中",
       "blocked": "等待中",
       "stopped": "已停止"
+    },
+    "autoReply": {
+      "title": "自动判断回复",
+      "hint": "消息没有 @ 任何成员时，由判断模型决定哪些成员需要回复。@ 成员的消息始终由被 @ 的成员回复。",
+      "model": "判断模型",
+      "sessionModel": "跟随群会话模型",
+      "unavailableModel": "已保存的模型不可用",
+      "modelHint": "选用响应快的小模型可以降低开销和等待时间。",
+      "pending": "正在判断由谁回复…",
+      "notified": "自动判断：已通知 {{names}} 回复",
+      "coordinated": "自动判断：已请 {{owner}} 协调 {{names}} 共同完成",
+      "separator": "、",
+      "none": "自动判断：无需成员回复",
+      "failed": "未能自动判断由谁回复，可 @ 成员",
+      "stopped": "已停止，未判断由谁回复"
     }
   },
   "webuiFileImport": {
@@ -7660,5 +8049,30 @@
       "unavailable": "当前会话的文件预览暂不可用",
       "error": "文件读取失败，请重新选择文件"
     }
+  },
+  "marketplace": {
+    "cache": {
+      "refreshFailed": "目录刷新失败，继续显示上次可用内容。",
+      "stale": "当前显示旧缓存。",
+      "updatedAt": "上次更新时间：{{time}}"
+    }
+  },
+  "assetPublish": {
+    "errors": {
+      "desktopNotReady": "桌面浏览器功能尚未就绪，请重试。",
+      "popupBlocked": "浏览器阻止了授权窗口，请允许打开新标签页。",
+      "openBrowserFailed": "无法打开系统浏览器，请重试。",
+      "oauthUnavailable": "OAuth 登录不可用"
+    }
+  },
+  "hubOAuth": {
+    "startFailed": "无法启动 Hub 授权，请检查本地服务。",
+    "requestExpired": "授权请求已过期，请重新登录。",
+    "windowClosed": "授权窗口已关闭，请重新登录。",
+    "exchangeFailed": "Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。",
+    "failed": "授权失败，请重试。"
+  },
+  "workspace": {
+    "selectFilesUnavailable": "后端未注册 path.select_files，请重启 jiuwenswarm-start 后再试"
   }
 }

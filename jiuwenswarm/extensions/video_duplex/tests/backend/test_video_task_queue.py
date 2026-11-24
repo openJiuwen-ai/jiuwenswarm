@@ -584,7 +584,7 @@ async def test_native_file_history_is_bound_to_exact_execution(queue, monkeypatc
 
     monkeypatch.setattr(session_history, "load_history_records", history)
     from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
-    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+    from e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.server.runtime.session import session_metadata, lifecycle
     monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *a, **k: {"user_id": "alice"})
     monkeypatch.setattr(lifecycle, "guard", lambda *_: None)
@@ -1129,7 +1129,7 @@ async def test_duplex_login_auth_is_bound_to_caller_and_sent_on_each_model_reque
     monkeypatch, tmp_path, model_name, login, model_field,
 ):
     from agent_gateway.auth import apig, login_credentials, model_catalog, passthrough, service
-    from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+    from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
     from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import RecordingChannel

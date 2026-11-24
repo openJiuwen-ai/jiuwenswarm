@@ -146,6 +146,12 @@ class RuntimeStateError(RuntimeError):
     """Raised when an operation violates the runtime lifecycle."""
 
 
+class NpcSessionReadOnlyError(RuntimeStateError):
+    """Raised when the Swarm conversation page sends a message to an NPC."""
+
+    code = "NPC_SESSION_READ_ONLY"
+
+
 async def _initialize_runtime_dependencies() -> None:
     """Initialize shared runtime dependencies without starting a server."""
     from jiuwenswarm.runtime.checkpointer import (
@@ -1606,8 +1612,8 @@ class AgentRuntime:
             )
             return
 
-        # Business waiters have exited. The retained observation subscription
-        # owns delivery, with the Team manager's existing waiter-less fallback.
+        # Business waiters have exited, and the Gateway may close observers
+        # independently. The lifecycle adapter publishes outside those streams.
         try:
             await self._team_lifecycle().publish_pause_completed(
                 request.session_id,
@@ -1801,12 +1807,6 @@ class AgentRuntime:
     ) -> list[RuntimeEvent]:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
-        request = self.normalize_request(request)
-        attachment_completion = self._non_team_attachment_completion(request)
-        if attachment_completion is not None:
-            return [attachment_completion]
-        self._validate_permission_answer(request)
-        self._validate_answer_source(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
                 request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -1819,6 +1819,15 @@ class AgentRuntime:
         )
 
         async with self._tenant.scoped_manager(request) as manager:
+            request, metadata = self._normalize_request_with_metadata(request)
+            refusal = self._swarm_npc_chat_refusal(request, metadata)
+            if refusal is not None:
+                return [refusal]
+            attachment_completion = self._non_team_attachment_completion(request)
+            if attachment_completion is not None:
+                return [attachment_completion]
+            self._validate_permission_answer(request)
+            self._validate_answer_source(request)
             token = set_runtime_context(self, manager)
             try:
                 work_kind = self.session_work_kind(request)
@@ -2345,7 +2354,11 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        request = self.normalize_request(request)
+        request, metadata = self._normalize_request_with_metadata(request)
+        refusal = self._swarm_npc_chat_refusal(request, metadata)
+        if refusal is not None:
+            yield refusal
+            return
         attachment_completion = self._non_team_attachment_completion(request)
         if attachment_completion is not None:
             yield attachment_completion
@@ -3881,7 +3894,7 @@ class AgentRuntime:
 
     @classmethod
     def _validate_answer_source(cls, request: AgentRequest) -> None:
-        """Reject answers carried under an unknown source (#6285).
+        """Reject answers lane admission would not resume (#6285, #6857).
 
         Runs before session lane admission; the raised
         ``InteractionAnswerError`` reaches the client as an error response
@@ -4087,13 +4100,39 @@ class AgentRuntime:
         return is_team_mode(canonical)
 
     @staticmethod
-    def normalize_request(request: AgentRequest) -> AgentRequest:
+    def _swarm_npc_chat_refusal(request: AgentRequest, metadata: dict[str, Any]) -> RuntimeEvent | None:
+        """Keep the Swarm composer from changing app-owned conversation history."""
+        params = request.params or {}
+        if request.req_method != ReqMethod.CHAT_SEND or params.get("chat_surface") != "swarm":
+            return None
+        if params.get(TEAM_ATTACH_ONLY_PARAM) is True and not any(
+            params.get(field) for field in ("query", "content", "files", "media_items")
+        ):
+            return None
+        from jiuwenswarm.runtime.app_role import is_npc_session
+        from jiuwenswarm.runtime.events import RuntimeEvent
+
+        if not is_npc_session(metadata):
+            return None
+        return RuntimeEvent.error(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            error=NpcSessionReadOnlyError("Continue the NPC conversation inside its application."),
+        )
+
+    @classmethod
+    def normalize_request(cls, request: AgentRequest) -> AgentRequest:
         """Resolve the effective mode before Runtime classification and dispatch."""
+        return cls._normalize_request_with_metadata(request)[0]
+
+    @staticmethod
+    def _normalize_request_with_metadata(request: AgentRequest) -> tuple[AgentRequest, dict[str, Any]]:
         params = request.params if isinstance(request.params, dict) else {}
         raw_mode = params.get("mode")
         session_id = str(request.session_id or "").strip()
         if not session_id:
-            return request
+            return request, {}
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,
         )
@@ -4110,23 +4149,23 @@ class AgentRuntime:
                 session_id,
                 exc,
             )
-            return request
+            return request, {}
         if not isinstance(metadata, dict):
-            return request
+            return request, {}
         resolved_mode = metadata.get("mode")
         if not isinstance(resolved_mode, str) or not resolved_mode.strip():
-            return request
+            return request, metadata
         if isinstance(raw_mode, str) and raw_mode.strip():
             from jiuwenswarm.runtime.request import resolve_request_runtime_mode
 
             if not (is_single_agent_mode(deprecate_mode(resolved_mode)) or is_team_mode(resolved_mode)):
-                return request
+                return request, metadata
             work_mode = metadata.get("work_mode")
             if not isinstance(work_mode, str) or work_mode.strip().lower() not in {"code", "work"}:
                 work_mode = "code" if is_code_profile_mode(resolved_mode) else "work"
             requested_mode = resolve_request_runtime_mode(request, work_mode=work_mode)
             if requested_mode.is_team == is_team_mode(resolved_mode):
-                return request
+                return request, metadata
             logger.warning(
                 "Runtime corrected cross-type mode: session=%s request=%s channel=%s "
                 "requested=%r effective=%r",
@@ -4136,7 +4175,7 @@ class AgentRuntime:
         normalized_params["mode"] = resolved_mode
         if not normalized_params.get("work_mode") and metadata.get("work_mode"):
             normalized_params["work_mode"] = metadata["work_mode"]
-        return replace(request, params=normalized_params)
+        return replace(request, params=normalized_params), metadata
 
     @classmethod
     def uses_session_runtime(

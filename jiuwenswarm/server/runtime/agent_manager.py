@@ -1295,6 +1295,7 @@ class AgentManager:
         execution_profile: str = "default",
         role_instructions: str = "",
         npc_team: dict | None = None,
+        npc_session: bool = False,
     ):
         token = str(create_token or "").strip()
         key = self.warm_pool.make_key(
@@ -1308,6 +1309,8 @@ class AgentManager:
         # Session，避免为布尔开关复制预热槽。但它属于 session.create 的幂等
         # 身份，同一 create_token 不允许用不同值重试。
         create_signature = (key, bool(prewarm_eligible), bool(persist_session), bool(moa_enabled))
+        if npc_session:
+            create_signature += ("npc_session",)
         if execution_profile != "default":
             create_signature += (execution_profile, role_instructions)
             # The roster definition is part of the same

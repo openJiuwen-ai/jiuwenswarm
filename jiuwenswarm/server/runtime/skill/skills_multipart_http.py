@@ -5,23 +5,26 @@
 from __future__ import annotations
 
 import asyncio
-import email.parser
-import email.policy
 import json
 import logging
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from e2a.gateway_normalize import e2a_from_agent_fields
 from e2a.models import E2AEnvelope
 from e2a.wire_codec import parse_agent_server_wire_unary
 
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+from jiuwenswarm.common.multipart_form import MultipartParseError
+from jiuwenswarm.common.multipart_form import (
+    parse_multipart_form as _parse_multipart_form_common,
+)
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC
@@ -29,11 +32,19 @@ from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_INVALID_PACKAGE,
     ERROR_SKILL_KNOWLEDGE_INPUT_CONFLICT,
     ERROR_SKILL_UNSAFE_PATH,
+    SKILL_ZIP_MAX_UPLOAD_BYTES,
     SkillManager,
     SkillRpcError,
 )
 
 logger = logging.getLogger(__name__)
+
+#: 每次上传在系统临时目录下创建独立目录的前缀，同时作为上传件归属标识。
+SKILL_UPLOAD_PREFIX = "jiuwenswarm_skill_upload_"
+#: 请求体上限：预留 multipart 头部开销，避免合法 zip 被误拒。
+SKILL_UPLOAD_MAX_REQUEST_BYTES = SKILL_ZIP_MAX_UPLOAD_BYTES + 2 * 1024 * 1024
+#: 上传残留的兜底 TTL（前端 discard 未送达时回收）。
+SKILL_UPLOAD_TTL_SECONDS = 24 * 60 * 60
 
 _SKILL_HTTP_ERROR_STATUS: dict[str, int] = {
     "SKILL_ALREADY_EXISTS": 409,
@@ -48,7 +59,7 @@ _SKILL_HTTP_ERROR_STATUS: dict[str, int] = {
     "SKILL_INVALID_METADATA": 400,
     "SKILL_RESERVED_PATH": 400,
     "SKILL_UNSAFE_PATH": 400,
-    "SKILL_FILE_TOO_LARGE": 400,
+    "SKILL_FILE_TOO_LARGE": 413,
     "SKILL_KNOWLEDGE_INPUT_CONFLICT": 400,
     "SKILL_VERSION_CONTENT_INVALID": 400,
     "SKILL_REBUILD_FAILED": 500,
@@ -64,36 +75,73 @@ def skill_http_error_body(code: str, message: str) -> dict[str, str]:
 
 
 def parse_multipart_form(content_type: str, body: bytes) -> dict[str, Any]:
-    """解析 multipart/form-data，返回字段名 → str 或 {filename, content}."""
-    if "multipart/form-data" not in (content_type or "").lower():
-        raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "Content-Type 须为 multipart/form-data")
-    header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
-    msg = email.parser.BytesParser(policy=email.policy.default).parsebytes(header + body)
-    if not msg.is_multipart():
-        raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "无法解析 multipart 表单")
+    """解析 multipart/form-data，返回字段名 → str 或 {filename, content}.
 
-    fields: dict[str, Any] = {}
-    for part in msg.iter_parts():
-        if part.get_content_disposition() != "form-data":
-            continue
-        name = part.get_param("name", header="content-disposition")
-        if not name:
-            continue
-        filename = part.get_filename()
-        payload = part.get_payload(decode=True)
-        if payload is None:
-            content = part.get_content()
-            if isinstance(content, str):
-                payload = content.encode("utf-8")
-            elif isinstance(content, bytes):
-                payload = content
+    实现位于 :mod:`jiuwenswarm.common.multipart_form`（与统一资产上传共用）；
+    本包装保持技能侧既有错误行为：解析失败抛 ``SkillRpcError``。
+    """
+    try:
+        return _parse_multipart_form_common(content_type, body)
+    except MultipartParseError as exc:
+        raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, str(exc)) from exc
+
+
+def _resolve_existing(path: Path) -> Path | None:
+    try:
+        return path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+
+def discard_skill_upload(path_value: str) -> bool:
+    """删除某次上传的专属目录（幂等）。
+
+    仅接受系统临时目录下 ``SKILL_UPLOAD_PREFIX*`` 目录内的文件；解析符号链接
+    后仍须满足该布局，其余路径一律拒绝，避免误删用户文件。
+    """
+    text = str(path_value or "").strip()
+    if not text:
+        return False
+    tmpdir = _resolve_existing(Path(tempfile.gettempdir()))
+    if tmpdir is None:
+        return False
+    resolved = _resolve_existing(Path(text))
+    if resolved is None:
+        return False
+    upload_dir = resolved.parent
+    if upload_dir.parent != tmpdir or not upload_dir.name.startswith(SKILL_UPLOAD_PREFIX):
+        return False
+    shutil.rmtree(upload_dir, ignore_errors=True)
+    return not upload_dir.exists()
+
+
+def cleanup_stale_skill_uploads(
+    max_age_seconds: int = SKILL_UPLOAD_TTL_SECONDS,
+) -> int:
+    """回收超过 TTL 的上传专属目录（按固定前缀识别）。"""
+    tmpdir = Path(tempfile.gettempdir())
+    try:
+        candidates = list(tmpdir.glob(f"{SKILL_UPLOAD_PREFIX}*"))
+    except OSError:
+        return 0
+
+    removed = 0
+    now = time.time()
+    for entry in candidates:
+        try:
+            # 用 lstat 读取链接自身的 mtime：悬空符号链接也能按 TTL 回收。
+            if now - entry.lstat().st_mtime < max_age_seconds:
+                continue
+            if entry.is_symlink():
+                entry.unlink()
+            elif entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
             else:
-                payload = b""
-        if filename is not None:
-            fields[name] = {"filename": filename, "content": payload}
-        else:
-            fields[name] = payload.decode("utf-8", errors="replace")
-    return fields
+                entry.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def handle_skills_upload_temp_http(
@@ -102,6 +150,8 @@ def handle_skills_upload_temp_http(
     body: bytes,
 ) -> tuple[int, dict[str, Any]]:
     """保存上传文件，返回后续 skills.* WebSocket RPC 使用的本地路径."""
+    if len(body) > SKILL_UPLOAD_MAX_REQUEST_BYTES:
+        return 413, skill_http_error_body("SKILL_FILE_TOO_LARGE", "上传包超过限制")
     try:
         fields = parse_multipart_form(content_type, body)
         file_field = fields.get("file")
@@ -117,14 +167,16 @@ def handle_skills_upload_temp_http(
         ):
             raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "文件路径非法或指向保留目录")
 
-        upload_dir = Path(tempfile.mkdtemp(prefix="jiuwenswarm_skill_upload_"))
+        cleanup_stale_skill_uploads()
+        upload_dir = Path(tempfile.mkdtemp(prefix=SKILL_UPLOAD_PREFIX))
         dest = upload_dir / filename
         try:
             dest.write_bytes(bytes(file_field["content"]))
         except (OSError, ValueError, TypeError):
             shutil.rmtree(upload_dir)
             raise
-        # 文件须保留到后续 RPC，包括同名技能覆盖确认后的再次导入。
+        # 文件须保留到后续 RPC（含同名技能覆盖确认后的再次导入），
+        # 由导入完成后的服务端清理、前端 discard 或 TTL 回收负责删除。
         return 200, {"path": str(dest)}
     except SkillRpcError as exc:
         return skill_http_error_status(exc.code), skill_http_error_body(exc.code, exc.message)

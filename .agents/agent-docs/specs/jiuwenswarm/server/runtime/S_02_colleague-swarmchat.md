@@ -68,3 +68,20 @@ search_group_messages 统一搜索 IM 与 SwarmChat；同事的启用连接按�
 接收审批决定后，群会话向当前订阅者发布 chat.ask_user_answer 事件，收起对应卡片。
 同事参与聊天提及，不进入专家任务卡片执行接口。旧群和原 IM 接入保留原执行流程。
 本契约依赖 core 的 HOST_MANAGED 实现；尚未包含该能力的固定依赖须先升级。
+
+## 自动判断回复
+
+适用于 SwarmChat 的专家、专家团代理和 AI 同事；群内只有群主是人类。
+- 触发：仅已接受的、`mentions` 为空的用户消息。带 @ 的消息与成员发出的消息不判断，沿用原有链路。
+- 群配置在 `group.json` 顶层：`auto_reply = {enabled, model_selection}`，缺省为开启且不指定模型，经 `group.update` 修改，群公开信息原样返回。开关对全群生效，没有按成员的回复规则；旧数据中残留的 `reply_rules` 被忽略。
+- 判断模型取 `auto_reply.model_selection`，为空时取群会话的模型选择。每次判断是一次无状态调用，提供基础工具 `notify_member(member_name, reason)`；群内至少有两个专家团代理时另提供下文的 `coordinate_expert_groups`。独立通知的调用次数由模型决定，宿主忽略非法、非群成员及重复调用。超时 30 秒。
+- 判断不修改消息：core 中该消息的 `mentions` 与 `history.jsonl` 保持用户发出时的内容。
+- 判断结果保存在群会话目录的 `auto_replies.json`，键为 core 的 `message_id`，状态为 `pending` / `notified` / `none` / `failed` / `stopped`，`notified` 逐成员记录是否已送达或已丢弃。群历史响应以 `auto_replies` 返回未被清空的记录，变化时发布 `group.auto_reply.updated`；网关只转发事件标识，前端收到后从群历史响应读取结果。同一消息只判断一次。
+- 送达：AI 同事经 `ColleagueGroupBridge.notify` 进入同事调度器，与 @ 共用 `swarmchat_mentions` 预留、请求 `source_ref` 和停止处理；专家与专家团代理经 core `TeamBackend.notify_group_member`，通知标识为 `auto-reply:<message_id>:<member_name>`。送达前按当前名册与群开关复核，不符合或被 core 拒绝的通知标为已丢弃，不再重试。
+- 被 `notify_member` 通知的专家与专家团代理的群轮次固定为 `direct`，这类通知不会形成 Team Organization。组织只来自用户显式 @ 多个专家团，或下一条的协作决策。
+- 协作决策：群内至少有两个专家团代理时，判断模型另有工具 `coordinate_expert_groups(owner, members, reason)`，表示这些专家团要共同交付一份成果。宿主只接受成员去重后至少两个、全部是当前专家团代理且包含 `owner` 的调用，其余忽略；一条消息只取第一个合法的协作决策，并丢弃同一次判断里的 `notify_member`。记录增加 `organization = {owner, members}`（Owner 在首位），`notified` 只含 Owner，群历史响应原样返回该字段。
+- 协作决策的送达：先以用户消息的 `client_message_id` 和持久化正文调用 `group_route.record_candidate` 登记组织候选，再只通知 Owner。之后与显式多 @ 相同：Owner 选择普通回复、追问或 `run_team`，接受任务后由现有组织流程拉其余专家团加入并汇总回复。送达前成员已离群或不再是专家团代理、或候选登记被拒时，该决策标为已丢弃，不唤醒任何成员，也不降级为独立通知。
+- 协作决策下的群轮次：判断记录与组织候选都包含该成员时轮次为 `organization`，Owner 与其余专家团相同；只有判断记录而候选未登记时不形成组织。
+- 恢复：运行时就绪、周期扫描以及同一群的下一次判断会补投未送达的通知。周期扫描覆盖没有 AI 同事的群；中断的判断在 10 分钟内重新判断，之后记为失败。判断失败不自动重试。
+- 停止：群聊页面不提供整群停止按钮。经其他入口发起的整群取消会取消进行中的判断并记为 `stopped`（不再重判）、把尚未送出的通知标为已丢弃；已交给 core 或同事调度器的通知不撤回，成员仍可能回复。失败只记录日志，不阻断原有取消。单个专家、组织、定向请求的停止和客户端断连触发的清理不影响全群判断。整群停止后，尚在恢复流程中运行的判断结果会被丢弃。
+- 消息写入后、判断调度前进程退出时，该消息不会被判断。

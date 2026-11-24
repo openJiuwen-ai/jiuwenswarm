@@ -640,8 +640,10 @@ def fork_session(
     # NPC 主从 fork：leader 会话透传 roster 定义，并为 fork 级联
     # 创建全新 member 会话（空历史，成员历史属于原会话资产）；member 被单独
     # fork 时剥离从属标记，成为独立的单 NPC 会话。运行时绑定不随 fork 复制。
-    from jiuwenswarm.runtime.app_role import APP_ROLE_PROFILE, is_app_role_team
+    from jiuwenswarm.runtime.app_role import APP_ROLE_PROFILE, is_app_role_team, is_npc_session
 
+    if is_npc_session(source_meta):
+        metadata["npc_session"] = True
     if source_meta.get("execution_profile") == APP_ROLE_PROFILE:
         raw_team = source_meta.get("npc_team")
         npc_team = raw_team if isinstance(raw_team, dict) else None

@@ -68,7 +68,11 @@ By default, Swarm passes a local 64-dimensional hashing embedder to the built-in
 2. In a local Web chat in Work mode, select **Full access**, click **+** next to the composer, choose a local video, and send “Remember this video.” Swarm saves the browser upload in the current session's upload directory and generates a `file:///` URI for `agent_memory_video_submit`. Use `agent_memory_video_status` with the returned `job_id` to check progress.
 3. You can also submit a URI manually. The file must be in a deployment-configured import directory or in the automatically authorized project directory or session workspace under **Full access**.
 
-Swarm forwards each enabled, complete model configuration under any permission profile. If the deployment already configures one model, set the other in the Web UI. Automatic workspace grants are bound to the current memory identity. Model and effective directory changes apply to subsequent turns. With the SDK's default in-memory job store, old video job IDs become unavailable after the memory rail is rebuilt.
+Configure both video and audio models before first using memory. If the deployment already configures one model, set the other in the Web UI. With Full access configured, the first shared Runtime authorizes the current user or tenant's `<agent directory>/sessions` tree, even before any upload exists. Work, Code, and Team initialize the same base media settings. Later sessions can import uploaded videos without creating another Runtime or watcher.
+
+The grant uses the exact memory scope and covers valid video files across that sessions tree, not just the current session. It does not authorize other users' or tenants' directories. Existing deployment roots and eligible workspace grants remain, as do project/team memory filters. Swarm adds no file copy; Memory validates the source before copying it into a task temporary directory.
+
+The shared Runtime retains its first model and authorization configuration. If those settings were incomplete at startup or later change, release all borrowers and recreate the Runtime, or restart Swarm. Rebuilding one Rail does not necessarily update the underlying configuration. Default in-memory job records are lost when the Runtime is released or the process restarts.
 
 ## 2. Built-in Memory vs. JiuwenMemory
 

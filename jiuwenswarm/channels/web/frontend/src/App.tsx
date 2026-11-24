@@ -36,6 +36,12 @@ import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
 import { TeamPanel } from './components/TeamPanel';
 import { RsiPage } from './features/rsi/RsiPage';
+import { ReaSetupPage } from './features/reaSetup/ReaSetupPage';
+import {
+  normalizeREAEnabled,
+  setREAFeatureEnabled,
+  useREAFeatureEnabled,
+} from './features/reaSetup/featureConfig';
 import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
 import { useRsiStore } from './features/rsi/rsiStore';
 import { useMediaQuery } from './hooks/useResponsive';
@@ -834,6 +840,7 @@ function AppContent({
   const historyRevealTargetRef = useRef(new Map<string, number>());
   const creatingSessionRef = useRef(false);
   const pendingAppEditsRef = useRef(new Map<string, Promise<Session>>());
+  const appEditTokensRef = useRef(new Map<string, string>());
   /** 离开新建任务页后，仍未发送的临时会话可以被再次打开。 */
   const pendingNewConversationRef = useRef(route.kind === 'chat-new');
   const sessionIdsCreatedInThisPageRef = useRef(new Set<string>());
@@ -1282,14 +1289,19 @@ function AppContent({
     typeof serverConfig?.runtime_platform === 'string' ? serverConfig.runtime_platform : undefined,
   );
   const rsiFeatureEnabled = useRSIFeatureEnabled();
+  const reaFeatureEnabled = useREAFeatureEnabled();
   const hiddenNavItems = useMemo<MainNavKey[]>(() => {
     const base: MainNavKey[] = [
       ...getHiddenNavItemsForPlatform(frontendPlatform),
       ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS),
     ];
-    const rsiFiltered: MainNavKey[] = rsiFeatureEnabled
-      ? base
-      : [...base, 'experiments'];
+    const hiddenFeatureItems: MainNavKey[] = [
+      ...(rsiFeatureEnabled ? [] : ['experiments' as const]),
+      ...(reaFeatureEnabled ? [] : ['rea' as const]),
+    ];
+    const rsiFiltered: MainNavKey[] = hiddenFeatureItems.length > 0
+      ? [...base, ...hiddenFeatureItems]
+      : base;
     // feature 关闭时移除全部个人上下文入口
     if (!FEATURE_PERSONAL_CONTEXT_UI) {
       return [...rsiFiltered, 'personalContext', 'personalContextSettings'];
@@ -1297,7 +1309,7 @@ function AppContent({
     // 总开关关闭时隐藏导航入口（设置页入口保留，供打开总开关）
     if (!masterEnabled) return [...rsiFiltered, 'personalContext'];
     return rsiFiltered;
-  }, [frontendPlatform, masterEnabled, rsiFeatureEnabled]);
+  }, [frontendPlatform, masterEnabled, reaFeatureEnabled, rsiFeatureEnabled]);
   const jiuwenMateHiddenPages = useMemo<JiuwenMateExistingPage[]>(
     () => (FEATURE_PERSONAL_CONTEXT_UI && masterEnabled ? [] : ['personalContext']),
     [masterEnabled],
@@ -1315,6 +1327,12 @@ function AppContent({
       setActiveNav('chat');
     }
   }, [activeNav, rsiFeatureEnabled]);
+
+  useEffect(() => {
+    if (!reaFeatureEnabled && activeNav === 'rea') {
+      setActiveNav('chat');
+    }
+  }, [activeNav, reaFeatureEnabled]);
 
   useEffect(() => {
     if (!serverConfig) {
@@ -2401,6 +2419,7 @@ function AppContent({
       if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
+      setREAFeatureEnabled(normalizeREAEnabled(config.rea_enabled));
       setTrajectoryDiagnosisEnabled(
         normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled),
       );
@@ -2900,7 +2919,7 @@ function AppContent({
     prevProcessingBySessionRef.current.set(sessionId, isProcessing);
   }, [sessionId, isProcessing, hasPendingQuestion, loadSessionMetadata]);
 
-  // 连接成功后从 config.yaml 同步 preferred_language 到前端显示
+  // 连接成功后同步 preferred_language（个人版 yaml / 企业版 Gateway 用户习惯表）到前端显示
   useEffect(() => {
     if (!isConnected) return;
     void webRequest<{ preferred_language?: string }>('locale.get_conf')
@@ -3806,6 +3825,8 @@ function AppContent({
   ) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
+    const current = useSessionStore.getState().currentSession;
+    if (current?.session_id === currentSessionId && current.npc_session) return;
     if (options && 'queuedTaskId' in options) {
       await sendMessage(content, currentSessionId, mediaItems, options);
       return;
@@ -4085,10 +4106,10 @@ function AppContent({
   const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
-      return Promise.reject(new Error('会话未就绪，请稍后重试'));
+      return Promise.reject(new Error(t('chat.sessionNotReady')));
     }
     return persistMedia(content, currentSessionId, mediaItems);
-  }, [persistMedia]);
+  }, [persistMedia, t]);
 
   const handleDiscardMedia = useCallback((sessionId: string, path: string) => {
     if (!sessionId || sessionId === NEW_CONVERSATION_ID || !path) {
@@ -4100,10 +4121,10 @@ function AppContent({
   const handlePersistDocuments = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
-      return Promise.reject(new Error('会话未就绪，请稍后重试'));
+      return Promise.reject(new Error(t('chat.sessionNotReady')));
     }
     return persistDocuments(content, currentSessionId, mediaItems);
-  }, [persistDocuments]);
+  }, [persistDocuments, t]);
 
   useEffect(() => {
     return setA2UIActionHandler((message) => {
@@ -4653,7 +4674,7 @@ function AppContent({
     handleNavigate(nav, peekTarget);
   };
 
-  // 应用市场卡片"编辑"——创建/复用该应用的编辑会话并跳转过去，随后在会话右栏打开应用预览
+  // 应用市场卡片"编辑"——创建新的编辑会话并跳转过去，随后在会话右栏打开应用预览
   // （app_market.preview 面板 tab）。原先内联在扩展页 ConnectorMarketPanel 的 onEditApp 里，
   // 应用市场提升为侧边栏一级入口后由 AppMarketPage 继续使用，提取到这里避免随渲染分支重复。
   const handleEditApp = useCallback(
@@ -4661,19 +4682,28 @@ function AppContent({
       if (creatingSessionRef.current) return;
       let pending = pendingAppEditsRef.current.get(target.appId);
       if (!pending) {
+        const editToken = appEditTokensRef.current.get(target.appId) ?? generateUuidV4();
+        appEditTokensRef.current.set(target.appId, editToken);
         pending = request<{ session: Session; created: boolean; git_available?: boolean | null; git_initialized?: boolean | null }>(
           'app_market.edit_session', {
             app_id: target.appId,
+            edit_token: editToken,
             title: t('appMarket.editSessionTitle', { name: target.name }),
             ...useSessionStore.getState().getModelSelectionPayload(sessionIdRef.current),
           }, { timeoutMs: 180_000 }).then(({ session, created, git_available }) => {
+            appEditTokensRef.current.delete(target.appId);
             // Initialize only the new session, even if navigation was canceled.
             // An existing runtime includes drafts the user deliberately cleared.
             const chatStore = useChatStore.getState();
             if (created && !chatStore.getRuntime(session.session_id)) {
               chatStore.ensureRuntime(session.session_id);
               chatStore.setInputValue(session.session_id,
-                t('appMarket.editPrompt', { name: target.name, entryPath: target.entryPath }));
+                t('appMarket.editPrompt', {
+                  name: target.name,
+                  version: target.version || '',
+                  description: (target.description || '').trim() || t('appMarket.noDescription'),
+                  entryPath: target.entryPath,
+                }));
             }
             if (created) {
               toast.open({
@@ -5372,6 +5402,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onSendMessage={handleSendMessage}
                         onEnsureSession={ensureApplicationPluginSession}
                         conversationCreated={sessionId !== NEW_CONVERSATION_ID}
+                        npcSession={currentSession?.session_id === sessionId && currentSession?.npc_session === true}
                         headerActions={sessionId && sessionId !== NEW_CONVERSATION_ID ? (
                           <AppMarketEditorAction key={sessionId} sessionId={sessionId} onOpen={preview => {
                             useSessionStore.getState().setAppMarketPreview(sessionId, preview);
@@ -5535,6 +5566,21 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               collapsed={rsiSidebarCollapsed}
               onCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed((v) => !v); }}
               openCreateNonce={rsiOpenCreateNonce}
+            />
+          </div>
+        )}
+        {activeNav === 'rea' && (
+          <div className="app-section">
+            <ReaSetupPage
+              onUseRea={(prompt) =>
+                requestSessionNavigation('new', {
+                  initialInputValue: prompt,
+                  initialSelectedSkills: ['reverse-engineer-anything'],
+                  initialEnabledMcps: ['rea'],
+                  forceMode: 'agent.code.normal',
+                  metadata: { prefer_mcp: 'rea' },
+                })
+              }
             />
           </div>
         )}

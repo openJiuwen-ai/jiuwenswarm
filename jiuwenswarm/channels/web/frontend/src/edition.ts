@@ -20,6 +20,7 @@ export function isEnterprise(): boolean {
 
 /** Enterprise deployment administration belongs to Manager, not User Web. */
 export const ENTERPRISE_HIDDEN_NAV_ITEMS = [
+  // connectorMarket is shown on enterprise user web (mcp.* over websocket).
   'experiments',
   'personalContext',
   'personalContextSettings',

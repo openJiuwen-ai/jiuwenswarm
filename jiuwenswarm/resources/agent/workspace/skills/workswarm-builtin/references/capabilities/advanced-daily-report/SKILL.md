@@ -77,7 +77,7 @@ advanced-daily-report/
 - **Git 提交记录**：通过 `git log` 命令读取 `D:/Download/jiuwenswarm` 仓库的提交历史
 - **邮箱邮件统计**：通过 IMAP 协议连接 `.env` 中配置的邮箱账户读取邮件统计（需要邮箱授权码）
 - **记忆系统**：读取 `~/.jiuwenswarm/agent/workspace/memory/` 目录下的每日记忆文件
-- **待办事项**：读取 `~/.jiuwenswarm/agent/sessions/` 下各会话的 `todo.md` 文件
+- **待办事项**：读取 `~/.jiuwenswarm/agent/workspace/todo/` 下各会话的 `todo.json`（兼容旧版 `sessions/*/todo.md`）
 
 ### 手动触发
 
@@ -108,7 +108,7 @@ python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabi
    - Git: 执行 `git log` 获取提交记录、代码变更统计
    - 邮箱: 通过 IMAP 连接获取邮件统计（如果配置了邮箱）
    - 记忆: 读取记忆文件获取工作记录
-   - 待办: 解析 todo.md 获取任务状态
+   - 待办: 解析 `workspace/todo/{session_id}/todo.json` 获取任务状态
 4. 脚本执行完成后，输出格式为 `REPORT_FILE:/path/to/report.md`
 5. **⚠️ 重要：使用 read_file 工具读取报告文件，然后将完整内容发送给用户**
    - 脚本输出包含 `REPORT_FILE:` 前缀，后面是文件路径
@@ -128,7 +128,7 @@ python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabi
 | **Git 仓库** | `git log` 命令 | 仓库路径: `D:/Download/jiuwenswarm` |
 | **网易邮箱** | IMAP 协议 | `.env`: `EMAIL_ADDRESS`, `EMAIL_TOKEN` |
 | **记忆系统** | 读取 MD 文件 | `~/.jiuwenswarm/agent/workspace/memory/YYYY-MM-DD.md` |
-| **待办事项** | 解析 todo.md | `~/.jiuwenswarm/agent/sessions/*/todo.md` |
+| **待办事项** | 解析 todo.json | `~/.jiuwenswarm/agent/workspace/todo/*/todo.json`（兼容 `sessions/*/todo.md`） |
 
 ### 定时触发
 

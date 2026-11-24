@@ -25,6 +25,8 @@ def editor(tmp_path):
 
 def core(calls, sessions, projects=None):
     projects = projects if projects is not None else [{"project_id": "2048", "work_mode": "code", "project_dir": "/tmp/source"}]
+    next_session = [0]
+    created = {}
 
     async def request(method, params):
         calls.append((method, params))
@@ -33,6 +35,10 @@ def core(calls, sessions, projects=None):
             return (True, session) if session else (False, {"code": "NOT_FOUND"})
         if method == ReqMethod.PROJECT_LIST:
             return True, {"projects": list(projects)}
+        if method == ReqMethod.PROJECT_INFO:
+            assert params["include_session_stats"] is False
+            project = next((item for item in projects if item["project_id"] == params["project_id"]), None)
+            return (True, {"project": project}) if project else (False, {"code": "NOT_FOUND"})
         if method == ReqMethod.PROJECT_GIT_STATUS:
             return True, {"repo": {"is_git": True}}
         if method == ReqMethod.PROJECT_RESTORE:
@@ -50,15 +56,20 @@ def core(calls, sessions, projects=None):
             projects.append(project)
             return True, {"project": project}
         if method == ReqMethod.SESSION_CREATE:
+            token = params["create_token"]
+            if token in created:
+                return True, {"session_id": created[token]}
             await asyncio.sleep(0)
-            sid = f"edit-{len(sessions)}"
+            next_session[0] += 1
+            sid = f"edit-{next_session[0]}"
+            created[token] = sid
             sessions[sid] = {"project_id": params["project_id"], "work_mode": params["work_mode"], "title": params.get("title", "")}
             return True, {"session_id": sid}
         raise AssertionError(method)
     return request
 
 
-def test_editor_is_shared_across_concurrent_clicks_restart_and_republish(editor):
+def test_every_edit_creates_a_new_editor_session(editor):
     manager, page, app_id = editor
     calls = []
     sessions = {"source": {"project_id": "2048", "work_mode": "code"}}
@@ -70,24 +81,60 @@ def test_editor_is_shared_across_concurrent_clicks_restart_and_republish(editor)
 
     first, second = asyncio.run(open_twice())
     assert first["created"] is True
-    assert second["created"] is False
-    assert first["session"] == second["session"]
-    assert first["session"]["project_id"] == "2048"
+    assert second["created"] is True
+    assert first["session"]["session_id"] != second["session"]["session_id"]
+    assert first["session"]["project_id"] == second["session"]["project_id"] == "2048"
     create = [params for method, params in calls if method == ReqMethod.SESSION_CREATE]
-    assert len(create) == 1
+    assert len(create) == 2
     assert create[0]["mode"] == "agent.code.normal"
     assert create[0]["work_mode"] == "code"
     asyncio.run(manager.publish_app(str(page), "source", "alice"))
     restarted = AppMarketManager(str(manager._service._storage.data_dir))
     del sessions["source"]  # Restoring an editor does not depend on the original session.
     third = asyncio.run(AppEditorSessions(restarted._service._storage).open(app_id, "alice", request, {}))
-    assert third["created"] is False
-    assert third["session"] == second["session"]
+    assert third["created"] is True
+    assert third["session"]["session_id"] not in {
+        first["session"]["session_id"], second["session"]["session_id"],
+    }
     assert third["project_id"] == second["project_id"]
-    assert len([m for m, _ in calls if m == ReqMethod.SESSION_CREATE]) == 1
+    assert len([m for m, _ in calls if m == ReqMethod.SESSION_CREATE]) == 3
+    manifest = manager.storage.load_manifest(app_id)
+    assert manifest.editor_session_id == third["session"]["session_id"]
+    assert manifest.editor_session_ids == [result["session"]["session_id"] for result in (first, second, third)]
+    assert [method for method, _ in calls].count(ReqMethod.PROJECT_LIST) == 1
+    older_session_id = first["session"]["session_id"]
+    assert restarted.get_editor_app(older_session_id, "alice")["app_id"] == app_id
+    assert restarted.get_editor_app(older_session_id, "bob") is None
+    assert "editor_session_ids" not in restarted.list_apps("alice")["apps"][0]
 
 
-def test_deleted_binding_is_replaced_but_transient_failure_is_not(editor):
+@pytest.mark.parametrize("with_token", [False, True])
+def test_editor_retry_recovers_created_session_after_lost_reply(editor, with_token):
+    manager, _, app_id = editor
+    sessions = {"source": {"project_id": "2048", "work_mode": "code"}}
+    request = core([], sessions)
+    options = {"edit_token": "ca2be687-0fad-4898-a42a-61573335ca92"} if with_token else {}
+
+    async def lose_create_reply(method, params):
+        ok, payload = await request(method, params)
+        if method == ReqMethod.SESSION_CREATE:
+            return False, {"code": "TIMEOUT", "error": "response lost"}
+        return ok, payload
+
+    with pytest.raises(EditorSessionError, match="response lost"):
+        asyncio.run(manager.edit_session(app_id, "alice", lose_create_reply, options))
+
+    restarted = AppEditorSessions(manager.storage)
+    result = asyncio.run(restarted.open(app_id, "alice", request, options))
+    assert result["session"]["session_id"] == "edit-1"
+    if with_token:
+        replay = asyncio.run(restarted.open(app_id, "alice", request, options))
+        assert replay["session"] == result["session"]
+    assert set(sessions) == {"source", "edit-1"}
+    assert manager.storage.load_manifest(app_id).editor_session_ids == ["edit-1"]
+
+
+def test_transient_failure_keeps_binding_and_next_click_creates(editor):
     manager, _, app_id = editor
     calls = []
     sessions = {"source": {"project_id": "2048", "work_mode": "code"}}
@@ -102,9 +149,9 @@ def test_deleted_binding_is_replaced_but_transient_failure_is_not(editor):
     with pytest.raises(EditorSessionError, match="offline"):
         asyncio.run(service.open(app_id, "alice", unavailable, {}))
     assert manager._service._storage.load_manifest(app_id).editor_session_id == first["session"]["session_id"]
-    del sessions[first["session"]["session_id"]]
     second = asyncio.run(service.open(app_id, "alice", request, {"title": "Edit"}))
     assert second["created"] is True
+    assert second["session"]["session_id"] != first["session"]["session_id"]
     assert manager._service._storage.load_manifest(app_id).editor_create_token != first_token
     assert len([m for m, _ in calls if m == ReqMethod.SESSION_CREATE]) == 2
 
@@ -146,6 +193,23 @@ def test_source_project_fallbacks_and_owner_boundary(editor, reason):
         assert any(m == ReqMethod.PROJECT_RESTORE for m, _ in calls)
     else:
         assert manifest.project_dir == str(page_dir(manager, app_id))
+
+
+def test_deleted_bound_project_is_replaced(editor):
+    manager, _, app_id = editor
+    manifest = manager.storage.load_manifest(app_id)
+    manifest.project_id = "deleted"
+    manifest.project_dir = manifest.work_dir
+    manager.storage.save_manifest(app_id, manifest)
+    calls = []
+    request = core(calls, {}, projects=[])
+
+    result = asyncio.run(manager.edit_session(app_id, "alice", request, {}))
+
+    assert [method for method, _ in calls][:3] == [
+        ReqMethod.PROJECT_INFO, ReqMethod.PROJECT_LIST, ReqMethod.PROJECT_CREATE,
+    ]
+    assert result["project_id"] == manager.storage.load_manifest(app_id).project_id == "proj-1"
 
 
 def test_delete_during_creation_cannot_resurrect_app(editor):

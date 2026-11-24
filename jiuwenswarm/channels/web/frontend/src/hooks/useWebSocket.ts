@@ -908,7 +908,9 @@ function normalizeAgentMode(rawMode: unknown): AgentMode {
   return 'agent';
 }
 
-function unsupportedEvolutionModeMessage(content: string, mode: AgentMode): string | null {
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+function unsupportedEvolutionModeMessage(content: string, mode: AgentMode, t: Translate): string | null {
   const trimmed = content.trim();
   const isEvolutionCommand =
     trimmed === '/evolve' ||
@@ -918,7 +920,7 @@ function unsupportedEvolutionModeMessage(content: string, mode: AgentMode): stri
   if (!isEvolutionCommand || mode === 'agent' || mode === 'team') {
     return null;
   }
-  return i18n.t('evolve.unsupportedMode', { mode });
+  return t('chat.evolutionUnavailableInMode', { mode });
 }
 
 const EVENT_DEDUP_WINDOW_MS = 1500;
@@ -2139,6 +2141,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         assistance_origin: 'none',
       },
     ): Promise<boolean> => {
+      const sessionState = useSessionStore.getState();
+      const sessionMetadata = sessionState.currentSession?.session_id === sessionId
+        ? sessionState.currentSession
+        : sessionState.sessions.find((session) => session.session_id === sessionId);
+      if (sessionMetadata?.npc_session) {
+        onErrorRef.current?.(t('chat.npcSessionReadOnly'));
+        return false;
+      }
       if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
         if (!content.trim() && !mediaItems.length) return false;
         try {
@@ -2168,10 +2178,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return false;
         }
       }
-      const sessionState = useSessionStore.getState();
-      const sessionMetadata = sessionState.currentSession?.session_id === sessionId
-        ? sessionState.currentSession
-        : sessionState.sessions.find((session) => session.session_id === sessionId);
       if (!useChatStore.getState().getRuntime(sessionId)?.isProcessing && isConversationModelGroupBlocked({
         mode: sessionState.getRuntime(sessionId)?.mode,
         cronId: sessionMetadata?.cron_id,
@@ -2225,7 +2231,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (!stripUploadDocumentBlocks(content).trim() && !hasMedia) return false;
 
       const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
-      const unsupportedEvolutionMode = unsupportedEvolutionModeMessage(content, currentMode ?? 'agent');
+      const unsupportedEvolutionMode = unsupportedEvolutionModeMessage(content, currentMode ?? 'agent', t);
       if (unsupportedEvolutionMode) {
         useChatStore.getState().addMessage(sessionId, {
           id: prefixedMessageId('error-'),
@@ -4072,6 +4078,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               // （见问题3：目标完成后队列消息没有紧接着发出去）。已经排空过则是空操作，不会重复发送。
               drainTaskQueueIfIdle(sessionId);
               useChatStore.getState().setThinking(sessionId, false);
+              // 终态兜底收口思考段（已闭合为幂等空操作）：processing_status(false)
+              // 丢帧时这里是唯一的收尾信号，漏收口思考块会一直转圈。
+              useChatStore.getState().closeReasoning(sessionId, {
+                atMs: eventTimestampMs(payload),
+              });
             }
           } else {
             useChatStore.getState().setThinking(sessionId, false);
@@ -5287,6 +5298,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
         useChatStore.getState().clearMoaStatus(sessionId);
         useChatStore.getState().setThinking(sessionId, false);
+        // 错误是本轮终态，思考段必须在此封口：MessageList 以 !closed 判定
+        // 「思考中…」，GATEWAY_FORWARD_FAILED 等转发错误可能永远等不到
+        // processing_status(false)，漏收口会让思考块一直转圈到下次发消息。
+        // 已闭合时为幂等空操作（与 processing_status 兜底分支同一口径）。
+        useChatStore.getState().closeReasoning(sessionId, {
+          atMs: eventTimestampMs(payload),
+        });
         // 任何 chat.error 都应解除历史加载态：faas 侧 history.get 流超时
         // （旧 session runtime 过 TTL 被回收、init 超时）只回发 chat.error
         // 而非结束帧，若不清 isLoadingHistory 会永久吞掉后续
@@ -5367,6 +5385,26 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         ) {
           return;
         }
+        // 错误是本轮终态：processing_status(false) 丢帧时这里是输入区唯一复位点，
+        // 不复位会停在「停止」态（错误气泡已出现但发送按钮仍是停止/执行态）。
+        // 口径对齐 chat.final 兜底分支：团队模式后端在团队仍运行时抑制 final，
+        // 这里同样不关 isProcessing（交给 team.completed 的 processing_status）；
+        // Goal 仍活跃时同理（可能只是普通问答子轮失败，Goal 还要继续跑）。
+        // 气泡级流式收尾不受影响，GATEWAY_FORWARD_FAILED 特例分支上面已复位过
+        // （此处幂等空操作）。
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+        if (useSessionStore.getState().getRuntime(sessionId)?.mode !== 'team') {
+          const goalStillActive =
+            useGoalStore.getState().runtimes[sessionId]?.goal?.status === 'active';
+          if (!goalStillActive) {
+            useChatStore.getState().setProcessing(sessionId, false);
+            drainTaskQueueIfIdle(sessionId);
+            localSendPendingRef.current.delete(sessionId);
+            updateSession(sessionId, { is_processing: false });
+            useWorkspaceStore.getState().patchSession(sessionId, { is_processing: false });
+          }
+        }
         useChatStore.getState().setExecutionError(sessionId, errorMsg);
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().setSessionError(sessionId, errorMsg);
@@ -5418,7 +5456,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const alertMsg =
           typeof payload.message === 'string'
             ? payload.message
-            : '安全警告';
+            : t('app.securityAlertTitle');
 
         window.dispatchEvent(new CustomEvent('security-alert', {
           detail: {
@@ -5437,7 +5475,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const retractMsg =
           typeof event.payload.message === 'string'
             ? event.payload.message
-            : '内容已因安全原因撤回';
+            : t('security.contentRetracted');
 
         const runtime = useChatStore.getState().getRuntime(sessionId);
         const currentStreamId = runtime?.currentStreamId;
@@ -5559,6 +5597,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           }
         } else if (resultPayload.intent === 'cancel') {
+          // The SSE may already be closed; use the authoritative cancel snapshot.
+          if (resultPayload.success && Array.isArray(payload.todos)) {
+            useTodoStore.getState().setTodos(
+              sessionId,
+              payload.todos as Parameters<ReturnType<typeof useTodoStore.getState>['setTodos']>[1]
+            );
+          }
           if (shouldClearPermissionQuestionsForLifecycleEvent('cancel', resultPayload.success)) {
             useChatStore.getState().clearPermissionQuestions(sessionId);
           }
@@ -6219,6 +6264,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setExecutionError(sessionId, null);
         useChatStore.getState().setProcessing(sessionId, false);
         useChatStore.getState().setThinking(sessionId, false);
+        // 会话终态兜底收口思考段（已闭合为幂等空操作）：错误路径可能没有
+        // 后续 processing_status(false)，漏收口思考块会一直转圈。
+        useChatStore.getState().closeReasoning(sessionId, {
+          atMs: eventTimestampMs(payload),
+        });
         useHarnessStore.getState().setHarnessRunning(sessionId, false);
       }),
     ];
