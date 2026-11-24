@@ -118,6 +118,7 @@
     "processing": "Processing…",
     "retry": "Retry",
     "selectedCount": "{{count}} selected",
+    "noMatches": "No matches",
     "editMenu": {
       "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
@@ -131,7 +132,11 @@
     "unavailable": "The interface cannot be displayed right now. Please try again or regenerate the result.",
     "unavailableTitle": "The interface cannot be displayed right now",
     "retry": "Please try again later or regenerate the result",
-    "unsupportedProtocol": "Unsupported A2UI protocol version: {{version}}"
+    "unsupportedProtocol": "Unsupported A2UI protocol version: {{version}}",
+    "multipleChoice": {
+      "maxSelections": "{{description}} (select up to {{count}})",
+      "searchPlaceholder": "Search options"
+    }
   },
   "webui": {
     "entryLabel": "Application view",
@@ -2014,7 +2019,8 @@
       "showSessions": "Show sessions",
       "hideTasks": "Collapse tasks",
       "showTasks": "Show tasks"
-    }
+    },
+    "retentionRunning": "Trajectory retention is running; retry shortly."
   },
   "teams": {
     "title": "Team Management",
@@ -2500,7 +2506,10 @@
       "providerRefusal": "Topic recommendations are unavailable. Check Settings.",
       "openSettings": "Check settings",
       "trySettings": "Try it",
-      "disabledHintWithCards": "Want topics that understand you better? Turn on topic recommendations in Settings - General."
+      "disabledHintWithCards": "Want topics that understand you better? Turn on topic recommendations in Settings - General.",
+      "newsReport": "News",
+      "recent": "Recent",
+      "openOriginal": "Open original: {{source}}"
     },
     "promptSuggestionBox": {
       "label": "Next: ",
@@ -2749,7 +2758,36 @@
     "selectTeamMembers": "Select team members",
     "noTeamMembersAvailable": "No team members available",
     "moaReferenceRunning": "Running reference models…",
-    "moaVerifying": "Evaluating task progress…"
+    "moaVerifying": "Evaluating task progress…",
+    "sessionNotReady": "The session is not ready yet. Try again in a moment.",
+    "slash": {
+      "forkFailed": "Failed to fork the session. Try again later.",
+      "compactBusy": "Compaction is already running. Please wait.",
+      "compactNoop": "The context is already optimal — no compaction needed.",
+      "compactDone": "✓ Context compacted: {{after}}K / {{before}}K tokens ({{rate}}% saved)",
+      "compactIncomplete": "Compaction did not finish. Try again later.",
+      "compactFailed": "Compaction failed: network error or request timeout.",
+      "planTeamUnsupported": "Plan mode is only available for single agents, not team sessions.",
+      "goalNone": "This session has no ongoing goal.",
+      "goalCurrent": "Current goal ({{status}}): {{objective}}",
+      "goalStatus": {
+        "active": "In progress",
+        "paused": "Paused",
+        "completed": "Completed",
+        "blocked": "Blocked"
+      },
+      "goalUsage": "Usage: /goal [set <objective>|pause|resume|clear]",
+      "goalNeedSession": "Start a conversation before controlling the ongoing goal.",
+      "goalBusy": "A reply is in progress, so the goal cannot be set. Wait for it to finish.",
+      "goalPlanActive": "Plan mode is active. Exit plan mode before setting a goal.",
+      "goalClearBusy": "The goal is running and cannot be cleared. Pause it or wait for it to finish.",
+      "goalFailed": "The goal command failed. Try again later.",
+      "persistExistingSession": "Persist Session can only be enabled when creating a new session, and it cannot be changed afterwards. Click \"New task\" and then use /persist <task>.",
+      "persistUsage": "Usage: /persist <task>"
+    },
+    "sessionTaskCompleted": "Session task: [{{description}}] completed",
+    "receiving": "Receiving...",
+    "evolutionUnavailableInMode": "The evolution feature is unavailable in {{mode}} mode."
   },
   "autoHarness": {
     "busy": "An Auto-Harness task is already running",
@@ -2912,6 +2950,7 @@
   },
   "sessionSidebar": {
     "newSession": "New session",
+    "comboboxOptions": "{{label}} options",
     "enterpriseContext": {
       "user": "User",
       "userContext": "User context",
@@ -5288,6 +5327,7 @@
     }
   },
   "network": {
+    "proxyRoutingError": "The request did not reach the backend service (an HTML page was returned with status {{status}}). Check that the backend is running and that the portal API prefix proxy is configured correctly.",
     "wsError": "WebSocket connection error",
     "connectionClosedWithCode": "Connection closed ({{code}})",
     "connectionClosed": "Connection closed",
@@ -5311,6 +5351,7 @@
     "recognitionUnsupported": "Speech recognition is not supported by this browser",
     "recordingUnsupported": "Microphone recording is not supported by this browser",
     "synthesisUnsupported": "Speech synthesis is not supported by this browser",
+    "codeBlockOmitted": "Code block omitted",
     "errors": {
       "noSpeech": "No speech detected",
       "noMic": "No microphone detected",
@@ -6105,6 +6146,24 @@
     }
   },
   "auth": {
+    "startup": {
+      "manager": "[Production identity mode] Depends on the Manager ID authentication service",
+      "simulate": "[Sign-in simulation mode is on] Using default Agent context candidates"
+    },
+    "errors": {
+      "authorizeFailed": "Failed to get the authorization URL",
+      "authorizeMalformed": "The authorization response is incomplete",
+      "authorizeUnavailable": "Unable to get the authorization URL. Try again later.",
+      "loginFailed": "Sign-in failed. Try again.",
+      "statusFailed": "Failed to get the sign-in status",
+      "modelsFailed": "Failed to load the model list",
+      "quotaFailed": "Failed to load the quota"
+    },
+    "manager": {
+      "networkFailed": "Network request failed: {{message}}",
+      "contextFailed": "Failed to load Agent contexts",
+      "switchClusterFailed": "Failed to switch clusters"
+    },
     "huawei": {
       "title": "Sign in with HUAWEI ID",
       "subtitle": "Sign in to use the models your account provides — no API key needed.",
@@ -6579,7 +6638,13 @@
     "forkFromSession": "Forked from session {{name}}",
     "forkChildSession": "Forked child session",
     "executorOrchestration": "[{{name}}'s orchestration · {{workflow}}]",
-    "runFoldDivider": "In progress {{active}} · Finished {{ended}}"
+    "runFoldDivider": "In progress {{active}} · Finished {{ended}}",
+    "sectionResult": "Result",
+    "iterationRound": "Round {{index}}",
+    "iterationDotTitle": "Round {{index}} · {{status}}",
+    "iterationCount": "×{{count}} rounds",
+    "formatToggleFormatted": "Formatted",
+    "formatToggleRaw": "Raw"
   },
   "a4pSettings": {
     "title": "A4P pre-authorization",
@@ -7947,5 +8012,30 @@
       "unavailable": "File preview is unavailable for this session",
       "error": "Unable to read this file. Select it again to retry."
     }
+  },
+  "marketplace": {
+    "cache": {
+      "refreshFailed": "Catalog refresh failed. Previously available items are retained.",
+      "stale": "Showing previously cached content.",
+      "updatedAt": "Last updated: {{time}}"
+    }
+  },
+  "assetPublish": {
+    "errors": {
+      "desktopNotReady": "Desktop browser support is not ready yet. Try again.",
+      "popupBlocked": "The browser blocked the authorization window. Allow new tabs and try again.",
+      "openBrowserFailed": "Could not open the system browser. Try again.",
+      "oauthUnavailable": "OAuth sign-in is unavailable"
+    }
+  },
+  "hubOAuth": {
+    "startFailed": "Could not start Hub authorization. Check the local service.",
+    "requestExpired": "The authorization request expired. Sign in again.",
+    "windowClosed": "The authorization window was closed. Sign in again.",
+    "exchangeFailed": "Hub sign-in could not be exchanged. Authorize again; if it still fails, contact the Hub administrator.",
+    "failed": "Authorization failed. Try again."
+  },
+  "workspace": {
+    "selectFilesUnavailable": "The backend did not register path.select_files. Restart jiuwenswarm-start and try again."
   }
 }
