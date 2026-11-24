@@ -35,6 +35,7 @@ from jiuwenswarm.agents.harness.team.team_manager import (
     get_team_manager,
 )
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
+from jiuwenswarm.common.error_text import chat_error_payload, exception_text, non_empty_text
 from jiuwenswarm.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
     _drain_cron_delegation_grace_events,
@@ -1218,6 +1219,15 @@ async def _broadcast_event(
     tm = get_team_manager(channel_id)
     if event and event.get("event_type") == 'team.error':
         event.update({"event_type": "chat.error"})
+        # team.error 的 error 也可能是空串（异常类型丢失）：统一补非空兜底，
+        # 否则前端只会看到一条无原文 warning 或把终态收成完成。
+        event["error"] = non_empty_text(
+            event.get("error"),
+            event.get("error_message"),
+            event.get("message"),
+            fallback="team error (no error detail)",
+        )
+        event.setdefault("error_type", "TeamError")
     result = tm.broadcast_event(session_id, event)
     if inspect.isawaitable(result):
         await result
@@ -1992,7 +2002,11 @@ async def process_team_message_stream(
         yield AgentResponseChunk(
             request_id=rid,
             channel_id=channel_id,
-            payload={"event_type": "chat.error", "error": str(exc)},
+            payload=chat_error_payload(
+                exc,
+                phase="team_create",
+                fallback="team agent create failed",
+            ),
             is_complete=True,
         )
         return
@@ -2405,7 +2419,11 @@ async def process_team_message_stream(
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=channel_id,
-                payload={"event_type": "chat.error", "error": str(exc)},
+                payload=chat_error_payload(
+                    exc,
+                    phase="team_event_stream",
+                    fallback="team event stream failed",
+                ),
                 is_complete=False,
             )
 
@@ -3639,7 +3657,12 @@ async def _consume_stream_with_query(
                         # 终态同理。广播与 warning 落盘在上方已照常完成。
                         # 记录本轮未恢复的 leader 模型错误史，
                         # 供 team.completed 等收尾帧携带（根治"重试耗尽却记已完成"）
-                        arbiter.note_leader_error(str(parsed.get("error") or ""))
+                        arbiter.note_leader_error(
+                            non_empty_text(
+                                parsed.get("error"),
+                                fallback="Leader model call failed (no error detail)",
+                            )
+                        )
                         await _broadcast_event(
                             channel_id,
                             session_id,
@@ -3857,13 +3880,19 @@ async def _consume_stream_with_query(
             exc,
             exc_info=True,
         )
+        error_text = exception_text(exc, fallback="team stream failed (no error detail)")
+        # 流异常不可恢复：记入终态账本，finally 的 STREAM_END 提案带 error 收口，
+        # 避免“有 chat.error 广播、但终态 processing_status 无 error”被前端当完成。
+        arbiter.note_leader_error(error_text)
         try:
             await _broadcast_event(
                 channel_id,
                 session_id,
                 {
                     "event_type": "chat.error",
-                    "error": str(exc),
+                    "error": error_text,
+                    "error_type": type(exc).__name__,
+                    "phase": "team_stream",
                     "session_id": session_id,
                 },
             )

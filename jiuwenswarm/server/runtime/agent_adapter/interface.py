@@ -39,6 +39,7 @@ from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.stall_watchdog import stall_watchdog
+from jiuwenswarm.common.error_text import exception_text
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
@@ -1823,7 +1824,7 @@ class JiuWenSwarm:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload={"error": exception_text(exc, fallback="request failed")},
                 metadata=request.metadata,
             )
         return AgentResponse(
@@ -1878,7 +1879,7 @@ class JiuWenSwarm:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload={"error": exception_text(exc, fallback="request failed")},
                 metadata=request.metadata,
             )
         return AgentResponse(
@@ -1912,7 +1913,7 @@ class JiuWenSwarm:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload={"error": exception_text(exc, fallback="request failed")},
                 metadata=request.metadata,
             )
         return AgentResponse(
@@ -1999,7 +2000,12 @@ class JiuWenSwarm:
             yield AgentResponseChunk(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
-                payload={"event_type": "chat.error", "error": str(exc)},
+                payload={
+                    "event_type": "chat.error",
+                    "error": exception_text(exc, fallback="symphony stream failed"),
+                    "error_type": type(exc).__name__,
+                    "phase": "symphony_stream",
+                },
                 is_complete=False,
             )
             yield AgentResponseChunk(
@@ -2367,7 +2373,7 @@ class JiuWenSwarm:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload={"error": exception_text(exc, fallback="request failed")},
                 metadata=request.metadata,
             )
         except _InvalidChatInputError as exc:
@@ -2380,7 +2386,11 @@ class JiuWenSwarm:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"status": "failed", "code": "INVALID_ARGUMENT", "error": str(exc)},
+                payload={
+                    "status": "failed",
+                    "code": "INVALID_ARGUMENT",
+                    "error": exception_text(exc, fallback="invalid chat input"),
+                },
                 metadata=request.metadata,
             )
 
@@ -2540,7 +2550,7 @@ class JiuWenSwarm:
                 yield AgentResponseChunk(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
-                    payload={"event_type": "skilldev.error", "error": str(exc)},
+                    payload={"event_type": "skilldev.error", "error": exception_text(exc, fallback="skilldev request failed")},
                     is_complete=True,
             )
             return
@@ -2632,7 +2642,12 @@ class JiuWenSwarm:
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
-                payload={"event_type": "chat.error", "error": str(exc)},
+                payload={
+                    "event_type": "chat.error",
+                    "error": exception_text(exc, fallback="team plan approval payload invalid"),
+                    "error_type": type(exc).__name__,
+                    "phase": "team_plan_approval",
+                },
                 is_complete=False,
             )
             yield AgentResponseChunk(
@@ -2651,7 +2666,13 @@ class JiuWenSwarm:
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
-                payload={"event_type": "chat.error", "code": "INVALID_ARGUMENT", "error": str(exc)},
+                payload={
+                    "event_type": "chat.error",
+                    "code": "INVALID_ARGUMENT",
+                    "error": exception_text(exc, fallback="invalid chat input"),
+                    "error_type": type(exc).__name__,
+                    "phase": "chat_input",
+                },
                 is_complete=True,
             )
             return

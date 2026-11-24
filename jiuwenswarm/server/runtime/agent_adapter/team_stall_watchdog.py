@@ -43,6 +43,11 @@ from jiuwenswarm.agents.harness.team import get_team_manager
 TEAM_STALL_WATCHDOG_SEC = 45.0
 TEAM_STALL_CONFIRM_WINDOWS = 2
 
+# DB 对照连续不可用的收口窗口：DB 初始化/读取超时期间不能按 live-only
+# 判“任务停摆”（会把尚未真正跑起来的团队误杀）；连续多个窗口仍读不到 DB
+# 才按“团队数据服务不可用”明确收口，而不是伪装成停摆。
+TEAM_DB_UNAVAILABLE_TERMINAL_WINDOWS = 6
+
 # 任务流转判活的回溯视野（秒）：任务 updated_at 落在此视野内 = 窗口内有认领/
 # 推进活动。独立于判定窗口常量——测试会压缩判定窗口，判活视野不能跟着缩。
 TASK_ACTIVITY_HORIZON_SEC = 45.0
@@ -395,6 +400,7 @@ def schedule_team_stall_watchdog(
         )
 
         stall_windows = 0
+        db_unavailable_windows = 0
         last_chunks = liveness()
         last_signals = completion_signals()
         while True:
@@ -411,20 +417,24 @@ def schedule_team_stall_watchdog(
                     # 回合已正常收尾：重置基线继续守下一轮（长寿命流跨轮复用）
                     last_signals = signals
                     stall_windows = 0
+                    db_unavailable_windows = 0
                     last_chunks = liveness()
                     continue
                 current = liveness()
                 if current != last_chunks:
                     last_chunks = current
                     stall_windows = 0
+                    db_unavailable_windows = 0
                     continue
                 progress = await team_progress_snapshot(channel_id, session_id)
                 if progress is None:
                     stall_windows = 0
+                    db_unavailable_windows = 0
                     continue
                 in_flight, pending, recent = progress
                 if in_flight > 0 or pending == 0 or recent:
                     stall_windows = 0
+                    db_unavailable_windows = 0
                     continue
                 # leader kernel 活性：agentic 迭代间隙/leader 长考期间成员与
                 # leader 的状态采样都是 ready，快照判定必误判——看运行时真值。
@@ -432,10 +442,15 @@ def schedule_team_stall_watchdog(
                 alive = await team_runtime_liveness(channel_id, session_id)
                 if alive:
                     stall_windows = 0
+                    db_unavailable_windows = 0
                     continue
                 # live 判零在途：DB 对照复核（live 内存视图滞后于 DAO 直写的
-                # 盲区兜底）；对照不可用退回 live-only 判定（保留击杀能力——
-                # 误杀主场景已由在途口径扩展+任务判活覆盖，不依赖对照）
+                # 盲区兜底）。对照不可用分两类：
+                # - TeamNotEstablishedError：团队行已不存在（确定性终结/被删），
+                #   维持既有 live-only 判定；
+                # - 普通 None（初始化/读取超时、锁竞争）：证据不足，不能按
+                #   live-only 判“停摆”误杀；连续多窗仍不可用才明确报存储故障。
+                db_not_established = False
                 try:
                     db_progress = await team_progress_snapshot_db(channel_id, session_id)
                 except TeamNotEstablishedError:
@@ -452,6 +467,42 @@ def schedule_team_stall_watchdog(
                         session_id,
                     )
                     db_progress = None
+                    db_not_established = True
+                if db_progress is None and not db_not_established:
+                    db_unavailable_windows += 1
+                    stall_windows = 0
+                    if db_unavailable_windows < TEAM_DB_UNAVAILABLE_TERMINAL_WINDOWS:
+                        logger.info(
+                            "[TeamStallWatchdog] db cross-check unavailable; "
+                            "stall judgement deferred: session_id=%s "
+                            "window=%s/%s",
+                            session_id,
+                            db_unavailable_windows,
+                            TEAM_DB_UNAVAILABLE_TERMINAL_WINDOWS,
+                        )
+                        continue
+                    logger.warning(
+                        "[TeamStallWatchdog] team database unavailable for %s "
+                        "windows; terminating with storage error: session_id=%s "
+                        "round_id=%s",
+                        db_unavailable_windows,
+                        session_id,
+                        round_id,
+                    )
+                    outcome = await propose(
+                        {
+                            "source": "storage_unavailable",
+                            "error": (
+                                "团队数据服务不可用（数据库初始化/读取超时），"
+                                "请重试或重启应用"
+                            ),
+                        }
+                    )
+                    if outcome != "suppressed" or completion_signals() > 0:
+                        return
+                    db_unavailable_windows = 0
+                    continue
+                db_unavailable_windows = 0
                 if db_progress is not None:
                     db_in_flight, db_pending, db_recent = db_progress
                     if db_in_flight > 0 or db_recent:

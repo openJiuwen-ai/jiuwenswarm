@@ -29,6 +29,7 @@ from typing import Any, Awaitable, Callable, Optional, TypedDict
 
 from openjiuwen.core.common.logging import logger
 
+from jiuwenswarm.common.error_text import leader_error_text
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
     TeamNotEstablishedError,
 )
@@ -58,6 +59,8 @@ class ProposalSource:
     SETTLE = "settle"
     DEATH_PROBE = "death_probe"
     STALL_WATCHDOG = "stall_watchdog"
+    # 团队数据服务（DB 初始化/读取）连续不可用：不是任务停摆，单独收口
+    STORAGE_UNAVAILABLE = "storage_unavailable"
     STREAM_END = "stream_end"
     INTERACT_FAILED = "interact_failed"
     # 迭代预算耗尽：agent-core 收尾序列
@@ -233,8 +236,10 @@ class RoundTerminalArbiter:
         """记录本轮未恢复的 leader 模型错误史（强制携带用）。
 
         重试通知与 degraded 告警的过滤在检测层（消费循环），裁决器不过滤。
+        空串（异常类型被后端丢成空消息）也必须落成非空错误史——否则
+        _emit_terminal 的 ``if error`` 会省略 error 字段，失败回合被前端收成 done。
         """
-        self._ledger.unrecovered_error = error
+        self._ledger.unrecovered_error = leader_error_text(error)
 
     def note_team_activity(self) -> None:
         """本轮见过团队活动帧（team.member/team.task/workflow.updated）——
@@ -418,8 +423,12 @@ class RoundTerminalArbiter:
                 log_reason="member_exhausted",
             )
 
-        if source in (ProposalSource.DEATH_PROBE, ProposalSource.STALL_WATCHDOG):
-            # 判死类：检测层自带条件（活性基线/任务判活/kernel 活性），
+        if source in (
+                ProposalSource.DEATH_PROBE,
+                ProposalSource.STALL_WATCHDOG,
+                ProposalSource.STORAGE_UNAVAILABLE,
+            ):
+            # 判死类：检测层自带条件（活性基线/任务判活/kernel 活性/存储可用性），
             # 裁决器只收口——带 error + 级联收流
             return await self._emit_terminal(
                 error=proposal.get("error") or UNCONFIRMED_FINAL_STATE_TEXT,
@@ -428,6 +437,8 @@ class RoundTerminalArbiter:
                 cascade_source=(
                     "leader-death-probe"
                     if source == ProposalSource.DEATH_PROBE
+                    else "storage-unavailable"
+                    if source == ProposalSource.STORAGE_UNAVAILABLE
                     else "stall-watchdog"
                 ),
                 log_reason=source,
