@@ -24,7 +24,7 @@ else
 endif
 
 # Target that is not a file -> always considered out of date.
-.PHONY: help install sync lock update-deps update-openjiuwen test test-unit test-integration \
+.PHONY: help install sync lock update-deps update-openjiuwen test test-unit test-unit-full test-integration \
 		test-cov lint lint-fix format typecheck clean build \
 		init start-debug start-debug-rebuild restart-debug restart-debug-fast stop \
 		genai-semconv check-genai-semconv openjiuwen-semconv check-openjiuwen-semconv
@@ -131,8 +131,11 @@ stop: ## Stop the background debug service started by start-debug
 test: ## Run the full test suite
 	@bash run_tests.sh
 
-test-unit: ## Run only unit tests
-	@bash run_tests.sh -u
+test-unit: ## Run change-related + baseline unit tests (smart selection)
+	@bash run_tests.sh -u -s
+
+test-unit-full: ## Run ALL unit tests
+	@bash run_tests.sh -u -f
 
 test-integration: ## Run only integration tests
 	@bash run_tests.sh -i
