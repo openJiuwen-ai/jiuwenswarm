@@ -298,7 +298,8 @@
       "installed": "已安装",
       "notInstalled": "未安装",
       "needsRepair": "需修复",
-      "notFound": "未检测到"
+      "notFound": "未检测到",
+      "outdated": "版本过低"
     },
     "sections": {
       "about": "基本信息",
@@ -365,6 +366,7 @@
       "stale_origin": "加载项还指向旧的地址。点「修复」更新。"
     },
     "appsNotFound": "未检测到 {{apps}}。装好并打开一次后，回到这里安装。",
+    "appOutdated": "{{app}} 版本过低，升级到 {{version}} 或更高版本后，回到这里安装。",
     "listSeparator": "、",
     "errors": {
       "actionFailed": "操作没有完成，请重试。"

@@ -310,6 +310,17 @@ def test_heartbeat_rail_skipped_for_xiaoyi_channel(session_metadata) -> None:
     assert isinstance(adapter._build_heartbeat_rail(), HeartbeatRail)
 
 
+def test_task_pane_conversations_get_no_scheduled_or_heartbeat_tools() -> None:
+    """Office/WPS 侧边栏对话不挂定时任务与心跳：到点触发时侧边栏可能已关，文档工具无法执行。"""
+    from jiuwenswarm.server.client_attachments.registry import client_apps
+
+    for app in client_apps().values():
+        adapter = _make_heartbeat_adapter("web_a", channel_id="web")
+        adapter._instance_overrides = {"left_out_capabilities": app.leaves_out}
+        assert adapter._build_heartbeat_rail() is None, app.id
+        assert adapter._scheduled_task_unsupported_for_current_request("web_a"), app.id
+
+
 def test_heartbeat_policy_keeps_unknown_channels_supported() -> None:
     """只有明确列入不支持清单的渠道才关心跳，未知渠道保持原行为。"""
     from jiuwenswarm.agents.harness.common.tools.heartbeat_policy import (

@@ -79,6 +79,11 @@ def _is_loopback_address(value: object) -> bool:
         return False
 
 
+def _is_loopback_name(host: str) -> bool:
+    """Return whether a bind or Host name is this machine only: ``localhost`` or a loopback IP literal."""
+    return host == "localhost" or _is_loopback_address(host)
+
+
 def _get_share_image_export_manager() -> ShareImageExportManager:
     """Forward to the gateway-owned singleton (shared job registry)."""
     from agent_gateway.channel_manager.web.share_image_export import (
@@ -1239,6 +1244,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self._send_desktop_forbidden()
         return True
 
+    def _is_this_machines_page(self) -> bool:
+        """The desktop window by its cookie; without a desktop token, a page this machine opened on a loopback name.
+
+        The Host check keeps out a site that points its own name at 127.0.0.1 (DNS rebinding): the browser
+        still sends that name.
+        """
+        if self.desktop_token:
+            return self._has_desktop_cookie()
+        host = urlparse(f"//{self.headers.get('Host', '')}").hostname or ""
+        return _is_loopback_address(self.client_address[0]) and _is_loopback_name(host)
+
     def _has_desktop_cookie(self) -> bool:
         cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
         return bool(cookie_token) and hmac.compare_digest(
@@ -1246,14 +1262,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         )
 
     def _dispatch_office_addins(self, parsed: ParseResult) -> bool:
-        """``/desktop-api/office-addins``: exists only for the desktop window, answers 404 to anyone else."""
+        """``/desktop-api/office-addins``: exists only for this machine's own page, answers 404 to anyone else."""
         if not parsed.path.startswith(self._OFFICE_ADDINS_PATH):
             return False
         route = parsed.path[len(self._OFFICE_ADDINS_PATH):]
         # A page on another local port shares the cookie; only the desktop window's own page may act.
         same_origin = self.headers.get("Sec-Fetch-Site") == "same-origin"
         addins = self.office_addins
-        if addins is None or not self._has_desktop_cookie():
+        if addins is None or not self._is_this_machines_page():
             self._write_json(404, {"error": "not_found"})
             return True
         match (self.command, route.split("/")):
@@ -3365,7 +3381,10 @@ def main() -> None:
     ).start()
     server = ThreadingHTTPServer((args.host, args.port), handler)
     office_listener = None
-    if desktop_token:
+    # The add-ins change this machine, so only a server that is this machine's alone offers them: the desktop's, or
+    # one that listens on the loopback only (jiuwenswarm-start and jiuwenswarm-web by default; a deployment for
+    # others listens elsewhere).
+    if desktop_token or _is_loopback_name(args.host):
         from jiuwenswarm.channels.desktop.office_addins import OfficeAddins
         from jiuwenswarm.channels.desktop.office_addins.listener import TlsListener
 

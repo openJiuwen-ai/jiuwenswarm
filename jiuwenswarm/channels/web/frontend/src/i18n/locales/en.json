@@ -298,7 +298,8 @@
       "installed": "Installed",
       "notInstalled": "Not installed",
       "needsRepair": "Needs repair",
-      "notFound": "Not found"
+      "notFound": "Not found",
+      "outdated": "Update needed"
     },
     "sections": {
       "about": "Basic info",
@@ -365,6 +366,7 @@
       "stale_origin": "The add-in still points to an old address. Click Repair to update it."
     },
     "appsNotFound": "Not found on this computer: {{apps}}. Open each once after installing it, then install from here.",
+    "appOutdated": "{{app}} is too old for the add-in. Update it to {{version}} or later, then install from here.",
     "listSeparator": ", ",
     "errors": {
       "actionFailed": "That didn't finish. Try again."
