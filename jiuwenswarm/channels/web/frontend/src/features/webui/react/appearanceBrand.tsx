@@ -5,7 +5,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import type { WebUIAppearanceParts, WebUIIdentity } from '../appearance/appearance.ts';
-import type { AppearancePreparation } from '../appearance/preparation.ts';
+import { readIdentityRecord, type AppearancePreparation } from '../appearance/preparation.ts';
 import { useOptionalWebUIAppContext } from './WebUIProvider.tsx';
 
 export const DEFAULT_BRAND_NAME = 'WorkSwarm';
@@ -43,4 +43,11 @@ export function useBrandImage(src: string | undefined, fallback: string): { src:
   useEffect(() => setFailed(null), [src]);
   const onError = useCallback(() => { if (src) setFailed(src); }, [src]);
   return { src: src && failed !== src ? src : fallback, onError };
+}
+
+/** Shared WorkSwarm logo. The standalone login page can use the last displayed brand before connecting. */
+export function useWorkSwarmLogo(useRecord = false): ReturnType<typeof useBrandImage> {
+  const identity = useBrandIdentity();
+  const [recorded] = useState(() => useRecord ? readIdentityRecord()?.logo : undefined);
+  return useBrandImage(useRecord ? recorded : identity?.logo, DEFAULT_BRAND_LOGO);
 }
