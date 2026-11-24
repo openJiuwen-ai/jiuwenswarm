@@ -24,8 +24,8 @@ from openjiuwen.symphony.discovery import (
 from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
     SkillRetrievalToolkit,
     build_model_discovery_settings,
-    is_skill_retrieval_enabled,
 )
+from jiuwenswarm.runtime.symphony.skill_retrieval import is_skill_retrieval_enabled
 
 _LEGACY_LIST_SKILL_TOOL_NAMES = frozenset({"list_skill", "list_skills"})
 _RUNTIME_SKILL_ATTACHMENT_SECTION = "skills.runtime_changes"

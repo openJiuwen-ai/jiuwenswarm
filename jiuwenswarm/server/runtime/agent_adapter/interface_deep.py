@@ -356,7 +356,9 @@ from jiuwenswarm.runtime.symphony.llm import (
     SYMPHONY_LLM_CONFIG_REF_KEY,
     register_request_model,
 )
-from jiuwenswarm.runtime.symphony.skill_retrieval import CAPABILITY_SEARCH_TOOL_NAME
+from jiuwenswarm.runtime.symphony.skill_retrieval import (
+    CAPABILITY_SEARCH_TOOL_NAME, is_skill_retrieval_enabled, skill_sources_from_directories,
+)
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_preview import preview_text
@@ -492,11 +494,10 @@ from jiuwenswarm.agents.harness.common.tools import (
     SkillRetrievalToolkit,
     SkillToolkit,
     build_model_discovery_settings,
-    is_skill_retrieval_enabled,
     SymphonyToolkit,
 )
 from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-    SKILL_RETRIEVAL_SESSION_PROFILE_VERSION, skill_sources_from_directories,
+    SKILL_RETRIEVAL_SESSION_PROFILE_VERSION,
 )
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
     symphony_retrieval_compact_processor_spec,

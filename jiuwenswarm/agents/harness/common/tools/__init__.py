@@ -21,7 +21,7 @@ _EXPORTS = {
     "SendFileToolkit": (".send_file_to_user", "SendFileToolkit"),
     "SkillToolkit": (".skill_toolkits", "SkillToolkit"),
     "build_model_discovery_settings": (".skill_retrieval_toolkits", "build_model_discovery_settings"),
-    "is_skill_retrieval_enabled": (".skill_retrieval_toolkits", "is_skill_retrieval_enabled"),
+    "is_skill_retrieval_enabled": ("jiuwenswarm.runtime.symphony.skill_retrieval", "is_skill_retrieval_enabled"),
     "skill_sources_from_manager": (".skill_retrieval_toolkits", "skill_sources_from_manager"),
     "SkillRetrievalToolkit": (".skill_retrieval_toolkits", "SkillRetrievalToolkit"),
     "SymphonyToolkit": (".symphony_toolkits", "SymphonyToolkit"),

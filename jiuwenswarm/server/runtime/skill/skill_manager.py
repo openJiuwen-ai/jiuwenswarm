@@ -2454,10 +2454,9 @@ class SkillManager:
     @staticmethod
     def _skill_taxonomy_runtime(*, model=None):
         from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            disabled_skills_from_directories, skill_sources_from_directories,
+        from jiuwenswarm.runtime.symphony.skill_retrieval import (
+            SkillTaxonomyRuntime, disabled_skills_from_directories, skill_sources_from_directories,
         )
-        from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
         policy = load_symphony_config()
         roots = configured_skill_roots(policy)
@@ -2481,13 +2480,12 @@ class SkillManager:
         session_profile = session_profile if isinstance(session_profile, dict) else None
         from jiuwenswarm.common.config import get_config
         from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            disabled_skills_from_directories,
-            resolve_skill_retrieval_strategy, skill_sources_from_directories,
-        )
         from jiuwenswarm.runtime.symphony.skill_retrieval import (
             CAPABILITY_SEARCH_TOOL_NAME,
+            disabled_skills_from_directories,
             read_live_retrieval_status,
+            resolve_skill_retrieval_strategy,
+            skill_sources_from_directories,
         )
 
         config = get_config() or {}
@@ -2661,9 +2659,7 @@ class SkillManager:
 
         status = await self.handle_skills_retrieval_status(params)
         from jiuwenswarm.common.config import get_config
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            is_skill_retrieval_enabled,
-        )
+        from jiuwenswarm.runtime.symphony.skill_retrieval import is_skill_retrieval_enabled
 
         config = get_config() or {}
         if not is_skill_retrieval_enabled(config):
@@ -2753,9 +2749,9 @@ class SkillManager:
 
     async def handle_skills_retrieval_search(self, params: dict) -> dict:
         """Search installed Skills through the same directory Tool used by Agents."""
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            SkillRetrievalToolkit, disabled_skills_from_directories,
-            skill_sources_from_directories,
+        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
+        from jiuwenswarm.runtime.symphony.skill_retrieval import (
+            disabled_skills_from_directories, skill_sources_from_directories,
         )
 
         query = str((params or {}).get("query") or "").strip()

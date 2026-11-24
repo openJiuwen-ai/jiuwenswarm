@@ -927,7 +927,7 @@ def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
     )
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits.is_skill_retrieval_enabled",
+        "jiuwenswarm.runtime.symphony.skill_retrieval.is_skill_retrieval_enabled",
         lambda _config_base=None: True,
     )
 
@@ -1939,6 +1939,7 @@ def test_team_send_file_does_not_enable_auto_authorization(
         user_id=None,
         project_dir=None,
         team_workspace_root=None,
+        language="zh",
     )
 
 
@@ -4018,8 +4019,10 @@ def test_jiuwen_team_factory_does_not_fall_back_or_enter_design(monkeypatch, cap
     monkeypatch.setattr(team_memory, "build_jiuwen_memory_rail", lambda *args, **kw: None)
     context = SwarmBuildContext(config=config, mode="team.work.normal", memory_team="bound")
     assert team_memory.build_team_memory({}, context) is None
+
     def unexpected_build(*args, **kwargs):
         pytest.fail("Non-Jiuwen, design, single-agent or unbound contexts must not build Team memory")
+
     monkeypatch.setattr(team_memory, "build_jiuwen_memory_rail", unexpected_build)
     context.mode = "team.design"
     assert team_memory.build_team_memory({}, context) is None

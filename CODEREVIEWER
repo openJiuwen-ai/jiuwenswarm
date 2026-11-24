@@ -622,7 +622,7 @@ jiuwenswarm/channels/web/frontend/src/features/settings/services/ xiaoyao
 jiuwenswarm/channels/web/frontend/src/features/settings/settingsNavigation.ts xiaoyao
 jiuwenswarm/runtime/symphony/build.py xutuo,linxiaoyu
 jiuwenswarm/runtime/symphony/llm.py xutuo
-jiuwenswarm/runtime/symphony/skill_retrieval/ xutuo
+jiuwenswarm/runtime/symphony/skill_retrieval.py xutuo
 jiuwenswarm/agents/harness/common/tools/skill_retrieval_toolkits.py xutuo
 jiuwenswarm/agents/harness/common/rails/symphony/retrieval_rail.py xutuo
 jiuwenswarm/agents/harness/code/rails/sdd/ yangpenghong

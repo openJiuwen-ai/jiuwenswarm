@@ -579,7 +579,6 @@ async def test_immediate_queued_cancellation_never_starts_the_model(tmp_path):
 @pytest.mark.asyncio
 async def test_manager_build_status_and_search_use_configured_global_collection(tmp_path, monkeypatch):
     from jiuwenswarm.common import config as common_config
-    from jiuwenswarm.agents.harness.common.tools import skill_retrieval_toolkits as toolkits
     from jiuwenswarm.runtime.symphony import service
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
@@ -589,7 +588,6 @@ async def test_manager_build_status_and_search_use_configured_global_collection(
     manager = SkillManager(workspace_dir=str(tmp_path))
     model = Model()
     monkeypatch.setattr(common_config, "get_config", lambda: config)
-    monkeypatch.setattr(toolkits, "get_config", lambda: config)
     monkeypatch.setattr(service, "get_swarm_symphony_service", lambda: SimpleNamespace(
         runtime=lambda: SimpleNamespace(model=model),
     ))
@@ -930,7 +928,7 @@ async def test_manager_job_id_stays_stable_through_running_status_and_cancel(tmp
 
 def test_explicit_library_state_is_read_only_and_default_install_semantics_are_preserved(tmp_path, monkeypatch):
     from jiuwenswarm.server.runtime.skill.skilldev import state_utils
-    from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import skill_sources_from_directories
+    from jiuwenswarm.runtime.symphony.skill_retrieval import skill_sources_from_directories
 
     default, configured, missing = (tmp_path / name for name in ("default", "configured", "missing"))
     default.mkdir()
@@ -1016,10 +1014,24 @@ async def test_manager_session_status_preserves_installed_counts(tmp_path, monke
     assert (session["layout"], session["index_state"], session["effective_strategy"]) == ("tree", "stale", "indexed_stale")
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_session_prewarm_uses_the_live_retrieval_switch(monkeypatch, enabled):
+    from jiuwenswarm.common import config as common_config
+    from jiuwenswarm.runtime.session_provisioner import RuntimeSessionProvisioner
+
+    config = {"symphony": {"retrieval": {"enabled": enabled}}}
+    monkeypatch.setattr(common_config, "get_config", lambda: config)
+    monkeypatch.setattr(common_config, "get_default_models", lambda _: [
+        {"is_default": True, "alias": "preferred", "model_client_config": {"model_name": "primary"}},
+    ])
+    assert RuntimeSessionProvisioner._is_prewarm_model_eligible("preferred")
+    assert RuntimeSessionProvisioner._is_prewarm_model_eligible("other") is (not enabled)
+
+
 @pytest.mark.asyncio
 async def test_manager_closes_live_retrieval_runtime_on_read_failure(tmp_path, monkeypatch):
     from jiuwenswarm.common import config as common_config
-    from jiuwenswarm.runtime.symphony.skill_retrieval import runtime as retrieval_runtime
+    from jiuwenswarm.runtime.symphony import skill_retrieval as retrieval_runtime
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
     monkeypatch.setattr(common_config, "get_config", lambda: config_for(tmp_path))

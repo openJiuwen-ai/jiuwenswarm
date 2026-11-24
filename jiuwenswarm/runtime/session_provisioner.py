@@ -1329,9 +1329,7 @@ class RuntimeSessionProvisioner:
         if not requested:
             return True
         from jiuwenswarm.common.config import get_config, get_default_models
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            is_skill_retrieval_enabled,
-        )
+        from jiuwenswarm.runtime.symphony.skill_retrieval import is_skill_retrieval_enabled
 
         config = get_config()
         if not is_skill_retrieval_enabled(config):

@@ -287,9 +287,7 @@ def _build_skill_retrieval_prompt_rail(
     context: SwarmBuildContext,
 ) -> SymphonyRetrievalRail | None:
     """Build the skill retrieval prompt rail when the feature is enabled."""
-    from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-        is_skill_retrieval_enabled,
-    )
+    from jiuwenswarm.runtime.symphony.skill_retrieval import is_skill_retrieval_enabled
     from jiuwenswarm.agents.swarm.providers.tools import (
         skill_retrieval_toolkit_for_context,
     )

@@ -123,7 +123,6 @@ from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
     get_config_file,
     get_domain_data_dir,
-    get_user_workspace_dir,
     mask_sensitive,
 )
 from jiuwenswarm.common.version import get_runtime_version
@@ -386,9 +385,7 @@ def _is_session_prewarm_model_eligible(
         return True
 
     resolved_config = config if config is not None else get_config()
-    from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-        is_skill_retrieval_enabled,
-    )
+    from jiuwenswarm.runtime.symphony.skill_retrieval import is_skill_retrieval_enabled
 
     # The global switch promises the unchanged legacy runtime when disabled.
     if not is_skill_retrieval_enabled(resolved_config):
@@ -8870,13 +8867,12 @@ class AgentWebSocketServer:
                 session_id, team_name,
             )
             members_raw = []
-        members = [
-            m for m in members_raw
-            if isinstance(m, dict)
-            and m.get("role") == "human_agent"
-            and m.get("member_id")
-            and not is_departed_member(m.get("status"))
-        ]
+        members = []
+        for member in members_raw:
+            if not isinstance(member, dict) or member.get("role") != "human_agent":
+                continue
+            if member.get("member_id") and not is_departed_member(member.get("status")):
+                members.append(member)
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=channel_id,
@@ -9497,8 +9493,7 @@ class AgentWebSocketServer:
 
         next_seq = sequence
 
-        # Session open / refresh: push full todo snapshot before history "done"
-        # so the frontend todo panel restores without reading workspace files.
+        # Push the full task list before history "done" so the panel restores on open or refresh.
         # Only the initial page/batch — pagination must not re-flash the panel.
         is_initial_history_batch = (
             cursor_protocol and request_cursor is None
@@ -9730,16 +9725,7 @@ class AgentWebSocketServer:
                 execution_subject=execution_subject,
             )
             try:
-                # TODO(compact): Keep command.compact on its original path; extension integration is deferred.
-                # options = {"session_id": session_id, "return_state": True,
-                #            "processor_types": _MANUAL_COMPACT_PROCESSOR_TYPES}
-                # instructions = params.get("instructions")
-                # if instructions is not None:
-                #     if not isinstance(instructions, str):
-                #         raise ValueError("compact instructions must be a string")
-                #     options["instructions"] = instructions
-                # result_data = await agent.compress_context(**options)
-
+                # Manual compaction uses the native processor set.
                 result_data = await agent.compress_context(
                     session_id=session_id,
                     return_state=True,
@@ -9849,8 +9835,6 @@ class AgentWebSocketServer:
                     payload={
                         "result": result,
                         "stats": stats,
-                        # TODO(compact): Do not add extension decisions to the native command response yet.
-                        # **({"skip": result_data["skip"]} if result_data.get("skip") else {}),
                         **({"summary": summary} if summary else {}),
                         **({"compact_summary": summary} if summary else {}),
                     },
