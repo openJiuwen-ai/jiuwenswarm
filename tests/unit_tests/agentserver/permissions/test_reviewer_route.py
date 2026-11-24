@@ -169,3 +169,72 @@ def test_exact_and_recent_fetch_routes(tmp_path: Path) -> None:
 
     assert explicit_route.source == SEMANTIC_REVIEW_SOURCE
     assert recent_route.source == RECENT_FETCH_SOURCE
+
+
+# ============================================================
+# Sensitive-path extraction fallback (issue #6064)
+# ============================================================
+
+@pytest.mark.parametrize(
+    ("command", "expected_deny"),
+    [
+        # issue #6064: unexpanded $HOME/.env and ~/.env in non path-aware
+        # commands yield external_paths=[] and must fail closed to deny.
+        ('echo SECRET=1 > "$HOME/.env"', True),
+        ('test -e "$HOME/.env" && echo EXISTS', True),
+        ("test -e ~/.env", True),
+        ("test -f ~/.env.production", True),
+        ("cat ${HOME}/.env", True),
+        # No home-variable token -> no fallback, even if the command mentions
+        # a bare .env-ish name (templates, ordinary paths) or is unrelated.
+        ("echo hello", False),
+        ("ls -la", False),
+        ("grep -r TODO ./src", False),
+        ("cat .env.example", False),
+        ("cat .env.template", False),
+    ],
+)
+def test_sensitive_path_extraction_fallback_denies(
+    tmp_path: Path, command: str, expected_deny: bool
+) -> None:
+    facts = _facts("bash", {"command": command}, tmp_path)
+    route = reviewer_route(
+        facts,
+        policy_level="ask",
+        guard_result="not_applicable",
+        workspace_root=tmp_path,
+    )
+    if expected_deny:
+        assert route.source == HARD_BLOCK_SOURCE
+        assert route.reason == "sensitive_path_extraction_failed"
+    else:
+        assert route.source == SEMANTIC_REVIEW_SOURCE
+
+
+def test_sensitive_path_fallback_defers_to_successful_extraction(tmp_path: Path) -> None:
+    """When the engine extracted the path, no deny fallback is added."""
+    facts = _facts(
+        "bash",
+        {"command": "cat /home/user/.env"},
+        tmp_path,
+        external_paths=("/home/user/.env",),
+    )
+    route = reviewer_route(
+        facts,
+        policy_level="ask",
+        guard_result="not_applicable",
+        workspace_root=tmp_path,
+    )
+    assert route.source == SEMANTIC_REVIEW_SOURCE
+
+
+def test_sensitive_path_fallback_ignores_non_shell_tools(tmp_path: Path) -> None:
+    """A read_file whose path mentions .env is not a shell extraction failure."""
+    facts = _facts("read_file", {"path": "./.env"}, tmp_path)
+    route = reviewer_route(
+        facts,
+        policy_level="ask",
+        guard_result="not_applicable",
+        workspace_root=tmp_path,
+    )
+    assert route.source == SEMANTIC_REVIEW_SOURCE
