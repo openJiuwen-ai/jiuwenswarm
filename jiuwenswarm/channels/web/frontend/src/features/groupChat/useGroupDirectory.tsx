@@ -4,6 +4,7 @@ import { webClient } from '../../services/webClient';
 import { Dialog } from '../../components/ui/Dialog/Dialog';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { isTransientManagementError, waitForClientContext } from '../../services/extensionsV2Api';
 import { groupChatClient, type GroupInfo } from './client';
 import { MemberPicker } from './MemberPicker';
 
@@ -58,7 +59,15 @@ export function useGroupDirectory({ activeGroupId, onSelect }: {
 
   const reload = useCallback(async () => {
     try {
-      const page = await groupChatClient.list({ limit: 50 });
+      let page;
+      try {
+        page = await groupChatClient.list({ limit: 50 });
+      } catch (reason) {
+        // A client-declarations swap during page load aborts in-flight reads; the list is
+        // still valid, so wait for the swap and read again instead of showing no groups.
+        if (!isTransientManagementError(reason) || !(await waitForClientContext())) throw reason;
+        page = await groupChatClient.list({ limit: 50 });
+      }
       if (!alive.current) return;
       setGroups(page.groups);
       setTotal(page.total);

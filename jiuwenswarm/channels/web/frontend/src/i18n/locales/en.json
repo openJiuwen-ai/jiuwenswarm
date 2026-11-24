@@ -981,7 +981,6 @@
       "affinityCapability": "This service supports Ascend KV-Cache affinity",
       "affinityCapabilityDescription": "Only for custom services implementing the agent_hint protocol. This is a manual declaration; connection tests do not verify affinity support.",
       "affinityAutoDisabled": "Model configuration saved. KV-Cache affinity was automatically disabled because a control model no longer supports it. Restart if required.",
-
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
@@ -7872,6 +7871,21 @@
       "in_progress": "In progress",
       "blocked": "Waiting",
       "stopped": "Stopped"
+    },
+    "autoReply": {
+      "title": "Auto reply",
+      "hint": "When a message mentions nobody, a judge model decides which members should reply. A mention is always answered by the mentioned member.",
+      "model": "Judge model",
+      "sessionModel": "Follow the group session model",
+      "unavailableModel": "Saved model is unavailable",
+      "modelHint": "A small, fast model lowers cost and waiting time.",
+      "pending": "Deciding who should reply…",
+      "notified": "Auto reply: asked {{names}} to reply",
+      "coordinated": "Auto reply: asked {{owner}} to coordinate {{names}} on one result",
+      "separator": ", ",
+      "none": "Auto reply: no member needs to reply",
+      "failed": "Could not decide who should reply. Mention a member instead.",
+      "stopped": "Stopped before deciding who should reply"
     }
   },
   "webuiFileImport": {
