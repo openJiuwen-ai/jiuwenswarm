@@ -428,29 +428,6 @@ def set_mcp_enabled(name: str, *, enabled: bool) -> None:
         _save(st)
 
 
-def set_mcp_default(name: str, *, default: bool) -> None:
-    """Flip an MCP's web-session default-equipment ``is_default`` flag.
-
-    Web-channel default equipment: new sessions without an equipment snapshot
-    inherit the default set via ``restore_chat_send_equipment_params`` (see
-    ``agent_adapter/interface.py``). Unlike ``enabled`` (TUI global load),
-    ``is_default`` never auto-loads into running sessions — it only seeds the
-    first chat.send of a fresh session, after which the session snapshot
-    takes over. Flipping it keeps the connection alive.
-    """
-    n = str(name or "").strip()
-    if not n:
-        raise ValueError("mcp name is required")
-    with _lock:
-        st = _load()
-        cons = st.get("mcp", {})
-        rec = cons.get(n)
-        if not isinstance(rec, dict):
-            raise KeyError(f"mcp '{n}' not found in state")
-        rec["is_default"] = bool(default)
-        _save(st)
-
-
 def list_default_mcps() -> list[str]:
     """Names of live MCPs flagged ``is_default`` (web session default set).
 
@@ -529,7 +506,6 @@ __all__ = [
     "set_mcp_state",
     "set_mcp_state_if",
     "set_mcp_enabled",
-    "set_mcp_default",
     "replace_default_mcps",
     "record_to_mcp_entry",
 ]

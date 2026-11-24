@@ -51,11 +51,10 @@ issue: 'GitCode #6383 / GitHub #11108'
 
 ### 2.1 存储
 
-`state.json` 每条连接器记录新增 `is_default: bool`。读写由 `state_store.py` 的四个函数负责：
+`state.json` 每条连接器记录新增 `is_default: bool`。读写由 `state_store.py` 的三个函数负责：
 
 | 函数 | 作用 |
 |---|---|
-| `set_mcp_default` | 勾/取消单个连接器 |
 | `list_default_mcps` | 列出生效的默认（只算已连接的） |
 | `list_default_flagged_mcps` | 列出所有被标记的（含断连，供界面灰显） |
 | `replace_default_mcps` | 一次性整体替换（加锁防并发写坏） |

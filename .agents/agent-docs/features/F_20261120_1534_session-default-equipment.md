@@ -33,11 +33,11 @@ author_email: chensitong2@huawei.com
 
 **做了什么**：给连接器加「默认使用」标记（`state.json` `is_default`）；新会话首条消息没带 `mcp` 时按默认清单自动挂载一次，之后按会话快照走。后端（存储/挂载规则/读写接口）+ 前端（详情页复选框 + 新会话面板预勾选）+ 中英文档。
 
-**验证**：新增单测 27 个、相关回归全绿；WS 直连冒烟（读/写/非法拒绝）通过；浏览器实测（复选框实时生效、新会话预勾选、取消勾选后不挂载）。
+**验证**：新增单测 25 个、相关回归全绿；WS 直连冒烟（读/写/非法拒绝）通过；浏览器实测（复选框实时生效、新会话预勾选、取消勾选后不挂载）。
 
 ## 关键实现
 
-- **存储**：`state_store.py` 新增 `is_default` 字段和四个读写函数；`replace_default_mcps` 加锁整体替换，防止并发写坏。
+- **存储**：`state_store.py` 新增 `is_default` 字段和三个读写函数；`replace_default_mcps` 加锁整体替换，防止并发写坏。
 - **挂载规则**：`interface.py` `restore_chat_send_equipment_params()` 末尾加一级：会话无快照且消息省略 `mcp` 时补默认。「没有快照」和「快照是空的（用户清空过）」用返回值区分，后者不再补默认（逃生门）。
 - **读写接口**：`session_equipment.defaults.get/set` 两个 RPC；set 整体替换、只收已连接项；WS 与 HTTP 共用 `handlers/session.py` 的同一份实现。
 - **前端**：McpDetailPage 复选框（读 `runtime` 集、写完整清单）；新会话面板预勾选（`sessionStore.prefillDefaultMcps`），手动改过的会话以快照为准不被覆盖。
