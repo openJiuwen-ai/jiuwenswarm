@@ -4998,6 +4998,11 @@ class AgentWebSocketServer:
                 error="target Session ownership changed before execution",
             )
 
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language_async,
+        )
+
+        preferred_lang = await resolve_preferred_language_async(stored_user_id or None)
         cross_session = {
             "message_id": record.message_id,
             "source_session_id": record.source_session_id,
@@ -5007,7 +5012,7 @@ class AgentWebSocketServer:
             "chain_id": record.chain_id,
             "parent_message_id": record.parent_message_id,
             "hop_count": record.hop_count,
-            "language": str(get_config().get("preferred_language") or "zh"),
+            "language": preferred_lang,
         }
         params: dict[str, Any] = {
             "query": record.content,
