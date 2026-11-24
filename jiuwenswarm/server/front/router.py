@@ -5,12 +5,8 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import logging
-import os
 from typing import Any
-
-from agent_gateway.common.security.ws_origin import get_header_value
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -34,17 +30,6 @@ from jiuwenswarm.server.ws_send import send_wire_payload
 logger = logging.getLogger(__name__)
 
 CONTROL_METHODS = ALL_CONTROL_METHODS
-_GATEWAY_INTERNAL_HEADER = "X-Jiuwen-Gateway-Internal"
-
-
-def _gateway_internal_authorized(ws: Any) -> bool:
-    expected = os.getenv("JIUWENSWARM_GATEWAY_INTERNAL_TOKEN", "").strip()
-    headers = getattr(ws, "request_headers", None)
-    if headers is None:
-        request = getattr(ws, "request", None)
-        headers = getattr(request, "headers", None)
-    provided = str(get_header_value(headers, _GATEWAY_INTERNAL_HEADER) or "").strip()
-    return bool(expected and provided and hmac.compare_digest(provided, expected))
 
 
 _HANDLE_SESSION = None
@@ -146,17 +131,6 @@ class MethodRouter:
         request: AgentRequest,
         send_lock: Any,
     ) -> None:
-        if (
-            request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC
-            and not _gateway_internal_authorized(ws)
-        ):
-            response = build_error_response(
-                request,
-                "channel config sync requires a gateway internal token",
-                code="PERMISSION",
-            )
-            await self._send(ws, send_lock, encode_response(response, response_id=request.request_id))
-            return
         if is_control_method(request):
             if request.req_method.value in CONTROL_HUB_METHODS:
                 await self._dispatch_hub_catalog(ws, request, send_lock)

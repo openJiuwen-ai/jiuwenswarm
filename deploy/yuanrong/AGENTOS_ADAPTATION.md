@@ -15,9 +15,18 @@ YuanRong 部署脚本在 systemd 和 nohup 两种 Gateway 启动方式中设置
 内部启动的 JiuwenBox 子进程得到 `JIUWENBOX_RUNTIME_PROFILE=agentos`。
 外部 JiuwenBox 服务需自行设置该标识及 `JIUWENBOX_ETCD_ENDPOINTS`。
 
-AgentOS 运行期跳过包内 `resources/config.yaml` 的配置模板迁移，使用部署脚本
-从 `gateway-config-yuanrong.template.yaml` 生成的配置。MCP 预置包补齐或升级时
-也保留已有配置文件；新增配置项由部署模板管理。个人版继续执行既有版本迁移。
+AgentOS 运行期跳过包内 `resources/config.yaml` 的配置模板迁移，Gateway 使用部署脚本
+从已安装 `agent-gateway` 包的 `resources/config.agentos.yaml` 渲染出的
+`<workspace>/infra/config/config.yaml`；AS 使用 `<workspace>/config/config.yaml`。
+Gateway 和 AS 共用 `<workspace>/config/.env`，Gateway 在 AgentOS profile 下
+自动读取该文件，不再单独维护 `infra/config/.env`。
+MCP 预置包补齐或升级时也保留已有配置文件；新增配置项由部署模板管理。
+个人版继续执行既有版本迁移。
+
+旧版一体机只有一份共享 `config/config.yaml`。升级时部署脚本先调用
+`jiuwenswarm.agentos_migration`：保留旧用户配置，用新部署值覆盖
+VIP / etcd / function ID 等 deploy-owned 字段，再把 Gateway 配置写入
+`infra/config/config.yaml`。AS 配置由不带 `-f` 的 `jiuwenswarm-init` 保留。
 
 Gateway 的 Web mode 兼容和数据面监听还以实际使用 AgentOS Router 为条件；
 个人版选择本地 AgentClient 时不会启用。运行标识由部署设置，不接受客户端请求参数。
