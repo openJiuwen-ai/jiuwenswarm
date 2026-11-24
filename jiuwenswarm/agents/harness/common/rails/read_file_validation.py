@@ -300,6 +300,31 @@ def build_provided_image_read_error(path: str, *, language: str = "cn") -> str:
     )
 
 
+def build_unsafe_image_read_error(path: str, *, language: str = "cn") -> str:
+    """拒绝重新读取被上游内容安全拦截（``image_url unsafe``）的图片。
+
+    图片像素已因上游 400 从本轮窗口摘除并降级为纯文本；若再放行 read_file，同一张图
+    会重新进入窗口、再次触发 400，而单次降级重试额度已经用完（[[S_22]] N11）。
+    文案要明确"不要再读这张图"，并给出继续任务的路径，避免模型反复重试。
+    """
+
+    target = path or "<unknown>"
+    if language == "cn":
+        return (
+            f"{READ_FILE_ERROR_PREFIX} 「{target}」的内容已被上游内容安全拦截"
+            "（image_url unsafe），本轮已摘除该图片并降级为纯文本，不能再次读取同一张图。"
+            "请基于已有的文本与工具结果继续任务；若必须查看图片内容，"
+            "请改用可用的图像理解工具或请用户提供其它图片。"
+        )
+    return (
+        f"{READ_FILE_ERROR_PREFIX} '{target}' was rejected by the upstream content "
+        "safety check (image_url unsafe). Its pixels were removed from this request "
+        "and the turn continues in text-only mode, so this image must not be read again. "
+        "Continue with the text and tool results already available; if image content is "
+        "essential, use an available image understanding tool or ask the user for another image."
+    )
+
+
 def build_native_image_tool_error(*, language: str = "cn") -> str:
     """拒绝在原生看图模型下调用视觉理解工具（VQA / image_reading / image_ocr）。"""
 

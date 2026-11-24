@@ -348,6 +348,24 @@ def test_hitl_suppress_dict_task_failed_not_noise() -> None:
     assert parsed == {"event_type": "chat.error", "error": "model failed"}
 
 
+def test_task_failed_attaches_image_unsafe_code() -> None:
+    """model call failed(image_url unsafe) 需带结构化 code，避免下游落到 unknown/OA.05000090。"""
+    msg = (
+        "[181001] model call failed, reason: openAI API async stream error: "
+        "BadRequestError: Error code: 400 - the content of image_url.url field is unsafe"
+    )
+    chunk = SimpleNamespace(
+        type="controller_output",
+        payload={"type": "task_failed", "data": [{"text": msg}]},
+    )
+    parsed = _parse_stream_chunk(chunk)
+    assert parsed == {
+        "event_type": "chat.error",
+        "error": msg,
+        "code": "image_url_unsafe",
+    }
+
+
 def test_controller_output_task_interaction_is_dropped() -> None:
     """ISSUE #3892: TASK_INTERACTION must not stringify as chat.delta body."""
     chunk = SimpleNamespace(

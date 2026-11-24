@@ -14,6 +14,7 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 
 from jiuwenswarm.agents.harness.common.multimodal import (
     augment_message_with_reference_lines,
+    collect_image_content_paths,
     collect_image_references_from_messages,
     collect_provided_image_paths,
     count_image_content_blocks,
@@ -26,10 +27,13 @@ from jiuwenswarm.agents.harness.common.multimodal import (
 )
 from jiuwenswarm.agents.harness.common.multimodal.image_history import (
     rewrite_orphan_attached_markers,
+    strip_image_content_from_messages,
 )
 from jiuwenswarm.agents.harness.common.rails.multimodal_image_state import (
     mark_native_images_sent,
     mark_provided_image_paths,
+    mark_unsafe_image_paths,
+    unsafe_image_paths,
 )
 from jiuwenswarm.common.utils import logger
 
@@ -38,6 +42,19 @@ from jiuwenswarm.common.utils import logger
 _IMAGE_STATE_ATTACHMENT_SECTION = "runtime.image_state"
 _IMAGE_STATE_ATTACHMENT_SOURCE = "jiuwenswarm.multimodal_image_rail"
 _IMAGE_STATE_SYNC_WINDOW_MUTATOR_ATTR = "_jiuwenswarm_multimodal_image_state_sync_mutator"
+
+# 图片被上游内容安全拦截的识别词法：同一异常文本需同时命中 image_url 与 unsafe，
+# 对应华为 AgentArts 的 "the content of image_url.url field is unsafe"。
+_IMAGE_UNSAFE_MARKERS = ("image_url", "unsafe")
+
+# 单次降级护栏：置位表示本 invoke 已摘图重试过一次。它同时是黑名单的"本轮保留"
+# 信号——before_model_call 只在未置位时清空请求级 unsafe 黑名单（见 N11）。
+_IMAGE_UNSAFE_STRIPPED_EXTRA_KEY = "_multimodal_image_unsafe_stripped"
+
+
+def _is_image_unsafe_error(exc: Any) -> bool:
+    msg = str(exc).lower()
+    return all(marker in msg for marker in _IMAGE_UNSAFE_MARKERS)
 
 
 class MultimodalImageRail(DeepAgentRail):
@@ -532,6 +549,15 @@ class MultimodalImageRail(DeepAgentRail):
             ctx is not None and ctx.context is not None,
             enabled,
         )
+        # 请求级黑名单的跨请求清理：新 invoke 的第一次模型调用从这里开始，
+        # 未发生摘图降级重试（guard 未置位）即视为新请求，清掉上一请求的残留。
+        # 降级重试会重跑本钩子，此时 guard 已置位，黑名单必须保留给 read_file 护栏。
+        extra = getattr(ctx, "extra", None)
+        if not (
+            isinstance(extra, dict)
+            and extra.get(_IMAGE_UNSAFE_STRIPPED_EXTRA_KEY)
+        ):
+            mark_unsafe_image_paths(ctx, [], agent=self._deep_agent)
         if ctx.context is None:
             logger.info("[MultimodalImageRail] skip install: ctx.context is None")
             self._mark_images_sent(ctx, 0)
@@ -594,6 +620,10 @@ class MultimodalImageRail(DeepAgentRail):
                     max_total_bytes=self._max_total_bytes,
                     max_visual_tokens=self._max_visual_tokens,
                     max_count=self._max_count,
+                    # 已被上游判 unsafe 的路径本轮不再物化（摘图重试后的自愈护栏）。
+                    blocked_paths=unsafe_image_paths(
+                        ctx=ctx, agent=self._deep_agent
+                    ) or [],
                 )
             except Exception as exc:  # pragma: no cover - 失败降级不阻断（N9）
                 logger.warning("[MultimodalImageRail] image injection failed: %s", exc)
@@ -692,6 +722,80 @@ class MultimodalImageRail(DeepAgentRail):
         logger.info(
             "[MultimodalImageRail] after_model_call final_window_images=%d", images_sent
         )
+
+    async def on_model_exception(self, ctx: AgentCallbackContext) -> None:
+        """图片被上游内容安全拦截时：摘除本轮窗口图片并降级为纯文本重试一次。
+
+        上游（华为 AgentArts 等）对扫描页 / 真题图等内容做安全审核，可能以 400
+        ``the content of image_url.url field is unsafe`` 拒绝整个请求——模型 0 chunk
+        结束、本轮任务直接失败且无产物。这里在异常路径识别该错误，把历史里的图片
+        块就地摘除、``attached`` 状态改写为 ``omitted: unsafe``（终态），然后
+        ``request_retry(0)`` 用纯文本窗口重发一次。重试时 ``before_model_call`` 的
+        注入因 ``omitted`` 状态行跳过同一路径、``get_context_window`` 从已摘图历史
+        重建，模型拿到纯文本继续任务。
+
+        同一 ctx 只降级重试一次（``ctx.extra`` 护栏）：重试仍失败则异常交上层，
+        避免无限重试。
+
+        摘图前先把「本轮已发出像素的图片路径」记为请求级黑名单
+        （``multimodal_image_state.mark_unsafe_image_paths``，ctx.extra + agent
+        属性）：摘图后 ``provided_paths`` 变为空，read_file 对同一张图的重复读会被
+        重新放行；若模型再次 read_file 同一张图，上游会二次 400，而护栏已置位 → 本轮
+        仍以 0 chunk 失败，与原 bug 症状相同。黑名单让 read_file / 引用行注入在同一次
+        invoke 内拒绝该路径（[[S_22]] N11），模型只能沿纯文本继续。
+        """
+
+        exc = getattr(ctx, "exception", None)
+        if exc is None or not _is_image_unsafe_error(exc):
+            return
+        if ctx.extra.get(_IMAGE_UNSAFE_STRIPPED_EXTRA_KEY):
+            return
+        ctx.extra[_IMAGE_UNSAFE_STRIPPED_EXTRA_KEY] = True
+
+        removed = 0
+        context = getattr(ctx, "context", None)
+        get_messages = getattr(context, "get_messages", None)
+        messages: list[Any] = []
+        if callable(get_messages):
+            try:
+                messages = list(get_messages())
+            except Exception:  # pragma: no cover - 读历史失败仍尝试重试一次
+                logger.warning(
+                    "[MultimodalImageRail] read messages after unsafe rejection failed",
+                    exc_info=True,
+                )
+        if messages:
+            try:
+                unsafe_paths = collect_image_content_paths(messages)
+            except Exception:  # pragma: no cover - 收集失败不阻断摘图 / 重试
+                unsafe_paths = []
+                logger.warning(
+                    "[MultimodalImageRail] collect unsafe image paths failed",
+                    exc_info=True,
+                )
+            if unsafe_paths:
+                mark_unsafe_image_paths(ctx, unsafe_paths, agent=self._deep_agent)
+                logger.info(
+                    "[MultimodalImageRail] blocked %d unsafe image path(s): %s",
+                    len(unsafe_paths),
+                    unsafe_paths,
+                )
+            try:
+                removed = strip_image_content_from_messages(
+                    messages, reason="unsafe"
+                )
+            except Exception:  # pragma: no cover - 摘图失败不阻断，仍尝试重试一次
+                logger.warning(
+                    "[MultimodalImageRail] strip image content after unsafe "
+                    "rejection failed",
+                    exc_info=True,
+                )
+        logger.info(
+            "[MultimodalImageRail] image_url unsafe rejected; stripped %d image "
+            "block(s), retrying text-only",
+            removed,
+        )
+        ctx.request_retry(delay_seconds=0)
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         """leader 给成员发消息时，把"只提了文件名 / 路径"的上传图补成引用行。

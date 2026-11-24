@@ -464,7 +464,7 @@ def _parse_stream_chunk(
                             ),
                             "任务执行失败",
                         )
-                    return {"event_type": "chat.error", "error": error or "任务执行失败"}
+                    return build_chat_error_event({}, error or "任务执行失败")
                 if inner_val == "task_interaction":
                     # native-harness ask_user interrupts
                     # surface here without __interaction__ payloads reaching

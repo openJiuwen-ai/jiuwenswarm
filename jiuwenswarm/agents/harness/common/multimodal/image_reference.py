@@ -419,6 +419,10 @@ _IMAGE_ATTACHED_LINE_RE = re.compile(r"^\[image #(\d+) attached\]$")
 # read_file 注入的像素块前面有一行路径说明（agent-core 生成），预算卸载时保留它，
 # 模型据此知道"这张图可以用 read_file 重新出图"。
 _READ_FILE_IMAGE_TEXT_RE = re.compile(r"^Image loaded from read_file:\s*(.+)$")
+# 同一路径说明行之后，像素块被预算卸载 / unsafe 摘除后留下的占位文本。两者相邻配对
+# 后视为该 read_file 图"已处理"，防止成员确定性分发按说明行里的路径重新补引用行、
+# 把已卸载的图再次物化（[[S_22]] N5 / N11）。
+_IMAGE_OMITTED_TEXT_RE = re.compile(r"^\[image omitted(?::[^\]]*)?\]$")
 
 
 def _build_image_state_line(index: int, state: str, reason: str = "") -> str:

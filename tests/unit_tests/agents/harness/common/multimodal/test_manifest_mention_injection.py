@@ -166,6 +166,70 @@ def test_duplicate_omitted_image_is_not_rematerialized() -> None:
     assert _plain(messages[0]) == before
 
 
+def test_stripped_read_file_image_is_not_referenced_again(tmp_path) -> None:
+    """read_file 图被摘图后：路径说明行 + omitted 占位应视为已处理（CR-2）。
+
+    摘图后 ``[image omitted: unsafe]`` 不是引用行 + 状态行对，若只按后者判定，
+    成员侧确定性分发会把说明行里的路径当成未处理清单图重新补引用行、再次物化。
+    路径用 ``tmp_path`` 拼接，确保 POSIX / Windows 下说明行与清单路径分隔符一致。
+    """
+
+    image_path = tmp_path / "3.jpg"
+    manifest = [
+        {
+            "type": "image",
+            "path": str(image_path),
+            "filename": "3.jpg",
+            "mime_type": "image/jpeg",
+            "size_bytes": 222,
+        }
+    ]
+    messages = [
+        _user("任务"),
+        {
+            "role": "tool",
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"Image loaded from read_file: {image_path}",
+                },
+                {"type": "text", "text": "[image omitted: unsafe]"},
+            ],
+        },
+    ]
+    before = _plain(messages[0])
+
+    assert ensure_manifest_images_referenced(messages, manifest) == 0
+    assert _plain(messages[0]) == before
+    assert "[image #1]" not in _plain(messages[0])
+
+
+def test_budget_evicted_read_file_image_is_not_referenced_again(tmp_path) -> None:
+    """预算卸载留下的 ``omitted: request budget`` 占位同样算终态。"""
+
+    image_path = tmp_path / "3.jpg"
+    manifest = [
+        {
+            "type": "image",
+            "path": str(image_path),
+            "filename": "3.jpg",
+            "mime_type": "image/jpeg",
+            "size_bytes": 222,
+        }
+    ]
+    messages = [
+        _user("任务"),
+        _tool(
+            f"Image loaded from read_file: {image_path}\n"
+            "[image omitted: request budget]"
+        ),
+    ]
+    before = _plain(messages[0])
+
+    assert ensure_manifest_images_referenced(messages, manifest) == 0
+    assert _plain(messages[0]) == before
+
+
 # ---------------------------------------------------------------------------
 # CR-9634-2：提及判定边界（裸子串会误命中更长的文件名 / 不同路径）
 # ---------------------------------------------------------------------------

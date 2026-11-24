@@ -151,3 +151,38 @@ def test_typed_answer_error_without_code_has_no_code() -> None:
     )
     parsed = parse_stream_chunk(chunk)
     assert parsed == {"event_type": "chat.error", "error": "模型未返回有效内容"}
+
+
+# ── image_url unsafe 兜底分类 ──────────────────────────────────────────────
+
+_IMAGE_UNSAFE_MSG = (
+    "[181001] model call failed, reason: openAI API async stream error: "
+    "BadRequestError: Error code: 400 - the content of image_url.url field is unsafe"
+)
+
+
+def test_build_chat_error_event_attaches_image_unsafe_code() -> None:
+    ev = build_chat_error_event({}, _IMAGE_UNSAFE_MSG)
+    assert ev == {
+        "event_type": "chat.error",
+        "error": _IMAGE_UNSAFE_MSG,
+        "code": "image_url_unsafe",
+    }
+
+
+def test_build_chat_error_event_no_code_for_unrelated_error() -> None:
+    ev = build_chat_error_event({}, "some other error")
+    assert ev == {"event_type": "chat.error", "error": "some other error"}
+
+
+def test_task_failed_chunk_attaches_image_unsafe_code() -> None:
+    chunk = SimpleNamespace(
+        type="controller_output",
+        payload={"type": "task_failed", "data": [{"text": _IMAGE_UNSAFE_MSG}]},
+    )
+    parsed = parse_stream_chunk(chunk)
+    assert parsed == {
+        "event_type": "chat.error",
+        "error": _IMAGE_UNSAFE_MSG,
+        "code": "image_url_unsafe",
+    }
