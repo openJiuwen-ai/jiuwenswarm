@@ -1079,10 +1079,11 @@ async def test_handle_command_mcp_add_probe_fails_rolls_back(server, fake_ws, mo
 
     monkeypatch.setattr(server.get_agent_manager(), "probe_mcp_live_connection", _probe_fail)
 
-    rolled_back = {"name": None}
+    rolled_back = {"name": None, "wipe": None}
 
-    def _rollback(name):
+    def _rollback(name, *, wipe_credentials=True):
         rolled_back["name"] = name
+        rolled_back["wipe"] = wipe_credentials
 
     monkeypatch.setattr(registry_mod, "rollback_failed_connect", _rollback)
 
@@ -1107,6 +1108,8 @@ async def test_handle_command_mcp_add_probe_fails_rolls_back(server, fake_ws, mo
 
     await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
     assert rolled_back["name"] == "demo", "probe failure must roll back the record"
+    # handshake timeout is network-class — credentials must be kept (JW-79)
+    assert rolled_back["wipe"] is False
     assert called["reload"] == 0, "reload must not run when probe fails"
     assert fake_ws.sent == [
         {

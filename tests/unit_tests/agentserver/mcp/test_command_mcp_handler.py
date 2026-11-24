@@ -881,7 +881,11 @@ class TestHandleMcpConnect:
             return_value=fake_entry,
         ), patch(
             "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
-            side_effect=lambda n: rolled_back.append(n),
+            # stdio command-missing is a local env failure, not a proven auth
+            # rejection → wipe_credentials=False (JW-79 classification).
+            side_effect=lambda n, *, wipe_credentials=True: rolled_back.append(
+                (n, wipe_credentials)
+            ),
         ):
             await _call(server, "handle_mcp_connect", ws, request, asyncio.Lock())
         payload = _extract_payload(json.loads(ws.sent[0]))
@@ -889,7 +893,8 @@ class TestHandleMcpConnect:
         assert payload["code"] == "MCP_UNREACHABLE"
         assert payload["error"] == "MCP live-connect probe failed"
         assert probed == ["context7"]  # stdio was probed at connect time
-        assert rolled_back == ["context7"]  # entry rolled back
+        # entry rolled back; env failure keeps credentials (JW-79)
+        assert rolled_back == [("context7", False)]
         assert len(applied) == 0
 
     @pytest.mark.anyio
