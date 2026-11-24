@@ -2,7 +2,7 @@
 <html lang="zh-CN" data-theme="default" data-color-mode="light">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/logo.svg" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f5f7f9" />
     <meta name="workswarm-iframe-host-isolation" content="__JIUWEN_IFRAME_HOST_ISOLATION_VALUE__" />
@@ -66,7 +66,9 @@
           var favicon = asset(identity.favicon);
           var link = document.querySelector('link[rel="icon"]');
           if (favicon && link) {
-            link.removeAttribute('type');
+            var suffix = favicon.split(/[?#]/, 1)[0].toLowerCase().match(/\.(png|svg|webp|gif)$/);
+            if (suffix) link.type = suffix[1] === 'svg' ? 'image/svg+xml' : 'image/' + suffix[1];
+            else link.removeAttribute('type');
             link.href = favicon;
           }
         } catch (error) {

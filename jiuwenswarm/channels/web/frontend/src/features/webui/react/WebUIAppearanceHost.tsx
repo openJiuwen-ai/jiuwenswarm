@@ -9,10 +9,11 @@ import { APPEARANCE_PROVIDER_KEY, writeItem } from '../splash/launch.ts';
 import type { WebUIAppearanceSnapshot } from '../appearance/appearance.ts';
 import type { WebUIRuntime } from '../runtime/types.ts';
 import { useOptionalWebUIAppContext } from './WebUIProvider.tsx';
-import { AppearanceBrandContext, DEFAULT_BRAND_LOGO, DEFAULT_BRAND_NAME, useBrandIdentity } from './appearanceBrand.tsx';
+import { AppearanceBrandContext, DEFAULT_BRAND_NAME, useBrandIdentity } from './appearanceBrand.tsx';
 
 const noopSubscribe = (): (() => void) => () => undefined;
 const noAppearance = (): WebUIAppearanceSnapshot | null => null;
+const DEFAULT_FAVICON = '/favicon.png';
 
 export interface WebUIAppearanceHostProps {
   /** 测试或特殊宿主的注入点；生产环境由 WebUIProvider 提供。 */
@@ -21,27 +22,27 @@ export interface WebUIAppearanceHostProps {
 
 /** Point the tab icon at `href`, or at the host icon when the image cannot be loaded. */
 export function setFavicon(doc: Document, href: string): () => void {
-  let link = doc.querySelector<HTMLLinkElement>('link[rel="icon"]');
-  if (!link) {
-    link = doc.createElement('link');
-    link.rel = 'icon';
-    doc.head.append(link);
-  }
-  const target = link;
-  if (href === DEFAULT_BRAND_LOGO || typeof Image === 'undefined') {
-    target.removeAttribute('type');
-    target.href = href;
-    return () => undefined;
-  }
   let current = true;
-  const probe = new Image();
   const use = (value: string) => {
     if (!current) return;
-    target.removeAttribute('type');
-    target.href = value;
+    const previous = doc.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    const suffix = value.split(/[?#]/, 1)[0].toLowerCase().match(/\.(png|svg|webp|gif)$/)?.[1];
+    const type = suffix === 'svg' ? 'image/svg+xml' : suffix ? `image/${suffix}` : '';
+    if (previous?.getAttribute('href') === value && previous.type === type) return;
+    const link = doc.createElement('link');
+    link.rel = 'icon';
+    if (type) link.type = type;
+    link.href = value;
+    if (previous) previous.replaceWith(link);
+    else doc.head.append(link);
   };
+  if (href === DEFAULT_FAVICON || typeof Image === 'undefined') {
+    use(href);
+    return () => undefined;
+  }
+  const probe = new Image();
   probe.onload = () => use(href);
-  probe.onerror = () => use(DEFAULT_BRAND_LOGO);
+  probe.onerror = () => use(DEFAULT_FAVICON);
   probe.src = href;
   return () => { current = false; };
 }
@@ -49,7 +50,7 @@ export function setFavicon(doc: Document, href: string): () => void {
 /** Show the host brand in the tab; index.html may have applied a recorded identity. */
 export function resetTabBrand(doc: Document): void {
   doc.title = DEFAULT_BRAND_NAME;
-  setFavicon(doc, DEFAULT_BRAND_LOGO);
+  setFavicon(doc, DEFAULT_FAVICON);
 }
 
 export function WebUIAppearanceHost({ runtime: runtimeOverride }: WebUIAppearanceHostProps) {
@@ -83,7 +84,7 @@ export function WebUIAppearanceHost({ runtime: runtimeOverride }: WebUIAppearanc
     if (branded) document.title = identity?.name ?? DEFAULT_BRAND_NAME;
   }, [branded, identity?.name]);
   useEffect(
-    () => (branded ? setFavicon(document, identity?.favicon ?? DEFAULT_BRAND_LOGO) : undefined),
+    () => (branded ? setFavicon(document, identity?.favicon ?? DEFAULT_FAVICON) : undefined),
     [branded, identity?.favicon],
   );
 

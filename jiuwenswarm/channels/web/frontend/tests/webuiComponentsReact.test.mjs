@@ -65,7 +65,7 @@ const {
   WebUIPageHost,
   WebUIBackgroundHost,
   ApplicationPresentationHost, SystemPluginRecoverySettings,
-  WebUIAppearanceHost, appearanceModule, splashModule, brandModule, WebUISplashGate,
+  setFavicon, WebUIAppearanceHost, appearanceModule, splashModule, brandModule, WebUISplashGate,
   WelcomeHeading, WelcomeMascot, BEE_ANIMATION_DURATION, SidebarBrandLogo,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
@@ -4841,6 +4841,40 @@ test('WebUISplashGate shows the recorded brand, then the providers\' parts, and 
   });
 });
 
+test('tab icons replace the active link after loading and ignore obsolete image requests', () => {
+  const doc = document.implementation.createHTMLDocument();
+  const originalImage = globalThis.Image;
+  const probes = [];
+  globalThis.Image = class {
+    constructor() { probes.push(this); }
+  };
+  const tabIcon = () => doc.head.querySelector('link[rel="icon"]');
+  try {
+    setFavicon(doc, '/favicon.png');
+    const initial = tabIcon();
+    assert.equal(initial.type, 'image/png');
+    const stale = '/extension-assets/pkg.theme/g/old.svg';
+    const current = '/extension-assets/pkg.theme/g/favicon.png?content=2';
+    const cancel = setFavicon(doc, stale);
+    cancel();
+    setFavicon(doc, current);
+    assert.equal(tabIcon(), initial, 'the displayed icon stays in place while the new one loads');
+    probes[1].onload();
+    assert.notEqual(tabIcon(), initial);
+    assert.equal(tabIcon().getAttribute('href'), current);
+    assert.equal(tabIcon().type, 'image/png');
+    probes[0].onload();
+    assert.equal(tabIcon().getAttribute('href'), current, 'a cancelled load cannot replace the active icon');
+    setFavicon(doc, '/extension-assets/pkg.theme/g/missing.png');
+    probes[2].onerror();
+    assert.equal(tabIcon().getAttribute('href'), '/favicon.png');
+    assert.equal(doc.head.querySelectorAll('link[rel="icon"]').length, 1);
+  } finally {
+    if (originalImage === undefined) delete globalThis.Image;
+    else globalThis.Image = originalImage;
+  }
+});
+
 test('a brand image falls back to the host image once it fails to load', async () => {
   function Logo({ src }) {
     const image = brandModule.useBrandImage(src, brandModule.DEFAULT_BRAND_LOGO);
@@ -4864,6 +4898,29 @@ test('a brand image falls back to the host image once it fails to load', async (
   }
 });
 
+test('the standalone login logo uses a valid saved brand and falls back if the asset fails', async () => {
+  function LoginLogo() {
+    const image = brandModule.useWorkSwarmLogo(true);
+    return createElement('img', { src: image.src, onError: image.onError });
+  }
+  await withBrandRecords(async () => {
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    const logo = () => container.querySelector('img');
+    try {
+      const saved = '/extension-assets/pkg.logo/g1/logo.svg';
+      window.localStorage.setItem(splashModule.APPEARANCE_IDENTITY_KEY, JSON.stringify({ logo: saved }));
+      await act(async () => root.render(createElement(LoginLogo)));
+      assert.equal(logo().getAttribute('src'), saved);
+      await act(async () => logo().dispatchEvent(new window.Event('error')));
+      assert.equal(logo().getAttribute('src'), '/logo.svg');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+});
+
 /** Runs the first-paint script of index.html over a full neutral layer and a tab icon. */
 function firstPaint() {
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -4872,7 +4929,7 @@ function firstPaint() {
   const neutral = document.createElement('div'); neutral.id = 'workswarm-neutral';
   neutral.innerHTML = '<img src="/logo.svg" alt="" /><div class="workswarm-neutral__name">WorkSwarm</div>';
   document.body.append(neutral);
-  const icon = document.createElement('link'); icon.rel = 'icon'; icon.setAttribute('type', 'image/png'); icon.href = '/logo.svg';
+  const icon = document.createElement('link'); icon.rel = 'icon'; icon.type = 'image/png'; icon.href = '/favicon.png';
   document.head.prepend(icon);
   const title = document.title;
   try {
@@ -4884,6 +4941,7 @@ function firstPaint() {
       logo: neutral.querySelector('img').getAttribute('src'),
       title: document.title,
       icon: icon.getAttribute('href'),
+      iconType: icon.type,
     };
   } finally {
     neutral.remove();
@@ -4898,7 +4956,9 @@ test('the first-paint script keeps the neutral layer for the appearance wait and
     try {
       openTab();
       window.localStorage.setItem(splashModule.SPLASH_EXPECTED_KEY, '0');
-      assert.deepEqual(firstPaint(), { kept: false, name: 'WorkSwarm', logo: '/logo.svg', title: document.title, icon: '/logo.svg' });
+      assert.deepEqual(firstPaint(), {
+        kept: false, name: 'WorkSwarm', logo: '/logo.svg', title: document.title, icon: '/favicon.png', iconType: 'image/png',
+      });
       window.localStorage.setItem(splashModule.APPEARANCE_EXPECTED_KEY, '1');
       assert.equal(firstPaint().kept, true, 'a page that expects appearance providers keeps the layer');
 
@@ -4907,7 +4967,7 @@ test('the first-paint script keeps the neutral layer for the appearance wait and
       }));
       assert.deepEqual(firstPaint(), {
         kept: true, name: 'Acme', logo: '/extension-assets/pkg.logo/g1/logo.svg', title: 'Acme',
-        icon: '/extension-assets/pkg.logo/g1/icon.png',
+        icon: '/extension-assets/pkg.logo/g1/icon.png', iconType: 'image/png',
       });
       window.localStorage.setItem(splashModule.APPEARANCE_EXPECTED_KEY, '0');
       const removed = firstPaint();
@@ -4919,7 +4979,7 @@ test('the first-paint script keeps the neutral layer for the appearance wait and
         logo: 'https://example.com/logo.svg', favicon: 'javascript:alert(1)',
       }));
       const foreign = firstPaint();
-      assert.deepEqual([foreign.logo, foreign.icon], ['/logo.svg', '/logo.svg'], 'only package asset paths are used');
+      assert.deepEqual([foreign.logo, foreign.icon], ['/logo.svg', '/favicon.png'], 'only package asset paths are used');
       window.localStorage.setItem(splashModule.APPEARANCE_IDENTITY_KEY, '{broken');
       assert.equal(firstPaint().kept, true, 'an unreadable record leaves the layer to the expectation');
     } finally {

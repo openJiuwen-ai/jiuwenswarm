@@ -24,7 +24,7 @@ export { createMockTransport } from '../../src/features/webui/transport/index.ts
 export { WebUIHost } from '../../src/features/webui/react/WebUIHost.tsx';
 export { WebUIEntryHost } from '../../src/features/webui/react/WebUIEntryHost.tsx';
 export { WebUIBackgroundHost } from '../../src/features/webui/react/WebUIBackgroundHost.tsx';
-export { WebUIAppearanceHost } from '../../src/features/webui/react/WebUIAppearanceHost.tsx';
+export { setFavicon, WebUIAppearanceHost } from '../../src/features/webui/react/WebUIAppearanceHost.tsx';
 export * as appearanceModule from '../../src/features/webui/appearance/index.ts';
 export * as splashModule from '../../src/features/webui/splash/index.ts';
 export * as brandModule from '../../src/features/webui/react/appearanceBrand.tsx';
