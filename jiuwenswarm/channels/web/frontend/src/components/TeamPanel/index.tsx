@@ -227,7 +227,6 @@ export function TeamPanel({ onSessionsDeleted }: TeamPanelProps) {
       setError(null);
     } catch (loadError) {
       console.error('Failed to load teams:', loadError);
-      setTeams([]);
       setError(t('teams.errors.loadTeams'));
     } finally {
       setLoadingTeams(false);
