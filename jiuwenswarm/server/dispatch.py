@@ -76,6 +76,7 @@ from jiuwenswarm.server.handlers.mcp_hub import (
     handle_mcp_register_custom,
     handle_mcp_save_credentials,
     handle_mcp_show,
+    handle_mcp_sources_providers,
     handle_mcp_uninstall,
     handle_mcp_wait_auth,
 )
@@ -194,6 +195,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.MCP_LIST: handle_mcp_list,
     ReqMethod.MCP_SHOW: handle_mcp_show,
     ReqMethod.MCP_INSTALL: handle_mcp_install,
+    ReqMethod.MCP_SOURCES_PROVIDERS: handle_mcp_sources_providers,
     ReqMethod.MCP_UNINSTALL: handle_mcp_uninstall,
     ReqMethod.MCP_CONNECT: handle_mcp_connect,
     ReqMethod.MCP_WAIT_AUTH: handle_mcp_wait_auth,

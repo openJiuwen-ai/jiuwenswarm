@@ -22,7 +22,7 @@ from .app_market.market_service import MarketService
 from .app_market.models import AppManifest, normalize_app_version
 from .app_market.run_consent import RunConsentStore
 from .app_market.storage import MarketStorage
-from .editor_sessions import AppEditorSessions, EditorSessionError
+from .editor_sessions import AppEditorSessions, CoreRequest, EditorSessionError
 from .resources import AppServiceResources, SystemResources
 
 logger = logging.getLogger(__name__)
@@ -326,7 +326,12 @@ class AppMarketManager:
             except OSError:
                 # The manifest is authoritative once converted.
                 logger.warning("Could not clear the old Hub metadata for %s", app_id, exc_info=True)
-            return {"app_id": app_id, "name": manifest.name, "version": manifest.version}
+            return {
+                "app_id": app_id,
+                "name": manifest.name,
+                "version": manifest.version,
+                "project_id": manifest.project_id,
+            }
 
     @staticmethod
     def _created_at_key(app: AppManifest) -> datetime:
@@ -379,6 +384,17 @@ class AppMarketManager:
                 for a in apps
             ]
         }
+
+    def get_editor_app(self, session_id: str, owner_id: str) -> dict[str, Any] | None:
+        """Resolve an editor's preview without listing other session bindings."""
+        for app in self._service.list_apps():
+            if app.owner_id == owner_id and session_id in app.iter_editor_session_ids():
+                return {
+                    "app_id": app.app_id,
+                    "name": app.name,
+                    "startup_timeout_seconds": app.startup_timeout_seconds,
+                }
+        return None
 
     def set_app_pinned(self, app_id: str, owner_id: str = "", pinned: bool = False) -> dict[str, Any]:
         """Pin or unpin one registration; the list order is recomputed on read."""
@@ -452,12 +468,18 @@ class AppMarketManager:
         app_id: str,
         owner_id: str = "",
         run_consent: dict[str, Any] | None = None,
-        project_request: Any = None,
+        project_request: CoreRequest | None = None,
     ) -> dict[str, Any] | None:
         self._reject_active_job(app_id)
         async with self._operation_lock(app_id):
             self._reject_active_job(app_id)
             manifest = self._service.get_app(app_id)
+            if manifest is not None and manifest.owner_id and manifest.owner_id != owner_id:
+                # Empty owner is the local single-user identity, so a local app
+                # that records an owner stays startable there. Enterprise
+                # deployments keep the strict ownership rule.
+                if owner_id or _owner_identity_required():
+                    raise AppMarketError("permission_denied", "Application belongs to another user")
             if manifest is not None and manifest.source == "hub":
                 # Empty owner is the local single-user identity; an app owned by
                 # a named user still requires that exact identity.
@@ -476,7 +498,22 @@ class AppMarketManager:
                 ) != (owner_id, manifest.work_dir, manifest.version, manifest.artifact_sha256):
                     raise AppMarketError("app_operation_conflict", "Application install state is incomplete")
                 self._require_run_consent(app_id, owner_id, run_consent)
-            await self._ensure_runtime_project(app_id, project_request)
+            if manifest is not None:
+                if not manifest.work_dir or not Path(manifest.work_dir).is_dir():
+                    raise AppMarketError("app_work_dir_missing", "Application working directory is missing")
+                previous_context = (manifest.project_id, manifest.project_dir, manifest.project_work_mode)
+                await self.bind_app_project(manifest, project_request)
+                current_context = (manifest.project_id, manifest.project_dir, manifest.project_work_mode)
+                if current_context != previous_context:
+                    for active in self._service.list_instances(app_id):
+                        if active.state in ("starting", "running", "stopping"):
+                            if not await self._service.stop_app(active.instance_id):
+                                raise AppMarketError("app_operation_conflict", "Could not restart the application")
+                    latest = self.storage.load_manifest(app_id)
+                    if latest is None or latest.owner_id != manifest.owner_id or latest.work_dir != manifest.work_dir:
+                        raise AppMarketError("app_operation_conflict", "Application changed while binding its project")
+                    latest.project_id, latest.project_dir, latest.project_work_mode = current_context
+                    self.storage.save_manifest(app_id, latest)
             instance = await self._service.start_app(app_id, owner_id=owner_id)
         if instance is None or instance.state != "running":
             return None
@@ -518,19 +555,12 @@ class AppMarketManager:
         if not self._consents.has(owner_id, app_id, expected):
             raise RunConsentRequired(manifest.artifact_sha256)
 
-    async def _ensure_runtime_project(self, app_id: str, request: Any) -> None:
-        """Ensure a project-bound app has its project before the process starts.
-
-        Pure static apps never reach this path, so installation stays cheap.
-        """
-        manifest = self._service.get_app(app_id)
-        if manifest is None or not manifest.requires_project:
-            return
+    async def bind_app_project(self, manifest: AppManifest, request: CoreRequest | None) -> None:
+        """Resolve or create the project and set its binding on the manifest."""
         if request is None:
-            raise AppMarketError(
-                "app_project_unavailable",
-                "This application requires a project but none is bound",
-            )
+            if self._service.has_project_binding(manifest):
+                return
+            raise AppMarketError("app_project_unavailable", "Application project binding is missing")
 
         async def call(method: Any, params: dict[str, Any]) -> dict[str, Any]:
             ok, payload = await request(method, params)
@@ -547,12 +577,11 @@ class AppMarketManager:
         manifest.project_dir = str(
             match.get("project_dir") or Path(manifest.work_dir).expanduser().resolve()
         ).strip()
-        if not manifest.project_id or not manifest.project_work_mode:
+        if not self._service.has_project_binding(manifest):
             raise AppMarketError(
                 "app_project_unavailable",
-                "Project resolution did not return a project id and work mode",
+                "Project resolution did not return an available project",
             )
-        self._service.storage.save_manifest(app_id, manifest)
 
     # ── Hub 应用市场 ──────────────────────────────────────
 
@@ -707,6 +736,7 @@ class AppMarketManager:
         install_dir: str = "",
         owner_id: str = "",
         expected_sha256: str = "",
+        project_request: CoreRequest | None = None,
     ) -> dict[str, Any]:
         from .hub_install import app_install_id, default_install_root
 
@@ -717,6 +747,14 @@ class AppMarketManager:
         port = self._hub_port()
         hub_url = str(getattr(port, "base_url", "") or "")
         app_id = app_install_id(asset_id, owner_id, hub_url)
+        active = self._active_job(app_id)
+        if active is not None:
+            return {
+                "job_id": active.job_id,
+                "state": active.state,
+                "app_id": app_id,
+                "already_installed": False,
+            }
         existing = self._service.get_app(app_id)
         if existing is not None:
             if existing.source == "local":
@@ -738,14 +776,6 @@ class AppMarketManager:
                 "install_path_conflict",
                 "The application is already installed; uninstall it or update in place",
             )
-        active = self._active_job(app_id)
-        if active is not None:
-            return {
-                "job_id": active.job_id,
-                "state": active.state,
-                "app_id": app_id,
-                "already_installed": False,
-            }
         if install_dir.strip() and not Path(install_dir).expanduser().is_absolute():
             raise AppMarketError("install_path_conflict", "Install root must be an absolute path")
         root = (
@@ -764,6 +794,7 @@ class AppMarketManager:
                 version=version,
                 install_dir=root,
                 expected_sha256=expected_sha256,
+                project_request=project_request,
             )
         )
         return {"job_id": job.job_id, "state": job.state, "app_id": app_id}
@@ -867,8 +898,15 @@ class AppMarketManager:
         version: str,
         install_dir: Path,
         expected_sha256: str,
+        project_request: CoreRequest | None,
     ) -> None:
         from .hub_install import AppInstallError, install_hub_app
+
+        committed_result: dict[str, Any] | None = None
+
+        def remember_commit(result: dict[str, Any]) -> None:
+            nonlocal committed_result
+            committed_result = result
 
         job.state = "running"
         job.phase = "resolving"
@@ -886,14 +924,21 @@ class AppMarketManager:
                     cancelled=lambda: job.cancel_requested,
                     operation_dir=self._operation_dir,
                     job_id=job.job_id,
+                    project_request=project_request,
+                    on_committed=remember_commit,
                 )
             job.state = "done"
             job.phase = "done"
             job.cancellable = False
             job.result = result
         except asyncio.CancelledError:
-            job.state = "cancelled"
-            job.phase = "cancelled"
+            if committed_result is None:
+                job.state = "cancelled"
+                job.phase = "cancelled"
+            else:
+                job.state = "done"
+                job.phase = "done"
+                job.result = committed_result
             job.cancellable = False
             raise
         except AppInstallError as exc:
@@ -904,6 +949,11 @@ class AppMarketManager:
                 job.state = "failed"
                 job.error_code = exc.code
                 job.error = str(exc)
+            job.cancellable = False
+        except AppMarketError as exc:
+            job.state = "failed"
+            job.error_code = exc.code
+            job.error = str(exc)
             job.cancellable = False
         except Exception as exc:  # noqa: BLE001
             logger.exception("Hub app install failed: app_id=%s", job.app_id)

@@ -294,6 +294,11 @@ function ConversationListItem({
         >
           {title}
         </span>
+        {session.npc_session && (
+          <span className="shrink-0 text-xs text-text-muted" data-testid="multi-session-conversation-list-item-npc">
+            {t('chat.npcSessionLabel')}
+          </span>
+        )}
         <span
           className="conversation-list-item__meta"
           data-testid="multi-session-conversation-list-item-status"

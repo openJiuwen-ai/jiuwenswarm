@@ -6,7 +6,7 @@ import asyncio
 import json
 from copy import deepcopy
 from types import MethodType, SimpleNamespace, new_class
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool as before_tool_module
 import jiuwenswarm.agents.harness.common.rails.permissions.tool_binding as tool_binding_module
@@ -250,7 +250,11 @@ async def test_real_core_nested_permission_resume(tmp_path, case, target_name):
         ))
         assert executed == ([0] if case == "allow" else [])
         markers = prepared["run"]["context"]["extra"][ROOT_PERMISSION_WRAPPERS_KEY]
-        assert all(marker.consumed for marker in markers)
+        # Core only replays the answered wrapper. The other call stays paused.
+        assert {marker.tool_call.id: marker.consumed for marker in markers} == {
+            "outer-0": True, "outer-1": False,
+        }
+        assert ("resume", "outer-1") not in callbacks
         if case in {"allow", "reject"}:
             remaining = queue.reconcile(resumed, root_session_id="session-a").cards
             assert len(remaining) == 1 and remaining[0].key == cards[1].key
@@ -847,7 +851,9 @@ def test_readonly_binding_rejects_unverified_dependencies(tmp_path, monkeypatch,
     elif defect == "card":
         monkeypatch.setattr(tool, "_card", deepcopy(card))
     elif defect == "lookup":
-        monkeypatch.setattr(tool_binding_module.Runner.resource_mgr, "get_tool", lambda *a, **k: 1 / 0)
+        monkeypatch.setattr(
+            tool_binding_module.Runner.resource_mgr, "get_tool", Mock(side_effect=RuntimeError("lookup failed")),
+        )
     elif defect == "code":
         monkeypatch.setattr(tool, "_func", lambda **kwargs: None)
     elif defect == "invoke_proxy":

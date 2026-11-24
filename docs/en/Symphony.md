@@ -92,11 +92,49 @@ After Skill Retrieval finds relevant skills, the agent narrows the candidate set
 
 | Tool | What it does | When to use |
 |------|--------------|-------------|
-| `symphony_read_graph` | Checks whether the skill graph exists and whether it is stale | Before orchestration, when the current graph state needs to be known |
-| `symphony_refresh_graph` | Extracts installed-skill features and refreshes the skill graph | When the graph is missing, stale, or skills were newly installed or changed |
-| `symphony_compose_graph` | Main orchestration entry. Builds an execution graph from the task goal, candidate skills, and skill graph | When the user asks to use skills, or the task needs a skill chain, skill ordering, or a specialized tool chain |
+| `symphony_read_graph` | Checks whether the Skill relationship graph is available and up to date | When the graph's current state needs to be known |
+| `symphony_refresh_graph` | Refreshes the Skill relationship graph | When the graph is missing, stale, or installed Skills have changed |
+| `symphony_compose_graph` | Plans how to complete the task with available capabilities. `type=auto` is the default; `candidate_ids` supplies shortlisted candidates. | When orchestration is requested or complex work needs planning |
+
+The agent can call `symphony_compose_graph` directly when progressive tool loading is enabled.
+
+The main agent calls `symphony_compose_graph` when planning is needed and normally omits `type`. Automatic planning selects a suitable execution strategy for that invocation. Use explicit `skill` or `expert` only when the user requests a Skill workflow or expert task assignments. Ordinary conversation does not trigger planning ahead of every new task, and automatic plans are not cached.
+
+| strategy | Execution | Graph |
+| --- | --- | --- |
+| `direct_answer` | Answer from known context | None |
+| `single_capability` | One Skill or existing tool | None |
+| `capability_workflow` | Main agent coordinates Skills/tools | Skill graph for pure Skill workflows; main-agent execution for tool or mixed workflows |
+| `single_expert` | One installed expert or temporary role | One expert task node |
+| `multi_expert` | Complementary, dependent, isolated or parallel expert work | Expert task DAG |
+
+Automatic planning selects the simplest strategy sufficient to complete the task. Multiple steps alone do not require multiple experts, and one Skill may use several tools. When the tool returns a `planned_graph`, the main agent follows its nodes and dependencies. On success without a graph, the main agent continues the task directly using the available capabilities.
+
+With automatic planning, supplied `candidate_ids` restrict selection to those candidates that are currently visible and available. Omit the field to select from visible capabilities. Empty or invalid IDs do not fall back to the full catalog. Candidates are optional choices, not mandatory assignments, and may identify Skills, installed experts or existing tools. Expert strategies can still use temporary roles.
+
+Planning uses the current session model, the original task and material supplied through `inputs`. The host supplies capability scope and necessary requirements without copying conversation history or the full system prompt. Code controls expert availability; disabling experts excludes both installed experts and temporary roles. Skill workflows use a Skill graph; expert plans need neither a Skill graph nor installed experts. Results appear in tool messages and flowcharts. Plan mode does not dispatch expert nodes, and existing permissions still apply.
+
+Both planners return `ready` for a valid DAG and `no_plan` when they cannot form a plan. The host agent checks the nodes' declared inputs, outputs, dependencies and `missing_inputs` against the material available in the session. It can run independent branches, obtain missing material or ask the user when their input is necessary.
+
+With a Core version that supports named planning inputs, the optional `inputs` list passes material already available to either planner. Each entry has a unique `name`, a `kind` of `text` or `file`, a string `value`, and an optional `description`. A file value is a readable workspace path. The main agent can pass a fact sheet by reference so a delegated node can read it using its workspace tools.
 
 Skill Orchestration builds a skill chain from the original task, retrieved candidate skills, and their connectable relationships. If the result says no suitable skill is available, install the required skill from the **Skills** page, refresh the skill graph, and compose again.
+
+Core can select expert assignments when specialist working rules, context isolation, complementary roles or independent verification provide a clear benefit. With `type=expert`, one task plan can assign work to installed experts from the published expert layer and to temporary inline roles. Prior retrieval and a matching installed expert are optional: the plan may consist entirely of inline roles. The planner follows the session's mode. Each node represents a task, and the tool result records each deliverable and its destination input. The Web flowchart draws one arrow per directed dependency, which can carry multiple deliverables.
+
+To give the host examples of work suited to specialists, set `SYMPHONY_EXPERT_DOMAIN_HINTS` in your instance’s `.env` to a comma-separated list of domains. The host prompt keeps complete entries in order up to 160 Unicode characters, including spaces and separators. Leave it empty to omit the examples. The host can also plan work in other domains.
+
+The main agent uses retrieval tools when requested and calls composition on demand, omitting type by default. If the user requires a particular installed expert that is unavailable, the agent reports that limitation instead of silently replacing it with an inline role.
+
+An expert plan can include a valid DAG and notes about missing material. The `ready` status means the graph passed structural validation. In a single-agent work session, a request to complete the task requires the main agent to dispatch applicable plan nodes through `task_tool` with the plan ID and node ID, then dispatch downstream nodes as their dependencies complete. The main agent must not treat the plan as a reference and take over its assignments. Planning-only requests and Plan mode show the plan without executing it. Missing material is advisory: the agent obtains genuine prerequisites, continues unaffected branches, and reports concrete blockers. If plan dispatch is unavailable, it explains the limitation.
+
+The main agent trusts completed expert and inline-role outputs by default and uses them for downstream tasks and final delivery. It coordinates the work, checks acceptance criteria, and integrates the results. Independent verification follows the plan's review node. A concrete error, missing deliverable, conflicting evidence, or failed acceptance criterion calls for a targeted check or correction that preserves valid results. Speculation about quality, consistency, or execution time does not justify redoing the experts' work.
+
+Inline roles run as temporary general-purpose agents. Installed native experts run with their template's persona, skills, and tools. Up to five independent nodes can run in parallel. Swarm passes completed outputs to dependent tasks and reports failed or blocked nodes to the main agent.
+
+Each subagent card shows its node's `task` text. A running node receives the original request, its task, the supplied material it references, and upstream outputs.
+
+Cards for installed experts show the package's display name and avatar. The name follows the interface language and falls back to the package name. An unavailable avatar falls back to the default illustration. History for new runs shows the name and avatar captured at dispatch.
 
 ---
 
@@ -257,6 +295,10 @@ After seeing the route, you can respond in one of these ways:
 
 > **Tip:** Skill Orchestration only uses currently installed skills and available configuration. If the result says no suitable skill is available, install the required skill first, then refresh or rebuild the skill graph and try again.
 
+#### Inspect expert assignments
+
+In expert orchestration, open the subagent details to see the task, requirements, deliverables, and acceptance criteria for that node. Each deliverable uses the name and format declared in the task graph. The subagent checks its work against the acceptance criteria before submitting it.
+
 ---
 
 ## Configuration
@@ -269,11 +311,11 @@ The user configuration is `~/.jiuwenswarm/config/config.yaml`. The `symphony` no
 - The Discover SkillPack switch saves `orchestration.experience.enabled`. Set `orchestration.plan.dynamic_graph_enabled` independently to use existing dynamic observations in planning.
 - Tree and graph builds use the host default model. Online planning uses the current session model. There is no retrieval-specific `llm` configuration. Fingerprint `max_output_tokens: null` inherits the host model output budget.
 - Discovery derives `retrieval.prompt.context_window_tokens` from the actual session model unless explicitly configured. Saved settings affect new sessions; existing sessions retain their frozen budget and index version. The tool and prompt Rail share the same capability view bound to the agent's Runtime.
-- `capability.sources` lists directories by `type` and `root`. Skill and standalone expert directories share one taxonomy. Skill discovery uses the host's session visibility and disabled filters. Expert discovery uses the host's installed catalog in single-agent and team sessions. Explicit expert sources restrict it to installed standalone experts whose actual manifest paths are in those sources. Without expert sources it also includes non-leader members of installed expert groups. Calling an expert requires the session's `spawn_expert` tool. Graph and Flow require exactly one Skill source.
+- `capability.sources` lists directories by `type` and `root`. Skills and standalone experts share one taxonomy. Skill discovery uses session visibility and disabled filters. In single-agent and team sessions, discovery uses the host's installed expert catalog. For explicit expert sources, expert discovery and planning match the installed catalog by manifest path. Without expert sources, discovery also includes non-leader members of installed expert groups. The graph requires one Skill source and can also include configured expert sources.
 
 ### Directories and rebuilding
 
-If `capability.sources` is omitted, Swarm uses the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`. The template supports `SYMPHONY_ARTIFACT_ROOT`. Collections with multiple directories or expert sources build their taxonomy under `taxonomy_collections/<scope_id>`. Build the shared taxonomy once after adding an expert source. The existing single-Skill tree, graph, and Flow retain their original paths.
+If `capability.sources` is omitted, Swarm uses the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`. The template supports `SYMPHONY_ARTIFACT_ROOT`. Collections with multiple directories or expert sources build their taxonomy under `taxonomy_collections/<scope_id>`. Refresh the taxonomy and the orchestration graph after adding an expert source. The graph panel displays Skills as circles and experts as diamonds. A link shows a possible handoff between capabilities of the same type. Expert plans describe those handoffs for the team scheduler.
 
 Old top-level `paths`, `fingerprint`, `build`, `skill_retrieval`, `evolution` and model-backend nodes are rejected. Old signatures and layouts are not reused. Rebuild with the new configuration; old directories are neither migrated nor deleted automatically. Failed refreshes preserve the last published version; cancellation prevents publication.
 

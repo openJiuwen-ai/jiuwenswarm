@@ -93,8 +93,7 @@ async def test_chat_hook_passes_params_to_extensions(monkeypatch, entry) -> None
 
 @pytest.mark.asyncio
 async def test_chat_hook_uses_local_hook_contract(monkeypatch) -> None:
-    from jiuwenswarm.common.hook_event import AgentServerHookEvents
-    from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
+    from e2a.hooks import AgentServerChatHookContext, AgentServerHookEvents
 
     seen: list[tuple[str, object]] = []
 

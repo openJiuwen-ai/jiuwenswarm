@@ -10,18 +10,6 @@ function normalizeBase(input: string): string {
   return input.replace(/\/+$/, "");
 }
 
-export function getApiPrefix(): string {
-  return normalizeBase(import.meta.env?.VITE_API_PREFIX || '');
-}
-
-export function resolveApiUrl(path: string): string {
-  if (!path || /^(https?:|\/\/|data:|blob:)/i.test(path)) return path;
-  const prefix = getApiPrefix();
-  if (!prefix) return path;
-  const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  return cleanPath === prefix || cleanPath.startsWith(`${prefix}/`) ? cleanPath : `${prefix}${cleanPath}`;
-}
-
 export function getApiBase(): string {
   const desktopApiBase = typeof window !== 'undefined' ? window.jiuwenDesktop?.apiBase : undefined;
   if (desktopApiBase) return normalizeBase(desktopApiBase);
@@ -37,11 +25,6 @@ export function getWsBase(): string {
   if (raw) return normalizeBase(raw);
   const apiBase = getApiBase();
   if (apiBase) return apiBase.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
-  const prefix = getApiPrefix();
-  if (prefix && typeof window !== 'undefined') {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}${prefix}/ws`;
-  }
   return "";
 }
 
@@ -84,7 +67,7 @@ export function getWebTransport(): WebTransport {
 /**
  * 浏览器访问 Gateway `/api` 的根路径。
  * 个人版页面与 Gateway 同源，用 `/api`。
- * 企业版页面从管理端打开，用 `/gateway-api`，管理端再改写成 Gateway 的 `/api`。
+ * Enterprise uses `/gateway-api` on its dedicated user origin, forwarded by Nginx and the user backend.
  * 桌面端或显式绝对地址时，根是该地址下的 `/api`。
  */
 export function getGatewayApiRoot(): string {
@@ -101,8 +84,7 @@ export function getGatewayApiRoot(): string {
     return `${origin}/api`;
   }
   const prefix = origin.startsWith("/") ? normalizeBase(origin) : "";
-  const root = `${prefix}${isEnterprise() ? "/gateway-api" : "/api"}`;
-  return origin ? root : resolveApiUrl(root);
+  return `${prefix}${isEnterprise() ? "/gateway-api" : "/api"}`;
 }
 
 /** Gateway `/api/v1` 在浏览器里的地址。 */

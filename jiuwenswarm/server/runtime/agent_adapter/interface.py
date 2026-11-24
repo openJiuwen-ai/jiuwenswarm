@@ -44,6 +44,7 @@ from e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
+from e2a.hooks import AgentServerHookEvents, MemoryHookContext
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
@@ -91,8 +92,6 @@ from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_CHANNEL_CONTEXT_KEY,
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
 )
-from jiuwenswarm.common.hook_event import AgentServerHookEvents
-from jiuwenswarm.common.hooks_context import MemoryHookContext
 from jiuwenswarm.common.input_guard import InputTooLongError
 from jiuwenswarm.common.schema.agent import (
     AgentRequest,
@@ -2135,7 +2134,11 @@ class JiuWenSwarm:
         channel = request_channel or (
             request.session_id.split('_')[0] if request.session_id else "web"
         )
-        language = config_base.get("preferred_language", "zh")
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
+        language = resolve_preferred_language()
 
         # Get trusted directories from request params (passed by TUI)
         trusted_dirs: list[str] = []
@@ -2625,11 +2628,15 @@ class JiuWenSwarm:
             # Web 的"跳过"：不退出 plan，也不继续修改，直接结束本轮。
             # ``plan_skip`` 是额外键，ConfirmPayload 会忽略它；
             # PlanApprovalInterruptRail 在校验前从原始 dict 读取该标记。
+            from jiuwenswarm.enterprise.config.preferred_language import (
+                resolve_preferred_language as _resolve_pref_lang,
+            )
+
             confirm_payload = {
                 "approved": False,
                 "auto_confirm": False,
                 "feedback": custom_input
-                or plan_skip_feedback(get_config().get("preferred_language")),
+                or plan_skip_feedback(_resolve_pref_lang()),
                 "plan_skip": True,
             }
         elif value in PLAN_REVISE_OPTION_VALUES:
@@ -2725,6 +2732,10 @@ class JiuWenSwarm:
         handler = getattr(self._skill_manager, handler_name)
         try:
             params = dict(request.params) if isinstance(request.params, dict) else {}
+            # Identity lives on request.metadata (not business params). Source
+            # SPI builders read it via params["_request_metadata"].
+            if isinstance(request.metadata, dict):
+                params["_request_metadata"] = dict(request.metadata)
             if handler_name in _SKILL_SYNC_HANDLERS:
                 # 长生命周期实例先重载磁盘 state（外部流程可能已写
                 # local_skills / skill_configs），同步结果才与磁盘一致
@@ -3712,16 +3723,24 @@ class JiuWenSwarm:
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
         from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            bind_preferred_language,
+        )
 
         with bind_request_subject(request.metadata):
-            return await self._process_message(request, schedule_session=True)
+            async with bind_preferred_language(request):
+                return await self._process_message(request, schedule_session=True)
 
     async def execute_message(self, request: AgentRequest) -> AgentResponse:
         """Execute one request when scheduling is owned by AgentRuntime."""
         from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            bind_preferred_language,
+        )
 
         with bind_request_subject(request.metadata):
-            return await self._process_message(request, schedule_session=False)
+            async with bind_preferred_language(request):
+                return await self._process_message(request, schedule_session=False)
 
     async def _process_message(
         self,
@@ -4511,16 +4530,28 @@ class JiuWenSwarm:
     ) -> AsyncIterator[AgentResponseChunk]:
         """处理流式请求，并带上本次请求的用户身份。"""
         from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            bind_preferred_language,
+            bind_preferred_language_memo,
+            current_preferred_language_user_id,
+        )
 
-        # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
+        # 先预取语言；流式路径不把 ContextVar token 留过 yield（关流可能在另一 Task）。
+        async with bind_preferred_language(request) as preferred_lang:
+            preferred_user_id = current_preferred_language_user_id()
+
         stream = self._process_message_stream(request)
         try:
             while True:
                 with bind_request_subject(request.metadata):
-                    try:
-                        chunk = await anext(stream)
-                    except StopAsyncIteration:
-                        return
+                    with bind_preferred_language_memo(
+                        user_id=preferred_user_id,
+                        language=preferred_lang,
+                    ):
+                        try:
+                            chunk = await anext(stream)
+                        except StopAsyncIteration:
+                            return
                 yield chunk
         finally:
             await stream.aclose()

@@ -1,19 +1,32 @@
+import { isEnterprise } from '../edition';
+
 export type EquipmentKind = 'agent' | 'plugin' | 'mcp';
 export type EquipmentScope = 'catalog' | 'mine';
 export type EquipmentSource = 'builtin' | 'local' | 'hub';
+export type McpListFilter = 'builtin' | 'hub' | 'local';
 
 export function isPluginBlockedInWorkMode(runtimePackageName: string, workMode: string): boolean {
   return workMode === 'work' && runtimePackageName === 'ttse';
 }
 
 export function equipmentListFilter(kind: 'agent' | 'plugin', scope: EquipmentScope): 'builtin+hub' | 'mine';
-export function equipmentListFilter(kind: 'mcp', scope: EquipmentScope): 'builtin' | 'local';
+export function equipmentListFilter(kind: 'mcp', scope: 'catalog'): 'builtin' | 'hub';
+export function equipmentListFilter(kind: 'mcp', scope: 'mine'): 'local';
+export function equipmentListFilter(kind: 'mcp', scope: EquipmentScope): McpListFilter;
 export function equipmentListFilter(
   kind: EquipmentKind,
   scope: EquipmentScope,
-): 'builtin+hub' | 'mine' | 'builtin' | 'local' {
-  if (kind === 'mcp') return scope === 'catalog' ? 'builtin' : 'local';
+): 'builtin+hub' | 'mine' | McpListFilter {
+  if (kind === 'mcp') {
+    if (scope === 'mine') return 'local';
+    // Enterprise catalogue uses filter=hub + source_id; personal keeps builtin.
+    return isEnterprise() ? 'hub' : 'builtin';
+  }
   return scope === 'catalog' ? 'builtin+hub' : 'mine';
+}
+
+export function isMcpCatalogFilter(filter: string): boolean {
+  return filter === 'builtin' || filter === 'hub';
 }
 
 export function normalizeEquipmentSource(

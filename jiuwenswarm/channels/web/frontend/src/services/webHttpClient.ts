@@ -16,6 +16,7 @@ import { buildRuntimeIdentityHeaders } from './runtimeScope';
 import { createSessionEventGate } from './sessionEventGate';
 import { PauseBufferHook, PAUSABLE_STREAM_EVENTS } from './webClient';
 import { withExpertUiLanguage } from './expertUiLanguage';
+import { withSwarmChatSurface } from './swarmChatSurface';
 import {
   isChatSseTerminal,
   isSteerReceiptSseTerminal,
@@ -196,6 +197,19 @@ const ROUTES: Record<string, RouteRow> = {
   'skills.enterprise.uninstall': { verb: 'POST', path: '/skills/enterprise/actions/uninstall', kind: 'unary' },
   'skills.enterprise.source.providers': { verb: 'GET', path: '/skills/enterprise/sources', kind: 'unary' },
   'skills.enterprise.source.search': { verb: 'GET', path: '/skills/enterprise/sources/search', kind: 'unary' },
+  // Connector marketplace (enterprise HTTP; paths align with gateway mapped + pod_rest_map).
+  'mcp.list': { verb: 'POST', path: '/mcp/actions/list', kind: 'unary' },
+  'mcp.sources.providers': { verb: 'POST', path: '/mcp/actions/sources-providers', kind: 'unary' },
+  'mcp.show': { verb: 'POST', path: '/mcp/actions/show', kind: 'unary' },
+  'mcp.install': { verb: 'POST', path: '/mcp/actions/install', kind: 'unary' },
+  'mcp.uninstall': { verb: 'POST', path: '/mcp/actions/uninstall', kind: 'unary' },
+  'mcp.connect': { verb: 'POST', path: '/mcp/actions/connect', kind: 'unary' },
+  'mcp.wait_auth': { verb: 'POST', path: '/mcp/actions/wait-auth', kind: 'unary' },
+  'mcp.cancel_connect': { verb: 'POST', path: '/mcp/actions/cancel-connect', kind: 'unary' },
+  'mcp.disconnect': { verb: 'POST', path: '/mcp/actions/disconnect', kind: 'unary' },
+  'mcp.register_custom': { verb: 'POST', path: '/mcp/actions/register-custom', kind: 'unary' },
+  'mcp.delete_custom': { verb: 'POST', path: '/mcp/actions/delete-custom', kind: 'unary' },
+  'mcp.save_credentials': { verb: 'POST', path: '/mcp/actions/save-credentials', kind: 'unary' },
   'skills.marketplace.list': { verb: 'GET', path: '/skills/marketplace', kind: 'unary' },
   'skills.marketplace.add': { verb: 'POST', path: '/skills/marketplace', kind: 'unary' },
   'skills.marketplace.remove': { verb: 'POST', path: '/skills/marketplace/actions/remove', kind: 'unary' },
@@ -595,7 +609,7 @@ function isSseContentType(contentType: string | null | undefined): boolean {
 }
 
 /**
- * HTTP unary ``chat.interrupt`` 把 ``accepted`` 与 ``interrupt_result`` 合在同一 JSON body。
+ * HTTP unary ``chat.interrupt`` 等待最终 ``interrupt_result``，而不只返回 ``accepted`` ACK。
  * 只在 Gateway 明确给出 ``event_type`` 时映射为 WS 事件，前端不伪造 success。
  */
 export function interruptUnaryToEvents(payload: unknown, requestId?: string): WsEvent | null {
@@ -605,8 +619,7 @@ export function interruptUnaryToEvents(payload: unknown, requestId?: string): Ws
   return {
     type: 'event',
     event: 'chat.interrupt_result',
-    // HTTP 合成事件补上 interrupt 请求 id：interrupt_result 处理器按
-    // event.request_id 清理 pendingInterruptRequestIdsRef，缺失会缓慢泄漏。
+    // Correlate the synthesized event with the HTTP interrupt request.
     ...(requestId ? { request_id: requestId } : {}),
     payload: { ...payload },
   };
@@ -631,6 +644,8 @@ export class WebHttpClient {
   private sseInflight = new Map<string, { controller: AbortController; sessionId: string }>();
   /** 被后续 chat.send 顶掉的 SSE，abort 后不得再发 interrupt / 不得当发送失败。 */
   private sseSuperseded = new Set<string>();
+  /** Only a pending interrupt for the current turn may update its session. */
+  private pendingInterrupts = new Map<string, string>();
   /** chat.send + awaitRuntimeAccepted：等本请求 SSE 上的 runtime.accepted / chat.error。 */
   private runtimeAckPending = new Map<string, RuntimeAckPending>();
   /** 企业版团队会话订阅。不进 sseInflight，chat.send 不会把它中止。 */
@@ -757,7 +772,7 @@ export class WebHttpClient {
 
     const requestId = this.generateRequestId();
     options.onRequestId?.(requestId);
-    const requestParams = withExpertUiLanguage(method, params);
+    const requestParams = withSwarmChatSurface(method, withExpertUiLanguage(method, params));
     let assembled;
     try {
       assembled = assembleWebRest(method, requestParams, getGatewayHttpBase());
@@ -825,12 +840,16 @@ export class WebHttpClient {
         // SSE 下发。若此处 abort 同 session 旧 SSE，父连接被掐掉 → 实时无输出、
         // processing_status(false) 也丢，UI 一直「执行中」（刷新 history 才有字）。
         if (!isSteerSessionInputParams(params) && !resumeSameReply) {
+          if (chatSessionId) this.pendingInterrupts.delete(chatSessionId);
           this.abortSseInflight({ exceptRequestId: requestId, sessionId: chatSessionId });
         }
         this.sseInflight.set(requestId, {
           controller,
           sessionId: chatSessionId ?? '',
         });
+      }
+      if (method === 'chat.interrupt' && chatSessionId) {
+        this.pendingInterrupts.set(chatSessionId, requestId);
       }
       const headers: Record<string, string> = {
         ...this.identityHeaders(requestId, params ?? {}),
@@ -903,7 +922,8 @@ export class WebHttpClient {
       this.sseInflight.delete(requestId);
       if (method === 'chat.interrupt') {
         const event = interruptUnaryToEvents(payload, requestId);
-        if (event) {
+        if (event && chatSessionId && this.pendingInterrupts.get(chatSessionId) === requestId) {
+          event.payload.session_id ??= chatSessionId;
           this.dispatchEvent(event);
           if (event.payload.success === true && interruptIntentOf(event.payload) === 'cancel') {
             this.abortSseInflight({
@@ -932,7 +952,7 @@ export class WebHttpClient {
       }
       if (options.signal?.aborted) {
         if (assembled.kind === 'sse' && typeof params?.session_id === 'string') {
-          void this.interruptChat(params.session_id, requestId);
+          void this.interruptChat(params.session_id);
         }
         throw this.createWebError(
           i18n.t('network.requestAborted'),
@@ -943,7 +963,7 @@ export class WebHttpClient {
       }
       if (error instanceof DOMException && error.name === 'AbortError') {
         if (assembled.kind === 'sse' && typeof params?.session_id === 'string') {
-          void this.interruptChat(params.session_id, requestId);
+          void this.interruptChat(params.session_id);
         }
         throw this.createWebError(
           i18n.t('network.requestTimeout'),
@@ -954,6 +974,10 @@ export class WebHttpClient {
       }
       throw this.asWebError(error, requestId, true);
     } finally {
+      const sessionId = pickHeaderString(params?.session_id);
+      if (sessionId && this.pendingInterrupts.get(sessionId) === requestId) {
+        this.pendingInterrupts.delete(sessionId);
+      }
       options.signal?.removeEventListener('abort', onAbort);
     }
   }
@@ -1100,6 +1124,8 @@ export class WebHttpClient {
           !controller.signal.aborted &&
           !this.sseSuperseded.has(requestId)
         ) {
+          // Register the receipt before the idle event can start a queued turn.
+          void this.interruptChat(sessionId);
           this.dispatchEvent({
             type: 'event',
             event: 'chat.processing_status',
@@ -1113,8 +1139,6 @@ export class WebHttpClient {
               source: sawChatError ? 'http_error_eof' : 'http_abnormal_eof',
             },
           } as WsEvent);
-          // 多副本下任意存活 gateway 均可按 session 转发 cancel。
-          void this.interruptChat(sessionId, requestId);
         }
       } catch (error) {
         console.warn('[WebHttpClient] Failed to settle errored SSE', requestId, error);
@@ -1139,7 +1163,9 @@ export class WebHttpClient {
     }
   }
 
-  private async interruptChat(sessionId: string, requestId: string): Promise<void> {
+  private async interruptChat(sessionId: string): Promise<void> {
+    const requestId = this.generateRequestId();
+    this.pendingInterrupts.set(sessionId, requestId);
     try {
       const assembled = assembleWebRest(
         'chat.interrupt',
@@ -1149,7 +1175,7 @@ export class WebHttpClient {
       if (!assembled) {
         return;
       }
-      await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
+      const response = await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
         method: assembled.verb,
         headers: {
           ...this.identityHeaders(requestId, { session_id: sessionId }),
@@ -1157,8 +1183,18 @@ export class WebHttpClient {
         },
         body: JSON.stringify(assembled.jsonBody ?? { intent: 'cancel' }),
       });
+      const payload = await this.readUnaryPayload(response, requestId);
+      const event = interruptUnaryToEvents(payload, requestId);
+      if (event && this.pendingInterrupts.get(sessionId) === requestId) {
+        event.payload.session_id ??= sessionId;
+        this.dispatchEvent(event);
+      }
     } catch {
       // 打断失败不掩盖本次 abort
+    } finally {
+      if (this.pendingInterrupts.get(sessionId) === requestId) {
+        this.pendingInterrupts.delete(sessionId);
+      }
     }
   }
 
@@ -1201,7 +1237,7 @@ export class WebHttpClient {
         ok: false,
         error: {
           code: 'PROXY_ROUTING_ERROR',
-          message: `接口未命中后端服务（返回了 HTML 页面，状态码 ${response.status}）。请检查后端服务是否启动，以及统一门户接口前缀代理是否配置正确。`,
+          message: i18n.t('network.proxyRoutingError', { status: response.status }),
         },
       };
     }
@@ -1453,6 +1489,7 @@ export class WebHttpClient {
     this.inflight.clear();
     this.sseInflight.clear();
     this.sseSuperseded.clear();
+    this.pendingInterrupts.clear();
   }
 
   private abortSseInflight(opts: { exceptRequestId?: string; sessionId?: string } = {}): void {

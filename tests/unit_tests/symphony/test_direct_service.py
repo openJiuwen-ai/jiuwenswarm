@@ -10,27 +10,13 @@ import pytest
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
-from openjiuwen.symphony import (
-    FINGERPRINT_ARTIFACT_FILENAME,
-    CapabilityDescriptor,
-    CapabilityFingerprint,
-    CapabilityIO,
-    FingerprintArtifact,
-    GraphArtifactStore,
-    OrchestrationPlan,
-    ScanResult,
-    SkillFolderScanner,
-    SymphonyRuntime,
-)
+from openjiuwen.symphony import OrchestrationPlan, SymphonyRuntime
 
 from jiuwenswarm.runtime.symphony.adapter import (
-    candidate_ids_from_skill_ids,
     llm_config_signature,
+    normalize_candidate_ids,
 )
-from jiuwenswarm.runtime.symphony.build import (
-    build_graph,
-    graph_status,
-)
+from jiuwenswarm.runtime.symphony.build import build_graph
 from jiuwenswarm.common.symphony_config import symphony_config_from_dict
 from jiuwenswarm.runtime.symphony.llm import LLMConfig
 from jiuwenswarm.runtime.symphony.service import (
@@ -189,7 +175,7 @@ def _minimal_planned_graph(status="ready"):
 
 
 def test_adapter_deduplicates_candidate_skill_ids():
-    assert candidate_ids_from_skill_ids(["writer", "writer", "reviewer"]) == [
+    assert normalize_candidate_ids(["writer", "writer", "reviewer"]) == [
         "writer",
         "reviewer",
     ]
@@ -372,9 +358,11 @@ async def test_service_graph_disabled_skill_keeps_distinct_unicode_name(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("capability_type", ["skill", "expert"])
 async def test_service_plans_through_public_runtime_with_minimal_jgf(
     monkeypatch,
     tmp_path,
+    capability_type,
 ):
     config = _config(tmp_path)
     captured = {}
@@ -408,7 +396,8 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
     result = await service.plan(
         "write",
         mode="beam",
-        candidate_skill_ids=["writer", "writer"],
+        capability_type=capability_type,
+        candidate_ids=["writer", "writer"],
         progress=progress,
     )
 
@@ -417,11 +406,215 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
         "planned_graph": _minimal_planned_graph(),
     }
     assert captured["candidate_ids"] == ["writer"]
-    assert captured["disabled_capability_ids"] == {"disabled"}
+    assert captured["type"] == capability_type
+    if capability_type == "skill":
+        assert captured["disabled_capability_ids"] == {"disabled"}
+    else:
+        assert captured["expert_manifest_paths"] == []
+        assert "disabled_capability_ids" not in captured
     assert "graph_scope_id" not in captured
     assert captured["language"] == "cn"
     assert captured["mode"] == "beam"
     assert captured["progress"] is progress
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["fast", "beam"])
+async def test_skill_compose_uses_public_core_plan(monkeypatch, tmp_path, mode):
+    from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+
+    config = _config(tmp_path, evolution=False)
+    skill = tmp_path / "skills" / "writer" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: writer\ndescription: Write a brief\n---\nWrite the requested brief.\n")
+    requests = []
+
+    async def invoke(messages, **kwargs):
+        request = json.loads(messages[-1]["content"])
+        requests.append(request)
+        response = {"status": "ready", "steps": [{"skill_id": "writer"}]} if mode == "fast" else {
+            "selected_plan_index": 1,
+        }
+        return SimpleNamespace(content=json.dumps(response))
+
+    runtime = SymphonyRuntime(SimpleNamespace(invoke=invoke), config)
+    await runtime.orchestration.build()
+    service = SwarmSymphonyService()
+    monkeypatch.setattr(service, "_runtime_for", lambda *_: runtime)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_: set())
+    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config", lambda *_: config)
+    compose = next(tool for tool in SymphonyToolkit(service, llm_config_provider=lambda: None).get_tools()
+                   if tool.card.name == "symphony_compose_graph")
+    try:
+        result = await compose.invoke({
+            "query": "Write a brief from confirmed facts.", "type": "skill", "mode": mode,
+            "candidate_ids": ["writer"], "inputs": [{"name": "facts", "kind": "text", "value": "Approved facts"}],
+        })
+        assert result["success"], result
+        graph = result["planned_graph"]["graph"]
+        assert graph["metadata"]["status"] == "ready"
+        assert graph["nodes"]["writer"]["metadata"]["type"] == "skill"
+        assert "plan_kind" not in graph["metadata"]
+        assert requests[-1]["query"] == "Write a brief from confirmed facts."
+        assert requests[-1]["inputs"] == [{"name": "facts", "kind": "text", "value": "Approved facts"}]
+    finally:
+        await service.close()
+        await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_expert_compose_uses_live_catalog_and_shares_the_web_graph(monkeypatch, tmp_path):
+    from openjiuwen.agent_teams.context import reset_session_id, set_session_id
+    from openjiuwen.agent_teams.experts import PackageLocation
+    from openjiuwen.agent_teams.paths import get_agent_teams_home, reset_task_openjiuwen_home, set_task_openjiuwen_home
+    from openjiuwen.agent_teams.tools.database import DatabaseConfig, TeamDatabase
+
+    from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+    from jiuwenswarm.agents.harness.team.experts import JiuwenExpertCatalog
+
+    skills = tmp_path / "skills"
+    (skills / "research").mkdir(parents=True)
+    (skills / "research" / "SKILL.md").write_text("---\nname: research\ndescription: Find invoices\n---\nSearch.\n")
+    experts = tmp_path / "experts"
+    descriptions = {"research": "Produces an evidence table as CSV", "report": "Accepts an evidence table as CSV"}
+    for name, description in descriptions.items():
+        package = experts / f"installed-{name}"
+        package.mkdir(parents=True)
+        (package / "manifest.json").write_text(json.dumps({
+            "name": name, "description": description, "package_type": "agent_template",
+        }))
+    installed = [PackageLocation(name=f"installed-{name}", path=experts / f"installed-{name}", source="local")
+                 for name in descriptions]
+
+    async def list_packages(_self):
+        return list(installed)
+
+    class HandoffModel(_FakeGraphModel):
+        async def invoke(self, messages, **kwargs):
+            data = json.loads(messages[-1]["content"])
+            table = {"name": "evidence_table", "type": "csv", "description": "Source evidence table"}
+            if "declared_inputs" in data:
+                result = {}
+                if data["capability_type"] == "expert":
+                    if data["capability_id"] == "research":
+                        result = {"outputs": [table]}
+                    else:
+                        result = {"inputs": [{**table, "required": True}], "outputs": [{"name": "brief", "type": "text"}]}
+            elif "current_skill" in data:
+                result = {"judgements": [
+                    {"candidate_id": item["candidate_id"], "score": 0.95} for item in data["candidates"]
+                ]}
+            elif "candidate_plans" in data:
+                result = {"selected_plan_index": 1, "steps": [{"skill_id": name} for name in descriptions]}
+            elif "experts" in data:
+                result = self._task_plan(data)
+            elif "query" in data and "can_feed_edges" in data:
+                ids = {item["id"] for item in data["skills"]}
+                result = {"status": "ready", "steps": [{"skill_id": name} for name in descriptions if name in ids]}
+            else:
+                return await super().invoke(messages, **kwargs)
+            return SimpleNamespace(content=json.dumps(result), finish_reason="stop")
+
+        @staticmethod
+        def _task_plan(data):
+            assert all(set(expert) == {"id", "name", "description"} for expert in data["experts"])
+            assert "published_expert_handoffs" not in data
+            available = {item["id"] for item in data["experts"]}
+            if data["query"] == "Use the installed report expert" and "report" not in available:
+                return {"status": "no_plan", "reason": "The required report expert is unavailable."}
+            notes = {"name": "source_notes", "type": "markdown"}
+            checked = {"name": "checked_notes", "type": "markdown"}
+            tasks = [
+                {"id": "research", "type": "expert", "expert_id": "research", "title": "Research",
+                 "task": "Collect source notes.", "outputs": [notes]},
+                {"id": "verify", "type": "inline", "title": "Verification", "task": "Check each citation.",
+                 "role": {"name": "Citation verifier", "description": "Independently check source evidence."},
+                 "outputs": [checked]},
+            ]
+            handoffs = [{"source": "research", "target": "verify", "source_output": "source_notes"}]
+            if "report" in available:
+                tasks.append({"id": "report", "type": "expert", "expert_id": "report", "title": "Report",
+                              "task": "Write the brief using checked notes.",
+                              "outputs": [{"name": "brief", "type": "markdown"}]})
+                handoffs.append({"source": "verify", "target": "report", "source_output": "checked_notes"})
+            return {"status": "ready", "tasks": tasks, "handoffs": handoffs}
+
+    config = symphony_config_from_dict({
+        "capability": {"sources": [{"type": "skill", "root": skills}, {"type": "expert", "root": experts}]},
+        "storage": {"artifact_root": str(tmp_path / "runtime")},
+        "orchestration": {"enabled": True},
+    })
+    monkeypatch.setattr(JiuwenExpertCatalog, "list_expert_packages", list_packages)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
+    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config", lambda *_: config)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_: set())
+    model = HandoffModel(confidences=[0.95])
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.build.model_from_config", lambda _: model)
+    result = await build_graph(config, LLMConfig(model="fake-model"))
+    assert result.success and (result.skill_count, result.expert_count) == (1, 2)
+
+    runtime = SymphonyRuntime(model, config)
+    service = SwarmSymphonyService()
+    monkeypatch.setattr(service, "_runtime_for", lambda *_: runtime)
+    published = runtime.orchestration.read().to_dict()
+    compose = next(tool for tool in SymphonyToolkit(service).get_tools() if tool.card.name == "symphony_compose_graph")
+    team_home = set_task_openjiuwen_home(tmp_path / "team-runtime")
+    session = set_session_id("expert-plan-test")
+    database = TeamDatabase(DatabaseConfig(connection_string=str(get_agent_teams_home() / "team.db")))
+    try:
+        await database.initialize()
+        assert await database.team.create_team("planning-team", "Planning Team", "leader")
+        monkeypatch.setattr(service, "refresh_graph", AsyncMock(side_effect=AssertionError("Planning rebuilt graph")))
+        for mode in ("fast", "beam"):
+            planned = await compose.invoke({"query": "Write and verify a Markdown brief.", "type": "expert", "mode": mode,
+                                            "candidate_ids": ["research"]})
+            assert planned["success"], planned
+            graph = planned["planned_graph"]["graph"]
+            assert graph["metadata"]["status"] == "ready"
+            assert graph["metadata"]["plan_kind"] == "expert_tasks"
+            assert [node["metadata"]["type"] for node in graph["nodes"].values()] == ["expert", "inline", "expert"]
+            assert graph["nodes"]["task-1"]["metadata"]["expert_id"] == "research"
+            assert graph["nodes"]["task-2"]["metadata"]["role"]["name"] == "Citation verifier"
+            assert graph["nodes"]["task-3"]["metadata"]["expert_id"] == "report"
+            assert graph["nodes"]["task-3"]["metadata"]["inputs"] == [{"name": "checked_notes", "type": "markdown"}]
+            assert graph["edges"] == [
+                {"source": "task-1", "target": "task-2", "relation": "can_feed",
+                 "source_output": "source_notes", "target_input": "source_notes"},
+                {"source": "task-2", "target": "task-3", "relation": "can_feed",
+                 "source_output": "checked_notes", "target_input": "checked_notes"},
+            ]
+
+        web = await service.graph()
+        assert {node["id"]: node["type"] for node in web["graph"]["nodes"]} == {
+            "skill:research": "skill", "expert:research": "expert", "expert:report": "expert",
+        }
+        assert [(edge["source"], edge["target"]) for edge in web["graph"]["edges"]] == [
+            ("expert:research", "expert:report"),
+        ]
+        assert [item["id"] for item in web["skills"]] == ["research"]
+
+        installed.pop()
+        missing = await compose.invoke({"query": "Use the installed report expert", "type": "expert",
+                                        "candidate_ids": ["report"]})
+        assert missing["planned_graph"]["graph"]["metadata"]["status"] == "no_plan"
+        for mode in ("fast", "beam"):
+            projected = await compose.invoke({"query": "write a brief", "type": "expert", "mode": mode,
+                                              "candidate_ids": ["research"]})
+            graph = projected["planned_graph"]["graph"]
+            assert all(node["metadata"].get("expert_id") != "report" for node in graph["nodes"].values())
+            assert len(graph["edges"]) == 1
+        assert runtime.orchestration.read().to_dict() == published
+        assert await database.member.get_team_members("planning-team") == []
+        assert await database.task.get_team_tasks("planning-team") == []
+    finally:
+        await database.close()
+        reset_session_id(session)
+        reset_task_openjiuwen_home(team_home)
+        await service.close()
+        await runtime.aclose()
 
 
 @pytest.mark.asyncio
@@ -504,6 +697,7 @@ async def test_service_plan_keeps_host_default_for_stale_graph_refresh(
         "compose",
         progress=progress,
         llm_config=selected,
+        capability_type="skill",
     )
 
     assert result["success"] is True
@@ -549,7 +743,7 @@ async def test_service_rebuilds_stale_graph_before_planning(monkeypatch, tmp_pat
         "jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_kwargs: set()
     )
     progress = object()
-    result = await service.plan("write", progress=progress)
+    result = await service.plan("write", capability_type="skill", progress=progress)
 
     assert calls == [(False, progress)]
     assert result["graph_build"]["rebuilt"] is True
@@ -598,7 +792,7 @@ async def test_service_promotes_graph_preparing_before_planning(
         lambda: {"preferred_language": "zh"},
     )
 
-    result = await service.plan("write")
+    result = await service.plan("write", capability_type="skill")
 
     assert result["success"] is False
     assert result["reason"] == "graph_preparing"
@@ -744,7 +938,9 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
         "FingerprintService",
         "FingerprintSettings",
         "GraphArtifactStore",
+        "IONameVocabulary",
         "OrchestrationConfig",
+        "PlanningInput",
         "ScanResult",
         "SkillFolderScanner",
         "SourceSnapshot",

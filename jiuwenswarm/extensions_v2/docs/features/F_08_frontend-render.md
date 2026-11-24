@@ -227,23 +227,27 @@ ToolPanel（右侧页签，经空白页签选择）、SettingsPageLayout（设�
 
 ### 4.6 Iframe 权限与点击交互
 
-Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址，但这只检查地址格式，不证明页面可信。
-不可信文档若同时获得脚本与同源权限，且最终地址与宿主同源，就能访问父页面 DOM 和同源存储，
-并可移除 sandbox 后重新加载以解除剩余限制。因此宿主固定设置
-`sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`，不允许插件传入或扩展权限。
-该限制同样适用于绝对地址指向宿主、重定向或后续导航回宿主的文档。
+Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址。基本沙盒为
+`sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`。
+内置 Personal Web 入口标识宿主文档隔离已经启用。客户端按浏览器解析后的地址判断来源，
+为与宿主来源独立的 HTTP(S) 地址加上 `allow-same-origin`。本地和远程网页遵循同一规则。
+内联 HTML、宿主同源地址和未启用文档隔离的入口使用基本沙盒。
+
+内置 Web 服务用 `frame-ancestors 'none'` 保护宿主界面和需要在顶层运行的登录回调，
+对其他宿主响应施加不含 `allow-same-origin` 的 HTTP 沙盒。响应策略覆盖代理内容、文件预览、
+重定向后的文档和嵌套文档。
 
 脚本、表单、弹窗、模态框和下载能力保持可用；弹窗继承 sandbox，不开放
 `allow-popups-to-escape-sandbox` 或顶层导航权限。普通点击、输入和 iframe 内导航不需要 `allow-same-origin`。
 `referrerPolicy="no-referrer"` 只限制 Referer，不承担同源隔离或禁用凭据的职责。
+宿主校验 URL iframe 的 `permissions` 名称格式。非空列表按首次出现的顺序去重后写入当前实例的 `allow`，省略或传空列表时不设置 `allow`。`allow` 变更时重建浏览上下文。权限约定见 [S_17 的 Iframe 规约](../specs/S_17_webui-component-props.md#418-iframe)。
 
 加载提示改为角标并设置 `pointer-events: none`，不再用全屏提示层拦截已渲染文档的点击。
 错误与非激活提示仍占满容器，且不保留 iframe。浏览器的 `load` 事件只用于结束加载提示，不保证远端页面业务可用。
 
 2026-11-02 修订取消本地曾加入的 `allow-same-origin`：没有证据表明普通点击需要该权限。
 保留它并仅禁止相对路径不能隔离绝对同源地址；仅增加风险说明也不能恢复隔离。
-代价是 iframe 文档使用不透明 origin，依赖 localStorage、IndexedDB 或同源请求的页面可能无法正常工作；
-这类需求应另行设计独立 origin、请求授权和导航边界，不能直接放开宿主同源访问。
+普通预览使用不透明 origin。使用本地存储的应用按 [S_17 的 Iframe 规约](../specs/S_17_webui-component-props.md#418-iframe) 接入独立入口。
 该隔离限制脚本访问父页面，不承诺阻止所有携带 cookie 的网络请求。
 
 ## 5. 组件与样式映射
@@ -305,10 +309,30 @@ Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址，但这只检查地�
 2026-11-06 补充包变更恢复验证：`npm run test:webui-runtime` 的 19 项和
 `npm run test:webui-transport` 的 9 项通过，分别覆盖指定包的 ready 重放和通知参数校验。
 
+2026-11-21 验证 URL iframe 的权限声明。WebUI 组件 380 项、面板页签 7 项、AgentServer WebUI 363 项和 Gateway 渲染 344 项通过。
+Chrome 本地运行实际组件，同一地址的三个 iframe 分别省略权限、只申请全屏、声明空列表。浏览器分别识别到剪贴板写入和全屏、仅全屏、两项均未启用。测试页面均处于不透明来源的沙盒。
+
+2026-11-21 在内置 Personal Web、独立 Gateway 和 AgentServer 进程之间用 Chrome 验证受管网页。
+安装验证插件，在 `task.function.main` 中打开 OpenMotion Studio 的示例项目。应用在宿主刷新 iframe 后读回
+`localStorage` 和 `IndexedDB` 的测试数据。重定向或嵌套到 WorkSwarm 主界面时浏览器拦截导航。
+宿主文件的嵌套预览、原有 `srcDoc` 仍使用不透明来源。OpenMotion 运行在隔离的验证数据目录，
+通过本地转接适配该应用的回环地址要求。
+
+2026-11-23 验证权限名称校验和去重。WebUI 组件 382 项、面板页签 7 项、AgentServer 和内置 Web 377 项、Gateway 407 项通过，Vite 打包通过。通过真实 V2 插件打开 OpenMotion，Chrome 识别 `autoplay`，重复的 `fullscreen` 在 `allow` 中只出现一次。示例项目打开、刷新后读取浏览器存储以及导航和嵌套隔离的用例均通过。
+
+2026-11-23 验证 iframe 仅委派显式声明的权限。WebUI 组件 382 项、面板页签 7 项和 Vite 打包通过。Chrome 中通过真实 V2 插件打开 OpenMotion，省略权限时 iframe 无 `allow` 属性，应用可打开示例项目并在刷新后读回浏览器存储。显式声明剪贴板写入和全屏时，两个名称各写入一次。导航和嵌套隔离及 `srcDoc` 预览回归通过。
+
+2026-11-23 验证 V2 Iframe 直接加载独立网页。WebUI 组件 382 项、面板页签 7 项、AgentServer 和内置 Web 377 项及 Vite 打包通过。在隔离环境直接运行 OpenMotion 的启动入口，V2 插件把它返回的 HTTP 地址填入 `src`。Chrome 能打开示例项目，刷新 iframe 后读回 `localStorage` 和 `IndexedDB` 数据。浏览器拦截了重定向和嵌套加载宿主界面，宿主文件及 `srcDoc` 使用不透明来源。
+
+2026-11-23 验证内联 Iframe 忽略 `permissions`。WebUI 组件 383 项、AgentServer WebUI 606 项、Gateway V2 750 项和 Vite 打包通过。后端测试检查内联 HTML 正常通过校验，且下行数据省略该字段。前端渲染测试确认内联 iframe 保留基本沙盒并省略 `allow`。
+
+2026-11-23 验证 Electron 主窗口的跨源 iframe 设备授权。桌面定向测试 22 项通过。macOS Electron 43.7.6 加载实际 V2 Iframe，使用模拟摄像头和麦克风验证用户允许后取得媒体流，拒绝或关闭原生对话框后没有媒体流，网页导航会取消待确认请求。Chromium 在桌面批准后仍检查 iframe 权限策略。
+
+2026-11-23 验证弹框前的设备声明检查。桌面定向测试 26 项、WebUI 组件测试 384 项通过。macOS Electron 43.7.6 加载实际 V2 Iframe，使用模拟设备验证省略设备声明、只声明麦克风却同时申请摄像头、同域页面尝试使用另一实例的声明，以及地址相同且候选权限冲突时直接拒绝。已声明设备的页面仍能通过桌面确认批准或拒绝本次请求。
+
 ## 9. 风险与遗留
 
-- **真实联调未完成**：15 个槽位已由新宿主承接，但尚未完成真实插件发帧 → 页面操作 → Handler → 回执的跨进程验证；
-  旧链路已删除，后续问题只能在单链路上定位。
+- **真实联调范围**：本次 Chrome 联调覆盖任务入口发帧、主页面 iframe 和应用操作。其他槽位和事件回执的完整跨进程验证仍待补充。
 - **双端规则维护**：前端组件目录与后端规则分别实现，共用组件属性样本；变更规则时需要同时验证两端。
 - **显示确认仅本地（未联调）**：`displayedRevision` 只保存在前端运行时，未接入后端显示回执事件；跨端显示语义需要另行确认。
 - **真实恢复链路（未验证）**：`ui.ready` 的重连重发只验证到请求构造，插件端是否按实例键恢复轮次视图需要真实联调。

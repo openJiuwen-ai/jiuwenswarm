@@ -30,7 +30,7 @@ from jiuwenswarm.agents.harness.common.rails.symphony import SymphonyOrchestrati
 from jiuwenswarm.agents.harness.common.rails.symphony.skillpack_route import (
     COMPOSE_CHOICE, PackRoute, ROUTING_SECTIONS, SkillPackRouter, direct_route_mode,
 )
-from tests.unit_tests.agentserver.test_symphony_orchestration_needs_input import (
+from tests.unit_tests.agentserver.test_symphony_orchestration_interactions import (
     _call, _inputs, _outer_ctx, _RuntimeModel, _ScriptedClient, _tool,
 )
 
@@ -102,11 +102,10 @@ async def _active(
 
 
 def _model_ctx(outer):
+    tool_names = ("symphony_compose_graph", "symphony_refresh_graph", "skill_tool", "ask_user", "write_file")
     return AgentCallbackContext(
         agent=outer.agent, session=outer.session, extra={"run_context": outer.inputs.run_context},
-        inputs=ModelCallInputs(tools=[{"name": name} for name in [
-            "symphony_compose_graph", "symphony_refresh_graph", "skill_tool", "ask_user", "write_file",
-        ]]),
+        inputs=ModelCallInputs(tools=[{"name": name} for name in tool_names]),
     )
 
 
@@ -1152,7 +1151,9 @@ async def test_no_route_does_not_allow_model_to_repeat_standard_pack_question(qu
     }]})
     await rail.before_tool_call(call)
     assert call.inputs.tool_result["reason"] == "skillpack_no_pending_choice"
-    assert not rail._outer_states[id(outer)].awaiting_input
+    outer.inputs.result = {"result_type": "answer"}
+    await rail.after_invoke(outer)
+    assert not rail._paused_states
 
 
 @pytest.mark.asyncio
@@ -1268,9 +1269,9 @@ async def test_real_session_history_does_not_reopen_completed_pack_selection(reb
         assert "A local SkillPack selection is pending" not in system
         assert "This request is direct_skillpack" not in system
     rejected = [
-        message for message in recorded_messages[-1]
-        if getattr(message, "role", "") == "tool"
-        and getattr(message, "tool_call_id", "") == "stale-pack-question"
+        message
+        for message in recorded_messages[-1]
+        if getattr(message, "role", "") == "tool" and getattr(message, "tool_call_id", "") == "stale-pack-question"
     ]
     assert len(rejected) == 1
     assert "skillpack_no_pending_choice" in str(rejected[0].content)

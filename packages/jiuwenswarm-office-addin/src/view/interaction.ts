@@ -55,7 +55,10 @@ export function approvalSheet(
   const [question] = prompt.questions;
   let guardStart = now();
   const known = APPROVAL_ORDER.flatMap(value => question.options.filter(option => option.value === value));
-  const choices = known.length ? known : question.options;
+  // Any other choice the backend offers, such as a plan's approve, follows the known ones; always_allow never shows.
+  const others = question.options.filter(option => !APPROVAL_ORDER.includes(option.value ?? '')
+    && option.value !== 'always_allow');
+  const choices = [...known, ...others];
   const choose = once((option: PromptOption) => answer([{ selected: [option] }]));
   const titleId = `approval-${prompt.requestId}`;
   const sheet = h('section', { class: 'sheet approval', role: 'region', 'aria-labelledby': titleId },
@@ -70,7 +73,7 @@ export function approvalSheet(
     h('div', { class: 'sheet-actions' }, ...choices.map(option => {
       const value = option.value ?? '';
       const key = known.length ? copy.approvalKeys[value] : undefined;
-      const tone = value === 'allow_once' ? ' button-primary' : '';
+      const tone = value === 'allow_once' || value === 'approve' ? ' button-primary' : '';
       return h('button', {
         type: 'button', class: `button${tone}`, title: option.description,
         'aria-keyshortcuts': key === 'Esc' ? 'Escape' : key, onclick: () => choose(option),

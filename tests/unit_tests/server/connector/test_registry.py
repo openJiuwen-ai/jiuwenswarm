@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""connector.SourceRegistry + apply_connector_source_configs (CMS-V-07)."""
+"""ConnectorSourceRegistry + apply_connector_source_configs (CMS-V-07)."""
 
 from __future__ import annotations
 
@@ -20,13 +20,16 @@ from jiuwenswarm.extensions.swarm_connector_hub.constants import (
     OPENJIUWEN_HUB_PROVIDER_TYPE,
     OPENJIUWEN_HUB_SOURCE_ID,
 )
-from jiuwenswarm.server.runtime.connector.source_registry import (
-    SourceRegistry,
-    SourceRegistryError,
+from jiuwenswarm.server.runtime.connector.manager import (
+    ConnectorSourceManager,
+    bind_connector_source_manager,
+    get_connector_source_manager,
+    reset_connector_source_manager,
+    reset_connector_source_manager_binding,
 )
-from jiuwenswarm.server.runtime.connector.source_runtime import (
-    SourceRuntime,
-    reset_source_runtime,
+from jiuwenswarm.server.runtime.connector.registry import (
+    ConnectorSourceRegistry,
+    ConnectorSourceRegistryError,
 )
 
 
@@ -93,7 +96,7 @@ class _StubExtension(ConnectorSourceExtension):
 
 
 def test_registry_register_list_and_get() -> None:
-    registry = SourceRegistry()
+    registry = ConnectorSourceRegistry()
     config = ConnectorSourceConfig(
         source_id="hub-a",
         provider_type="stub",
@@ -105,15 +108,15 @@ def test_registry_register_list_and_get() -> None:
     provider = asyncio.run(registry.get("hub-a", "search"))
     assert provider.source_id == "hub-a"
 
-    with pytest.raises(SourceRegistryError) as exc:
+    with pytest.raises(ConnectorSourceRegistryError) as exc:
         asyncio.run(registry.get("hub-a", "get_detail"))
     assert exc.value.code == "source_capability_unsupported"
 
 
 def test_bind_extension_rejects_type_mismatch() -> None:
-    registry = SourceRegistry()
+    registry = ConnectorSourceRegistry()
     extension = _StubExtension("stub-a")
-    with pytest.raises(SourceRegistryError):
+    with pytest.raises(ConnectorSourceRegistryError):
         registry.bind_extension(
             ConnectorSourceConfig(source_id="s1", provider_type="stub-b"),
             extension,
@@ -121,8 +124,8 @@ def test_bind_extension_rejects_type_mismatch() -> None:
 
 
 def test_apply_connector_sources_absent_vs_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    reset_source_runtime()
-    runtime = SourceRuntime()
+    reset_connector_source_manager()
+    manager = ConnectorSourceManager()
     hub_ext = _StubExtension(
         OPENJIUWEN_HUB_PROVIDER_TYPE,
         default_source_id=OPENJIUWEN_HUB_SOURCE_ID,
@@ -130,7 +133,7 @@ def test_apply_connector_sources_absent_vs_empty(monkeypatch: pytest.MonkeyPatch
     extra_ext = _StubExtension("enterprise-a")
 
     monkeypatch.setattr(
-        SourceRuntime,
+        ConnectorSourceManager,
         "_list_extensions",
         staticmethod(lambda: [hub_ext, extra_ext]),
     )
@@ -142,13 +145,13 @@ def test_apply_connector_sources_absent_vs_empty(monkeypatch: pytest.MonkeyPatch
         }
         return mapping.get(provider_type)
 
-    monkeypatch.setattr(SourceRuntime, "_get_extension", staticmethod(_get))
+    monkeypatch.setattr(ConnectorSourceManager, "_get_extension", staticmethod(_get))
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.connector.source_runtime._is_enterprise",
+        "jiuwenswarm.server.runtime.connector.manager._is_enterprise",
         lambda: True,
     )
 
-    runtime.register_provider(
+    manager.register_provider(
         ConnectorSourceConfig(
             source_id="manual",
             provider_type="stub",
@@ -157,21 +160,21 @@ def test_apply_connector_sources_absent_vs_empty(monkeypatch: pytest.MonkeyPatch
         _StubProvider("manual"),
     )
     untouched = asyncio.run(
-        runtime.apply_connector_source_configs([{"custom_config": {"other": True}}])
+        manager.apply_connector_source_configs([{"custom_config": {"other": True}}])
     )
     assert untouched["applied"] is False
-    assert [p["source_id"] for p in runtime.list_providers()] == ["manual"]
+    assert [p["source_id"] for p in manager.list_providers()] == ["manual"]
 
     cleared = asyncio.run(
-        runtime.apply_connector_source_configs(
+        manager.apply_connector_source_configs(
             [{"custom_config": {"connector_sources": []}}]
         )
     )
     assert cleared["applied"] is True
-    assert [p["source_id"] for p in runtime.list_providers()] == [OPENJIUWEN_HUB_SOURCE_ID]
+    assert [p["source_id"] for p in manager.list_providers()] == [OPENJIUWEN_HUB_SOURCE_ID]
 
     applied = asyncio.run(
-        runtime.apply_connector_source_configs(
+        manager.apply_connector_source_configs(
             [
                 {
                     "custom_config": {
@@ -188,25 +191,25 @@ def test_apply_connector_sources_absent_vs_empty(monkeypatch: pytest.MonkeyPatch
         )
     )
     assert applied["applied"] is True
-    ids = {p["source_id"] for p in runtime.list_providers()}
+    ids = {p["source_id"] for p in manager.list_providers()}
     assert ids == {OPENJIUWEN_HUB_SOURCE_ID, "ent-a"}
 
 
 def test_non_enterprise_drops_extra_sources(monkeypatch: pytest.MonkeyPatch) -> None:
-    reset_source_runtime()
-    runtime = SourceRuntime()
+    reset_connector_source_manager()
+    manager = ConnectorSourceManager()
     hub_ext = _StubExtension(
         OPENJIUWEN_HUB_PROVIDER_TYPE,
         default_source_id=OPENJIUWEN_HUB_SOURCE_ID,
     )
     extra_ext = _StubExtension("enterprise-a")
     monkeypatch.setattr(
-        SourceRuntime,
+        ConnectorSourceManager,
         "_list_extensions",
         staticmethod(lambda: [hub_ext, extra_ext]),
     )
     monkeypatch.setattr(
-        SourceRuntime,
+        ConnectorSourceManager,
         "_get_extension",
         staticmethod(
             lambda provider_type: {
@@ -216,12 +219,12 @@ def test_non_enterprise_drops_extra_sources(monkeypatch: pytest.MonkeyPatch) -> 
         ),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.connector.source_runtime._is_enterprise",
+        "jiuwenswarm.server.runtime.connector.manager._is_enterprise",
         lambda: False,
     )
 
     result = asyncio.run(
-        runtime.apply_connector_source_configs(
+        manager.apply_connector_source_configs(
             [
                 {
                     "custom_config": {
@@ -238,4 +241,43 @@ def test_non_enterprise_drops_extra_sources(monkeypatch: pytest.MonkeyPatch) -> 
         )
     )
     assert result["applied"] is True
-    assert [p["source_id"] for p in runtime.list_providers()] == [OPENJIUWEN_HUB_SOURCE_ID]
+    assert [p["source_id"] for p in manager.list_providers()] == [OPENJIUWEN_HUB_SOURCE_ID]
+
+
+def test_context_manager_overrides_process_singleton() -> None:
+    """Request-bound ConnectorSourceManager must not mutate the process default."""
+    reset_connector_source_manager()
+    process = get_connector_source_manager()
+    process.register_provider(
+        ConnectorSourceConfig(
+            source_id="process-only",
+            provider_type="stub",
+            capabilities=frozenset({"search"}),
+        ),
+        _StubProvider("process-only"),
+    )
+
+    scoped = ConnectorSourceManager()
+    scoped.register_provider(
+        ConnectorSourceConfig(
+            source_id="tenant-a",
+            provider_type="stub",
+            capabilities=frozenset({"search"}),
+        ),
+        _StubProvider("tenant-a"),
+    )
+    token = bind_connector_source_manager(scoped)
+    try:
+        assert get_connector_source_manager() is scoped
+        assert [p["source_id"] for p in get_connector_source_manager().list_providers()] == [
+            "tenant-a"
+        ]
+        assert [p["source_id"] for p in process.list_providers()] == ["process-only"]
+    finally:
+        reset_connector_source_manager_binding(token)
+
+    assert get_connector_source_manager() is process
+    assert [p["source_id"] for p in get_connector_source_manager().list_providers()] == [
+        "process-only"
+    ]
+    reset_connector_source_manager()

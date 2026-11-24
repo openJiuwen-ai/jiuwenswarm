@@ -384,8 +384,12 @@ class SkillRetrievalToolkit:
 
     def get_tools(self) -> list[Tool]:
         tool, = self.runtime.retrieval.get_tools()
-        tool.card.description += (
-            ' To look up installed experts, use type=["expert"] and one focused query per role. '
+        tool.card.description = (
+            "Before starting work that needs independent review, distinct domain or platform expertise, "
+            'or separate deliverables that can be developed in parallel, call this tool with type=["expert"] '
+            "to find relevant installed experts. Search even if no expert was named. "
+            "Use one focused query per role or workstream. "
+            f"{tool.card.description} "
             "Use returned expert references when spawn_expert is available."
         )
         return [tool]

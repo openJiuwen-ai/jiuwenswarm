@@ -45,7 +45,11 @@ import {
 } from '../../services/personalContextApi';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
 import { isProjectDirectoryPickerSupported, selectProjectDirectory } from '../../features/workspace/projectDirectoryPicker';
-import { selectLocalFiles } from '../../features/workspace/localFilePicker';
+import {
+  isDesktopLocalFilePicker,
+  isLocalFilePickerSupported,
+  selectLocalFiles,
+} from '../../features/workspace/localFilePicker';
 import { toast } from '../../components/ui/Toast/toastStore';
 import { Input } from '../ui/Input/Input';
 import { Select } from '../ui/Select/Select';
@@ -1073,6 +1077,7 @@ function MultiSelectDropdown<T extends string>({ options, selected, labelKey, on
 function ProviderFields(props: ProviderFieldsProps) {
   const { t } = useTranslation();
   const rootDirEditVersion = useRef(0);
+  const edgeBookmarksPathEditVersion = useRef(0);
   /** 路径/文件选择器失败时给出反馈；取消选择保持静默。 */
   const notifyPickerFailure = (result: {
     ok: boolean;
@@ -1174,11 +1179,13 @@ function ProviderFields(props: ProviderFieldsProps) {
     );
   }
 
+  const isWindowsHost = props.hostPlatform === 'win32';
+  const hasNativeDirectoryPicker =
+    typeof window !== 'undefined' && typeof window.pywebview?.api?.select_project_directory === 'function';
+  const canSelectDirectory =
+    hasNativeDirectoryPicker || (isWindowsHost && isProjectDirectoryPickerSupported());
+
   if (provider === 'local_files') {
-    const hasNativeDirectoryPicker =
-      typeof window !== 'undefined' && typeof window.pywebview?.api?.select_project_directory === 'function';
-    const canSelectDirectory =
-      hasNativeDirectoryPicker || (props.hostPlatform === 'win32' && isProjectDirectoryPickerSupported());
     return (
       <div className="pc-drawer__field">
         <label>{t('personalContext.addContent.localFiles.rootDirLabel')}</label>
@@ -1268,6 +1275,8 @@ function ProviderFields(props: ProviderFieldsProps) {
   }
 
   if (provider === 'browser_bookmarks') {
+    const canSelectBookmarksFile =
+      isDesktopLocalFilePicker() || (isWindowsHost && isLocalFilePickerSupported());
     return (
       <div className="pc-drawer__fields-group">
         <div className="pc-drawer__field">
@@ -1277,10 +1286,11 @@ function ProviderFields(props: ProviderFieldsProps) {
             data-testid="personal-context-edge-profile"
             onChange={props.setEdgeProfile}
             placeholder={t('personalContext.addContent.edge.profilePlaceholder')}
-            suffix={
+            suffix={canSelectDirectory && (
               <button
                 type="button"
                 className="pc-drawer__path-btn"
+                data-testid="personal-context-edge-profile-browse"
                 onClick={async () => {
                   const result = await selectProjectDirectory({});
                   if (result.ok && result.path) {
@@ -1309,7 +1319,7 @@ function ProviderFields(props: ProviderFieldsProps) {
                   />
                 </svg>
               </button>
-            }
+            )}
           />
           <div className="pc-drawer__field-hint">{t('personalContext.addContent.edge.profileHint')}</div>
         </div>
@@ -1318,16 +1328,22 @@ function ProviderFields(props: ProviderFieldsProps) {
           <Input
             value={props.edgeBookmarksPath}
             data-testid="personal-context-edge-bookmarks-path"
-            readOnly
+            onChange={(value) => {
+              edgeBookmarksPathEditVersion.current += 1;
+              props.setEdgeBookmarksPath(value);
+            }}
             placeholder={t('personalContext.addContent.edge.bookmarksPathPlaceholder')}
-            suffix={
+            suffix={canSelectBookmarksFile && (
               <button
                 type="button"
                 className="pc-drawer__path-btn"
+                data-testid="personal-context-edge-bookmarks-path-browse"
                 onClick={async () => {
+                  const editVersion = edgeBookmarksPathEditVersion.current;
                   const result = await selectLocalFiles(false);
-                  if (result.ok && result.files[0]?.path) props.setEdgeBookmarksPath(result.files[0].path);
-                  else notifyPickerFailure(result);
+                  if (result.ok && result.files[0]?.path && editVersion === edgeBookmarksPathEditVersion.current) {
+                    props.setEdgeBookmarksPath(result.files[0].path);
+                  } else notifyPickerFailure(result);
                 }}
                 aria-label="browse"
               >
@@ -1348,7 +1364,7 @@ function ProviderFields(props: ProviderFieldsProps) {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15 3v5h5" />
                 </svg>
               </button>
-            }
+            )}
           />
         </div>
         <div className="pc-drawer__field">

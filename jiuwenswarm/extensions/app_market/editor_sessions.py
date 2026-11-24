@@ -1,4 +1,4 @@
-"""Resolve one persistent editing conversation per market application."""
+"""Create a fresh editing conversation in the app-owned project on every edit."""
 from __future__ import annotations
 
 import asyncio
@@ -68,7 +68,11 @@ class AppEditorSessions:
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def open(self, app_id: str, owner_id: str, request: CoreRequest, options: dict[str, Any]) -> dict[str, Any]:
-        """Serialize lookup/create/bind without importing AgentServer runtime state."""
+        """Create a fresh editing conversation in the app-owned project.
+
+        Each edit operation starts one conversation. Keep previous bindings so
+        the preview action can be restored from any editor session.
+        """
         async def call(method: ReqMethod, params: dict[str, Any]) -> dict[str, Any]:
             ok, payload = await request(method, params)
             if not ok:
@@ -80,30 +84,18 @@ class AppEditorSessions:
             if manifest is None or manifest.owner_id != owner_id:
                 raise EditorSessionError({"error": "Application not found", "code": "NOT_FOUND"})
 
-            if manifest.editor_session_id:
+            create_options = dict(options)
+            edit_token = create_options.pop("edit_token", "")
+            if edit_token != "":
                 try:
-                    session = await call(
-                        ReqMethod.SESSION_GET_METADATA,
-                        {"session_id": manifest.editor_session_id},
-                    )
-                    result = self._payload(manifest, session, created=False)
-                    if manifest.project_id:
-                        available, initialized = await self._ensure_git(
-                            {
-                                "project_id": manifest.project_id,
-                                "project_dir": manifest.project_dir,
-                            },
-                            call,
-                            app_dir=manifest.work_dir,
-                        )
-                        result["git_available"] = available
-                        result["git_initialized"] = initialized
-                    return result
-                except EditorSessionError as exc:
-                    if exc.code != "NOT_FOUND":
-                        raise
-                manifest.editor_session_id = ""
-                manifest.editor_create_token = ""
+                    operation_id = uuid.UUID(edit_token).hex
+                except (ValueError, AttributeError, TypeError) as exc:
+                    raise EditorSessionError({"error": "Invalid edit token", "code": "BAD_REQUEST"}) from exc
+                create_token = uuid.uuid5(uuid.NAMESPACE_URL, f"{app_id}/{operation_id}").hex
+            elif manifest.editor_create_pending and manifest.editor_create_token:
+                create_token = manifest.editor_create_token
+            else:
+                create_token = uuid.uuid4().hex
 
             project = await self.resolve_project(manifest, call)
             project_id = str(project.get("project_id") or "")
@@ -113,42 +105,51 @@ class AppEditorSessions:
                 project["project_dir"] = project_dir
             project["project_id"] = project_id
             project_work_mode = str(project.get("work_mode") or "")
-            if (manifest.project_id, manifest.project_dir, manifest.project_work_mode) != (
-                project_id, project_dir, project_work_mode,
-            ):
-                manifest.project_id = project_id
-                manifest.project_dir = project_dir
-                manifest.project_work_mode = project_work_mode
-                self._storage.save_manifest(app_id, manifest)
+            latest = self._storage.load_manifest(app_id)
+            if latest is None or latest.owner_id != owner_id or latest.work_dir != manifest.work_dir:
+                raise EditorSessionError({"error": "Application changed while opening editor", "code": "CONFLICT"})
+            manifest = latest
+            manifest.project_id = project_id
+            manifest.project_dir = project_dir
+            manifest.project_work_mode = project_work_mode
+            manifest.editor_create_token = create_token
+            manifest.editor_create_pending = True
+            self._storage.save_manifest(app_id, manifest)
 
             git_available, git_initialized = await self._ensure_git(
                 project, call, app_dir=manifest.work_dir
             )
 
-            if not manifest.editor_create_token:
-                manifest.editor_create_token = uuid.uuid4().hex
-                self._storage.save_manifest(app_id, manifest)
             created = await call(ReqMethod.SESSION_CREATE, {
-                **options,
-                "create_token": manifest.editor_create_token,
+                **create_options,
+                "create_token": create_token,
                 "mode": f"agent.{project['work_mode']}.normal",
                 "is_swarm": False,
                 "persist_session": False,
                 "project_id": project["project_id"],
                 "work_mode": project["work_mode"],
             })
+            session_id = created["session_id"]
+            session = await call(ReqMethod.SESSION_GET_METADATA, {"session_id": session_id})
             # Publishing can update metadata while creation is awaiting Core.
             current = self._storage.load_manifest(app_id)
-            if (
-                current is None
-                or current.owner_id != owner_id
-                or current.editor_create_token != manifest.editor_create_token
+            conflict = {"error": "Application changed while opening editor", "code": "CONFLICT"}
+            if current is None:
+                raise EditorSessionError(conflict)
+            if (current.owner_id, current.work_dir, current.editor_create_token) != (
+                owner_id,
+                manifest.work_dir,
+                create_token,
             ):
-                raise EditorSessionError({"error": "Application changed while opening editor", "code": "CONFLICT"})
-            current.editor_session_id = created["session_id"]
+                raise EditorSessionError(conflict)
+            if current.editor_session_id and current.editor_session_id not in current.editor_session_ids:
+                current.editor_session_ids.append(current.editor_session_id)
+            if session_id not in current.editor_session_ids:
+                current.editor_session_ids.append(session_id)
+                current.editor_session_id = session_id
+            current.editor_create_pending = False
             self._storage.save_manifest(app_id, current)
-            session = await call(ReqMethod.SESSION_GET_METADATA, {"session_id": current.editor_session_id})
-            result = self._payload(current, session, created=True)
+            result = self._payload(current, {**session, "session_id": session_id}, created=True)
             result.update(
                 {
                     "git_available": git_available,
@@ -160,7 +161,7 @@ class AppEditorSessions:
     @staticmethod
     def _payload(manifest: AppManifest, session: dict[str, Any], *, created: bool) -> dict[str, Any]:
         return {
-            "session": {**session, "session_id": manifest.editor_session_id},
+            "session": session,
             "created": created,
             "project_id": manifest.project_id,
             "project_dir": manifest.project_dir,
@@ -174,6 +175,19 @@ class AppEditorSessions:
         call: CoreCall,
     ) -> dict[str, Any]:
         """Resolve existing binding → source-session project → app directory project."""
+        if manifest.project_id:
+            try:
+                bound = await call(ReqMethod.PROJECT_INFO, {
+                    "project_id": manifest.project_id,
+                    "include_hidden": True,
+                    "include_session_stats": False,
+                })
+            except EditorSessionError as exc:
+                if exc.code != "NOT_FOUND":
+                    raise
+            else:
+                return await self._restore_if_hidden(_project_info(bound), call)
+
         projects_all = await call(
             ReqMethod.PROJECT_LIST,
             {"filter": "all", "include_hidden": True},
@@ -184,12 +198,6 @@ class AppEditorSessions:
                 if str(item.get("project_id") or "") == project_id:
                     return item
             return None
-
-        if manifest.project_id:
-            project = by_id(manifest.project_id)
-            if project is not None:
-                return await self._restore_if_hidden(project, call)
-            # Project was deleted: rebuild it below.
 
         if manifest.source_session and not manifest.project_id:
             try:

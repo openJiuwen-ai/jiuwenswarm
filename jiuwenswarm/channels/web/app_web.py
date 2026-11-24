@@ -79,6 +79,11 @@ def _is_loopback_address(value: object) -> bool:
         return False
 
 
+def _is_loopback_name(host: str) -> bool:
+    """Return whether a bind or Host name is this machine only: ``localhost`` or a loopback IP literal."""
+    return host == "localhost" or _is_loopback_address(host)
+
+
 def _get_share_image_export_manager() -> ShareImageExportManager:
     """Forward to the gateway-owned singleton (shared job registry)."""
     from agent_gateway.channel_manager.web.share_image_export import (
@@ -473,11 +478,15 @@ def _inject_user_web_runtime_config(document: str) -> str:
         document.replace("__JIUWENSWARM_EDITION_VALUE__", edition)
         .replace("__JIUWEN_WEB_TRANSPORT_VALUE__", _runtime_web_transport())
         .replace("__JIUWEN_LOGIN_AUTH_SIMULATE_VALUE__", login_auth_simulate)
+        .replace("__JIUWEN_IFRAME_HOST_ISOLATION_VALUE__", str(edition == "personal").lower())
     )
 
 
 class _SpaStaticHandler(SimpleHTTPRequestHandler):
     """Static file handler with SPA fallback to index.html."""
+
+    _TOP_LEVEL_DOCUMENT_CSP = "frame-ancestors 'none'"
+    _EMBEDDABLE_DOCUMENT_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"
 
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
@@ -894,9 +903,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             resp_body = b"" if stream_response else resp.read()
 
             self.send_response(resp.status, resp.reason)
+            document_policy = self._host_document_policy()
             for key, value in resp.getheaders():
                 if key.lower() in self._HOP_BY_HOP_HEADERS:
                     continue
+                if key.lower() == "content-security-policy" and value == document_policy:
+                    continue  # end_headers sends this policy once for the outer origin.
                 self.send_header(key, value)
             if streaming:
                 self.close_connection = True
@@ -1232,6 +1244,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self._send_desktop_forbidden()
         return True
 
+    def _is_this_machines_page(self) -> bool:
+        """The desktop window by its cookie; without a desktop token, a page this machine opened on a loopback name.
+
+        The Host check keeps out a site that points its own name at 127.0.0.1 (DNS rebinding): the browser
+        still sends that name.
+        """
+        if self.desktop_token:
+            return self._has_desktop_cookie()
+        host = urlparse(f"//{self.headers.get('Host', '')}").hostname or ""
+        return _is_loopback_address(self.client_address[0]) and _is_loopback_name(host)
+
     def _has_desktop_cookie(self) -> bool:
         cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
         return bool(cookie_token) and hmac.compare_digest(
@@ -1239,14 +1262,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         )
 
     def _dispatch_office_addins(self, parsed: ParseResult) -> bool:
-        """``/desktop-api/office-addins``: exists only for the desktop window, answers 404 to anyone else."""
+        """``/desktop-api/office-addins``: exists only for this machine's own page, answers 404 to anyone else."""
         if not parsed.path.startswith(self._OFFICE_ADDINS_PATH):
             return False
         route = parsed.path[len(self._OFFICE_ADDINS_PATH):]
         # A page on another local port shares the cookie; only the desktop window's own page may act.
         same_origin = self.headers.get("Sec-Fetch-Site") == "same-origin"
         addins = self.office_addins
-        if addins is None or not self._has_desktop_cookie():
+        if addins is None or not self._is_this_machines_page():
             self._write_json(404, {"error": "not_found"})
             return True
         match (self.command, route.split("/")):
@@ -2645,9 +2668,19 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def _handle_skills_upload_temp(self) -> None:
         from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+            SKILL_UPLOAD_MAX_REQUEST_BYTES,
             handle_skills_upload_temp_http,
+            skill_http_error_body,
         )
 
+        length = self._parse_content_length()
+        if length > SKILL_UPLOAD_MAX_REQUEST_BYTES:
+            self._discard_request_body(length)
+            self._write_json(
+                413,
+                skill_http_error_body("SKILL_FILE_TOO_LARGE", "上传包超过限制"),
+            )
+            return
         status, payload = handle_skills_upload_temp_http(
             content_type=self.headers.get("Content-Type", ""),
             body=self._read_request_body(),
@@ -2986,10 +3019,25 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 return candidate
         return None
 
+    def _host_document_policy(self) -> str | None:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            return None
+        # Bundled pages and the trusted login callback run top-level with their
+        # original origin. All other documents on this origin stay sandboxed,
+        # including proxied content and files opened outside an iframe.
+        if getattr(self, "_static_cache_control", None) or urlparse(self.path).path == "/api/v1/auth/callback":
+            return self._TOP_LEVEL_DOCUMENT_CSP
+        return self._EMBEDDABLE_DOCUMENT_CSP
+
     def end_headers(self) -> None:
         # 缓存策略在 send_head 里决定、这里统一落头：super().send_head() 内部
         # 就会调用 end_headers，之后再追加头已来不及。非静态路径不设置该
         # 标记，API/代理响应仍走各自的 no-store。
+        document_policy = self._host_document_policy()
+        if document_policy:
+            self.send_header("Content-Security-Policy", document_policy)
         cache_control = getattr(self, "_static_cache_control", None)
         if cache_control:
             self._static_cache_control = None
@@ -3310,9 +3358,33 @@ def main() -> None:
     _ConfiguredHandler.logs_root = logs_root
     _ConfiguredHandler.logger = logger
     handler = partial(_ConfiguredHandler, directory=str(dist_dir))
+
+    def _cleanup_stale_skill_uploads() -> None:
+        try:
+            from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+                cleanup_stale_skill_uploads,
+            )
+
+            removed = cleanup_stale_skill_uploads()
+            if removed:
+                logger.info(
+                    "[jiuwenswarm-web] removed %s stale skill uploads", removed
+                )
+        except Exception as exc:  # noqa: BLE001 - 清理失败不应阻断启动
+            logger.debug("[jiuwenswarm-web] skill upload cleanup skipped: %s", exc)
+
+    # 技能导入临时上传的兜底回收放到后台线程，避免拖慢 Web 启动。
+    threading.Thread(
+        target=_cleanup_stale_skill_uploads,
+        name="skill-upload-cleanup",
+        daemon=True,
+    ).start()
     server = ThreadingHTTPServer((args.host, args.port), handler)
     office_listener = None
-    if desktop_token:
+    # The add-ins change this machine, so only a server that is this machine's alone offers them: the desktop's, or
+    # one that listens on the loopback only (jiuwenswarm-start and jiuwenswarm-web by default; a deployment for
+    # others listens elsewhere).
+    if desktop_token or _is_loopback_name(args.host):
         from jiuwenswarm.channels.desktop.office_addins import OfficeAddins
         from jiuwenswarm.channels.desktop.office_addins.listener import TlsListener
 

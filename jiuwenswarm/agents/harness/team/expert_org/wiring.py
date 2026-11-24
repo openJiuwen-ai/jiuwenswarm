@@ -19,11 +19,14 @@ def register_expert_adapter_installer() -> None:
     from openjiuwen.agent_teams.runtime import TeamRuntimeManager
     from openjiuwen.core.runner.runner import GLOBAL_RUNNER
 
+    from jiuwenswarm.agents.harness.team.expert_org.organization_runtime import install_expert_invitation_policy
+
     manager = vars(GLOBAL_RUNNER).get(_RUNNER_TEAM_RUNTIME_ATTR)
     if manager is None:
         manager = TeamRuntimeManager()
         setattr(GLOBAL_RUNNER, _RUNNER_TEAM_RUNTIME_ATTR, manager)
     org_runtime = getattr(manager, "organization_runtime_manager", None)
+    install_expert_invitation_policy(org_runtime, manager)
     set_installer = getattr(org_runtime, "set_expert_adapter_installer", None)
     if callable(set_installer):
         set_installer(install_expert_org_adapters)

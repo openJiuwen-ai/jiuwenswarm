@@ -23,10 +23,10 @@ from jiuwenswarm.agents.harness.common.rails.symphony.skillpack_route import Ski
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.skill.skillpack_install import inventory_mutex
 from tests.unit_tests.agentserver.test_skillpack_backend import (
-    _install_demo_pack, _write_pack, _write_skill, manager,
+    _install_demo_pack, _write_pack, _write_skill, manager as manager,
 )
 from tests.unit_tests.agentserver.test_skillpack_direct_route import _config, _model_ctx, _tool_ctx
-from tests.unit_tests.agentserver.test_symphony_orchestration_needs_input import _outer_ctx
+from tests.unit_tests.agentserver.test_symphony_orchestration_interactions import _outer_ctx
 
 
 async def _context(manager, tmp_path: Path, *, extra_roots: tuple[Path, ...] = ()):

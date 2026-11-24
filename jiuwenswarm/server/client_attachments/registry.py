@@ -38,12 +38,16 @@ class Capability(StrEnum):
     MESSAGE_RULES = "message_rules"
     # The workspace's skill library; the app's own skills come with its template.
     SKILL_LIBRARY = "skill_library"
+    # Scheduled tasks (cron) and heartbeat jobs.
+    SCHEDULING = "scheduling"
 
 
 # An Office task pane's conversation: the document is the deliverable, the task pane renders no A2UI, the
 # persona sets the message rules and the template brings the skills (a library skill would build files instead).
+# A scheduled run finds no task pane once it is closed, and the document tools run only in the task pane.
 _TASK_PANE_LEAVES_OUT = frozenset({
-    Capability.SUBAGENTS, Capability.FILE_DELIVERY, Capability.MESSAGE_RULES, Capability.SKILL_LIBRARY})
+    Capability.SUBAGENTS, Capability.FILE_DELIVERY, Capability.MESSAGE_RULES, Capability.SKILL_LIBRARY,
+    Capability.SCHEDULING})
 
 # client_app: the app's package directory, ``<package>/<relative dir>`` inside an installed Python package so it
 # resolves the same from source and from a frozen bundle, the platform its host is of, and the capabilities its

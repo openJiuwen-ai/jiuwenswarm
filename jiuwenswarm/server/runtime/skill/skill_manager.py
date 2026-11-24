@@ -162,11 +162,21 @@ _DETAIL_KEY_SKILLHUB_DETAIL_FAILED = "skills.swarmskillshub.errors.detailFailed"
 _SKILLHUB_DETAIL_DESC_MAX_CHARS = 200 * 1024
 
 # ZIP 解包配额（防 zip bomb）
-_SKILL_ZIP_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+SKILL_ZIP_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 _SKILL_ZIP_MAX_FILE_COUNT = 5000
 _SKILL_ZIP_MAX_SINGLE_FILE_BYTES = 32 * 1024 * 1024
 _SKILL_ZIP_MAX_PATH_DEPTH = 20
+
+
+def _discard_uploaded_skill_zip(src: Path) -> None:
+    """删除两阶段上传留下的临时 zip（仅限上传专属目录，best-effort）。"""
+    from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+        discard_skill_upload,
+    )
+
+    discard_skill_upload(str(src))
+
 
 # ---------------------------------------------------------------------------
 # 技能同步（Server / Client 分离部署）
@@ -620,6 +630,24 @@ _IMPORT_LOCAL_DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = ("*.obs.*.myhuaw
 _IMPORT_LOCAL_FORBIDDEN_DIRS_ENV = "IMPORT_LOCAL_FORBIDDEN_DIRS"
 # 本地导入结构校验：SKILL.md 开头（仅允许前置空行）必须是 --- frontmatter。
 _SKILL_FRONTMATTER_RE = re.compile(r"^(?:\s*\n)*---\s*\n(.*?)\n---\s*\n?(.*)", re.DOTALL)
+
+
+def parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """SKILL.md frontmatter 的解析实现与公开入口（跨模块复用）。
+
+    开头必须是 ``---`` frontmatter（仅允许前置空行），YAML 解析为 dict；
+    SkillManager 内的同名静态方法委托本函数，语义一致。
+    """
+    match = _SKILL_FRONTMATTER_RE.match(text)
+    if not match:
+        raise ValueError("SKILL.md 开头必须是 --- frontmatter（仅允许前置空行）")
+    try:
+        metadata = yaml.safe_load(match.group(1))
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("SKILL.md frontmatter YAML 无效") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("SKILL.md frontmatter 必须是 YAML 对象")
+    return metadata, match.group(2).strip()
 _ONLINE_SEARCH_RRF_K = 60
 _ONLINE_SEARCH_SOURCE_ORDER = {"skillnet": 0, "teamskillshub": 1, "clawhub": 2}
 _ONLINE_SEARCH_SOURCE_TIMEOUT = 30.0
@@ -5950,35 +5978,49 @@ class SkillManager:
                 f"上传文件不存在: {path_str}",
             ) from exc
 
-        if not src.is_file():
-            raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "上传内容不是文件")
-        name_lower = src.name.lower()
-        if name_lower.endswith(".skill") or name_lower.endswith(".skill.zip"):
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_PACKAGE,
-                "仅接受 .zip 文件",
-            )
-        if not name_lower.endswith(".zip"):
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_PACKAGE,
-                "仅接受 .zip 文件",
-            )
+        try:
+            if not src.is_file():
+                raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "上传内容不是文件")
+            name_lower = src.name.lower()
+            if name_lower.endswith(".skill") or name_lower.endswith(".skill.zip"):
+                raise SkillRpcError(
+                    ERROR_SKILL_INVALID_PACKAGE,
+                    "仅接受 .zip 文件",
+                )
+            if not name_lower.endswith(".zip"):
+                raise SkillRpcError(
+                    ERROR_SKILL_INVALID_PACKAGE,
+                    "仅接受 .zip 文件",
+                )
 
-        size = src.stat().st_size
-        if size > _SKILL_ZIP_MAX_UPLOAD_BYTES:
-            raise SkillRpcError(
-                ERROR_SKILL_FILE_TOO_LARGE,
-                f"上传包超过限制（{_SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
-            )
+            size = src.stat().st_size
+            if size > SKILL_ZIP_MAX_UPLOAD_BYTES:
+                raise SkillRpcError(
+                    ERROR_SKILL_FILE_TOO_LARGE,
+                    f"上传包超过限制（{SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
+                )
 
-        with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_upload_") as tmpdir:
-            skill_dir = self._extract_skill_package_file(src, Path(tmpdir))
-            return self._install_imported_skill_dir(
-                skill_dir,
-                force=overwrite,
-                origin="file-api:upload",
-                conflict_code=ERROR_SKILL_ALREADY_EXISTS,
-            )
+            with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_upload_") as tmpdir:
+                skill_dir = self._extract_skill_package_file(src, Path(tmpdir))
+                result = self._install_imported_skill_dir(
+                    skill_dir,
+                    force=overwrite,
+                    origin="file-api:upload",
+                    conflict_code=ERROR_SKILL_ALREADY_EXISTS,
+                )
+        except SkillRpcError as exc:
+            # 同名冲突时保留上传文件，等待前端覆盖确认后的二次导入。
+            if exc.code not in (
+                ERROR_SKILL_ALREADY_EXISTS,
+                ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
+            ):
+                _discard_uploaded_skill_zip(src)
+            raise
+        except Exception:  # noqa: BLE001 - 清理后仍向上抛出原始异常
+            _discard_uploaded_skill_zip(src)
+            raise
+        _discard_uploaded_skill_zip(src)
+        return result
 
     async def handle_skills_create_from_knowledge(self, params: dict) -> dict:
         """知识转 Skill：校验输入并准备隔离临时目录与 Agent follow-up.
@@ -6012,10 +6054,10 @@ class SkillManager:
             if not src.is_file():
                 raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "知识文档不是文件")
             size = src.stat().st_size
-            if size > _SKILL_ZIP_MAX_UPLOAD_BYTES:
+            if size > SKILL_ZIP_MAX_UPLOAD_BYTES:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
-                    f"知识文档超过限制（{_SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
+                    f"知识文档超过限制（{SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
                 )
             file_path = str(src)
 
@@ -6388,17 +6430,8 @@ class SkillManager:
 
     @staticmethod
     def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-        """解析原始 frontmatter，不填充展示默认值。"""
-        match = _SKILL_FRONTMATTER_RE.match(text)
-        if not match:
-            raise ValueError("SKILL.md 开头必须是 --- frontmatter（仅允许前置空行）")
-        try:
-            metadata = yaml.safe_load(match.group(1))
-        except (yaml.YAMLError, RecursionError) as exc:
-            raise ValueError("SKILL.md frontmatter YAML 无效") from exc
-        if not isinstance(metadata, dict):
-            raise ValueError("SKILL.md frontmatter 必须是 YAML 对象")
-        return metadata, match.group(2).strip()
+        """解析原始 frontmatter，不填充展示默认值（委托公开模块函数）。"""
+        return parse_skill_frontmatter(text)
 
     @staticmethod
     def _validate_skill_metadata(path: Path) -> dict[str, Any]:

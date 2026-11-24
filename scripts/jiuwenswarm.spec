@@ -148,6 +148,9 @@ datas = webview_datas + [
 datas += computer_use_datas
 if sys.platform in ("darwin", "win32"):
     datas += collect_data_files("computer_use", includes=["*.pyi", "py.typed"])
+if sys.platform == "darwin":
+    # The SDK launches this helper by file path to forward inherited descriptors.
+    datas += collect_data_files("computer_use", include_py_files=True, includes=["native/driver_exec.py"])
 # Every actual frozen backend build gets a distinct, bundled identity.
 _identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
 _identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
@@ -367,6 +370,7 @@ excludes = [
 ]
 if sys.platform in ("darwin", "win32"):
     hiddenimports += collect_submodules("computer_use") + collect_submodules("computer_use_mcp")
+    hiddenimports += collect_submodules("computer_use_agent")
 
 # 入口脚本位于 scripts 目录
 entry_script = os.path.join(project_root, "scripts", "jiuwenswarm_exe_entry.py")

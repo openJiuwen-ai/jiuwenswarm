@@ -566,6 +566,46 @@
       }
     ],
     [
+      "Iframe",
+      {
+        "title": "Preview",
+        "src": "/preview",
+        "permissions": "fullscreen"
+      }
+    ],
+    [
+      "Iframe",
+      {
+        "title": "Preview",
+        "src": "/preview",
+        "permissions": [""]
+      }
+    ],
+    [
+      "Iframe",
+      {
+        "title": "Preview",
+        "src": "/preview",
+        "permissions": ["fullscreen *"]
+      }
+    ],
+    [
+      "Iframe",
+      {
+        "title": "Preview",
+        "src": "/preview",
+        "permissions": ["fullscreen; autoplay"]
+      }
+    ],
+    [
+      "Iframe",
+      {
+        "title": "Preview",
+        "src": "/preview",
+        "permissions": ["fullscreen\n"]
+      }
+    ],
+    [
       "Avatar",
       {
         "src": "javascript:alert(1)"
@@ -955,6 +995,46 @@
         "title": "Preview",
         "src": "/preview",
         "icon": "globe"
+      }
+    ],
+    [
+      "Iframe",
+      {
+        "title": "Preview",
+        "src": "https://example.com",
+        "permissions": []
+      }
+    ],
+    [
+      "Iframe",
+      {
+        "title": "Preview",
+        "src": "https://example.com",
+        "permissions": ["camera", "microphone", "display-capture", "autoplay", "future-feature"]
+      }
+    ],
+    [
+      "Iframe",
+      {
+        "title": "Preview",
+        "src": "/preview",
+        "permissions": ["fullscreen", "fullscreen"]
+      }
+    ],
+    [
+      "Iframe",
+      {
+        "title": "Preview",
+        "srcDoc": "<p>Preview</p>",
+        "permissions": []
+      }
+    ],
+    [
+      "Iframe",
+      {
+        "title": "Preview",
+        "srcDoc": "<p>Preview</p>",
+        "permissions": ["fullscreen"]
       }
     ],
     [

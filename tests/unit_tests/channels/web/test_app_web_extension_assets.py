@@ -82,6 +82,9 @@ def test_extension_assets_forward_media_and_backend_errors_instead_of_spa_html(
                 assert response.headers["Content-Length"] == str(len(content))
                 assert response.headers["Cache-Control"] == "no-store"
                 assert response.headers["X-Content-Type-Options"] == "nosniff"
+                assert response.headers["Content-Security-Policy"] == (
+                    "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+                )
                 assert response.read() == (content if method == "GET" else b"")
             finally:
                 connection.close()
@@ -95,14 +98,17 @@ def test_asset_prefix_does_not_capture_similarly_named_frontend_routes(tmp_path)
         def log_message(self, format, *args):  # noqa: A002
             pass
 
-    (tmp_path / "index.html").write_text("<html>SPA entry</html>", encoding="utf-8")
+    marker = "__JIUWEN_IFRAME_HOST_ISOLATION_VALUE__"
+    index = f'<html><meta name="workswarm-iframe-host-isolation" content="{marker}">SPA entry</html>'
+    (tmp_path / "index.html").write_text(index, encoding="utf-8")
     with _serve(partial(FrontendHandler, directory=str(tmp_path))) as port:
         connection = HTTPConnection("127.0.0.1", port, timeout=5)
         try:
             connection.request("GET", "/extension-assets-help")
             response = connection.getresponse()
             assert response.status == 200
-            assert response.read() == b"<html>SPA entry</html>"
+            assert response.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
+            assert response.read() == index.replace(marker, "true").encode()
         finally:
             connection.close()
 

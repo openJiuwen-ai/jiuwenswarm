@@ -154,6 +154,12 @@ button.group-chat-member-row:hover:not(:disabled) { background: var(--color-surf
 .group-chat-member-avatar { width: 40px; height: 40px; }
 .group-chat-tag { flex-shrink: 0; padding: 1px 5px; border-radius: 3px; font-size: 11px; line-height: 16px; white-space: nowrap; }
 .group-chat-tag.is-team { background: var(--color-tag-team-surface); color: var(--color-tag-team-text); }
+.group-chat-auto-reply { display: flex; margin-top: 6px; }
+.group-chat-auto-reply-settings { display: flex; flex-direction: column; gap: 8px; padding: 12px 0 16px; }
+.group-chat-auto-reply-settings .group-chat-panel-heading { margin-top: 0; }
+.group-chat-auto-reply-hint { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; }
+.group-chat-auto-reply-field { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.group-chat-auto-reply-field > span { flex-shrink: 0; }
 .group-chat-panel-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: auto; padding-top: 16px; }
 .group-chat-notice { padding: 12px 16px; background: var(--color-surface-muted); color: var(--color-text-secondary); font-size: 12px; line-height: 1.7; }
 .group-chat-delete {

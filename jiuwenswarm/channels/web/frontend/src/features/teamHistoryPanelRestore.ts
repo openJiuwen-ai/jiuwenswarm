@@ -1,4 +1,5 @@
 import { webClient } from '../services/webClient';
+import i18n from '../i18n';
 import { isEnterprise } from '../edition';
 import { isTeamAgentMode } from './planMode/wireMode';
 import type { Message } from '../types';
@@ -483,7 +484,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
 
     tasks.set(taskId, {
       task_id: taskId,
-      title: title || existing?.title || `任务 ${taskId}`,
+      title: title || existing?.title || i18n.t('team.taskFallback', { id: taskId }),
       content: content || existing?.content,
       status,
       assignee: assignee || existing?.assignee,
@@ -602,7 +603,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
               member_id: memberId,
               kind: 'final',
               timestamp,
-              title: '任务完成总结',
+              title: i18n.t('team.process.execution.final'),
               content,
             });
           }
@@ -617,7 +618,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
             member_id: memberId,
             kind: 'tool_call',
             timestamp,
-            title: `调用 ${toolName}`,
+            title: i18n.t('team.process.execution.toolCallTitle', { tool: toolName }),
             content,
             tool_name: toolName,
             tool_call_id: toolCallId || undefined,
@@ -635,7 +636,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
             member_id: memberId,
             kind: 'tool_result',
             timestamp,
-            title: `${toolName} 结果`,
+            title: i18n.t('team.process.execution.toolResultTitle', { tool: toolName }),
             content,
             tool_name: toolName,
             tool_call_id: toolCallId || undefined,
@@ -663,7 +664,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
               member_id: memberId,
               kind: 'file',
               timestamp,
-              title: '发送文件',
+              title: i18n.t('team.process.execution.sentFile'),
               content: mergedFiles.map((file) => file.name).join('\n'),
               files: mergedFiles,
             });
@@ -903,7 +904,7 @@ function snapshotItemToTask(item: Record<string, unknown>, fallbackTimestamp: nu
   const timestamp = taskTimestamp(item, fallbackTimestamp);
   return {
     task_id: taskId,
-    title: title || `任务 ${taskId}`,
+    title: title || i18n.t('team.taskFallback', { id: taskId }),
     content: content || undefined,
     status,
     assignee: assignee || undefined,

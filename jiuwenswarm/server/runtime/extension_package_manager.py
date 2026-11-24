@@ -706,30 +706,61 @@ def _connection_state(names: list[str] | tuple[str, ...], *, installed: bool) ->
     return "disconnected"
 
 
-def _resolve_package_avatar(pkg_dir: Path, manifest: dict) -> str:
-    """Inline manifest avatar as a data URL so the frontend can render <img src>."""
-    raw = manifest.get("avatar")
+def _package_avatar_file(pkg_dir: Path, raw: Any) -> tuple[Path, str] | None:
     if not isinstance(raw, str):
-        return ""
+        return None
     rel = raw.strip().replace("\\", "/")
-    if not rel or rel.startswith("/") or ".." in PurePosixPath(rel).parts:
-        return ""
+    if not rel or PureWindowsPath(rel).anchor or ".." in PurePosixPath(rel).parts:
+        return None
     mime = _AVATAR_MIME.get(Path(rel).suffix.lower())
     if mime is None:
-        return ""
-    root = pkg_dir.resolve()
-    full = (pkg_dir / rel).resolve()
+        return None
     try:
+        root = pkg_dir.resolve()
+        full = (pkg_dir / rel).resolve()
         full.relative_to(root)
-    except ValueError:
+        if full.is_file():
+            return full, mime
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
+def _avatar_data_url(data: bytes, mime: str) -> str:
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _resolve_package_avatar(pkg_dir: Path, manifest: dict) -> str:
+    """Inline manifest avatar as a data URL so the frontend can render <img src>."""
+    avatar = _package_avatar_file(pkg_dir, manifest.get("avatar"))
+    if avatar is None:
         return ""
-    if not full.is_file():
-        return ""
+    path, mime = avatar
     try:
-        data = full.read_bytes()
+        return _avatar_data_url(path.read_bytes(), mime)
     except OSError:
         return ""
-    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def resolve_package_avatar_thumbnail(pkg_dir: Path, reference: str) -> str:
+    """Return a package avatar small enough to replay from a roster event."""
+    from .marketplace.hub_avatar_cache import MAX_INPUT_BYTES, MAX_THUMBNAIL_BYTES, thumbnail
+
+    avatar = _package_avatar_file(pkg_dir, reference)
+    if avatar is None:
+        return ""
+    path, mime = avatar
+    limit = MAX_THUMBNAIL_BYTES if mime == "image/svg+xml" else MAX_INPUT_BYTES
+    try:
+        with path.open("rb") as image:
+            data = image.read(limit + 1)
+        if not data or len(data) > limit:
+            return ""
+        if mime == "image/svg+xml":
+            return _avatar_data_url(data, mime)
+        return thumbnail(data)
+    except Exception:  # noqa: BLE001 - avatar I/O or decoding must not fail delegation
+        return ""
 
 
 def _build_list_card(
