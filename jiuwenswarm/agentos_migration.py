@@ -19,8 +19,8 @@ AS 配置不在这里迁移：部署脚本用不带 ``-f`` 的 ``jiuwenswarm-ini
 from __future__ import annotations
 
 import argparse
+import logging
 import os
-import sys
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -30,6 +30,8 @@ from typing import Any
 from ruamel.yaml import YAML
 
 from jiuwenswarm.common.utils import get_gateway_config_dir, get_user_workspace_dir
+
+logger = logging.getLogger(__name__)
 
 #: 这些字段由部署参数决定，迁移时必须使用新渲染值，不能沿用旧值。
 DEPLOY_OWNED_PATHS: tuple[str, ...] = (
@@ -242,6 +244,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("[agentos-migrate] %(levelname)s: %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+
     args = _parse_args(argv)
     workspace = args.workspace or get_user_workspace_dir()
     try:
@@ -253,9 +262,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
     except Exception as exc:  # noqa: BLE001 - CLI should surface a stable message
-        print(f"[agentos-migrate] ERROR: {exc}", file=sys.stderr)
+        logger.error("%s", exc)
         return 2
-    print(f"[agentos-migrate] {report}")
+    logger.info("%s", report)
     return 0
 
 
