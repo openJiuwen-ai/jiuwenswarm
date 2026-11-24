@@ -16,7 +16,8 @@ import logging
 import os
 import textwrap
 import time
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,7 +53,12 @@ def _is_daemon_ipc_exec_failure(result: ExecResult) -> bool:
     stderr = result.stderr or ""
     if result.exit_code == 124 and "daemon IPC timeout" in stderr:
         return True
-    return "daemon IPC channel unavailable" in stderr
+    # Only retry pre-execution daemon unavailability; mid-exec transport
+    # failures may already have run non-idempotent commands or hit OOM.
+    return (
+        "daemon IPC channel unavailable" in stderr
+        or "daemon IPC unavailable" in stderr
+    )
 
 
 def _is_daemon_ipc_file_op_failure(result: RuntimeFileOpResult) -> bool:
@@ -184,6 +190,7 @@ class SandboxManager:
         self._lock = asyncio.Lock()
         self._sandboxes: dict[str, SandboxRef] = {}
         self._policies: dict[str, SecurityPolicy] = {}
+        self._inflight_ops: dict[str, int] = {}
         # 空闲沙箱淘汰: 后台 reaper task 句柄 + stop event。``None`` 表示当前没有
         # reaper 在跑 (idle_timeout 未配置 / 已被禁用 / 服务尚未 startup)。
         self._idle_reaper_task: asyncio.Task | None = None
@@ -349,8 +356,8 @@ class SandboxManager:
         ``<= 0`` (the default), the feature is disabled and this method is
         a no-op. Otherwise a single asyncio task runs forever in the
         background polling every ``idle_check_interval`` seconds and
-        deletes any sandbox whose ``last_active_at`` is older than
-        ``idle_timeout``.
+        deletes any idle sandbox (no in-flight operations, no running
+        background jobs, and latest activity older than ``idle_timeout``).
 
         Must be called from inside the running event loop (e.g. the
         FastAPI lifespan startup hook). Safe to call multiple times --
@@ -437,6 +444,225 @@ class SandboxManager:
             self._idle_reaper_task = None
             self._idle_reaper_stop = None
 
+    @staticmethod
+    def _reference_active_ts_utc(ref: SandboxRef) -> datetime:
+        """Return the sandbox's latest activity timestamp normalized to UTC."""
+        reference_ts = ref.last_active_at or ref.started_at or ref.created_at
+        # Naive values are local wall time (same as created_at).
+        # astimezone() converts those, and older UTC values, to UTC.
+        return reference_ts.astimezone(timezone.utc)
+
+    async def _check_sandbox_background_activity(
+        self,
+        sandbox_id: str,
+        runtime: RuntimeAdapter,
+    ) -> tuple[int, datetime | None, bool]:
+        """Inspect background job state for idle-reaping decisions.
+
+        Returns:
+            Tuple ``(running_jobs, latest_finished_at_utc, probe_failed)``.
+            When ``runtime.is_running(sandbox_id)`` reports the sandbox is no
+            longer alive, returns ``(0, None, False)`` so stale job records
+            cannot pin a dead sandbox forever on any runtime.
+        """
+        try:
+            jobs = await runtime.list_background_jobs(sandbox_id, running_only=False)
+        except (SandboxNotFoundError, NotImplementedError):
+            return 0, None, False
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "idle reaper: failed to inspect background jobs for sandbox %s; skipping this cycle",
+                sandbox_id,
+                exc_info=True,
+            )
+            return 0, None, True
+
+        running_count = 0
+        latest_finished_at: datetime | None = None
+        for job in jobs:
+            if job.running:
+                running_count += 1
+                continue
+            if job.finished_at is not None:
+                finished_utc = job.finished_at.astimezone(timezone.utc)
+                if latest_finished_at is None or finished_utc > latest_finished_at:
+                    latest_finished_at = finished_utc
+
+        if running_count > 0:
+            try:
+                alive = await runtime.is_running(sandbox_id)
+            except SandboxNotFoundError:
+                return 0, None, False
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "idle reaper: failed to check liveness for sandbox %s; skipping this cycle",
+                    sandbox_id,
+                    exc_info=True,
+                )
+                return 0, None, True
+            if not alive:
+                return 0, None, False
+
+        return running_count, latest_finished_at, False
+
+    async def _try_claim_idle_sandbox_for_delete(
+        self,
+        sandbox_id: str,
+        *,
+        cutoff: float,
+    ) -> RuntimeAdapter | None:
+        """Atomically re-verify idleness under ``self._lock`` and enter ``DELETING``."""
+        async with self._lock:
+            ref = self._sandboxes.get(sandbox_id)
+            if ref is None or ref.phase != SandboxPhase.READY:
+                return None
+            inflight = self._inflight_ops.get(sandbox_id, 0)
+            if inflight > 0:
+                logger.info(
+                    "idle reaper: skipping sandbox %s before delete "
+                    "(reason=in_flight_ops, in_flight_ops=%d)",
+                    sandbox_id,
+                    inflight,
+                )
+                return None
+            if self._reference_active_ts_utc(ref).timestamp() >= cutoff:
+                logger.info(
+                    "idle reaper: skipping sandbox %s before delete (reason=became_active)",
+                    sandbox_id,
+                )
+                return None
+            runtime = self._runtime_for(ref)
+            ref.phase = SandboxPhase.DELETING
+            self._save_state(ref)
+            return runtime
+
+    async def _teardown_deleting_sandbox(
+        self,
+        sandbox_id: str,
+        runtime: RuntimeAdapter,
+        *,
+        idle_timeout: float | None = None,
+    ) -> None:
+        """Run runtime cleanup, audit logging, and registry removal for a ``DELETING`` sandbox."""
+        # Cleanup can wait on processes and namespace teardown. Keep it outside
+        # the global state lock so deleting one sandbox does not block unrelated
+        # sandbox operations.
+        await runtime.cleanup(sandbox_id)
+        self.policy_engine.delete_sandbox_policy(sandbox_id)
+        if idle_timeout is not None:
+            self.audit.log(
+                AuditEventType.SANDBOX_DELETED,
+                sandbox_id,
+                reason="idle_timeout",
+                idle_timeout_seconds=idle_timeout,
+            )
+        else:
+            self.audit.log(AuditEventType.SANDBOX_DELETED, sandbox_id)
+
+        async with self._lock:
+            self._sandboxes.pop(sandbox_id, None)
+            self._policies.pop(sandbox_id, None)
+            self._delete_state(sandbox_id)
+
+    async def _reap_idle_sandboxes_once(self, *, idle_timeout: float) -> list[str]:
+        """Run one idle-reaper sweep and return the list of reaped sandbox IDs.
+
+        A sandbox is only considered idle when all three hold:
+        1. No in-flight sandbox manager operations (exec / background / file ops).
+        2. No running background jobs inside the sandbox.
+        3. Last activity (including completion of recent operations or background
+           jobs) is older than ``idle_timeout``.
+        """
+        now = datetime.now(timezone.utc)
+        cutoff = now.timestamp() - idle_timeout
+        candidates: list[tuple[str, RuntimeAdapter]] = []
+        async with self._lock:
+            for sid, ref in self._sandboxes.items():
+                # Only consider READY sandboxes: PROVISIONING is still
+                # spinning up its bwrap / daemon (user code hasn't had a
+                # chance to touch it yet, so an idle judgment would be
+                # bogus); DELETING/STOPPED/ERROR have no live daemon to
+                # reap.
+                if ref.phase != SandboxPhase.READY:
+                    continue
+                if self._reference_active_ts_utc(ref).timestamp() >= cutoff:
+                    continue
+                inflight = self._inflight_ops.get(sid, 0)
+                if inflight > 0:
+                    logger.info(
+                        "idle reaper: skipping sandbox %s "
+                        "(reason=in_flight_ops, in_flight_ops=%d)",
+                        sid,
+                        inflight,
+                    )
+                    continue
+                candidates.append((sid, self._runtime_for(ref)))
+
+        if not candidates:
+            return []
+
+        reaped: list[str] = []
+        for sid, runtime in candidates:
+            running_jobs, latest_finished_at, probe_failed = (
+                await self._check_sandbox_background_activity(sid, runtime)
+            )
+            if probe_failed:
+                continue
+            if running_jobs > 0:
+                logger.info(
+                    "idle reaper: skipping sandbox %s "
+                    "(reason=running_background_jobs, running_jobs=%d)",
+                    sid,
+                    running_jobs,
+                )
+                continue
+            if latest_finished_at is not None:
+                async with self._lock:
+                    ref = self._sandboxes.get(sid)
+                    if (
+                        ref is not None
+                        and ref.phase == SandboxPhase.READY
+                        and latest_finished_at.timestamp()
+                        > self._reference_active_ts_utc(ref).timestamp()
+                    ):
+                        ref.last_active_at = latest_finished_at.astimezone()
+                if latest_finished_at.timestamp() >= cutoff:
+                    logger.info(
+                        "idle reaper: skipping sandbox %s "
+                        "(reason=recent_background_job_finished, finished_at=%s)",
+                        sid,
+                        latest_finished_at.isoformat(),
+                    )
+                    continue
+
+            claimed_runtime = await self._try_claim_idle_sandbox_for_delete(
+                sid,
+                cutoff=cutoff,
+            )
+            if claimed_runtime is None:
+                continue
+
+            logger.info(
+                "idle reaper: deleting sandbox %s idle > %.1fs",
+                sid,
+                idle_timeout,
+            )
+            try:
+                await self._teardown_deleting_sandbox(
+                    sid,
+                    claimed_runtime,
+                    idle_timeout=idle_timeout,
+                )
+                reaped.append(sid)
+            except SandboxNotFoundError:
+                # Raced with an external delete; treat as a clean teardown.
+                continue
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "idle reaper: delete_sandbox(%s) failed", sid,
+                )
+        return reaped
+
     async def _idle_reaper_loop(
         self,
         *,
@@ -447,13 +673,12 @@ class SandboxManager:
         """Per-``check_interval`` poll: delete sandboxes idle longer than
         ``idle_timeout``.
 
-        Idleness is measured against ``last_active_at`` (in-memory only),
-        falling back to ``started_at`` / ``created_at`` for sandboxes that
-        somehow have no recorded activity yet. ``DELETING`` / ``STOPPED``
-        sandboxes are skipped because they are either already on the way
-        out or carry no live daemon to reap. Per-sandbox failures are
-        swallowed (logged with stack trace) so a single broken sandbox
-        cannot stall the entire reaper.
+        Idleness requires no in-flight operations, no running background jobs,
+        and ``last_active_at`` (falling back to ``started_at`` / ``created_at``)
+        older than ``idle_timeout``. ``DELETING`` / ``STOPPED`` sandboxes are
+        skipped because they are either already on the way out or carry no live
+        daemon to reap. Per-sandbox failures are swallowed (logged with stack
+        trace) so a single broken sandbox cannot stall the entire reaper.
         """
         while True:
             try:
@@ -463,50 +688,7 @@ class SandboxManager:
             except asyncio.TimeoutError:
                 pass
 
-            now = datetime.now(timezone.utc)
-            cutoff = now.timestamp() - idle_timeout
-            async with self._lock:
-                expired_ids: list[str] = []
-                for sid, ref in self._sandboxes.items():
-                    # Only consider READY sandboxes: PROVISIONING is still
-                    # spinning up its bwrap / daemon (user code hasn't had a
-                    # chance to touch it yet, so an idle judgment would be
-                    # bogus); DELETING/STOPPED/ERROR have no live daemon to
-                    # reap.
-                    if ref.phase != SandboxPhase.READY:
-                        continue
-                    reference_ts = ref.last_active_at or ref.started_at or ref.created_at
-                    # Naive values are local wall time (same as created_at).
-                    # astimezone() converts those, and older UTC values, to UTC.
-                    reference_ts = reference_ts.astimezone(timezone.utc)
-                    if reference_ts.timestamp() < cutoff:
-                        expired_ids.append(sid)
-
-            if not expired_ids:
-                continue
-
-            logger.info(
-                "idle reaper: deleting %d sandbox(es) idle > %.1fs: %s",
-                len(expired_ids),
-                idle_timeout,
-                expired_ids,
-            )
-            for sid in expired_ids:
-                try:
-                    self.audit.log(
-                        AuditEventType.SANDBOX_DELETED,
-                        sid,
-                        reason="idle_timeout",
-                        idle_timeout_seconds=idle_timeout,
-                    )
-                    await self.delete_sandbox(sid)
-                except SandboxNotFoundError:
-                    # Raced with an external delete; treat as a clean teardown.
-                    continue
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "idle reaper: delete_sandbox(%s) failed", sid,
-                    )
+            await self._reap_idle_sandboxes_once(idle_timeout=idle_timeout)
 
     def register_zombie_reaper(
         self,
@@ -585,6 +767,49 @@ class SandboxManager:
         lock and races with the idle reaper).
         """
         ref.last_active_at = _local_now()
+
+    @asynccontextmanager
+    async def _track_active_op(
+        self,
+        sandbox_id: str,
+        *,
+        require_ready: bool = True,
+        action_desc: str = "operate on",
+    ) -> AsyncIterator[tuple[SandboxRef, RuntimeAdapter, str]]:
+        """Track an active sandbox operation across its entire execution window.
+
+        Stamps ``last_active_at`` on entry and completion (while READY) and
+        maintains an in-flight counter so the idle reaper never kills a sandbox
+        mid-operation or immediately after a long operation finishes.
+        """
+        async with self._lock:
+            ref = self._get_sandbox(sandbox_id)
+            if require_ready and ref.phase != SandboxPhase.READY:
+                raise SandboxStateError(
+                    f"Cannot {action_desc} sandbox '{sandbox_id}': state is {ref.phase.value}"
+                )
+            if ref.phase == SandboxPhase.READY:
+                self._mark_active(ref)
+            self._inflight_ops[sandbox_id] = self._inflight_ops.get(sandbox_id, 0) + 1
+            runtime = self._runtime_for(ref)
+            runtime_name = ref.runtime
+
+        try:
+            yield ref, runtime, runtime_name
+        finally:
+            remaining = self._inflight_ops.get(sandbox_id, 0) - 1
+            if remaining <= 0:
+                self._inflight_ops.pop(sandbox_id, None)
+            else:
+                self._inflight_ops[sandbox_id] = remaining
+            current = self._sandboxes.get(sandbox_id)
+            if current is ref and current.phase == SandboxPhase.READY:
+                self._mark_active(current)
+
+    def _is_sandbox_ready_for_restart(self, sandbox_id: str) -> bool:
+        """Return whether a sandbox is still active and eligible for IPC-failure restart."""
+        ref = self._sandboxes.get(sandbox_id)
+        return ref is not None and ref.phase == SandboxPhase.READY
 
     async def create_sandbox(
         self,
@@ -782,6 +1007,10 @@ class SandboxManager:
     async def restart_sandbox(self, sandbox_id: str) -> SandboxRef:
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
+            if ref.phase == SandboxPhase.DELETING:
+                raise SandboxStateError(
+                    f"Cannot restart sandbox '{sandbox_id}': state is {ref.phase.value}"
+                )
             if ref.runtime != RUNTIME_CONCH:
                 await self._stop_sandbox_unlocked(sandbox_id)
                 return await self._start_sandbox_unlocked(sandbox_id)
@@ -853,33 +1082,32 @@ class SandboxManager:
             ref.phase = SandboxPhase.DELETING
             self._save_state(ref)
 
-        # Cleanup can wait on processes and namespace teardown. Keep it outside
-        # the global state lock so deleting one sandbox does not block unrelated
-        # sandbox operations.
-        await runtime.cleanup(sandbox_id)
-        self.policy_engine.delete_sandbox_policy(sandbox_id)
-        self.audit.log(AuditEventType.SANDBOX_DELETED, sandbox_id)
-
-        async with self._lock:
-            self._sandboxes.pop(sandbox_id, None)
-            self._policies.pop(sandbox_id, None)
-            self._delete_state(sandbox_id)
+        await self._teardown_deleting_sandbox(sandbox_id, runtime)
 
     async def exec_in_sandbox(
         self,
         sandbox_id: str,
         request: SandboxExecRequest,
     ) -> ExecResult:
-        async with self._lock:
-            ref = self._get_sandbox(sandbox_id)
-            if ref.phase != SandboxPhase.READY:
-                raise SandboxStateError(
-                    f"Cannot exec in sandbox '{sandbox_id}': state is {ref.phase.value}"
-                )
-            self._mark_active(ref)
-            runtime = self._runtime_for(ref)
-            runtime_name = ref.runtime
+        async with self._track_active_op(
+            sandbox_id,
+            require_ready=True,
+            action_desc="exec in",
+        ) as (_, runtime, runtime_name):
+            return await self._exec_in_sandbox_tracked(
+                sandbox_id,
+                request,
+                runtime,
+                runtime_name,
+            )
 
+    async def _exec_in_sandbox_tracked(
+        self,
+        sandbox_id: str,
+        request: SandboxExecRequest,
+        runtime: RuntimeAdapter,
+        runtime_name: str,
+    ) -> ExecResult:
         # One audit row per exec, emitted **after** the runtime returns so
         # the payload covers both intent (command/workdir) and outcome
         # (exit_code, stdout/stderr tail, duration, error). The earlier
@@ -895,7 +1123,11 @@ class SandboxManager:
         )
         try:
             result = await runtime.exec(sandbox_id, runtime_request)
-            if runtime_name == RUNTIME_PROCESS and _is_daemon_ipc_exec_failure(result):
+            if (
+                runtime_name == RUNTIME_PROCESS
+                and _is_daemon_ipc_exec_failure(result)
+                and self._is_sandbox_ready_for_restart(sandbox_id)
+            ):
                 logger.warning(
                     "Daemon IPC exec failed for sandbox %s (exit=%s), "
                     "restarting sandbox once",
@@ -933,14 +1165,23 @@ class SandboxManager:
         sandbox_id: str,
         request: SandboxBackgroundExecRequest,
     ) -> BackgroundExecResult:
-        async with self._lock:
-            ref = self._get_sandbox(sandbox_id)
-            if ref.phase != SandboxPhase.READY:
-                raise SandboxStateError(
-                    f"Cannot exec in sandbox '{sandbox_id}': state is {ref.phase.value}"
-                )
-            self._mark_active(ref)
-            runtime = self._runtime_for(ref)
+        async with self._track_active_op(
+            sandbox_id,
+            require_ready=True,
+            action_desc="exec in",
+        ) as (_, runtime, _):
+            return await self._exec_background_in_sandbox_tracked(
+                sandbox_id,
+                request,
+                runtime,
+            )
+
+    async def _exec_background_in_sandbox_tracked(
+        self,
+        sandbox_id: str,
+        request: SandboxBackgroundExecRequest,
+        runtime: RuntimeAdapter,
+    ) -> BackgroundExecResult:
 
         job_id = (
             generate_job_id()
@@ -999,9 +1240,11 @@ class SandboxManager:
         sandbox_id: str,
         job_id: str,
     ) -> BackgroundJobStatus:
-        async with self._lock:
-            runtime = self._runtime_for(self._get_sandbox(sandbox_id))
-        return await runtime.get_background_job(sandbox_id, job_id)
+        async with self._track_active_op(
+            sandbox_id,
+            require_ready=False,
+        ) as (_, runtime, _):
+            return await runtime.get_background_job(sandbox_id, job_id)
 
     async def list_background_jobs_in_sandbox(
         self,
@@ -1009,12 +1252,14 @@ class SandboxManager:
         *,
         running_only: bool = False,
     ) -> list[BackgroundJobSummary]:
-        async with self._lock:
-            runtime = self._runtime_for(self._get_sandbox(sandbox_id))
-        return await runtime.list_background_jobs(
+        async with self._track_active_op(
             sandbox_id,
-            running_only=running_only,
-        )
+            require_ready=False,
+        ) as (_, runtime, _):
+            return await runtime.list_background_jobs(
+                sandbox_id,
+                running_only=running_only,
+            )
 
     async def kill_background_job_in_sandbox(
         self,
@@ -1022,15 +1267,25 @@ class SandboxManager:
         job_id: str,
         signal: int = 15,
     ) -> KillBackgroundJobResult:
-        async with self._lock:
-            ref = self._get_sandbox(sandbox_id)
-            if ref.phase != SandboxPhase.READY:
-                raise SandboxStateError(
-                    f"Cannot kill background job in sandbox '{sandbox_id}': "
-                    f"state is {ref.phase.value}"
-                )
-            self._mark_active(ref)
-            runtime = self._runtime_for(ref)
+        async with self._track_active_op(
+            sandbox_id,
+            require_ready=True,
+            action_desc="kill background job in",
+        ) as (_, runtime, _):
+            return await self._kill_background_job_in_sandbox_tracked(
+                sandbox_id,
+                job_id,
+                signal,
+                runtime,
+            )
+
+    async def _kill_background_job_in_sandbox_tracked(
+        self,
+        sandbox_id: str,
+        job_id: str,
+        signal: int,
+        runtime: RuntimeAdapter,
+    ) -> KillBackgroundJobResult:
 
         start = time.monotonic()
         try:
@@ -1070,14 +1325,25 @@ class SandboxManager:
         sandbox_path: str,
         content: bytes,
     ) -> None:
-        async with self._lock:
-            ref = self._get_sandbox(sandbox_id)
-            if ref.phase != SandboxPhase.READY:
-                raise SandboxStateError(
-                    f"Cannot upload to sandbox '{sandbox_id}': state is {ref.phase.value}"
-                )
-            self._mark_active(ref)
-            runtime = self._runtime_for(ref)
+        async with self._track_active_op(
+            sandbox_id,
+            require_ready=True,
+            action_desc="upload to",
+        ) as (_, runtime, _):
+            await self._upload_file_to_sandbox_tracked(
+                sandbox_id,
+                sandbox_path,
+                content,
+                runtime,
+            )
+
+    async def _upload_file_to_sandbox_tracked(
+        self,
+        sandbox_id: str,
+        sandbox_path: str,
+        content: bytes,
+        runtime: RuntimeAdapter,
+    ) -> None:
 
         # One audit row per upload, emitted after the call returns so the
         # payload covers both intent (path/size) and outcome (ok, error,
@@ -1200,16 +1466,25 @@ class SandboxManager:
         sandbox_id: str,
         sandbox_path: str,
     ) -> bytes:
-        async with self._lock:
-            ref = self._get_sandbox(sandbox_id)
-            if ref.phase != SandboxPhase.READY:
-                raise SandboxStateError(
-                    f"Cannot download from sandbox '{sandbox_id}': state is {ref.phase.value}"
-                )
-            self._mark_active(ref)
-            runtime = self._runtime_for(ref)
-            runtime_name = ref.runtime
+        async with self._track_active_op(
+            sandbox_id,
+            require_ready=True,
+            action_desc="download from",
+        ) as (_, runtime, runtime_name):
+            return await self._download_file_from_sandbox_tracked(
+                sandbox_id,
+                sandbox_path,
+                runtime,
+                runtime_name,
+            )
 
+    async def _download_file_from_sandbox_tracked(
+        self,
+        sandbox_id: str,
+        sandbox_path: str,
+        runtime: RuntimeAdapter,
+        runtime_name: str,
+    ) -> bytes:
         # Mirror of ``upload_file_to_sandbox``: a single post-result row
         # carrying intent + outcome. ``size`` is filled in on success
         # (from the actual bytes returned), 0 otherwise.
@@ -1240,6 +1515,7 @@ class SandboxManager:
             runtime_name == RUNTIME_PROCESS
             and not result.ok
             and _is_daemon_ipc_file_op_failure(result)
+            and self._is_sandbox_ready_for_restart(sandbox_id)
         ):
             logger.warning(
                 "Daemon IPC read failed for sandbox %s (%s), restarting sandbox once",
@@ -1329,14 +1605,23 @@ class SandboxManager:
         sandbox_id: str,
         request: SandboxListRequest,
     ) -> list[dict[str, object]]:
-        async with self._lock:
-            ref = self._get_sandbox(sandbox_id)
-            if ref.phase != SandboxPhase.READY:
-                raise SandboxStateError(
-                    f"Cannot list files in sandbox '{sandbox_id}': state is {ref.phase.value}"
-                )
-            self._mark_active(ref)
-            runtime = self._runtime_for(ref)
+        async with self._track_active_op(
+            sandbox_id,
+            require_ready=True,
+            action_desc="list files in",
+        ) as (_, runtime, _):
+            return await self._list_files_in_sandbox_tracked(
+                sandbox_id,
+                request,
+                runtime,
+            )
+
+    async def _list_files_in_sandbox_tracked(
+        self,
+        sandbox_id: str,
+        request: SandboxListRequest,
+        runtime: RuntimeAdapter,
+    ) -> list[dict[str, object]]:
 
         # Fast path: ask the daemon to walk the directory in-process.
         # Saves the python3 cold start and the fork+exec that the legacy
@@ -1463,14 +1748,27 @@ class SandboxManager:
         pattern: str,
         exclude_patterns: list[str] | None = None,
     ) -> list[dict[str, object]]:
-        async with self._lock:
-            ref = self._get_sandbox(sandbox_id)
-            if ref.phase != SandboxPhase.READY:
-                raise SandboxStateError(
-                    f"Cannot search files in sandbox '{sandbox_id}': state is {ref.phase.value}"
-                )
-            self._mark_active(ref)
-            runtime = self._runtime_for(ref)
+        async with self._track_active_op(
+            sandbox_id,
+            require_ready=True,
+            action_desc="search files in",
+        ) as (_, runtime, _):
+            return await self._search_files_in_sandbox_tracked(
+                sandbox_id,
+                sandbox_path,
+                pattern,
+                exclude_patterns,
+                runtime,
+            )
+
+    async def _search_files_in_sandbox_tracked(
+        self,
+        sandbox_id: str,
+        sandbox_path: str,
+        pattern: str,
+        exclude_patterns: list[str] | None,
+        runtime: RuntimeAdapter,
+    ) -> list[dict[str, object]]:
 
         result = await runtime.search_files(
             sandbox_id,
