@@ -82,8 +82,6 @@ declare -A DEPLOY_VARS=(
     ["EXTENSION_DIRS"]=""
     # Gateway-only config dir override. Empty -> <workspace>/infra/config.
     ["JIUWENSWARM_GATEWAY_CONFIG_DIR"]=""
-    # Gateway/AS shared internal token for MCP OAuth callback; not injected into builtin AS.
-    ["JIUWENSWARM_GATEWAY_INTERNAL_TOKEN"]=""
     # Optional explicit Gateway template path; empty -> locate AGW package resource.
     ["GATEWAY_CONFIG_TEMPLATE_FILE"]=""
     # AgentOS IAM; empty URL → http://MASTER_NODE_IP:8090 at deploy check time

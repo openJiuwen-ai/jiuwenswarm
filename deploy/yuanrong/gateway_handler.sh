@@ -137,10 +137,9 @@ gateway_gen_config() {
 
     info "Generating shared Gateway/AgentServer .env from DEPLOY_VARS..."
     # 这些变量必须在进程启动前由 systemd/nohup 注入；写进 .env 后
-    # load_dotenv(override=True) 可能用空值覆盖进程环境，导致路径/token 丢失。
+    # load_dotenv(override=True) 可能用空值覆盖进程环境，导致路径丢失。
     local -a shared_env_excludes=(
         JIUWENSWARM_GATEWAY_CONFIG_DIR
-        JIUWENSWARM_GATEWAY_INTERNAL_TOKEN
     )
     write_filtered_env_to_file "${SHARED_ENV_FILE}" "DEPLOY_VARS" shared_env_excludes
 
@@ -186,9 +185,8 @@ gateway_start_systemd() {
     # gateway 日志独立目录（gateway.log 及轮转归档）；源码默认与其它日志同目录，
     # 由部署脚本显式指定 /var/log/agentos（Linux），可通过 .env.custom 覆盖。
     local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
-    local config_dir gateway_token
+    local config_dir
     config_dir=$(gateway_get_config_dir)
-    gateway_token="${DEPLOY_VARS["JIUWENSWARM_GATEWAY_INTERNAL_TOKEN"]:-}"
 
     # 解析 jiuwenswarm-gateway 和 python bin/lib 目录的绝对路径（远程主机上）
     local gw_bin py_bindir py_libdir
@@ -257,10 +255,6 @@ Environment=AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir}"
 Environment=JIUWENSWARM_RUNTIME_PROFILE=agentos
 Environment=JIUWENSWARM_HOME=/root
 Environment=JIUWENSWARM_GATEWAY_CONFIG_DIR=${config_dir}"
-    if [ -n "${gateway_token}" ]; then
-        dropin_content="${dropin_content}
-Environment=JIUWENSWARM_GATEWAY_INTERNAL_TOKEN=${gateway_token}"
-    fi
     if [ -n "${instance_name}" ]; then
         dropin_content="${dropin_content}
 Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
@@ -330,14 +324,10 @@ gateway_start_nohup() {
 
     # gateway 日志独立目录（与 systemd 模式一致），通过环境变量传给进程
     local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
-    local config_dir gateway_token
+    local config_dir
     config_dir=$(gateway_get_config_dir)
-    gateway_token="${DEPLOY_VARS["JIUWENSWARM_GATEWAY_INTERNAL_TOKEN"]:-}"
     exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
     local log_dir_prefix="JIUWENSWARM_HOME=/root JIUWENSWARM_RUNTIME_PROFILE=agentos JIUWENSWARM_GATEWAY_CONFIG_DIR=${config_dir} AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
-    if [ -n "${gateway_token}" ]; then
-        log_dir_prefix="${log_dir_prefix}JIUWENSWARM_GATEWAY_INTERNAL_TOKEN=${gateway_token} "
-    fi
 
     local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     if [ -n "${instance_name}" ]; then

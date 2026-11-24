@@ -78,9 +78,8 @@ vim .env.custom
 | --------------------------- | -------------------------------------------------------------------------------------------------- | ------------------- |
 | `JIUWENSWARM_INSTANCE_NAME` | jiuwenswarm 实例名（留空则使用默认 workspace `~/.jiuwenswarm`）。指定实例名后：AS 使用 `~/.jiuwenswarm-instances/<实例名>/config/`，Gateway 使用 `~/.jiuwenswarm-instances/<实例名>/infra/config/` | `""`                |
 | `JIUWENSWARM_GATEWAY_CONFIG_DIR` | Gateway 配置目录覆盖。绝对路径直接使用；相对路径按 `<workspace>/infra/config/<override>` 解析。留空使用 `<workspace>/infra/config` | `""`                |
-| `JIUWENSWARM_GATEWAY_INTERNAL_TOKEN` | Gateway 与 AgentServer 共享的内部 token（仅 MCP OAuth callback 校验）。一体机 builtin AS 不再注入该变量，OAuth callback 在 builtin AS 中 fail-closed | `""`                |
-| `GATEWAY_CONCURRENCY`       | 旧 JWS 合并模板字段；AgentOS 的 AGW 模板不使用                                                                       | `1`                 |
-| `GATEWAY_INVOKE_TIMEOUT`    | 旧 JWS 合并模板字段；AgentOS 的 AGW 模板不使用                                                                       | `60`                |
+| `GATEWAY_CONCURRENCY`       | 网关同时向后端发送的最大并发请求数                                                                                  | `1`                 |
+| `GATEWAY_INVOKE_TIMEOUT`    | 网关调用后端接口的超时时间（秒）                                                                                   | `60`                |
 | `GATEWAY_SESSION_MAP_SCOPE` | SessionMap 会话映射策略。可选值：`per_chat_bot`（同聊天窗口+机器人共享会话）、`per_chat_bot_user`（按用户维度隔离会话）                 | `per_chat_bot_user` |
 | `EXTENSION_DIRS`            | 扩展包搜索目录（远程主机上的路径，多个目录用分号 `;` 分隔）。留空则自动从 jiuwenswarm 安装路径推断：`<pip_location>/jiuwenswarm/extensions` | `""`                |
 
