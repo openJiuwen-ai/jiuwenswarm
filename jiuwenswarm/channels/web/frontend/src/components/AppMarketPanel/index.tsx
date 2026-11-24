@@ -407,19 +407,35 @@ export function AppMarketPanel({
   const openMarketDetail = useCallback(async (item: MarketAppInfo) => {
     setDetailTarget({ kind: 'market', id: item.asset_id });
     const known = marketDetails[item.asset_id];
+    // The version pin also covers in-flight loading entries, so a matching
+    // version never starts a duplicate request.
     if (known && known.state !== 'error' && known.version === item.public_latest_version) return;
-    setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'loading' } }));
+    const requestedVersion = item.public_latest_version;
+    setMarketDetails((current) => ({
+      ...current,
+      [item.asset_id]: { state: 'loading', version: requestedVersion },
+    }));
     try {
       const detail = await webRequest<MarketAppDetail>('app_market.market_detail', {
         asset_id: item.asset_id,
-        version: item.public_latest_version,
+        version: requestedVersion,
       });
-      setMarketDetails((current) => ({
-        ...current,
-        [item.asset_id]: { state: 'success', detail, version: item.public_latest_version },
-      }));
+      setMarketDetails((current) => {
+        // A newer request or invalidation replaced this entry while the request
+        // was in flight; the stale response must not overwrite it.
+        const currentEntry = current[item.asset_id];
+        if (currentEntry && currentEntry.version !== requestedVersion) return current;
+        return {
+          ...current,
+          [item.asset_id]: { state: 'success', detail, version: requestedVersion },
+        };
+      });
     } catch {
-      setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'error' } }));
+      setMarketDetails((current) => {
+        const currentEntry = current[item.asset_id];
+        if (currentEntry && currentEntry.version !== requestedVersion) return current;
+        return { ...current, [item.asset_id]: { state: 'error' } };
+      });
     }
   }, [marketDetails]);
 

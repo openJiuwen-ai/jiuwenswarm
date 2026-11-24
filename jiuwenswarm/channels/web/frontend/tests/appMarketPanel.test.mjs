@@ -397,6 +397,52 @@ test('market detail refreshes when an install finishes while its detail page is 
   }
 });
 
+test('a late stale detail response cannot overwrite the refreshed version', async () => {
+  let hubVersion = '1.0.0';
+  const firstDetail = deferred();
+  let firstDetailPending = true;
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') {
+      return { total: 1, items: [{ asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [] }] };
+    }
+    if (method === 'app_market.market_detail') {
+      // The first (v1) request hangs; every later request answers immediately
+      // with the version the caller asked for.
+      if (firstDetailPending) return firstDetail.promise;
+      return { asset_id: params.asset_id, version: params.version || hubVersion, display_name: 'Listed' };
+    }
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    // The first detail request is still hanging, so the page shows loading.
+    assert.match(find('app-market-detail-page').textContent, /Loading\.\.\./);
+    await click(find('app-market-detail-back'));
+    // The Hub publishes v2 and the plaza refreshes; the pinned v1 entry no
+    // longer matches the list version, so reopening re-requests v2.
+    hubVersion = '2.0.0';
+    firstDetailPending = false;
+    await click(document.querySelector('button[data-variant="all"]'));
+    await tick();
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+    // The v1 response arrives after the v2 cache entry is already in place;
+    // it must not put v1 back on the screen.
+    firstDetail.resolve({ asset_id: 'listed', version: '1.0.0', display_name: 'Listed' });
+    for (let i = 0; i < 5; i += 1) await tick();
+    assert.doesNotMatch(find('app-market-detail-page').textContent, /v1\.0\.0/);
+    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('market detail returns to the plaza when a pending refresh removes its app', async () => {
   const refreshed = deferred();
   const item = { asset_id: 'listed', display_name: 'Listed', public_latest_version: '1.0.0', tags: [] };
