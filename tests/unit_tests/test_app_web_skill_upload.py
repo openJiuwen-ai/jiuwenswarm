@@ -378,16 +378,27 @@ def test_upload_discard_removes_uploaded_path(upload_server):
     assert result == {"ok": True, "discarded": False}
 
 
-def test_upload_discard_rejects_oversized_body(upload_server):
+def test_upload_discard_rejects_oversized_body(upload_server, monkeypatch):
     port, _ = upload_server
     status, payload = _post_upload(port, "keep.zip", b"zip-content")
     assert status == 200, payload
     uploaded = Path(payload["path"])
 
+    consumed: list[int] = []
+    original = _SpaStaticHandler._discard_request_body
+
+    def _record(self, length: int) -> None:
+        consumed.append(length)
+        original(self, length)
+
+    monkeypatch.setattr(_SpaStaticHandler, "_discard_request_body", _record)
+
     oversized = b"{" + b" " * (SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES + 1) + b"}"
     status, result = _post_discard(port, oversized)
     assert status == 413
     assert result["code"] == ERROR_SKILL_FILE_TOO_LARGE
+    # 应答前先读完整段请求体，否则连接复位会让浏览器拿不到 413 JSON
+    assert consumed == [len(oversized)]
     # 超限请求不产生任何删除副作用
     assert uploaded.is_file()
 
