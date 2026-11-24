@@ -7,6 +7,8 @@ import { createSelectValueFilter } from '../../../catalog/components/select.ts';
 import { resolveLocalizedText, useLocalizedText } from '../../useLocalizedText.ts';
 
 type Selection = string | number | (string | number)[] | null;
+const DEFAULT_SELECT_WIDTH = 180;
+
 export function WebUISelect({ node, context, emit, appearance }: WebUIAdapterProps) {
   const { i18n } = useTranslation();
   const p = node.props as Pick<SelectProps<Selection>, 'value' | 'defaultValue' | 'mode' | 'disabled'
@@ -35,7 +37,7 @@ export function WebUISelect({ node, context, emit, appearance }: WebUIAdapterPro
   }, [p]);
   const disabled = p.disabled || !context.connected;
   return <Select<Selection>
-    className={appearance?.className} style={{ width: 180, maxWidth: '100%', ...appearance?.style }}
+    className={appearance?.className} style={{ width: DEFAULT_SELECT_WIDTH, maxWidth: '100%', ...appearance?.style }}
     data-testid="webui-select" aria-label={ariaLabel} options={options} value={value} mode={p.mode}
     disabled={disabled} placeholder={p.placeholder} allowClear={p.allowClear} size={p.size} maxCount={p.maxCount}
     variant={p.variant} status={p.status} maxTagCount={p.maxTagCount}

@@ -2137,8 +2137,56 @@ test('Iframe releases inactive documents and resets loading on source changes an
     await act(async () => iframe().dispatchEvent(new window.Event('error')));
     assert.ok(!iframe(), 'failed frame releases its iframe'); assert.equal(state().dataset.variant, 'error');
     assert.notEqual(getComputedStyle(state()).pointerEvents, 'none');
+    await app.replace(tree('https://example.com/third'), 3);
+    assert.equal(iframe().src, 'https://example.com/third');
+    assert.equal(iframe().getAttribute('aria-busy'), 'true');
+    assert.equal(state().dataset.variant, 'loading');
+    await fire(iframe(), 'load');
+    await app.replace({ component: 'Iframe', props: { srcDoc: '<p>New document</p>', title: 'Preview' } }, 4);
+    assert.equal(iframe().getAttribute('srcdoc'), '<p>New document</p>');
     assert.equal(app.business().length, 0);
   } finally { await app.close(); }
+});
+
+test('keep-mounted form controls replay controlled values and changed defaults on new frames', async () => {
+  const panel = (component, props) => ({ component: 'Panel', props: { title: 'Controls' }, children: [{ component, props }] });
+  const slot = { ...target, slot_id: 'conversation.panel.right' };
+  const switchApp = await setup(panel('Switch', { checked: false }), slot);
+  try {
+    const control = () => switchApp.container.querySelector('[role="switch"]');
+    await click(control());
+    assert.equal(control().getAttribute('aria-checked'), 'true');
+    await switchApp.replace(panel('Switch', { checked: false }));
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    await switchApp.replace(panel('Switch', { defaultChecked: true }), 3);
+    assert.equal(control().getAttribute('aria-checked'), 'true');
+    await switchApp.replace(panel('Switch', { defaultChecked: false }), 4);
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+  } finally { await switchApp.close(); }
+
+  const sliderApp = await setup(panel('Slider', { value: 20 }), slot);
+  try {
+    const handle = () => sliderApp.container.querySelector('[role="slider"]');
+    await pressKey(handle(), 'ArrowRight', 39);
+    await sliderApp.replace(panel('Slider', { value: 20 }));
+    assert.equal(handle().getAttribute('aria-valuenow'), '20');
+    await sliderApp.replace(panel('Slider', { defaultValue: 30 }), 3);
+    await sliderApp.replace(panel('Slider', { defaultValue: 40 }), 4);
+    assert.equal(handle().getAttribute('aria-valuenow'), '40');
+  } finally { await sliderApp.close(); }
+
+  const props = (value) => ({ treeData: treeSelectOptions, ...value });
+  const treeApp = await setup(panel('TreeSelect', props({ value: 'alpha' })), slot);
+  try {
+    await changeInput(treeApp.container.querySelector('input'), 'Beta');
+    await click(document.querySelector('.ant-select-tree-node-content-wrapper'));
+    assert.match(treeApp.container.textContent, /Beta/);
+    await treeApp.replace(panel('TreeSelect', props({ value: 'alpha' })));
+    assert.match(treeApp.container.textContent, /Alpha/);
+    await treeApp.replace(panel('TreeSelect', props({ defaultValue: 'alpha' })), 3);
+    await treeApp.replace(panel('TreeSelect', props({ defaultValue: 'beta' })), 4);
+    assert.match(treeApp.container.textContent, /Beta/);
+  } finally { await treeApp.close(); }
 });
 
 for (const source of [{ src: 'https://example.com/wide' }, { srcDoc: '<p>Wide page</p>' }]) {

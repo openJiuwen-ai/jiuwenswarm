@@ -209,7 +209,7 @@ disabled、readOnly 和断连时也不提交；空值与回执尚未完成时的
 
 Switch 使用 Ant Design Switch 管理本地开关状态，按 checked、defaultChecked、false 的顺序初始化。
 切换时为已绑定的 `ui.change` 发送 `{checked}`；未绑定事件时仍可本地切换。
-disabled、loading 或断连时禁用；合法 replace 重新初始化状态，不因初始化或更新主动派发 change。
+disabled、loading 或断连时禁用；rebuild 槽位的合法 replace 重新初始化状态，不因初始化或更新主动派发 change。
 可独立绑定 `ui.click` 接收切换后的 `{checked}`；同时绑定 change 和 click 时，一次点击依次派发两个事件。
 
 Select 使用 Ant Design Select 管理本地选择值，value 优先于 defaultValue；合法 replace 重新初始化选择。
@@ -224,7 +224,9 @@ TreeSelect 使用 Ant Design TreeSelect 管理本地选择值，treeData 的 key
 
 Slider 使用 Ant Design Slider 管理本地数值，按 value、defaultValue 的顺序初始化，目录在缺省时准备合法默认值。
 拖动或键盘调整的每次有效变化为已绑定的 `ui.change` 发送数值 `{value}`，不合并中间值、不等待回执。
-未绑定事件时仍可本地调整；disabled 或断连时禁用，合法 replace 重新初始化数值。
+未绑定事件时仍可本地调整；disabled 或断连时禁用，rebuild 槽位的合法 replace 重新初始化数值。
+
+keep-mounted 槽位中，Switch、Slider 和 TreeSelect 在新帧重放受控值（包括同值），非受控默认值变化时重新初始化；默认值不变时保留本地编辑。Iframe 的 src、srcDoc 或权限变化时重新挂载文档，重置加载状态。
 
 Tabs 使用 Ant Design Tabs 管理本地激活页，activeKey 优先于 defaultActiveKey，缺省取首个可用页签。
 切换页签时为已绑定的 `ui.change` 发送 `{activeKey}`。未提供 `activeKey` 时由组件记录本地选择，提供时由服务端帧决定选中项。禁用页签和断连时不可切换。

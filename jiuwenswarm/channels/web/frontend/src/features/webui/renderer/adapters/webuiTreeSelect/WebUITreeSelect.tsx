@@ -35,7 +35,10 @@ export function WebUITreeSelect({ node, context, emit, appearance }: WebUIAdapte
   );
   useEffect(() => {
     if (p.value !== undefined) setValue(p.value);
-  }, [p.value]);
+  }, [node, p.value]);
+  useEffect(() => {
+    if (p.value === undefined) setValue(p.defaultValue ?? (p.multiple ? [] : null));
+  }, [p.value, p.defaultValue, p.multiple]);
   const disabled = p.disabled || !context.connected;
   return <TreeSelect<Selection>
     className={appearance?.className} style={appearance?.style}

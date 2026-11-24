@@ -119,7 +119,7 @@ MediaSurface 只能作为 Gateway 槽位 `application.background`、`application
 
 已隐藏的源或目标不能产生打开面板请求。存储读取失败由实例错误边界呈现，不当作关闭偏好。客户端偏好控制显示统一使用实例级 visible_when；Box 和 Iframe 均不接受 visibleWhen 属性，也不保留组件级显示偏好的别名。Box.visibleFrom 继续按响应式断点控制子树活动状态。
 
-`application.menu.main`、`task.function.main` 与 `conversation.panel.right` 使用 `keep-mounted`，实例存活期内新帧保留仍然匹配的组件。其余槽位默认按新帧重建。`defaultActiveKey`、`defaultValue` 等非受控初始值在组件挂载时生效。独立 Input 的跨帧重置条件见 [Input](#44-input)。需要由服务端决定跨帧值时，使用受控属性（例如 Tabs.activeKey）并处理对应事件。
+`application.menu.main`、`task.function.main` 与 `conversation.panel.right` 使用 `keep-mounted`，实例存活期内新帧保留仍然匹配的组件。其余槽位默认按新帧重建。非受控初始值通常在组件挂载时生效；Switch、Slider、TreeSelect 的默认值变化时重新初始化，默认值不变时保留本地编辑，新帧中的受控值会重新应用。Iframe 来源或权限变化时重新挂载文档。独立 Input 的跨帧重置条件见 [Input](#44-input)。需要由服务端决定跨帧值时，使用受控属性（例如 Tabs.activeKey）并处理对应事件。
 
 ## 3. 嵌套数据结构
 
@@ -284,6 +284,8 @@ checked 优先于 defaultChecked。支持 ui.click、ui.change，初始化不派
 | `showSearch` | boolean | 否 | — | 允许搜索 |
 
 options 的 value 非空、唯一且同类型；tags 仅接受字符串，允许创建非空新值。单选 value / defaultValue 为标量或 null，多选 / tags 必须为无重复数组，且不超过 maxCount。未提供 showSearch 时，准备阶段按是否声明 mode 决定。支持 ui.select、ui.change、ui.search、ui.clear，门禁见第 5 章。
+
+Select 默认宽度为 180px，最大宽度为容器的 100%；宿主外观样式可覆盖这两个值。
 
 保留组件树时，新帧中的显式 `value` 会同步到 Select。省略 `value` 时，保留仍符合新帧的选择和有效自定义标签，多选按 `maxCount` 保留靠前的值。原有选择全部失效或数据形态与模式不符时，回退到新帧的 `defaultValue`，未设置时清空。已经清空的同模式选择继续保持为空。应用新帧不派发选择事件。
 
