@@ -22,7 +22,7 @@ export interface AssetExportParams {
 export interface AssetExportInfo {
   /** 短效下载链接（token 600 秒过期，过期后需重新调用 assets.export）。 */
   download_url: string;
-  /** 契约文件名 <id>[-<version>].zip，保存时直接使用。 */
+  /** 下载文件名 <stem>[-<version>].zip（stem 优先 UI 显示名，回退资产 id），保存时直接使用。 */
   filename: string;
   size_bytes?: number;
   sha256?: string;

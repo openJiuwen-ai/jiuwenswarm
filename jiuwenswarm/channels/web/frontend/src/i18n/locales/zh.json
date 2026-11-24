@@ -2355,6 +2355,16 @@
       "downloadFailed": "导出包下载失败，请重新导出或稍后重试",
       "saveFailed": "文件保存失败，请重试",
       "requestFailed": "请求失败，请重试"
+    },
+    "actions": {
+      "export": "导出",
+      "exporting": "导出中…"
+    },
+    "messages": {
+      "exportSavedDesktop": "已保存到本地",
+      "exportSavedBrowser": "已保存到所选位置",
+      "exportStartedBrowser": "已开始下载，请查看浏览器下载列表",
+      "exportCancelled": "已取消保存"
     }
   },
   "artifacts": {

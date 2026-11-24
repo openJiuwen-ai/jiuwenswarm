@@ -2355,6 +2355,16 @@
       "downloadFailed": "Failed to download the export package; export again or retry later",
       "saveFailed": "Failed to save the file, please try again",
       "requestFailed": "Request failed, please try again"
+    },
+    "actions": {
+      "export": "Export",
+      "exporting": "Exporting…"
+    },
+    "messages": {
+      "exportSavedDesktop": "Saved to your computer",
+      "exportSavedBrowser": "Saved to the selected location",
+      "exportStartedBrowser": "Download started; check your browser downloads",
+      "exportCancelled": "Save cancelled"
     }
   },
   "artifacts": {
