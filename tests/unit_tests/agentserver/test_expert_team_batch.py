@@ -224,23 +224,26 @@ async def test_concurrent_requests_share_session_lock_and_reuse_success(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_gateway_registers_authenticated_proxy(monkeypatch):
-    from jiuwenswarm.extensions.expert_teams import extension
+async def test_gateway_registers_authenticated_proxy():
     from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions.expert_teams import extension
 
-    proxy = AsyncMock()
-    monkeypatch.setattr(extension, "proxy_unary_request", proxy)
-    channel = SimpleNamespace(register_method=Mock(), connection_user_id=Mock(return_value="alice"))
-    client = object()
+    channel = SimpleNamespace(channel_id="web", register_method=Mock(),
+                              connection_user_id=Mock(return_value="alice"), send_response=AsyncMock())
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True, payload={})))
     extension.ExpertTeamsExtension().bind_web_channel(channel, SimpleNamespace(require_agent_client=lambda: client))
     name, handler = channel.register_method.call_args.args
     assert name == "org.expert_teams.add"
     assert channel.register_method.call_args.kwargs == {"local_only": True}
     ws = object()
     await handler(ws, "r", {"agent_group_names": ["a"]}, "s")
-    assert proxy.call_args.kwargs["user_id"] == "alice"
-    assert proxy.call_args.kwargs["req_method"] == ReqMethod.ORG_EXPERT_TEAMS_ADD
-    assert proxy.call_args.kwargs["session_id"] == "s"
+    client.send_request.assert_awaited_once()
+    envelope = client.send_request.await_args.args[0]
+    assert envelope.user_id == "alice"
+    assert envelope.method == ReqMethod.ORG_EXPERT_TEAMS_ADD.value
+    assert envelope.session_id == "s"
+    assert envelope.params["agent_group_names"] == ["a"]
+    assert channel.send_response.await_args.kwargs["ok"] is True
 
 
 @pytest.mark.asyncio
