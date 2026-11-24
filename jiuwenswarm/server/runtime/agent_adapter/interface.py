@@ -111,6 +111,19 @@ class _TeamPlanApprovalPayloadError(ValueError):
     """Raised when a structured team.plan approval payload is malformed."""
 
 
+# relay-claw 服务端调度入口（reminder / web-digest / TaskRunnerV2 敏感重试）在信封 metadata
+# 写入 officeace_scheduler = {source: "scheduler", task_id, template_id}，HITL 续跑帧同样携带；
+# 用户点击重试、普通聊天不带。只认这个结构化字段，不认 query 文本，避免用户自行伪造。
+_SCHEDULER_METADATA_KEY = "officeace_scheduler"
+
+
+def _is_scheduler_trigger(metadata: Any) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    marker = metadata.get(_SCHEDULER_METADATA_KEY)
+    return isinstance(marker, dict) and marker.get("source") == "scheduler"
+
+
 def _permission_response_key(request: AgentRequest) -> str | None:
     """Return the opaque request ID for a permission continuation.
 
@@ -2113,6 +2126,8 @@ class JiuWenSwarm:
                 "kind": "cron",
                 "context": {"extra": {"cron": cron}},
             }
+        elif not run and _is_scheduler_trigger(request.metadata):
+            inputs["run"] = {"kind": "cron"}
 
         # 将 extension_config 放入 run_context.extra 中，供 Rails 消费
         # 注意：openjiuwen 框架从 inputs["run"]["context"] 解析 RunContext
