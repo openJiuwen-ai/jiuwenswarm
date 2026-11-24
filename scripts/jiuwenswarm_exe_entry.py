@@ -673,6 +673,17 @@ def _dispatch() -> int | None:
         return None
     # 子进程模式：argv 有任何参数（.py 脚本或 -m 等），不检查单实例锁
     if getattr(sys, "frozen", False) and len(sys.argv) >= 2:
+        # Strip Python interpreter flags (e.g., -I, -S) that are meaningless
+        # in a frozen environment. The SDK's wrap_posix_command passes these
+        # flags when launching ``sys.executable -I -S <helper.py> <args>``,
+        # but in a frozen exe the interpreter is already initialized and
+        # these flags only confuse the argument parsing below (issue #6973).
+        _PY_INTERPRETER_FLAGS = frozenset({"-I", "-S", "-E", "-s", "-B", "-P"})
+        if any(arg in _PY_INTERPRETER_FLAGS for arg in sys.argv[1:]):
+            sys.argv = [sys.argv[0]] + [
+                arg for arg in sys.argv[1:] if arg not in _PY_INTERPRETER_FLAGS
+            ]
+
         script_path = next((arg for arg in sys.argv[1:] if arg.endswith(".py") or arg.endswith(".pyw")), None)
         if script_path:
             import runpy
@@ -686,6 +697,25 @@ def _dispatch() -> int | None:
                 sys.argv[0] = str(script_abs)
                 runpy.run_path(str(script_abs), run_name="__main__")
                 return 0
+
+            # Script not on disk — try to resolve as a module from the frozen
+            # bundle (PYZ archive). This handles the SDK's _posix_command.py
+            # helper which is bundled inside the PYZ, not extracted to disk.
+            # When found, run it via run_module so the helper's main() receives
+            # the remaining argv as its command arguments (issue #6973).
+            _meipass = getattr(sys, "_MEIPASS", None)
+            if _meipass:
+                try:
+                    _rel = script_abs.relative_to(Path(_meipass).resolve())
+                    _module_name = str(_rel.with_suffix("")).replace(os.sep, ".")
+                    import importlib.util
+                    if importlib.util.find_spec(_module_name) is not None:
+                        sys.argv.remove(script_path)
+                        sys.argv[0] = _module_name
+                        runpy.run_module(_module_name, run_name="__main__", alter_sys=True)
+                        return 0
+                except (ValueError, ImportError, ModuleNotFoundError):
+                    pass
 
         if sys.argv[1] == "-m" and len(sys.argv) >= 3:
             # ruff is a native binary; its Python wrapper module is not
@@ -707,10 +737,12 @@ def _dispatch() -> int | None:
                 sys.argv = original_argv
             return 0
 
-        # 其他有参数的情况：直接执行，不检查单实例锁
-        # 例如 code 工具、browser tools 等
-        # 让子进程自己处理参数或报错
-        return 0
+        # Unrecognized arguments in a frozen subprocess — explicitly error
+        # instead of silently returning 0, which would cause callers to
+        # mistake the non-execution for success (issue #6973).
+        _unrecognized = " ".join(sys.argv[1:])
+        os.write(2, f"error: unrecognized arguments in frozen subprocess: {_unrecognized}\n".encode())
+        return 1
 
     # 只有无参数时才检查单实例锁（双击启动桌面应用）
     if not _acquire_single_instance_lock():
