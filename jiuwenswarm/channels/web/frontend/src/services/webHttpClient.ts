@@ -191,11 +191,6 @@ const ROUTES: Record<string, RouteRow> = {
   'skills.retrieval.tree': { verb: 'GET', path: '/skills/retrieval/tree', kind: 'unary' },
   'skills.retrieval.index_build': { verb: 'POST', path: '/skills/retrieval/actions/index-build', kind: 'unary' },
   'skills.retrieval.index_cancel': { verb: 'POST', path: '/skills/retrieval/actions/index-cancel', kind: 'unary' },
-  'skills.enterprise.list': { verb: 'GET', path: '/skills/enterprise', kind: 'unary' },
-  'skills.enterprise.install': { verb: 'POST', path: '/skills/enterprise/actions/install', kind: 'unary' },
-  'skills.enterprise.uninstall': { verb: 'POST', path: '/skills/enterprise/actions/uninstall', kind: 'unary' },
-  'skills.enterprise.source.providers': { verb: 'GET', path: '/skills/enterprise/sources', kind: 'unary' },
-  'skills.enterprise.source.search': { verb: 'GET', path: '/skills/enterprise/sources/search', kind: 'unary' },
   // Connector marketplace (enterprise HTTP; paths align with gateway mapped + pod_rest_map).
   'mcp.list': { verb: 'POST', path: '/mcp/actions/list', kind: 'unary' },
   'mcp.sources.providers': { verb: 'POST', path: '/mcp/actions/sources-providers', kind: 'unary' },

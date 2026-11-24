@@ -11520,31 +11520,6 @@ class SkillManager:
             display_name=display_name,
         )
 
-    async def handle_skills_enterprise_list(self, params: dict) -> dict:
-        """企业兼容列表：复用 workspace 安装 DTO，并保留租户标识字段。"""
-        payload = await self.handle_skills_installed(params)
-        service_id = str(
-            params.get("service_id") or self._service_id or ""
-        ).strip()
-        agent_id = str(
-            params.get("agent_id") or self._agent_id or ""
-        ).strip()
-        for skill in payload.get("skills", []):
-            if not isinstance(skill, dict):
-                continue
-            skill.update(
-                {
-                    "skill_name": skill.get("name"),
-                    "skill_source": skill.get("origin"),
-                    "skill_version": skill.get("version"),
-                    "service_id": service_id,
-                    "agent_id": agent_id,
-                }
-            )
-        payload["service_id"] = service_id
-        payload["agent_id"] = agent_id
-        return payload
-
     @staticmethod
     def _source_error(code: str, message: str) -> dict[str, Any]:
         return {

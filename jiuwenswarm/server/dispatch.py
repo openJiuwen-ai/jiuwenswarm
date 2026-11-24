@@ -361,11 +361,6 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SKILLS_SOURCE_INSTALL: handle_skills_request,
     ReqMethod.SKILLS_UPDATES_CHECK: handle_skills_request,
     ReqMethod.SKILLS_UPDATE: handle_skills_request,
-    ReqMethod.SKILLS_ENTERPRISE_LIST: handle_skills_request,
-    ReqMethod.SKILLS_ENTERPRISE_INSTALL: handle_skills_request,
-    ReqMethod.SKILLS_ENTERPRISE_UNINSTALL: handle_skills_request,
-    ReqMethod.SKILLS_ENTERPRISE_SOURCE_PROVIDERS: handle_skills_request,
-    ReqMethod.SKILLS_ENTERPRISE_SOURCE_SEARCH: handle_skills_request,
 }
 
 
