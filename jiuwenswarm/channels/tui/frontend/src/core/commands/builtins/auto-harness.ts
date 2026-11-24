@@ -51,6 +51,12 @@ export function pipelineDisplayLabel(name: string): string {
   return name;
 }
 
+// Request timeout for schedule.run / schedule.create / schedule.check_config.
+// These can take much longer than the default 30s on a cold AgentServer: the
+// task execution is asyncio.create_task'd (non-blocking), but the synchronous
+// wait is dominated by first-time get_agent() + start_scheduler() warmup.
+const SCHEDULE_REQUEST_TIMEOUT_MS = 120_000;
+
 // Interval options
 export const INTERVAL_OPTIONS = {
   "1": { desc: "每 1 小时执行" },
@@ -101,11 +107,17 @@ function getPipelineCompletions(_partial: string, parts: string[]): string[] {
     const flagPos = Math.max(pipelineIndex, shortPipelineIndex);
     // parts.length === flagPos + 2 means we're at the value slot (flag at flagPos, value at flagPos+1)
     if (parts.length === flagPos + 2 && !lastPart.startsWith("-")) {
-      // Return completions with flag preserved: "--pipeline <value>"
-      const flag = pipelineIndex !== -1 ? "--pipeline" : "-p";
+      // Value already filled with a complete pipeline name (e.g. after Tab completion
+      // the user presses space to type the query). Stop suggesting — the slot is done.
+      if (PIPELINE_VALUES.includes(lastPart.toLowerCase())) {
+        return [];
+      }
+      // Only append the value: buildCompletion preserves the flag via existingParts
+      // (parts.slice(0, -1) already contains the flag). Re-adding `${flag} ${v}`
+      // here would duplicate the flag (e.g. "--pipeline --pipeline optimize_expert_harness").
       return PIPELINE_VALUES
         .filter(v => v.startsWith(lastPart.toLowerCase()))
-        .map(v => buildCompletion(`${flag} ${v}`));
+        .map(v => buildCompletion(v));
     }
   }
 
@@ -284,11 +296,18 @@ const scheduleStartCommand: SlashCommand = {
     const intervalValues = ["1", "2", "4", "8", "12", "24"];
     if (intervalIndex !== -1 || shortIntervalIndex !== -1) {
       const flagPos = Math.max(intervalIndex, shortIntervalIndex);
-      if (parts.length === flagPos + 1 && !lastPart.startsWith("-") && /^\d/.test(lastPart)) {
-        const flag = intervalIndex !== -1 ? "--interval" : "-i";
+      // parts.length === flagPos + 2 means we're at the value slot (flag at flagPos, value at flagPos+1).
+      // Only append the value: buildCompletion preserves the flag via existingParts
+      // (parts.slice(0, -1) already contains the flag).
+      if (parts.length === flagPos + 2 && !lastPart.startsWith("-") && /^\d/.test(lastPart)) {
+        // Value already filled with a complete interval (e.g. after Tab completion the
+        // user presses space to type the query). Stop suggesting — the slot is done.
+        if (intervalValues.includes(lastPart)) {
+          return [];
+        }
         return intervalValues
           .filter(v => v.startsWith(lastPart))
-          .map(v => buildCompletion(`${flag} ${v}`));
+          .map(v => buildCompletion(v));
       }
     }
 
@@ -381,7 +400,7 @@ const scheduleStartCommand: SlashCommand = {
 
     // For optimize_meta_harness, check git config
     if (resolvedPipeline === "meta_evolve_pipeline") {
-      const configCheck = await ctx.request<{ valid: boolean; missing_fields?: Array<{ id: string; prompt: string }> }>("schedule.check_config", {});
+      const configCheck = await ctx.request<{ valid: boolean; missing_fields?: Array<{ id: string; prompt: string }> }>("schedule.check_config", {}, SCHEDULE_REQUEST_TIMEOUT_MS);
 
       const missingFields = configCheck.missing_fields as Array<{ id: string; prompt: string }> | undefined;
       if (missingFields && missingFields.length > 0) {
@@ -417,7 +436,7 @@ const scheduleStartCommand: SlashCommand = {
       query: parsed.query,
       pipeline: resolvedPipeline,
       run_immediately: run_immediately,
-    });
+    }, SCHEDULE_REQUEST_TIMEOUT_MS);
 
     if (result.error) {
       ctx.addItem(
@@ -2221,7 +2240,7 @@ const runCommand: SlashCommand = {
 
     // For optimize_meta_harness, check git config
     if (resolvedPipeline === "meta_evolve_pipeline") {
-      const configCheck = await ctx.request<{ valid: boolean; missing_fields?: Array<{ id: string; prompt: string }> }>("schedule.check_config", {});
+      const configCheck = await ctx.request<{ valid: boolean; missing_fields?: Array<{ id: string; prompt: string }> }>("schedule.check_config", {}, SCHEDULE_REQUEST_TIMEOUT_MS);
 
       const missingFields = configCheck.missing_fields as Array<{ id: string; prompt: string }> | undefined;
       if (missingFields && missingFields.length > 0) {
@@ -2239,7 +2258,7 @@ const runCommand: SlashCommand = {
     const result = await ctx.request<{ error?: string; task_id?: string; status?: string; message?: string }>("schedule.run", {
       query: parsed.query,
       pipeline: resolvedPipeline,
-    });
+    }, SCHEDULE_REQUEST_TIMEOUT_MS);
 
     if (result.error) {
       ctx.addItem(
@@ -2397,7 +2416,7 @@ const issueFixCommand: SlashCommand = {
       return;
     }
 
-    const configCheck = await ctx.request<{ valid: boolean; missing_fields?: Array<{ id: string; prompt: string }> }>("schedule.check_config", {});
+    const configCheck = await ctx.request<{ valid: boolean; missing_fields?: Array<{ id: string; prompt: string }> }>("schedule.check_config", {}, SCHEDULE_REQUEST_TIMEOUT_MS);
     const missingFields = configCheck.missing_fields as Array<{ id: string; prompt: string }> | undefined;
     if (missingFields && missingFields.length > 0) {
       const missingList = missingFields.map(f => `  - ${f.prompt}`).join("\n");
