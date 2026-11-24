@@ -3870,6 +3870,8 @@
       "noNewContent": "No new content",
       "capacityRemoved": "Capacity maintenance removed {{count}} content files",
       "capacityIncomplete": "Capacity maintenance is incomplete. Knowledge may still exceed the limit",
+      "tokenUsage": "Used about {{amount}} tokens",
+      "tokenUsageUnavailable": "Token usage was not fully recorded for this run",
       "collectionDisabledHint": "Enable Personal Context and content collection in settings before fetching now.",
       "collectionStoppingHint": "Collection is stopping. Wait until it has stopped and try again.",
       "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
