@@ -10203,10 +10203,10 @@ class JiuWenSwarmDeepAdapter:
             params = request.params
             if policy is None or not isinstance(params, dict):
                 return
+            if not is_single_agent_mode(deprecate_mode(params.get("mode", "agent"))) or is_team_params(params):
+                return
             if (
-                not is_single_agent_mode(deprecate_mode(params.get("mode", "agent")))
-                or is_team_params(params)
-                or self._session_instance_agent_definition is not None
+                self._session_instance_agent_definition is not None
                 or getattr(self, "_session_instance_spec", None) is not None
                 or "agent_name" in self._instance_overrides
             ):
