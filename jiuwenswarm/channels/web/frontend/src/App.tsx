@@ -2919,7 +2919,7 @@ function AppContent({
     prevProcessingBySessionRef.current.set(sessionId, isProcessing);
   }, [sessionId, isProcessing, hasPendingQuestion, loadSessionMetadata]);
 
-  // 连接成功后从 config.yaml 同步 preferred_language 到前端显示
+  // 连接成功后同步 preferred_language（个人版 yaml / 企业版 Gateway 用户习惯表）到前端显示
   useEffect(() => {
     if (!isConnected) return;
     void webRequest<{ preferred_language?: string }>('locale.get_conf')

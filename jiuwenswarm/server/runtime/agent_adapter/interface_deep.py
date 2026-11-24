@@ -6132,11 +6132,34 @@ class JiuWenSwarmDeepAdapter:
             return channel
         return "web"
 
-    @staticmethod
-    def _resolve_prompt_language() -> str:
-        """Resolve configured prompt language for builder input."""
-        config_base = get_config()
-        return str(config_base.get("preferred_language", "zh")).strip().lower()
+    def _resolve_prompt_language(self) -> str:
+        """Resolve configured prompt language for builder input.
+
+        企业态一律走 ``resolve_preferred_language``（已 bind → memo/DB，
+        未 bind → yaml 回退）；个人态优先本 adapter 的 ``_config_base_cache``，
+        再回退 ``config.yaml``，避免只 patch 了模块内 ``get_config`` 别名时读偏。
+        """
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
+        if is_enterprise():
+            return resolve_preferred_language()
+
+        config_base = (
+            self._config_base_cache
+            if isinstance(getattr(self, "_config_base_cache", None), dict)
+            else None
+        )
+        if config_base is not None:
+            raw = config_base.get("preferred_language")
+            if isinstance(raw, str):
+                lang = raw.strip().lower()
+                if lang in {"zh", "en"}:
+                    return lang
+
+        return resolve_preferred_language()
 
     def _resolve_runtime_language(self) -> str:
         """Resolve normalized runtime language shared by rails and tools."""

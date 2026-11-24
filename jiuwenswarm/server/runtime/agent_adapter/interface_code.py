@@ -693,12 +693,20 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         Distinct from prompt/runtime language (always "en" in code mode).
         Returns the normalized language code ("cn"/"en") based on
-        config.yaml preferred_language, so the Language section injected
-        by RuntimePromptRail can instruct the LLM to respond in the
+        preferred_language（企业 memo / 个人 yaml），so the Language section
+        injected by RuntimePromptRail can instruct the LLM to respond in the
         user's chosen language.
         """
-        config_base = self._active_code_config()
-        raw = str(config_base.get("preferred_language", "zh")).strip().lower()
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
+        if is_enterprise():
+            raw = resolve_preferred_language()
+        else:
+            config_base = self._active_code_config()
+            raw = str(config_base.get("preferred_language", "zh")).strip().lower()
         if raw == "zh":
             raw = "cn"
         return resolve_language(raw)
