@@ -1,5 +1,8 @@
-"""JiuwenSwarm adapter for Symphony's optional Skill taxonomy index."""
+"""JiuwenSwarm adapter for Skill retrieval and its optional taxonomy index."""
+
+from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
 
 from .runtime import SkillTaxonomyRuntime
+from .status import read_live_retrieval_status
 
-__all__ = ["SkillTaxonomyRuntime"]
+__all__ = ["CAPABILITY_SEARCH_TOOL_NAME", "SkillTaxonomyRuntime", "read_live_retrieval_status"]

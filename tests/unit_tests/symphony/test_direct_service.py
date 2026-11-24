@@ -35,6 +35,12 @@ _ALLOWED_SYMPHONY_FACADE_SYMBOLS = {
     "openjiuwen.symphony.config": frozenset({"RetrievalConfig"}),
 }
 
+_SWARM_RETRIEVAL_CONSUMERS = {
+    "agents/harness/common/rails/stream_event_rail.py",
+    "server/runtime/agent_adapter/interface_deep.py",
+    "server/runtime/skill/skill_manager.py",
+}
+
 
 class _FakeGraphModel:
     def __init__(self, model="fake-model", confidences=()):
@@ -86,6 +92,7 @@ def _forbidden_symphony_import(
     *,
     allowed_symbols,
     allowed_modules=frozenset(),
+    allow_direct=True,
 ):
     if isinstance(node, ast.Import):
         imported_modules = {
@@ -93,7 +100,9 @@ def _forbidden_symphony_import(
             for alias in node.names
             if alias.name.startswith("openjiuwen.symphony")
         }
-        forbidden = imported_modules - {"openjiuwen.symphony", *allowed_modules}
+        forbidden = imported_modules
+        if allow_direct:
+            forbidden = imported_modules - {"openjiuwen.symphony", *allowed_modules}
         return ",".join(sorted(forbidden))
     if not isinstance(node, ast.ImportFrom):
         return ""
@@ -102,6 +111,8 @@ def _forbidden_symphony_import(
         return "openjiuwen:symphony" if "symphony" in imported else ""
     if not (node.module or "").startswith("openjiuwen.symphony"):
         return ""
+    if not allow_direct:
+        return node.module
     if node.module in allowed_modules:
         return ""
     if imported <= _ALLOWED_SYMPHONY_FACADE_SYMBOLS.get(node.module, frozenset()):
@@ -959,15 +970,17 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
     offenders = []
     for path in package_root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        relative_path = path.relative_to(package_root).as_posix()
         for node in ast.walk(tree):
             violation = _forbidden_symphony_import(
                 node,
                 allowed_symbols=allowed_symbols,
                 allowed_modules=allowed_modules,
+                allow_direct=relative_path not in _SWARM_RETRIEVAL_CONSUMERS,
             )
             if violation:
                 offenders.append(
-                    f"{path.relative_to(package_root)}:{node.lineno}:{violation}"
+                    f"{relative_path}:{node.lineno}:{violation}"
                 )
 
     assert offenders == []
@@ -985,6 +998,9 @@ def test_static_import_guard_detects_openjiuwen_symphony_alias_bypass():
     assert _forbidden_symphony_import(dotted, allowed_symbols=set())
     assert not _forbidden_symphony_import(legal, allowed_symbols=set())
     assert not _forbidden_symphony_import(stable_module, allowed_symbols=set())
+    assert _forbidden_symphony_import(stable_module, allowed_symbols=set(), allow_direct=False)
+    facade_alias = ast.parse("from openjiuwen.symphony.discovery import CapabilitySearchTool as Search").body[0]
+    assert _forbidden_symphony_import(facade_alias, allowed_symbols=set(), allow_direct=False)
 
 
 def test_flow_facade_import_guard_keeps_deep_imports_forbidden():

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolMessage, UserMessage
+from openjiuwen.core.foundation.tool import ToolInfo
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
@@ -118,6 +119,21 @@ def _model_ctx(messages):
         session=None,
         extra={},
     )
+
+
+@pytest.mark.asyncio
+async def test_model_call_skips_call_goal_for_capability_search():
+    search = ToolInfo(name="capability_search", description="Search", parameters={"type": "object", "properties": {}})
+    other = ToolInfo(name="read_file", description="Read", parameters={"type": "object", "properties": {}})
+    ctx = _model_ctx([])
+    ctx.inputs.tools = [search, other]
+
+    await JiuSwarmStreamEventRail().before_model_call(ctx)
+
+    search_input, other_input = ctx.inputs.tools
+    assert "call_goal" not in search_input.parameters["properties"]
+    assert "call_goal" in other_input.parameters["properties"]
+    assert "call_goal" not in other.parameters["properties"]
 
 
 @pytest.mark.asyncio

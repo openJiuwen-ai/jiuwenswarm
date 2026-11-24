@@ -7,6 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -596,6 +597,9 @@ async def test_manager_build_status_and_search_use_configured_global_collection(
     assert status["enabled"] and status["build_supported"]
     assert status["tool_name"] == "capability_search"
     assert status["installed_count"] == 1 and status["installed_enabled_count"] == 1
+    assert (status["candidate_scale"], status["layout"], status["effective_strategy"]) == ("large", "flat", "large_flat")
+    estimated_tokens = status["estimated_candidate_tokens"]
+    assert estimated_tokens >= status["candidate_budget_tokens"] == 2
     started = await manager.handle_skills_retrieval_index_build({})
     assert started["success"] and started["background"] and started["build_id"]
     queued = await manager.handle_skills_retrieval_status({"build_id": started["build_id"]})
@@ -606,6 +610,9 @@ async def test_manager_build_status_and_search_use_configured_global_collection(
     assert status["build_id"] == started["build_id"]
     assert status["core_build_id"] == status["version"]
     assert status["core_build_id"] and status["core_build_id"] != status["build_id"]
+    assert (status["layout"], status["index_state"], status["effective_strategy"]) == ("tree", "fresh", "indexed")
+    assert status["installed_count"] == status["installed_enabled_count"] == status["searchable_count"] == 1
+    assert (status["estimated_candidate_tokens"], status["candidate_budget_tokens"]) == (estimated_tokens, 2)
     assert model.loops == [asyncio.get_running_loop()]
     result = await manager.handle_skills_retrieval_search({"query": "Configured alpha"})
     assert result["success"] and "alpha" in result["result"]
@@ -654,7 +661,8 @@ async def test_adapter_reload_cancels_old_artifact_root_and_waits_for_model_clea
 
 @pytest.mark.asyncio
 async def test_adapter_disabled_tools_are_closed_and_joined_during_cleanup(tmp_path):
-    from unittest.mock import AsyncMock
+    from openjiuwen.core.runner import Runner
+    from openjiuwen.core.single_agent.ability_manager import AbilityManager
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     config = config_for(tmp_path)
@@ -664,18 +672,31 @@ async def test_adapter_disabled_tools_are_closed_and_joined_during_cleanup(tmp_p
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._skill_retrieval_toolkit = toolkit
     adapter._skill_retrieval_environment = toolkit.environment
-    adapter._skill_retrieval_tools = toolkit.get_tools()
+    search, = toolkit.get_tools()
+    abilities = AbilityManager()
+    abilities.add(search.card)
+    adapter._instance = SimpleNamespace(ability_manager=abilities)
+    adapter._tool_cards = [search.card]
+    # A previous registration can survive after the list of tracked instances is cleared.
+    adapter._skill_retrieval_tools = []
     adapter._skill_retrieval_tools_registered = True
     adapter._skill_retrieval_tools_enabled_for_runtime = lambda *args: False
-    adapter._sync_tool_group = lambda **kwargs: ([], False)
-    adapter._drop_tool_names_from_runtime = lambda *args: None
     adapter._cleanup_adapter_resources = AsyncMock()
     adapter.close_moa_runtime = AsyncMock()
-    adapter._sync_skill_retrieval_tools_for_runtime(config)
-    assert adapter._skill_retrieval_toolkit is None
-    with pytest.raises(RuntimeError, match="closed"):
-        await toolkit.runtime.retrieval.search(operation="list")
-    await adapter.cleanup()
+    Runner.resource_mgr.add_tool(search)
+    try:
+        assert Runner.resource_mgr.get_tool(search.card.id) is search
+        assert abilities.get("capability_search") is not None
+        adapter._sync_skill_retrieval_tools_for_runtime(config)
+        assert Runner.resource_mgr.get_tool(search.card.id) is None
+        assert abilities.get("capability_search") is None
+        assert adapter._tool_cards == []
+        assert adapter._skill_retrieval_toolkit is None
+        with pytest.raises(RuntimeError, match="closed"):
+            await toolkit.runtime.retrieval.search(operation="list")
+    finally:
+        Runner.resource_mgr.remove_tool(search.card.id)
+        await adapter.cleanup()
     assert toolkit._close_task.done()
     assert adapter._retired_skill_retrieval_toolkits == []
 
@@ -961,6 +982,54 @@ async def test_manager_reads_disabled_state_and_sources_from_configured_root_not
     disabled = await manager.handle_skills_retrieval_status({})
     assert not disabled["enabled"]
     assert disabled["installed_count"] == 1 and disabled["installed_enabled_count"] == 1
+    assert disabled["searchable_count"] == disabled["estimated_candidate_tokens"] == 0
+    assert disabled["candidate_budget_tokens"] == 2
+    assert (disabled["layout"], disabled["index_state"], disabled["effective_strategy"]) == ("flat", "missing", "legacy")
+
+
+@pytest.mark.asyncio
+async def test_manager_session_status_preserves_installed_counts(tmp_path, monkeypatch):
+    from jiuwenswarm.common import config as common_config
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+
+    config = config_for(tmp_path, context=10_000)
+    root = tmp_path / "skills"
+    for name in ("alpha", "beta", "blocked"):
+        write_skill(root, name)
+    (root / "skills_state.json").write_text(json.dumps({"skill_configs": {"blocked": {"enabled": False}}}))
+    config["symphony"]["retrieval"]["use_existing_index"] = True
+    monkeypatch.setattr(common_config, "get_config", lambda: config)
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    live = await manager.handle_skills_retrieval_status({})
+    assert (live["installed_count"], live["installed_enabled_count"], live["searchable_count"]) == (3, 2, 2)
+    assert (live["candidate_scale"], live["layout"], live["index_state"]) == ("small", "flat", "not-required")
+    assert live["effective_strategy"] == "small_full"
+    assert 0 < live["estimated_candidate_tokens"] < live["candidate_budget_tokens"] == 100
+
+    session = await manager.handle_skills_retrieval_status({"_session_profile": {
+        "session_id": "frozen", "enabled": True, "candidate_scale": "large", "searchable_count": 1,
+        "estimated_candidate_tokens": 80, "candidate_budget_tokens": 40, "layout": "tree", "index_state": "stale",
+    }})
+    assert (session["profile_scope"], session["profile_session_id"]) == ("session", "frozen")
+    assert (session["installed_count"], session["installed_enabled_count"], session["searchable_count"]) == (3, 2, 1)
+    assert (session["estimated_candidate_tokens"], session["candidate_budget_tokens"]) == (80, 40)
+    assert (session["layout"], session["index_state"], session["effective_strategy"]) == ("tree", "stale", "indexed_stale")
+
+
+@pytest.mark.asyncio
+async def test_manager_closes_live_retrieval_runtime_on_read_failure(tmp_path, monkeypatch):
+    from jiuwenswarm.common import config as common_config
+    from jiuwenswarm.runtime.symphony.skill_retrieval import status
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+
+    monkeypatch.setattr(common_config, "get_config", lambda: config_for(tmp_path))
+    runtime = Mock(aclose=AsyncMock())
+    runtime.retrieval.bind_search.side_effect = OSError("collection unavailable")
+    monkeypatch.setattr(status, "SymphonyRuntime", lambda model, config: runtime)
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    with pytest.raises(OSError, match="collection unavailable"):
+        await manager.handle_skills_retrieval_status({})
+    runtime.aclose.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

@@ -169,7 +169,6 @@ from openjiuwen.harness.schema.interaction import (
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from openjiuwen.harness.schema.config import SubAgentConfig
-from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
 
 from agent_gateway.common.interrupt_resume import answers_paused_calls, is_client_tool_resume
 
@@ -354,6 +353,7 @@ from jiuwenswarm.runtime.symphony.llm import (
     SYMPHONY_LLM_CONFIG_REF_KEY,
     register_request_model,
 )
+from jiuwenswarm.runtime.symphony.skill_retrieval import CAPABILITY_SEARCH_TOOL_NAME
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_preview import preview_text

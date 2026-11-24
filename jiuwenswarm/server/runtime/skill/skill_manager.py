@@ -98,6 +98,21 @@ from jiuwenswarm.server.runtime.skill.skill_type import (
     SKILL_TYPE_SWARM,
     detect_skill_type,
 )
+from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
+    get_registered_skill_names,
+    get_skill_enabled,
+    get_state_file,
+    list_disabled_skills,
+    list_execution_disabled_skills,
+    normalize_local_skills,
+    normalize_skill_configs,
+    remove_skill_config,
+    set_skill_enabled,
+)
+from jiuwenswarm.server.runtime.skill.source_registry import (
+    SourceRegistry,
+    SourceRegistryError,
+)
 from jiuwenswarm.server.runtime.skill.skillpack import (
     SkillPackDefinition,
     SkillPackService,
@@ -835,19 +850,6 @@ _KNOWLEDGE_SKILL_MISSING_SKILL_MD = {
 }
 
 
-from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
-    get_registered_skill_names,
-    get_skill_enabled,
-    get_state_file,
-    list_disabled_skills,
-    list_execution_disabled_skills,
-    normalize_local_skills,
-    normalize_skill_configs,
-    remove_skill_config,
-    set_skill_enabled,
-)
-
-
 class SkillNetEmptyDownloadError(Exception):
     """skillnet-ai ``download()`` returned None; 前端用 detail_key 做多语言。"""
 
@@ -1470,12 +1472,6 @@ def _handle_copy_error(
         "success": False,
         "detail": error_msg if error_msg else f"复制失败 ({type(exc).__name__})",
     }
-
-
-from jiuwenswarm.server.runtime.skill.source_registry import (
-    SourceRegistry,
-    SourceRegistryError,
-)
 
 
 def _state_transactional(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -2483,15 +2479,15 @@ class SkillManager:
         params = params if isinstance(params, dict) else {}
         session_profile = params.get("_session_profile")
         session_profile = session_profile if isinstance(session_profile, dict) else None
-        from types import SimpleNamespace
-
-        from openjiuwen.symphony import SymphonyRuntime
-        from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
         from jiuwenswarm.common.config import get_config
         from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
             disabled_skills_from_directories,
             resolve_skill_retrieval_strategy, skill_sources_from_directories,
+        )
+        from jiuwenswarm.runtime.symphony.skill_retrieval import (
+            CAPABILITY_SEARCH_TOOL_NAME,
+            read_live_retrieval_status,
         )
 
         config = get_config() or {}
@@ -2502,37 +2498,20 @@ class SkillManager:
         configured_enabled = policy.retrieval.enabled
         enabled = configured_enabled
         settings = policy.retrieval
-        visible_documents = ()
-        all_count = 0
-        installed_enabled_count = 0
-        snapshot = SimpleNamespace(estimated_candidate_tokens=0,
-                                   candidate_budget_tokens=settings.prompt.candidate_budget_tokens,
-                                   all_candidates_included=True)
-        artifact = SimpleNamespace(layout="flat", index_state="missing")
-        candidate_scale = "small"
         if enabled:
-            runtime = SymphonyRuntime(None, policy)
-            try:
-                flat_config = settings.model_copy(update={"use_existing_index": False})
-                all_count = len(runtime.retrieval.bind_search(config=flat_config).records())
-                directory = runtime.retrieval.bind_search(
-                    config=flat_config,
-                    disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
-                    source_by_id=lambda: skill_sources_from_directories(roots),
-                )
-                visible_documents = directory.records()
-                installed_enabled_count = len(visible_documents)
-                snapshot = directory.prompt_snapshot(refresh=False)
-                candidate_scale = "small" if snapshot.all_candidates_included else "large"
-                if candidate_scale == "large" and settings.use_existing_index:
-                    directory = runtime.retrieval.bind_search(
-                        config=settings,
-                        disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
-                        source_by_id=lambda: skill_sources_from_directories(roots),
-                    )
-                artifact = directory.artifact
-            finally:
-                await runtime.aclose()
+            live = await read_live_retrieval_status(
+                policy,
+                disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
+                source_by_id=lambda: skill_sources_from_directories(roots),
+            )
+            installed_count = live.installed_count
+            installed_enabled_count = live.installed_enabled_count
+            searchable_count = installed_enabled_count
+            candidate_scale = live.candidate_scale
+            estimated_candidate_tokens = live.estimated_candidate_tokens
+            candidate_budget_tokens = live.candidate_budget_tokens
+            layout = live.layout
+            index_state = live.index_state
         else:
             from jiuwenswarm.server.runtime.skill.skilldev.state_utils import load_skill_state
 
@@ -2548,19 +2527,20 @@ class SkillManager:
                             ).strip()
                             if identifier:
                                 identifiers.add(identifier)
-            all_count = len(identifiers)
+            installed_count = len(identifiers)
             installed_enabled_count = len(identifiers - set(disabled_skills_from_directories(roots)))
+            searchable_count = 0
+            candidate_scale = "small"
+            estimated_candidate_tokens = 0
+            candidate_budget_tokens = settings.prompt.candidate_budget_tokens
+            layout = "flat"
+            index_state = "missing"
         build = await asyncio.to_thread(self._skill_taxonomy_runtime().status,
                                         build_id=str(params.get("build_id") or "") or None)
         profile_scope = "default"
         profile_session_id = ""
         profile_model_name = ""
         pinned_index_revision = ""
-        estimated_candidate_tokens = snapshot.estimated_candidate_tokens
-        candidate_budget_tokens = snapshot.candidate_budget_tokens
-        layout = artifact.layout
-        index_state = artifact.index_state
-        searchable_count = len(visible_documents)
         profile_recovery_error = ""
         if session_profile is not None:
             profile_scope = "session"
@@ -2665,7 +2645,7 @@ class SkillManager:
             "index_exists": bool(build.get("index_exists")),
             "fresh": bool(build.get("fresh")),
             "indexed_count": int(build.get("indexed_skill_count", build.get("indexed_count")) or 0),
-            "installed_count": all_count,
+            "installed_count": installed_count,
             "installed_enabled_count": installed_enabled_count,
             "searchable_count": searchable_count,
             "tool_name": CAPABILITY_SEARCH_TOOL_NAME,
@@ -9735,11 +9715,13 @@ class SkillManager:
 
         dl = SkillDownloader(api_token=SkillManager._get_github_token())
         _configure_skillnet_requests_session(dl.session)
-        parsed = dl._parse_github_url(skill_url)
-        if not parsed:
+        # SkillNet tree and blob URLs carry owner/repo/kind/ref followed by an optional path.
+        url_parts = skill_url.rstrip("/").split("/")
+        if len(url_parts) < 7:
             return ""
 
-        owner, repo, ref, dir_path, _ = parsed
+        owner, repo, _, ref, *directory = url_parts[3:]
+        dir_path = "/".join(directory)
         api = f"https://api.github.com/repos/{owner}/{repo}/contents/{dir_path}?ref={ref}"
         try:
             with _skillnet_network_context():
