@@ -12641,6 +12641,14 @@ class JiuWenSwarmDeepAdapter:
         provider = getattr(rail, "_provider", None)
         if provider is None:
             return
+        drain_experience = getattr(rail, "drain_experience", None)
+        if callable(drain_experience):
+            try:
+                await drain_experience()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] jiuwen experience drain failed: %s", type(exc).__name__,
+                )
         sync_task = getattr(rail, "_sync_task", None)
         if sync_task is not None and not sync_task.done():
             try:

@@ -3421,6 +3421,13 @@ class AgentRuntime:
         if not requests:
             self._pending_chat_requests.pop(session_id, None)
 
+    def has_running_work(self) -> bool:
+        """Report whether any foreground Session is currently executing."""
+        return any(
+            self.is_session_running(snapshot.session_id, ignore_heartbeats=True)
+            for snapshot in self._session_coordinator.snapshot_sessions()
+        )
+
     def is_session_running(
         self, session_id: str, *, ignore_heartbeats: bool = False
     ) -> bool:

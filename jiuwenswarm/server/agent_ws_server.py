@@ -16,7 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Optional
 from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
@@ -1271,6 +1271,10 @@ class _AppField:
         setattr(obj._ensure_app_services(), self.name, value)
 
 
+if TYPE_CHECKING:
+    from jiuwenswarm.server.experience_dreaming import AgentMemoryExperienceDreamingService
+
+
 class AgentWebSocketServer:
     """Gateway 与 AgentServer 之间的 WebSocket 服务端（单例）.
 
@@ -1439,6 +1443,7 @@ class AgentWebSocketServer:
         )
         self._personal_context_start_task: asyncio.Task[None] | None = None
         self._sandbox_start_task: asyncio.Task[None] | None = None
+        self._agent_memory_experience_dreaming_service: AgentMemoryExperienceDreamingService | None = None
         # checkpointer 后台预热任务 (start() 里 fire-and-forget, stop() 时 cancel)
         self._checkpointer_warmup_task: Optional[asyncio.Task] = None
         self._team_session_reconcile_task: Optional[asyncio.Task] = None
@@ -1927,6 +1932,13 @@ class AgentWebSocketServer:
         preparation.register("sandbox", self._bootstrap_internal_jiuwenbox)
         self._sandbox_start_task = preparation.start("sandbox")
 
+        from jiuwenswarm.server.experience_dreaming import AgentMemoryExperienceDreamingService
+
+        self._agent_memory_experience_dreaming_service = AgentMemoryExperienceDreamingService(
+            lambda: self._execution_runtime().has_running_work(),
+        )
+        self._agent_memory_experience_dreaming_service.start()
+
     def schedule_image_modality_warmup(
         self, *, reason: str, reset_cache: bool = False
     ) -> None:
@@ -2294,6 +2306,10 @@ class AgentWebSocketServer:
                 pass
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[AgentWebSocketServer] checkpointer warmup stop failed: %s", exc)
+        dreaming = getattr(self, "_agent_memory_experience_dreaming_service", None)
+        if dreaming is not None:
+            await dreaming.stop()
+            self._agent_memory_experience_dreaming_service = None
         close_client_attachments()
         await self._stop_recommendation_host()
         preparation = getattr(self, "_preparation_registry", None)

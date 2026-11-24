@@ -17,6 +17,7 @@ sdk 模式的内核配置优先级（2026-10-17 起 builder 不再自行缝合�
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -86,11 +87,19 @@ class _FakeAgentMemoryProvider:
             "space": space,
             "identity_org": identity_org,
             "identity_user": identity_user,
+            "experience_space": _kwargs.get("experience_space"),
+            "document_runtime_holder": _kwargs.get("document_runtime_holder"),
         }
 
     @staticmethod
     def is_available() -> bool:
         return _FakeAgentMemoryProvider.available
+
+    async def ensure_experience_dreaming(self, **_kwargs):
+        return "test-experience-timer"
+
+    async def sync_experience(self, *_args):
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -178,12 +187,62 @@ def test_sdk_bare_uses_provider_builtin_default():
     assert isinstance(rail, _FakeJiuwenRail)
     init = _FakeAgentMemoryProvider.last_init_kwargs
     root = init["config_dict"]["markdown_store"]["default"]["params"]["root"]
-    assert root.endswith("agent/workspace")  # Shared SDK root; provider fills remaining defaults.
+    assert Path(root).parts[-2:] == ("agent", "workspace")
+    assert init["document_runtime_holder"] is not None
     assert init["config_path"] is None
     assert not init["base_url"]
-    assert init["security_provider"] is not None  # mem2.0 进程内身份 fail-closed
+    assert init["security_provider"]().auth.actor.space == ""
     assert _FakeJiuwenRail.last_args["user_id"] == "__default__"
     assert _FakeJiuwenRail.last_args["session_id"] == ""
+
+
+def test_sdk_own_experience_binds_actor_to_write_space():
+    from jiuwen_memory.common.security.authorization.scope_rules import scope_covers
+    from jiuwen_memory.common.type_def import Scope
+
+    rail = jrb.build_jiuwen_memory_rail(
+        _cfg({"mode": "sdk", "space": "project-a", "experience_space": "own"}),
+    )
+    assert isinstance(rail, _FakeJiuwenRail)
+    init = _FakeAgentMemoryProvider.last_init_kwargs
+    actor = init["security_provider"]().auth.actor
+    assert actor.space == init["space"] == "project-a"
+    assert init["config_dict"]["grant_store"]["default"]["params"]["space"] == "project-a"
+    assert init["config_dict"]["globals"]["experience"]["default_space"] == "own"
+    assert init["document_runtime_holder"] is None
+    assert scope_covers(actor, Scope(org=actor.org, space=actor.space, user=actor.user, session="s1"))
+    assert not scope_covers(actor, Scope(org=actor.org, space="project-b", user=actor.user))
+
+
+def test_sdk_default_experience_grant_is_scoped_and_read_only():
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from jiuwen_memory.common.security.types import Action
+    from jiuwen_memory.common.type_def import Scope
+
+    from jiuwen_memory.common.security.authorization.store import GrantStoreProducer
+    from jiuwen_memory.config.context import AssemblyContext
+
+    sdk = {}
+    jrb._configure_sdk_experience(sdk, {"org": "local", "space": "project-a", "user": "alice"}, "shared-experience")
+    assert "embedder" not in sdk
+    ctx = AssemblyContext.from_dict({"grant_store": sdk["grant_store"]})
+    store = GrantStoreProducer.build_named("default", ctx)
+    actor = jrb._build_security_provider("local", "alice", space="project-a")().auth.actor
+    now = datetime.now(UTC)
+    grants = store.find_active(grantee=actor, grantor_org="local", action=Action.READ, now=now)
+    assert len(grants) == 1
+    assert grants[0].grantor == Scope(org="local", space="shared-experience")
+    assert grants[0].grantee == actor
+    assert not store.find_active(grantee=actor, grantor_org="local", action=Action.WRITE, now=now)
+
+
+def test_sdk_explicit_authorization_keeps_its_grant_configuration():
+    sdk = {"authorizer": {"default": "standard"}, "embedder": {"default": "openai"}}
+    jrb._configure_sdk_experience(sdk, {"org": "local", "user": "alice"}, "shared-experience")
+    assert "grant_store" not in sdk
+    assert sdk["embedder"]["default"] == "openai"
 
 
 def test_sdk_inline_config_dict_passthrough():
@@ -837,3 +896,95 @@ def test_shared_video_root_does_not_override_explicit_gates(tmp_path, monkeypatc
         monkeypatch.setenv("JIUWEN_MEMORY_VIDEO_ROOTS", "invalid-json")
     assert jrb.build_jiuwen_memory_rail(config, **kwargs)
     assert not sessions.exists()
+
+
+@pytest.mark.parametrize(
+    ("ordinary", "experience", "expected"),
+    [
+        ("project-a", "own", "project-a"),
+        ("", "own", ""),
+        ("project-a", "shared-experience", "shared-experience"),
+        ("project-a", "", ""),
+    ],
+)
+def test_experience_space_resolution(ordinary, experience, expected):
+    config = {"memory": {"builtin": {"jiuwen": {"space": ordinary, "experience_space": experience}}}}
+    assert jrb.get_jiuwen_experience_space(config) == expected
+
+
+@pytest.mark.parametrize("kv_target", [None, "redis"])
+def test_dreaming_provider_uses_single_agent_storage(monkeypatch, tmp_path, kv_target):
+    sdk = {"markdown_store": {"default": {"target": "local", "params": {"root": str(tmp_path)}}}}
+    if kv_target:
+        sdk["kv_store"] = {"default": {"target": kv_target}}
+    cfg = _cfg({"mode": "sdk", "space": "project-a", "experience_space": "own", "sdk": sdk})
+    monkeypatch.setattr(
+        "jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider.AgentMemoryMemoryProvider",
+        _FakeAgentMemoryProvider,
+    )
+    assert jrb.build_jiuwen_memory_rail(cfg, shared_document_root=True) is not None
+    agent_options = _FakeAgentMemoryProvider.last_init_kwargs
+    built = jrb.build_experience_dreaming_provider(cfg)
+    assert built is not None
+    _, scope = built
+    options = _FakeAgentMemoryProvider.last_init_kwargs
+    assert options["experience_space"] == agent_options["experience_space"] == scope["space"]
+    dreaming_config = options["config_dict"]
+    assert dreaming_config["markdown_store"] == agent_options["config_dict"]["markdown_store"]
+    grant_params = dreaming_config["grant_store"]["default"]["params"]
+    assert grant_params["org"] == scope["org"]
+    assert grant_params["space"] == scope["space"]
+    assert grant_params["consolidation"] is True
+    assert agent_options["config_dict"]["grant_store"]["default"]["params"]["consolidation"] is False
+    kv = dreaming_config["kv_store"]["default"]
+    if kv_target:
+        assert kv == {"target": kv_target}
+    else:
+        assert kv["target"] == "sqlite"
+        assert kv["params"]["fixed_path"] is True
+        assert Path(kv["params"]["db_path"]).parent == tmp_path / "memory" / "experience"
+        assert "kv_store" not in sdk
+
+
+@pytest.mark.asyncio
+async def test_drain_work_memory_continues_after_experience_failure(monkeypatch):
+    from openjiuwen.harness import rails as core_rails
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    calls = []
+
+    class Rail:
+        async def drain_experience(self):
+            calls.append("experience")
+            raise OSError("experience unavailable")
+
+    async def sync_turn():
+        calls.append("dialogue")
+
+    async def shutdown():
+        calls.append("shutdown")
+
+    rail = Rail()
+    rail._sync_task = asyncio.create_task(sync_turn())
+    rail._provider = SimpleNamespace(shutdown=shutdown)
+    monkeypatch.setattr(core_rails, "JiuwenMemoryRail", Rail)
+    await JiuWenSwarmDeepAdapter._drain_jiuwen_memory_rail(rail)
+    assert calls == ["experience", "dialogue", "shutdown"]
+
+
+def test_dreaming_provider_is_disabled_with_legacy_sdk(monkeypatch):
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "ensure_experience_dreaming", None)
+    cfg = _cfg({"mode": "sdk", "space": "project-a", "experience_space": "own"})
+    assert jrb.build_experience_dreaming_provider(cfg) is None
+    assert _FakeAgentMemoryProvider.last_init_kwargs is None
+    assert jrb.build_jiuwen_memory_rail(cfg) is not None
+
+
+def test_single_agent_experience_is_disabled_with_legacy_sdk(monkeypatch):
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "sync_experience", None)
+    cfg = _cfg({"mode": "sdk", "space": "project-a", "experience_space": "own"})
+    assert jrb.build_jiuwen_memory_rail(cfg) is not None
+    options = _FakeAgentMemoryProvider.last_init_kwargs
+    assert options["experience_space"] is None
+    assert options["document_runtime_holder"] is not None
