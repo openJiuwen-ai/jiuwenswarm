@@ -359,6 +359,44 @@ test('market detail refreshes when the list reports a new version after tab swit
   }
 });
 
+test('market detail refreshes when an install finishes while its detail page is open', async () => {
+  let hubVersion = '1.0.0';
+  const job = deferred();
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') {
+      return { total: 1, items: [{ asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [] }] };
+    }
+    if (method === 'app_market.market_detail') {
+      return { asset_id: params.asset_id, version: params.version || hubVersion, display_name: 'Listed' };
+    }
+    if (method === 'app_market.install_dir_default') return { path: '/workspace/apps' };
+    if (method === 'app_market.install') return { job_id: 'install-job' };
+    if (method === 'app_market.install_status') return job.promise;
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-install'));
+    await click(find('app-market-install-dir').querySelector('button:last-child'));
+    await tick();
+    // The user opens the detail page while the install job is still running.
+    await click(find('app-market-market-card'));
+    await tick();
+    const detailPage = () => find('app-market-detail-page');
+    assert.doesNotMatch(detailPage().textContent, /Loading\.\.\./);
+    assert.match(detailPage().textContent, /v1\.0\.0/);
+    hubVersion = '2.0.0';
+    job.resolve({ state: 'done', phase: 'done' });
+    for (let i = 0; i < 5; i += 1) await tick();
+    // Dropping the stale cache must not leave the open page on the placeholder.
+    assert.doesNotMatch(detailPage().textContent, /Loading\.\.\./);
+    assert.match(detailPage().textContent, /v2\.0\.0/);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('market detail returns to the plaza when a pending refresh removes its app', async () => {
   const refreshed = deferred();
   const item = { asset_id: 'listed', display_name: 'Listed', public_latest_version: '1.0.0', tags: [] };
