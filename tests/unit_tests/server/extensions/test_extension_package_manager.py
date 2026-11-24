@@ -1928,6 +1928,63 @@ class TestAgentTemplateNameUniqueness:
         )
         assert dest.is_dir()
 
+    def test_update_rejects_display_name_of_other_package(
+        self, extension_workspace: Path
+    ) -> None:
+        create_package(AGENT_TEMPLATES, "demo-expert")
+        create_package(AGENT_TEMPLATES, "other-expert")
+
+        with pytest.raises(ValueError, match="already exists in local: DEMO-EXPERT"):
+            catalog.update_agent_template(
+                {
+                    "id": "other-expert",
+                    "name": "DEMO-EXPERT",
+                    "description": "D",
+                    "persona": "P",
+                    "skills": [],
+                }
+            )
+
+        manifest = json.loads(
+            (
+                extension_workspace
+                / "plugins"
+                / AGENT_TEMPLATES
+                / "local"
+                / "other-expert"
+                / "manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert manifest["name"] == "other-expert"
+
+    def test_update_allows_keeping_or_recasing_own_name(
+        self, extension_workspace: Path
+    ) -> None:
+        create_package(AGENT_TEMPLATES, "demo-expert")
+
+        catalog.update_agent_template(
+            {
+                "id": "demo-expert",
+                "name": "Demo-Expert",
+                "description": "D2",
+                "persona": "P2",
+                "skills": [],
+            }
+        )
+
+        manifest = json.loads(
+            (
+                extension_workspace
+                / "plugins"
+                / AGENT_TEMPLATES
+                / "local"
+                / "demo-expert"
+                / "manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert manifest["name"] == "Demo-Expert"
+        assert manifest["description"] == "D2"
+
 
 class TestInstallPendingConnectorsGate:
     """Two-phase install: read-only gate, no connect_mcp, pending then retry."""

@@ -2050,8 +2050,10 @@ def _assert_agent_group_name_available(name: str) -> None:
             )
 
 
-def _assert_agent_template_name_available(name: str) -> None:
-    """Reject create/import when an installed expert shows the same display name.
+def _assert_agent_template_name_available(
+    name: str, *, exclude_package_id: str = ""
+) -> None:
+    """Reject create/import/update when an installed expert shows the same display name.
 
     Mirrors the agent_group rule above. Creation packages live under a
     uuid-suffixed directory id that differs from the manifest name, so without
@@ -2059,6 +2061,9 @@ def _assert_agent_template_name_available(name: str) -> None:
     reimport and installs a second expert under the same display name. The
     message keeps the "already exists in ..." shape consumed by the frontend
     duplicate-name mapping and by import error classification.
+
+    ``exclude_package_id`` skips the package being updated so keeping or
+    re-casing its own name never conflicts with itself.
     """
     normalized_name = name.strip().casefold()
     if not normalized_name:
@@ -2070,6 +2075,8 @@ def _assert_agent_template_name_available(name: str) -> None:
     )
     for label, package_dirs in roots:
         for package_dir in package_dirs:
+            if exclude_package_id and package_dir.name == exclude_package_id:
+                continue
             manifest = read_package_manifest(package_dir)
             if manifest is None:
                 continue
@@ -4124,6 +4131,7 @@ def update_agent_template(params: dict) -> None:
         raise ValueError(
             f"only local packages can be edited: {package_id} (source={existing.get('source')!r})"
         )
+    _assert_agent_template_name_available(name, exclude_package_id=package_id)
 
     # Failures in the in-place rewrite propagate to the caller unchanged; there
     # is no partial state to clean up here (unlike create, which removes a
