@@ -3,6 +3,7 @@ import { Select, type SelectProps } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
 import { useTranslation } from 'react-i18next';
 import type { LocalizedText } from '../../../catalog/components/localizedText.ts';
+import { createSelectValueFilter } from '../../../catalog/components/select.ts';
 import { resolveLocalizedText, useLocalizedText } from '../../useLocalizedText.ts';
 
 type Selection = string | number | (string | number)[] | null;
@@ -15,11 +16,26 @@ export function WebUISelect({ node, context, emit, appearance }: WebUIAdapterPro
   const options = p.options.map(option => ({ ...option, label: resolveLocalizedText(option.label, i18n.resolvedLanguage ?? i18n.language) }));
   const [value, setValue] = useState<Selection>(p.value !== undefined ? p.value : p.defaultValue ?? (p.mode ? [] : null));
   useEffect(() => {
-    if (p.value !== undefined) setValue(p.value);
-  }, [p.value]);
+    if (p.value !== undefined) {
+      setValue(p.value);
+      return;
+    }
+    const fallback = p.defaultValue ?? (p.mode ? [] : null);
+    const isAllowed = createSelectValueFilter(p.options, p.mode === 'tags', p.defaultValue);
+    setValue((current) => {
+      if (p.mode) {
+        if (!Array.isArray(current)) return fallback;
+        const valid = current.filter(isAllowed).slice(0, p.maxCount);
+        if (valid.length === current.length) return current;
+        return valid.length ? valid : fallback;
+      }
+      if (current === null || (!Array.isArray(current) && isAllowed(current))) return current;
+      return fallback;
+    });
+  }, [p]);
   const disabled = p.disabled || !context.connected;
   return <Select<Selection>
-    className={appearance?.className} style={appearance?.style}
+    className={appearance?.className} style={{ width: 180, maxWidth: '100%', ...appearance?.style }}
     data-testid="webui-select" aria-label={ariaLabel} options={options} value={value} mode={p.mode}
     disabled={disabled} placeholder={p.placeholder} allowClear={p.allowClear} size={p.size} maxCount={p.maxCount}
     variant={p.variant} status={p.status} maxTagCount={p.maxTagCount}

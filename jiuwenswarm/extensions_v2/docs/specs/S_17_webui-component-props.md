@@ -3,7 +3,7 @@
 | 项目 | 约定 |
 | --- | --- |
 | 维护范围 | 插件侧声明、AgentServer / Gateway 后端校验、Web 前端校验与渲染 |
-| 最近修订 | 2026-11-21 |
+| 最近修订 | 2026-11-24 |
 | 适用协议 | `webui-tree`，`schema_version=1`；本文件修订不等于自动升级 wire 版本 |
 | 相关设计与验证记录 | [F_01 组件目录与渲染适配](../../../channels/web/frontend/src/features/webui/docs/features/F_01_antd-components.md) |
 | 相邻行为契约 | [S_01 组件运行与交互](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md) |
@@ -119,6 +119,8 @@ MediaSurface 只能作为 Gateway 槽位 `application.background`、`application
 
 已隐藏的源或目标不能产生打开面板请求。存储读取失败由实例错误边界呈现，不当作关闭偏好。客户端偏好控制显示统一使用实例级 visible_when；Box 和 Iframe 均不接受 visibleWhen 属性，也不保留组件级显示偏好的别名。Box.visibleFrom 继续按响应式断点控制子树活动状态。
 
+`application.menu.main`、`task.function.main` 与 `conversation.panel.right` 使用 `keep-mounted`，实例存活期内新帧保留仍然匹配的组件。其余槽位默认按新帧重建。`defaultActiveKey`、`defaultValue` 等非受控初始值在组件挂载时生效。独立 Input 的跨帧重置条件见 [Input](#44-input)。需要由服务端决定跨帧值时，使用受控属性（例如 Tabs.activeKey）并处理对应事件。
+
 ## 3. 嵌套数据结构
 
 以下对象同样拒绝表外字段。带“必填”的字段必须存在。
@@ -212,16 +214,13 @@ Box 不接受 background、style 或 className 等自定义背景与样式属性
 | `icon` | IconName | 否 | — | 白名单图标名 |
 | `iconPlacement` | `start` / `end` | 否 | — | 图标在文案前或后 |
 | `aria-label` | LocalizedText | 否 | — | 纯图标按钮必需的无障碍名称 |
-| `openPanel` | string（<= 128 UTF-8 字节） | 否 | — | 已接受的点击回执后选中同包、同会话的活动右侧面板实例 |
 | `form` | string，最多 200 UTF-8 字节 | 否 | — | Gateway 页面中同一实例的 Form.name；去空白后非空 |
-| `openPanel` | string，最多 128 UTF-8 字节 | 否 | — | 同包、同会话右侧面板的实例 key |
+| `openPanel` | string，最多 128 UTF-8 字节 | 否 | — | 同包右侧面板的实例 key |
 
 字号显示回退 medium。icon 存在且 value 去空白后为空时，必须提供非空 aria-label；target 只能与 href 一起提供。loading.delay 当前只要求有限数值。支持 ui.click；加载、禁用或断连时不能派发。
 form 引用必须有效；点击时先校验表单，成功后直接发送字段值，失败时展示本地错误并且不发送事件。
 普通按钮始终发送空 data。表单能力不改变 value、type、variant 或无障碍属性的名称。
-openPanel 遵循 `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`。只有用户实际点击且 ui.click 返回明确 accepted 回执、源实例仍存活、目标已在 conversation.panel.right 渲染时，当前客户端打开并选中该目标。目标身份从可信源实例派生，不接受其他包或会话。普通 render、失败、未知或迟到的失效交互不得切换页签。显式再次打开可恢复本客户端关闭的插件 Tab；关闭/隐藏释放 iframe 浏览上下文，后台观测不因此停止。
-
-openPanel 仅接受 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`；实例必须已挂载且活动。渲染更新不触发跳转，拒绝回执不跳转。
+`openPanel` 遵循 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`。用户点击且 `ui.click` 返回明确的 `accepted` 回执后，当前客户端可以打开并选中目标，此时源实例和 `conversation.panel.right` 中已渲染的目标都须保持挂载且活动。目标包取自可信源实例。会话范围源使用源实例的会话，application 范围源使用宿主当前会话。没有当前会话、收到普通渲染帧、失败回执、未知回执或交互已失效时，不切换页签。显式再次打开可恢复本客户端关闭的插件 Tab。关闭或隐藏 Tab 会释放 iframe 浏览上下文，后台观测继续运行。
 
 ### 4.4 Input
 
@@ -243,6 +242,10 @@ openPanel 仅接受 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`；实例必须已挂�
 | `autoComplete` | string | 否 | — | Gateway 原生自动填充提示；浏览器可以忽略 off |
 
 初始化 value / defaultValue 和事件值均不得超过 maxLength，长度按 UTF-16 计算。支持 ui.click、ui.change、ui.press_enter；readOnly 仅允许 click。输入法组合期间标识 isComposing，组合提交不重复发送 Enter；未绑定 change 也允许本地编辑。
+
+在保留组件树的槽位中，同一位置的独立 Input 在 `ariaLabel`、`type`、生效的 `defaultValue` 或事件绑定变更时重新初始化。未提供 `value` 时，仅更新 `placeholder` 等展示属性会保留草稿。绑定参数的对象字段顺序不影响判断。由 Form.Item 管理的 Input 使用表单本身的草稿规则。
+
+独立 Input 在输入法组合期间保留正在编辑的文本。组合期间收到的 `value` 不覆盖草稿，组合结束后收到的新帧会应用显式 `value`。同一 `value` 在新帧中重复下发时也会同步到输入框。
 
 ### 4.5 Switch
 
@@ -281,6 +284,8 @@ checked 优先于 defaultChecked。支持 ui.click、ui.change，初始化不派
 | `showSearch` | boolean | 否 | — | 允许搜索 |
 
 options 的 value 非空、唯一且同类型；tags 仅接受字符串，允许创建非空新值。单选 value / defaultValue 为标量或 null，多选 / tags 必须为无重复数组，且不超过 maxCount。未提供 showSearch 时，准备阶段按是否声明 mode 决定。支持 ui.select、ui.change、ui.search、ui.clear，门禁见第 5 章。
+
+保留组件树时，新帧中的显式 `value` 会同步到 Select。省略 `value` 时，保留仍符合新帧的选择和有效自定义标签，多选按 `maxCount` 保留靠前的值。原有选择全部失效或数据形态与模式不符时，回退到新帧的 `defaultValue`，未设置时清空。已经清空的同模式选择继续保持为空。应用新帧不派发选择事件。
 
 ### 4.7 TreeSelect
 
@@ -339,7 +344,7 @@ value / 实际 key 在全树非空且唯一，省略 key 时使用 value。准�
 | `destroyOnHidden` | boolean | 否 | `false` | 销毁隐藏页签内容 |
 | `ariaLabel` | string | 否 | — | 无障碍名称 |
 
-items.key 非空且唯一；activeKey / defaultActiveKey 必须存在且未禁用。省略激活值时，适配器选择首个未禁用页签，无可用项则不激活。内容只放 items[].children，包含隐藏内容的整树一起校验和计数。支持 ui.change。
+items.key 非空且唯一；activeKey / defaultActiveKey 必须存在且未禁用。提供 activeKey 时，用户点击派发 ui.change，选中项随服务端帧更新。未提供 activeKey 时，适配器保留仍可用的本地选中项；初始化未指定默认项或当前项被删除、禁用时，回退到首个可用项，无可用项时不激活。应用新帧和自动回退均不派发 ui.change。内容只放 items[].children，包含隐藏内容的整树一起校验和计数。
 
 ### 4.10 Empty
 

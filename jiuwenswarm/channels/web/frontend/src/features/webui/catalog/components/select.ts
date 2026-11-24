@@ -1,11 +1,26 @@
+import { localizedTextRule } from './localizedText.ts';
 import {
   array, bool, component, inputProps, integer, nil, noData, nonEmpty, number, object,
   text, token, union, unique, valueData,
 } from './shared.ts';
 
 const optionValue = union(text, number);
-import { localizedTextRule } from './localizedText.ts';
 const selection = union(optionValue, nil, array(optionValue));
+
+export function createSelectValueFilter(
+  options: readonly { value: string | number; disabled?: boolean }[],
+  allowCustomTags: boolean,
+  initial: unknown,
+): (value: unknown) => boolean {
+  const optionByValue = new Map<unknown, (typeof options)[number]>(options.map((option) => [option.value, option]));
+  const retained = new Set<unknown>(Array.isArray(initial) ? initial : [initial]);
+  return (value) => {
+    const option = optionByValue.get(value);
+    if (option?.disabled) return retained.has(value);
+    return allowCustomTags ? typeof value === 'string' && nonEmpty(value) : option !== undefined;
+  };
+}
+
 export const selectRule = component('Select', {
   ...inputProps, ariaLabel: localizedTextRule,
   options: array(object({ value: optionValue, label: localizedTextRule, disabled: bool }, ['value', 'label'])),
@@ -49,13 +64,9 @@ export const selectRule = component('Select', {
         return 'invalid selected count';
       }
       const initial = p.value !== undefined ? p.value : p.defaultValue;
-      const retained = Array.isArray(initial) ? initial : initial === undefined || initial === null ? [] : [initial];
       const options = p.options as { value: string | number; disabled?: boolean }[];
-      return selected.every((value) => {
-        const option = options.find((item) => item.value === value);
-        if (option?.disabled) return retained.includes(value);
-        return p.mode === 'tags' ? typeof value === 'string' && nonEmpty(value) : !!option;
-      }) ? null : 'selected value is not allowed';
+      return selected.every(createSelectValueFilter(options, p.mode === 'tags', initial))
+        ? null : 'selected value is not allowed';
     }
     if (p.mode === 'tags') return typeof data.value === 'string' && nonEmpty(data.value) ? null : 'invalid tag';
     return (p.options as { value: string | number; disabled?: boolean }[])
