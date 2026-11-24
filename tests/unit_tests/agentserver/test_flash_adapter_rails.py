@@ -72,6 +72,21 @@ def test_disabled_tools_rail_is_protected():
     assert "_disabled_tools_rail" in JiuwenSwarmFlashAdapter._PROFILE_PROTECTED_RAILS
 
 
+def test_fact_premise_rail_is_kept_in_flash():
+    """The year/edition premise guard must stay in the flash whitelist.
+
+    Flash filters inside ``_instantiate_rails`` by ``_FLASH_RAIL_KEEP``, so an
+    unregistered rail is dropped before construction: flash sessions get
+    neither the ``[事实核对]`` injection nor the output-side warning. Flash is
+    relay-claw's default chat path and the reported channel of B_09, so dropping
+    the entry would put the original online scenario back to "no guard, no
+    observation". It is a normal rail (not a security boundary), so KEEP alone
+    is enough.
+    """
+    assert "_fact_premise_rail" in JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+    assert "_fact_premise_rail" not in JiuwenSwarmFlashAdapter._PROFILE_PROTECTED_RAILS
+
+
 def test_keep_whitelist_keeps_protected_and_drops_others():
     """Whitelist keeps KEEP ∪ PROTECTED; everything else is dropped."""
     adapter = JiuwenSwarmFlashAdapter()

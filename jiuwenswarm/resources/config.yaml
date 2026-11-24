@@ -1079,6 +1079,27 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # 年份/届次事实题的前提守卫（FactPremiseRail）：
+  # 模型会把相邻年份的真实参数套到不存在的年份上（如 2028 年世界杯）。
+  # 命中判据 = 时间锚点 × 疑问形态（名词表只定级），普通办公指令不注入。
+  fact_premise_guard:
+    # 总开关：关闭后不挂载 FactPremiseRail（用户消息不再注入 [事实核对]）。
+    # deep / agent 与 flash 均已挂载：flash 是 relay-claw 默认聊天路径，也是
+    # B_09 的线上复现渠道；白名单变更触发 warm 实例重建属预期（S_26 P4）。
+    enabled: true
+    # 命中后在用户消息头部注入 [事实核对] 指令（level 2 约 130 字 / level 1 约 50 字），不改写用户原话
+    # 首轮强制调用一次检索工具（tool_choice）。要求 agent-core 放行 tool_choice；
+    # 不支持的 provider 会返回 400，故默认关闭，确认模型支持后再开。
+    force_first_retrieval: false
+    # 按顺序选择第一个已挂载的检索工具
+    force_tool_names:
+      - web_flash
+      - web_search
+    # 命中判据、最终答案已产出却整轮没有任何检索时打 warning，便于统计"该搜没搜"的比例
+    log_when_unverified: true
+    # 未命中判据的轮次（如无时间锚点的「re:Invent 有什么新发布」）也会看最终答案：
+    # 含窗口内年份 + 具体断言且本轮零检索 → 一条 warning。误报只是一行日志。
+    log_unclassified_claims: true
   # 策略级鉴权失败 / 凭证探测断路器（单 agent / flash）。
   stalled_access:
     enabled: true

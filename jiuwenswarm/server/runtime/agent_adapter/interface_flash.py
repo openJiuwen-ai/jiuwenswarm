@@ -315,6 +315,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_security_rail",
         "_heartbeat_rail",
         "_request_summary_rail",
+        # 年份/届次事实题前提守卫：B_09 的线上复现就是 flash 会话（web_flash
+        # 工具面）。未登记会让 OfficeClaw 默认单专家路径回到「不注入、不告警」
+        # 的裸奔状态；本 rail 只注入用户消息 + 观测，不动静态提示词。
+        "_fact_premise_rail",
         "_stalled_access_circuit_rail",
         "_last_iteration_finalize_rail",
         "_subagent_rail",

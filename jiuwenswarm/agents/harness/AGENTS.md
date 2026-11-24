@@ -1,5 +1,5 @@
 ---
-description: 给修改/检视 agents/harness 代码的 AI 助手与工程师：七子树地图、任务规划 / 可靠性 / subagent / 中断交互 / 事件流 / 原生多模态 / DeepResearch 日志 / 运行时技能目录 specs 索引（S_01~S_25）、公开入口、架构铁律、装配点与配置消费、测试与提交约束
+description: 给修改/检视 agents/harness 代码的 AI 助手与工程师：七子树地图、任务规划 / 可靠性 / subagent / 中断交互 / 事件流 / 原生多模态 / DeepResearch 日志 / 运行时技能目录 / 事实前提守卫 specs 索引（S_01~S_26）、公开入口、架构铁律、装配点与配置消费、测试与提交约束
 ---
 
 # harness：代理执行挂件的多域聚合目录
@@ -15,19 +15,20 @@ common / code / flash——**spec 按改哪块机制切，不按目录树切**�
 
 **当前 specs 覆盖任务规划域（S_01~S_06）、可靠性域（S_07~S_10）、subagent 域
 （S_11~S_14）、中断交互域（S_15~S_19）、事件流域（S_20~S_21）与原生多模态图像输入
-（S_22）、RSI 场景与 Provider 装配（S_23）、DeepResearch 日志（S_24）以及运行时技能目录（S_25）**。未归档的域（team / skill_selection / memory / 观测性 / …）不等于不存在，
+（S_22）、RSI 场景与 Provider 装配（S_23）、DeepResearch 日志（S_24）、运行时技能目录
+（S_25）以及事实前提守卫（S_26）**。未归档的域（team / skill_selection / memory / 观测性 / …）不等于不存在，
 只等于还没有契约文档；动这些域时
 同样遵循"机制横跨多个子树"的找代码方式（subagent 域横跨 openjiuwen SDK 机制主体与
 server 装配层；中断交互域的原语层在 agent-core `openjiuwen`、守卫与结算层在 server
 runtime——spec 关联模块按仓分列；事件流域的正向通道底层在 agent-core stream 队列、
-消费侧在 server runtime），新增 spec 从 S_26 起编（编号跨域连续，不复用）。
+消费侧在 server runtime），新增 spec 从 S_27 起编（编号跨域连续，不复用）。
 
 DeepResearch 主研究 SDK 与 runner 日志由 [[S_24]] 维护，包含日志路径、完整 stderr、
 调用关联、故障降级和跨仓收集契约；不改变研究 stdout 或交互协议。
 
 修改任何代码前先读对应 spec；改规约本身必须同步 specs（三条强制约束见文末）。
 
-## Specs 索引（任务规划域 S_01~S_06 + 可靠性域 S_07~S_10 + subagent 域 S_11~S_14 + 中断交互域 S_15~S_19 + 事件流域 S_20~S_21 + 原生多模态图像输入 S_22 + RSI 场景 S_23 + DeepResearch 日志 S_24 + 运行时技能目录 S_25）
+## Specs 索引（任务规划域 S_01~S_06 + 可靠性域 S_07~S_10 + subagent 域 S_11~S_14 + 中断交互域 S_15~S_19 + 事件流域 S_20~S_21 + 原生多模态图像输入 S_22 + RSI 场景 S_23 + DeepResearch 日志 S_24 + 运行时技能目录 S_25 + 事实前提守卫 S_26）
 
 - `docs/specs/S_01_todo-storage-and-toolchain.md` — todo.json 整表存储、stock 四工具行为、代际 token、todo_compat monkeypatch 装配时序
 - `docs/specs/S_02_task-execution-rail.md` — TaskExecutionRail 全景：状态→事件映射、串行顺序约束、auto_advance / lazy_start、产物检测、代际过滤
@@ -54,6 +55,7 @@ DeepResearch 主研究 SDK 与 runner 日志由 [[S_24]] 维护，包含日志�
 - `docs/specs/S_23_rsi-scenarios-and-providers.md` — RSI 场景与 Provider 装配：Harness、论文、程序、优化模型接线与回归范围。
 - `docs/specs/S_24_deepresearch-sdk-diagnostics.md` — DeepResearch SDK 与 runner 日志：服务日志根、完整 stderr、调用关联、跨平台文件和故障降级。
 - `docs/specs/S_25_runtime-skill-directory-context.md` — 运行时技能目录提示：内部存储与当前加载目录的语义、实时目录提供回调、中英文说明及宿主安装工具职责。
+- `docs/specs/S_26_fact-premise-guard.md` — 事实前提守卫：时间锚点 + 疑问形态的判据（名词表只定级）、`[事实核对]` 用户消息两级注入、首轮 `tool_choice` 强制检索与请求前剪枝、最终答案未检索告警。
 
 ## 统一术语表
 
@@ -124,6 +126,7 @@ DeepResearch 主研究 SDK 与 runner 日志由 [[S_24]] 维护，包含日志�
 | `CircuitBreakerRail` | `common/rails/execution_guard/circuit_breaker_rail.py` | [[S_08]] | 工具循环断路器（非恢复型）：四检测器先中先断，critical 命中即 force-finish；默认关 |
 | `ConcurrentSafeSysOperationRail` / `ConcurrentSafeTaskPlanningRail` | `common/rails/concurrent_safe_rails.py` | [[S_09]] | 并发安全：注册前查表 + binding 双因子 + 三段式原子注册；deep 侧 task_planning 一律用其子类 |
 | `WorkspaceQuotaRail` | `common/rails/workspace_quota_rail.py` | [[S_10]] | 配额门禁 rail（env `WORKSPACE_QUOTA_ENABLED`，默认关）：命令 7 工具满额拒绝 + du 卸线程池 |
+| `FactPremiseRail` | `common/rails/fact_premise_rail.py` | [[S_26]] | 事实前提守卫（priority=10，不继承子代理）：命中「时间锚点 × 疑问形态」的用户问题 → 按级注入 `[事实核对]`（名词表只定级）+ 可选首轮 `tool_choice` 强搜（仅 level 2）；deep / agent 与 flash 均已挂载（flash 是 relay-claw 默认聊天路径、B_09 线上渠道） |
 | `SubagentRail`（agent-core） | `openjiuwen/harness/rails/subagent/subagent_rail.py` | [[S_14]] | 三模式互斥注册（runtime > async session > sync task_tool），priority=95；`_REFRESHABLE_TOOL_NAMES` 刷新白名单；deep 装配其子类 BrowserTaskPromptRail |
 | `BrowserTaskPromptRail` | `common/rails/browser_task_prompt_rail.py` | [[S_14]] | SubagentRail 子类：`synchronous_subagent_types={"browser_agent"}` + browser 委派策略 task_prompt_extension |
 | `FlashSubagentRail` | `flash/rails/flash_subagent_rail.py` | [[S_11]] [[S_14]] | flash 变体三差异：spec 自注入 / 系统提示段替换 / 工具卡描述重写；async 分支回落 stock |
@@ -174,10 +177,10 @@ agents/harness/
 │   ├── rails/                    #   code_task_planning_rail（S_02/S_05）/ code_plan_approval_interrupt_rail（S_04）/ code_agent_mode_rail（S_04 模式恢复）/ code_plan_approval_rail（p76 未装配遗留）/ code_confirm_interrupt_rail（S_15 确认卡）/ coding_artifact_post_process_rail
 │   └── tools/                    #   code_todo_tools 四子类（S_05）
 ├── common/                       # 跨 profile 共享挂件（最大子树）
-│   ├── rails/                    #   task_execution_rail（S_02）+ 可靠性域（S_07 重试与溢出恢复 / S_08 熔断 execution_guard/ / S_09 并发安全 / S_10 配额 rail 与输入守卫纯函数库）+ subagent 域（S_13 subagent_skill_authorization_rail / subagent_permission_rail、S_14 browser_task_prompt_rail）+ 中断交互域（S_15/S_17 ask_user_rail、S_17 interrupt/ 子树 interrupt_helpers 与 permissions/ 子树 config_loader / owner_scopes / tool_permission_context）+ 事件流域（S_20/S_21 stream_event_rail、symphony/tool_stream_events）+ 模型路由 / symphony 编排等
+│   ├── rails/                    #   task_execution_rail（S_02）+ 可靠性域（S_07 重试与溢出恢复 / S_08 熔断 execution_guard/ / S_09 并发安全 / S_10 配额 rail 与输入守卫纯函数库 / S_26 事实前提守卫）+ subagent 域（S_13 subagent_skill_authorization_rail / subagent_permission_rail、S_14 browser_task_prompt_rail）+ 中断交互域（S_15/S_17 ask_user_rail、S_17 interrupt/ 子树 interrupt_helpers 与 permissions/ 子树 config_loader / owner_scopes / tool_permission_context）+ 事件流域（S_20/S_21 stream_event_rail、symphony/tool_stream_events）+ 模型路由 / symphony 编排等
 │   ├── tools/                    #   todo_resume / todo_compat / user_todo_tool（S_01/S_05）/ deepresearch/（S_06）/ subagent_compat.py（S_12 类替换）/ subagent_executor/（S_13/S_14 授权 wiring 与委托边界）/ web_search / xiaoyi_phone_tools 等 40+ 件
 │   └── …                         #   auto_harness/ auto_memory/ long_horizon/ memory/ plugins/ prompt/ recommendation/ skill_sleep/（未归档域）
-├── docs/                         # 归档规约 AGENTS.md + specs/（S_01~S_25）
+├── docs/                         # 归档规约 AGENTS.md + specs/（S_01~S_26）
 ├── flash/                        # flash profile 挂件
 │   ├── permissions/              #   tool_policy_projection（S_05 统一名权限投影三段式）/ flash_permission_rail / skill_install
 │   ├── rails/                    #   flash_todo_rail（S_05）/ flash_subagent_rail（S_11/S_14 flash 变体三差异）/ flash_delivery_summary / flash_memory / slim_sys_operation
@@ -190,7 +193,7 @@ agents/harness/
 
 ## 架构铁律
 
-从二十二份 specs 的不变量中提炼的跨 spec 最高优先级约束。逐条细则以回链 spec 为准。
+从各份 specs 的不变量中提炼的跨 spec 最高优先级约束。逐条细则以回链 spec 为准。
 
 1. **代际 token 单向流**：agent-core 侧只读 token 打标过滤，写侧唯一 bump 点是
    `todo_resume.bump_todo_generation_token`。新增任何"重置任务列表"的路径必须走 bump，

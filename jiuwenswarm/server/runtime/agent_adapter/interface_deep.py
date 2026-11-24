@@ -444,6 +444,7 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.adapter_statics import (
 from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import (
     _build_avatar_rail,
     _build_extension_config_debug_rail,
+    _build_fact_premise_rail,
     _build_heartbeat_rail,
     _build_llm_retry_rail,
     _build_skill_protocol_prompt_rail,
@@ -8852,6 +8853,14 @@ class JiuWenSwarmDeepAdapter:
             # 保证 ON_USER_MESSAGE 投影替换发生在上下文初始化链路之后。
             _RailBuildInfo(
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
+            # 年份/届次事实题的前提守卫：on_user_message 注入 [事实核对]，
+            # 可选在首轮强制一次联网检索。排在 eternal 之后即可，钩子顺序由
+            # 各 rail 的 priority 决定（本 rail priority=10，晚于 thinking(15)）。
+            _RailBuildInfo(
+                "_fact_premise_rail",
+                _build_fact_premise_rail,
+                {"config_base": config_base, "language": self._resolve_runtime_language()},
             ),
         ]
 
