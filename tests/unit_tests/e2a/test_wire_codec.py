@@ -17,7 +17,7 @@ from e2a.wire_codec import (
     parse_agent_server_wire_unary,
 )
 
-from jiuwenswarm.common.e2a.gateway_normalize import (
+from e2a.gateway_normalize import (
     e2a_response_from_agent_chunk,
     e2a_response_from_agent_response,
     e2a_response_to_agent_chunk,

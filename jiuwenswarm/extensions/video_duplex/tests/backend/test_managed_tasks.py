@@ -1327,7 +1327,7 @@ async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path, m
     finished = False
 
     async def query(env):
-        from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+        from e2a.agent_compat import e2a_to_agent_request
         request = e2a_to_agent_request(env)
         assert request.req_method in {ReqMethod.SESSION_GET_METADATA, ReqMethod.HISTORY_GET}
         if failures:
@@ -1366,7 +1366,7 @@ async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path, m
         assert store.read(other["id"])["status"] == "running"
         service.snapshot("alice", "current")
         await service.refresh("alice", "current")
-        from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+        from e2a.agent_compat import e2a_to_agent_request
         assert all(e2a_to_agent_request(call.args[0]).session_id == current["core_session_id"]
                    for call in queries.await_args_list)
         finished = True
@@ -1459,7 +1459,7 @@ async def test_unopened_scope_reserves_resources_without_consuming_capacity(task
 async def test_lost_settlement_push_is_recovered_by_read_only_core_probe(tmp_path, monkeypatch, stopping):
     from unittest.mock import AsyncMock
     from jiuwenswarm.extensions.video_duplex.backend import task_adapter
-    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+    from e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.schema.message import ReqMethod
     store = TaskStore(tmp_path / "lost-settlement.sqlite")
     finish = asyncio.Event()

@@ -894,7 +894,7 @@ async def test_only_dingtalk_binding_starts_the_existing_im_runtime(monkeypatch)
 @pytest.mark.asyncio
 async def test_server_dispatches_dingtalk_without_personal_chat(monkeypatch):
     from jiuwenswarm.server import agent_ws_server as module
-    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+    from e2a.agent_compat import e2a_to_agent_request
     from e2a.models import E2AEnvelope
 
     inbound = SimpleNamespace(handle=AsyncMock(return_value=InboundDisposition.HANDLED))
