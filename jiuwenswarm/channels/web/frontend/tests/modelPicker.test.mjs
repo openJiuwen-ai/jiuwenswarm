@@ -411,6 +411,58 @@ test('selecting a chat model preserves the scheduled-task draft and canonical re
   });
 });
 
+test('run now rejection shows a warning toast and jumps to the active run', async (t) => {
+  const job = {
+    id: 'run-now-job', name: 'Run now', description: 'Run now', mode: 'agent',
+    cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', wake_offset_seconds: 0,
+  };
+  const navigationDone = { value: false };
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs: [job] };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.run_now') {
+      return {
+        accepted: false, run_id: 'run-active', session_id: 'cron-active',
+        reason: 'previous_run_active',
+      };
+    }
+    if (method === 'project.get_cron_sessions') {
+      return { sessions: [], total: 0 };
+    }
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  await withFixture(async ({ mount, click, byId }) => {
+    await mount(createElement(CronPanel, {
+      sessionId, onCreateViaChat() {},
+      async onSelectSession(id, description) {
+        // 拒绝分支不带任务描述跳转（跳去正在跑的会话，不是触发新一轮）
+        assert.equal(id, 'cron-active');
+        assert.equal(description, undefined);
+        navigationDone.value = true;
+      },
+    }));
+    await click(byId('cron-job-run-now-btn'));
+    await click(byId('cron-confirm-submit-btn'));
+    await act(async () => {});
+    assert.equal(navigationDone.value, true);
+    assert.equal(byId('cron-confirm-dialog'), null);
+    // 拒绝提示挂 App 根部、warning 语义，不出现成功 toast
+    assert.equal(byId('cron-success-toast'), null);
+    const rejected = toastStore.getSnapshot().find(
+      (record) => record.id === 'cron-run-now-rejected-toast',
+    );
+    assert.ok(rejected, 'rejected toast is open');
+    assert.equal(rejected.variant, 'warning');
+    assert.match(rejected.content, /already running/);
+    const stack = document.querySelector('[data-testid="ui-toast-stack"]');
+    assert.ok(stack, 'toast stack is mounted at the app root');
+    assert.equal(stack.querySelector('[data-testid="cron-run-now-rejected-toast"]') !== null, true);
+  });
+});
+
 test('run now waits for navigation and reports a session restore failure', async (t) => {
   const job = {
     id: 'run-now-job', name: 'Run now', description: 'Run now', mode: 'agent',

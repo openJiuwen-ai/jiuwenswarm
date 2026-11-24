@@ -53,11 +53,18 @@ function clearCronError() {
 
 // 立即执行的结果提示挂在 App 根部：成功跳转、或者被后端守卫拒绝后跳去
 // 进行中的会话时，CronPanel 都会被卸载，面板内的 success state 看不到。
-function showCronRunNowToast(content: string, testId: string, panelRect?: DOMRect) {
+// 成功沿用 default 纯色条（success 变体的图标与绿底同色，会消失）；守卫拒绝
+// 是「请求送达但未起新轮」，用 warning 变体走语义描边与警示图标。
+function showCronRunNowToast(
+  content: string,
+  testId: string,
+  panelRect?: DOMRect,
+  variant: 'default' | 'warning' = 'default',
+) {
   toast.open({
     id: testId,
     content,
-    variant: 'default',
+    variant,
     testId,
     duration: 2,
     closable: false,
@@ -68,9 +75,11 @@ function showCronRunNowToast(content: string, testId: string, panelRect?: DOMRec
       transform: 'translateX(-50%)',
       animation: 'none',
       width: 'auto',
-      background: 'var(--color-feedback-success)',
-      color: 'var(--color-text-inverse)',
-      border: 'none',
+      ...(variant === 'default' ? {
+        background: 'var(--color-feedback-success)',
+        color: 'var(--color-text-inverse)',
+        border: 'none',
+      } : {}),
       fontSize: '14px',
       lineHeight: '20px',
       borderRadius: 'var(--radius-lg)',
@@ -983,6 +992,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           t('cron.errors.runNowPreviousActive'),
           'cron-run-now-rejected-toast',
           panelRect,
+          'warning',
         );
         if (result.session_id) {
           try {
