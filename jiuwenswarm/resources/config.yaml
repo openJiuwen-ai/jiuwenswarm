@@ -1093,6 +1093,14 @@ execution_guard:
     auth_threshold: 5
     probe_threshold: 3
     window_seconds: 1800
+  # 同一工具 + 同一参数连续返回相同错误达到阈值时终止本轮（force-finish）。
+  # 用于工具进入不可恢复状态后，模型仍反复重试的场景（issue #6368）。
+  # 只在错误文本完全相同时累计；换工具、换参数或错误变化都会重新计数。
+  # 注意：这不是下面的 circuit_breaker；它只对失败计数（成功重复不算），
+  # 在 ProgressiveToolRail 内先于 agent_ras 的通用循环检测触发，默认开。
+  tool_failure_loop:
+    enabled: true
+    threshold: 3
   # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
   # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
   # 不是 issue 级 OPEN/HALF_OPEN 恢复型熔断；

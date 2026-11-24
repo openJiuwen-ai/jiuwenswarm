@@ -44,6 +44,15 @@
 - **N9（history_size 派生）**：`max(4 × critical_threshold, 2 × global_breaker_threshold, 2 × unknown_tool_threshold)`——窗口为最苛检测器保 2 倍、为 critical 保 4 倍采样余量；超窗截尾（保留最近）。
 - **N10（裸前缀契约）**：`_PLAIN_ERROR_PREFIXES` 只放项目级通用约定（当前仅 `[ERROR]:`，search / image / audio / video / pdf / web_fetch 等纯文本工具的失败约定）；功能专属前缀必须经 `register_plain_error_prefix` 注册（类级共享 set，strip + upper 归一，大小写不敏感、须开头匹配）。新前缀准入标准：**失败结果独有，成功输出绝不以其开头**——一个坏前缀会同时污染所有复用方。裸错误散文（如 `"Error happened"`）不匹配，只有前缀形态算。
 
+### 终态失败快停：`ProgressiveToolRail.tool_failure_loop`（默认开）
+
+与四检测器不同的一条**失败专用**快停链，配置在 `execution_guard.tool_failure_loop`：
+
+- 计数键 = 目标工具名 + 规范化参数（`invoke_tool` 取内层目标，直接调用取工具名）；只统计**失败**结果（`_unwrap_tool_failure` 先经 `normalize_tool_result`，再剥 `result` / JSON 信封）。
+- 错误判等用全文 sha256，展示/日志只用前 300 字符；错误变化、换工具/参数或中途成功都会重置。
+- 达到 `threshold`（默认 3）后 `ctx.request_force_finish({"result_type": "answer"})`，本轮结束。守卫整体 try/except fail-open，且放在 DeepResearch binding 释放之后，永不阻断工具生命周期。
+- **与 N1 的关系**：本链只对失败计数，不参与成功重复 / ping-pong / 无进展判定，通常先于 `agent_ras.repeat_tool` 的通用阈值触发并直接收轮，不构成同一循环的双重 force-finish；因此默认开，不受 N1「断路器默认关」约束。
+
 ## 接口契约
 
 ### CircuitBreakerConfig

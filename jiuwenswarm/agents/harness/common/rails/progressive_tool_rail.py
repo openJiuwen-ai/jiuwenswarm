@@ -17,6 +17,8 @@ Fixed schema maximizes LLM prefix caching while keeping rarely used tools reacha
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager, nullcontext
@@ -38,6 +40,9 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     build_native_image_tool_error,
     is_vision_tool,
     vision_tool_targets_all_provided,
+)
+from jiuwenswarm.agents.harness.common.tool_result_schema import (
+    normalize_tool_result,
 )
 from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
     InvokeToolInput,
@@ -84,6 +89,121 @@ _OFFICE_CLAW_SCHEDULE_THREAD_PIN_TOOLS = frozenset(
         "office_claw_update_scheduled_task",
     }
 )
+# Terminal tool-failure loop guard (issue #6368). A tool that keeps returning
+# the same error for the same arguments carries no new information; waiting for
+# the model to notice wastes iterations and tokens. The counter lives in
+# ctx.extra, so it is scoped to one invocation and cleared by before_invoke.
+_FAILURE_LOOP_EXTRA_KEY = "__progressive_tool_failure_loop__"
+_FAILURE_LOOP_TRIPPED_KEY = "__progressive_tool_failure_loop_tripped__"
+_DEFAULT_FAILURE_LOOP_THRESHOLD = 3
+_FAILURE_LOOP_ERROR_MAX_CHARS = 300
+
+
+def _try_parse_json_dict(value: Any) -> dict | None:
+    """Parse a JSON-object string; return None for anything else."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _payload_error_text(payload: Any) -> str:
+    """Best-effort human-readable error text from a tool payload."""
+    if isinstance(payload, BaseException):
+        return str(payload).strip()
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            for key in ("message", "msg", "code", "error_message"):
+                value = error.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        if isinstance(error, str) and error.strip() and error.strip().lower() != "none":
+            return error.strip()
+        for key in ("error_message", "error_msg", "errMessage", "message", "content"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if isinstance(payload, str):
+        return payload.strip()
+    return ""
+
+
+def _unwrap_tool_failure(value: Any) -> tuple[bool, str]:
+    """Return (failed, error_text) for a tool result, unwrapping MCP envelopes.
+
+    ``RequestScopedOfficeClawMcpTool`` returns ``{"result": "<json text>"}``,
+    so a tool-level error sits one or more envelopes below the dict that this
+    rail used to stamp as ``success: True``. Normalize first (covers
+    ``success: false`` / status / error keys / exit codes), then peel
+    ``result`` wrappers and JSON strings until a payload remains.
+    """
+    if value is None:
+        return False, ""
+    if isinstance(value, BaseException):
+        return True, str(value).strip()
+    normalized = normalize_tool_result(value)
+    if normalized.get("status") != "success":
+        text = (
+            _payload_error_text(value)
+            or normalized.get("error_message")
+            or normalized.get("error")
+            or ""
+        )
+        return True, str(text).strip()
+    if isinstance(value, dict):
+        inner = value.get("result")
+        if isinstance(inner, str):
+            parsed = _try_parse_json_dict(inner)
+            if parsed is not None:
+                inner = parsed
+        if isinstance(inner, (dict, list)):
+            return _unwrap_tool_failure(inner)
+    return False, ""
+
+
+def _read_failure_loop_config() -> tuple[bool, int]:
+    """Read ``execution_guard.tool_failure_loop`` with fail-open defaults."""
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        guard = (get_config() or {}).get("execution_guard") or {}
+        policy = guard.get("tool_failure_loop") if isinstance(guard, Mapping) else None
+        if not isinstance(policy, Mapping):
+            policy = {}
+        enabled = policy.get("enabled", True) is not False
+        try:
+            threshold = int(policy.get("threshold", _DEFAULT_FAILURE_LOOP_THRESHOLD))
+        except (TypeError, ValueError):
+            logger.warning(
+                "%s invalid tool_failure_loop.threshold=%r; using default %s",
+                _LOG_PREFIX,
+                policy.get("threshold"),
+                _DEFAULT_FAILURE_LOOP_THRESHOLD,
+            )
+            threshold = _DEFAULT_FAILURE_LOOP_THRESHOLD
+        if threshold < 2:
+            logger.warning(
+                "%s tool_failure_loop.threshold=%s is below 2; using default %s",
+                _LOG_PREFIX,
+                threshold,
+                _DEFAULT_FAILURE_LOOP_THRESHOLD,
+            )
+            threshold = _DEFAULT_FAILURE_LOOP_THRESHOLD
+        return enabled, threshold
+    except Exception:
+        logger.warning(
+            "%s tool_failure_loop config unreadable; using defaults",
+            _LOG_PREFIX,
+            exc_info=True,
+        )
+        return True, _DEFAULT_FAILURE_LOOP_THRESHOLD
 
 
 def _is_pinned_schema_tool(tool_name: str, registered_card: Any) -> bool:
@@ -143,6 +263,11 @@ class ProgressiveToolRail(DeepAgentRail):
     """
 
     priority = 80
+    # Class-level fallbacks so bare instances (object.__new__ in tests) do not
+    # raise when the failure-loop policy is read before __init__ ran.
+    language: str = "cn"
+    _failure_loop_enabled: bool | None = None
+    _failure_loop_threshold: int = _DEFAULT_FAILURE_LOOP_THRESHOLD
     # Do NOT inherit this rail into a general-purpose subagent. init() /
     # before_invoke bind ``_deep_agent`` / ``_runtime_agent`` and refresh the
     # deferred-tool cache from that agent's ability_manager. Factory injects
@@ -211,6 +336,9 @@ class ProgressiveToolRail(DeepAgentRail):
         self._office_claw_active_tool_ids: frozenset[str] | None = None
         self._office_claw_delivery_thread_id: str | None = None
         self._office_claw_invocation_id: str | None = None
+        # None = resolve execution_guard.tool_failure_loop lazily on first use.
+        self._failure_loop_enabled: bool | None = None
+        self._failure_loop_threshold: int = _DEFAULT_FAILURE_LOOP_THRESHOLD
 
     def update_disabled_tools(self, disabled_tools: list[str] | None) -> None:
         """Replace the local blacklist mirror and drop stale deferred cache.
@@ -688,7 +816,12 @@ class ProgressiveToolRail(DeepAgentRail):
         bindings[tool_call_id] = manager
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
-        """Release a direct DeepResearch entry's tenant bindings."""
+        """Release DeepResearch bindings, then stop identical failure loops.
+
+        The failure-loop guard is observation-only and must never block the
+        cleanup below (or the tool lifecycle): it runs after the release and
+        swallows its own exceptions.
+        """
         inputs = getattr(ctx, "inputs", None)
         tool_call = getattr(inputs, "tool_call", None)
         tool_name = str(
@@ -696,15 +829,141 @@ class ProgressiveToolRail(DeepAgentRail):
             or getattr(tool_call, "name", "")
             or ""
         ).strip()
-        if tool_name not in {"deepresearch_execute", "deepresearch_stream"}:
+        if tool_name in {"deepresearch_execute", "deepresearch_stream"}:
+            tool_call_id = str(getattr(tool_call, "id", "") or id(inputs))
+            bindings = ctx.extra.get(_EAGER_DEEPRESEARCH_BINDINGS_KEY, {})
+            manager = bindings.pop(tool_call_id, None) if isinstance(bindings, dict) else None
+            if not bindings:
+                ctx.extra.pop(_EAGER_DEEPRESEARCH_BINDINGS_KEY, None)
+            if manager is not None:
+                manager.__exit__(None, None, None)
+        await self._stop_repeated_tool_failure(ctx)
+
+    def _failure_loop_policy(self) -> tuple[bool, int]:
+        """Resolve (enabled, threshold) once; defaults apply when config is absent."""
+        if self._failure_loop_enabled is None:
+            enabled, threshold = _read_failure_loop_config()
+            self._failure_loop_enabled = enabled
+            self._failure_loop_threshold = threshold
+        return bool(self._failure_loop_enabled), int(self._failure_loop_threshold)
+
+    @staticmethod
+    def _failure_loop_key(ctx: AgentCallbackContext) -> tuple[str, str]:
+        """Return (target_tool_name, canonical_arguments) for this call.
+
+        ``invoke_tool`` calls are keyed by the deferred target they proxy;
+        direct calls are keyed by the tool that ran.
+        """
+        inputs = getattr(ctx, "inputs", None)
+        tool_call = getattr(inputs, "tool_call", None)
+        tool_name = str(
+            getattr(inputs, "tool_name", "")
+            or getattr(tool_call, "name", "")
+            or ""
+        ).strip()
+        arguments: Any = getattr(tool_call, "arguments", None)
+        if isinstance(arguments, str):
+            parsed = _try_parse_json_dict(arguments)
+            if parsed is not None:
+                arguments = parsed
+        target_name = tool_name
+        target_arguments = arguments
+        if tool_name == "invoke_tool" and isinstance(arguments, dict):
+            target_name = str(arguments.get("tool_name") or tool_name).strip()
+            target_arguments = arguments.get("arguments") or {}
+        try:
+            digest = json.dumps(
+                target_arguments,
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            )
+        except (TypeError, ValueError):
+            digest = str(target_arguments)
+        return target_name, digest
+
+    def _failure_loop_output(self, tool_name: str, count: int, error_text: str) -> str:
+        if str(self.language or "").lower().startswith("en"):
+            return (
+                f"Tool {tool_name} returned the same error {count} times in a row; "
+                "this round has been stopped to avoid more ineffective retries. "
+                f"Last error: {error_text}. Fix the underlying issue first, "
+                "then start a new request."
+            )
+        return (
+            f"工具 {tool_name} 连续 {count} 次返回相同错误，本轮已停止以免继续无效重试。"
+            f"最后一次错误：{error_text}。请先处理该问题，再新开一轮请求重试。"
+        )
+
+    async def _stop_repeated_tool_failure(self, ctx: AgentCallbackContext) -> None:
+        """Force-finish after the same tool+args+error repeats to the threshold.
+
+        Observation-only: any internal failure is logged and swallowed so the
+        tool lifecycle (in particular DeepResearch binding release) is never
+        blocked by this guard.
+        """
+        try:
+            self._enforce_repeated_tool_failure(ctx)
+        except Exception:
+            logger.warning(
+                "%s failure-loop guard skipped; keep tool result unchanged",
+                _LOG_PREFIX,
+                exc_info=True,
+            )
+
+    def _enforce_repeated_tool_failure(self, ctx: AgentCallbackContext) -> None:
+        enabled, threshold = self._failure_loop_policy()
+        if not enabled:
             return
-        tool_call_id = str(getattr(tool_call, "id", "") or id(inputs))
-        bindings = ctx.extra.get(_EAGER_DEEPRESEARCH_BINDINGS_KEY, {})
-        manager = bindings.pop(tool_call_id, None) if isinstance(bindings, dict) else None
-        if not bindings:
-            ctx.extra.pop(_EAGER_DEEPRESEARCH_BINDINGS_KEY, None)
-        if manager is not None:
-            manager.__exit__(None, None, None)
+        extra = getattr(ctx, "extra", None)
+        if not isinstance(extra, dict) or extra.get(_FAILURE_LOOP_TRIPPED_KEY):
+            return
+        inputs = getattr(ctx, "inputs", None)
+        if inputs is None:
+            return
+        failed, error_text = _unwrap_tool_failure(getattr(inputs, "tool_result", None))
+        target_name, digest = self._failure_loop_key(ctx)
+        store = extra.get(_FAILURE_LOOP_EXTRA_KEY)
+        if not isinstance(store, dict):
+            store = {}
+            extra[_FAILURE_LOOP_EXTRA_KEY] = store
+        key = f"{target_name}:{digest}"
+        if not failed:
+            store.pop(key, None)
+            return
+        raw_error = error_text or "unknown error"
+        # Compare the full error via digest: a 300-char display prefix could
+        # otherwise treat two different errors as the same one and stop early.
+        error_digest = hashlib.sha256(
+            raw_error.encode("utf-8", "replace")
+        ).hexdigest()
+        display_error = raw_error[:_FAILURE_LOOP_ERROR_MAX_CHARS]
+        count, last_digest, last_error = store.get(key, (0, "", ""))
+        if last_digest != error_digest:
+            # A new error is new information, not a stuck loop.
+            count = 0
+            last_digest = error_digest
+            last_error = display_error
+        count += 1
+        store[key] = (count, last_digest, last_error)
+        if count < threshold:
+            return
+        extra[_FAILURE_LOOP_TRIPPED_KEY] = True
+        logger.warning(
+            "%s terminal tool failure loop: tool=%s count=%s error=%s",
+            _LOG_PREFIX,
+            target_name,
+            count,
+            last_error,
+        )
+        finish = getattr(ctx, "request_force_finish", None)
+        if callable(finish):
+            finish(
+                {
+                    "output": self._failure_loop_output(target_name, count, last_error),
+                    "result_type": "answer",
+                }
+            )
 
     # ------------------------------------------------------------------
     # Meta tool management
@@ -846,6 +1105,10 @@ class ProgressiveToolRail(DeepAgentRail):
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         """Register meta tools when active; cache deferred tools for navigation."""
+        extra = getattr(ctx, "extra", None)
+        if isinstance(extra, dict):
+            extra.pop(_FAILURE_LOOP_EXTRA_KEY, None)
+            extra.pop(_FAILURE_LOOP_TRIPPED_KEY, None)
         if getattr(ctx, "agent", None) is not None:
             self._runtime_agent = ctx.agent
         self._resolve_runtime_agent(ctx)
@@ -2039,6 +2302,29 @@ class ProgressiveToolRail(DeepAgentRail):
             env_inv = _office_claw_tool_env_value(
                 target_tool, "OFFICE_CLAW_INVOCATION_ID"
             )
+            safe_result = _json_safe_value(result)
+            # MCP tools can return a tool-level error inside the payload
+            # ({"result": '{"error": {...}}'}). Reporting that as success left
+            # the model with contradictory signals and fed loop detectors a
+            # false "progress" marker (issue #6368).
+            failed, error_text = _unwrap_tool_failure(safe_result)
+            if failed:
+                logger.warning(
+                    "%s invoke tool=%s failed inside result: %s tool_id=%s "
+                    "env_invocation_id=%s delivery_thread_id=%s",
+                    _LOG_PREFIX,
+                    tool_name,
+                    error_text or "unknown error",
+                    target_tool_id,
+                    (env_inv[:8] + "…") if env_inv else "-",
+                    pinned_thread or "-",
+                )
+                return {
+                    "success": False,
+                    "error": error_text or f"工具 '{tool_name}' 返回失败结果",
+                    "tool_name": tool_name,
+                    "result": safe_result,
+                }
             logger.info(
                 "%s invoke tool=%s success=True result_type=%s tool_id=%s "
                 "env_invocation_id=%s delivery_thread_id=%s",
@@ -2052,7 +2338,7 @@ class ProgressiveToolRail(DeepAgentRail):
             return {
                 "success": True,
                 "tool_name": tool_name,
-                "result": _json_safe_value(result),
+                "result": safe_result,
             }
         except Exception as exc:
             logger.warning(

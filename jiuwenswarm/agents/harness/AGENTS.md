@@ -232,6 +232,9 @@ agents/harness/
 15. **断路器默认关且只断不恢复**：`execution_guard.circuit_breaker` 默认 false，
     与 agent_ras 双挂互斥；命中即 force-finish 会话，无 OPEN/HALF_CLOSED 恢复态——
     别把它当恢复型熔断器用 [[S_08]]。
+    例外：`execution_guard.tool_failure_loop`（ProgressiveToolRail 内的终态失败快停，
+    默认开）只对「同工具 + 同参数 + 同错误文本」的**失败**计数，不参与成功重复/无进展
+    判定；先于 agent_ras 的通用循环检测触发并直接结束本轮，不构成同一循环的双重 force-finish [[S_08]]。
 16. **错误判定三级回退与裸前缀准入**：has_error → has_explicit_success 压过 ctx →
     ctx_has_error；新增"失败独有"的文本前缀必须经 `register_plain_error_prefix` 注册，
     禁止直接改 `_PLAIN_ERROR_PREFIXES` [[S_08]]。
