@@ -68,7 +68,7 @@ def _fake_ctx(tool_name: str, arguments: dict, tool_result: object):
 
 def _rail(enabled: bool = True, threshold: int = 3) -> ProgressiveToolRail:
     """Build a rail with the failure-loop policy pinned (no host get_config())."""
-    rail = _rail()
+    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
     rail._failure_loop_enabled = enabled
     rail._failure_loop_threshold = threshold
     return rail
