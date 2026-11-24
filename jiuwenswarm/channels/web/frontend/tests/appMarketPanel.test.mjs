@@ -171,7 +171,7 @@ for (const desktop of [false, true]) {
     });
     try {
       await click(document.querySelector('button[data-variant="market"]'));
-      await click(find('common-pagination-next'));
+      await click(find('app-market-panel').querySelector(`button[aria-label="${i18next.t('common.pagination.next')}"]`));
       await click(find('app-market-install'));
       assert.equal(find('app-market-install-dir-input').value, '/workspace/apps');
       await click(find('app-market-install-dir').querySelector('button:last-child'));
@@ -519,7 +519,7 @@ test('pin action persists through the app market RPC and refreshes the list', as
       { app_id: 'gomoku', pinned: true },
     );
     assert.equal(
-      document.querySelector('[role="status"]').textContent,
+      actionNotice().textContent,
       i18next.t('appMarket.pinSuccess', { name: 'Gomoku' }),
     );
     assert.equal(ctx.calls.filter(({ method }) => method === 'app_market.list').length, 2);
