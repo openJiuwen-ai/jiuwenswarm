@@ -111,7 +111,7 @@ type AppState = 'stopped' | 'starting' | 'running' | 'stopping';
 type PendingAction = 'starting' | 'stopping' | 'deleting' | 'converting' | 'pinning';
 type Tab = 'all' | 'market';
 type LoadState = 'loading' | 'success' | 'error';
-type MarketDetailState = { state: LoadState; detail?: MarketAppDetail };
+type MarketDetailState = { state: LoadState; detail?: MarketAppDetail; version?: string };
 type DetailTarget = { kind: 'installed'; id: string } | { kind: 'market'; id: string };
 
 function appState(state?: string): AppState {
@@ -400,20 +400,36 @@ export function AppMarketPanel({
     }
   }, [marketPage, marketPageSize, showError]);
 
+  // Market details are cached per asset_id and only reused while the plaza list
+  // still reports the same version; installs, updates and Hub releases bump
+  // public_latest_version, so a mismatch forces a fresh market_detail request
+  // and the detail page never disagrees with the card label.
   const openMarketDetail = async (item: MarketAppInfo) => {
     setDetailTarget({ kind: 'market', id: item.asset_id });
     const known = marketDetails[item.asset_id];
-    if (known && known.state !== 'error') return;
+    if (known && known.state !== 'error' && known.version === item.public_latest_version) return;
     setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'loading' } }));
     try {
       const detail = await webRequest<MarketAppDetail>('app_market.market_detail', {
         asset_id: item.asset_id,
         version: item.public_latest_version,
       });
-      setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'success', detail } }));
+      setMarketDetails((current) => ({
+        ...current,
+        [item.asset_id]: { state: 'success', detail, version: item.public_latest_version },
+      }));
     } catch {
       setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'error' } }));
     }
+  };
+
+  const invalidateMarketDetail = (assetId: string) => {
+    setMarketDetails((current) => {
+      if (!(assetId in current)) return current;
+      const next = { ...current };
+      delete next[assetId];
+      return next;
+    });
   };
 
   const waitForInstallJob = useCallback(async (jobId: string, assetId: string) => {
@@ -457,6 +473,7 @@ export function AppMarketPanel({
       ? t('appMarket.updateBackupSuccess', { name: detail.display_name, path: backup })
       : t('appMarket.installSuccess', { name: detail.display_name });
     showNotice(text);
+    invalidateMarketDetail(key);
     await Promise.all([fetchApps(), fetchMarket()]);
     setActiveTab('all');
     window.dispatchEvent(new Event('app-market-apps-changed'));
@@ -559,6 +576,7 @@ export function AppMarketPanel({
       const detail = await webRequest<MarketAppDetail>('app_market.market_detail', {
         asset_id: app.hub_asset_id,
       });
+      invalidateMarketDetail(app.hub_asset_id);
       if (detail.version === app.version && detail.checksum_sha256 && detail.checksum_sha256 === app.artifact_sha256) {
         showNotice(t('appMarket.alreadyLatest'), 'info');
         return;
@@ -773,6 +791,7 @@ export function AppMarketPanel({
         directory = result.work_dir || '';
       }
       removeInstalledApp(app.app_id);
+      if (app.source === 'hub' && app.hub_asset_id) invalidateMarketDetail(app.hub_asset_id);
       showNotice(t(messageKey, { directory }), messageKey === 'appMarket.uninstallCleanupWarning' ? 'warning' : 'success');
       await closeApplication(app);
       window.dispatchEvent(new Event('app-market-apps-changed'));
@@ -788,6 +807,7 @@ export function AppMarketPanel({
     if (!beginAction(app.app_id, 'converting')) return;
     try {
       await webRequest('app_market.convert_to_local', { app_id: app.app_id });
+      if (app.hub_asset_id) invalidateMarketDetail(app.hub_asset_id);
       await fetchApps();
       showNotice(t('appMarket.convertSuccess', { name: app.name }));
     } catch (error) {
@@ -815,6 +835,7 @@ export function AppMarketPanel({
     if (!beginAction(app.app_id, 'deleting')) return;
     try {
       await webRequest('app_market.delete', { app_id: app.app_id });
+      if (app.hub_asset_id) invalidateMarketDetail(app.hub_asset_id);
       removeInstalledApp(app.app_id);
       await fetchMarket();
       setActiveTab('market');

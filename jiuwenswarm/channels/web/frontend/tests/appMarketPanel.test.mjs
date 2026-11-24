@@ -275,6 +275,90 @@ test('market cards open a detail page and return to the plaza', async () => {
   }
 });
 
+test('market detail refreshes after an install completes and the list reports a new version', async () => {
+  let hubVersion = '1.0.0';
+  const marketItem = () => ({
+    asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [],
+  });
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') return { total: 1, items: [marketItem()] };
+    if (method === 'app_market.market_detail') {
+      return { asset_id: params.asset_id, version: hubVersion, display_name: 'Listed' };
+    }
+    if (method === 'app_market.install_dir_default') return { path: '/workspace/apps' };
+    if (method === 'app_market.install') return { job_id: 'install-job' };
+    if (method === 'app_market.install_status') return { state: 'done', phase: 'done' };
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(find('app-market-detail-page').textContent, /v1\.0\.0/);
+    await click(find('app-market-detail-back'));
+    // The Hub publishes v2 and the user installs it; the install flow refreshes
+    // the list, so the card label and the detail page must both show v2.0.0.
+    hubVersion = '2.0.0';
+    await click(find('app-market-install'));
+    await click(find('app-market-install-dir').querySelector('button:last-child'));
+    await tick();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1100)); });
+    await tick();
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await tick();
+    assert.match(find('app-market-market-card').textContent, /v2\.0\.0/);
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('market detail refreshes when the list reports a new version after tab switches', async () => {
+  let hubVersion = '1.0.0';
+  const marketItem = () => ({
+    asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [],
+  });
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') return { total: 1, items: [marketItem()] };
+    if (method === 'app_market.market_detail') {
+      return { asset_id: params.asset_id, version: hubVersion, display_name: 'Listed' };
+    }
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(find('app-market-detail-page').textContent, /v1\.0\.0/);
+    await click(find('app-market-detail-back'));
+    // The Hub publishes v2 without any install; a plaza refresh must update the
+    // detail page too instead of replaying the cached v1 detail.
+    hubVersion = '2.0.0';
+    await click(document.querySelector('button[data-variant="all"]'));
+    await tick();
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    assert.match(find('app-market-market-card').textContent, /v2\.0\.0/);
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+    // An unchanged version must reuse the cache: one extra detail open, no new request.
+    const detailCalls = ctx.calls.filter(({ method }) => method === 'app_market.market_detail').length;
+    await click(find('app-market-detail-back'));
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+    assert.equal(ctx.calls.filter(({ method }) => method === 'app_market.market_detail').length, detailCalls);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('market detail returns to the plaza when a pending refresh removes its app', async () => {
   const refreshed = deferred();
   const item = { asset_id: 'listed', display_name: 'Listed', public_latest_version: '1.0.0', tags: [] };
