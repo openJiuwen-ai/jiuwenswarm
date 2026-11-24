@@ -141,7 +141,9 @@ class UserTurn:
         text: The user's own words. ``str`` for ordinary turns, ``dict`` for an
             A2UI client event, or an ``InteractiveInput`` resuming an interrupt.
         channel: Originating channel id (``web`` / ``feishu`` / ``cron`` / ...).
-        language: Preferred response language (``zh`` / ``en``).
+        language: UI / lead-in language (``zh`` / ``en``). Reply language is
+            decided in the envelope as ``preferred_response_language``
+            (``match`` for user turns; ``language`` for system / cross-session).
         files: ``chat.send`` files mapping (``uploaded_documents`` / ``uploaded_images``).
         trusted_dirs: Directories the client declared as trusted, if any.
         skills: Skill names explicitly selected by the client, if any.
@@ -261,7 +263,9 @@ class UserTurn:
         )
         envelope.update(
             {
-                "preferred_response_language": self.language,
+                "preferred_response_language": self._envelope_response_language(
+                    prompt_channel
+                ),
                 "content": content,
                 "type": (
                     prompt_channel
@@ -308,6 +312,28 @@ class UserTurn:
                 logger.warning("[UserTurn] ignored invalid MCP App model context")
         self._add_prepared_context_carrier(envelope)
         return envelope
+
+    def _keeps_configured_response_language(self, prompt_channel: str) -> bool:
+        """Whether this turn keeps yaml/memo UI language instead of ``match``."""
+        if prompt_channel in _SYSTEM_CHANNELS or prompt_channel in {
+            "agent_session",
+            "__cron__",
+        }:
+            return True
+        return isinstance(self.metadata, dict) and isinstance(
+            self.metadata.get("cron"), dict
+        )
+
+    def _envelope_response_language(self, prompt_channel: str) -> str:
+        """Return envelope ``preferred_response_language``.
+
+        User-authored turns use ``match`` so the model follows ``content``.
+        System (cron / heartbeat / ``__cron__``) and cross-session turns keep
+        the configured UI language — they have no user utterance to match.
+        """
+        if self._keeps_configured_response_language(prompt_channel):
+            return self.language
+        return "match"
 
     def _prompt_channel(self) -> str:
         """Return the model-visible channel for this turn."""
@@ -414,12 +440,20 @@ class UserTurn:
         name = str(prefer.get("display_name") or prefer.get("id") or "").strip()
         if not name:
             return {}
-        return {
-            "prefer_mcp": (
+        from jiuwenswarm.common.i18n import try_normalize_preferred_language
+
+        ui_lang = try_normalize_preferred_language(self.language) or "zh"
+        if ui_lang == "en":
+            directive = (
+                f'For this task, prefer tools or skills from the enabled MCP "{name}"; '
+                "only fall back to other approaches if that MCP is insufficient."
+            )
+        else:
+            directive = (
                 f"本次任务请优先使用已启用的 MCP「{name}」提供的工具或技能来完成；"
                 "若该 MCP 能力不足，再考虑其它方式。"
             )
-        }
+        return {"prefer_mcp": directive}
 
     def _interaction_prefix(self) -> str:
         """Return the interaction-context preamble, or an empty string."""

@@ -2031,12 +2031,17 @@ def test_model_anomaly_detection_params_from_execution_guard() -> None:
                 "model_anomaly_detection_rail": {
                     "enabled": True,
                     "tool_loop_compact": {"enabled": True},
+                    "transient_max_retries": 0,
                 }
             }
         }
     )
     assert params["rail_config"]["enabled"] is True
     assert params["rail_config"]["tool_loop_compact"]["enabled"] is True
+    assert params["rail_config"]["transient_max_retries"] == 0
+    rail = member_rails._build_model_anomaly_detection(params, SwarmBuildContext())
+    assert rail is not None
+    assert rail.transient_max_retries == 0
 
 
 def test_team_workspace_report_path_returns_none_without_root() -> None:

@@ -1402,6 +1402,7 @@ class AgentRuntime:
         stopped_at = self._ask_user_stop_timestamp(request, intent, is_team_request)
         team_stopped = False
         team_paused = False
+        lifecycle_pause_result = None
         target_request_id = str(params.get("target_request_id") or "").strip()
         # Only the web cron path fences a specific execution. Other transports
         # (for example process-cli request-scoped cancels) must keep the
@@ -1497,11 +1498,30 @@ class AgentRuntime:
                 generation=snapshot.generation,
             )
             if intent == "pause":
-                team_paused = await self._team_lifecycle().pause_session(
+                from jiuwenswarm.agents.harness.team.team_manager import (
+                    PauseSessionResult,
+                )
+
+                lifecycle_pause_result = await self._team_lifecycle().pause_session(
                     context,
                     reason=ExecutionCancelCause.USER_PAUSE.value,
                     channel_id=request.channel_id,
                 )
+                if not isinstance(lifecycle_pause_result, PauseSessionResult):
+                    lifecycle_pause_result = (
+                        PauseSessionResult(
+                            work_stopped=True,
+                            resumable=True,
+                            outcome="parked",
+                        )
+                        if lifecycle_pause_result
+                        else PauseSessionResult(
+                            work_stopped=False,
+                            resumable=False,
+                            outcome="failed",
+                        )
+                    )
+                team_paused = lifecycle_pause_result.work_stopped
             elif intent in {"cancel", "stop"}:
                 team_stopped = await self._team_lifecycle().stop_session(
                     context,
@@ -1516,14 +1536,54 @@ class AgentRuntime:
             request,
             allow_create=allow_create,
         )
-        if is_team_request and intent == "pause" and not team_paused:
-            # The adapter may pause successfully even when the generation-aware
-            # lifecycle did not find a matching Team runtime.
-            team_paused = (
-                response.ok
-                and isinstance(response.payload, dict)
-                and response.payload.get("success") is True
+        if is_team_request and intent == "pause":
+            from jiuwenswarm.agents.harness.team.team_manager import (
+                PauseSessionResult,
+                merge_pause_session_results,
             )
+
+            adapter_pause_result = None
+            if response.ok and isinstance(response.payload, dict):
+                payload = response.payload
+                if "outcome" in payload or "work_stopped" in payload:
+                    adapter_pause_result = PauseSessionResult(
+                        work_stopped=bool(payload.get("work_stopped")),
+                        resumable=bool(payload.get("resumable")),
+                        outcome=str(payload.get("outcome") or "failed"),
+                    )
+                elif payload.get("success") is True:
+                    adapter_pause_result = PauseSessionResult(
+                        work_stopped=True,
+                        resumable=True,
+                        outcome="parked",
+                    )
+                elif payload.get("success") is False:
+                    adapter_pause_result = PauseSessionResult(
+                        work_stopped=False,
+                        resumable=False,
+                        outcome="failed",
+                    )
+            merged_pause = merge_pause_session_results(
+                lifecycle_pause_result,
+                adapter_pause_result,
+            )
+            team_paused = merged_pause.work_stopped
+            if isinstance(response.payload, dict):
+                if merged_pause.resumable:
+                    merged_message = "团队已暂停"
+                elif merged_pause.outcome == "already_idle":
+                    merged_message = "当前没有可暂停的团队任务"
+                else:
+                    merged_message = str(
+                        response.payload.get("message")
+                        or "当前没有可暂停的团队任务"
+                    )
+                response.payload["work_stopped"] = merged_pause.work_stopped
+                response.payload["resumable"] = merged_pause.resumable
+                response.payload["outcome"] = merged_pause.outcome
+                response.payload["success"] = merged_pause.success
+                response.payload["has_active_task"] = merged_pause.resumable
+                response.payload["message"] = merged_message
         cancellation_drained = True
         executions_cancelled = False
         # 单 Agent 的 pause 只挂起 ReAct 循环：StreamEventRail 在下一个

@@ -144,7 +144,7 @@ class ExternalHarnessBindingError(ValueError):
 
 def _error_text(key: str, **values: object) -> str:
     zh_text, en_text = _ERROR_TEXT[key]
-    use_en = False
+    use_en = True
     try:
         from jiuwenswarm.enterprise.config.preferred_language import (
             resolve_preferred_language,
@@ -152,7 +152,7 @@ def _error_text(key: str, **values: object) -> str:
 
         use_en = resolve_preferred_language() == "en"
     except Exception:
-        logger.debug("read preferred_language failed, fallback to zh", exc_info=True)
+        logger.debug("read preferred_language failed, fallback to en", exc_info=True)
     return (en_text if use_en else zh_text).format(**values)
 
 
@@ -658,7 +658,17 @@ async def _ensure_external_harness(
         or "default"
     )
     language_resolver = getattr(adapter, "_resolve_runtime_language", None)
-    language = language_resolver() if callable(language_resolver) else "zh"
+    if callable(language_resolver):
+        language = language_resolver()
+    else:
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
+        # Prefer memo / yaml; map zh→cn for harness codes that expect cn/en.
+        from jiuwenswarm.common.i18n import to_runtime_language
+
+        language = to_runtime_language(resolve_preferred_language()) or "cn"
     io = await start_external_harness(
         session_id=session_id,
         agent_template_name=str(binding["agent_template_name"]),

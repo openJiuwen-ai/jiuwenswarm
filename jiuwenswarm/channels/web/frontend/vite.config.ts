@@ -181,13 +181,10 @@ function resolveProjectRootDir(): string {
   return repoRoot
 }
 
-/** 前端 file-api 契约沿用平铺相对路径（agent/...）；分区后 agent 树落 domain/agent 下 */
+/** 前端 file-api 契约沿用平铺相对路径（agent/...），与后端平铺布局一致；
+ *  与 app_web._resolve_project_path 对齐，直接 resolve 不做重写。 */
 function resolveFileApiPath(projectRootDir: string, relPath: string): string {
-  const normalized = relPath.replace(/\\/g, '/')
-  if (normalized === 'agent' || normalized.startsWith('agent/')) {
-    return path.resolve(projectRootDir, 'domain', normalized)
-  }
-  return path.resolve(projectRootDir, normalized)
+  return path.resolve(projectRootDir, relPath.replace(/\\/g, '/'))
 }
 
 const FILE_CONTENT_ENCODING_ALIASES: Record<string, string> = {
@@ -367,10 +364,10 @@ function validateFileDownloadToken(token: string): { path: string } | null {
       const relativePath = String(payload.relative_path || '').trim()
       if (!name || !relativePath) return null
       const rootDir = resolveProjectRootDir()
-      const skillDir = path.resolve(rootDir, 'domain', 'agent', 'workspace', 'skills', name)
+      const skillDir = path.resolve(rootDir, 'agent', 'workspace', 'skills', name)
       const fullPath = path.resolve(skillDir, relativePath)
       // 安全检查：确保路径在 skills 目录下
-      const skillsRoot = path.resolve(rootDir, 'domain', 'agent', 'workspace', 'skills')
+      const skillsRoot = path.resolve(rootDir, 'agent', 'workspace', 'skills')
       const rel = path.relative(skillsRoot, fullPath)
       if (rel.startsWith('..') || path.isAbsolute(rel)) return null
       return { path: fullPath }
@@ -415,7 +412,7 @@ function devWsTrafficLogger(): Plugin {
     name: 'dev-ws-traffic-logger',
     configureServer(server) {
       const projectRootDir = resolveProjectRootDir()
-      const logDir = path.resolve(projectRootDir, 'infra', 'logs', 'agent')
+      const logDir = path.resolve(projectRootDir, 'agent', '.logs')
       const logFile = path.resolve(logDir, 'ws-dev.log')
       fs.mkdirSync(logDir, { recursive: true })
       // 每次前端 dev 服务启动时清空日志，避免历史数据干扰排查。
@@ -555,15 +552,15 @@ function parseMultipartFiles(contentType: string, body: Buffer): MultipartFilePa
 function devFileContentApi(): Plugin {
   const projectRootDir = resolveProjectRootDir()
   const sourceRepoRootDir = path.resolve(__dirname, '../../../..')
-  const workspaceRootDir = path.resolve(projectRootDir, 'domain', 'agent')
+  const workspaceRootDir = path.resolve(projectRootDir, 'agent')
   const sessionsRootDir = path.resolve(workspaceRootDir, 'sessions')
-  const agentTeamsRootDir = path.resolve(projectRootDir, 'domain', '.agent_teams')
+  const agentTeamsRootDir = path.resolve(projectRootDir, '.agent_teams')
   // Team-organization summaries live here, outside .agent_teams. A group
   // attachment points at this tree; rejecting it makes the chat card call an
   // existing file expired.
-  const organizationsRootDir = path.resolve(projectRootDir, 'domain', '.organizations')
-  const webLogsRootDir = path.resolve(projectRootDir, 'infra', 'logs', 'agent')
-  const autoHarnessDir = path.resolve(projectRootDir, 'infra', 'auto-harness')
+  const organizationsRootDir = path.resolve(projectRootDir, '.organizations')
+  const webLogsRootDir = path.resolve(workspaceRootDir, '.logs')
+  const autoHarnessDir = path.resolve(projectRootDir, 'auto-harness')
   // Projectless tasks (no bound project_dir) write generated media under
   // <Documents>/JiuwenSwarm/<date>/chat-<n>/outputs/ (see
   // jiuwenswarm/common/projectless_workspace.py::get_projectless_tasks_dir) --

@@ -76,6 +76,17 @@ export function isAlreadyExistsError(error: unknown): boolean {
   return errorCode(error) === 'ALREADY_EXISTS';
 }
 
+export function isWorkspaceQuotaError(error: unknown): boolean {
+  if (typeof error === 'string') {
+    return error.includes('WORKSPACE_QUOTA_EXCEEDED');
+  }
+  if (!error || typeof error !== 'object') return false;
+  const record = error as { code?: unknown; message?: unknown; error?: unknown };
+  return [record.code, record.message, record.error].some(
+    (value) => typeof value === 'string' && value.includes('WORKSPACE_QUOTA_EXCEEDED'),
+  );
+}
+
 export function resolveCreatedSessionId(
   payload: SessionCreatePayload | null | undefined,
 ): string | undefined {

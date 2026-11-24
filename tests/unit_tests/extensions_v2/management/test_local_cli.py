@@ -478,7 +478,8 @@ async def test_host_shutdown_drains_cli_requests_before_releasing_manager(
     monkeypatch.setattr(assembly, "_LOCAL_CLI", service)
     monkeypatch.setattr(assembly, "_ASSEMBLY", SimpleNamespace(
         manager=manager, compact=SimpleNamespace(close=AsyncMock()),
-        authorization=SimpleNamespace(close=lambda: None), webui=SimpleNamespace(shutdown=AsyncMock()),
+        authorization=SimpleNamespace(close=lambda: None),
+        webui=SimpleNamespace(stop_state_refresh=AsyncMock(), shutdown=AsyncMock()),
     ))
     request = asyncio.create_task(transport.request(transport.read_context("agent_server"), "query", {}, 2))
     shutdown = None

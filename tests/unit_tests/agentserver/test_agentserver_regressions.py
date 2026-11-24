@@ -104,7 +104,19 @@ def _gateway_process(connection, directory):
         )
         handler._cron_controller = controller
 
-        async def ack(*, command_id, data, user_id=None, session_id=None):
+        # Cron058 后真实 _push_cron_command_ack 会多传 group_id/bot_id；
+        # mock 必须吞掉，否则子进程 TypeError → pipe EOF，本用例失败。
+        async def ack(
+            *,
+            command_id,
+            data,
+            user_id=None,
+            session_id=None,
+            group_id=None,
+            bot_id=None,
+            **_kwargs,
+        ):
+            _ = (session_id, group_id, bot_id, _kwargs)
             envelope = e2a_from_agent_fields(
                 request_id=command_id, channel_id="", req_method=ReqMethod.CRON_COMMAND_ACK,
                 params={"command_id": command_id, "data": data}, user_id=user_id,

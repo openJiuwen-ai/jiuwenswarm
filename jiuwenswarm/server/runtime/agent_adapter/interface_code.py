@@ -529,6 +529,7 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
     "subagent_resume",
     "read_file",
     "pcs_search",
+    "pcs_read",
     "grep",
     "list_files",
     "glob",
@@ -697,6 +698,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         injected by RuntimePromptRail can instruct the LLM to respond in the
         user's chosen language.
         """
+        from jiuwenswarm.common.i18n import normalize_preferred_language
+        from jiuwenswarm.common.i18n import to_runtime_language
         from jiuwenswarm.enterprise.config.preferred_language import (
             resolve_preferred_language,
         )
@@ -706,10 +709,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             raw = resolve_preferred_language()
         else:
             config_base = self._active_code_config()
-            raw = str(config_base.get("preferred_language", "zh")).strip().lower()
-        if raw == "zh":
-            raw = "cn"
-        return resolve_language(raw)
+            raw = normalize_preferred_language(
+                config_base.get("preferred_language")
+            )
+        mapped = to_runtime_language(raw)
+        return resolve_language(mapped)
 
     def _resolve_cua_card_language(self) -> str:
         """The cua approval card is read by the user, so it follows the UI
@@ -2814,6 +2818,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # 不走 SubagentRail 的 subagent_spawn / task_tool 路径。
         # （agent 模式仍由 interface_deep.py 的 _load_custom_subagents 管理）
 
+        logger.debug(
+            "[JiuwenSwarmCodeAdapter] react.subagents resolved specs=%s",
+            [
+                {
+                    "name": getattr(getattr(spec, "agent_card", None), "name", None),
+                    "max_iterations": getattr(spec, "max_iterations", None),
+                }
+                for spec in subagents
+            ],
+        )
         return subagents or None, False
 
     # ─── Rail 生命周期(mode切换) ───────────────────

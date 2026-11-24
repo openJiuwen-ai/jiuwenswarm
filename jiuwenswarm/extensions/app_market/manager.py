@@ -18,6 +18,7 @@ from urllib.parse import quote
 
 from jiuwenswarm.enterprise.edition import is_enterprise
 
+from .app_ai_roles import load_ai_role_groups
 from .app_market.market_service import MarketService
 from .app_market.models import AppManifest, normalize_app_version
 from .app_market.run_consent import RunConsentStore
@@ -175,6 +176,7 @@ class AppMarketManager:
         self._consents = RunConsentStore(data_dir)
         self._jobs: dict[str, InstallJob] = {}
         self._operation_locks: dict[str, asyncio.Lock] = {}
+        self._local_work_dirs_lock = asyncio.Lock()
         self.editors = AppEditorSessions(self._service.storage)
         self._service.allow_hub_code = False
         self._operation_dir = Path(data_dir) / "install_ops"
@@ -243,56 +245,66 @@ class AppMarketManager:
         An explicit version must match the HTML version if both are set.
         With neither set, keep the version from the previous registration.
         """
-        entry = Path(entry_path).expanduser().resolve()
-        if not entry.is_file() or entry.suffix.lower() not in (".html", ".htm"):
-            raise ValueError("A readable HTML application entry is required")
-        if self.storage.contains_hub_install(entry):
-            raise ValueError("Convert this Hub app to a local app before registering it")
-        app_id = _local_app_id(entry, owner_id)
-        existing = self._service.get_app(app_id)
-        if existing is None:
-            # A converted app keeps its installation ID and project binding.
-            existing = self.storage.find_local_app(entry, owner_id)
-            if existing is not None:
-                app_id = existing.app_id
-        metadata = _metadata(entry)
-        requested_version = normalize_app_version(version)
-        try:
-            declared_version = normalize_app_version(metadata["version"])
-        except ValueError as exc:
-            raise ValueError(f"invalid application-version meta: {exc}") from exc
-        if requested_version and declared_version and requested_version != declared_version:
-            raise ValueError("version must match the HTML application-version")
-        resolved_version = (
-            requested_version
-            or declared_version
-            or (existing.version if existing is not None else "")
-            or "1.0.0"
-        )
-        manifest = await self._service.publish_app(
-            str(entry.parent),
-            {
-                "app_id": app_id,
-                "name": metadata["name"],
-                "version": resolved_version,
-                "run_type": "static",
-                "page_entry_path": entry.name,
-                "source_session": source_session,
-                "description": metadata["description"],
-                "icon_url": metadata["icon_url"],
-                "owner_id": owner_id,
-                "permissions": ["ai"] if "WorkSwarmApp" in entry.read_text(encoding="utf-8", errors="replace") else [],
-            },
-        )
-        if manifest is None:
-            raise ValueError("Application adaptation or validation failed")
-        saved = self._service.get_app(app_id)
-        if saved is None:
-            raise ValueError("Application registration failed")
-        return {"app_id": saved.app_id, "name": saved.name, "version": saved.version}
+        async with self._local_work_dirs_lock:
+            entry = Path(entry_path).expanduser().resolve()
+            if not entry.is_file() or entry.suffix.lower() not in (".html", ".htm"):
+                raise ValueError("A readable HTML application entry is required")
+            if self.storage.contains_hub_install(entry):
+                raise ValueError("Convert this Hub app to a local app before registering it")
+            app_id = _local_app_id(entry, owner_id)
+            existing = self._service.get_app(app_id)
+            if existing is None:
+                # A converted app keeps its installation ID and project binding.
+                existing = self.storage.find_local_app(entry, owner_id)
+                if existing is not None:
+                    app_id = existing.app_id
+            metadata = _metadata(entry)
+            requested_version = normalize_app_version(version)
+            try:
+                declared_version = normalize_app_version(metadata["version"])
+            except ValueError as exc:
+                raise ValueError(f"invalid application-version meta: {exc}") from exc
+            if requested_version and declared_version and requested_version != declared_version:
+                raise ValueError("version must match the HTML application-version")
+            resolved_version = (
+                requested_version
+                or declared_version
+                or (existing.version if existing is not None else "")
+                or "1.0.0"
+            )
+            uses_ai = bool(load_ai_role_groups(entry.parent)) or (
+                "WorkSwarmApp" in entry.read_text(encoding="utf-8", errors="replace")
+            )
+            manifest = await self._service.publish_app(
+                str(entry.parent),
+                {
+                    "app_id": app_id,
+                    "name": metadata["name"],
+                    "version": resolved_version,
+                    "run_type": "static",
+                    "page_entry_path": entry.name,
+                    "source_session": source_session,
+                    "description": metadata["description"],
+                    "icon_url": metadata["icon_url"],
+                    "owner_id": owner_id,
+                    "permissions": ["ai"] if uses_ai else [],
+                },
+            )
+            if manifest is None:
+                raise ValueError("Application adaptation or validation failed")
+            saved = self._service.get_app(app_id)
+            if saved is None:
+                raise ValueError("Application registration failed")
+            return {"app_id": saved.app_id, "name": saved.name, "version": saved.version}
 
-    async def convert_to_local(self, app_id: str, owner_id: str) -> dict[str, Any]:
-        """Switch one installation to local maintenance without changing its files."""
+    async def convert_to_local(
+        self, app_id: str, owner_id: str, project_request: CoreRequest | None = None
+    ) -> dict[str, Any]:
+        """Switch one installation to local maintenance without changing its files.
+
+        Preserve project and editor bindings for this directory. Resolve a
+        replacement binding when needed, and stop instances using the old one.
+        """
         self._reject_active_job(app_id)
         async with self._operation_lock(app_id):
             self._reject_active_job(app_id)
@@ -312,6 +324,27 @@ class AppMarketManager:
                 raise AppMarketError(
                     "app_operation_conflict", "Remove the duplicate local registration before converting"
                 )
+            previous_context = (manifest.project_id, manifest.project_dir, manifest.project_work_mode)
+            self._detach_stale_project(manifest)
+            detached_context = (manifest.project_id, manifest.project_dir, manifest.project_work_mode)
+            if project_request is not None and not self._service.has_project_binding(manifest):
+                try:
+                    await self.bind_app_project(manifest, project_request)
+                except Exception as exc:  # noqa: BLE001 - start can retry project resolution
+                    manifest.project_id, manifest.project_dir, manifest.project_work_mode = detached_context
+                    logger.warning("Project binding failed while converting %s: %s", app_id, exc)
+            if (manifest.project_id, manifest.project_dir, manifest.project_work_mode) != previous_context:
+                await self._stop_active_instances(app_id)
+            latest = self._service.get_app(app_id)
+            if latest is None or (latest.owner_id, latest.source, latest.work_dir) != (
+                owner_id, "hub", manifest.work_dir,
+            ):
+                raise AppMarketError("app_operation_conflict", "Application changed during conversion")
+            # Pinning can update the registration while Core or an instance is stopping.
+            manifest.pinned = latest.pinned
+            record = self.storage.load_install_record(app_id)
+            if record and (record.get("owner_id"), record.get("work_dir")) == (owner_id, manifest.work_dir):
+                manifest.local_release_id = str(record.get("release_id") or "")
             manifest.source = "local"
             manifest.hub_asset_id = ""
             manifest.hub_url = ""
@@ -332,6 +365,33 @@ class AppMarketManager:
                 "version": manifest.version,
                 "project_id": manifest.project_id,
             }
+
+    @staticmethod
+    def _detach_stale_project(manifest: AppManifest) -> None:
+        """Drop bindings that belong to another directory or to an old copy.
+
+        A Hub install can reuse an app_id from an earlier local conversion. That
+        project and its editor sessions belong to the old copy, not to this
+        directory, so conversion must not silently keep them.
+        """
+        def normalized(value: str) -> str:
+            try:
+                return os.path.normcase(str(Path(value).expanduser().resolve()))
+            except (OSError, RuntimeError):
+                return os.path.normcase(os.path.abspath(value))
+
+        work_dir = normalized(manifest.work_dir)
+        project_dir = normalized(manifest.project_dir) if manifest.project_dir else ""
+        if manifest.project_id and project_dir == work_dir:
+            return
+        manifest.project_id = ""
+        manifest.project_dir = ""
+        manifest.project_work_mode = ""
+        manifest.source_session = ""
+        manifest.editor_session_id = ""
+        manifest.editor_create_token = ""
+        manifest.editor_create_pending = False
+        manifest.editor_session_ids = []
 
     @staticmethod
     def _created_at_key(app: AppManifest) -> datetime:
@@ -384,6 +444,17 @@ class AppMarketManager:
                 for a in apps
             ]
         }
+
+    async def get_ai_role_groups(self, app_id: str, owner_id: str) -> list[dict[str, Any]]:
+        manifest = self._service.get_app(app_id)
+        if manifest is None or manifest.owner_id != owner_id:
+            raise AppMarketError("not_found", "Application not found")
+        if not manifest.work_dir:
+            return []
+        try:
+            return await asyncio.to_thread(load_ai_role_groups, Path(manifest.work_dir), include_avatars=True)
+        except ValueError as exc:
+            raise AppMarketError("app_ai_roles_invalid", str(exc)) from exc
 
     def get_editor_app(self, session_id: str, owner_id: str) -> dict[str, Any] | None:
         """Resolve an editor's preview without listing other session bindings."""
@@ -505,10 +576,7 @@ class AppMarketManager:
                 await self.bind_app_project(manifest, project_request)
                 current_context = (manifest.project_id, manifest.project_dir, manifest.project_work_mode)
                 if current_context != previous_context:
-                    for active in self._service.list_instances(app_id):
-                        if active.state in ("starting", "running", "stopping"):
-                            if not await self._service.stop_app(active.instance_id):
-                                raise AppMarketError("app_operation_conflict", "Could not restart the application")
+                    await self._stop_active_instances(app_id)
                     latest = self.storage.load_manifest(app_id)
                     if latest is None or latest.owner_id != manifest.owner_id or latest.work_dir != manifest.work_dir:
                         raise AppMarketError("app_operation_conflict", "Application changed while binding its project")
@@ -1023,21 +1091,24 @@ class AppMarketManager:
         owner_id: str = "",
         remove_files: bool = False,
     ) -> dict[str, Any]:
-        from .hub_install import AppInstallError, uninstall_hub_app
-
         self._reject_active_job(app_id)
         async with self._operation_lock(app_id):
             self._reject_active_job(app_id)
-            try:
-                result = await uninstall_hub_app(
-                    manager=self,
-                    app_id=app_id,
-                    owner_id=owner_id,
-                    remove_files=remove_files,
-                )
-            except AppInstallError as exc:
-                raise AppMarketError(exc.code, str(exc)) from exc
-            self._consents.revoke_app(app_id)
+            return await self._uninstall_app_locked(app_id, owner_id, remove_files)
+
+    async def _uninstall_app_locked(self, app_id: str, owner_id: str, remove_files: bool) -> dict[str, Any]:
+        from .hub_install import AppInstallError, uninstall_hub_app
+
+        try:
+            result = await uninstall_hub_app(
+                manager=self,
+                app_id=app_id,
+                owner_id=owner_id,
+                remove_files=remove_files,
+            )
+        except AppInstallError as exc:
+            raise AppMarketError(exc.code, str(exc)) from exc
+        self._consents.revoke_app(app_id)
         return result
 
     def start_error(self, app_id: str) -> str:
@@ -1059,16 +1130,52 @@ class AppMarketManager:
             return False
         return await self._service.stop_app(instance_id)
 
-    async def delete_app(self, app_id: str, owner_id: str = "") -> bool:
-        app = self._service.get_app(app_id)
-        if not app or app.owner_id != owner_id:
-            return False
-        if app.source == "hub":
-            # Hub apps keep their files by default; explicit cleanup goes through
-            # app_market.uninstall with remove_files=true.
-            await self.uninstall_app(app_id, owner_id, remove_files=False)
-            return True
-        return await self._service.delete_app(app_id)
+    async def _stop_active_instances(self, app_id: str) -> None:
+        for active in self._service.list_instances(app_id):
+            if active.state not in ("starting", "running", "stopping"):
+                continue
+            if not await self._service.stop_app(active.instance_id):
+                raise AppMarketError("app_operation_conflict", "Could not stop the active application")
+
+    async def delete_app(
+        self, app_id: str, owner_id: str = "", remove_files: bool = False
+    ) -> dict[str, Any]:
+        """Remove an app from the market, optionally deleting its program files.
+
+        Both modes leave the app project and its editor sessions untouched.
+        """
+        from .hub_install import cleanup_local_app_files
+
+        async with self._operation_lock(app_id):
+            app = self._service.get_app(app_id)
+            if not app or app.owner_id != owner_id:
+                return {"deleted": False}
+            self._reject_active_job(app_id)
+            if app.source == "hub":
+                result = await self._uninstall_app_locked(app_id, owner_id, remove_files)
+                return {"deleted": True, **result}
+            if not await self._service.delete_app(app_id) or self._service.get_app(app_id) is not None:
+                return {"deleted": False}
+
+            removed_dir = preserved_dir = cleanup_warning = ""
+            if remove_files:
+                async with self._local_work_dirs_lock:
+                    cleanup = asyncio.create_task(asyncio.to_thread(cleanup_local_app_files, app, self.storage))
+                    try:
+                        removed_dir, preserved_dir, cleanup_warning = await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        # Keep both locks until the filesystem work finishes.
+                        await cleanup
+                        raise
+        return {
+            "deleted": True,
+            "removed_files": bool(removed_dir),
+            "removed_dir": removed_dir,
+            "preserved_dir": preserved_dir,
+            "project_retained": True,
+            "work_dir": app.work_dir,
+            "cleanup_warning": cleanup_warning,
+        }
 
     async def shutdown(self) -> None:
         tasks = []

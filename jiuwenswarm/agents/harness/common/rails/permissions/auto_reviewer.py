@@ -261,13 +261,21 @@ class IsolatedModelReviewerClient:
         return {"response_format": {"type": "json_object"}}
 
     def _display_language(self) -> str:
+        from jiuwenswarm.common.i18n import normalize_preferred_language
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
         getter = self._display_language_getter
         if getter is None:
-            return "zh"
+            try:
+                return resolve_preferred_language()
+            except Exception:
+                return "en"
         try:
-            return "en" if str(getter() or "").strip().lower() == "en" else "zh"
+            return normalize_preferred_language(getter())
         except Exception:
-            return "zh"
+            return "en"
 
 
 @dataclass(frozen=True)

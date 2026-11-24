@@ -1329,20 +1329,28 @@ def _resolve_channel_id(channel_id: str | None) -> str:
 
 
 def _resolve_request_language(request: Any) -> str:
+    from jiuwenswarm.common.i18n import try_normalize_preferred_language
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
     metadata = getattr(request, "metadata", None)
     params = getattr(request, "params", None)
     sources = []
-    if isinstance(metadata, dict):
-        sources.append(metadata)
     if isinstance(params, dict):
         sources.append(params)
+    if isinstance(metadata, dict):
+        sources.append(metadata)
 
+    # UI language only — never treat preferred_response_language=match as UI.
     for source in sources:
-        for key in ("language", "preferred_language", "preferred_response_language"):
+        for key in ("ui_language", "language", "preferred_language"):
             value = source.get(key)
             if value:
-                return str(value).strip().lower() or "zh"
-    return "zh"
+                mapped = try_normalize_preferred_language(value)
+                if mapped is not None:
+                    return mapped
+    return resolve_preferred_language()
 
 
 def _safe_query_preview(query: Any, limit: int = DEFAULT_PREVIEW_MAX_CHARS) -> str:
@@ -2901,14 +2909,13 @@ def _redact_teammate_quota_tool_result(parsed: dict[str, Any]) -> dict[str, Any]
         return parsed
     keys = ("result", "raw_output", "summary", "content", "error", "rendered_result")
     blob = "\n".join(str(parsed.get(key) or "") for key in keys)
-    if "TEAM_MEMBER_QUOTA_EXCEEDED" not in blob and "人数已满" not in blob:
+    markers = ("TEAM_MEMBER_QUOTA_EXCEEDED", "人数已满", "Team is full")
+    if not any(marker in blob for marker in markers):
         return parsed
     redacted = dict(parsed)
     for key in keys:
         value = redacted.get(key)
-        if isinstance(value, str) and (
-            "TEAM_MEMBER_QUOTA_EXCEEDED" in value or "人数已满" in value
-        ):
+        if isinstance(value, str) and any(marker in value for marker in markers):
             redacted[key] = "TEAM_MEMBER_QUOTA_EXCEEDED"
     return redacted
 

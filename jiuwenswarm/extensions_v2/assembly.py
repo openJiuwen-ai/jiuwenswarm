@@ -93,6 +93,11 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
                     authorization_service=assembly.authorization,
                 ),
             )
+            if assembly.manager.state_store is not None and assembly.manager.state_dependencies is not None:
+                assembly.webui.bind_state(
+                    assembly.manager.state_store,
+                    assembly.manager.state_dependencies,
+                )
         except Exception:  # noqa: BLE001 - extensions must not block chat startup
             logger.exception("[ExtensionsV2] assembly failed; extension features are unavailable")
             return None
@@ -152,6 +157,7 @@ async def shutdown_extensions() -> None:
             logger.exception("[ExtensionsV2] failed to withdraw the AgentLoop extension bus")
         try:
             await assembly.compact.close()
+            await assembly.webui.stop_state_refresh()
             await assembly.manager.shutdown()
         finally:
             assembly.authorization.close()

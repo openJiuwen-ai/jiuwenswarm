@@ -817,17 +817,16 @@ def _get_state_file() -> "Path":
 def _knowledge_skill_language() -> str:
     """Return ``"en"`` or ``"zh"`` for Skill display, Knowledge-to-Skill prompts and errors.
 
-    Follows the top-level ``preferred_language`` in config.yaml; anything that
-    is not English (or an unreadable config) keeps the historical Chinese text.
+    Uses the same preferred_language resolution as chat tools; failures → ``en``.
     """
     try:
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
 
-        config = get_config() or {}
+        return resolve_preferred_language()
     except Exception:  # noqa: BLE001 - language lookup must never break the flow
-        return "zh"
-    raw = config.get("preferred_language") if isinstance(config, dict) else None
-    return "en" if str(raw or "").strip().lower().startswith("en") else "zh"
+        return "en"
 
 
 _KNOWLEDGE_SKILL_MISSING_SKILL_MD = {
@@ -3178,9 +3177,7 @@ class SkillManager:
             except ValueError as exc:
                 _log_rejected_name("skills.install", "skill", spec, exc)
                 return {"success": False, "detail": str(exc)}
-            builtin_dir = get_builtin_skills_dir()
-            builtin_path = _safe_child_path(builtin_dir, safe_name, "skill")
-            if _exists_long(builtin_path) and _is_dir_long(builtin_path):
+            if self._resolve_builtin_skill_source_dir(safe_name) is not None:
                 return await self.handle_skills_install_builtin({"name": safe_name})
             return {"success": False, "detail": "spec 格式应为 skill@marketplace，内置技能可直接使用名称安装"}
 
@@ -13353,6 +13350,32 @@ class SkillManager:
             for name in removed_names - remaining_names:
                 configs.pop(name, None)
 
+    def _resolve_builtin_skill_source_dir(self, name: str) -> Path | None:
+        """定位包内置技能源目录：顶层扁平布局，或 workswarm-builtin/capabilities。
+
+        仓库资源已收敛为单一目录 Skill（``workswarm-builtin/references/capabilities/<name>``），
+        企业版自动安装仍按扁平名复制进租户工作区；二者都要能解析到源。
+        """
+        builtin_dir = get_builtin_skills_dir()
+        if not _exists_long(builtin_dir):
+            return None
+        try:
+            flat = _safe_child_path(builtin_dir, name, "skill")
+            if _is_dir_long(flat) and self._try_find_skill_file(flat) is not None:
+                return flat
+            catalog_cap = builtin_dir.joinpath(
+                _BUILTIN_CATALOG_NAME, *_BUILTIN_CATALOG_CAPABILITIES, name,
+            )
+            # 与 _safe_child_path 同等约束：必须落在 builtin_dir 下且含 SKILL.md。
+            resolved = catalog_cap.resolve()
+            if not resolved.is_relative_to(builtin_dir.resolve()) or resolved.is_symlink():
+                return None
+            if not _is_dir_long(resolved) or self._try_find_skill_file(resolved) is None:
+                return None
+            return resolved
+        except (OSError, RuntimeError, ValueError):
+            return None
+
     @_state_transactional
     def _install_builtin_skill_sync(self, name: str) -> dict[str, Any]:
         """将包内置技能复制到当前 workspace，并写入 builtin 安装账本。"""
@@ -13360,8 +13383,8 @@ class SkillManager:
         if not _exists_long(builtin_dir):
             return {"success": False, "detail": "内置技能目录不存在"}
 
-        src = _safe_child_path(builtin_dir, name, "skill")
-        if not _is_dir_long(src):
+        src = self._resolve_builtin_skill_source_dir(name)
+        if src is None:
             return {"success": False, "detail": f"未找到内置技能: {name}"}
 
         dest = _safe_child_path(self._skills_dir, name, "skill")
@@ -13431,8 +13454,8 @@ class SkillManager:
         for name in sorted(_ENTERPRISE_BUILTIN_AUTO_INSTALL):
             if name in claimed_names:
                 continue
-            src = _safe_child_path(builtin_dir, name, "skill")
-            if not _is_dir_long(src):
+            # 源可能在扁平目录，也可能在 workswarm-builtin/capabilities。
+            if self._resolve_builtin_skill_source_dir(name) is None:
                 continue
             dest = _safe_child_path(self._skills_dir, name, "skill")
             if _is_dir_long(dest):

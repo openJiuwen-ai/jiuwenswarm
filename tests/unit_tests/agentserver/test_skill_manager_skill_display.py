@@ -309,7 +309,7 @@ def test_selected_language_missing_fields_preserve_original_metadata(
 
 @pytest.mark.parametrize(
     ("configured_language", "expected_language"),
-    [(None, "zh"), ("", "zh"), ("unsupported", "zh"), (" EN-us ", "en"), ("en", "en"), ("zh-CN", "zh"), ("cn", "zh")],
+    [(None, "en"), ("", "en"), ("unsupported", "en"), (" EN-us ", "en"), ("en", "en"), ("zh-CN", "zh"), ("cn", "zh")],
 )
 def test_skill_display_config_language_normalization(tmp_path, config_file, configured_language, expected_language):
     content = "{}\n" if configured_language is None else f'preferred_language: "{configured_language}"\n'
@@ -326,7 +326,7 @@ def test_skill_display_config_language_normalization(tmp_path, config_file, conf
     assert meta["description"] == ("English description" if expected_language == "en" else "中文简介")
 
 
-def test_skill_display_unreadable_config_defaults_to_chinese(monkeypatch, tmp_path):
+def test_skill_display_unreadable_config_defaults_to_english(monkeypatch, tmp_path):
     def unreadable_config():
         raise OSError("config unavailable")
 
@@ -339,8 +339,8 @@ def test_skill_display_unreadable_config_defaults_to_chinese(monkeypatch, tmp_pa
 
     SkillManager._apply_skill_display(meta, skill_dir)
 
-    assert meta["display_name"] == "中文名称"
-    assert meta["description"] == "中文简介"
+    assert meta["display_name"] == "English name"
+    assert meta["description"] == "English description"
 
 
 @pytest.mark.asyncio
@@ -398,7 +398,7 @@ def test_marketplace_scan_uses_configured_display_language(monkeypatch, tmp_path
 
 
 @pytest.mark.parametrize("failure", ["missing", "invalid_yaml", "not_mapping"])
-def test_skill_display_invalid_config_defaults_to_chinese(tmp_path, config_file, failure):
+def test_skill_display_invalid_config_defaults_to_english(tmp_path, config_file, failure):
     if failure == "missing":
         config_file.unlink()
     else:
@@ -411,8 +411,8 @@ def test_skill_display_invalid_config_defaults_to_chinese(tmp_path, config_file,
 
     SkillManager._apply_skill_display(meta, skill_dir)
 
-    assert meta["display_name"] == "中文名称"
-    assert meta["description"] == "中文简介"
+    assert meta["display_name"] == "English name"
+    assert meta["description"] == "English description"
 
 
 def _make_display_scan_manager(monkeypatch, tmp_path):

@@ -5,6 +5,7 @@ export { useSessionStore } from '../../src/stores/sessionStore.ts';
 export { useWorkspaceStore } from '../../src/stores/workspaceStore.ts';
 export { ApplicationPresentationHost } from '../../src/features/webui/presentation/ApplicationPresentationHost.tsx';
 export { usePresentationHost } from '../../src/features/webui/presentation/hostContext.ts';
+export { WebUIApplicationSurface } from '../../src/features/webui/renderer/adapters/webuiApplicationSurface/WebUIApplicationSurface.tsx';
 export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx';
 export { componentCatalog } from '../../src/features/webui/catalog/componentCatalog.ts';
 export { createRendererRegistry } from '../../src/features/webui/renderer/types.ts';
@@ -14,3 +15,5 @@ export { createPresentationReplyReader, lastPresentationReply, lastPresentationU
 export { selectConversationModel } from '../../src/multi-session/state/modelSelectionActions.ts';
 export { webClient } from '../../src/services/webClient.ts';
 export { PresentationWindow } from '../../src/features/webui/presentation/PresentationWindow.tsx';
+export { createPresentationOverlay, fitOverlayBounds } from '../../src/features/webui/presentation/overlay.ts';
+export { createPresentationStartHandler } from '../../src/features/webui/presentation/start.ts';

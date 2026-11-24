@@ -1487,7 +1487,16 @@ def _build_context_messages_from_history(
                         if isinstance(cross_session, dict)
                         else {}
                     )
-                    language = str(cross_session.get("language") or "zh").strip()
+                    from jiuwenswarm.common.i18n import normalize_preferred_language
+                    from jiuwenswarm.enterprise.config.preferred_language import (
+                        resolve_preferred_language,
+                    )
+
+                    language = normalize_preferred_language(
+                        cross_session.get("language")
+                        if cross_session.get("language")
+                        else resolve_preferred_language()
+                    )
                     content = render_cross_session_history_content(
                         content,
                         cross_session,

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from typing import Optional
 
@@ -67,7 +68,9 @@ def run_init(force: bool = False, name: Optional[str] = None) -> int:
         logging.info(f"[jiuwenswarm-init] Creating instance: {name}")
         logging.info(f"[jiuwenswarm-init] Workspace: {workspace_path}")
     else:
-        workspace_path = get_user_home() / ".jiuwenswarm"
+        # 与运行时 get_user_workspace_dir() 保持一致：优先 JIUWENSWARM_DATA_DIR，
+        # 其次 JIUWENSWARM_HOME/.jiuwenswarm。实例部署依赖这里，不能只看 HOME。
+        workspace_path = get_user_workspace_dir()
         logging.info(f"[jiuwenswarm-init] Initializing default workspace")
         logging.info(f"[jiuwenswarm-init] Workspace: {workspace_path}")
 
@@ -91,12 +94,18 @@ def run_init(force: bool = False, name: Optional[str] = None) -> int:
             logging.info(f"[jiuwenswarm-init] Stop it first with: jiuwenswarm-start --stop {name}")
             return 1
     elif force:
-        # For default instance, use get_default_instance_status which includes port detection
-        status = get_default_instance_status()
-        if status.running:
-            logging.info(f"[jiuwenswarm-init] ERROR: Default instance is running (PID={status.pid or '-'}).")
-            logging.info(f"[jiuwenswarm-init] Stop it first with: jiuwenswarm-start --stop default")
-            return 1
+        # 只有初始化“默认 workspace”时才检查默认实例。部署实例模式会设置
+        # JIUWENSWARM_DATA_DIR 指向另一个目录；此时默认实例正在运行不应阻止
+        # 实例 workspace 的 -f 初始化。
+        data_dir = (os.environ.get("JIUWENSWARM_DATA_DIR") or "").strip()
+        default_workspace = get_user_home() / ".jiuwenswarm"
+        is_default_target = not data_dir or workspace_path.resolve() == default_workspace.resolve()
+        if is_default_target:
+            status = get_default_instance_status()
+            if status.running:
+                logging.info(f"[jiuwenswarm-init] ERROR: Default instance is running (PID={status.pid or '-'}).")
+                logging.info(f"[jiuwenswarm-init] Stop it first with: jiuwenswarm-start --stop default")
+                return 1
 
     # 4. Call init_user_workspace with workspace path
     #    (deletion and confirmation handled by init_user_workspace)
