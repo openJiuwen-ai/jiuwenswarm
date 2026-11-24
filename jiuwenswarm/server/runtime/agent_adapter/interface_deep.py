@@ -10779,8 +10779,9 @@ class JiuWenSwarmDeepAdapter:
         key. The reused operation's providers read the gateway config of the
         *registered* card, not the locally built one, so runtime patches must
         target that card. Look it up from the resource manager's id→card
-        cache first; a miss returns None so callers keep the local card (best
-        effort, mirrors ``cli_sandbox._sandbox_key_owner``'s tolerance).
+        cache first; when neither that cache nor the operation's own sandbox
+        run config yields a card, return None so callers keep the local card
+        (best effort, mirrors ``cli_sandbox._sandbox_key_owner``'s tolerance).
 
         ``ResourceMgr`` publishes the operation to the sys-operation registry
         before caching its card, so a resolver that loses the isolation-key
