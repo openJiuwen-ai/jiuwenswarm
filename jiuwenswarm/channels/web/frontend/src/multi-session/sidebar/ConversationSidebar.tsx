@@ -14,6 +14,7 @@ import {
   type SidebarCronJob,
 } from '../../stores';
 import { shouldDiscoverCronActiveSessions } from '../../features/cron/cronActiveSessionDiscovery';
+import { sessionFailureMessage } from '../../features/sessionTurnError';
 import type { AgentMode, ProjectInfo, Session, WorkMode } from '../../types';
 import {
   formatSessionTime,
@@ -220,9 +221,11 @@ function ConversationListItem({
       truncationTooltipHandlers.onBlur();
     },
   };
-  const errorMessage = runtime?.error || runtime?.executionError || null;
+  /* 失败标记的事实来源是可重建的消息时间线 + 本地缓存（见 features/sessionTurnError.ts）：
+   * runtime.error 只是实时态，刷新后为空。取值顺序集中在 sessionFailureMessage 里，
+   * 避免侧栏和会话项各自维护一份优先级。 */
+  const errorMessage = sessionFailureMessage(session.session_id, runtime);
   const indicator = getSessionIndicator(runtime, unread, session.is_processing === true, Boolean(errorMessage));
-
   let status: React.ReactNode;
   if (indicator === 'waiting') {
     status = (

@@ -1281,6 +1281,7 @@ function parseSessionHistoryTimelineEntry(
         role: 'system',
         content: errorMsg,
         timestamp: at,
+        terminalError: true,
         ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
       },
     };
@@ -1358,6 +1359,9 @@ function parseSessionHistoryTimelineEntry(
       message: {
         id,
         role: 'assistant',
+        // 历史恢复的 assistant 只认 chat.final 来源，作为「本轮正常收尾」的
+        // final 语义标记（半截回答不会落盘成 chat.final，见检视意见）。
+        turnFinal: true,
         outputOrder: readOutputOrder(record) ?? readOutputOrder(payload),
         outputPhaseId: typeof record.output_phase_id === 'string' ? record.output_phase_id : undefined,
         content,

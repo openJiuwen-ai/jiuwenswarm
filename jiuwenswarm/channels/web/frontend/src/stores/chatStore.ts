@@ -38,6 +38,7 @@ import {
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { canMessageHostFileItems } from '../features/chatFileAttachment';
 import { parseTimestampToMs } from '../utils/timestamp';
+import { forgetSessionTurnError, reconcileSessionTurnError } from '../features/sessionTurnError';
 import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
   consumePendingQuestion as consumeQueuedQuestion,
@@ -680,12 +681,21 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const assigned = assignMessageRenderKeys(
         runtime, omitLiveQuestionHistory(sessionId, messages, runtime.pendingQuestions),
       );
+      // 历史是「最近一轮是否失败」的持久事实来源：重建消息时间线时同步回填会话级
+      // 失败标记，否则刷新/切回会话后侧栏红叹号会凭空消失（GitCode #6920/#6794）。
+      // 正在处理的一轮以实时事件为准，不用历史覆盖。
+      const restoredTurnError = runtime.isProcessing
+        ? null
+        : reconcileSessionTurnError(sessionId, assigned.messages);
       return {
         runtimes: {
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
             messages: assigned.messages,
+            ...(runtime.isProcessing
+              ? {}
+              : { executionError: restoredTurnError, error: restoredTurnError }),
             messageRenderKeySeq: assigned.messageRenderKeySeq,
             currentStreamContent: '',
             currentStreamId: null,
@@ -1131,6 +1141,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
   },
 
   setProcessing: (sessionId, status, options) => {
+    // 新一轮的判定要用更新前的状态：用户重发（false→true）或显式 newTurn 都算新轮次。
+    const wasForegroundProcessing = get().runtimes[sessionId]?.foregroundIsProcessing ?? false;
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
@@ -1159,6 +1171,11 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     // 整轮空闲：把忙碌时暂存的目标用户气泡正式入列（空 final 主路径之外的兜底）
     if (!get().runtimes[sessionId]?.isProcessing) {
       get().flushPendingGoalObjectiveBubble(sessionId);
+    }
+    // 新一轮开始（用户重新发送、或恢复出的进行中轮次）：上一轮的失败标记就此作废，
+    // 不能再挂红叹号，也不能留在本地缓存里（GitCode #6920）。
+    if (status && (wasForegroundProcessing === false || options?.newTurn)) {
+      forgetSessionTurnError(sessionId);
     }
   },
 
