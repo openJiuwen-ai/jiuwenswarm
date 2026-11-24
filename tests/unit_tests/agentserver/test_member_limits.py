@@ -14,6 +14,15 @@ from jiuwenswarm.enterprise.team import member_limits
 from jiuwenswarm.enterprise.team.quota import TeamQuotaExceeded
 
 
+@pytest.fixture(autouse=True)
+def _prefer_english_i18n(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Helpers call ``t()`` without language; pin resolver so CI/dev yaml zh 不干扰。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+        lambda: "en",
+    )
+
+
 class _Roster:
     def __init__(self, rows):
         self.rows = rows
@@ -72,12 +81,17 @@ async def test_guard_allows_under_limit_and_blocks_at_limit():
     blocked = await backend.spawn_member("c", "C", object())
     assert not blocked.ok
     assert blocked.reason.startswith(member_limits.TEAM_MEMBER_QUOTA_EXCEEDED)
-    assert "该团队最多3人（含 Leader）" in blocked.reason
+    assert "at most 3 members including the Leader" in blocked.reason
     assert backend.calls == ["b"]  # original not reached
 
 
 def test_teammate_quota_user_message_includes_leader():
-    assert member_limits.teammate_quota_user_message(3) == (
+    from jiuwenswarm.common.i18n import t
+
+    assert member_limits.teammate_quota_user_message(3) == t(
+        "enterprise.team.teammate_full", language="en", limit=3
+    )
+    assert t("enterprise.team.teammate_full", language="zh", limit=3) == (
         "人数已满：该团队最多3人（含 Leader），无法再添加队员"
     )
     assert member_limits.teammate_quota_fail_reason(5).startswith(
@@ -107,7 +121,7 @@ async def test_guard_n_includes_leader():
     member_limits.attach_teammate_limit_guard(agent, max_teammates=1)
     blocked = await backend.spawn_member("a", "A", object())
     assert not blocked.ok
-    assert "该团队最多1人（含 Leader）" in blocked.reason
+    assert "at most 1 members including the Leader" in blocked.reason
 
     agent2, backend2 = _leader(rows)
     member_limits.attach_teammate_limit_guard(agent2, max_teammates=2)
@@ -232,7 +246,7 @@ async def test_guard_lease_quota_exceeded_blocks_spawn(monkeypatch):
     blocked = await backend.spawn_member("qa-engineer", "Q", object())
     assert not blocked.ok
     assert blocked.reason.startswith(member_limits.TEAM_MEMBER_QUOTA_EXCEEDED)
-    assert "该团队最多5人（含 Leader）" in blocked.reason
+    assert "at most 5 members including the Leader" in blocked.reason
     assert backend.calls == []
     assert notices == [{"used": 5, "limit": 5, "member_name": "qa-engineer"}]
 
@@ -274,17 +288,19 @@ def test_explicit_team_size_blocks_only_a_single_over_limit_reading():
     assert member_limits.requested_team_size_over_limit("再加 4 人", 5) is None
     assert member_limits.requested_team_size_over_limit("再加 4 人", 5, enterprise=True) is None
     assert member_limits.requested_team_size_over_limit("再加 5 人", 5, enterprise=True) == 6
+    from jiuwenswarm.common.i18n import t
+
     note = member_limits.enterprise_recruit_constraint("五人团队")
-    assert "含组长共 5 人" in note
-    assert "再招募 4 名队员" in note
-    assert "侧边成员列表不含组长" in note
+    assert "5 members including the leader" in note
+    assert "recruit 4 more teammates" in note
+    assert "sidebar list omits the leader" in note
     exclude = member_limits.enterprise_recruit_constraint("三个专家")
-    assert "含组长共 4 人" in exclude
-    assert "再招募 3 名队员" in exclude
-    assert member_limits.requested_team_size_user_message(4, 3) == (
-        "无法创建：你要求的是 4 人团队，该团队最多 3 人（含 Leader）。"
+    assert "4 members including the leader" in exclude
+    assert "recruit 3 more teammates" in exclude
+    assert member_limits.requested_team_size_user_message(4, 3) == t(
+        "enterprise.team.requested_size_over", language="en", requested=4, limit=3
     )
-    assert "无法再添加队员" in member_limits.teammate_quota_user_message(3)
+    assert "cannot add more teammates" in member_limits.teammate_quota_user_message(3)
 
 
 @pytest.mark.asyncio

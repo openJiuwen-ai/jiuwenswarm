@@ -817,17 +817,16 @@ def _get_state_file() -> "Path":
 def _knowledge_skill_language() -> str:
     """Return ``"en"`` or ``"zh"`` for Skill display, Knowledge-to-Skill prompts and errors.
 
-    Follows the top-level ``preferred_language`` in config.yaml; anything that
-    is not English (or an unreadable config) keeps the historical Chinese text.
+    Uses the same preferred_language resolution as chat tools; failures → ``en``.
     """
     try:
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
 
-        config = get_config() or {}
+        return resolve_preferred_language()
     except Exception:  # noqa: BLE001 - language lookup must never break the flow
-        return "zh"
-    raw = config.get("preferred_language") if isinstance(config, dict) else None
-    return "en" if str(raw or "").strip().lower().startswith("en") else "zh"
+        return "en"
 
 
 _KNOWLEDGE_SKILL_MISSING_SKILL_MD = {

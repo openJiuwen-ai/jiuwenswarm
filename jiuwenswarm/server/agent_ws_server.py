@@ -9167,6 +9167,10 @@ class AgentWebSocketServer:
         tree-view buttons are greyed then), or no matching run
         is registered on the controller.
         """
+        from jiuwenswarm.common.i18n import t
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
             classify_swarmflow_control_miss,
             get_background_task_controller,
@@ -9201,7 +9205,12 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=channel_id,
                 ok=False,
-                payload={"error": "工作流控制不可用，发送一条消息唤醒团队后即可使用。"},
+                payload={
+                    "error": t(
+                        "enterprise.team.workflow_unavailable",
+                        language=resolve_preferred_language(),
+                    )
+                },
             )
         else:
             run_id = run_id.strip()

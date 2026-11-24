@@ -79,6 +79,20 @@ def _is_team_plan_leader(ctx: SwarmBuildContext) -> bool:
     return is_team_plan_mode(ctx.mode) and ctx.role == "leader"
 
 
+def _preferred_as_runtime_language(config: dict[str, Any] | None) -> str:
+    """Map yaml / memo preferred_language to harness ``cn`` / ``en``."""
+    from jiuwenswarm.common.i18n import to_runtime_language
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    mapped = to_runtime_language(resolve_preferred_language())
+    if mapped is not None:
+        return resolve_language(mapped)
+    mapped = to_runtime_language((config or {}).get("preferred_language"))
+    return resolve_language(mapped)
+
+
 def code_runtime_language(ctx: SwarmBuildContext) -> str:
     """Resolve the code member's runtime-prompt language.
 
@@ -93,14 +107,14 @@ def code_runtime_language(ctx: SwarmBuildContext) -> str:
         The resolved language code ("en" or the configured preferred language).
     """
     if _is_team_plan_leader(ctx):
-        return resolve_language((ctx.config or {}).get("preferred_language", "zh"))
+        return _preferred_as_runtime_language(ctx.config)
     return "en"
 
 
 def structured_ask_user_language(ctx: SwarmBuildContext) -> str:
     """Resolve the StructuredAskUserRail language for team/code profiles."""
     if ctx.role == "leader" and (is_team_mode(ctx.mode) or is_team_plan_mode(ctx.mode)):
-        return resolve_language((ctx.config or {}).get("preferred_language", "zh"))
+        return _preferred_as_runtime_language(ctx.config)
     return code_runtime_language(ctx)
 
 
@@ -415,9 +429,7 @@ def build_code_agent_mode(params: dict[str, Any], ctx: SwarmBuildContext) -> Any
                 WorkAgentModeRail,
             )
 
-            language = resolve_language(
-                (ctx.config or {}).get("preferred_language", "zh")
-            )
+            language = _preferred_as_runtime_language(ctx.config)
             notification = (
                 _TEAM_PLAN_EXIT_NOTIFICATION_EN
                 if language == "en"

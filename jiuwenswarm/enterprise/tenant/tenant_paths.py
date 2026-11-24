@@ -118,6 +118,7 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
         return
 
     config_path = get_config_file()
+    # Tenant-shared skeleton: use global yaml, not per-request user memo.
     resolved_lang = _resolve_preferred_language(config_path, None)
     suffix = "_ZH" if resolved_lang == "zh" else "_EN"
     # (模板内相对路径, 落盘相对路径)，多语言文件去掉 _ZH/_EN 后缀

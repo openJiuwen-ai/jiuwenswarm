@@ -14,7 +14,6 @@ from typing import Any, AsyncIterator, Iterator
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_ID = "__default__"
-_ALLOWED = frozenset({"zh", "en"})
 
 _USER_ID_CV: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "preferred_language_user_id", default=None
@@ -25,10 +24,9 @@ _MEMO_CV: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar
 
 
 def _normalize(raw: object) -> str | None:
-    if not isinstance(raw, str):
-        return None
-    lang = raw.strip().lower()
-    return lang if lang in _ALLOWED else None
+    from jiuwenswarm.common.i18n import try_normalize_preferred_language
+
+    return try_normalize_preferred_language(raw)
 
 
 def _yaml_or_en() -> str:
@@ -141,6 +139,17 @@ def current_preferred_language_user_id() -> str | None:
     return text or None
 
 
+def framework_language_from_params(
+    params: dict[str, Any] | None, preferred_lang: str
+) -> str:
+    """Resolve framework-copy language: ``ui_language`` overrides memo/yaml."""
+    from jiuwenswarm.common.i18n import try_normalize_preferred_language
+
+    raw_params = params if isinstance(params, dict) else {}
+    ui_language = try_normalize_preferred_language(raw_params.get("ui_language"))
+    return ui_language if ui_language is not None else preferred_lang
+
+
 @asynccontextmanager
 async def bind_preferred_language(request: Any) -> AsyncIterator[str]:
     """绑定本请求 user_id，并预取语言写入 memo。"""
@@ -190,6 +199,7 @@ __all__ = (
     "bind_preferred_language",
     "bind_preferred_language_memo",
     "current_preferred_language_user_id",
+    "framework_language_from_params",
     "resolve_preferred_language",
     "resolve_preferred_language_async",
 )

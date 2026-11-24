@@ -90,6 +90,9 @@ def _task_execution_prompt(language: str) -> PromptSection:
 
 
 def _input_prompt(language: str) -> PromptSection:
+    # Normalize before the "cn" branch: raw settings such as "zh"/"EN" would
+    # otherwise fall through to the English text.
+    language = resolve_language(language)
     if language == "cn":
         content = """# 输入说明
 
@@ -98,7 +101,7 @@ def _input_prompt(language: str) -> PromptSection:
 ```json
 {
   "channel": "【频道来源，如 feishu / telegram / web】",
-  "preferred_response_language": "【en 或 zh】",
+  "preferred_response_language": "【en、zh 或 match】",
   "content": "【用户消息内容】",
   "source": "user"
 }
@@ -109,7 +112,7 @@ def _input_prompt(language: str) -> PromptSection:
 ```json
 {
   "type": "【系统消息类型，如 cron / notify】",
-  "preferred_response_language": "【en 或 zh】",
+  "preferred_response_language": "【en、zh 或 match】",
   "content": "【任务信息】",
   "source": "system"
 }
@@ -127,7 +130,7 @@ def _input_prompt(language: str) -> PromptSection:
 ```json
 {
   "channel": "【channel source, such as feishu / telegram / web】",
-  "preferred_response_language": "【en or zh】",
+  "preferred_response_language": "【en, zh, or match】",
   "content": "【user message content】",
   "source": "user"
 }
@@ -138,7 +141,7 @@ def _input_prompt(language: str) -> PromptSection:
 ```json
 {
   "type": "【system message type, such as cron / notify】",
-  "preferred_response_language": "【en or zh】",
+  "preferred_response_language": "【en, zh, or match】",
   "content": "【task information】",
   "source": "system"
 }
@@ -160,6 +163,8 @@ def _output_prompt(
     *,
     send_file_enabled: bool = True,
 ) -> PromptSection:
+    # See _input_prompt: normalize before branching on "cn".
+    language = resolve_language(language)
     if language == "cn":
         if send_file_enabled:
             file_delivery_rule = (
@@ -223,7 +228,7 @@ def _output_prompt(
 ## 输出语言
 
 - 优先使用用户明确指定的回复语言。
-- 用户未指定时，默认使用简体中文。
+- 用户未明确指定时，按当前消息的 `preferred_response_language` 处理：`en` 用英文，`zh` 用简体中文，`match` 或未提供该字段时与本轮消息 `content` 同语。
 - 技术术语、代码标识符、路径和工具名称保持原本的语言。
 
 ## 模型名称回答
@@ -307,7 +312,7 @@ def _output_prompt(
 ## Output Language
 
 - Prefer the response language explicitly requested by the user.
-- If the user does not specify one, default to Simplified Chinese.
+- Otherwise, follow `preferred_response_language` in the current message: `en` for English, `zh` for Simplified Chinese, and `match` or a missing field for the same language as this turn's `content`.
 - Keep technical terms, code identifiers, paths, and tool names in their original language.
 
 ## Model Name Answers
