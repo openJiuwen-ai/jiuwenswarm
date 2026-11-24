@@ -52,6 +52,49 @@ def test_network_and_env_reasons_are_not_credential(reason: str) -> None:
     assert probe_failure_is_auth_rejected(reason) is False
 
 
+# --- probe_failure_is_local_env (review P2 on PR !10905) --------------------
+# Locally-built reasons (from the user's own config) are safe to surface
+# verbatim; everything else — including runner connect errors that may quote
+# server_config with env credentials — must stay redacted.
+
+from jiuwenswarm.common.mcp_config import probe_failure_is_local_env  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "command 'npx' not found on PATH (install it or add to PATH)",
+        "invalid url: empty",
+        "invalid url: Invalid URL 'x'",
+        "invalid mcp server entry for 'demo'",
+        "prefix: invalid url: bad",
+    ],
+)
+def test_local_env_reasons_are_classified_local_env(reason: str) -> None:
+    assert probe_failure_is_local_env(reason) is True
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "",
+        "ok (http 200)",
+        "http probe timed out after 10s (server not responding): ReadTimeout",
+        "unreachable: ConnectError: [Errno 111] Connection refused",
+        "http 502 from server: Bad Gateway",
+        "auth rejected (HTTP 401)",
+        "auth rejected (HTTP 403)",
+        # Runner connect-failure strings may embed the full server_config
+        # (env credentials included) — must NOT be classified local-env.
+        "mcp server connect failed, server_config={"
+        "'env': {'HUAWEI_ACCESS_KEY': 'AK-SENTINEL'}}, error='timed out'",
+        "MCP server 'demo' connect rejected (no runner reason)",
+    ],
+)
+def test_network_auth_runner_reasons_are_not_local_env(reason: str) -> None:
+    assert probe_failure_is_local_env(reason) is False
+
+
 def _seed_custom(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str = "net-custom"
 ) -> Path:
@@ -219,6 +262,81 @@ async def test_connect_flow_network_probe_failure_keeps_credentials() -> None:
     assert payload["type"] == "connect_failed"
     assert payload["code"] == "MCP_UNREACHABLE"
     assert recorder.calls == [("github", False)]
+    # Network-class reasons keep the redacted fixed message (review P2 on
+    # PR !10905: only locally-built reasons are surfaced verbatim).
+    assert payload["error"] == "MCP live-connect probe failed"
+
+
+@pytest.mark.asyncio
+async def test_connect_flow_hub_local_env_reason_surfaces_details() -> None:
+    """Review P2 on PR !10905: a locally-built reason (stdio command missing
+    from PATH) reaches the frontend verbatim in the mcp_hub copy, instead of
+    the generic "service unreachable" message."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from jiuwenswarm.server.handlers import mcp_hub
+
+    class _Manager:
+        async def probe_mcp_live_connection(self, name: str):
+            return False, "command 'npx' not found on PATH (install it or add to PATH)"
+
+    services = SimpleNamespace(agent_manager=_Manager())
+    recorder = _RollbackRecorder()
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
+            return_value={"name": "github", "transport": "http", "url": "https://x"},
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+            new=recorder,
+        ),
+    ):
+        payload = await mcp_hub._run_mcp_connect_flow(services, "github")
+
+    assert payload["type"] == "connect_failed"
+    assert payload["code"] == "MCP_UNREACHABLE"
+    assert recorder.calls == [("github", False)]
+    assert payload["error"] == (
+        "command 'npx' not found on PATH (install it or add to PATH)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_connect_flow_hub_runner_failure_stays_redacted() -> None:
+    """The mcp_hub copy must keep the redacted fixed message for runner
+    connect-failure reasons (they can embed server_config credentials)."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from jiuwenswarm.server.handlers import mcp_hub
+
+    class _Manager:
+        async def probe_mcp_live_connection(self, name: str):
+            return False, (
+                "mcp server connect failed, server_config={"
+                "'env': {'AK': 'AK-SENTINEL'}}, error='timed out'"
+            )
+
+    services = SimpleNamespace(agent_manager=_Manager())
+    recorder = _RollbackRecorder()
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
+            return_value={"name": "github", "transport": "http", "url": "https://x"},
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+            new=recorder,
+        ),
+    ):
+        payload = await mcp_hub._run_mcp_connect_flow(services, "github")
+
+    assert payload["type"] == "connect_failed"
+    assert payload["code"] == "MCP_UNREACHABLE"
+    assert payload["error"] == "MCP live-connect probe failed"
+    assert "AK-SENTINEL" not in str(payload)
 
 
 @pytest.mark.asyncio
@@ -304,6 +422,56 @@ async def test_agentserver_connect_flow_classifies_probe_failure(
     assert payload["type"] == "connect_failed"
     assert payload["code"] == expected_code
     assert recorder.calls == [(name, expected_wipe)]
+    # Review P2 on PR !10905: locally-built reasons (PATH-missing command,
+    # invalid URL) must reach the frontend verbatim so "command 'npx' not
+    # found on PATH" is not misreported as "service unreachable"; every other
+    # class stays on the redacted fixed message (runner errors can quote
+    # server_config with env credentials).
+    if not expected_wipe and probe_failure_is_local_env(probe_reason):
+        assert payload["error"] == probe_reason
+    else:
+        assert payload["error"] == "MCP live-connect probe failed"
+
+
+@pytest.mark.asyncio
+async def test_connect_flow_runner_failure_stays_redacted() -> None:
+    """A runner connect-failure reason (which can embed the full server_config
+    with env credentials) must keep the redacted fixed message even though it
+    is not an auth rejection — the redact contract from
+    test_connect_remote_unreachable_redacts_probe_details_and_rolls_back."""
+    from unittest.mock import patch
+
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    leaky_reason = (
+        "mcp server connect failed, server_config={'env': {"
+        "'HUAWEI_ACCESS_KEY': 'AK-SENTINEL'}}, error='timed out'"
+    )
+
+    class _Manager:
+        async def probe_mcp_live_connection(self, name: str):
+            return False, leaky_reason
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = _Manager()
+    recorder = _RollbackRecorder()
+    name = "jw79-agent-redact"
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
+            return_value={"name": name, "transport": "http", "url": "https://x"},
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+            new=recorder,
+        ),
+    ):
+        payload = await AgentWebSocketServer._run_mcp_connect_flow(server, name)
+
+    assert payload["type"] == "connect_failed"
+    assert payload["code"] == "MCP_UNREACHABLE"
+    assert payload["error"] == "MCP live-connect probe failed"
+    assert "AK-SENTINEL" not in str(payload)
 
 
 @pytest.mark.asyncio

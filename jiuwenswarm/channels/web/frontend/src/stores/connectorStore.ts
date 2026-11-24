@@ -245,7 +245,16 @@ function friendlyMcpFailure(fields: McpFailureFields): string {
     return i18n.t('connectorMarket.errors.probeAuthRejected');
   }
   if (fields.code === 'MCP_UNREACHABLE') {
-    return i18n.t('connectorMarket.errors.probeUnreachable');
+    // MCP_UNREACHABLE 是"非确证凭据被拒"的兜底码，覆盖的不只是网络故障——
+    // stdio 命令缺失、URL 非法这类本地环境失败也走这个码。固定文案会把它们
+    // 误报成"服务暂不可达"，因此把后端 reason 里的具体细节拼在后面；没有细节
+    // （网络类探活 reason 前端已屏蔽或后端未带）时保持纯固定文案。
+    const generic = i18n.t('connectorMarket.errors.probeUnreachable');
+    const detail = (fields.message ?? '').trim();
+    if (detail && detail !== 'MCP live-connect probe failed') {
+      return `${generic} (${detail})`;
+    }
+    return generic;
   }
   return fields.message ?? ''; // 兜底：非 CLI 边界失败，展示原文
 }

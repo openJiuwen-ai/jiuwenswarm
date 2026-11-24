@@ -299,6 +299,8 @@ async def _persist_and_probe_mcp(
         auth_rejected = probe_failure_is_auth_rejected(probe_reason)
         try:
             from jiuwenswarm.server.runtime.mcp.registry import (
+                CODE_CREDENTIALS_INVALID,
+                CODE_UNREACHABLE,
                 rollback_failed_connect,
             )
             # Only a proven auth rejection wipes the stored tokens; a
@@ -314,7 +316,7 @@ async def _persist_and_probe_mcp(
                 "type": types.fail,
                 "name": payload["name"],
                 "error": probe_reason or "MCP live-connect probe failed",
-                "code": "MCP_CREDENTIALS_INVALID" if auth_rejected else "MCP_UNREACHABLE",
+                "code": CODE_CREDENTIALS_INVALID if auth_rejected else CODE_UNREACHABLE,
             },
         )
     if not is_config_yaml:

@@ -10544,6 +10544,8 @@ class AgentWebSocketServer:
             auth_rejected = probe_failure_is_auth_rejected(probe_reason)
             try:
                 from jiuwenswarm.server.runtime.mcp.registry import (
+                    CODE_CREDENTIALS_INVALID,
+                    CODE_UNREACHABLE,
                     rollback_failed_connect,
                 )
                 # Only a proven auth rejection wipes the stored tokens; a
@@ -10559,7 +10561,7 @@ class AgentWebSocketServer:
                     "type": types.fail,
                     "name": payload["name"],
                     "error": probe_reason or "MCP live-connect probe failed",
-                    "code": "MCP_CREDENTIALS_INVALID" if auth_rejected else "MCP_UNREACHABLE",
+                    "code": CODE_CREDENTIALS_INVALID if auth_rejected else CODE_UNREACHABLE,
                 },
             )
         if not is_config_yaml:
@@ -11440,8 +11442,11 @@ class AgentWebSocketServer:
         from jiuwenswarm.common.mcp_config import (
             discard_probed_mcp,
             probe_failure_is_auth_rejected,
+            probe_failure_is_local_env,
         )
         from jiuwenswarm.server.runtime.mcp.registry import (
+            CODE_CREDENTIALS_INVALID,
+            CODE_UNREACHABLE,
             connect_mcp,
             was_connect_cancelled,
         )
@@ -11482,10 +11487,18 @@ class AgentWebSocketServer:
                         "[mcp] rollback failed-probe entry '%s' failed: %s",
                         name, rollback_exc,
                     )
+            # Runner connect-failure strings can embed the full server_config
+            # (env credentials included), so the default stays the redacted
+            # fixed message; only locally-built reasons (PATH-missing command,
+            # invalid URL) are safe to surface — and those must NOT read as
+            # "service unreachable" (review P2 on PR !10905).
+            error = "MCP live-connect probe failed"
+            if not auth_rejected and probe_failure_is_local_env(probe_reason):
+                error = probe_reason
             return {
                 "type": "connect_failed",
-                "error": "MCP live-connect probe failed",
-                "code": "MCP_CREDENTIALS_INVALID" if auth_rejected else "MCP_UNREACHABLE",
+                "error": error,
+                "code": CODE_CREDENTIALS_INVALID if auth_rejected else CODE_UNREACHABLE,
                 "name": name,
             }
         # Promote connecting state and sync skill-only credentials.

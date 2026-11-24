@@ -308,8 +308,11 @@ async def _run_mcp_connect_flow(
     from jiuwenswarm.common.mcp_config import (
         discard_probed_mcp,
         probe_failure_is_auth_rejected,
+        probe_failure_is_local_env,
     )
     from jiuwenswarm.server.runtime.mcp.registry import (
+        CODE_CREDENTIALS_INVALID,
+        CODE_UNREACHABLE,
         connect_mcp,
         was_connect_cancelled,
     )
@@ -352,8 +355,17 @@ async def _run_mcp_connect_flow(
                 )
         return {
             "type": "connect_failed",
-            "error": "MCP live-connect probe failed",
-            "code": "MCP_CREDENTIALS_INVALID" if auth_rejected else "MCP_UNREACHABLE",
+            # Runner connect-failure strings can embed the full server_config
+            # (env credentials included), so the default stays the redacted
+            # fixed message; only locally-built reasons (PATH-missing command,
+            # invalid URL) are safe to surface — and those must NOT read as
+            # "service unreachable" (review P2 on PR !10905).
+            "error": (
+                probe_reason
+                if not auth_rejected and probe_failure_is_local_env(probe_reason)
+                else "MCP live-connect probe failed"
+            ),
+            "code": CODE_CREDENTIALS_INVALID if auth_rejected else CODE_UNREACHABLE,
             "name": name,
         }
     # Promote connecting state and sync skill-only credentials.

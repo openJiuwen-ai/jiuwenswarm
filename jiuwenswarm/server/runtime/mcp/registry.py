@@ -79,6 +79,10 @@ CODE_NAME_CONFLICT = "MCP_NAME_CONFLICT"
 # token-schema env var; the CLI's auth status rejected the stored token at
 # connect time. Frontend maps this to a "token invalid, re-enter" hint.
 CODE_CREDENTIALS_INVALID = "MCP_CREDENTIALS_INVALID"
+# Probe failed but the stored credentials were NOT proven rejected (timeout /
+# unreachable / 5xx / local env). Frontend maps this to the "keep credentials,
+# retry later" hint (review P2 on PR !10905).
+CODE_UNREACHABLE = "MCP_UNREACHABLE"
 # CLI install script could not find PowerShell (npm postinstall spawn
 # powershell.exe ENOENT); frontend shows a friendly hint instead of the
 # misleading "version too low".

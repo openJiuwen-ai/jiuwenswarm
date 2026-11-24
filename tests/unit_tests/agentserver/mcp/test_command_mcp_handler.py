@@ -891,7 +891,12 @@ class TestHandleMcpConnect:
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "connect_failed"
         assert payload["code"] == "MCP_UNREACHABLE"
-        assert payload["error"] == "MCP live-connect probe failed"
+        # A locally-built reason (command missing from PATH) surfaces verbatim
+        # so it is not misreported as "service unreachable" (review P2 on
+        # PR !10905); network/runner classes stay on the redacted fixed text.
+        assert payload["error"] == (
+            "command 'npx' not found on PATH (install it or add to PATH)"
+        )
         assert probed == ["context7"]  # stdio was probed at connect time
         # entry rolled back; env failure keeps credentials (JW-79)
         assert rolled_back == [("context7", False)]

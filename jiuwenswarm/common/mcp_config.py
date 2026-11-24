@@ -589,6 +589,32 @@ def probe_failure_is_auth_rejected(reason: str) -> bool:
     return any(marker in text for marker in _AUTH_REJECTED_REASON_MARKERS)
 
 
+# Probe reasons that are safe to surface verbatim to the frontend: they are
+# constructed locally by ``probe_mcp_live_connection`` / ``preflight_mcp_server_
+# reachable`` from user-supplied config (command missing from PATH, invalid
+# URL) and cannot embed credential material. Runner connect-failure strings are
+# deliberately NOT whitelisted — they can embed the full server_config (with
+# env credentials) in their exception text.
+_LOCAL_ENV_REASON_MARKERS = (
+    "not found on PATH",
+    "invalid url:",
+    "invalid mcp server entry",
+)
+
+
+def probe_failure_is_local_env(reason: str) -> bool:
+    """Classify a failed probe reason as a local environment problem.
+
+    True only for reasons built locally from the user's own config (stdio
+    command missing from PATH, invalid URL, invalid entry) — these are safe
+    to show the user verbatim and must not be misreported as "service
+    unreachable". Everything else (network failures, runner connect errors
+    that may quote server_config) is excluded.
+    """
+    text = str(reason or "")
+    return any(marker in text for marker in _LOCAL_ENV_REASON_MARKERS)
+
+
 async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
     """Live-connect probe for one MCP by name (connect-time preflight).
 
@@ -844,5 +870,6 @@ __all__ = [
     "preflight_mcp_server_reachable",
     "prewarm_connected_mcps",
     "probe_failure_is_auth_rejected",
+    "probe_failure_is_local_env",
     "resolve_node_package_runner",
 ]
