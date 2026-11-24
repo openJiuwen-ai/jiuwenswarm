@@ -2642,6 +2642,15 @@ async def process_team_message_stream(
             request_metadata.setdefault(
                 "enable_routing", request.params.get("enable_routing") is True
             )
+            # 卡片窗口选用：enrich 时写入各成员 context_engine_config 分母。
+            from jiuwenswarm.server.runtime.agent_adapter.deep.context_window import (
+                SELECTED_CONTEXT_WINDOW_KEY,
+            )
+
+            if SELECTED_CONTEXT_WINDOW_KEY in request.params:
+                request_metadata[SELECTED_CONTEXT_WINDOW_KEY] = request.params.get(
+                    SELECTED_CONTEXT_WINDOW_KEY
+                )
         # 原生图片输入：team 成员拿不到 adapter 的 agent 属性镜像，上传清单要随
         # build context 到成员侧；这里**覆盖写**（同键可能来自请求 metadata，不能
         # 被外部值当成可信清单），空列表即清除上一轮残留。

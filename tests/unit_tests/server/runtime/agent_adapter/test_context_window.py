@@ -10,6 +10,7 @@ import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.deep.context_window import (
     apply_context_window_to_session,
+    catalog_window_from_model_entries,
     parse_positive_window_tokens,
     resolve_effective_context_window,
 )
@@ -168,3 +169,15 @@ def test_apply_pending_then_retries_when_engine_appears():
     assert engine_config.context_window_tokens == 300000
     assert "pending" not in snap
     assert snap["seeded_engine"] is True
+
+
+def test_catalog_window_from_model_entries_matches_name_and_ignores_mco():
+    entries = [
+        {
+            "model_client_config": {"model_name": "custom-m"},
+            "model_config_obj": {"context_window_tokens": 999},
+            "context_window_tokens": 32_000,
+        }
+    ]
+    assert catalog_window_from_model_entries(entries, model_name="custom-m") == 32_000
+    assert catalog_window_from_model_entries(entries, model_name="other") is None

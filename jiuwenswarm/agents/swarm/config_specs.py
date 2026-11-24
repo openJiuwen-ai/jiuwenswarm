@@ -70,6 +70,11 @@ from jiuwenswarm.agents.swarm.providers import tools as _tools
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.context_window import (
+    catalog_window_from_entry,
+    catalog_window_from_model_entries,
+    parse_positive_window_tokens,
+)
 
 # Modes that route to the code adapter and get the code member profile.
 _CODE_MODES: frozenset[str] = frozenset({"code.team", "team.plan"})
@@ -654,9 +659,19 @@ def _positive_context_window_tokens(raw: Any) -> int | None:
 
 
 def _team_context_engine_config(
-    config: dict[str, Any], base_spec: DeepAgentSpec,
+    config: dict[str, Any],
+    base_spec: DeepAgentSpec,
+    *,
+    selected_window: Any = None,
+    ignore_selected: bool = False,
 ) -> ContextEngineConfig:
-    """在 Team 副本继承产品配置，并保留产品、成员及模型的更小窗口。"""
+    """在 Team 副本继承产品配置，并合成成员压缩分母。
+
+    优先级（与单 Agent 对齐，Team 硬顶仅作用于无 selected 路径）：
+    1. 合法 ``selected_context_window_tokens``（可突破 200K 硬顶；Auto 忽略）
+    2. 否则 ``min(硬顶200K, model_window, product, member, catalog同级上限)``
+    3. 无 catalog 时与改前四路 min 一致
+    """
     product_config = _config_section(
         _config_section(config, "react"), "context_engine_config",
     )
@@ -681,10 +696,30 @@ def _team_context_engine_config(
             (entry for entry in entries if entry.get("is_default") is True), entries[0],
         )
         model_name = _model_entry_name(default_entry)
+    matched_entry: dict[str, Any] | None = None
     for entry in entries:
         if model_name and model_name in {_model_entry_name(entry), _model_entry_alias(entry)}:
             model_name = _model_entry_name(entry)
+            matched_entry = entry
             break
+
+    if not ignore_selected:
+        selected_tokens = parse_positive_window_tokens(selected_window)
+        if selected_tokens is not None:
+            logger.info(
+                "[ModelWindow] team applied model=%s effective=%s source=selected",
+                model_name or "<default>",
+                selected_tokens,
+            )
+            return context_config.model_copy(update={"context_window_tokens": selected_tokens})
+
+    catalog_window = catalog_window_from_entry(matched_entry) if matched_entry else None
+    if catalog_window is None:
+        catalog_window = catalog_window_from_model_entries(
+            entries,
+            model_name=model_name or "",
+            model_alias=_model_entry_alias(matched_entry) if matched_entry else "",
+        )
     model_window = ContextUtils.resolve_context_max(
         model_name=model_name,
         model_context_window_tokens=context_config.model_context_window_tokens,
@@ -695,13 +730,25 @@ def _team_context_engine_config(
         model_window,
         product_window or _TEAM_CONTEXT_WINDOW_TOKENS,
         member_window or _TEAM_CONTEXT_WINDOW_TOKENS,
+        catalog_window or _TEAM_CONTEXT_WINDOW_TOKENS,
     )
-    if any(explicit is not None and window < explicit for explicit in (product_window, member_window)):
+    if any(
+        explicit is not None and window < explicit
+        for explicit in (product_window, member_window, catalog_window)
+    ):
         logger.info(
             "Team context window capped: model=%s product_window=%s member_window=%s "
-            "model_window=%s team_limit=%s window=%s",
+            "catalog_window=%s model_window=%s team_limit=%s window=%s",
             model_name or "<default>", product_window, member_window,
-            model_window, _TEAM_CONTEXT_WINDOW_TOKENS, window,
+            catalog_window, model_window, _TEAM_CONTEXT_WINDOW_TOKENS, window,
+        )
+    elif catalog_window is not None:
+        logger.info(
+            "[ModelWindow] team applied model=%s effective=%s source=team_min "
+            "catalog_window=%s",
+            model_name or "<default>",
+            window,
+            catalog_window,
         )
     return context_config.model_copy(update={"context_window_tokens": window})
 
@@ -1261,6 +1308,8 @@ def build_member_deep_agent_spec(
     member_name: str | None = None,
     enable_permissions: bool = False,
     mcp_configs: list[McpServerConfig] | None = None,
+    selected_window: Any = None,
+    ignore_selected: bool = False,
 ) -> DeepAgentSpec:
     """Fold the member capability specs onto *base_spec*.
 
@@ -1276,6 +1325,8 @@ def build_member_deep_agent_spec(
         member_name: Named member key for config skill fallback.
         enable_permissions: Effective team permission toggle from TeamAgentSpec.
         mcp_configs: MCP server configs inherited from ``config.yaml``.
+        selected_window: Optional ``selected_context_window_tokens`` from chat.send.
+        ignore_selected: When True (Auto ``enable_routing``), discard selected.
 
     Returns:
         A new ``DeepAgentSpec`` with the capability specs applied.
@@ -1326,7 +1377,12 @@ def build_member_deep_agent_spec(
         "tools": merged_tools,
         "mcps": merged_mcps,
         "kv_cache_affinity_config": _kv_cache_affinity_config(config),
-        "context_engine_config": _team_context_engine_config(config, base_spec),
+        "context_engine_config": _team_context_engine_config(
+            config,
+            base_spec,
+            selected_window=selected_window,
+            ignore_selected=ignore_selected,
+        ),
         # 显式写死能力位：openjiuwen 对成员 None 一律兜底 False（省掉每成员一次
         # 探测 LLM 往返），不写这里的话 rail 即便挂上也走非原生分支。
         "enable_read_image_multimodal": native_image_enabled,
