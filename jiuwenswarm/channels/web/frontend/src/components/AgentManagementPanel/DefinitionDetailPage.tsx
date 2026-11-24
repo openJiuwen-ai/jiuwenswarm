@@ -14,6 +14,7 @@ import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import { DetailPromptChip, DetailSection, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
+import { AssetExportButton } from '../AssetTransfer/AssetExportButton';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
 
 type DefinitionDetailPageProps = {
@@ -166,6 +167,16 @@ export function DefinitionDetailPage({
                   <PromptSendIcon aria-hidden="true" />
                   {t('skills.actions.publish')}
                 </button>
+              )}
+              {/* 导出与发布同口径：仅覆盖已落地的包（本地包，或已安装的
+                  内置/Hub 副本）；未安装的货架与 Hub 资产无本地物料可打包。 */}
+              {(detail.source === 'local' || detail.installed) && (
+                <AssetExportButton
+                  kind="agent_template"
+                  localId={detail.runtimePackageName}
+                  disabled={busy}
+                  testId="agent-management-agent-template-export"
+                />
               )}
               {detail.installed ? (
                 <>

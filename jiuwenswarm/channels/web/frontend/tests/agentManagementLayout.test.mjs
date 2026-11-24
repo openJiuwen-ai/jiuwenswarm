@@ -410,6 +410,109 @@ for (const [source, installed, expected] of [
   });
 }
 
+// 导出按钮可见性与服务端解析口径一致：专家仅覆盖已落地的包（本地包或已安装
+// 的内置/Hub 副本），未安装的货架与 Hub 资产无本地物料；专家团发布目录解析
+// 额外覆盖内置与货架包，仅 Hub 未安装资产隐藏。
+for (const [source, installed, visible] of [
+  ['local', true, true],
+  ['local', false, true],
+  ['builtin', true, true],
+  ['builtin', false, false],
+  ['hub', true, true],
+  ['hub', false, false],
+]) {
+  test(`expert export button for ${source} installed=${installed} is ${visible ? 'visible' : 'hidden'}`, async () => {
+    const { DefinitionDetailPage } =
+      await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+    const { JSDOM } = await import('jsdom');
+    const detail = {
+      id: 'test',
+      runtimePackageName: 'test',
+      displayName: 'Test',
+      description: '',
+      source,
+      installed,
+      connectionState: 'connected',
+      tags: [],
+      avatarUrl: null,
+      skills: [],
+      tools: [],
+      rails: [],
+      mcps: [],
+      suggestedPrompts: [],
+      pendingConnectors: [],
+      details: '',
+      prompt: '',
+    };
+    const markup = renderToStaticMarkup(
+      React.createElement(DefinitionDetailPage, {
+        detail,
+        detailStatus: 'ready',
+        detailTab: 'content',
+        fileEntries: [],
+        onBack() {},
+        onUninstall() {},
+      }),
+    );
+    const button = new JSDOM(markup).window.document.querySelector(
+      '[data-testid="agent-management-agent-template-export"]',
+    );
+    assert.equal(Boolean(button), visible);
+    if (button) assert.equal(button.textContent, '导出');
+  });
+}
+
+for (const [source, installed, visible] of [
+  ['local', false, true],
+  ['builtin', false, true],
+  ['hub', true, true],
+  ['hub', false, false],
+]) {
+  test(`group export button for ${source} installed=${installed} is ${visible ? 'visible' : 'hidden'}`, async () => {
+    const { AgentGroupDetailPage } =
+      await import('../node_modules/.cache/agent-management-layout/AgentGroupDetailPage.mjs');
+    const { JSDOM } = await import('jsdom');
+    const detail = {
+      id: 'team-test',
+      displayName: 'Team Test',
+      description: '',
+      source,
+      installed,
+      category: '',
+      avatarUrl: null,
+      tags: [],
+      skills: [],
+      members: [],
+      quickInputs: [],
+      details: '',
+      capabilities: {},
+    };
+    const markup = renderToStaticMarkup(
+      React.createElement(AgentGroupDetailPage, {
+        detail,
+        loadingSummary: null,
+        detailStatus: 'success',
+        detailTab: 'content',
+        files: [],
+        onBack() {},
+        onUninstall() {},
+      }),
+    );
+    const button = new JSDOM(markup).window.document.querySelector(
+      '[data-testid="agent-management-agent-group-export"]',
+    );
+    assert.equal(Boolean(button), visible);
+    if (button) assert.equal(button.textContent, '导出');
+  });
+}
+
+test('create menu keeps upload-create as the only import entry', () => {
+  // 导入资产包复用既有「上传文件创建」入口，不再另设统一导入菜单项
+  assert.match(panelSource, /data-variant="create-by-upload"/);
+  assert.doesNotMatch(panelSource, /import-asset-package/);
+  assert.doesNotMatch(panelSource, /AssetImportDialog/);
+});
+
 test('unsupported expert files remain selectable and show the unsupported preview state', async () => {
   const { DefinitionDetailPage } =
     await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');

@@ -9,6 +9,7 @@ import type {
   DefinitionFileEntry,
   RequestStatus,
 } from '../../features/agentManagement';
+import { AssetExportButton } from '../AssetTransfer/AssetExportButton';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
@@ -179,6 +180,16 @@ export function AgentGroupDetailPage({
                   <PromptSendIcon aria-hidden="true" />
                   {t('skills.actions.publish')}
                 </button>
+              ) : null}
+              {/* 导出定位覆盖本地/内置/货架包；仅 Hub 未安装资产无本地物料，
+                  不显示导出。 */}
+              {!(detail.source === 'hub' && !detail.installed) ? (
+                <AssetExportButton
+                  kind="agent_group"
+                  localId={detail.id}
+                  disabled={busy}
+                  testId="agent-management-agent-group-export"
+                />
               ) : null}
               {detail.installed && detail.capabilities.canUninstall ? (
                 <button
