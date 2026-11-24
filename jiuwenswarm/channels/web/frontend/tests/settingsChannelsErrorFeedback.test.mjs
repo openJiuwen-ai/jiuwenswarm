@@ -38,12 +38,15 @@ const telegramConfig = {
 };
 
 function createHarness() {
-  const state = { telegramConfFail: false, telegramSaveFail: false };
+  const state = { telegramConfFail: false, telegramConfFailEmpty: false, telegramSaveFail: false };
+  const calls = [];
   const request = async (method) => {
+    calls.push(method);
     switch (method) {
       case 'channel.get': return { channels: [] };
       case 'channel.telegram.get_conf':
         if (state.telegramConfFail) throw new Error('backend unavailable');
+        if (state.telegramConfFailEmpty) throw new Error('');
         return { config: telegramConfig };
       case 'channel.telegram.set_conf':
         if (state.telegramSaveFail) throw new Error('save rejected');
@@ -76,11 +79,11 @@ function createHarness() {
       },
     };
   }
-  return { state, render };
+  return { state, calls, render };
 }
 
 test('a failed channel configuration load keeps the list visible with an error banner, and the retry reloads configurations', async () => {
-  const { state, render } = createHarness();
+  const { state, calls, render } = createHarness();
   state.telegramConfFail = true;
   const page = await render();
   try {
@@ -92,6 +95,8 @@ test('a failed channel configuration load keeps the list visible with an error b
       'channel list should stay visible after a failed configuration load');
     assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-list-skeleton"]'), null,
       'the skeleton should not be stuck after the failed load settles');
+    assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'), null,
+      'configuration load failures surface on the persistent banner, not on the transient toast');
 
     state.telegramConfFail = false;
     await page.click('[data-testid="settings-channels-panel-config-retry-btn"]');
@@ -99,6 +104,34 @@ test('a failed channel configuration load keeps the list visible with an error b
       'the banner should clear once the retry succeeds');
     assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'), null,
       'no error toast should linger after the retry succeeds');
+    assert.ok(page.container.querySelector('[data-testid="settings-channels-panel-channel-list"]'));
+    assert.equal(calls.filter((method) => method === 'channel.get').length, 2,
+      'the retry should re-run channel.get, not only the configuration loads');
+    assert.equal(calls.filter((method) => method === 'channel.telegram.get_conf').length, 2,
+      'the retry should re-run the channel configuration load');
+  } finally {
+    await page.unmount();
+  }
+});
+
+test('an empty error message from a failed configuration load still frees the skeleton and shows the banner', async () => {
+  const { state, render } = createHarness();
+  state.telegramConfFailEmpty = true;
+  const page = await render();
+  try {
+    await page.settle();
+    const banner = page.container.querySelector('[data-testid="settings-channels-panel-config-error"]');
+    assert.ok(banner, 'a failed load with an empty message must not be mistaken for an in-flight load');
+    assert.match(banner.textContent, /获取 Telegram 配置失败/,
+      'the empty message should fall back to the localized load error');
+    assert.ok(page.container.querySelector('[data-testid="settings-channels-panel-channel-list"]'),
+      'channel list should stay visible');
+    assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-list-skeleton"]'), null,
+      'the skeleton should not be stuck for an empty-message failure');
+
+    state.telegramConfFailEmpty = false;
+    await page.click('[data-testid="settings-channels-panel-config-retry-btn"]');
+    assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-config-error"]'), null);
     assert.ok(page.container.querySelector('[data-testid="settings-channels-panel-channel-list"]'));
   } finally {
     await page.unmount();
@@ -121,12 +154,36 @@ test('a failed save inside the channel dialog surfaces the error next to the for
     assert.ok(status, 'expected the save error to show inside the dialog');
     assert.match(status.textContent, /save rejected/);
     assert.equal(status.getAttribute('role'), 'alert');
+    assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'), null,
+      'a save failure for the open dialog should not duplicate on the page toast');
 
     await new Promise((resolve) => setTimeout(resolve, 2300));
     assert.ok(page.container.querySelector('[data-testid="settings-channels-panel-channel-config-status"]'),
       'the error should stay visible instead of auto-clearing after two seconds');
     assert.ok(page.container.querySelector('[data-testid="settings-channels-panel-channel-config"]'),
       'the dialog should stay open after a failed save');
+  } finally {
+    await page.unmount();
+  }
+});
+
+test('a failed enable toggle keeps the page toast transient instead of permanently sticky', async () => {
+  const { state, render } = createHarness();
+  const page = await render();
+  try {
+    await page.settle();
+    assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'), null);
+
+    state.telegramSaveFail = true;
+    await page.click('[data-testid="settings-channels-panel-account-toggle-btn"]');
+    assert.ok(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'),
+      'a toggle failure has no other surface and should show on the page toast');
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2300)); });
+    assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'), null,
+      'the toast should disappear after two seconds instead of staying forever');
+    assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-config-error"]'), null,
+      'a toggle failure on a loaded channel should not raise the configuration banner');
   } finally {
     await page.unmount();
   }

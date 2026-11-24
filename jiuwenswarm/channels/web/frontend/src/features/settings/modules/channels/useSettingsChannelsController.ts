@@ -409,10 +409,16 @@ export function useSettingsChannelsController({
     if (deleted) setPendingDeletion(null);
   };
 
+  // Page-level toast only covers failures that have no better surface: the configuration load
+  // failures are shown by the persistent configurationsError banner, and a save failure for the
+  // open dialog is shown by the dialog status bar. Everything else (enable toggle, unbind) stays
+  // on the toast, which the panel keeps transient.
   const errorNotice = Array.from(
     new Set(
-      Object.values(controllers)
-        .map((controller) => controller.error)
+      Object.entries(controllers)
+        .map(([channelId, controller]) =>
+          controller.loaded && !(dialogOpen && channelId === activeChannelId) ? controller.error : null,
+        )
         .filter((message): message is string => Boolean(message)),
     ),
   ).join(t('common.and'));
@@ -443,11 +449,10 @@ export function useSettingsChannelsController({
     channelConfigured,
     channelSaving,
     configurationsLoading: Object.values(controllers).some(
-      (controller) => (!controller.loaded && !controller.error) || controller.loading,
+      (controller) => (!controller.loaded && controller.error === null) || controller.loading,
     ),
     configurationsError,
     errorNotice,
-    loadChannels,
     reloadChannels,
     selectChannel,
     editChannel,
