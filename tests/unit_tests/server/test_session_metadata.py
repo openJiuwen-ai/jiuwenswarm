@@ -2561,7 +2561,7 @@ class TestSetSessionPinnedSyncWrite:
             set_session_pinned,
         )
 
-        init_session_metadata(session_id="s_pw")  # pinned=False
+        init_session_metadata(session_id="s_pw", channel_id="web")  # pinned=False
 
         result = set_session_pinned("s_pw", True)
         # 不调 _drain_queue():验证返回前已落盘
@@ -2579,7 +2579,7 @@ class TestSetSessionPinnedSyncWrite:
             set_session_pinned,
         )
 
-        init_session_metadata(session_id="s_unpw")
+        init_session_metadata(session_id="s_unpw", channel_id="web")
         set_session_pinned("s_unpw", True)  # 先置顶(同步落盘)
 
         result = set_session_pinned("s_unpw", False)  # 再取消置顶
@@ -2611,7 +2611,7 @@ class TestSetSessionPinnedQueuedWriteRace:
 
         monkeypatch.setattr(sm, "_write_metadata_sync", _delayed_write)
 
-        sm.init_session_metadata(session_id="s_async_pin")
+        sm.init_session_metadata(session_id="s_async_pin", channel_id="web")
         sm.update_session_metadata(session_id="s_async_pin", model="old-queued-write")
         assert old_write_started.wait(5), "old queued write did not start"
 
@@ -3318,7 +3318,7 @@ class TestSessionPinOptimization:
     def test_repeated_pin_skips_scan_and_write(self, sessions_dir, monkeypatch):
         from jiuwenswarm.server.runtime.session import session_metadata as sm
 
-        sm.init_session_metadata(session_id="repeat")
+        sm.init_session_metadata(session_id="repeat", channel_id="web")
         assert sm.set_session_pinned("repeat", True) == (True, 1)
         original_read = sm._read_metadata
         reads = []
@@ -3338,7 +3338,7 @@ class TestSessionPinOptimization:
         from jiuwenswarm.server.runtime.session import session_metadata as sm
 
         for sid in ("a", "b", "c"):
-            sm.init_session_metadata(session_id=sid)
+            sm.init_session_metadata(session_id=sid, channel_id="web")
             sm.set_session_pinned(sid, True)
         before = {sid: _read_json(sessions_dir / sid / "metadata.json") for sid in ("a", "b", "c")}
         assert [before[sid]["pin_order"] for sid in ("c", "b", "a")] == [1, 2, 3]
@@ -3357,7 +3357,11 @@ class TestSessionPinOptimization:
 
 
 class TestSessionPinCronIdentityGuard:
-    """缺 job 身份的 ``__cron__`` 执行会话不得置顶(置顶后三列表盲区)。"""
+    """缺 job 身份的 cron 执行会话不得置顶(置顶后三列表盲区)。
+
+    拒绝口径与置顶区准入共用 ``pinned_session_admitted`` 单一谓词:凡置顶区
+    不收的会话一律拒绝,两侧永不漂移。
+    """
 
     @staticmethod
     @pytest.mark.parametrize(
@@ -3375,6 +3379,15 @@ class TestSessionPinCronIdentityGuard:
             ("web_1770000000000_x", "", "web", False),
             # __cron__ 渠道但 id 无 cron 前缀且无 cron_id → 拒绝(畸形存量)
             ("plain_sid", "", "__cron__", True),
+            # channel_id 落空(init 默认"")但目录名嵌 job id → 放行:cron 分组
+            # 按名字兜底不按渠道过滤,带身份会话置顶后仍可见
+            ("cron_1770000000000_job-blank", "", "", False),
+            # channel_id 落空、无 cron_id、非 job 形态 → 拒绝(渠道缺失不再旁路守卫)
+            ("plain_blank_sid", "", "", True),
+            # channel_id 落空但有 cron_id → 放行(带身份,置顶后仍可见)
+            ("__cron___1770000000001_rnd", "job-2", "", False),
+            # 非 web 非 cron 渠道(tui)无 job 身份 → 拒绝(置顶区只收 web)
+            ("plain_tui_sid", "", "tui", True),
         ],
     )
     def test_pin_guard_by_identity(sessions_dir, sid, cron_id, channel_id, rejected):

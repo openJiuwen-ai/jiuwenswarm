@@ -1206,6 +1206,72 @@ class TestSessionPin:
             "cron_1770000000999_job-named"
         ]
 
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_pin_rejects_blank_channel_session_without_identity(
+        registered_channel, sessions_dir
+    ):
+        """channel_id 落空(``channel_id or ""`` 写入路径)且无 job 身份的会话,
+        置顶被拒绝(FORBIDDEN):守卫与置顶区准入共用单一谓词,非 web 渠道一律走
+        身份判定,渠道落空不再旁路守卫——否则该会话置顶后从三列表消失(与本
+        缺陷同形的盲区,atomgit-bot Medium 意见场景)。"""
+        _make_session("plain_blank_sid", channel_id="")  # 落空渠道,非 web
+
+        pin = await _call(
+            registered_channel,
+            "session.pin",
+            {"session_id": "plain_blank_sid", "pinned": True},
+        )
+        assert pin["ok"] is False
+        assert pin["code"] == "FORBIDDEN"
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        _drain()
+        meta = get_session_metadata(
+            "plain_blank_sid", cache_bust=True, enable_writeback=False
+        )
+        assert meta.get("pinned") is not True
+        assert int(meta.get("pin_order", 0)) == 0
+
+        # 取消置顶仍放行
+        unpin = await _call(
+            registered_channel,
+            "session.pin",
+            {"session_id": "plain_blank_sid", "pinned": False},
+        )
+        assert unpin["ok"] is True
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_pin_allows_blank_channel_cron_session_with_identity(
+        registered_channel, sessions_dir
+    ):
+        """channel_id 落空但目录名嵌 job id 的 cron 执行会话可正常置顶并出现在
+        置顶区:cron 分组按名字兜底列出它,与准入谓词的放行口径一致,不构成盲区。"""
+        _make_session("cron_1770000001222_job-shape")  # channel_id 默认 ""
+
+        pin = await _call(
+            registered_channel,
+            "session.pin",
+            {"session_id": "cron_1770000001222_job-shape", "pinned": True},
+        )
+        assert pin["ok"] is True
+
+        pinned = await _call(registered_channel, "project.pinned_sessions", {})
+        assert [s["session_id"] for s in pinned["payload"]["sessions"]] == [
+            "cron_1770000001222_job-shape"
+        ]
+
+        unpin = await _call(
+            registered_channel,
+            "session.pin",
+            {"session_id": "cron_1770000001222_job-shape", "pinned": False},
+        )
+        assert unpin["ok"] is True
+
 
 # ===========================================================================
 # 兼容性: 旧 session.create 不传 project_dir + session.rename
