@@ -2692,6 +2692,10 @@ class JiuWenSwarmDeepAdapter:
         self._selected_model_context_window_tokens: int | None = None
         # (base model, ACP thinking level, turn-local model) of the last ACP override.
         self._acp_thinking_model: tuple[Model, str, Model] | None = None
+        # Every live turn-local model maps back to its base, not just the last
+        # one: a resolved-but-unapplied override replaces the slot above while
+        # an older override can still be the remembered model.
+        self._acp_thinking_bases: weakref.WeakKeyDictionary[Model, Model] = weakref.WeakKeyDictionary()
         self._model_config_source: str = "config.yaml"
         self._enterprise_config: Any = None
         self._enterprise_config_resource_id: str | None = None
@@ -10040,18 +10044,18 @@ class JiuWenSwarmDeepAdapter:
         params = request.params or {}
         if ACP_THINKING_PARAM not in params:
             return model
-        previous = self._acp_thinking_model
-        if previous is not None and model is previous[2]:
-            model = previous[0]
+        model = self._acp_thinking_bases.get(model, model)
         level = params[ACP_THINKING_PARAM]
         if level is None:
             return model
+        previous = self._acp_thinking_model
         if previous is not None and model is previous[0] and level == previous[1]:
             return previous[2]
 
         from jiuwenswarm.server.runtime.acp_thinking import apply_thinking_level
 
         adjusted = apply_thinking_level(model, level)
+        self._acp_thinking_bases[adjusted] = model
         self._acp_thinking_model = (model, level, adjusted)
         return adjusted
 
