@@ -3053,10 +3053,13 @@ test('a plugin display preference hides bars and detail tabs across conversation
   });
   const visibleFrame = (tree, revision, owner) => ({ ...frame(tree, revision, owner), visible_when: binding });
   function Panels({ sessionId }) {
-    const { panels, renderPanel } = useWebUIPanels({ slotId: 'conversation.panel.right', sessionId });
+    const { panels, hiddenPanels, renderPanel } = useWebUIPanels({ slotId: 'conversation.panel.right', sessionId });
     return createElement(
       'section',
-      null,
+      {
+        'data-testid': 'webui-test-discovery',
+        'data-hidden-ids': hiddenPanels.map((panel) => panel.panelId).join(','),
+      },
       ...panels.map((panel) =>
         createElement(
           'div',
@@ -3100,12 +3103,17 @@ test('a plugin display preference hides bars and detail tabs across conversation
     assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 2);
     assert.equal(tabs().length, 3);
     assert.equal(iframes().length, 3);
+    const hiddenIds = () => [...container.querySelectorAll('[data-testid="webui-test-discovery"]')]
+      .map((node) => node.dataset.hiddenIds);
+    assert.deepEqual(hiddenIds(), ['', ''], 'visible panels are never reported as hidden');
     const originalDocument = iframes()[0];
     const control = () => container.querySelector('[data-testid="webui-switch"]');
     await click(control());
     assert.equal(control().getAttribute('aria-checked'), 'false');
     assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 0);
     assert.equal(tabs().length, 1, 'the unrelated package keeps its tab');
+    assert.deepEqual(hiddenIds(), [`${packageId}|details`, `${packageId}|details`],
+      'discovery reports preference-hidden detail panels as hidden, not gone');
     assert.equal(iframes().length, 1, 'hidden documents release their browsing contexts');
     assert.equal(originalDocument.isConnected, false);
     await act(async () => {
@@ -3125,6 +3133,7 @@ test('a plugin display preference hides bars and detail tabs across conversation
     assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 2);
     assert.equal(tabs().length, 3);
     assert.equal(iframes().length, 3);
+    assert.deepEqual(hiddenIds(), ['', ''], 're-enabling the preference clears the hidden result');
     assert.ok([...iframes()].some((node) => node.getAttribute('srcdoc').includes('Updated history while hidden')));
     assert.equal(panelNavigation(runtime).getSnapshot(), null, 'enabling does not request panel selection');
     const storageKey = Object.keys(window.localStorage).find((key) => !keysBefore.has(key));

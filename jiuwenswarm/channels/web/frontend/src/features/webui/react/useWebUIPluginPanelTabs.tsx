@@ -119,14 +119,18 @@ export function useWebUIPluginPanelTabs({
     // Only a contribution that left both the visible and the hidden discovery result is truly
     // gone (cleared or unmounted); a preference-hidden panel keeps its tab parked.
     const removedPanelIds = previousPanelIds.filter((panelId) => !known.has(panelId));
-    const hiddenNowPanelIds = hiddenPanelIds.filter((panelId) => previousPanelIds.includes(panelId));
     if (removedPanelIds.length > 0) {
       store.update((current) => removeWebUIPluginPanels(current, removedPanelIds));
     }
-    if (hiddenNowPanelIds.length > 0) {
-      store.update((current) => hideWebUIPluginPanels(current, hiddenNowPanelIds));
-    }
   }, [availablePanelIds, hiddenPanelIds, sessionKey, store]);
+
+  useEffect(() => {
+    // A parked tab must not own the content area while its panel is hidden, even when this hook
+    // mounts or the conversation switches with the preference already off. The discovery history
+    // only guards pruning against contributions that have not rendered yet; hiding is idempotent.
+    if (hiddenPanelIds.length === 0) return;
+    store.update((current) => hideWebUIPluginPanels(current, hiddenPanelIds));
+  }, [hiddenPanelIds, store]);
 
   useEffect(() => {
     if (!enabled || !openRequest || !sessionId || openRequest.sessionId !== sessionId) return;

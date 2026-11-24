@@ -268,6 +268,25 @@ test('pruning still removes tabs whose contribution left while its preference wa
   }
 });
 
+test('a parked tab stays unselected when the conversation switches with the preference already off', async () => {
+  const app = await setup({ sessionId: 'a', discoveredPanels: [usagePanel('a')] });
+  try {
+    await app.addPlugin(usagePanelId);
+    assert.equal(app.active(), usageTabKey);
+    // The conversation switch rebuilds the discovery baseline, so the hidden panel is only known
+    // from the new result: it must still hand the content area back to the native page.
+    await app.render({ sessionId: 'b', discoveredPanels: [], hiddenPanels: [usagePanel('b')] });
+    assert.equal(app.tab(usageTabKey), null, 'a preference-hidden tab does not render');
+    assert.equal(app.active(), 'planning', 'a pre-hidden active tab falls back to the native page');
+    // Re-enabling the preference restores the parked tab without taking the selection back.
+    await app.render({ sessionId: 'b', discoveredPanels: [usagePanel('b')] });
+    assert.ok(app.tab(usageTabKey), 're-enabling the preference restores the parked tab');
+    assert.equal(app.active(), 'planning', 'the restored tab is not auto-selected');
+  } finally {
+    await app.dispose();
+  }
+});
+
 test('closing an active draft skips neighbours that are still waiting to render', async () => {
   const app = await setup({ sessionId: 'a', discoveredPanels: [usagePanel('a'), filesPanel('a')] });
   try {
