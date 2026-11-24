@@ -88,3 +88,92 @@ def test_install_wraps_bash_tool_invoke() -> None:
     assert getattr(BashTool.invoke, "jiuwenswarm_safety_wrapped", False)
     install_shell_tool_safety_hooks()
     assert getattr(BashTool.invoke, "jiuwenswarm_safety_wrapped", False)
+
+
+def _shell_tool(cls_name: str, module: str):
+    """Construct a shell tool with a minimal LOCAL SysOperation."""
+    import importlib
+
+    from openjiuwen.core.sys_operation import (
+        LocalWorkConfig,
+        OperationMode,
+        SysOperation,
+        SysOperationCard,
+    )
+
+    operation = SysOperation(
+        SysOperationCard(
+            id="shell-card-exempt-test",
+            mode=OperationMode.LOCAL,
+            work_config=LocalWorkConfig(shell_allowlist=None, restrict_to_sandbox=False),
+        )
+    )
+    cls = getattr(importlib.import_module(module), cls_name)
+    return cls(operation=operation)
+
+
+def test_shell_tool_card_exempts_outer_call_timeout() -> None:
+    """bash / powershell must not be capped by the 300s call-level default.
+
+    Their time budget arrives per call as the ``timeout`` argument. Without
+    ``resilience.timeout_s`` the framework's ``DEFAULT_TOOL_CALL_TIMEOUT``
+    (300s) silently overrode the caller: production logs contain
+    ``Tool 'bash' timed out after 300.0s`` for a command that declared
+    ``timeout: 900``.
+    """
+    install_shell_tool_safety_hooks()
+
+    bash = _shell_tool("BashTool", "openjiuwen.harness.tools.shell.bash._tool")
+    assert bash.card.properties["resilience"]["timeout_s"] is None
+
+    try:
+        powershell = _shell_tool(
+            "PowerShellTool", "openjiuwen.harness.tools.shell.powershell._tool"
+        )
+    except ImportError:  # pragma: no cover - platform without PowerShell tool
+        powershell = None
+    if powershell is not None:
+        assert powershell.card.properties["resilience"]["timeout_s"] is None
+
+
+def test_shell_tool_card_exemption_is_idempotent() -> None:
+    install_shell_tool_safety_hooks()
+    install_shell_tool_safety_hooks()
+    bash = _shell_tool("BashTool", "openjiuwen.harness.tools.shell.bash._tool")
+    assert bash.card.properties["resilience"] == {"timeout_s": None}
+
+
+def test_shell_tool_card_keeps_a_caller_declared_budget() -> None:
+    """A construction site that already declared a budget keeps it."""
+    from openjiuwen.core.sys_operation import (
+        LocalWorkConfig,
+        OperationMode,
+        SysOperation,
+        SysOperationCard,
+    )
+
+    from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
+        _stamp_exempt_tool_card,
+    )
+
+    operation = SysOperation(
+        SysOperationCard(
+            id="shell-card-declared-test",
+            mode=OperationMode.LOCAL,
+            work_config=LocalWorkConfig(shell_allowlist=None, restrict_to_sandbox=False),
+        )
+    )
+
+    class FakeShellTool:
+        """Minimal stand-in: the stamp helper only touches ``card.properties``."""
+
+        def __init__(self, *_args, **_kwargs):
+            self.card = type(
+                "Card",
+                (),
+                {"properties": {"resilience": {"timeout_s": 42.0}}},
+            )()
+
+    _stamp_exempt_tool_card(FakeShellTool)
+    tool = FakeShellTool(operation)
+    assert tool.card.properties["resilience"] == {"timeout_s": 42.0}

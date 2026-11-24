@@ -1979,9 +1979,28 @@ class ProgressiveToolRail(DeepAgentRail):
             owned = self._office_claw_active_tool_ids
             if owned is not None:
                 kwargs_without_session[OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG] = owned
-            call_timeout = getattr(AbilityManager, "_resolve_call_timeout")(
-                target_tool_card
+            # Prefer the arguments-aware resolver (agent-core >= the 300s-cap
+            # fix); fall back to the card-only one on an older runtime so this
+            # fork keeps working across the version boundary.
+            args_resolver = getattr(
+                AbilityManager, "_resolve_call_timeout_for_args", None
             )
+            if args_resolver is not None:
+                call_timeout = args_resolver(target_tool_card, arguments)
+            else:
+                call_timeout = getattr(AbilityManager, "_resolve_call_timeout")(
+                    target_tool_card
+                )
+            # Same fallback as AbilityManager's own call site: exemption
+            # (timeout_s=None / no argument timeout) means "no 300s default",
+            # not "no ceiling" - ``anyio.fail_after(None)`` would otherwise
+            # hang this round forever.
+            if call_timeout is None:
+                from openjiuwen.core.single_agent.ability_manager import (
+                    MAX_TOOL_CALL_TIMEOUT_HARD_LIMIT,
+                )
+
+                call_timeout = MAX_TOOL_CALL_TIMEOUT_HARD_LIMIT
             with self._bind_deepresearch_context(tool_name):
                 try:
                     with anyio.fail_after(call_timeout) as timeout_scope:
@@ -1991,9 +2010,15 @@ class ProgressiveToolRail(DeepAgentRail):
                 except TimeoutError as exc:
                     if not timeout_scope.cancel_called:
                         raise
-                    raise TimeoutError(
-                        f"Tool '{tool_name}' timed out after {call_timeout}s"
-                    ) from exc
+                    describe = getattr(
+                        AbilityManager, "_describe_timeout_layer", None
+                    )
+                    message = (
+                        describe(tool_name, call_timeout, arguments)
+                        if describe is not None
+                        else f"Tool '{tool_name}' timed out after {call_timeout}s"
+                    )
+                    raise TimeoutError(message) from exc
             env_inv = _office_claw_tool_env_value(
                 target_tool, "OFFICE_CLAW_INVOCATION_ID"
             )
