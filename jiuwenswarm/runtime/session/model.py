@@ -12,6 +12,13 @@ from typing import Any
 
 TEAM_EXECUTION_CONTEXT_METADATA_KEY = "_team_execution_context"
 
+# ``chat.interrupt`` params injected in-process by AgentRuntime before the
+# Team pause request falls back to the adapter path. They bind the compat
+# pause to the generation and Team rounds the runtime snapshotted, so a
+# round admitted afterwards is never paused by a stale request.
+TEAM_PAUSE_FENCE_GENERATION_PARAM = "_team_pause_fence_generation"
+TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM = "_team_pause_fence_request_ids"
+
 # ``chat.send`` requests carrying this truthy param attach a response
 # subscription to an already-running Team Session without submitting input.
 from jiuwenswarm.common.schema.message import TEAM_ATTACH_ONLY_PARAM  # noqa: F401,E402  re-export
