@@ -54,10 +54,7 @@ from jiuwenswarm.common.symphony_config import (
     require_graph_skill_root,
 )
 from jiuwenswarm.runtime.symphony.build import build_graph as service_build_graph
-from jiuwenswarm.runtime.symphony.build import graph_status
-from jiuwenswarm.runtime.symphony.graph_storage import (
-    resolve_graph_artifact_dir,
-)
+from jiuwenswarm.runtime.symphony.build import graph_status, resolve_graph_artifact_dir
 
 logger = logging.getLogger(__name__)
 

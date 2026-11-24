@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from openjiuwen.symphony import SymphonyRuntime
+from openjiuwen.symphony import GraphArtifactStore, SymphonyRuntime
 from jiuwenswarm.common.symphony_config import SymphonyConfig
 from jiuwenswarm.runtime.symphony.adapter import model_from_config
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, get_llm_token_usage_summary, reset_llm_token_usage
@@ -55,6 +55,28 @@ class GraphBuildResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def resolve_graph_artifact_dir(graph_dir: str | Path) -> Path:
+    """Resolve a published version through the Core artifact contract."""
+    root = Path(graph_dir).resolve()
+    artifact = GraphArtifactStore(root).current_artifact()
+    if artifact is None:
+        raise FileNotFoundError("No published Symphony graph is available")
+    return artifact.graph_path.parent
+
+
+def graph_exists(graph_dir: str | Path) -> bool:
+    """Report only graph versions accepted by the public Core artifact contract."""
+    try:
+        store = GraphArtifactStore(graph_dir)
+        artifact = store.current_artifact()
+        if artifact is None:
+            return False
+        store.read(artifact.version)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def graph_status(config: SymphonyConfig, *, llm_config: LLMConfig | None = None) -> GraphStatus:

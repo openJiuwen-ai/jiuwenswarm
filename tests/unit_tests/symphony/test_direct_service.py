@@ -16,7 +16,7 @@ from jiuwenswarm.runtime.symphony.adapter import (
     llm_config_signature,
     normalize_candidate_ids,
 )
-from jiuwenswarm.runtime.symphony.build import build_graph
+from jiuwenswarm.runtime.symphony.build import build_graph, graph_exists
 from jiuwenswarm.common.symphony_config import symphony_config_from_dict
 from jiuwenswarm.runtime.symphony.llm import LLMConfig
 from jiuwenswarm.runtime.symphony.service import (
@@ -27,7 +27,6 @@ from jiuwenswarm.runtime.symphony.service import (
     _build_log_path,
     _graph_needs_build,
 )
-from jiuwenswarm.runtime.symphony.graph_storage import graph_exists
 
 
 _ALLOWED_SYMPHONY_FACADE_SYMBOLS = {
