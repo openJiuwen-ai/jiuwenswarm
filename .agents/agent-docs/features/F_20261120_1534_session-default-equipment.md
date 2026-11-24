@@ -29,29 +29,22 @@ author_email: chensitong2@huawei.com
 
 # 全局默认装备（SDD-0030）：新会话自动挂载默认 MCP
 
-对应 Issue：GitCode #6383（GitHub #11108）。设计全文与场景矩阵见
-`designs/proposals/SDD-0030-session-default-equipment/design.md`。
+对应 Issue：GitCode #6383（GitHub #11108）。设计见 `designs/proposals/SDD-0030-session-default-equipment/design.md`。
 
-## 元信息
+**做了什么**：给连接器加「默认使用」标记（`state.json` `is_default`）；新会话首条消息没带 `mcp` 时按默认清单自动挂载一次，之后按会话快照走。后端（存储/挂载规则/读写接口）+ 前端（详情页复选框 + 新会话面板预勾选）+ 中英文档。
 
-| 项 | 值 |
-|---|---|
-| 范围 | 后端阶段一（state `is_default` 单一来源 + restore 第三级回填 + defaults.get/set 双通道路由 + WS 聊天线接线）+ 前端阶段二（详情页复选框 + 新会话面板预勾选 + i18n）+ 中英文档 |
-| 可靠性 | 新增 UT 29 个用例（state_store 6 + defaults 23）全绿；回归：extension mount / dispatch / message / warmup / cron 全绿；WS 直连冒烟（get/PUT/非法项拒绝）通过 |
+**验证**：新增单测 27 个、相关回归全绿；WS 直连冒烟（读/写/非法拒绝）通过；浏览器实测（复选框实时生效、新会话预勾选、取消勾选后不挂载）。
 
-## 实施要点
+## 关键实现
 
-| 决策 | 实施落地 |
-|---|---|
-| 默认来源（单一） | state.json `is_default` 标记（UI 复选框写入，读取时过滤 connected/connecting，去重排序）——2026-11-24 社区简化：config.yaml 预置层已删除，`mcp.servers` 注册的 MCP 本就全局可见不需此机制；provider 读取异常降级为空，绝不阻塞 chat.send |
-| 第三级回填 | `restore_chat_send_equipment_params()`：`not saved and "mcp" not in params` 时播种一次。`{}`（无快照）与 `{"mcp": []}`（显式清空）靠 dict 真值区分，逃生门契约原样保留；首轮回合成功后 `save_session_equipment` 落快照，默认清单变更不追溯 |
-| 存储原子性 | `replace_default_mcps()` 单锁内全量替换 `is_default` 集（PUT 语义基础）；`set_mcp_default()` 单项翻转不动连接状态；`list_default_mcps()` 只回活记录（断连默认项回填时静默跳过）；`list_default_flagged_mcps()` 供 UI 显示"默认但断连" |
-| RPC 双通道 | 共享核心 `read/apply_session_equipment_defaults_payload`（handlers/session.py）：dispatch.py HANDLERS（HTTP REST 路径）与 `JiuWenSwarm.process_message` 的 `_handle_session_equipment_defaults_request`（WS 聊天线，`_SESSION_ASSET_ROUTES` 同款模式，adapter 创建前应答）共用，两种传输不可能漂移 |
-| set 校验链 | 类型 → strip/去重 → 每名必须有活记录（断连项在回填时本就静默失效，写入时直接 BAD_REQUEST 让用户当场修正）；KeyError → MCP_NOT_FOUND。数量不设上限（评审决定，用户自控） |
-| UI（Cursor 模式） | MCP 详情页"默认使用"复选框（社区对齐形态；读 `defaults.get.runtime`，写 PUT 全量清单；断连/达上限/读取失败置灰，set 错误红字透出）；无快照新会话打开扩展面板即预勾选默认集（`prefillDefaultMcps` 整体初始化 + hydrate，所见即所发）；已 hydrate 会话以快照为准不被覆盖；team 模式跳过；空默认集不预填（保持省略字段 → 后端回填活读取） |
+- **存储**：`state_store.py` 新增 `is_default` 字段和四个读写函数；`replace_default_mcps` 加锁整体替换，防止并发写坏。
+- **挂载规则**：`interface.py` `restore_chat_send_equipment_params()` 末尾加一级：会话无快照且消息省略 `mcp` 时补默认。「没有快照」和「快照是空的（用户清空过）」用返回值区分，后者不再补默认（逃生门）。
+- **读写接口**：`session_equipment.defaults.get/set` 两个 RPC；set 整体替换、只收已连接项；WS 与 HTTP 共用 `handlers/session.py` 的同一份实现。
+- **前端**：McpDetailPage 复选框（读 `runtime` 集、写完整清单）；新会话面板预勾选（`sessionStore.prefillDefaultMcps`），手动改过的会话以快照为准不被覆盖。
+- **取舍**：默认来源只有 `state.json`（2026-11-24 社区简化，config.yaml 预置层已删）；数量不设上限（评审决定）。
 
 ## 已知边界
 
-- **跨仓依赖（发布前置）**：web WS 转发链上 agent-gateway 有三处硬编码门（`_FORWARD_REQ_METHODS` / `_FORWARD_NO_LOCAL_HANDLER_METHODS` / `protocol_methods.py` 枚举清单），需 agent-gateway 正式加入两个方法并升级 pin，前端 RPC 才能对外生效；后端回填（SDK/cron/无面板场景）不依赖网关，先行生效。详见 SDD-0030 §4。
-- 默认范围仅 `mcp`（`plugin_names` / 专家模板不在本特性内）。
-- 失败回合不落快照（既有行为）：回合失败的会话下一条消息默认重新播种。
+- **网关依赖（发布前置）**：前端 RPC 需 agent-gateway 三处名单放行（`_FORWARD_REQ_METHODS` 等）才对外生效；自动挂载本身不经过网关，先行生效。见 SDD-0030 §4。
+- 只覆盖 `mcp`，不含插件和专家模板。
+- 回合失败不存快照（既有行为），下一条消息默认重新生效。

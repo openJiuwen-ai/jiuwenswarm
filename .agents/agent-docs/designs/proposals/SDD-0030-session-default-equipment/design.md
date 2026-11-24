@@ -7,7 +7,7 @@ stage: proposals
 reviewers: []
 created: 2026-11-20
 updated: 2026-11-24
-version: 2
+version: 3
 domain: core
 modules: [server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend]
 tags: [mcp, session-equipment, default-equipment, chat-send, ux]
@@ -33,95 +33,92 @@ files:
 issue: 'GitCode #6383 / GitHub #11108'
 ---
 
-# 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器
+# 全局默认装备：新会话自动挂载默认连接器
 
-> 对应 Issue：GitCode #6383（GitHub #11108）。方案已全部实现并通过本地端到端验证；实施记录见 `features/F_20261120_1534_session-default-equipment.md`。
+> 对应 Issue：GitCode #6383（GitHub #11108）。方案已实现并通过端到端验证，实施记录见 `features/F_20261120_1534_session-default-equipment.md`。
 
-## 1. 背景与根因
+## 1. 问题
 
-在「扩展 / 连接器」（MCP）里安装并连接一个服务后，新建会话仍是空装备，必须逐会话手动勾选，工具才可用。根因（develop 已核实）：
+在「扩展 / 连接器」里装好并连接一个 MCP 后，新建会话还是空的——每个会话都要手动勾一遍，工具才可用。
 
-- 「安装/连接」与「会话挂载」是两套状态：`registry.py` 连接完成只把 state 置为 `connected`，不加载进任何 agent 会话；
-- 会话 MCP 集合由每条 `chat.send` 的 `mcp` 字段驱动（`reconcile_session_mcp`）；
-- 新会话无装备快照（`get_session_equipment` 返回 `{}`）。
+原因：连接器和会话是两套状态。连接成功只把 `state.json` 里的状态置为 `connected`，不代表它进了任何会话；会话里挂载哪些 MCP，由每条 `chat.send` 消息的 `mcp` 字段决定。
 
-`config.yaml` `mcp.servers` init 注册的 MCP 本就对所有会话可见，无需本机制；本方案解决的是 web 面板安装连接的 MCP（state.json 记录型）的默认挂载。
+（`config.yaml` `mcp.servers` 注册的 MCP 本来就对所有会话可见，不受此问题影响。）
 
-## 2. 已实现方案
+## 2. 方案（已实现）
 
-### 2.1 存储：state.json `is_default`（单一来源）
+一句话：给每个连接器加一个「默认使用」标记（`state.json` `is_default` 字段）；新会话第一次发消息时，如果没带 `mcp` 信息，就自动按这份默认清单挂载。
 
-MCP state store（`server/runtime/mcp/state_store.py`）每条记录新增 `is_default: bool`，配四个操作函数：
+### 2.1 存储
 
-| 函数 | 语义 |
+`state.json` 每条连接器记录新增 `is_default: bool`。读写由 `state_store.py` 的四个函数负责：
+
+| 函数 | 作用 |
 |---|---|
-| `set_mcp_default(name, flag)` | 单项翻转，不动连接状态 |
-| `list_default_mcps()` | 生效默认名单（仅 `connected`/`connecting`） |
-| `list_default_flagged_mcps()` | 全部被标记项（含断连，供 UI 灰显"默认但不可用"） |
-| `replace_default_mcps(names)` | 单锁内原子全量替换 `is_default` 集（PUT 语义基础，防并发互踩） |
+| `set_mcp_default` | 勾/取消单个连接器 |
+| `list_default_mcps` | 列出生效的默认（只算已连接的） |
+| `list_default_flagged_mcps` | 列出所有被标记的（含断连，供界面灰显） |
+| `replace_default_mcps` | 一次性整体替换（加锁防并发写坏） |
 
-### 2.2 回填：三级优先级 + 逃生门
+### 2.2 挂载规则（谁说了算）
 
-`interface.py` `restore_chat_send_equipment_params()` 新增第三级回填：
+一条 `chat.send` 消息的装备按三级取值，从高到低：
 
 ```
-显式传参 > 会话快照 > 全局默认
+消息里带了 mcp（用户此刻的选择） > 会话快照（上次用过什么） > 全局默认
 ```
 
-- 仅当会话**无快照**（`get_session_equipment` 返回 `{}`，区别于快照 `{"mcp": []}` 的显式清空）且消息**省略 `mcp` 字段**时，用默认播种一次；
-- 首轮回合成功后 `save_session_equipment` 落快照，默认清单后续变更**不追溯**已有会话；
-- 显式 `mcp: []` 永不被回灌——key-presence 三态契约（缺省=保留 / `[]`=清空 / 值=替换）原样保留，前端 hydrate 机制天然保证"碰过面板=显式"；
-- 只播种 `mcp`，不碰 `plugin_names` / `agent_template_name`；
-- 读取入口 `config.py` `get_default_equipment_mcp_names()`：state 单一来源、去重排序，provider 异常降级为空——默认装备绝不阻塞 `chat.send`。
+- 「快照」= 会话上一轮成功后存下的装备记录（`session_equipment`）；
+- 默认只在**前两级都空**（新会话、且没碰过扩展面板）时补一次；补完即存快照，之后默认清单怎么改都不影响这个会话；
+- 用户在会话里明确清空过（发送 `mcp: []`）的，默认**永远不会再灌回去**；
+- 只处理 `mcp`，不动插件和专家模板。
 
-### 2.3 RPC：`session_equipment.defaults.get/set`（双通道）
+### 2.3 读写接口
 
-- **get** → `{mcp: 生效名单, runtime: 全部标记, unavailable: 标记但断连}`；
-- **set** 参数 `{mcp: [...]}`：PUT 语义原子替换。校验链：必须 list → 条目 string → strip/去重 → 每名必须有活记录（否则 `BAD_REQUEST`，错误带具体名字与状态）；KeyError → `MCP_NOT_FOUND`。数量不设上限（2026-11-24 评审决定：数量由用户自行控制）；
-- **双通道共享核心**（`handlers/session.py` `read/apply_session_equipment_defaults_payload`，WS 与 HTTP 不可能漂移）：
-  - WS 聊天线：`JiuWenSwarm.process_message` 的 `_handle_session_equipment_defaults_request`，在 adapter 创建前应答（`_SESSION_ASSET_ROUTES` 同款模式；不接线的合法 ReqMethod 会落入聊天路径按空 query 触发 LLM 调用）；
-  - HTTP：`dispatch.py` HANDLERS 注册（`agent_http_routes` 消费）；
-- 枚举注册：`message.py` `_ensure_req_method`（协议包演进机制）；
-- 所有磁盘 IO 走 `asyncio.to_thread`（带锁 IO 不阻塞事件循环）。
+新增两个 RPC：`session_equipment.defaults.get / set`（前端复选框用它读写默认清单）。
+
+- get 返回：生效名单 + 全部标记 + 断连部分；
+- set 收一份完整清单整体替换；每个名字必须已连接，否则报错并说明原因（断连的设了默认也不会生效，不如当场告诉用户）；
+- 数量不设上限，由用户自行控制；
+- WS 和 HTTP 两条通道共用同一份实现（`handlers/session.py`），行为不会不一致；
+- 读取失败一律返回空名单——默认装备绝不能把聊天弄挂。
 
 ### 2.4 前端
 
-- MCP 详情页「默认使用」复选框（社区对齐形态：原生 checkbox；读 `runtime` 集，写 PUT 全量清单；断连/达上限/读取失败置灰带 title 提示；set 校验错误红字透出）；
-- 无快照新会话打开扩展面板即预勾选默认集（`sessionStore.prefillDefaultMcps` 整体初始化 + 标记 hydrated，所见即所发）；已 hydrate 会话（快照恢复/手动改过）以快照为准**不被覆盖**；team 模式跳过；空默认集不预填（保持省略字段，后端回填活读取）。
+- 连接器详情页加「默认使用」复选框：勾选即设为默认，断连或读取失败时置灰；
+- 新会话打开扩展面板时，默认清单已勾好（所见即所发）；手动改过的会话按快照显示，不被默认覆盖。
 
-### 2.5 场景行为
+### 2.5 各场景表现
 
 | 场景 | 行为 |
 |---|---|
-| 新会话首条消息（未碰面板） | 默认回填播种一次 → 快照接管 |
-| 新会话（已勾选/已清空） | 显式数组 / `[]` 优先，默认不介入 |
-| 历史会话 | 快照优先 |
-| `session.fork` / `session.copy` | 既有快照继承，默认不介入 |
-| cron 创建/执行会话 | 裸消息无快照 → 同样回填默认 |
-| 团队会话（team 模式） | 不生效（装备走 team spec 级装配） |
-| 企业模式 | routed Agent 模板整体替换优先；策略加载失败时默认兜底 |
-| 断连默认项 | 读取源头过滤 + reconcile 失败隔离双保险；重连自动恢复生效 |
-| 失败回合 | 不落快照（既有行为），下条消息默认重新播种 |
-| 服务重启 | `is_default` 持久化；历史会话快照不受影响 |
+| 新会话第一条消息（没碰过面板） | 自动挂载默认 |
+| 新会话（勾过/清空过） | 按用户操作，默认不介入 |
+| 历史会话 | 按快照 |
+| fork / copy 会话 | 按既有快照继承 |
+| 定时任务（cron）会话 | 同样自动挂载默认 |
+| 团队会话 | 不生效（团队装备另有机制） |
+| 企业模式 | 企业模板优先，加载失败时默认兜底 |
+| 默认连接器断连 | 新会话静默跳过，重连后自动恢复 |
+| 回合失败 | 不存快照，下一条消息默认重新生效 |
+| 服务重启 | 标记持久化，历史会话不受影响 |
 
 ## 3. 防护
 
-- **set 拒绝断连名**：断连项在回填时本就静默失效，写入时报错让用户当场修正（先重连再设）；
-- **读取异常降级为空**：默认装备不能成为 `chat.send` 的故障源；
-- **`is_default` 与 TUI `enabled` 独立**：前者是 web 新会话默认，后者是 TUI 全局加载开关，互不污染。
+- set 拒绝断连的连接器（设了不生效，不如报错）；
+- 读取失败返回空，不影响聊天；
+- `is_default` 与 TUI 的 `enabled` 是两个独立开关，互不影响。
 
-## 4. 跨仓依赖（agent-gateway）
+## 4. 网关依赖（发布前必须解决）
 
-web WS 转发链上 agent-gateway（外部 pin 依赖）有三处硬编码门：
+前端的 RPC 要经过 agent-gateway（外部依赖仓库）转发，那里有三处硬编码名单需要正式加入这两个方法：
 
-1. `channel_manager/web/app_web_handlers.py` `_FORWARD_REQ_METHODS`（不在集合 → 网关回 `METHOD_NOT_FOUND`）；
-2. 同文件 `_FORWARD_NO_LOCAL_HANDLER_METHODS`（纯转发 RPC 必须同时在列）；
-3. `common/protocol_methods.py` 的 ReqMethod 枚举补丁清单（解析不到 → 信封 method 为空）。
+1. `_FORWARD_REQ_METHODS`；2. `_FORWARD_NO_LOCAL_HANDLER_METHODS`；3. `common/protocol_methods.py`。
 
-正式发布需 agent-gateway 加入两个方法并升 pin。在此之前：前端 RPC 置灰降级（读取失败提示），**后端回填（SDK / cron / 未碰面板会话）不依赖网关、先行生效**。本地验证曾在 `.venv` 内对三处打临时补丁打通端到端。
+放行之前：复选框暂时不可用（置灰）；**自动挂载本身不经过网关，先行生效**（SDK、定时任务、没碰过面板的会话都正常）。本地验证时曾对这三处打临时补丁打通全链路。
 
-## 5. 测试与验证
+## 5. 测试
 
-- **新增 UT**：state 四件套（翻转/缺记录/活性过滤/原子替换）；回填语义矩阵（无快照+缺省→播种、显式 `[]`→不回灌、显式名单→不动、空快照→快照优先、无默认→不动、team 跳过、只播种 `mcp`）；RPC 校验（非 list/超上限/未连接拒绝、PUT 替换）；读取降级；
-- **回归全绿**：extension mount、dispatch 注册表、ReqMethod、session warmup、cron 调度；
-- **端到端**：WS 直连冒烟（get 全量视图 / PUT 替换 / 非法拒绝）；浏览器实测（复选框实时翻转 state.json、新会话面板预勾选、取消勾选后不挂载、快照接管）。
+- 新增 27 个单测：存储操作、挂载规则全组合（含逃生门）、RPC 校验、读取失败降级；
+- 回归全绿：装备挂载、路由表、协议枚举、会话预热、定时任务；
+- 端到端：WS 直连冒烟（读/写/非法拒绝）+ 浏览器实测（勾选实时生效、新会话预勾选、取消不挂载）。
