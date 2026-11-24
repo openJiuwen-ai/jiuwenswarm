@@ -75,6 +75,25 @@ async def _run(gateway_url: str) -> None:
                 self._gateway_reader_loop(), name="acp-gateway-reader",
             )
 
+        async def _close_gateway_connection(self) -> None:
+            # AcpChannel cancels the reader first, and the reader's finally
+            # clears _gateway_ws, so the base method never closes the socket:
+            # the Gateway sees an abnormal close and asyncio.run then waits out
+            # close_timeout. Take the socket before cancelling the reader.
+            # Remove once the agent-gateway pin closes it itself.
+            ws = self._gateway_ws
+            self._gateway_ws = None
+            reader_task = self._gateway_reader_task
+            self._gateway_reader_task = None
+            if reader_task is not None:
+                reader_task.cancel()
+                await asyncio.gather(reader_task, return_exceptions=True)
+            if ws is not None:
+                try:
+                    await ws.close()
+                except (OSError, WebSocketException):
+                    pass  # The process is leaving; the peer sees the socket drop.
+
         async def _gateway_session(self, operation: str, **params) -> dict:
             await self._ensure_gateway_connection()
             request_id = f"acp_options_{uuid4().hex}"

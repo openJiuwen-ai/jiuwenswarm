@@ -40,6 +40,33 @@ async def test_native_version_and_unreachable_gateway():
 
 
 @pytest.mark.asyncio
+async def test_native_closes_the_gateway_connection_when_stdin_ends():
+    closed = asyncio.get_running_loop().create_future()
+
+    async def gateway(ws):
+        await ws.wait_closed()
+        closed.set_result(ws.close_code)
+
+    async with serve(gateway, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        process = await _provider("--gateway-url", f"ws://127.0.0.1:{port}/acp")
+        try:
+            # The provider connects before it reads stdin; end the session then.
+            async with asyncio.timeout(8):
+                while not server.websockets:
+                    await asyncio.sleep(0.05)
+            process.stdin.close()
+            await asyncio.wait_for(process.communicate(), 8)
+            assert process.returncode == 0
+            # 1000 is a closing handshake; a socket left to drop at exit is 1006.
+            assert await asyncio.wait_for(closed, 5) == 1000
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("aliased", [False, True])
 async def test_native_uses_session_cwd_and_forwards_gateway_usage(tmp_path, aliased):
     requests = asyncio.Queue()
