@@ -29,12 +29,36 @@ export function SettingsChannelsPanel({
         </div>
       ) : null}
 
+      {controller.configurationsError ? (
+        <div
+          className="settings-channels-panel__fetch-error settings-channels-panel__config-error"
+          data-testid="settings-channels-panel-config-error"
+        >
+          <span>
+            {t('channels.configLoadFailed')}: {controller.configurationsError}
+          </span>
+          <Button
+            variant="quiet"
+            size="sm"
+            onClick={() => void controller.reloadChannels()}
+            data-testid="settings-channels-panel-config-retry-btn"
+          >
+            {t('channels.retry')}
+          </Button>
+        </div>
+      ) : null}
+
       {controller.channelsError ? (
         <div className="settings-channels-panel__fetch-error" data-testid="settings-channels-panel-fetch-error">
           <span>
             {t('channels.fetchFailed')}: {controller.channelsError}
           </span>
-          <Button variant="quiet" size="sm" onClick={() => void controller.loadChannels()} data-testid="settings-channels-panel-retry-btn">
+          <Button
+            variant="quiet"
+            size="sm"
+            onClick={() => void controller.reloadChannels()}
+            data-testid="settings-channels-panel-retry-btn"
+          >
             {t('channels.retry')}
           </Button>
         </div>

@@ -203,8 +203,8 @@ export function useSettingsChannelsController({
     void loadChannels();
   }, [loadChannels]);
 
-  useEffect(() => {
-    void Promise.all([
+  const loadConfigurations = useCallback(async () => {
+    await Promise.all([
       xiaoyi.load(),
       feishu.load(),
       dingtalk.load(),
@@ -214,6 +214,14 @@ export function useSettingsChannelsController({
       whatsapp.load(),
     ]);
   }, [dingtalk.load, discord.load, feishu.load, slack.load, telegram.load, whatsapp.load, xiaoyi.load]);
+
+  const reloadChannels = useCallback(async () => {
+    await Promise.all([loadChannels(), loadConfigurations()]);
+  }, [loadChannels, loadConfigurations]);
+
+  useEffect(() => {
+    void loadConfigurations();
+  }, [loadConfigurations]);
 
   useEffect(() => {
     onHasChangesChange?.(hasActiveDialogChanges);
@@ -409,6 +417,14 @@ export function useSettingsChannelsController({
     ),
   ).join(t('common.and'));
 
+  const configurationsError = Array.from(
+    new Set(
+      Object.values(controllers)
+        .map((controller) => (!controller.loaded ? controller.error : null))
+        .filter((message): message is string => Boolean(message)),
+    ),
+  ).join(t('common.and'));
+
   return {
     channels,
     channelsLoading,
@@ -426,9 +442,13 @@ export function useSettingsChannelsController({
     channelEnabled,
     channelConfigured,
     channelSaving,
-    configurationsLoading: Object.values(controllers).some((controller) => !controller.loaded || controller.loading),
+    configurationsLoading: Object.values(controllers).some(
+      (controller) => (!controller.loaded && !controller.error) || controller.loading,
+    ),
+    configurationsError,
     errorNotice,
     loadChannels,
+    reloadChannels,
     selectChannel,
     editChannel,
     addFeishuConfiguration,

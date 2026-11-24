@@ -3017,6 +3017,7 @@
   },
   "channels": {
     "fetchFailed": "获取失败",
+    "configLoadFailed": "配置加载失败",
     "retry": "重试",
     "hideValue": "隐藏明文",
     "showValue": "显示明文",
