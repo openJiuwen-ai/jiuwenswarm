@@ -97,12 +97,15 @@ async def test_stdio_tool_lifetime_and_gateway_round_trip(tmp_path, explicit_clo
                 response = await request(4, "session/close", {"sessionId": session_id})
                 assert response["result"] == {}
             else:
+                # Python 3.11's communicate() leaves stdin open when no input is given.
+                process.stdin.close()
                 await asyncio.wait_for(process.communicate(), 2)
                 assert process.returncode == 0
             if os.name == "posix":
                 with pytest.raises(ProcessLookupError):
                     os.kill(pid, 0)
         finally:
+            process.stdin.close()
             try:
                 await asyncio.wait_for(process.communicate(), 8)
             except TimeoutError:

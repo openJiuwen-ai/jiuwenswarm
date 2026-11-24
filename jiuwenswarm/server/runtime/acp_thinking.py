@@ -87,8 +87,11 @@ def _reasoning_override(config: ModelRequestConfig, level: ReasoningLevel) -> Mo
 def apply_thinking_level(model: Model, level: str) -> Model:
     """Return a turn-local model with the requested reasoning configuration."""
     canonical = normalize_reasoning_level(level)
-    if canonical is None or canonical != level or canonical not in _levels(model.model_client_config, model.model_config.model_name):
-        raise ValueError("Thinking level is no longer supported by the selected model")
+    unsupported = ValueError("Thinking level is no longer supported by the selected model")
+    if canonical is None or canonical != level:
+        raise unsupported
+    if canonical not in _levels(model.model_client_config, model.model_config.model_name):
+        raise unsupported
     config = _reasoning_override(model.model_config, canonical)
     plan = resolve_reasoning_plan(model.model_client_config, config)
     if not (plan.sdk_params or plan.extra_body):

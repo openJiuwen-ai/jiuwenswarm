@@ -63,8 +63,6 @@ class SessionMcp:
                             break
                 self._ready.set_result(declarations)
                 await asyncio.Future()
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:
             if not self._ready.done():
                 self._ready.set_exception(exc)
@@ -97,8 +95,9 @@ def _remote_server(entry: dict, transport: str) -> McpTransport:
         port = endpoint.port
     except ValueError:
         raise ValueError("Remote MCP server requires a valid HTTP(S) URL") from None
-    if (endpoint.scheme not in ("http", "https") or not endpoint.hostname
-            or endpoint.username is not None or endpoint.fragment or port == 0):
+    if endpoint.scheme not in ("http", "https") or not endpoint.hostname:
+        raise ValueError("Remote MCP server requires a valid HTTP(S) URL")
+    if endpoint.username is not None or endpoint.fragment or port == 0:
         raise ValueError("Remote MCP server requires a valid HTTP(S) URL")
     headers = _name_value_pairs(entry.get("headers", []), "headers")
     if any(
@@ -120,14 +119,16 @@ def _name_value_pairs(items: object, field: str) -> dict[str, str]:
     return {item["name"]: item["value"] for item in items}
 
 
+def _is_session_dir(cwd: object) -> bool:
+    return isinstance(cwd, str) and Path(cwd).is_absolute() and Path(cwd).is_dir()
+
+
 def _session_servers(params: dict) -> list[tuple[str, McpTransport]]:
     entries = params.get("mcpServers", [])
     if not isinstance(entries, list):
         raise ValueError("mcpServers must be an array")
     cwd = params.get("cwd")
-    if entries and (
-        not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir()
-    ):
+    if entries and not _is_session_dir(cwd):
         raise ValueError("MCP requires an existing absolute session cwd")
     servers = []
     names = set()
@@ -159,6 +160,8 @@ def _session_servers(params: dict) -> list[tuple[str, McpTransport]]:
 class SessionMcpChannelMixin:
     """Attach bridge-owned MCP transports to successful ACP sessions."""
 
+    _REMOTE_MCP_CAPABILITIES = {"http": True, "sse": True}
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._mcp_sessions: dict[str, tuple[SessionMcp, list[dict]]] = {}
@@ -167,7 +170,7 @@ class SessionMcpChannelMixin:
 
     def _initialize_result(self) -> dict:
         result = super()._initialize_result()
-        result["agentCapabilities"]["mcpCapabilities"].update(http=True, sse=True)
+        result["agentCapabilities"]["mcpCapabilities"].update(self._REMOTE_MCP_CAPABILITIES)
         return result
 
     async def start(self) -> None:

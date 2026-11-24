@@ -21,6 +21,14 @@ from jiuwenswarm.acp.session_protocol import (
 from jiuwenswarm.common.version import get_runtime_version
 
 
+class GatewayUnreachable(BaseException):
+    """The Gateway cannot be reached, so the provider process must exit.
+
+    Derives from ``BaseException`` so the stdio request loop, which reports
+    ordinary request failures back to the client, does not swallow it.
+    """
+
+
 def _token_usage(payload: dict) -> dict[str, int]:
     usage = payload.get("usage")
     if not isinstance(usage, dict):
@@ -61,8 +69,8 @@ async def _run(gateway_url: str) -> None:
                 return
             try:
                 self._gateway_ws = await connect(gateway_url, open_timeout=3, close_timeout=1)
-            except (OSError, TimeoutError, WebSocketException) as exc:
-                raise SystemExit(f"JiuwenSwarm Gateway unreachable: {gateway_url}") from exc
+            except (OSError, WebSocketException) as exc:
+                raise GatewayUnreachable(f"JiuwenSwarm Gateway unreachable: {gateway_url}") from exc
             self._gateway_reader_task = asyncio.create_task(
                 self._gateway_reader_loop(), name="acp-gateway-reader",
             )
@@ -149,12 +157,14 @@ async def _run(gateway_url: str) -> None:
                 args = {"cwd": str(Path(cwd).resolve()), "sessionId": session_id}
             try:
                 result = await self._gateway_session(operation, **args)
-            except (OSError, TimeoutError, WebSocketException):
+            except (OSError, WebSocketException):
                 result = {}
-            if error := result.get("error"):
+            error = result.get("error")
+            if error:
                 await self._write_jsonrpc_error(rpc_id, error["code"], error["message"])
                 return
-            if not (session_id := result.get("sessionId")):
+            session_id = result.get("sessionId")
+            if not session_id:
                 await self._write_jsonrpc_error(rpc_id, -32603, "Gateway session operation failed")
                 return
             if operation != "set_model":
@@ -250,7 +260,8 @@ async def _run(gateway_url: str) -> None:
             if event == "context.usage":
                 size = payload.get("context_max")
                 used = payload.get("tokens_used")
-                if type(size) is int and size > 0 and type(used) is int and used >= 0:
+                valid_size = type(size) is int and size > 0
+                if valid_size and type(used) is int and used >= 0:
                     self._context_sizes[request_id] = (size, used)
                 return
             if event != "chat.usage_summary":
@@ -316,7 +327,10 @@ def main() -> None:
     from agent_gateway.common.logging_setup import setup_gateway_logger
 
     setup_gateway_logger()
-    asyncio.run(_run(url))
+    try:
+        asyncio.run(_run(url))
+    except GatewayUnreachable as exc:
+        sys.exit(str(exc))
 
 
 if __name__ == "__main__":

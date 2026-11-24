@@ -4,11 +4,19 @@
 import argparse
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+
+logger = logging.getLogger("check_native_acp")
+
+
+def _require(condition: bool, detail: object) -> None:
+    if not condition:
+        raise RuntimeError(f"Native ACP check failed: {detail}")
 
 
 async def check(gateway_url: str) -> None:
@@ -27,7 +35,10 @@ async def check(gateway_url: str) -> None:
             await process.stdin.drain()
 
         async def receive(rpc_id):
-            while line := await process.stdout.readline():
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
                 frame = json.loads(line)
                 if frame.get("id") == rpc_id:
                     if "error" in frame:
@@ -35,7 +46,7 @@ async def check(gateway_url: str) -> None:
                     return frame["result"]
                 update = frame.get("params", {}).get("update", {})
                 if update.get("sessionUpdate") == "usage_update":
-                    print(json.dumps(frame))
+                    logger.info(json.dumps(frame))
             raise RuntimeError("ACP closed stdout")
 
         async def new_session(rpc_id):
@@ -58,11 +69,12 @@ async def check(gateway_url: str) -> None:
             session = await new_session(2)
             await prompt(session, 3, "Use bash to run exactly: pwd > acp-cwd-check.txt")
             result = await receive(3)
-            print(json.dumps({"promptResult": result}))
-            assert result["stopReason"] == "end_turn", result
-            assert Path((cwd / "acp-cwd-check.txt").read_text().strip()).resolve() == cwd
-            assert result["usage"]["inputTokens"] > 0, result
-            assert result["usage"]["outputTokens"] > 0, result
+            logger.info(json.dumps({"promptResult": result}))
+            _require(result["stopReason"] == "end_turn", result)
+            reported_cwd = Path((cwd / "acp-cwd-check.txt").read_text().strip()).resolve()
+            _require(reported_cwd == cwd, f"prompt ran in {reported_cwd}, expected {cwd}")
+            _require(result["usage"]["inputTokens"] > 0, result)
+            _require(result["usage"]["outputTokens"] > 0, result)
 
             if os.name != "posix":
                 return
@@ -77,14 +89,15 @@ async def check(gateway_url: str) -> None:
             pid = int(pid_file.read_text())
             os.kill(pid, 0)
             await send("session/cancel", {"sessionId": cancel_session})
-            assert (await receive(5))["stopReason"] == "cancelled"
+            cancelled = await receive(5)
+            _require(cancelled["stopReason"] == "cancelled", cancelled)
 
             async with asyncio.timeout(8):
                 while True:
                     try:
                         os.kill(pid, 0)
                     except ProcessLookupError:
-                        print("Cancelled prompt and reaped its child process")
+                        logger.info("Cancelled prompt and reaped its child process")
                         break
                     await asyncio.sleep(0.1)
         finally:
@@ -97,6 +110,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("gateway_url")
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     asyncio.run(asyncio.wait_for(check(args.gateway_url), timeout=60))
 
 
