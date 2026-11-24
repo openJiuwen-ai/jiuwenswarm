@@ -12633,6 +12633,7 @@ class JiuWenSwarmDeepAdapter:
                 repeat_window_chars=retry_cfg.get("repeat_window_chars", 1024),
                 single_char_repeat_count=retry_cfg.get("single_char_repeat_count", 100),
                 tool_loop_compact=retry_cfg.get("tool_loop_compact"),
+                transient_max_retries=retry_cfg.get("transient_max_retries", 3),
             )
             logger.info("[JiuWenSwarmDeepAdapter] ModelAnomalyDetectionRail create success")
             return rail
