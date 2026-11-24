@@ -20,6 +20,7 @@ construction is deterministic.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -41,6 +42,23 @@ class _FakeSysOperation:
     def __init__(self, sys_operation_id: str, isolation_key: str | None) -> None:
         self.id = sys_operation_id
         self.isolation_key_template = isolation_key
+
+
+class _RegisteredSysOperation(_FakeSysOperation):
+    """SysOperation double exposing the sandbox run config, like the real one.
+
+    Models the interleaving in ``ResourceMgr._inner_add_resource`` where the
+    operation is visible in the sys-operation registry before its id→card cache
+    entry is published: the operation still carries the exact
+    ``SandboxGatewayConfig`` object its providers read.
+    """
+
+    def __init__(
+        self, sys_operation_id: str, isolation_key: str | None, card: SysOperationCard
+    ) -> None:
+        super().__init__(sys_operation_id, isolation_key)
+        self.mode = OperationMode.SANDBOX
+        self._run_config = SimpleNamespace(config=card.gateway_config)
 
 
 class _FakeResourceMgr:
@@ -320,13 +338,48 @@ def test_runtime_patch_mutates_registered_card(
     assert local_extra.get("policy") is not new_policy
 
 
-def test_missing_registered_card_keeps_local_card(
+def test_card_cache_race_falls_back_to_operation_gateway_config(
     resource_mgr: _FakeResourceMgr, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A registry without a card cache keeps the old (local-card) behavior.
+    """A visible operation without its card cache entry still syncs the card.
 
-    The sync is best effort: when the id→card lookup misses, the adapter must
-    not crash and must keep whatever card it already resolved.
+    ``ResourceMgr`` registers the operation before publishing the id→card
+    cache entry, so the losing resolver can observe the operation first. The
+    fallback must wrap the operation's own gateway config — the object its
+    providers read — instead of silently staying on the dead local card.
+    """
+    _sandbox_enabled(monkeypatch)
+    cli_card = _sandbox_card("mcp_cli_install", "project_abc123")
+    resource_mgr.add_sys_operation(cli_card)
+    # Operation published, card cache not yet: mirror the interleaving.
+    resource_mgr._sys_operations["mcp_cli_install"] = _RegisteredSysOperation(
+        "mcp_cli_install", _card_isolation_key(cli_card), cli_card
+    )
+    resource_mgr._id_to_card.clear()
+
+    local_card = _sandbox_card("agent_local", "project_abc123")
+    adapter = _make_adapter(local_card)
+
+    sys_operation = adapter._resolve_sys_operation()
+
+    assert sys_operation is not None
+    assert adapter._sys_operation_card is not local_card
+    assert adapter._sys_operation_card.id == "mcp_cli_install"
+    # The fallback card must share the live gateway/extra_params objects.
+    assert adapter._sys_operation_card.gateway_config is cli_card.gateway_config
+    assert (
+        adapter._sys_operation_card.gateway_config.launcher_config.extra_params
+        is cli_card.gateway_config.launcher_config.extra_params
+    )
+
+
+def test_op_without_usable_sandbox_config_keeps_local_card(
+    resource_mgr: _FakeResourceMgr, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Best effort: an operation exposing no config must not crash the resolve.
+
+    Both lookups miss here (no card cache entry and a double without a
+    sandbox run config), so the adapter keeps whatever card it resolved.
     """
     _sandbox_enabled(monkeypatch)
     cli_card = _sandbox_card("mcp_cli_install", "project_abc123")

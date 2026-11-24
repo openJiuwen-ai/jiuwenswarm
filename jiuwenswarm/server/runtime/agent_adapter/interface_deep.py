@@ -10772,15 +10772,22 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _registered_card_for(sys_operation: SysOperation) -> SysOperationCard | None:
-        """Return the registered SysOperationCard backing *sys_operation*.
+        """Return a card whose gateway config *sys_operation*'s providers read.
 
         ``_resolve_sys_operation`` may reuse an operation another registrar
         (the MCP CLI sandbox) already registered under the same isolation
         key. The reused operation's providers read the gateway config of the
         *registered* card, not the locally built one, so runtime patches must
         target that card. Look it up from the resource manager's id→card
-        cache; a miss returns None so callers keep the local card (best
+        cache first; a miss returns None so callers keep the local card (best
         effort, mirrors ``cli_sandbox._sandbox_key_owner``'s tolerance).
+
+        ``ResourceMgr`` publishes the operation to the sys-operation registry
+        before caching its card, so a resolver that loses the isolation-key
+        race can observe the operation while the id→card entry is still
+        missing. In that case wrap the operation's own sandbox run config:
+        it holds the very ``SandboxGatewayConfig`` object its providers read,
+        so runtime patches still reach the live sandbox.
         """
         try:
             id_to_card = getattr(Runner.resource_mgr, "_id_to_card", None) or {}
@@ -10790,13 +10797,31 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] failed to look up registered card: %s",
                 exc,
             )
-            return None
+            card = None
         if isinstance(card, SysOperationCard):
             return card
-        return None
+        try:
+            if getattr(sys_operation, "mode", None) != OperationMode.SANDBOX:
+                return None
+            run_config = getattr(sys_operation, "_run_config", None)
+            gateway_config = getattr(run_config, "config", None)
+            if gateway_config is None:
+                return None
+            return SysOperationCard(
+                id=str(sys_operation.id),
+                mode=OperationMode.SANDBOX,
+                gateway_config=gateway_config,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] failed to derive card from reused "
+                "sys_operation: %s",
+                exc,
+            )
+            return None
 
     def _sync_card_to_reused_sys_operation(self, sys_operation: SysOperation) -> None:
-        """Point ``_sys_operation_card`` at *sys_operation*'s registered card.
+        """Point ``_sys_operation_card`` at the card its providers read.
 
         Called on every reuse branch of ``_resolve_sys_operation``. Without
         this, ``apply_sandbox_runtime_patch`` and the other card consumers
@@ -10808,8 +10833,8 @@ class JiuWenSwarmDeepAdapter:
         registered_card = JiuWenSwarmDeepAdapter._registered_card_for(sys_operation)
         if registered_card is None:
             logger.warning(
-                "[JiuWenSwarmDeepAdapter] reused sys_operation %s has no "
-                "registered card; runtime patches stay on the local card",
+                "[JiuWenSwarmDeepAdapter] reused sys_operation %s exposes no "
+                "usable sandbox card; runtime patches stay on the local card",
                 sys_operation.id,
             )
             return
