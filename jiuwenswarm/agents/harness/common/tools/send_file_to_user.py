@@ -30,6 +30,7 @@ from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 
 from jiuwenswarm.common.host_services import send_runtime_push
+from jiuwenswarm.common.i18n import t
 
 if TYPE_CHECKING:
     from jiuwenswarm.agents.harness.common.rails.permissions.generated_artifact_delivery import (
@@ -153,6 +154,22 @@ def clear_sent_files_for_session(session_id: str | None) -> None:
     _SENT_FILE_PATHS_BY_SESSION.pop(sid, None)
 
 
+def _resolve_send_file_language(language: object | None = None) -> str:
+    """Resolve UI language for send_file copy (``zh`` / ``en``)."""
+    from jiuwenswarm.common.i18n import (
+        normalize_preferred_language,
+        try_normalize_preferred_language,
+    )
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    mapped = try_normalize_preferred_language(language)
+    if mapped is not None:
+        return mapped
+    return normalize_preferred_language(resolve_preferred_language())
+
+
 class SendFileToolkit:
     """Toolkit for sending files to users."""
 
@@ -168,6 +185,7 @@ class SendFileToolkit:
         team_workspace_root: str | None = None,
         require_execution_authorization: bool = False,
         asset_owner: VerifiedDownloadAssetOwner | None = None,
+        language: str | None = None,
     ) -> None:
         """Initialize SendFileToolkit.
 
@@ -181,6 +199,7 @@ class SendFileToolkit:
             team_workspace_root: Optional exact team workspace root.
             require_execution_authorization: Require an exact host capability.
             asset_owner: Optional injected durable verified-asset owner.
+            language: UI language for result copy (``zh`` / ``en``).
         """
         self.routing_request_id = request_id
         self.session_id = session_id
@@ -193,6 +212,7 @@ class SendFileToolkit:
         )
         self._require_execution_authorization = bool(require_execution_authorization)
         self._asset_owner = asset_owner
+        self._language = _resolve_send_file_language(language)
         logger.debug(
             "[SendFileToolkit] 初始化 request_id=%s session_id=%s channel_id=%s has_metadata=%s",
             request_id,
@@ -200,6 +220,10 @@ class SendFileToolkit:
             channel_id,
             bool(self._request_metadata),
         )
+
+    def _t(self, message_id: str, **params: Any) -> str:
+        """Localize a send_file catalog string with the cached UI language."""
+        return t(message_id, language=self._language, **params)
 
     def update_runtime_context(
         self,
@@ -212,6 +236,7 @@ class SendFileToolkit:
         project_dir: str | None = None,
         team_workspace_root: str | None = None,
         require_execution_authorization: bool | None = None,
+        language: str | None = None,
     ) -> None:
         """Update per-request runtime context without recreating the toolkit/tool."""
         self.routing_request_id = request_id
@@ -227,6 +252,8 @@ class SendFileToolkit:
             self._require_execution_authorization = bool(
                 require_execution_authorization
             )
+        if language is not None:
+            self._language = _resolve_send_file_language(language)
         logger.debug(
             "[SendFileToolkit] update_runtime_context request_id=%s session_id=%s channel_id=%s has_metadata=%s",
             request_id,
@@ -382,10 +409,7 @@ class SendFileToolkit:
                 "[SendFileToolkit] 静默模式跳过 send_file session_id=%s",
                 self.session_id,
             )
-            return (
-                "静默模式禁止 send_file_to_user；"
-                "请直接用文件写入工具生成 Skill 目录，不要投递文件给用户。"
-            )
+            return self._t("tools.send_file.silent_forbidden")
 
         owns_execution_grant = self._require_execution_authorization
         envelope: _SendFileRuntimeEnvelope | None = None
@@ -407,7 +431,7 @@ class SendFileToolkit:
                 session_id,
                 str(error),
             )
-            return f"提交文件失败: {error!s}"
+            return self._t("tools.send_file.submit_failed", error=error)
         finally:
             if owns_execution_grant:
                 from jiuwenswarm.agents.harness.common.rails.permissions.generated_artifact_delivery import (
@@ -505,7 +529,7 @@ class SendFileToolkit:
                     exc,
                 )
                 return (
-                    f"发送文件失败：无法将团队交付文件写入当前项目目录\n  - {fp}: {exc}"
+                    f"{self._t('tools.send_file.team_copy_failed')}\n  - {fp}: {exc}"
                 )
         valid_files = materialized_files
         copied_to_project = any(
@@ -521,7 +545,7 @@ class SendFileToolkit:
                 authorized_delivered_paths.add(normalized_path)
 
         if not valid_files:
-            msg_parts = ["发送文件失败：所有文件均不存在"]
+            msg_parts = [self._t("tools.send_file.all_missing")]
             for mf in missing_files:
                 msg_parts.append(f"  - {mf}")
             return "\n".join(msg_parts)
@@ -539,15 +563,15 @@ class SendFileToolkit:
             )
             msg_parts: list[str] = []
             if skipped_files:
-                msg_parts.append("文件已在本次会话发送过，跳过重复投递：")
+                msg_parts.append(self._t("tools.send_file.duplicate_skipped"))
                 for sf in skipped_files:
                     msg_parts.append(f"  - {sf}")
             if missing_files:
-                msg_parts.append("以下文件不存在，未发送：")
+                msg_parts.append(self._t("tools.send_file.missing"))
                 for mf in missing_files:
                     msg_parts.append(f"  - {mf}")
             if not msg_parts:
-                msg_parts.append("没有可发送的文件")
+                msg_parts.append(self._t("tools.send_file.none"))
             return "\n".join(msg_parts)
 
         logger.info(
@@ -640,17 +664,19 @@ class SendFileToolkit:
                     history_error,
                     exc_info=True,
                 )
-            result_parts = [f"成功发送 {len(valid_files)} 个文件"]
+            result_parts = [
+                self._t("tools.send_file.sent", count=len(valid_files))
+            ]
             if copied_to_project:
-                result_parts.append("最终交付文件已位于当前项目目录：")
+                result_parts.append(self._t("tools.send_file.copied_to_project"))
                 for delivered_path in valid_files:
                     result_parts.append(f"  - {delivered_path}")
             if skipped_files:
-                result_parts.append("以下文件已在本次会话发送过，已跳过：")
+                result_parts.append(self._t("tools.send_file.skipped_suffix"))
                 for sf in skipped_files:
                     result_parts.append(f"  - {sf}")
             if missing_files:
-                result_parts.append("以下文件不存在，未发送：")
+                result_parts.append(self._t("tools.send_file.missing"))
                 for mf in missing_files:
                     result_parts.append(f"  - {mf}")
             return "\n".join(result_parts)

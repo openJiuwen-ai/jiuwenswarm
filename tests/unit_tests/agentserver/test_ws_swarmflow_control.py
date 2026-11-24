@@ -9,6 +9,8 @@ from types import SimpleNamespace  # noqa: F401  (kept for parity with sibling t
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -240,11 +242,17 @@ class TestHandleSwarmflowControl:
         assert run.status == "stopped"
         assert handler.persist_calls == 1
 
-    async def test_control_while_team_asleep_is_rejected(self) -> None:
+    async def test_control_while_team_asleep_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Team asleep: no leader harness can host the run, so every control
         is refused without touching the controller (the tree-view buttons are
         greyed then; resume goes through the leader's ask_user).
         """
+        monkeypatch.setattr(
+            "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+            lambda: "en",
+        )
         asleep = SimpleNamespace(
             has_stream_task=lambda sid: False, get_workflow_handler=lambda sid: None,
         )
@@ -256,7 +264,11 @@ class TestHandleSwarmflowControl:
                 team_state="paused",
             )
             assert resp["ok"] is False
-            assert resp["payload"].get("error") == "工作流控制不可用，发送一条消息唤醒团队后即可使用。"
+            from jiuwenswarm.common.i18n import t
+
+            assert resp["payload"].get("error") == t(
+                "enterprise.team.workflow_unavailable", language="en"
+            )
             assert ctl.calls == []
 
     async def test_controller_false_returns_not_found(self) -> None:

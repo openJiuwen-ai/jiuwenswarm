@@ -6163,7 +6163,9 @@ class JiuWenSwarmDeepAdapter:
 
     def _resolve_runtime_language(self) -> str:
         """Resolve normalized runtime language shared by rails and tools."""
-        return resolve_language(self._resolve_prompt_language())
+        from jiuwenswarm.common.i18n import to_runtime_language
+
+        return resolve_language(to_runtime_language(self._resolve_prompt_language()))
 
     def _resolve_model_name(self) -> str:
         """Resolve current model name from model request config."""
@@ -12450,7 +12452,11 @@ class JiuWenSwarmDeepAdapter:
     def _get_memory_workspace(
         self, language: str | None = None, *, config: dict[str, Any] | None = None,
     ) -> Workspace:
-        resolved_language = language or getattr(self, "_resolved_language", None) or "zh"
+        resolved_language = (
+            language
+            or getattr(self, "_resolved_language", None)
+            or self._resolve_runtime_language()
+        )
         workspace = Workspace(root_path=self._workspace_dir or "./", language=resolved_language)
         effective_config = config if config is not None else getattr(self, "_config_base_cache", None)
         if is_jiuwen_builtin_memory(effective_config):
@@ -16204,6 +16210,7 @@ class JiuWenSwarmDeepAdapter:
                 getattr(existing, "name", "").startswith("send_file_to_user")
                 for existing in (self._instance.ability_manager.list() or [])
             )
+            send_file_language = self._resolve_prompt_language()
             if not already_registered:
                 self._send_file_toolkit = SendFileToolkit(
                     request_id=request_id,
@@ -16213,6 +16220,7 @@ class JiuWenSwarmDeepAdapter:
                     user_id=_CRON_TOOL_USER_ID.get(),
                     project_dir=self._project_dir,
                     require_execution_authorization=require_send_authorization,
+                    language=send_file_language,
                 )
                 for sf_tool in self._send_file_toolkit.get_tools():
                     self._register_agent_owned_tool(sf_tool, self._tool_owner_id())

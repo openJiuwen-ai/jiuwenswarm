@@ -856,7 +856,15 @@ def _subagent_language(mode: str, role: str, config: dict[str, Any]) -> str:
     openjiuwen sub-agent providers stay free of swarm mode/role policy.
     """
     if is_team_plan_mode(mode) and role == "leader":
-        return resolve_language((config or {}).get("preferred_language", "zh"))
+        from jiuwenswarm.common.i18n import to_runtime_language
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
+        mapped = to_runtime_language(resolve_preferred_language())
+        if mapped is None:
+            mapped = to_runtime_language((config or {}).get("preferred_language"))
+        return resolve_language(mapped)
     return "en"
 
 

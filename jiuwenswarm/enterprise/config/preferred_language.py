@@ -14,7 +14,6 @@ from typing import Any, AsyncIterator, Iterator
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_ID = "__default__"
-_ALLOWED = frozenset({"zh", "en"})
 
 _USER_ID_CV: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "preferred_language_user_id", default=None
@@ -25,10 +24,9 @@ _MEMO_CV: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar
 
 
 def _normalize(raw: object) -> str | None:
-    if not isinstance(raw, str):
-        return None
-    lang = raw.strip().lower()
-    return lang if lang in _ALLOWED else None
+    from jiuwenswarm.common.i18n import try_normalize_preferred_language
+
+    return try_normalize_preferred_language(raw)
 
 
 def _yaml_or_en() -> str:

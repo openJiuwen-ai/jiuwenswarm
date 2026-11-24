@@ -203,6 +203,7 @@ jiuwenswarm = [
     "channels/web/frontend/dist/**/*",
     "channels/web/frontend/dist/*",
     "agents/harness/common/rsi/harness_config.yaml",
+    "common/i18n/catalog/*.yaml",
     # config / env 模板放在 resources 目录
     "resources/**/*",
     "resources/*",

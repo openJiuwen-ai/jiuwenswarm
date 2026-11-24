@@ -2134,11 +2134,14 @@ class JiuWenSwarm:
         channel = request_channel or (
             request.session_id.split('_')[0] if request.session_id else "web"
         )
+        from jiuwenswarm.common.i18n import try_normalize_preferred_language
         from jiuwenswarm.enterprise.config.preferred_language import (
             resolve_preferred_language,
         )
 
-        language = resolve_preferred_language()
+        # Per-request UI language overrides memo / yaml preferred_language.
+        ui_language = try_normalize_preferred_language(params.get("ui_language"))
+        language = ui_language if ui_language is not None else resolve_preferred_language()
 
         # Get trusted directories from request params (passed by TUI)
         trusted_dirs: list[str] = []

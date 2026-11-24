@@ -510,7 +510,11 @@ async def config_get_handler(
         payload["memory_forbidden_enabled"] = (
             "true" if mem_cfg.get("enabled", False) else "false"
         )
-        payload["preferred_language"] = raw.get("preferred_language") or "zh"
+        from jiuwenswarm.common.i18n import normalize_preferred_language
+
+        payload["preferred_language"] = normalize_preferred_language(
+            raw.get("preferred_language")
+        )
         auto_recap_cfg = raw.get("auto_recap") or {}
         payload["auto_recap_enabled"] = (
             "true" if auto_recap_cfg.get("enabled", True) else "false"
@@ -588,7 +592,7 @@ async def config_get_handler(
         payload.setdefault("context_engine_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("memory_forbidden_enabled", "false")
-        payload.setdefault("preferred_language", "zh")
+        payload.setdefault("preferred_language", "en")
         payload.setdefault("skill_evolution", "false")
 
     # Auto-Harness config values (from ~/.jiuwenswarm/auto-harness/config.yaml)

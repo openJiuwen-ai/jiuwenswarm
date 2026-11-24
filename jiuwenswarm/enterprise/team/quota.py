@@ -284,16 +284,20 @@ def teammate_spawn_key(team_id: str, member_name: str) -> str:
 
 def team_create_quota_user_message(limit: int) -> str:
     """User-facing X-quota failure. ``limit`` is max teams per user."""
-    return f"创建失败，一个用户最多有{max(int(limit), 0)}个团队"
+    from jiuwenswarm.common.i18n import t
+
+    return t("enterprise.team.create_user_full", limit=max(int(limit), 0))
 
 
 def org_team_create_quota_user_message(limit: int) -> str:
     """User-facing Z-quota failure. ``limit`` is max teams in the organization."""
-    return f"创建失败，一个组织最多有{max(int(limit), 0)}个团队"
+    from jiuwenswarm.common.i18n import t
+
+    return t("enterprise.team.create_org_full", limit=max(int(limit), 0))
 
 
 def team_quota_user_message(exc: TeamQuotaExceeded) -> str:
-    """Chinese sentence for a create-time quota block. Other kinds stay internal."""
+    """Localized sentence for a create-time quota block. Other kinds stay internal."""
     if exc.kind == KIND_ORG_TEAM_CREATE:
         return org_team_create_quota_user_message(exc.limit)
     if exc.kind == KIND_TEAM_CREATE:
