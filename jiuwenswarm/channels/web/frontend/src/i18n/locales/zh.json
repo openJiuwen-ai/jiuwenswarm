@@ -194,7 +194,6 @@
       "directory": "应用目录",
       "packageSize": "包大小",
       "sourceSize": "源文件大小",
-      "requiresProject": "需要项目",
       "permissions": "权限",
       "serverScript": "包含服务脚本"
     },
@@ -206,7 +205,7 @@
     "updateConfirm": "更新 {{name}} 到 v{{version}}{{size}}？将停止正在运行的实例，备份当前完整工作目录（含本地编辑），并将 data/ 和 Git 仓库复制到新版本。",
     "installServerWarning": "该应用包含 scripts/app_server.py，将在本机启动服务进程。",
     "installPermissions": "声明权限：{{list}}",
-    "installProjectNote": "该应用运行期需要项目上下文，将使用应用自己的项目。",
+    "installProjectNote": "安装时会为应用创建或绑定项目，供运行和编辑会话使用。",
     "installDirPrompt": "选择安装目录（留空使用默认目录）：",
     "installDirLabel": "安装目录（服务端路径）",
     "installDirHint": "目录位于运行后端服务的机器；最终会安装到该目录下的应用名子目录。",
@@ -220,6 +219,7 @@
     "updateSuccess": "已更新 {{name}}",
     "updateBackupSuccess": "已更新 {{name}}。旧工作目录备份在 {{path}}",
     "runDisabled": "当前部署禁止运行 Hub 应用随包携带的服务器脚本。",
+    "projectUnavailable": "无法为应用绑定可用项目，请检查项目后重试。",
     "alreadyInstalled": "该版本已安装",
     "alreadyLatest": "已是最新版本",
     "installCancelling": "正在取消安装…",
@@ -260,7 +260,8 @@
     "editSessionTitle": "编辑 {{name}}",
     "reloadPreview": "重新加载应用预览",
     "reloadFailed": "重新加载应用预览失败",
-    "editPrompt": "帮我修改应用“{{name}}”，源码入口：{{entryPath}}\n请保留应用已有的数据和存档。我要修改的内容是：",
+    "editPrompt": "帮我修改应用“{{name}}”（v{{version}}）。\n应用简介：{{description}}\n源码入口：{{entryPath}}\n\n请先阅读现有代码和数据，保留已有的数据与存档。建议按以下步骤进行：\n1. 说明当前实现、入口文件和关键数据；\n2. 按我的需求做最小修改并自测；\n3. 需要发布新版本时提醒我。\n我要修改的内容是：",
+    "noDescription": "暂无简介",
     "expandPane": "展开应用面板",
     "restorePane": "恢复分栏",
     "hidePane": "收起应用面板",
@@ -2410,6 +2411,8 @@
     }
   },
   "chat": {
+    "npcSessionLabel": "NPC",
+    "npcSessionReadOnly": "这是应用的 NPC 会话。请在应用内继续对话。",
     "recordingInProgress": "正在录音，点击停止后转写。",
     "toolResultLabel": "工具结果",
     "duplexControls": {

@@ -840,6 +840,7 @@ function AppContent({
   const historyRevealTargetRef = useRef(new Map<string, number>());
   const creatingSessionRef = useRef(false);
   const pendingAppEditsRef = useRef(new Map<string, Promise<Session>>());
+  const appEditTokensRef = useRef(new Map<string, string>());
   /** 离开新建任务页后，仍未发送的临时会话可以被再次打开。 */
   const pendingNewConversationRef = useRef(route.kind === 'chat-new');
   const sessionIdsCreatedInThisPageRef = useRef(new Set<string>());
@@ -3824,6 +3825,8 @@ function AppContent({
   ) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
+    const current = useSessionStore.getState().currentSession;
+    if (current?.session_id === currentSessionId && current.npc_session) return;
     if (options && 'queuedTaskId' in options) {
       await sendMessage(content, currentSessionId, mediaItems, options);
       return;
@@ -4671,7 +4674,7 @@ function AppContent({
     handleNavigate(nav, peekTarget);
   };
 
-  // 应用市场卡片"编辑"——创建/复用该应用的编辑会话并跳转过去，随后在会话右栏打开应用预览
+  // 应用市场卡片"编辑"——创建新的编辑会话并跳转过去，随后在会话右栏打开应用预览
   // （app_market.preview 面板 tab）。原先内联在扩展页 ConnectorMarketPanel 的 onEditApp 里，
   // 应用市场提升为侧边栏一级入口后由 AppMarketPage 继续使用，提取到这里避免随渲染分支重复。
   const handleEditApp = useCallback(
@@ -4679,19 +4682,28 @@ function AppContent({
       if (creatingSessionRef.current) return;
       let pending = pendingAppEditsRef.current.get(target.appId);
       if (!pending) {
+        const editToken = appEditTokensRef.current.get(target.appId) ?? generateUuidV4();
+        appEditTokensRef.current.set(target.appId, editToken);
         pending = request<{ session: Session; created: boolean; git_available?: boolean | null; git_initialized?: boolean | null }>(
           'app_market.edit_session', {
             app_id: target.appId,
+            edit_token: editToken,
             title: t('appMarket.editSessionTitle', { name: target.name }),
             ...useSessionStore.getState().getModelSelectionPayload(sessionIdRef.current),
           }, { timeoutMs: 180_000 }).then(({ session, created, git_available }) => {
+            appEditTokensRef.current.delete(target.appId);
             // Initialize only the new session, even if navigation was canceled.
             // An existing runtime includes drafts the user deliberately cleared.
             const chatStore = useChatStore.getState();
             if (created && !chatStore.getRuntime(session.session_id)) {
               chatStore.ensureRuntime(session.session_id);
               chatStore.setInputValue(session.session_id,
-                t('appMarket.editPrompt', { name: target.name, entryPath: target.entryPath }));
+                t('appMarket.editPrompt', {
+                  name: target.name,
+                  version: target.version || '',
+                  description: (target.description || '').trim() || t('appMarket.noDescription'),
+                  entryPath: target.entryPath,
+                }));
             }
             if (created) {
               toast.open({
@@ -5390,6 +5402,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onSendMessage={handleSendMessage}
                         onEnsureSession={ensureApplicationPluginSession}
                         conversationCreated={sessionId !== NEW_CONVERSATION_ID}
+                        npcSession={currentSession?.session_id === sessionId && currentSession?.npc_session === true}
                         headerActions={sessionId && sessionId !== NEW_CONVERSATION_ID ? (
                           <AppMarketEditorAction key={sessionId} sessionId={sessionId} onOpen={preview => {
                             useSessionStore.getState().setAppMarketPreview(sessionId, preview);

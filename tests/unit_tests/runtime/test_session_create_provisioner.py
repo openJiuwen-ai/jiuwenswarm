@@ -148,8 +148,28 @@ async def test_app_role_create_persists_configuration_and_disables_prewarm(monke
     metadata = get_session_metadata(prepared.result.session_id)
     assert metadata["execution_profile"] == "app_role"
     assert metadata["role_instructions"] == "Fisherman"
+    assert metadata["npc_session"] is True
+    assert prepared.result.npc_session is True
     assert captured["prewarm_eligible"] is False
     assert prepared.result.moa_enabled is False
+    await provisioner.abort_session_provision(prepared)
+
+
+@pytest.mark.asyncio
+async def test_explicit_npc_marker_is_independent_of_execution_profile(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session.session_info import to_session_info
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata, patch_session_metadata
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    provisioner = _provisioner(state)
+    prepared = await provisioner.prepare_session_create(_input(npc_session=True))
+    session_id = prepared.result.session_id
+    metadata = get_session_metadata(session_id)
+    assert prepared.result.execution_profile == "default"
+    assert prepared.result.npc_session is True
+    assert to_session_info(metadata)["npc_session"] is True
+    assert patch_session_metadata(session_id, {"npc_session": False})["npc_session"] is True
     await provisioner.abort_session_provision(prepared)
 
 

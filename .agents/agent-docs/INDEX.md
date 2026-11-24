@@ -688,8 +688,8 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261119_1039_app-hub](features/F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
-| [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
 | [B_20261116_2059_hub-package-root](bugfix/jiuwenswarm/server/runtime/B_20261116_2059_hub-package-root.md) | B | Hub 安装把包内子资产 manifest 误判为多个包根 | openjiuwen_ai | 无独立 D：仅修正包根识别的深度判定，不改变 Hub 包格式、安装状态机与 marketplace 契约；无独立设计。 |
+| [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-server-runtime-session"></a>
 

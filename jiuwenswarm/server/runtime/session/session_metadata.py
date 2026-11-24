@@ -35,6 +35,7 @@ from jiuwenswarm.server.runtime.session.work_mode import (
 )
 
 from jiuwenswarm.server.runtime.session.session_info import session_type_from_metadata
+from jiuwenswarm.runtime.app_role import APP_ROLE_PROFILE, is_npc_session
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +332,8 @@ def _apply_metadata_defaults_with_inference(
     metadata.setdefault("pinned", False)
     metadata.setdefault("pin_order", 0)
     metadata.setdefault("status", "idle")
+    if is_npc_session(metadata):
+        metadata["npc_session"] = True
 
     changed = False  # 是否有需要写盘的确定性推断
     changed_fields: set[str] = set()
@@ -765,6 +768,11 @@ def _write_metadata_unfenced(
                     to_write[pinned] = current[pinned]
                 else:
                     to_write.pop(pinned, None)
+        if current:
+            if is_npc_session(current):
+                to_write = {**to_write, "npc_session": True}
+            elif "npc_session" in to_write:
+                to_write = {key: value for key, value in to_write.items() if key != "npc_session"}
         if current is not None and isinstance(
             current.get("session_runtime_binding"),
             dict,
@@ -1153,6 +1161,7 @@ def init_session_metadata(
     npc_team: dict[str, Any] | None = None,
     npc_member: dict[str, Any] | None = None,
     npc_member_sessions: dict[str, str] | None = None,
+    npc_session: bool = False,
 ) -> None:
     """初始化会话元数据(同步写,确保创建后立即可读)
 
@@ -1200,6 +1209,8 @@ def init_session_metadata(
     from jiuwenswarm.runtime.app_role import normalize_execution_profile, normalize_npc_team
 
     execution_profile, role_instructions = normalize_execution_profile(execution_profile, role_instructions)
+    if npc_session or execution_profile == APP_ROLE_PROFILE:
+        metadata["npc_session"] = True
     if execution_profile != "default":
         metadata["execution_profile"] = execution_profile
         metadata["role_instructions"] = role_instructions

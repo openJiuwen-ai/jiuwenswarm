@@ -27,7 +27,6 @@ export type PublishMetadata = {
   version_desc: string;
   visibility: 'public' | 'private';
   dependency_sources?: Record<string, string>;
-  requires_project?: boolean;
 };
 export type PublishIssue = string | { code?: string; message?: string; path?: string; [key: string]: unknown };
 export type PublishRecord = {

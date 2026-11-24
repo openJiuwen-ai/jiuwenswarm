@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from asyncio import timeout
 from collections.abc import Mapping
 from copy import copy
 from pathlib import Path
@@ -375,7 +376,7 @@ class SymphonyTaskTool(TaskTool):
             if recipe is None:
                 raise ValueError("No general-purpose subagent is configured")
             runner = _ExpertNodeTask(self, node, recipe)
-            async with asyncio.timeout(resolve_subagent_task_timeout_s()):
+            async with timeout(resolve_subagent_task_timeout_s()):
                 outputs = await runner.run(plan.query_for(node_id), session)
             status = {"status": "completed", "outputs": outputs}
         except asyncio.CancelledError:

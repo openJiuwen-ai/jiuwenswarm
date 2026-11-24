@@ -120,7 +120,8 @@ async def test_local_app_publishes_wrapped_snapshot_with_owner_and_version_check
         assert defaults["asset_name"] == defaults["display_name"] == "demo--app"
         assert defaults["version"] == "1.2-beta.1"
         assert defaults["description"] == "Local app description"
-        metadata = {**defaults, "requires_project": True}
+        assert "requires_project" not in defaults
+        metadata = defaults
         with pytest.raises(PublishAPIError, match="APP_VERSION_MISMATCH"):
             await server.call(
                 "prepare", params(**ref, metadata={**metadata, "version": "2.0"}), gateway_user=owner,
