@@ -8206,37 +8206,70 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 last = i
         return last + 1 if last >= 0 else -1
 
+    def _restore_live_context_session_ref(self, session_id: str, presess: Any = None) -> None:
+        """复位 rewind 临时改写的活窗引用，且不影响 rewind 原有控制流。"""
+        if (
+            getattr(self, "_instance", None) is None
+            or getattr(self._instance, "react_agent", None) is None
+        ):
+            return
+        orig_session = (
+            getattr(self._instance, "_interaction_session", None)
+            or getattr(self._instance, "_loop_session", None)
+        )
+        if orig_session is None or orig_session is presess:
+            return
+        try:
+            ctx_eng = self._instance.react_agent.context_engine
+            live_ctx = ctx_eng.get_context(session_id=session_id)
+            if (
+                live_ctx is not None
+                and hasattr(live_ctx, "set_session_ref")
+                and getattr(live_ctx, "session_ref", orig_session) is not orig_session
+            ):
+                live_ctx.set_session_ref(orig_session)
+        except Exception:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] failed to restore live context session_ref "
+                "after rewind session=%s",
+                session_id,
+                exc_info=True,
+            )
+
     async def _rewind_history_fallback(
         self, session_id: str, reason: str, _presess: Any,
     ) -> None:
-        """全量 history 重放降级路径（保持改动前行为不变）。"""
-        if not await flush_history_writes_async():
-            return
-        records = await asyncio.to_thread(load_history_records, session_id)
-        rebuilt = self._build_rewind_messages_for_model(records)
-        _rebuilt_roles = [getattr(m, "role", "?") for m in rebuilt]
-        _rebuilt_tool_calls = sum(
-            len(getattr(m, "tool_calls", None) or []) for m in rebuilt
-        )
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] %s: rewind fallback full-history-replay "
-            "roles=%s tool_calls=%d records=%d session=%s",
-            reason, _rebuilt_roles, _rebuilt_tool_calls,
-            len(records), session_id,
-        )
-        if not rebuilt:
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] %s: no recapworthy records on disk, "
-                "skip reload session=%s disk_records=%d",
-                reason, session_id, len(records),
+        """全量 history 重放降级路径；任何退出都恢复活窗 session 引用。"""
+        try:
+            if not await flush_history_writes_async():
+                return
+            records = await asyncio.to_thread(load_history_records, session_id)
+            rebuilt = self._build_rewind_messages_for_model(records)
+            _rebuilt_roles = [getattr(m, "role", "?") for m in rebuilt]
+            _rebuilt_tool_calls = sum(
+                len(getattr(m, "tool_calls", None) or []) for m in rebuilt
             )
-            return
-        await self._write_rewind_context(
-            session_id=session_id,
-            reason=reason,
-            messages=rebuilt,
-            _presess=_presess,
-        )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] %s: rewind fallback full-history-replay "
+                "roles=%s tool_calls=%d records=%d session=%s",
+                reason, _rebuilt_roles, _rebuilt_tool_calls,
+                len(records), session_id,
+            )
+            if not rebuilt:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] %s: no recapworthy records on disk, "
+                    "skip reload session=%s disk_records=%d",
+                    reason, session_id, len(records),
+                )
+                return
+            await self._write_rewind_context(
+                session_id=session_id,
+                reason=reason,
+                messages=rebuilt,
+                _presess=_presess,
+            )
+        finally:
+            self._restore_live_context_session_ref(session_id, _presess)
 
     async def _write_rewind_context(
         self,
@@ -8289,6 +8322,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             self._instance.save_state(_presess)
         except Exception:
             pass
+        # rewind 完成，把活窗池 context 的 session_ref 复位回交互 session，
+        # 避免后续不显式传 session 的写者（典型是压缩链路）被劫持到抛弃型 _presess。
+        self._restore_live_context_session_ref(session_id, _presess)
         _presess._pre_run_done = True
         _rewind_key = self._resolve_interrupt_session_id(session_id)
         self._rewind_session[_rewind_key] = _presess
@@ -8416,6 +8452,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     "session=%s: %s",
                     reason, session_id, fallback_exc,
                 )
+        finally:
+            # 基线读取后的早退、降级和异常路径都必须解除临时 session 绑定。
+            self._restore_live_context_session_ref(session_id)
 
     async def _stop_session_interrupt_work(
         self,
