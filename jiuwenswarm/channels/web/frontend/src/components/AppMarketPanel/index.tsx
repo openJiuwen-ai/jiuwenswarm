@@ -247,7 +247,7 @@ function MarketAppDetailPage({ item, detailState, onBack }: {
           {detailState.detail.detail_desc || item.short_desc ? (
             <p className="app-market-detail__description">{detailState.detail.detail_desc || item.short_desc}</p>
           ) : null}
-          <dl className="app-market-detail__grid">
+          <dl className="app-market-detail__grid" data-testid="app-market-detail-grid">
             <DetailRow label={t('appMarket.detail.version')} value={`v${detailState.detail.version || item.public_latest_version}`} />
             <DetailRow label={t('appMarket.detail.packageSize')} value={formatBytes(detailState.detail.file_size)} />
             <DetailRow label={t('appMarket.detail.sourceSize')} value={formatBytes(detailState.detail.source_size)} />
@@ -434,7 +434,9 @@ export function AppMarketPanel({
       setMarketDetails((current) => {
         const currentEntry = current[item.asset_id];
         if (currentEntry && currentEntry.version !== requestedVersion) return current;
-        return { ...current, [item.asset_id]: { state: 'error' } };
+        // Keep the version pin on failed entries too, so a later response for
+        // the same request cannot overwrite a newer entry (mirrors success).
+        return { ...current, [item.asset_id]: { state: 'error', version: requestedVersion } };
       });
     }
   }, [marketDetails]);
@@ -604,7 +606,6 @@ export function AppMarketPanel({
         version: detail.version,
         size: detail.source_size ? `${(detail.source_size / 1024 / 1024).toFixed(1)} MB` : '',
       }))) return;
-      invalidateMarketDetail(app.hub_asset_id);
       const start = await webRequest<{ job_id: string }>('app_market.update', {
         app_id: app.app_id,
         version: detail.version,
@@ -616,7 +617,12 @@ export function AppMarketPanel({
         ? t('appMarket.updateBackupSuccess', { name: app.name, path: backup })
         : t('appMarket.updateSuccess', { name: app.name });
       showNotice(text);
+      // Same contract as runInstall: refresh the lists first, then drop the
+      // cached detail, so a refetch while the update finished resolves against
+      // the refreshed list version. A failed or cancelled update keeps the
+      // cache intact instead of discarding still-valid entries.
       await Promise.all([fetchApps(), fetchInstances()]);
+      invalidateMarketDetail(app.hub_asset_id);
     } catch (error) {
       showError('appMarket.updateFailed', error);
     } finally {

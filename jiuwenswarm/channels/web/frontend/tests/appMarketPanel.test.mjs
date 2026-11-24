@@ -295,10 +295,13 @@ test('market detail refreshes after an install completes and the list reports a 
     await tick();
     await click(find('app-market-market-card'));
     await tick();
-    assert.match(find('app-market-detail-page').textContent, /v1\.0\.0/);
+    // Assert on the detail grid only: the EntityHeader tags come from the list
+    // item, so a whole-page match would pass even with a stale cached detail.
+    const detailGrid = () => find('app-market-detail-grid').textContent;
+    assert.match(detailGrid(), /v1\.0\.0/);
     await click(find('app-market-detail-back'));
     // The Hub publishes v2 and the user installs it; the install flow refreshes
-    // the list, so the card label and the detail page must both show v2.0.0.
+    // the list, so the card label and the detail grid must both show v2.0.0.
     hubVersion = '2.0.0';
     await click(find('app-market-install'));
     await click(find('app-market-install-dir').querySelector('button:last-child'));
@@ -311,7 +314,8 @@ test('market detail refreshes after an install completes and the list reports a 
     assert.match(find('app-market-market-card').textContent, /v2\.0\.0/);
     await click(find('app-market-market-card'));
     await tick();
-    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.doesNotMatch(detailGrid(), /v1\.0\.0/);
   } finally {
     await ctx.close();
   }
@@ -334,10 +338,13 @@ test('market detail refreshes when the list reports a new version after tab swit
     await tick();
     await click(find('app-market-market-card'));
     await tick();
-    assert.match(find('app-market-detail-page').textContent, /v1\.0\.0/);
+    // Assert on the detail grid only: the EntityHeader tags come from the list
+    // item, so a whole-page match would pass even with a stale cached detail.
+    const detailGrid = () => find('app-market-detail-grid').textContent;
+    assert.match(detailGrid(), /v1\.0\.0/);
     await click(find('app-market-detail-back'));
     // The Hub publishes v2 without any install; a plaza refresh must update the
-    // detail page too instead of replaying the cached v1 detail.
+    // detail grid too instead of replaying the cached v1 detail.
     hubVersion = '2.0.0';
     await click(document.querySelector('button[data-variant="all"]'));
     await tick();
@@ -346,13 +353,14 @@ test('market detail refreshes when the list reports a new version after tab swit
     assert.match(find('app-market-market-card').textContent, /v2\.0\.0/);
     await click(find('app-market-market-card'));
     await tick();
-    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.doesNotMatch(detailGrid(), /v1\.0\.0/);
     // An unchanged version must reuse the cache: one extra detail open, no new request.
     const detailCalls = ctx.calls.filter(({ method }) => method === 'app_market.market_detail').length;
     await click(find('app-market-detail-back'));
     await click(find('app-market-market-card'));
     await tick();
-    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+    assert.match(detailGrid(), /v2\.0\.0/);
     assert.equal(ctx.calls.filter(({ method }) => method === 'app_market.market_detail').length, detailCalls);
   } finally {
     await ctx.close();
@@ -384,14 +392,18 @@ test('market detail refreshes when an install finishes while its detail page is 
     await click(find('app-market-market-card'));
     await tick();
     const detailPage = () => find('app-market-detail-page');
+    const detailGrid = () => find('app-market-detail-grid').textContent;
     assert.doesNotMatch(detailPage().textContent, /Loading\.\.\./);
-    assert.match(detailPage().textContent, /v1\.0\.0/);
+    // Assert on the detail grid only: the EntityHeader tags come from the list
+    // item, so a whole-page match would pass even with a stale cached detail.
+    assert.match(detailGrid(), /v1\.0\.0/);
     hubVersion = '2.0.0';
     job.resolve({ state: 'done', phase: 'done' });
     for (let i = 0; i < 5; i += 1) await tick();
     // Dropping the stale cache must not leave the open page on the placeholder.
     assert.doesNotMatch(detailPage().textContent, /Loading\.\.\./);
-    assert.match(detailPage().textContent, /v2\.0\.0/);
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.doesNotMatch(detailGrid(), /v1\.0\.0/);
   } finally {
     await ctx.close();
   }
