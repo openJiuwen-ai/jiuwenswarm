@@ -223,8 +223,12 @@ def test_app_package_writes_hub_icon_from_snapshot(tmp_path):
     )
     with zipfile.ZipFile(package.artifact_path) as archive:
         assert archive.read("demo-app/icon.png") == _PNG_1PX
-        wrapper = yaml.safe_load(archive.read("demo-app/plugin.yaml"))
+        plugin_text = archive.read("demo-app/plugin.yaml").decode("utf-8")
+        wrapper = yaml.safe_load(plugin_text)
         assert wrapper["metadata"]["app"]["requires_project"] is True
+        # Local project/editor metadata must never travel to the Hub package.
+        for field in ("project_id", "project_dir", "project_work_mode", "editor_session"):
+            assert field not in plugin_text
 
 
 def test_app_package_skips_non_png_icon(tmp_path):
