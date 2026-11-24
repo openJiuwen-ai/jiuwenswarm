@@ -688,7 +688,10 @@ class SandboxManager:
             except asyncio.TimeoutError:
                 pass
 
-            await self._reap_idle_sandboxes_once(idle_timeout=idle_timeout)
+            try:
+                await self._reap_idle_sandboxes_once(idle_timeout=idle_timeout)
+            except Exception:  # noqa: BLE001
+                logger.exception("idle reaper: sweep cycle failed")
 
     def register_zombie_reaper(
         self,
@@ -1513,7 +1516,6 @@ class SandboxManager:
             raise
         if (
             runtime_name == RUNTIME_PROCESS
-            and not result.ok
             and _is_daemon_ipc_file_op_failure(result)
             and self._is_sandbox_ready_for_restart(sandbox_id)
         ):

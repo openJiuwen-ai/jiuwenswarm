@@ -15,9 +15,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("jiuwenbox server runs on Linux", allow_module_level=True)
 
-_JIUWENBOX_SRC = str(Path(__file__).resolve().parents[2] / "jiuwenbox" / "src")
-if _JIUWENBOX_SRC not in sys.path:
-    sys.path.insert(0, _JIUWENBOX_SRC)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "jiuwenbox" / "src"))
 
 from jiuwenbox.models.common import AuditEventType
 from jiuwenbox.models.policy import SecurityPolicy, TimeoutPolicy
