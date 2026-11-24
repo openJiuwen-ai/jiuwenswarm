@@ -3,6 +3,10 @@
   min-height: 160px;
 }
 
+.app-market-card .entity-header__identity {
+  flex: 1;
+}
+
 .app-market-card-actions {
   display: flex;
   flex-shrink: 0;
@@ -34,6 +38,20 @@
   font-size: 13px;
   line-height: 22px;
   white-space: pre-wrap;
+}
+
+.app-market-detail__introduction {
+  display: grid;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.app-market-detail__introduction blockquote {
+  margin: 0;
+  padding-inline-start: 12px;
+  border-inline-start: 2px solid var(--color-border-default);
 }
 
 .app-market-detail__grid {
