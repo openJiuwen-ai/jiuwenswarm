@@ -101,6 +101,35 @@ async def test_agent_group_catalog_queries_only_group_hub_type(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_hub_agent_group_same_package_name_as_builtin_not_duplicated(monkeypatch):
+    """The Hub lists an expert team that also ships built-in under the same
+    package name but a different asset id — the card must not appear twice
+    (issue #6750: three built-in teams showed up duplicated in the plaza)."""
+    from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetSummary, HubSearchPage
+
+    monkeypatch.setattr(catalog, "list_agent_groups", lambda _params=None: [
+        {"id": "ppt-generation", "name": "ppt-generation", "source": "builtin", "installed": True}
+    ])
+    monkeypatch.setattr(catalog, "hub_install_state_store", lambda _kind: type(
+        "Store", (), {"get_by_package_id": lambda _self, _id: None}
+    )())
+
+    class Port:
+        async def search_assets(self, request):
+            item = HubAssetSummary(
+                "agent_group", "hub-asset-999", "PPT 生成专家团", "desc", "2.0.0", "", (),
+                "ppt-generation",
+            )
+            return HubSearchPage((item,), 1, 1, 100)
+
+    cards = await catalog.list_agent_groups_with_hub({"filter": "builtin+hub"}, hub_port=Port())
+    assert len(cards) == 1, f"expected one enriched card, got {cards}"
+    assert cards[0]["id"] == "ppt-generation"
+    assert cards[0]["source"] == "builtin"
+    assert cards[0]["version"] == "2.0.0"
+
+
+@pytest.mark.asyncio
 async def test_hub_agent_group_installs_and_uninstalls_by_asset_id(extension_workspace, tmp_path):
     from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetDetail, HubResolvedDownload
 
