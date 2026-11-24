@@ -350,7 +350,7 @@ gateway_start_nohup() {
     local retry=0
     while [ ${retry} -lt ${GATEWAY_MAX_RETRY} ]; do
         sleep 2
-        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1" \
+        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway$' >/dev/null 2>&1" \
             && port_is_listening "${master_host}" "${gw_port}" \
             && port_is_listening "${master_host}" "${web_port}"; then
             success "Gateway process is running on ${master_host} (ports ${gw_port}/${web_port} listening)"
@@ -362,7 +362,7 @@ gateway_start_nohup() {
 
     # 失败诊断：区分是进程没起来、还是起来了但端口未监听（对标 systemd 分支的 gw_state/监听探测）。
     local gw_proc="no" gw_listen="no" web_listen="no"
-    exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1" && gw_proc="yes"
+    exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway$' >/dev/null 2>&1" && gw_proc="yes"
     port_is_listening "${master_host}" "${gw_port}" && gw_listen="yes"
     port_is_listening "${master_host}" "${web_port}" && web_listen="yes"
     info "jiuwenswarm-gateway on ${master_host}: proc(alive)=${gw_proc}; port ${gw_port}(GATEWAY_PORT)=${gw_listen}, port ${web_port}(WEB_PORT)=${web_listen}"
@@ -479,7 +479,7 @@ gateway_deploy_process() {
             return 0
         fi
     fi
-    if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1"; then
+    if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway$' >/dev/null 2>&1"; then
         warning "jiuwenswarm-gateway process already alive (unit not active: deactivating/legacy nohup); run 'down' first to redeploy"
         return 0
     fi

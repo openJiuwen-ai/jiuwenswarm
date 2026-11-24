@@ -124,6 +124,13 @@ def migrate_legacy_symphony_config(
                 break
             value = value[segment]
         else:
+            # 旧配置里 root_categories 常写成空字符串；新模型要求 list/null。
+            # 空字符串按“未配置”处理，否则升级后 Worker 会因校验失败起不来。
+            if (
+                old_path == "skill_retrieval.build.root_categories"
+                and (value == "" or value == [])
+            ):
+                value = None
             if value is None and old_path != "skill_retrieval.build.root_categories":
                 continue
             if old_path == "fingerprint.extraction.body_limit":

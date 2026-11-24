@@ -108,6 +108,14 @@ def test_experience_switch_inherits_core_default_or_uses_explicit_value(value):
     assert cfg.orchestration.experience.enabled is (False if value is None else value)
 
 
+def test_legacy_empty_root_categories_migrates_to_unset():
+    cfg = symphony_config.symphony_config_from_dict({
+        "skill_retrieval": {"build": {"root_categories": ""}},
+    })
+
+    assert cfg.retrieval.index_build.structure.root_categories is None
+
+
 def test_legacy_symphony_values_migrate_without_mutating_input():
     raw = {
         "enabled": True,
