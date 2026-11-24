@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 from contextlib import aclosing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from weakref import WeakValueDictionary
@@ -314,6 +315,17 @@ def _fit_sessions_page_bytes(
 # 适配器注册与 prepare 仍在后台续跑，delete 抢在该尾巴之前会 cancel 空转、cleanup
 # 撞上"刚注册"的运行态而误判 DELETE_FAILED。超时后照常拆，仍失败则诚实报错。
 _SESSION_PREWARM_WAIT_SEC = 5.0
+
+
+@dataclass
+class _TerminateStreamsResult:
+    accepted: bool
+    completed: bool
+    error: str | None = None
+
+    @property
+    def legacy_ok(self) -> bool:
+        return self.accepted and self.completed
 
 
 def format_permission_wire_diagnostic(
@@ -2543,7 +2555,6 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
                 # 中断请求：根据 intent 决定是否取消流式任务
-                sid = request.session_id or "default"
                 intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
                 cleanup_after_cancel = self._is_client_disconnect_cancel_request(request)
 
@@ -2560,17 +2571,49 @@ class AgentWebSocketServer:
                     )
                     return cancel_response
 
-                succeeded = await self._terminate_session_streams(
+                result = await self._terminate_session_streams_result(
                     request, cancel_agent, cleanup_runtime=cleanup_after_cancel,
                 )
+                # Manual stop: the RPC succeeds once cancellation has been
+                # dispatched. Disconnect cleanup remains legacy strict because
+                # no live client is waiting and deletion safety needs completion.
+                rpc_ok = result.legacy_ok if cleanup_after_cancel else result.accepted
+
                 if cancel_response is None:
-                    cancel_response = AgentResponse(request_id=request.request_id,
-                        channel_id=request.channel_id, ok=succeeded,
-                        payload={"event_type": "chat.interrupt_result", "success": succeeded})
-                if not succeeded:
-                    cancel_response.ok = False
-                    cancel_response.payload = {"event_type": "chat.interrupt_result", "success": False,
-                        "code": "CANCEL_FAILED", "error": "session runtime cleanup failed"}
+                    payload = {"event_type": "chat.interrupt_result", "success": rpc_ok}
+                    if rpc_ok and not result.completed:
+                        payload["cleanup_pending"] = True
+                    if not rpc_ok:
+                        payload.update({
+                            "code": "CANCEL_FAILED",
+                            "error": "session runtime cleanup failed",
+                        })
+                    cancel_response = AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=rpc_ok,
+                        payload=payload,
+                    )
+                else:
+                    payload = cancel_response.payload if isinstance(cancel_response.payload, dict) else {}
+                    if rpc_ok:
+                        payload = {
+                            **payload,
+                            "event_type": "chat.interrupt_result",
+                            "success": True,
+                        }
+                        if not result.completed:
+                            payload["cleanup_pending"] = True
+                        cancel_response.ok = True
+                        cancel_response.payload = payload
+                    else:
+                        cancel_response.ok = False
+                        cancel_response.payload = {
+                            "event_type": "chat.interrupt_result",
+                            "success": False,
+                            "code": "CANCEL_FAILED",
+                            "error": "session runtime cleanup failed",
+                        }
                 wire = encode_agent_response_for_wire(cancel_response, response_id=request.request_id)
                 async with send_lock:
                     await send_wire_payload(ws, wire)
@@ -5301,8 +5344,22 @@ class AgentWebSocketServer:
     ) -> bool:
         """Cancel each matching owner once and await one retained shutdown job.
 
-        A deadline bounds the RPC wait, not the resource cleanup. If shutdown
-        is still running, the owner and its capacity entry remain registered.
+        Legacy boolean callers, such as session.delete, must keep the old
+        "cancellation accepted and cleanup completed" contract.
+        """
+        result = await self._terminate_session_streams_result(
+            request, cancel_agent, cleanup_runtime=cleanup_runtime,
+        )
+        return result.legacy_ok
+
+    async def _terminate_session_streams_result(
+        self, request: AgentRequest, cancel_agent=None, *, cleanup_runtime: bool = False,
+    ) -> _TerminateStreamsResult:
+        """Cancel each matching owner once and report stop vs cleanup state.
+
+        ``accepted`` means the stop signal was dispatched for this session.
+        ``completed`` means the retained shutdown job finished successfully.
+        RPC callers may accept a completed=false result as "cleanup pending".
         """
         sid = request.session_id or "default"
         target = (request.params or {}).get("request_id")
@@ -5312,8 +5369,21 @@ class AgentWebSocketServer:
         jobs = getattr(self, "_stream_shutdown_jobs", None)
         if jobs is None:
             jobs = self._stream_shutdown_jobs = {}
+        states = getattr(self, "_stream_shutdown_states", None)
+        if states is None:
+            states = self._stream_shutdown_states = {}
+
         job = jobs.get(key)
-        if job is None or job.done():
+        if job is not None and job.done():
+            states.pop(key, None)
+            job = None
+
+        state = states.get(key)
+        if state is None:
+            state = {"accepted": None, "error": None}
+            states[key] = state
+
+        if job is None:
             entries = getattr(self, "_session_stream_tasks", {}).get(sid, {})
             ids = getattr(self, "_session_stream_requests", {})
             owners = [task for task in list(entries) if not task.done()
@@ -5321,7 +5391,8 @@ class AgentWebSocketServer:
                       and (not target or ids.get(task) == target)]
             # A delayed cancel for an old round must not touch a newer owner.
             if target and not owners and any(not task.done() for task in entries):
-                return True
+                state["accepted"] = True
+                return _TerminateStreamsResult(True, True, None)
             owner_requests = {task: ids.get(task) for task in owners}
             for task in owners:
                 event = entries[task]
@@ -5329,8 +5400,13 @@ class AgentWebSocketServer:
                     event.set()
                     task.cancel()
 
-            related = [pending for other_key, pending in jobs.items()
-                       if other_key[0] == sid and not pending.done()]
+            related = [(other_key, pending) for other_key, pending in jobs.items()
+                       if other_key[0] == sid and not pending.done()
+                       and other_key != key]
+
+            # The stop has been dispatched once we are entering shutdown.
+            # Explicit adapter failure below can still downgrade accepted.
+            state["accepted"] = True
 
             async def shutdown():
                 succeeded = True
@@ -5338,31 +5414,61 @@ class AgentWebSocketServer:
                     if related:
                         # A stop followed by delete shares the same adapter
                         # shutdown, while still joining any additional owners.
-                        results = await asyncio.gather(*related, return_exceptions=True)
-                        succeeded = all(result is True for result in results)
+                        results = await asyncio.gather(*[pending for _, pending in related], return_exceptions=True)
+                        completed = all(result is True for result in results)
+                        accepted = not any(
+                            states.get(other_key, {}).get("accepted") is False
+                            for other_key, _ in related
+                        )
+                        state["accepted"] = accepted
+                        if not completed:
+                            succeeded = False
                     elif cancel_agent is not None:
                         response = await cancel_agent()
                         if isinstance(response, AgentResponse) and not response.ok:
+                            state["accepted"] = False
+                            payload = response.payload if isinstance(response.payload, dict) else {}
+                            state["error"] = str(
+                                payload.get("error")
+                                or payload.get("message")
+                                or response.ok
+                            )
                             succeeded = False
-                except Exception:
+                    else:
+                        state["accepted"] = True
+
+                    results = await asyncio.gather(*owners, return_exceptions=True)
+                    for owner, result in zip(owners, results):
+                        if isinstance(result, Exception):
+                            succeeded = False
+                            logger.warning(
+                                "[AgentWebSocketServer] stream task cleanup failed: "
+                                "session=%s request_id=%s error=%s",
+                                sid, owner_requests[owner], result,
+                                exc_info=(type(result), result, result.__traceback__),
+                            )
+                            state["error"] = str(result)
+                    if cleanup_runtime:
+                        # Even a failed stream finalizer may leave recoverable
+                        # runtime state. Try this only after all owners have exited.
+                        cleaned = await self._cleanup_client_disconnect_session_runtime(request)
+                        if not cleaned:
+                            succeeded = False
+                            state["error"] = state.get("error") or "client disconnect runtime cleanup failed"
+                    return succeeded
+                except Exception as exc:
                     succeeded = False
-                    logger.warning("[AgentWebSocketServer] session cancellation failed: session=%s", sid, exc_info=True)
-                results = await asyncio.gather(*owners, return_exceptions=True)
-                for owner, result in zip(owners, results):
-                    if isinstance(result, Exception):
-                        succeeded = False
-                        logger.warning(
-                            "[AgentWebSocketServer] stream task cleanup failed: "
-                            "session=%s request_id=%s error=%s",
-                            sid, owner_requests[owner], result,
-                            exc_info=(type(result), result, result.__traceback__),
-                        )
-                if cleanup_runtime:
-                    # Even a failed stream finalizer may leave recoverable
-                    # runtime state. Try this only after all owners have exited.
-                    cleaned = await self._cleanup_client_disconnect_session_runtime(request)
-                    succeeded = succeeded and cleaned
-                return succeeded
+                    # A cleanup exception does not invalidate the stop signal
+                    # that has already been dispatched above.
+                    state["error"] = str(exc)[:300]
+                    logger.warning(
+                        "[AgentWebSocketServer] session cancellation failed: session=%s",
+                        sid,
+                        exc_info=True,
+                    )
+                    return succeeded
+                finally:
+                    state["completed"] = bool(succeeded)
 
             job = asyncio.create_task(shutdown(), name=f"session-shutdown-{sid}")
             jobs[key] = job
@@ -5372,8 +5478,29 @@ class AgentWebSocketServer:
                     jobs.pop(key, None)
 
             job.add_done_callback(finished)
+
         done, _ = await asyncio.wait({job}, timeout=getattr(self, "_stream_cancel_timeout", 5.0))
-        return bool(job.result()) if done else False
+        if not done:
+            return _TerminateStreamsResult(
+                accepted=state.get("accepted") is not False,
+                completed=False,
+                error=state.get("error"),
+            )
+
+        try:
+            completed = bool(job.result())
+        except Exception as exc:
+            completed = False
+            state["error"] = state.get("error") or str(exc)[:300]
+
+        accepted = state.get("accepted") is not False
+        if accepted and not completed:
+            state["error"] = state.get("error") or "session runtime cleanup pending or failed"
+        return _TerminateStreamsResult(
+            accepted=bool(accepted),
+            completed=completed,
+            error=state.get("error"),
+        )
 
     async def _cancel_inflight_round_for_delete(
         self, request: AgentRequest, target: str
