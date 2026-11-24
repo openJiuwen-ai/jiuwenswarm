@@ -51,6 +51,33 @@ function clearCronError() {
   }
 }
 
+// 立即执行的结果提示挂在 App 根部：成功跳转、或者被后端守卫拒绝后跳去
+// 进行中的会话时，CronPanel 都会被卸载，面板内的 success state 看不到。
+function showCronRunNowToast(content: string, testId: string, panelRect?: DOMRect) {
+  toast.open({
+    id: testId,
+    content,
+    variant: 'default',
+    testId,
+    duration: 2,
+    closable: false,
+    style: {
+      position: 'fixed',
+      top: panelRect ? `${panelRect.top + 12}px` : '12px',
+      left: panelRect ? `${panelRect.left + panelRect.width / 2}px` : '50%',
+      transform: 'translateX(-50%)',
+      animation: 'none',
+      width: 'auto',
+      background: 'var(--color-feedback-success)',
+      color: 'var(--color-text-inverse)',
+      border: 'none',
+      fontSize: '14px',
+      lineHeight: '20px',
+      borderRadius: 'var(--radius-lg)',
+    },
+  });
+}
+
 // 页码按钮列表：页数不多时全部展示，页数较多时只展示首页/尾页/当前页前后一页，其余用省略号折叠，
 // 避免页数很多时（比如上百页）把一整行按钮撑爆
 function buildPageList(current: number, total: number): (number | 'ellipsis')[] {
@@ -949,9 +976,14 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       });
       if (result.accepted === false) {
         // 后端守卫拒绝了本次触发（如上一轮还在执行中）：请求本身成功送达，
-        // 不是错误；提示用户任务正在执行，并跳到进行中的会话（若有）。
+        // 不是错误。提示必须在跳转前挂到 App 根部，否则面板卸载后看不到。
+        const panelRect = panelRef.current?.getBoundingClientRect();
         clearCronError();
-        setSuccess(t('cron.errors.runNowPreviousActive'));
+        showCronRunNowToast(
+          t('cron.errors.runNowPreviousActive'),
+          'cron-run-now-rejected-toast',
+          panelRect,
+        );
         if (result.session_id) {
           try {
             await onSelectSession(result.session_id, undefined);
@@ -976,28 +1008,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           throw new Error(t('cron.errors.sessionOpenFailed'));
         }
         clearCronError();
-        toast.open({
-          id: 'cron-run-now-success',
-          content: t('cron.success.runNow'),
-          variant: 'default',
-          testId: 'cron-success-toast',
-          duration: 2,
-          closable: false,
-          style: {
-            position: 'fixed',
-            top: panelRect ? `${panelRect.top + 12}px` : '12px',
-            left: panelRect ? `${panelRect.left + panelRect.width / 2}px` : '50%',
-            transform: 'translateX(-50%)',
-            animation: 'none',
-            width: 'auto',
-            background: 'var(--color-feedback-success)',
-            color: 'var(--color-text-inverse)',
-            border: 'none',
-            fontSize: '14px',
-            lineHeight: '20px',
-            borderRadius: 'var(--radius-lg)',
-          },
-        });
+        showCronRunNowToast(t('cron.success.runNow'), 'cron-success-toast', panelRect);
       } else {
         // 后端未返回 session_id：面板不卸载，local state 提示生命周期足够
         clearCronError();
