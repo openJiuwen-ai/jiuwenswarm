@@ -159,7 +159,7 @@ async def apply_mcp_http_hook(server_name: str, request: Any) -> dict[str, str]:
 
     try:
         registry = ExtensionRegistry.get_instance()
-    except RuntimeError:
+    except Exception:  # noqa: BLE001 - Never raises: config/import faults must not break MCP
         return {}
     subscribed = _has_before_mcp_http_subscriber(registry)
     if subscribed is False:

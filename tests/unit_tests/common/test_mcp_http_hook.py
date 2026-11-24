@@ -154,6 +154,19 @@ async def test_handler_failure_falls_back_to_no_extra_headers(registry):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError, ImportError, AttributeError])
+async def test_registry_lookup_failure_never_breaks_mcp_call(monkeypatch, error):
+    """``Never raises`` 契约覆盖 get_instance 的任意异常，不只未初始化的 RuntimeError。"""
+
+    def _boom(cls):
+        raise error("registry lookup failed")
+
+    monkeypatch.setattr(ExtensionRegistry, "get_instance", classmethod(_boom))
+
+    assert await hook.apply_mcp_http_hook("gw", _request("tools/call")) == {}
+
+
+@pytest.mark.asyncio
 async def test_scope_is_passed_to_context(registry):
     seen = {}
 
