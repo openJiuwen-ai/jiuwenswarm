@@ -833,11 +833,20 @@ async def handle_swarmflow_control(ctx: RequestContext) -> None:
             payload={"error": "run_id is required"},
         )
     elif not team_runtime_running:
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=channel_id,
             ok=False,
-            payload={"error": t("enterprise.team.workflow_unavailable")},
+            payload={
+                "error": t(
+                    "enterprise.team.workflow_unavailable",
+                    language=resolve_preferred_language(),
+                )
+            },
         )
     else:
         run_id = run_id.strip()

@@ -137,26 +137,24 @@ def test_t_missing_both_returns_id(monkeypatch):
     assert t("tools.unknown.id", language="en") == "tools.unknown.id"
 
 
-def test_t_uses_memo_not_yaml(monkeypatch):
+def test_t_without_language_defaults_to_en():
+    text = t("tools.send_file.none")
+    assert text == "No files to send"
+    assert not any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+def test_t_with_resolved_preferred_language_follows_memo(monkeypatch):
     monkeypatch.setattr(
         "jiuwenswarm.enterprise.edition.is_enterprise",
         lambda: True,
     )
     monkeypatch.setattr(pref, "_yaml_or_en", lambda: "en")
     with pref.bind_preferred_language_memo(user_id="alice", language="zh"):
-        text = t("tools.send_file.none")
+        text = t(
+            "tools.send_file.none",
+            language=pref.resolve_preferred_language(),
+        )
     assert "没有可发送的文件" in text
-
-
-def test_t_without_memo_falls_back_to_yaml_en(monkeypatch):
-    monkeypatch.setattr(
-        "jiuwenswarm.enterprise.edition.is_enterprise",
-        lambda: True,
-    )
-    monkeypatch.setattr(pref, "_yaml_or_en", lambda: "en")
-    text = t("tools.send_file.none")
-    assert text == "No files to send"
-    assert not any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
 def test_send_file_en_has_no_chinese():

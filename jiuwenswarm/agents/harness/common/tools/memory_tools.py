@@ -22,6 +22,14 @@ from ..memory import (
 
 logger = logging.getLogger(__name__)
 
+
+def _t(message_id: str, **params: Any) -> str:
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    return t(message_id, language=resolve_preferred_language(), **params)
+
 # 群聊模式标记：群聊中禁止 write_memory / edit_memory
 _GROUP_CHAT_MODE: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "group_chat_mode", default=False,
@@ -309,7 +317,7 @@ async def write_memory(
     if is_group_chat_mode():
         return {
             "success": False,
-            "error": t("tools.memory.group_write_forbidden"),
+            "error": _t("tools.memory.group_write_forbidden"),
         }
     from jiuwenswarm.agents.harness.common.memory.forbidden import (
         contains_forbidden_memory_content,
@@ -319,7 +327,7 @@ async def write_memory(
         return {
             "success": False,
             "path": path,
-            "error": t("tools.memory.sensitive_blocked"),
+            "error": _t("tools.memory.sensitive_blocked"),
         }
     try:
         is_valid, result = _validate_memory_path(path)
@@ -383,7 +391,7 @@ async def edit_memory(
     if is_group_chat_mode():
         return {
             "success": False,
-            "error": t("tools.memory.group_edit_forbidden"),
+            "error": _t("tools.memory.group_edit_forbidden"),
         }
     from jiuwenswarm.agents.harness.common.memory.forbidden import (
         contains_forbidden_memory_content,
@@ -393,7 +401,7 @@ async def edit_memory(
         return {
             "success": False,
             "path": path,
-            "error": t("tools.memory.sensitive_blocked"),
+            "error": _t("tools.memory.sensitive_blocked"),
         }
     try:
         is_valid, result = _validate_memory_path(path)

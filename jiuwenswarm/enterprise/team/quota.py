@@ -282,18 +282,23 @@ def teammate_spawn_key(team_id: str, member_name: str) -> str:
     return f"team:{_clean(team_id)}:member:{_clean(member_name)}"
 
 
+def _t(message_id: str, **params: Any) -> str:
+    from jiuwenswarm.common.i18n import t
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    return t(message_id, language=resolve_preferred_language(), **params)
+
+
 def team_create_quota_user_message(limit: int) -> str:
     """User-facing X-quota failure. ``limit`` is max teams per user."""
-    from jiuwenswarm.common.i18n import t
-
-    return t("enterprise.team.create_user_full", limit=max(int(limit), 0))
+    return _t("enterprise.team.create_user_full", limit=max(int(limit), 0))
 
 
 def org_team_create_quota_user_message(limit: int) -> str:
     """User-facing Z-quota failure. ``limit`` is max teams in the organization."""
-    from jiuwenswarm.common.i18n import t
-
-    return t("enterprise.team.create_org_full", limit=max(int(limit), 0))
+    return _t("enterprise.team.create_org_full", limit=max(int(limit), 0))
 
 
 def team_quota_user_message(exc: TeamQuotaExceeded) -> str:

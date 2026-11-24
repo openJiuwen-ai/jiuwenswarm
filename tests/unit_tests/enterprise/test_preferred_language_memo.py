@@ -117,7 +117,10 @@ def test_framework_language_from_params_prefers_ui_language(monkeypatch):
     assert effective == "en"
     with pref.bind_preferred_language_memo(user_id="alice", language=effective):
         assert pref.resolve_preferred_language() == "en"
-        assert "silent mode" in t("tools.send_file.silent_forbidden").lower()
+        assert "silent mode" in t(
+            "tools.send_file.silent_forbidden",
+            language=effective,
+        ).lower()
 
 
 def test_framework_language_from_params_falls_back_to_preferred():

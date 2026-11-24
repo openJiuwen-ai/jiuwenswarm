@@ -194,16 +194,6 @@ def bind_preferred_language_memo(
         _MEMO_CV.reset(token_memo)
 
 
-def _register_i18n_resolver() -> None:
-    """Wire common.i18n t() to this module without a common→enterprise import."""
-    from jiuwenswarm.common.i18n import set_preferred_language_resolver
-
-    set_preferred_language_resolver(resolve_preferred_language)
-
-
-_register_i18n_resolver()
-
-
 __all__ = (
     "DEFAULT_USER_ID",
     "bind_preferred_language",

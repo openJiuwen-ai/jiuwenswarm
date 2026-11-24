@@ -20,11 +20,18 @@ logger = logging.getLogger(__name__)
 TEAM_MEMBER_QUOTA_EXCEEDED = "TEAM_MEMBER_QUOTA_EXCEEDED"
 
 
+def _t(message_id: str, **params: Any) -> str:
+    from jiuwenswarm.common.i18n import t
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    return t(message_id, language=resolve_preferred_language(), **params)
+
+
 def teammate_quota_user_message(limit: int) -> str:
     """User-facing spawn failure. ``limit`` is whole-team size including the leader."""
-    from jiuwenswarm.common.i18n import t
-
-    return t("enterprise.team.teammate_full", limit=max(int(limit), 0))
+    return _t("enterprise.team.teammate_full", limit=max(int(limit), 0))
 
 
 def teammate_quota_fail_reason(limit: int) -> str:
@@ -33,9 +40,7 @@ def teammate_quota_fail_reason(limit: int) -> str:
 
 def requested_team_size_user_message(requested: int, limit: int) -> str:
     """User-facing refusal when the original sentence already exceeds the cap."""
-    from jiuwenswarm.common.i18n import t
-
-    return t(
+    return _t(
         "enterprise.team.requested_size_over",
         requested=int(requested),
         limit=max(int(limit), 0),
@@ -160,13 +165,11 @@ def enterprise_recruit_constraint(query: str) -> str:
     Including-leader phrases recruit ``N - 1``. Excluding-leader phrases recruit
     ``N``. The sidebar list omits the leader and is not a headcount.
     """
-    from jiuwenswarm.common.i18n import t
-
     size = explicit_whole_team_size(query, enterprise=True)
     if size is None:
         return ""
     recruit = max(size - 1, 0)
-    return t("enterprise.team.recruit_constraint", size=size, recruit=recruit)
+    return _t("enterprise.team.recruit_constraint", size=size, recruit=recruit)
 
 
 def requested_team_size_over_limit(

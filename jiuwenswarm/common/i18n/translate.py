@@ -1,16 +1,15 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Message catalog lookup for AgentServer user-facing tool copy.
 
-Language comes from ``resolve_preferred_language()`` unless the caller passes
-an explicit value that maps to ``zh`` / ``en``. Missing or illegal values
-resolve to ``en``.
+Callers pass an explicit ``language`` that maps to ``zh`` / ``en``. Missing or
+illegal values resolve to ``en``. This module does not look up preferred
+language from enterprise memo / yaml.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -23,13 +22,6 @@ _EN_ALIASES = frozenset({"en", "en_us", "en-us"})
 _CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
 _LOCK = threading.Lock()
 _CATALOGS: dict[str, dict[str, str]] | None = None
-_PREFERRED_LANGUAGE_RESOLVER: Callable[[], str] | None = None
-
-
-def set_preferred_language_resolver(resolver: Callable[[], str] | None) -> None:
-    """Inject preferred-language lookup without importing enterprise from common."""
-    global _PREFERRED_LANGUAGE_RESOLVER
-    _PREFERRED_LANGUAGE_RESOLVER = resolver
 
 
 def try_normalize_preferred_language(raw: object) -> str | None:
@@ -107,14 +99,7 @@ def _resolve_language(language: object | None) -> str:
         mapped = try_normalize_preferred_language(language)
         if mapped is not None:
             return mapped
-    resolver = _PREFERRED_LANGUAGE_RESOLVER
-    if resolver is None:
-        return "en"
-    try:
-        return normalize_preferred_language(resolver())
-    except Exception:  # noqa: BLE001
-        logger.debug("preferred_language resolver failed in t()", exc_info=True)
-        return "en"
+    return "en"
 
 
 def _interpolate(template: str, params: Mapping[str, Any]) -> str:
@@ -135,9 +120,10 @@ def _interpolate(template: str, params: Mapping[str, Any]) -> str:
 def t(message_id: str, /, *, language: object | None = None, **params: Any) -> str:
     """翻译函数：按消息 id 取本地化文案（translate 的惯用短名）。
 
-    语言取值顺序：显式 ``language``（能归一成 ``zh`` / ``en``）→
-    ``resolve_preferred_language()`` → ``en``。中文模板缺失时回退英文；
-    英文也缺失或词表读失败时返回 ``message_id`` 本身，并打英文 warning。
+    语言仅来自显式 ``language``（能归一成 ``zh`` / ``en``）；缺省或非法 →
+    ``en``。中文模板缺失时回退英文；英文也缺失或词表读失败时返回
+    ``message_id`` 本身，并打英文 warning。需要跟用户偏好时，由调用方先
+    ``resolve_preferred_language()`` 再传入。
 
     ``params`` 按 ``{name}`` 字面替换；缺参保留占位符，参数值里的花括号
     不再二次解析。调用方只传字面量 id，不要拼接动态 id。

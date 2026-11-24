@@ -9159,6 +9159,9 @@ class AgentWebSocketServer:
         is registered on the controller.
         """
         from jiuwenswarm.common.i18n import t
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
             classify_swarmflow_control_miss,
             get_background_task_controller,
@@ -9193,7 +9196,12 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=channel_id,
                 ok=False,
-                payload={"error": t("enterprise.team.workflow_unavailable")},
+                payload={
+                    "error": t(
+                        "enterprise.team.workflow_unavailable",
+                        language=resolve_preferred_language(),
+                    )
+                },
             )
         else:
             run_id = run_id.strip()
