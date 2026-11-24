@@ -19,6 +19,8 @@ COVERAGE_REPORT="term"
 VERBOSE="-v"
 TEST_PATH="tests/"
 PARALLEL=false
+SMART=false
+FULL=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -43,6 +45,14 @@ while [[ $# -gt 0 ]]; do
             PARALLEL=true
             shift
             ;;
+        -s|--smart)
+            SMART=true
+            shift
+            ;;
+        -f|--full)
+            FULL=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -52,12 +62,16 @@ while [[ $# -gt 0 ]]; do
             echo "  -u, --unit-only      Run only unit tests"
             echo "  -i, --integration-only Run only integration tests"
             echo "  -p, --parallel       Run tests in parallel (requires pytest-xdist)"
+            echo "  -s, --smart          Run change-related tests + fixed baseline (scripts/select_tests.py)"
+            echo "  -f, --full           Force full test run (overrides --smart)"
             echo "  -h, --help           Show this help message"
             echo ""
             echo "Examples:"
             echo "  $0                  # Run all tests"
             echo "  $0 -c               # Run tests with HTML coverage"
             echo "  $0 -u               # Run only unit tests"
+            echo "  $0 -u -s            # Smart: changed code + baseline unit tests"
+            echo "  $0 -u -f            # Full unit tests"
             echo "  $0 -p               # Run tests in parallel"
             exit 0
             ;;
@@ -94,6 +108,27 @@ if [[ "$PARALLEL" == true ]]; then
     else
         echo -e "${YELLOW}Running tests in parallel...${NC}"
         PYTEST_CMD="$PYTEST_CMD -n auto"
+    fi
+fi
+
+# Smart selection: replace the whole test path with change-related tests plus
+# the fixed baseline. Falls back to the full path when the change set is too
+# broad (config/build files) or cannot be determined.
+if [[ "$SMART" == true && "$FULL" != true ]]; then
+    echo -e "${YELLOW}Selecting change-related tests (base ref: ${TEST_BASE_REF:-origin/develop})...${NC}"
+    PYTHON_BIN=""
+    if command -v python3 &>/dev/null; then
+        PYTHON_BIN=python3
+    elif command -v python &>/dev/null; then
+        PYTHON_BIN=python
+    fi
+    SELECTED=$($PYTHON_BIN scripts/select_tests.py --base "${TEST_BASE_REF:-origin/develop}" 2>/dev/null || true)
+    if [[ -z "$SELECTED" || "$SELECTED" == "FULL" ]]; then
+        echo -e "${YELLOW}Change set too broad or unavailable; falling back to full ${TEST_PATH}${NC}"
+    else
+        TEST_PATH=$(echo "$SELECTED" | tr '\n' ' ')
+        echo -e "${GREEN}Selected tests:${NC}"
+        echo "  $TEST_PATH"
     fi
 fi
 

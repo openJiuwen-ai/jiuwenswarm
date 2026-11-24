@@ -131,8 +131,11 @@ stop: ## Stop the background debug service started by start-debug
 test: ## Run the full test suite
 	@bash run_tests.sh
 
-test-unit: ## Run only unit tests
-	@bash run_tests.sh -u
+test-unit: ## Run change-related + baseline unit tests (smart selection)
+	@bash run_tests.sh -u -s
+
+test-unit-full: ## Run ALL unit tests
+	@bash run_tests.sh -u -f
 
 test-integration: ## Run only integration tests
 	@bash run_tests.sh -i
