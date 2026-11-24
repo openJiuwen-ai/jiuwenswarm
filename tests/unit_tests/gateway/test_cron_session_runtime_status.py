@@ -84,6 +84,9 @@ class _TestScheduler(CronSchedulerService):
     def state(self, run_id: str) -> CronRunState:
         return self._runs[run_id]
 
+    def runs_state(self) -> list[CronRunState]:
+        return list(self._runs.values())
+
     def remember(self, state: CronRunState, task: asyncio.Task | None = None) -> None:
         self._runs[state.run_id] = state
         if task is not None:
@@ -498,3 +501,62 @@ async def test_stopped_owner_metadata_is_idle_while_child_keeps_git_guard_busy(h
     assert response["payload"]["status"] == ("idle" if stopped else "processing")
     assert harness.channel.is_session_busy(sid)
     assert ("child", "child-round") in harness.channel._expert_processing_requests[sid]
+
+
+class _RunNowWebChannel(_TestWebChannel):
+    """Invoke the registered cron.job.run_now handler the way the WS dispatcher would."""
+
+    async def run_now(self, job_id: str, user_id: str | None = "alice") -> dict:
+        ws_id = "run-now-test"
+        ws = SimpleNamespace(_jiuwen_ws_id=ws_id, closed=False)
+        queue = asyncio.Queue()
+        self._send_queues[ws_id] = queue
+        handler = self._method_handlers["cron.job.run_now"]
+        await handler(ws, "run-now-request", {"id": job_id}, "current-web-session", user_id)
+        return queue.get_nowait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent", "team"])
+async def test_run_now_rejected_while_previous_run_active(harness_factory, mode):
+    """JW-77: manual run_now must not start a second parallel run.
+
+    While a run is executing, a second run_now request is answered with
+    ``accepted=False, reason="previous_run_active"`` pointing at the active
+    run — no new session.create, no new run state. After the first run
+    finishes, run_now is accepted again (guard blocks parallelism, not
+    consecutive manual triggers).
+    """
+    harness = await harness_factory(mode=mode)
+    harness.channel.__class__ = _RunNowWebChannel
+    run_id = await _start(harness)
+    active_sid = harness.scheduler.state(run_id).exec_session_id
+    created_before = [
+        env for env in harness.client.requests
+        if env.method == ReqMethod.SESSION_CREATE.value
+    ]
+
+    response = await harness.channel.run_now(harness.job.id)
+    assert response["ok"] is True
+    assert response["payload"]["accepted"] is False
+    assert response["payload"]["reason"] == "previous_run_active"
+    assert response["payload"]["run_id"] == run_id
+    assert response["payload"]["session_id"] == active_sid
+
+    # No second execution session or run state was created by the rejection.
+    created_after = [
+        env for env in harness.client.requests
+        if env.method == ReqMethod.SESSION_CREATE.value
+    ]
+    assert len(created_after) == len(created_before)
+    assert len([state for state in harness.scheduler.runs_state() if state.job_id == harness.job.id]) == 1
+
+    # Let the first run finish; a fresh run_now is accepted (new run, new session).
+    harness.client.release.set()
+    await asyncio.wait_for(harness.scheduler.task(run_id), timeout=2)
+    assert harness.scheduler.state(run_id).status == "succeeded"
+    harness.client.metadata_payload.update(status="idle", is_processing=False)
+    response = await harness.channel.run_now(harness.job.id)
+    assert response["ok"] is True
+    assert response["payload"]["accepted"] is True
+    assert response["payload"]["run_id"] != run_id
