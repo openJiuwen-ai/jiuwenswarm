@@ -13,6 +13,7 @@ from typing import Any, Literal
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
+from .topic_primitives import nonempty as _nonempty, valid_scope as _valid_scope
 
 EXTERNAL_INVOCATION_AUDIT_SCHEMA_VERSION = (
     "topic-starter-v6-external-invocation-audit-v3"
@@ -26,18 +27,6 @@ _ATTEMPT_OPERATIONS = ("ark", *_OPERATIONS)
 _FAILURE_REASON_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}\Z")
 ExternalOperation = Literal["search", "fetch", "extractor"]
 ExternalAttemptOperation = Literal["ark", "search", "fetch", "extractor"]
-
-
-def _nonempty(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _valid_scope(value: object) -> bool:
-    return value == "global_new_chat" or (
-        isinstance(value, str)
-        and value.startswith("project:")
-        and bool(value.removeprefix("project:").strip())
-    )
 
 
 class ExternalInvocationAudit:

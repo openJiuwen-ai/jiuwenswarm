@@ -3,10 +3,12 @@ export type FrontendPlatform = 'web' | 'harmony';
 export type SidebarNavKey =
   | 'chat'
   | 'skills'
+  | 'rea'
   | 'agents'
   | 'design'
   | 'teams'
   | 'connectorMarket'
+  | 'appMarket'
   | 'sessions'
   | 'cron'
   | 'personalContext'
@@ -30,7 +32,7 @@ const PLATFORM_ALIASES: Record<string, FrontendPlatform | null> = {
 
 const HIDDEN_NAV_ITEMS_BY_PLATFORM: Record<FrontendPlatform, readonly SidebarNavKey[]> = {
   web: ['sessions'],
-  harmony: ['sessions', 'updatepanel', 'connectorMarket', 'experiments'],
+  harmony: ['sessions', 'updatepanel', 'connectorMarket', 'appMarket', 'experiments', 'rea'],
 };
 
 export function normalizeFrontendPlatform(value: unknown): FrontendPlatform | null {

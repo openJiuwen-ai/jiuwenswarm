@@ -23,7 +23,6 @@ class WorkerRuntime:
     stop_event: asyncio.Event
     teammate_task: asyncio.Task | None = None
     zen_task: asyncio.Task | None = None
-    proactive_task: asyncio.Task | None = None
     image_task: asyncio.Task | None = None
     background_tasks: set[asyncio.Task] = field(default_factory=set)
 
@@ -58,7 +57,7 @@ class WorkerRuntime:
     async def _shutdown_owned_resources(self) -> None:
         """Keep registry dispatch available until SDK teardown has settled."""
         self.stop_event.set()
-        owned = (self.image_task, self.proactive_task, self.teammate_task, self.zen_task, *self.background_tasks)
+        owned = (self.image_task, self.teammate_task, self.zen_task, *self.background_tasks)
         tasks = list(dict.fromkeys(task for task in owned if task is not None))
         for task in tasks:
             task.cancel()
@@ -76,6 +75,12 @@ class WorkerRuntime:
         stop = getattr(self.server, "stop", None)
         if callable(stop):
             await stop()
+        try:
+            from jiuwenswarm.extensions_v2.assembly import shutdown_extensions
+
+            await shutdown_extensions()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Worker] extension v2 shutdown failed: %s", exc)
         # A stopped server can still have queued persistence writes. Join both
         # stores before closing application owners or reporting shutdown done.
         from jiuwenswarm.server.runtime.session.session_history import flush_pending_writes as flush_history

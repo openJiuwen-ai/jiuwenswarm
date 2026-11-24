@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { activateNativeWebUIPanel } from './webui/react/pluginPanelTabsStore';
 import type { TabType, TeamDetailTab } from '../components/teamArea/shared';
 import {
   DEFAULT_TEAM_PANEL_STATE,
@@ -53,6 +54,7 @@ export function openTeamPanel(
   activeDetailTab: TeamDetailTab = 'members',
   selectedMemberId?: string
 ): void {
+  activateNativeWebUIPanel('conversation.panel.right');
   const nextState: TeamPanelState = {
     expanded: true,
     activeTab,
@@ -64,6 +66,7 @@ export function openTeamPanel(
 }
 
 export function openArtifactPanel(selectedArtifactId: string): void {
+  activateNativeWebUIPanel('conversation.panel.right');
   const nextState: TeamPanelState = {
     ...loadTeamPanelState(),
     expanded: true,
@@ -91,6 +94,7 @@ export function useTeamPanelState(): UseTeamPanelStateResult {
   }, [updateState]);
 
   const setTeamAreaActiveTab = useCallback((activeTab: TabType) => {
+    activateNativeWebUIPanel('conversation.panel.right');
     updateState({ activeTab });
   }, [updateState]);
 

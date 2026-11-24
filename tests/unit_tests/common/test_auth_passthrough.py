@@ -4,12 +4,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
 from agent_gateway.auth import login_credentials
 from agent_gateway.auth import passthrough
 from agent_gateway.auth.login_credentials import credential_ref_for_user
+from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+
 from jiuwenswarm.common.auth.model_catalog import LoginModel
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
 
 def _remote(monkeypatch, *, effective=True, apig_base="https://apig.example.com",

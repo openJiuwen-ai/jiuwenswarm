@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from contextlib import aclosing
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from openjiuwen.harness import persistent_agent as core
@@ -28,14 +29,22 @@ from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatReposit
 from jiuwenswarm.server.jiuwenmate.group_collaboration import build_group_execution_guidance
 from jiuwenswarm.server.jiuwenmate.group_directory import prepare_group_directory_invocation
 from jiuwenswarm.server.jiuwenmate.group_search_cursor_repository import GroupSearchCursorRepository
-from jiuwenswarm.server.jiuwenmate.execution_models import ExecutionRecord, RequestRecord, RequestState
+from jiuwenswarm.server.jiuwenmate.execution_models import (
+    ExecutionRecord,
+    RequestRecord,
+    RequestState,
+    build_execution_context,
+)
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.ports.budget import HostBudgetPort
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAccess, WorkspaceStore
-from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort, MembershipVerifier, unavailable_membership
-from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
+from jiuwenswarm.server.jiuwenmate.ports.group_chat import (
+    GroupAuthorizationError, HostGroupChatPort, MembershipVerifier, unavailable_membership,
+)
+from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, CONTINUATION_CHAIN_LIMIT, build_invocation
+from jiuwenswarm.server.jiuwenmate.permission_cleanup import discard_permission_confirmation
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.bash_runtime import (
     bind_bash_runtime, close_bash_runtime, shell_environment_guidance,
@@ -45,6 +54,7 @@ from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_guidance
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailRuntimeService
 from jiuwenswarm.server.jiuwenmate.agent_mail_tool import prepare_agent_mail_invocation
+from jiuwenswarm.server.jiuwenmate.swarmchat.roster_tool import prepare_group_roster_invocation
 from jiuwenswarm.server.jiuwenmate.welink_office_tool import prepare_welink_office_invocation, welink_execution_guidance
 from jiuwenswarm.server.jiuwenmate.dingtalk_cli_tool import (
     DingTalkCliCommitGuard,
@@ -152,8 +162,10 @@ class ExecutionDriver:
         dingtalk_cli_runtime: DingTalkCliRuntimeService | None = None,
         permission_approvals: PermissionApprovalRepository | None = None,
         group_sharing=None,
+        swarmchat_service=None,
     ) -> None:
         self._snapshots = snapshots
+        self._swarmchat_service = swarmchat_service
         self._commit_port = commit_port
         self._queue = queue
         self._budget_port = budget_port
@@ -163,9 +175,10 @@ class ExecutionDriver:
         self._groups = groups
         self._group_archive = group_archive
         self._group_search = ConversationSearch(group_archive) if group_archive is not None else None
-        self._group_search_cursors = (
-            GroupSearchCursorRepository(groups.db_path) if groups is not None else None
-        )
+        cursor_db = groups.db_path if groups is not None else None
+        if cursor_db is None and swarmchat_service is not None and sessions is not None:
+            cursor_db = sessions.db_path
+        self._group_search_cursors = GroupSearchCursorRepository(cursor_db) if cursor_db is not None else None
         self._sessions = sessions
         self._verify_group_membership = verify_group_membership
         self._refresh_group_messages = refresh_group_messages
@@ -181,6 +194,58 @@ class ExecutionDriver:
 
     def new_handle(self) -> ExecutionHandle:
         return ExecutionHandle(self._abort)
+
+    async def _prepare_runtime_spec(self, spec, context, record):
+        directory = self._groups
+        if self._swarmchat_service is not None and record.namespace_id == "local":
+            from jiuwenswarm.server.jiuwenmate.swarmchat.membership import ColleagueGroupDirectory, require_membership
+
+            owner = None
+            if record.route_snapshot is not None and record.route_snapshot.channel == "swarmchat":
+                group, _ = require_membership(record.route_snapshot.target_id, record.agent_id)
+                owner = group["user_id"]
+            directory = ColleagueGroupDirectory(self._groups, self._swarmchat_service, owner=owner)
+        spec = prepare_group_directory_invocation(spec, context, directory)
+        spec = await prepare_agent_mail_invocation(spec, context, self._agent_mail_runtime)
+        spec = await prepare_group_roster_invocation(
+            spec, context, record, self._sessions, self._swarmchat_service,
+        )
+        spec = await prepare_dingtalk_cli_invocation(
+            spec, context, self._dingtalk_cli_runtime,
+            request_input=record.request_input, route_snapshot=record.route_snapshot,
+        )
+        return prepare_welink_office_invocation(
+            spec, context, request_input=record.request_input, route_snapshot=record.route_snapshot,
+            settings_path=self._windows.db_path,
+        )
+
+    async def permission_cleanup_fingerprint(self, record, approval) -> str:
+        """Read durable identity; reconstruct legacy records through the same trusted preparation path."""
+        saved = await asyncio.to_thread(
+            self._sessions.runtime_fingerprint, record.namespace_id, record.request_id, approval.execution_id,
+        )
+        if saved is not None:
+            return saved
+        snapshot = await asyncio.to_thread(self._snapshots, record.namespace_id, record.agent_id, record.config_version)
+        if (snapshot.agent_id, snapshot.config_version, snapshot.fingerprint) != (
+            record.agent_id, record.config_version, record.config_fingerprint,
+        ):
+            raise PersistentAgentError(
+                "approval configuration does not match the original request", code="INVALID_CONFIG",
+            )
+        spec = snapshot.load_spec()
+        if spec.continuation_chain_limit is None:
+            spec = spec.model_copy(update={"continuation_chain_limit": CONTINUATION_CHAIN_LIMIT})
+        executions = await asyncio.to_thread(self._sessions.executions, record.namespace_id, record.request_id)
+        execution = next((item for item in executions if item.execution_id == approval.execution_id), None)
+        if execution is None:
+            raise PersistentAgentError("approval execution is not part of this request", code="NOT_FOUND")
+        context = SimpleNamespace(
+            execution=build_execution_context(record, execution, capability_snapshot=snapshot.enabled_features),
+            extras={},
+        )
+        spec = await self._prepare_runtime_spec(spec, context, record)
+        return spec.fingerprint()
 
     async def run(self, state: RequestState, execution: ExecutionRecord, handle: ExecutionHandle) -> str:
         record = state.record
@@ -211,16 +276,13 @@ class ExecutionDriver:
                 enforce_session_boundary=record.request_input.kind == "group_message",
             )
             group_chat_port = None
+            has_group_history_store = self._group_search_cursors is not None and self._sessions is not None
             can_read_groups = (
                 record.request_input.kind in ("direct_message", "group_message")
                 and self._groups is not None
                 and (self._group_archive is not None)
             )
-            if can_read_groups and (
-                self._group_search is not None
-                and self._group_search_cursors is not None
-                and (self._sessions is not None)
-            ):
+            if can_read_groups and self._group_search is not None and has_group_history_store:
                 group_chat_port = HostGroupChatPort(
                     self._groups, self._group_archive, self._sessions,
                     namespace_id=record.namespace_id, agent_id=record.agent_id,
@@ -230,10 +292,32 @@ class ExecutionDriver:
                     cursors=self._group_search_cursors,
                     clock=self._clock,
                 )
+                if self._swarmchat_service is not None:
+                    def related_agents(namespace_id, agent_id):
+                        config = self._swarmchat_service.get_config(namespace_id, agent_id)
+                        return [item.agent_id for item in self._swarmchat_service.list_agents(namespace_id)
+                                if item.config_id == config.agent_id and item.enabled]
+                    group_chat_port.set_related_agents(related_agents)
                 if self._group_sharing is not None:
                     from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
 
                     group_chat_port = GuardedGroupChatPort(group_chat_port, self._group_sharing)
+            has_im_group_port = group_chat_port is not None
+            if self._swarmchat_service is not None and has_group_history_store and record.namespace_id == "local":
+                from jiuwenswarm.server.jiuwenmate.swarmchat.port import (
+                    CompositeGroupChatPort, SwarmChatGroupChatPort,
+                )
+
+                swarm_port = SwarmChatGroupChatPort(
+                    self._sessions, self._swarmchat_service,
+                    self._group_search_cursors,
+                ).bind(record.namespace_id, record.agent_id)
+                if group_chat_port is not None:
+                    group_chat_port = CompositeGroupChatPort(
+                        group_chat_port, swarm_port, self._sessions, self._group_search_cursors,
+                    )
+                elif record.route_snapshot is not None and record.route_snapshot.channel == "swarmchat":
+                    group_chat_port = swarm_port
             dingtalk_commit_guard = DingTalkCliCommitGuard(self._commit_port)
             ports = core.PersistentPorts(
                 commit=dingtalk_commit_guard,
@@ -269,6 +353,14 @@ class ExecutionDriver:
                         )
                         roster = []
                     guidance = build_group_execution_guidance(roster)
+            swarm_session = (self._sessions.get_session(record.namespace_id, record.session_id)
+                             if self._sessions is not None else None)
+            if swarm_session is not None and swarm_session.conversation.kind == "swarm_group":
+                from jiuwenswarm.server.jiuwenmate.swarmchat.membership import require_membership
+                from jiuwenswarm.server.jiuwenmate.swarmchat.files import execution_guidance
+
+                group, _ = require_membership(swarm_session.conversation.key, record.agent_id)
+                guidance = execution_guidance(group, record.agent_id)
             guidance_items = (
                 await shell_environment_guidance(getattr(published_spec, "language", None) or "cn"),
                 guidance,
@@ -285,22 +377,15 @@ class ExecutionDriver:
                 ports=ports,
                 system_prompt_addendum="\n\n".join(addenda),
             )
-            spec = prepare_group_directory_invocation(spec, context, self._groups)
-            spec = await prepare_agent_mail_invocation(spec, context, self._agent_mail_runtime)
-            spec = await prepare_dingtalk_cli_invocation(
-                spec,
-                context,
-                self._dingtalk_cli_runtime,
-                request_input=record.request_input,
-                route_snapshot=record.route_snapshot,
-            )
-            spec = prepare_welink_office_invocation(
-                spec, context, request_input=record.request_input, route_snapshot=record.route_snapshot,
-                settings_path=self._windows.db_path,
-            )
+            spec = await self._prepare_runtime_spec(spec, context, record)
+            if self._sessions is not None:
+                await asyncio.to_thread(
+                    self._sessions.bind_runtime_fingerprint, record.namespace_id, record.request_id,
+                    execution.execution_id, context.execution.config_fingerprint,
+                )
             dingtalk_commit_guard.bind_context(context)
             group_cli = None
-            if group_chat_port is not None and self._group_sharing is not None:
+            if has_im_group_port and self._group_sharing is not None:
                 from jiuwenswarm.server.jiuwenmate.cli_group_sharing import CliGroupSharing
 
                 group_cli = CliGroupSharing(sharing=self._group_sharing, group_port=group_chat_port,
@@ -316,7 +401,7 @@ class ExecutionDriver:
             inputs = record.request_input
             if record.request_input.kind == "group_message" and ports.group_chat is not None:
                 trigger = await ports.group_chat.current_trigger(context.execution, inputs.trigger_message_id)
-                if trigger.status in {"recalled", "unavailable"}:
+                if trigger is None or trigger.status in {"recalled", "unavailable"}:
                     raise PersistentAgentError("group trigger is no longer readable", code="TRIGGER_UNAVAILABLE")
                 source = trigger
                 if inputs.source is not None:
@@ -363,7 +448,11 @@ class ExecutionDriver:
                 execution.execution_id,
                 exc,
             )
-            await self._record_failure(record, execution, reason="error", detail=f"{type(exc).__name__}: {exc}")
+            await self._record_failure(
+                record, execution, reason=exc.reason if isinstance(exc, GroupAuthorizationError) else "error",
+                detail=f"{type(exc).__name__}: {exc}",
+                runtime_fingerprint=context.execution.config_fingerprint if context is not None else None,
+            )
             return "failed"
         finally:
             try:
@@ -383,6 +472,7 @@ class ExecutionDriver:
 
     async def _record_failure(
         self, record: RequestRecord, execution: ExecutionRecord, *, reason: str, detail: str | None,
+        runtime_fingerprint: str | None = None,
     ) -> None:
         if self._sessions is None:
             return
@@ -392,6 +482,11 @@ class ExecutionDriver:
                 record.namespace_id, record.request_id, execution.execution_id,
                 reason=reason, detail=detail, now=self._clock(),
             )
+        except Exception:
+            logger.exception("[JiuwenMate] execution failure notice could not be persisted: request=%s",
+                             record.request_id)
+            return
+        try:
             # A durable failure cannot be continued. Settle even when preflight
             # failed before the saved reply was loaded, or no terminal was yielded.
             if self._permission_approvals is not None:
@@ -399,19 +494,11 @@ class ExecutionDriver:
                     self._permission_approvals.resume_reply, record.namespace_id, record.request_id,
                 )
                 if approval is not None:
-                    window_generation = ''
-                    if self._group_sharing is not None:
-                        window_generation = await asyncio.to_thread(
-                            self._group_sharing.repository.saved_request_window,
-                            record.namespace_id, record.request_id,
-                        )
-                    await core.discard_persistent_confirmation(
-                        self._windows.bind(record.namespace_id, record.agent_id, record.session_id,
-                                           generation=window_generation),
-                        agent_id=record.agent_id, session_id=record.session_id,
-                        request_id=record.request_id, spec_fingerprint=record.config_fingerprint,
+                    await discard_permission_confirmation(
+                        sessions=self._sessions, windows=self._windows, sharing=self._group_sharing,
+                        approvals=self._permission_approvals, record=record, approval=approval,
+                        runtime_fingerprint=runtime_fingerprint,
                     )
-                    await asyncio.to_thread(self._permission_approvals.consume, approval.approval_id)
         except Exception:
-            logger.exception("[JiuwenMate] execution failure notice could not be persisted: request=%s",
+            logger.exception("[JiuwenMate] confirmation cleanup will retry: request=%s",
                              record.request_id)

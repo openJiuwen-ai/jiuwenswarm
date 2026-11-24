@@ -134,11 +134,10 @@ class _CronToolsCronBackend(CronToolBackend):
     ) -> dict[str, Any]:
         """创建 cron 时直接复用创建它的 chat-session 的模型配置。
 
-        用户通过对话（chat-session）创建定时任务时，会话当前使用的模型（如免费模型
-        ``mimo-v2.5-free``）已写入会话 metadata 的 ``model`` 字段；这里无条件用该
-        值覆盖 ``model_name``，保证 cron 执行与创建它的会话使用同一模型配置，而不是
-        回退到 config 默认模型（用户自配 key 失效时会 401）。会话无模型 / 模型校验
-        不过时保持原 payload（此时显式传入的 model_name 仍生效），不阻断创建。
+        Prefer the session's stable model_selection so duplicate model names keep
+        their identity. Legacy name-only sessions (including free models) retain
+        the existing name validation and fallback behavior. Model groups are passed
+        through to the shared job builder, which enforces single-model-only cron.
         """
         if context is None:
             return payload
@@ -154,6 +153,23 @@ class _CronToolsCronBackend(CronToolBackend):
             if not isinstance(meta, dict):
                 return payload
             inherited = str(meta.get("model") or "").strip()
+            raw_selection = meta.get("model_selection")
+            if raw_selection is not None:
+                from agent_gateway.common.model_selection import ModelSelection
+
+                try:
+                    selection = ModelSelection.model_validate(raw_selection)
+                except ValueError:
+                    logger.warning(
+                        "[CronRuntimeBridge] invalid session model selection; "
+                        "trying legacy model inheritance: session=%s", session_id,
+                    )
+                else:
+                    out = dict(payload)
+                    out["model_selection"] = selection.model_dump()
+                    if inherited:
+                        out["model_name"] = inherited
+                    return out
             if not inherited:
                 return payload
             from jiuwenswarm.enterprise import is_enterprise
@@ -364,6 +380,11 @@ class _CronToolsCronBackend(CronToolBackend):
     async def run_now(self, job_id: str) -> str:
         run_result = await self._with_route(None, self._cron_tools.run_now(job_id))
         if isinstance(run_result, dict):
+            # CronTools 的 ack 形状是 {"action": ..., "data": {"run_id": ...}}；
+            # 顶层 run_id 仅兼容旧实现，未拿到 ack（data 为 None）时保持空串。
+            data = run_result.get("data")
+            if isinstance(data, dict):
+                return str(data.get("run_id") or run_result.get("run_id") or "")
             return str(run_result.get("run_id") or "")
         return str(run_result or "")
 
@@ -484,11 +505,14 @@ def _extract_legacy_params(
             at_raw = str(schedule.get("at") or "").strip()
             if at_raw:
                 try:
-                    from jiuwenswarm.runtime.cron.cron_expr import iso_to_seven_field_cron
-                    cron_expr = iso_to_seven_field_cron(at_raw, timezone=timezone)
+                    from jiuwenswarm.runtime.cron.cron_expr import iso_to_one_shot_cron
+                    # A DST fall-back instant may come back evaluated in UTC;
+                    # then the job must carry that timezone, not the local one.
+                    cron_expr, timezone = iso_to_one_shot_cron(at_raw, timezone=timezone)
                     logger.info(
-                        "[CronRuntimeBridge] _extract_legacy_params: converted kind=at '%s' to cron_expr='%s'",
-                        at_raw, cron_expr,
+                        "[CronRuntimeBridge] _extract_legacy_params: converted kind=at '%s' "
+                        "to cron_expr='%s' timezone='%s'",
+                        at_raw, cron_expr, timezone,
                     )
                 except Exception as conv_exc:
                     raise ValueError(
@@ -580,6 +604,11 @@ def _extract_legacy_params(
         model_name_raw = data.get("model_name") or payload_block.get("model_name")
         if model_name_raw is not None and str(model_name_raw).strip():
             out["model_name"] = str(model_name_raw).strip()
+
+        for block in (data, payload_block):
+            if "model_selection" in block:
+                out["model_selection"] = block["model_selection"]
+                break
 
         # mcp：透传会话级 MCP 选择（顶层或随 payload 传入）；未显式传时由
         # 调用方继承会话 MCP 快照。保留显式空列表，避免继承覆盖或无法清除选择；
@@ -993,6 +1022,10 @@ class CronRuntimeBridge:
     def __init__(self) -> None:
         self._backend_override: CronToolBackend | None = None
         self._resolved_backend: CronToolBackend | None = None
+        # 后台调度器启动 Task 的强引用集合：CPython 对未引用 Task 只持弱引用，
+        # 不持有会被 GC 提前回收（"Task was destroyed but it is pending"），
+        # 调度器未完成启动、定时任务到点无人调度。完成后经 done 回调移除，不泄漏。
+        self._scheduler_start_tasks: set[asyncio.Task] = set()
 
     def set_backend(self, backend: CronToolBackend | None) -> None:
         self._backend_override = backend
@@ -1014,18 +1047,39 @@ class CronRuntimeBridge:
         backend = self.get_backend()
         if backend is None:
             return
-        
+
         if not isinstance(backend, _CronToolsCronBackend):
             return
-        
+
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                asyncio.create_task(backend.ensure_scheduler_started())
+                task = asyncio.create_task(
+                    self._start_scheduler_guarded(backend.ensure_scheduler_started())
+                )
+                # 持有强引用直到完成，避免被 GC 提前回收。
+                self._scheduler_start_tasks.add(task)
+                task.add_done_callback(self._scheduler_start_tasks.discard)
             else:
                 loop.run_until_complete(backend.ensure_scheduler_started())
         except Exception as exc:
             logger.warning("[CronRuntimeBridge] Failed to start scheduler: %s", exc)
+
+    @staticmethod
+    async def _start_scheduler_guarded(coro: Any) -> None:
+        """运行后台调度器启动协程并记录其内部异常。
+
+        asyncio.create_task 外层的 try/except 只能捕获创建 Task 的同步异常；
+        协程内部异常若不在此捕获，只会变成 "Task exception was never retrieved"，
+        调用方（build_tools）完全无感知，表现为静默失败。
+        """
+        try:
+            await coro
+        except Exception:
+            logger.warning(
+                "[CronRuntimeBridge] Background scheduler start failed",
+                exc_info=True,
+            )
 
     def build_tools(
         self,

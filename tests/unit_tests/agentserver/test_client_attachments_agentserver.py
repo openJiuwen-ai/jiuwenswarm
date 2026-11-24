@@ -16,7 +16,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server import agent_ws_server
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-from jiuwenswarm.server.client_attachments import directory, get_attachment_directory
+from jiuwenswarm.server.client_attachments import attach, directory, get_attachment_directory
 from jiuwenswarm.server.client_attachments.watch import CLIENT_GONE_GRACE_SECONDS
 from jiuwenswarm.server.runtime.session.session_metadata import flush_pending_writes
 from tests.unit_tests.runtime.test_client_tool_control_resume import (
@@ -59,6 +59,9 @@ def _server() -> AgentWebSocketServer:
 
 
 def test_agent_server_answers_the_attach_methods_and_a_new_gateway_link_leaves_the_attachments_alone() -> None:
+    metadata = attach.get_agent_sessions_dir() / "session-1" / "metadata.json"
+    metadata.write_text(json.dumps({**json.loads(metadata.read_text()), "message_count": 2}))  # listed once written in
+
     async def scenario() -> None:
         server = _server()
         old_link, new_link = Socket(), Socket()

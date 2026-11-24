@@ -6,7 +6,12 @@ from dataclasses import dataclass
 import re
 from typing import Literal
 
-PublishAssetKind = Literal["skill", "skillpack", "agent_template", "agent_group", "plugin", "mcp"]
+from jiuwenswarm.extensions.app_market.app_market.models import normalize_app_version
+
+PublishAssetKind = Literal[
+    "skill", "skillpack", "agent_template", "agent_group", "plugin", "mcp", "system_plugin", "app"
+]
+APP_UPLOAD_BODY_BYTES = 512 * 1024 * 1024
 
 
 class PublishProtocolError(ValueError):
@@ -28,6 +33,8 @@ class PublishIdentity:
             "agent_group",
             "plugin",
             "mcp",
+            "system_plugin",
+            "app",
         }:
             raise ValueError("Unsupported publish kind")
         if (
@@ -36,7 +43,10 @@ class PublishIdentity:
             or self.package_name != self.package_name.strip()
         ):
             raise ValueError("Invalid package name")
-        if not isinstance(self.version, str) or not re.fullmatch(
+        if self.kind == "app":
+            if normalize_app_version(self.version) is None or self.version != self.version.strip():
+                raise ValueError("Invalid app publish version")
+        elif not isinstance(self.version, str) or not re.fullmatch(
             r"(?:[0-9]+\.[0-9]+\.[0-9]+|[0-9a-f]{7})", self.version
         ):
             raise ValueError("Invalid publish version")

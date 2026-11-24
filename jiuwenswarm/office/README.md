@@ -1,24 +1,43 @@
 # Office 后端
 
-PowerPoint 任务窗格在 AgentServer 侧的能力：工具合同、在任务窗格执行的客户端工具、人设与 skills、
-插入用的会话资产。`server/client_attachments/registry.py` 把应用编号 `office-powerpoint`
-登记为包目录 `powerpoint/`；这个目录既是合同，也是对话加载的 agent template（`manifest.json`）。
+Office 任务窗格在 AgentServer 侧的能力：工具合同、在任务窗格执行的客户端工具、人设与 skills、
+插入用的会话资产。`server/client_attachments/registry.py` 把应用编号 `office-powerpoint`、`office-word`、
+`office-excel` 分别登记为包目录 `powerpoint/`、`word/`、`excel/`，`wps-presentation`（WPS 演示）也登记为
+`powerpoint/`，`wps-spreadsheet`（WPS 表格）也登记为 `excel/`，`wps-writer`（WPS 文字）也登记为 `word/`；
+每个目录既是合同，也是对话加载的 agent template（`manifest.json`）。
+
+每个工具的 `host_requirements` 按平台（`office`、`wps`）写宿主要具备什么（`sets`：Office.js 需求集合；
+`worker`：要 Worker）。工具只在写了的平台上运行：登记表给每个应用一个平台，attach 拒绝声明本平台
+没有的工具；窗格只声明本平台写了、条件满足、自己实现了的工具。只有 WPS 能做的工具只写 `wps`：WPS 不跑
+Office.js，`execute_office_js` 只写 `office`，WPS 表格和 WPS 文字改用只写 `wps` 的 `execute_wps_js`（在 WPS
+对象模型上运行模型的代码）。
 
 ## 目录
 
 ```text
-contract.py            读 powerpoint/tools.json，校验 annotations，生成 ToolCard
-client_tools.py        PowerPointTool(ClientTool)：build_request 判断能否执行并给出下载链接，complete 处理截图；
-                       VerifySlideVisualTool：verify_slide_visual
-review.py              视觉复核：选审稿模型、审稿调用（60s）、判定、几何摘要、返回给作者的结果
-rails.py               OfficeToolsRail：注册工具、按 supported_tools 过滤每次模型调用
-assets.py              publish_powerpoint_asset 与会话资产（office_assets/，经 /file-api/download 下发）
+contract.py            读包目录的 tools.json，校验 annotations，生成 ToolCard
+client_tools.py        TaskPaneTool(ClientTool)：build_request 判断能否执行并给出下载链接，complete 处理截图；
+                       ReviewTool：按工具名表 _REVIEWS 挂独立审稿（verify_slide_visual、verify_doc_visual、explain_edits）
+review.py              独立审稿：视觉复核（选审稿模型、审稿调用 60s、判定、几何摘要）与 explain_edits 的依据核对
+rails.py               OfficeToolsRail：注册所在包的工具，第一次模型调用时按 supported_tools 去掉窗格跑不了的；
+                       把窗格随消息发来的文档状态作为一次 read_surface_context 调用和结果加进对话
+excel_reminders.py     ExcelReminderRail：Excel 和 WPS 表格回合要结束时，写了没读回、改了图表没看、调用失败没重试，
+                       各提醒一次
+assets.py              publish_office_asset 与会话资产（office_assets/，经 /file-api/download 下发）
 documents.py           list_open_documents：同一用户其他已连接的文档及其对话
+icons.py               search_icons 与随包图标集（fluent_icons/：Fluent UI System Icons 24px regular+filled，MIT；
+                       aliases.json 中英文别名）；scripts/update_fluent_icons.py 从 npm 包重建
 runtime.py             会话目录、资产允许目录、把图片存进会话 uploads
 powerpoint/            合同 tools.json、profile.json（任务窗格构建时读取）；agent template：
                        manifest.json、persona/（替换默认身份）、rails/（指向 OfficeToolsRail）、skills/；
                        review.md（verify_slide_visual 的审稿清单）
+word/、excel/          同上的 Word、Excel 包；word/review.md 是 verify_doc_visual 的审稿清单，word/claim_check.md
+                       是 explain_edits 的核对说明；excel/ 没有独立审稿
 ```
+
+`contract.py`、`TaskPaneTool`、`rails.py` 不认识 Office：任何在自己包里声明工具、由客户端执行的应用都是
+这一套。现在登记的应用都是 Office 宿主，所以放在这里；出现第一个非 Office 的客户端应用时，把这三块
+挪到 `server/client_attachments/`，Office 专属的东西（视觉复核、素材类型、`list_open_documents`）留下。
 
 ## 何时生效
 
@@ -30,6 +49,8 @@ powerpoint/            合同 tools.json、profile.json（任务窗格构建时�
 - 该对话的每一轮（任务窗格发的消息、别的对话发来的消息、续跑）在加载装备插件的同一步给本对话的
   agent 加载 `powerpoint/` 这个 agent template（人设、`OfficeToolsRail`、skills），每个 agent 实例只加载一次；
   `client_app` 为空的对话不受影响。这类对话不装备专家（`agent_template_name` 被拒绝），也不从预热池领取。
+- `OfficeToolsRail` 从加载它的 template 得知自己的包目录（agent-core 的 `from_plugin_context`，
+  `source_root` 即 `manifest.json` 所在目录），包里的 `rails/office_tools.py` 只是转出这个类。
 - 建这类对话的 agent 时就去掉登记表里该应用 `leaves_out` 的能力：子代理（段落与 `subagent_*` 工具）、
   `send_file_to_user`、input 段、output 段。这些能力不挂上，热更新、每轮补挂和重建 agent 后也不会回来。
 - `client_app` 为已登记应用的对话只在该客户端里显示：不出现在 web/desktop 的 session 列表和项目里，
@@ -38,34 +59,101 @@ powerpoint/            合同 tools.json、profile.json（任务窗格构建时�
 
 ## 工具执行
 
-- 合同里的 18 个工具都是 agent-core `ClientTool`。模型调用时先过所有 `before_tool_call`
+- 合同里的 19 个工具都是 agent-core `ClientTool`。模型调用时先过所有 `before_tool_call`
   rail（含权限），再以 `client_tool` 中断暂停；流里发 `chat.client_tool_request`，
   `arguments` 是本次调用的参数，`client_tool.downloads` 是参数里各资产 handle 的下载链接。
   任务窗格执行后用 `chat.send`（`source: "client_tool_interrupt"`）续跑。
 - 审批只在后端：工具和其他工具一样走 permissions 规则，任务窗格不再自己询问。
-- 本文档的 PowerPoint 跑不了的工具不出现在模型的工具列表里；`tool_search` 仍可能找到
-  deferred 工具，调用时直接报错说明原因。文档当前没打开时调用立即失败（可重试），
+- 窗格连上后的第一次模型调用，rail 把窗格跑不了的工具从 agent 上去掉：模型的工具列表、
+  `tool_search` 和 deferred 工具目录都没有它们。之后不再变：一个对话在一个宿主里用。
+  调用途中窗格失去支持时，调用直接报错说明是插件还没有这个工具。文档当前没打开时调用立即失败（可重试），
   不会占住这一轮；已发出的调用若窗格消失，由 attach 的 sweep 答成 `client_gone`。
 - 截图：当前模型能看图时，图片只送进下一次模型调用（`keep_in_context: False`）；
   不能看图时存进本对话 uploads，结果里给出 `visual_attachment.path`。
 - 视觉复核 `verify_slide_visual`：审稿只看清单和这一页，不带对话内容。审稿模型是本对话当前的模型
   （能看图时，判断同上一条），否则是 `models.vision`（与 agent 自己的视觉工具同一门控）；两者都没有时，
-  build_request 在上面的检查之后立即失败、不可重试。通过后 `client_tool.render.width` 为 960。任务窗格在
-  一次答复里给出这一页的截图和几何测量（`{slide_id, slide_index, geometry|null}`）。complete 校验答复
-  （恰好一张图、`slide_id` 一致）后，把审稿清单（`review.md`）、几何摘要和截图交给审稿模型，只有这两条消息；
+  build_request 在上面的检查之后立即失败、不可重试。任务窗格在一次答复里给出这一页的截图和几何测量
+  （`{slide_id, geometry}`）。complete 校验答复（恰好一张图、`slide_id` 一致、带几何）后，把包里的审稿清单
+  （`review.md`）、几何摘要和截图交给审稿模型，只有这两条消息；
   60s 内没有答复、供应商报错或两次空答复时，返回不带 verdict 的结果。作者拿到 `done|needs_work`、
   `hard_defects`/`advisories`/`expected_change_checks` 和同一张截图（截图的去向同上一条）。
   怎么用这个结果（`needs_work` 不算完成、同一页三轮就停、没有 verdict 时自己看图并说明）只写在人设的编辑循环里。
+- 依据核对 `explain_edits`（Word）：同一张表的一行。窗格答复文档的定稿正文（待处理修订已应用）和待处理修订；
+  complete 把 `claim_check.md`、正文、修订、依据里点名且包里有的 skill 和要核对的依据交给本对话当前的模型，
+  不带对话内容，按 JSON 数组读回每条依据的 verdict。`model_judgment` 记 `not_checked`；法律（要联网搜索）和
+  用户的长期偏好（审稿拿不到）记 `could_not_verify`，不进审稿调用。审稿失败或答复不成形时，送审的依据都记
+  `could_not_verify` 并写明原因。作者拿到每条计划修改及其 `verdicts`、`has_unverified_claims`。
 - 跨文档协作走 `list_open_documents` + 现有的 `session_send_message`，session 之间只传文字。
+- 图标：`search_icons` 在后端按图标名和别名查随包图标集，不调外部服务；合同里有 `insert_icon` 时才注册，
+  窗格不支持 `insert_icon` 时一并去掉。`insert_icon` 的 `build_request` 把该图标的 SVG 放进请求（`icon_svg`），
+  窗格着色、画出 PNG 回退，经整页往返插成带 `svgBlip` 的图片。
+- 耗时：每次窗格工具答复，日志记一行 `[office] <工具> <调用> in <会话>: <telemetry>`（排队、宿主导出/写入耗时），
+  与同一会话的 `llm_usage` 行（模型耗时）对照，可算出建一页时模型与宿主各占多少。
+
+## 每回合的文档状态与 Excel 提醒
+
+- Word、Excel 窗格发消息时带上 `chat.send` 的 `client_state`：窗格的 `read_surface_context` 此刻会给的文本。
+  该轮在加载应用 template、保存会话设备之后把它存进会话目录的 `client_state.json`，只留最新一份，带递增序号；
+  不是文本或超过 256 KiB 时这条消息报错。PowerPoint 窗格不发。
+- `OfficeToolsRail` 在每次模型调用前比较序号：比对话里已加过的新，就在对话末尾加一次 `read_surface_context`
+  调用（id `client_state_<序号>`）和它的结果，模型看到的就像自己调过一样。续跑、别的对话发来的消息不带状态，
+  什么都不加。状态进历史、不进系统提示词，旧的结果留在历史里（Excel 首回合的 `<initial_state>` 之后不再重发）。
+- Excel 包另挂 `ExcelReminderRail`：模型不调工具、要结束回合时，从本回合（最近一条用户消息之后）的调用和结果
+  推出三件事：写了单元格之后没读回、改了图表或形状之后没看图、有调用失败且之后没有成功重做。有就要求再跑一轮，
+  在下一次模型调用前加一条提醒；每种一回合一次。窗格工具每次都暂停、续跑是新的 invoke，所以不记在 `ctx.extra`，
+  只把"这次调用失败了"标在结果消息的 metadata 上；结果自己报错的（代码返回 `{error}` 或 `{success: false}`）也算失败。
 
 ## 资产
 
-插入图片、导入 .pptx 时，模型先用 `publish_powerpoint_asset` 发布对话项目目录、agent
+插入图片、导入 .pptx 时，模型先用 `publish_office_asset` 发布对话项目目录、agent
 workspace 或本对话 uploads 里的文件，拿到它的 descriptor（不透明的 handle、大小、SHA-256）；
 各工具的资产参数都直接接收这个 descriptor（`presentation_apply_patch` 另加 `key`）。调用引用本对话的
 handle 时，`build_request` 给出 `/file-api/download` 链接；这个下载接口和 `send_file_to_user`
 的链接一样，不检查过期和对话，任务窗格下载后按 descriptor 的大小和 SHA-256 校验。
-后端不保存演示文稿副本，撤销靠 PowerPoint。
+后端不保存文档副本，撤销靠宿主自己的撤销。
+
+## 桌面安装
+
+桌面版把任务窗格装进本机的 PowerPoint、Word 和 Excel，代码在 `jiuwenswarm/channels/desktop/office_addins/`：
+
+- 窗格构建在前端 dist 的 `office/` 下（`npm run build:desktop`，桌面构建脚本在前端之后执行，失败则构建失败），
+  由桌面的 web 进程提供：三个宿主的页面 `taskpane.<host>.html`，旁边是各自的 `manifest.<host>.xml`。
+  Office 只从 HTTPS 加载窗格，所以 web 进程在端口分配表的 `office_tls`（默认 5443，
+  随实例 +1000）上另开一个只绑 127.0.0.1 的 HTTPS 监听，用同一个 handler，`/ws`、`/file-api/download` 照常可用。
+- 证书在 `<数据目录>/office-addin/tls/`：一个本地 CA 和它签发的 `localhost` 证书；系统只信任这个 CA，
+  CA 私钥不落盘，所以它签不了别的证书。距过期不足 30 天时，再点一次安装会换新的一对，先撤销旧 CA 的信任。
+- 注册用 Microsoft 的侧载位置（与 office-addin-dev-settings 相同）：Mac 写各应用容器
+  `~/Library/Containers/<com.microsoft.Powerpoint|Word|Excel>/Data/Documents/wef/`，Windows 在
+  `HKCU\SOFTWARE\Microsoft\Office\16.0\Wef\Developer` 下按 add-in Id 各写一个值。`registration.py` 的 `HOSTS`
+  一张表记每个应用的容器和安装版 Id。清单由 `manifest.<host>.xml` 渲染：开发 origin 换成本进程的 HTTPS origin、
+  路径加 `/office/`（窗格页是 `/office/taskpane.<host>.html`），`<Id>` 换成安装版自己的，不与开发侧载互相覆盖。
+- 窗格地址带 `?u=<用户 id>`：安装器第一次渲染清单时在 `<数据目录>/office-addin/user-id` 生成一个 id，各宿主的清单
+  都用它，所以 Word、Excel、PowerPoint 的窗格是同一个用户，能互相看到打开的文档、互发消息（服务端按用户隔离）。
+  移除后再装仍用原 id，Windows 卸载才删除。清单里的 id 不对或没有，和端口变了一样算 `stale_origin`。
+- 用户安装的单位是套件：`SUITES` 一张表定义每个套件含哪些应用（`office` → PowerPoint、Word、Excel）。
+  一次安装为整个套件做一次证书、信任和监听，再注册套件里本机有的每个应用；本机没有的应用（Mac 上容器不存在）
+  不算套件的问题，装好并打开一次后再点安装即可补上。
+- 接口只在桌面模式下存在，且只认桌面窗口的 Cookie，否则 404：`GET /desktop-api/office-addins` 返回
+  `{"suites": {"office": {"installed", "problems", "apps": {"powerpoint": "installed", ...}}}}`；
+  `POST /desktop-api/office-addins/<suite>/install|remove` 返回该套件的状态。每个应用是 `installed`、
+  `not_installed` 或 `host_not_found`；`installed` 表示本机有的应用都已注册，且至少有一个。
+  状态每次现读注册和证书，`problems` 取值 `permission_denied`、`certificate_untrusted`、
+  `certificate_expiring`、`tls_unavailable`、`stale_origin`；修复就是再点一次安装。web 进程启动后会按当前端口
+  重写已装的清单。
+- `wps` 套件（WPS 文字、表格、演示）不用证书：WPS 从本机 HTTP 加载，地址是桌面 web 进程自己的端口
+  `http://127.0.0.1:<端口>/office/wps/<wps|et|wpp>/`（壳页面 `ribbon.xml`、`index.html` 在窗格构建的 `wps/` 下）。
+  注册是在 WPS 的加载项列表 `publish.xml` 里按类型各加一条 `name="WorkSwarm"` 的 `jspluginonline`，
+  移除只删这几条，其他条目和文件编码不动；`authaddin.json` 归 WPS 管，不碰。列表位置按平台
+  查表：Mac 国际版和国内版各在自己的沙盒容器里（`WPS_MAC_EDITIONS`）；Windows 在
+  `%APPDATA%\kingsoft\wps\jsaddons\publish.xml`（`WPS_WINDOWS_EDITIONS`，国内版取自 WPS 官方 wpsjs 工具的写法，
+  国际版也用这个目录是推断，未验证）。装过哪个版本就写哪个，各版本互不影响；没有装任何版本时，三个应用都显示「未找到」。
+  Windows 卸载程序也会删掉这几条。
+  首次使用要重启 WPS，并在 WPS 询问时信任一次。
+- 没有任何 Office 应用还注册着时，移除会撤销 CA 信任、删除证书并关掉 HTTPS 监听。Windows 卸载程序执行
+  `--desktop-remove-office-addins` 做同样的清理。
+- 已知限制：Mac 没有卸载钩子，删除 app 前要先在桌面里移除；macOS 上每个 Office 应用必须先打开过一次；
+  Office 应用可能要重启才读到新清单；从源码运行桌面版时要先在 `packages/jiuwenswarm-office-addin` 执行
+  `npm run build:desktop`。
 
 ## 测试
 

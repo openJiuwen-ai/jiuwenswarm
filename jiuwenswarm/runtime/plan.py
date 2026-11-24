@@ -102,6 +102,7 @@ class PlanModeController:
         from jiuwenswarm.agents.harness.common.session_ops_service import (
             resolve_live_agent_session,
         )
+        from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 
         live_deep_agent = agent.get_live_session_instance(session_id)
         if live_deep_agent is not None:
@@ -122,6 +123,10 @@ class PlanModeController:
                 started = starter(session_id)
                 if inspect.isawaitable(started):
                     started = await started
+            except HistoryReplayError:
+                # A rejected restore must reach the caller before any plan state
+                # can be written to a separate Session or execution starts.
+                raise
             except Exception as exc:  # noqa: BLE001 - compatibility fallback
                 logger.warning(
                     "Failed to start live plan-state session for session=%s: %s; "
@@ -265,7 +270,9 @@ class PlanModeController:
     ) -> list[dict[str, Any]]:
         """Detect an exit_plan_mode transition performed by a tool."""
         session_id = request.session_id
-        if not session_id:
+        # Inspection requests can finish before the first chat enters plan
+        # mode. Their snapshot cannot establish that a tool exited it.
+        if not session_id or not self.should_sync(request):
             return []
         resolved = resolve_request_runtime_mode(request)
         if isinstance(request.params, dict):

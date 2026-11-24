@@ -19,6 +19,14 @@ import {
   type DesignerNodeState,
 } from './executionGraphTypes';
 
+/** Session that owns the graph; run triggers must name it so run pushes land
+ * in the same session as the canvas (regenerate issue #5326). */
+function graphSessionId(graph: DesignerExecutionGraph | null | undefined): string | undefined {
+  const raw = graph?.metadata?.session_id;
+  const id = typeof raw === 'string' ? raw.trim() : '';
+  return id || undefined;
+}
+
 type DesignerRunStore = {
   run: DesignerExecutionRun | null;
   nodeStates: Record<string, DesignerNodeState>;
@@ -260,12 +268,22 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
               graphId: graph.graph_id,
               runId: run?.run_id,
               nodeId: failedId,
+              sessionId: graphSessionId(graph),
             })
-          : await designerGraphClient.startRun({ graphId: graph.graph_id });
+          : await designerGraphClient.startRun({
+              graphId: graph.graph_id,
+              sessionId: graphSessionId(graph),
+            });
       } else if (run?.run_id && primary === 'continue') {
-        result = await designerGraphClient.startRun({ runId: run.run_id });
+        result = await designerGraphClient.startRun({
+          runId: run.run_id,
+          sessionId: graphSessionId(graph),
+        });
       } else {
-        result = await designerGraphClient.startRun({ graphId: graph.graph_id });
+        result = await designerGraphClient.startRun({
+          graphId: graph.graph_id,
+          sessionId: graphSessionId(graph),
+        });
       }
       const warning = String(result.warning || result.run?.warning || result.warnings?.[0] || '').trim() || null;
       get().applyRun(result.run);
@@ -279,11 +297,11 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
 
   rerunNode: async (graph, nodeId) => {
     if (get().isRunning || !nodeId) return;
-    // No model, no run: regenerating an image / video node with its Settings
-    // slot off or incomplete can only fail, so report the same reason the
-    // landing page uses instead of dispatching a doomed job (#5266).
+    // Same kind-scoped gate as the node send button: only this node's
+    // modality is required. A catalogue deleted after the canvas was
+    // created fails here instead of dispatching a doomed job (#5266).
     const node = graph.nodes.find((item) => item.id === nodeId);
-    const problem = await findDesignRunProblem([node], graph);
+    const problem = await findDesignRunProblem(node ? [node] : [], graph);
     if (problem) {
       set({ runError: problem, runWarning: null });
       return;
@@ -296,6 +314,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
         graphId: graph.graph_id,
         runId: run?.run_id,
         nodeId,
+        sessionId: graphSessionId(graph),
       });
       const warning = String(result.warning || result.run?.warning || result.warnings?.[0] || '').trim() || null;
       get().applyRun(result.run);
@@ -319,7 +338,10 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
     await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {
-      const result = await designerGraphClient.startRun({ graphId: graph.graph_id });
+      const result = await designerGraphClient.startRun({
+        graphId: graph.graph_id,
+        sessionId: graphSessionId(graph),
+      });
       const warning = String(result.warning || result.run?.warning || result.warnings?.[0] || '').trim() || null;
       get().applyRun(result.run);
       if (warning) {

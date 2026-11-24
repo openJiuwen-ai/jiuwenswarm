@@ -7,6 +7,7 @@ type MemberOverviewCardProps = {
   memberId: string;
   /** 头像 hash key（镜像 worker 传 agent.name，真实队友缺省用 memberId）。 */
   avatarKey?: string;
+  avatarUrl?: string;
   /** 头像身份（CLI 品牌 / 人类 / 专家）：avatarKey 非成员 id 时名册查不到，需显式传入。 */
   avatarIdentity?: { cliAgent?: string; role?: string; mode?: string; agentTemplate?: string };
   displayName: string;
@@ -22,6 +23,7 @@ type MemberOverviewCardProps = {
 export function MemberOverviewCard({
   memberId,
   avatarKey,
+  avatarUrl,
   avatarIdentity,
   displayName,
   expertHint,
@@ -63,6 +65,7 @@ export function MemberOverviewCard({
         <div className="relative shrink-0">
           <TeamMemberAvatar
             member={avatarKey ?? memberId}
+            avatarUrl={avatarUrl}
             identity={avatarIdentity}
             alt={displayName}
             className="h-8 w-8 rounded-full"

@@ -33,12 +33,16 @@ import contextlib
 import dataclasses
 import logging
 import time
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from .managed_subagent_control import (
     register_cua_execution,
     unregister_cua_execution,
 )
+
+if TYPE_CHECKING:
+    from openjiuwen.harness.subagent_runtime.models import SubagentStatus
 
 _PATCH_APPLIED = False
 _REVISIONS: dict[str, int] = {}
@@ -101,7 +105,7 @@ def _build_projection(
         display_name=display_name,
         role="",
         parent_session_id=parent_session_id,
-        task_description=task_description[:_MAX_TASK_DESCRIPTION_CHARS],
+        task_description=task_description,
         created_at_ms=created_at_ms,
         updated_at_ms=time.time() * 1000,
         closed_at_ms=None,
@@ -223,10 +227,16 @@ class _ActivityForwardingSubagent:
         self._emitter = emitter
 
     async def stream(self, inputs: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        stream = self._inner.stream(inputs, **kwargs)
+        scope = (
+            contextlib.aclosing(stream)
+            if callable(getattr(stream, "aclose", None)) else contextlib.nullcontext(stream)
+        )
         try:
-            async for chunk in self._inner.stream(inputs, **kwargs):
-                await self._emitter.forward_chunk(chunk)
-                yield chunk
+            async with scope:
+                async for chunk in stream:
+                    await self._emitter.forward_chunk(chunk)
+                    yield chunk
         finally:
             await self._emitter.flush()
 
@@ -238,14 +248,7 @@ class _ActivityForwardingSubagent:
 
 
 async def _run_roster_heartbeat(
-    parent_session: Any,
-    *,
-    parent_session_id: str,
-    subagent_id: str,
-    normalized_type: str,
-    display_name: str,
-    task_text: str,
-    created_at_ms: float,
+    emit_status: Callable[[SubagentStatus], Awaitable[None]],
 ) -> None:
     """Touch the roster with a running status while the delegation runs.
 
@@ -257,19 +260,7 @@ async def _run_roster_heartbeat(
 
     while True:
         await asyncio.sleep(_HEARTBEAT_INTERVAL_S)
-        await _emit_roster_event(
-            parent_session,
-            _build_projection(
-                subagent_id=subagent_id,
-                normalized_type=normalized_type,
-                display_name=display_name,
-                parent_session_id=parent_session_id,
-                task_description=task_text,
-                status=SubagentStatus.running(),
-                revision=_next_revision(subagent_id),
-                created_at_ms=created_at_ms,
-            ),
-        )
+        await emit_status(SubagentStatus.running())
 
 
 async def _stop_heartbeat(task: asyncio.Task | None) -> None:
@@ -299,38 +290,40 @@ async def _invoke_with_event_forwarding(
         return await original_invoke(task_tool, subagent, **kwargs)
 
     display_name_value = _display_name(subagent, normalized_type)
-    task_text = str(kwargs.get("task_description") or "")
+    task_text = getattr(task_tool, "display_task_description", None)
+    if task_text is None:
+        task_text = str(kwargs.get("task_description") or "")[:_MAX_TASK_DESCRIPTION_CHARS]
+    display_name_i18n = getattr(task_tool, "display_name_i18n", None)
+    avatar = getattr(task_tool, "display_avatar", "")
+    if display_name_i18n:
+        language = getattr(task_tool, "language", "cn")
+        display_name_value = display_name_i18n.get("en" if language == "en" else "zh") or display_name_value
     started_ms = time.time() * 1000
 
-    await _emit_roster_event(
-        parent_session,
-        _build_projection(
+    async def emit_status(status: SubagentStatus, *, include_avatar: bool = False) -> None:
+        projection = _build_projection(
             subagent_id=sub_session_id,
             normalized_type=normalized_type,
             display_name=display_name_value,
             parent_session_id=parent_session_id,
             task_description=task_text,
-            status=SubagentStatus.pending_init(),
+            status=status,
             revision=_next_revision(sub_session_id),
             created_at_ms=started_ms,
-        ),
-    )
+        )
+        if display_name_i18n:
+            projection["display_name_i18n"] = display_name_i18n
+        if include_avatar and avatar:
+            projection["avatar"] = avatar
+        await _emit_roster_event(parent_session, projection)
+
+    await emit_status(SubagentStatus.pending_init(), include_avatar=True)
     emitter = _SyncActivityEmitter(
         parent_session=parent_session,
         parent_session_id=parent_session_id,
         subagent_id=sub_session_id,
     )
-    heartbeat = asyncio.create_task(
-        _run_roster_heartbeat(
-            parent_session,
-            parent_session_id=parent_session_id,
-            subagent_id=sub_session_id,
-            normalized_type=normalized_type,
-            display_name=display_name_value,
-            task_text=task_text,
-            created_at_ms=started_ms,
-        )
-    )
+    heartbeat = asyncio.create_task(_run_roster_heartbeat(emit_status))
     cua_execution = (
         register_cua_execution(
             parent_session_id=parent_session_id,
@@ -356,35 +349,11 @@ async def _invoke_with_event_forwarding(
     except BaseException as exc:
         unregister_cua_execution(cua_execution)
         await _stop_heartbeat(heartbeat)
-        await _emit_roster_event(
-            parent_session,
-            _build_projection(
-                subagent_id=sub_session_id,
-                normalized_type=normalized_type,
-                display_name=display_name_value,
-                parent_session_id=parent_session_id,
-                task_description=task_text,
-                status=SubagentStatus.errored(str(exc) or "subagent failed"),
-                revision=_next_revision(sub_session_id),
-                created_at_ms=started_ms,
-            ),
-        )
+        await emit_status(SubagentStatus.errored(str(exc) or "subagent failed"), include_avatar=True)
         raise
     unregister_cua_execution(cua_execution)
     await _stop_heartbeat(heartbeat)
-    await _emit_roster_event(
-        parent_session,
-        _build_projection(
-            subagent_id=sub_session_id,
-            normalized_type=normalized_type,
-            display_name=display_name_value,
-            parent_session_id=parent_session_id,
-            task_description=task_text,
-            status=SubagentStatus.completed(),
-            revision=_next_revision(sub_session_id),
-            created_at_ms=started_ms,
-        ),
-    )
+    await emit_status(SubagentStatus.completed(), include_avatar=True)
     return result
 
 

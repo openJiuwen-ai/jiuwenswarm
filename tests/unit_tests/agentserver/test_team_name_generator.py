@@ -146,7 +146,8 @@ async def test_generate_team_name_retries_generic_placeholder(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_team_name_retries_non_ascii_candidate(monkeypatch):
+@pytest.mark.parametrize("invalid_first_candidate", ["双人报数12", "counting_duo"])
+async def test_generate_team_name_retries_invalid_candidate(monkeypatch, invalid_first_candidate):
     prompts: list[str] = []
 
     class FakeTinyAgent:
@@ -159,40 +160,7 @@ async def test_generate_team_name_retries_non_ascii_candidate(monkeypatch):
         async def run(self, content: str):
             prompts.append(content)
             if len(prompts) == 1:
-                return {"team_name": "双人报数12"}
-            return {"team_name": "counting-duo"}
-
-    monkeypatch.setattr(
-        team_name_generator,
-        "create_tiny_agent",
-        lambda **kwargs: FakeTinyAgent(),
-    )
-
-    result = await team_name_generator.generate_team_name(
-        "使用 build team 创建2人团队，分别报数 1 2",
-        config_base=_team_config(),
-        template_id="default_team",
-    )
-
-    assert result == "counting-duo"
-    assert len(prompts) == 2
-
-
-@pytest.mark.asyncio
-async def test_generate_team_name_retries_underscore_candidate(monkeypatch):
-    prompts: list[str] = []
-
-    class FakeTinyAgent:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return None
-
-        async def run(self, content: str):
-            prompts.append(content)
-            if len(prompts) == 1:
-                return {"team_name": "counting_duo"}
+                return {"team_name": invalid_first_candidate}
             return {"team_name": "counting-duo"}
 
     monkeypatch.setattr(

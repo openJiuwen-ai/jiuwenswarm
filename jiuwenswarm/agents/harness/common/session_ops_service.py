@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 from __future__ import annotations
 
+import codecs
 import copy
 import json
 import logging
@@ -9,8 +10,9 @@ import re
 import shutil
 import threading
 import time
+import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +21,14 @@ from typing import Any, TYPE_CHECKING
 from agent_gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
 from jiuwenswarm.server.runtime.session import lifecycle as lc
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
+from jiuwenswarm.server.runtime.session.history_replay import (
+    HistoryReplayCursor,
+    HistoryReplayError,
+    read_history_replay,
+    try_prefetch_history_prefix,
+)
+from jiuwenswarm.server.runtime.session.recovery_budget import LegacyGroupLimit, LegacyLimitSource
 from jiuwenswarm.server.runtime.session.session_history import (
     flush_history_writes,
     get_read_history_path,
@@ -27,11 +37,16 @@ from jiuwenswarm.server.runtime.session.session_history import (
     write_history_records,
     _write_records_to_path,
 )
+from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
 
 if TYPE_CHECKING:
     from openjiuwen.harness import DeepAgent
 
 logger = logging.getLogger(__name__)
+
+# Speculative reads run alongside adapter assembly, before recovery admission.
+# Larger files are decoded only by the admitted restore.
+_MAX_HISTORY_PREFETCH_BYTES = 128 * 1024
 
 
 @dataclass(frozen=True)
@@ -41,10 +56,11 @@ class SessionHistorySnapshot:
     session_id: str
     before_request_id: str
     generation: int
-    runtime_owner: tuple[int, float]
+    runtime_owner: tuple[int, float | int]
     path: Path
     file_identity: tuple[int, int, int, int, int]
     records: tuple[dict[str, Any], ...]
+    replay_cursor: HistoryReplayCursor | None = None
 
 
 def _history_file_identity(path: Path) -> tuple[int, int, int, int, int]:
@@ -52,11 +68,16 @@ def _history_file_identity(path: Path) -> tuple[int, int, int, int, int]:
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
-def _history_runtime_owner(value: dict[str, Any]) -> tuple[int, float] | None:
+def _history_runtime_owner(value: dict[str, Any]) -> tuple[int, float | int] | None:
     owner = value.get("runtime_owner") or {}
-    if owner.get("pid") != os.getpid() or owner.get("started_at") is None:
+    if owner.get("pid") != os.getpid():
         return None
-    return (owner["pid"], owner["started_at"])
+    identity = owner.get("started_at")
+    if identity is None:
+        identity = owner.get("start_ticks")
+    if identity is None:
+        return None
+    return (owner["pid"], identity)
 
 
 def prefetch_session_history(
@@ -71,31 +92,33 @@ def prefetch_session_history(
     boundary = str(history_before_request_id or "").strip()
     if not boundary:
         return None
+    from jiuwenswarm.server.runtime.session.context_snapshot import has_snapshot_hint
+
+    if has_snapshot_hint(session_id):
+        return None
+    owner = None
+
+    def eligible(path: Path, size: int, state: dict[str, Any]) -> bool:
+        nonlocal owner
+        owner = _history_runtime_owner(state)
+        return (
+            owner is not None and not state.get("write_blocked")
+            and size <= _MAX_HISTORY_PREFETCH_BYTES
+            and _path_has_recovery_prefix(path, session_id, boundary, size)
+        )
+
     try:
-        with lc.resource_lock("session", session_id):
-            lc.guard(session_id)
-            value = lc.state("session", session_id)
-            owner = _history_runtime_owner(value)
-            if owner is None or value.get("write_blocked"):
-                return None
-            path = get_read_history_path(session_id)
-            if not path.exists():
-                return None
-            identity = _history_file_identity(path)
-            records = load_history_records(session_id)
-            if get_read_history_path(session_id) != path or identity != _history_file_identity(path):
-                return None
-            if not any(
-                str(record.get("request_id") or "").strip() == boundary
-                and record.get("role") in {"user", "human"}
-                for record in records
-            ):
-                return None
-            return SessionHistorySnapshot(
-                session_id, boundary, int(value.get("generation", 0)), owner,
-                path, identity, tuple(records),
-            )
+        batch = try_prefetch_history_prefix(session_id, boundary, eligible)
+        if batch is None or owner is None:
+            return None
+        if not any(record.get("role") in {"user", "human"}
+                   and str(record.get("request_id") or "").strip() == boundary for record in batch.records):
+            return None
+        cursor = batch.prefix_cursor
+        return SessionHistorySnapshot(session_id, boundary, cursor.generation, owner, cursor.path,
+                                      cursor.identity, tuple(batch.records), cursor)
     except Exception as exc:
+        # The admitted restore rereads the source and reports any authoritative error.
         logger.debug("session history pre-read unavailable for %s: %s", session_id, exc)
         return None
 
@@ -118,6 +141,82 @@ def _history_snapshot_is_current(
             )
     except Exception:
         return False
+
+
+def _legacy_limit_source_is_current(source: LegacyLimitSource) -> bool:
+    try:
+        cursor = source.cursor
+        with lc.resource_lock("session", source.session_id, blocking=False):
+            lc.guard(source.session_id)
+            state = lc.state("session", source.session_id)
+            return (
+                not state.get("write_blocked")
+                and int(state.get("generation", 0)) == cursor.generation
+                and get_read_history_path(source.session_id) == cursor.path
+                and _history_file_identity(cursor.path) == cursor.identity
+            )
+    except Exception:
+        # An unverifiable cached limit must defer to the admitted history reader.
+        return False
+
+
+def _has_recovery_prefix(session_id: str, boundary: str) -> bool:
+    """Check if a restore might be needed without materializing history payloads."""
+    try:
+        # This speculative check runs before recovery admission. A busy lock
+        # must defer to the admitted reader, never occupy the shared executor.
+        with lc.resource_lock("session", session_id, blocking=False):
+            if not history_exists(session_id):
+                return False
+            lc.guard(session_id)
+            path = get_read_history_path(session_id)
+            return _path_has_recovery_prefix(path, session_id, boundary, path.stat().st_size)
+    except (OSError, ValueError, lc.LifecycleError):
+        return True
+
+
+def _path_has_recovery_prefix(path: Path, session_id: str, boundary: str, size: int) -> bool:
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayLimits
+    from jiuwenswarm.server.runtime.session.history_stream import iter_history_rows
+
+    if not size:
+        return False
+    if not boundary and size > _MAX_HISTORY_PREFETCH_BYTES:
+        return True
+    if size > HistoryReplayLimits().max_record_bytes:
+        return True
+    jsonl = path.suffix.lower() == ".jsonl"
+    try:
+        with closing(iter_history_rows(path, session_id=session_id, metadata_only=True, end=size)) as rows:
+            first = next(rows, None)
+            if first is None:
+                if not jsonl:
+                    return False  # The scanner consumed and validated the entire empty array.
+                # A BOM on an otherwise blank JSONL line is a nonempty, invalid
+                # record for the line-oriented reader. Ordinary whitespace is empty.
+                with path.open("rb") as source:
+                    return source.read(len(codecs.BOM_UTF8)) == codecs.BOM_UTF8
+            if (not boundary or first.record.get("role") not in {"user", "human"}
+                    or str(first.record.get("request_id") or "").strip() != boundary):
+                return True
+            if not jsonl:
+                # Verify the closing array and any trailing whitespace. Leave
+                # longer tails to the admitted reader.
+                return size - first.end > _MAX_HISTORY_PREFETCH_BYTES or next(rows, None) is not None
+            if first.end != size:
+                return True
+            # The migration scanner accepts multiline objects. Only bypass for
+            # one complete physical JSONL record, including any leading BOM.
+            with path.open("rb") as source:
+                remaining = first.value_end
+                while remaining:
+                    chunk = source.read(min(65536, remaining))
+                    if not chunk or b"\n" in chunk:
+                        return True
+                    remaining -= len(chunk)
+            return False
+    except (HistoryReplayError, ValueError, TypeError, RecursionError):
+        return True
 
 _FORK_HISTORY_SESSION_KEYS = frozenset({
     "session_id",
@@ -402,6 +501,10 @@ def fork_session(
     cutoff_timestamp: Any = None,
     session_equipment_override: dict[str, object] | None = None,
 ) -> dict[str, Any]:
+    lc.validate_id(source_session_id)
+    lc.validate_id(target_session_id)
+    from jiuwenswarm.server.runtime.session.history_artifacts import ArtifactCopyError, copy_history_artifacts
+
     sessions_dir = get_agent_sessions_dir()
     source_dir = sessions_dir / source_session_id
     target_dir = sessions_dir / target_session_id
@@ -452,6 +555,7 @@ def fork_session(
                     source_session_id=source_session_id,
                     target_session_id=target_session_id,
                 )
+                forked_record = copy_history_artifacts(forked_record, source_session_id, target_session_id)
                 forked_record["forked_from"] = {
                     "session_id": source_session_id,
                     "original_id": record.get("id", ""),
@@ -464,8 +568,9 @@ def fork_session(
                     preserve_existing_format=False,
                 )
         except Exception as exc:
-            if has_message_cutoff:
-                shutil.rmtree(target_dir, ignore_errors=True)
+            if has_message_cutoff or isinstance(exc, ArtifactCopyError):
+                if target_dir.resolve() == sessions_dir.resolve() / target_session_id:
+                    shutil.rmtree(target_dir, ignore_errors=True)
                 raise
             logger.warning("fork: failed to add forked_from to history: %s", exc)
 
@@ -529,6 +634,58 @@ def fork_session(
         "project_dir": source_meta.get("project_dir", ""),
     }
     metadata["moa_enabled"] = source_meta.get("moa_enabled") is True
+    for field in ("execution_profile", "role_instructions", "work_mode"):
+        if field in source_meta:
+            metadata[field] = source_meta[field]
+    # NPC 主从 fork：leader 会话透传 roster 定义，并为 fork 级联
+    # 创建全新 member 会话（空历史，成员历史属于原会话资产）；member 被单独
+    # fork 时剥离从属标记，成为独立的单 NPC 会话。运行时绑定不随 fork 复制。
+    from jiuwenswarm.runtime.app_role import APP_ROLE_PROFILE, is_app_role_team
+
+    if source_meta.get("execution_profile") == APP_ROLE_PROFILE:
+        raw_team = source_meta.get("npc_team")
+        npc_team = raw_team if isinstance(raw_team, dict) else None
+        is_member_session = isinstance(source_meta.get("npc_member"), dict)
+        if is_app_role_team(source_meta):
+            metadata["npc_team"] = copy.deepcopy(npc_team)
+        elif not is_member_session and npc_team:
+            metadata["npc_team"] = copy.deepcopy(npc_team)
+            channel_key = str(channel_id or "web").strip() or "web"
+            member_sessions = {
+                str(member.get("name") or ""): (
+                    f"{channel_key}_{int(time.time() * 1000):x}_{uuid.uuid4().hex[:12]}"
+                )
+                for member in npc_team.get("members", [])
+                if isinstance(member, dict) and member.get("name")
+            }
+            metadata["npc_member_sessions"] = member_sessions
+            for member in npc_team.get("members", []):
+                member_name = str(member.get("name") or "")
+                member_sid = member_sessions.get(member_name)
+                if not member_sid:
+                    continue
+                member_title = member.get("title") or " · ".join(
+                    part for part in (str(final_title or "").strip(), member_name) if part
+                )
+                init_session_metadata(
+                    session_id=member_sid,
+                    channel_id=channel_id,
+                    user_id=str(source_meta.get("user_id") or ""),
+                    title=member_title,
+                    mode=str(source_mode or "agent"),
+                    project_dir=str(source_meta.get("project_dir") or ""),
+                    project_id=str(source_meta.get("project_id") or ""),
+                    persist_session=False,
+                    work_mode=str(source_meta.get("work_mode") or ""),
+                    model=str(source_meta.get("model") or ""),
+                    moa_enabled=False,
+                    execution_profile=APP_ROLE_PROFILE,
+                    role_instructions=str(member.get("role_instructions") or ""),
+                    npc_member={
+                        "leader_session_id": target_session_id,
+                        "name": member_name,
+                    },
+                )
     if "model_selection" in source_meta:
         metadata["model_selection"] = copy.deepcopy(source_meta["model_selection"])
     if "model" in source_meta:
@@ -686,7 +843,6 @@ def compact_partial_session(
 
     target_user_index = user_positions[turn_index - 1]
 
-    import uuid
     from jiuwenswarm.server.runtime.session.session_history import (
         FILE_LOCK,
         WRITE_QUEUE,
@@ -1347,6 +1503,11 @@ def _build_context_messages_from_history(
                             OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
                         },
                     )]
+                request_id = str(record.get("request_id") or "").strip()
+                if request_id:
+                    for message in messages:
+                        if isinstance(message, UserMessage):
+                            message.metadata = {**(message.metadata or {}), "jiuwenswarm_request_ids": [request_id]}
                 # UI receipt order can place a supplement inside a parallel
                 # tool batch. Model consumption happens after its results.
                 if open_tool_call_ids or any(
@@ -1517,6 +1678,7 @@ async def warmup_session_context(
     history_before_request_id: str | None = None,
     history_snapshot: SessionHistorySnapshot | None = None,
     refresh_existing: bool = False,
+    prior_limit: LegacyLimitSource | None = None,
 ) -> bool:
     """Restart-safe restore of context_engine messages from on-disk history.
 
@@ -1544,27 +1706,99 @@ async def warmup_session_context(
     if react_agent is None:
         logger.warning("warmup_session_context: no react_agent for %s", session_id)
         return False
+    initialize = getattr(deep_agent, "ensure_initialized", None)
+    if callable(initialize):
+        await initialize()
 
     context_engine = react_agent.context_engine
+    live_session = resolve_live_agent_session(deep_agent, session_id)
+    if live_session is not None:
+        from jiuwenswarm.runtime.context_checkpointer import bind_context_checkpoint
+
+        bind_context_checkpoint(context_engine, live_session)
     existing_context = context_engine.get_context(session_id=session_id)
     if existing_context is not None and not refresh_existing:
         # 内存上下文已存在（进程未重启 / 已 warmup / rewind 重建过）
         return True
 
+    from jiuwenswarm.server.runtime.session.context_snapshot import has_checkpoint_reference, restore_checkpoint_context
+    from jiuwenswarm.server.runtime.session.recovery_budget import admit_context_recovery
+
+    session = live_session
+    get_state = getattr(session, "get_state", None)
     boundary_request_id = str(history_before_request_id or "").strip()
-    if history_snapshot is not None and _history_snapshot_is_current(
-        history_snapshot, session_id, boundary_request_id,
+    same_failed_prefix = (
+        prior_limit is not None and prior_limit.session_id == session_id
+        and prior_limit.before_request_id == boundary_request_id
+        and callable(get_state) and callable(getattr(session, "commit", None))
+        and await run_history_io(_legacy_limit_source_is_current, prior_limit)
+    )
+    has_snapshot = callable(get_state) and has_checkpoint_reference(session)
+    if same_failed_prefix and not has_snapshot:
+        logger.info("Reused overlapping legacy group limit: session=%s", session_id)
+        raise LegacyGroupLimit(prior_limit)
+    if not has_snapshot and not await run_history_io(_has_recovery_prefix, session_id, boundary_request_id):
+        return False
+
+    async with admit_context_recovery(session_id):
+        existing_context = context_engine.get_context(session_id=session_id)
+        if existing_context is not None and not refresh_existing:
+            return True
+        # Another owner may have published a checkpoint while this request waited.
+        if callable(get_state) and await restore_checkpoint_context(
+            context_engine=context_engine, session=session, processors=_get_context_processors(react_agent),
+            before_request_id=history_before_request_id,
+        ):
+            return True
+        return await _restore_history_prefix(
+            deep_agent, session_id, react_agent, context_engine, session, existing_context,
+            boundary_request_id, history_snapshot, refresh_existing,
+        )
+
+
+async def _restore_history_prefix(
+    deep_agent: "DeepAgent", session_id: str, react_agent: Any, context_engine: Any,
+    session: Any, existing_context: Any, boundary_request_id: str,
+    history_snapshot: SessionHistorySnapshot | None, refresh_existing: bool,
+) -> bool:
+    replay_cursor = None
+    if history_snapshot is not None and await run_history_io(
+        _history_snapshot_is_current, history_snapshot, session_id, boundary_request_id,
     ):
         history_records = list(history_snapshot.records)
+        replay_cursor = history_snapshot.replay_cursor
     else:
-        if not history_exists(session_id):
-            # 全新会话，磁盘无历史，静默跳过
-            return False
         try:
-            history_records = load_history_records(session_id)
-        except OSError as exc:
-            logger.warning("warmup_session_context: failed to read history for %s: %s", session_id, exc)
-            return False
+            batch = await run_history_io(read_history_replay, session_id,
+                                         before_request_id=boundary_request_id)
+        except HistoryReplayError as exc:
+            if exc.code != "HISTORY_RESTORE_LIMIT" or session is None:
+                raise
+            from jiuwenswarm.server.runtime.session.context_migration import migrate_history_context
+
+            return await migrate_history_context(
+                context_engine=context_engine, session=session, processors=_get_context_processors(react_agent),
+                before_request_id=boundary_request_id,
+            )
+        except MemoryError as exc:
+            raise HistoryReplayError("Insufficient memory while reading restored history",
+                                     code="HISTORY_RESTORE_RESOURCE") from exc
+        except Exception as exc:
+            raise HistoryReplayError("History could not be read for context restore") from exc
+        history_records = batch.records
+        replay_cursor = batch.prefix_cursor
+
+    if session is not None and callable(getattr(session, "commit", None)) and any(
+        record.get("event_type") == "context.compact_summary"
+        and (record.get("compact_metadata") or {}).get("trigger") != "manual_rewind"
+        for record in history_records
+    ):
+        from jiuwenswarm.server.runtime.session.context_migration import migrate_history_context
+
+        return await migrate_history_context(
+            context_engine=context_engine, session=session, processors=_get_context_processors(react_agent),
+            before_request_id=boundary_request_id,
+        )
 
     if not isinstance(history_records, list) or not history_records:
         return False
@@ -1587,7 +1821,13 @@ async def warmup_session_context(
             history_records = prior_records
             break
 
-    context_messages, skipped = _build_context_messages_from_history(history_records)
+    try:
+        context_messages, skipped = _build_context_messages_from_history(history_records)
+    except MemoryError as exc:
+        raise HistoryReplayError("Insufficient memory while building restored messages",
+                                 code="HISTORY_RESTORE_RESOURCE") from exc
+    except Exception as exc:
+        raise HistoryReplayError("History messages could not be reconstructed") from exc
     if not context_messages:
         logger.info(
             "warmup_session_context: no rebuildable messages in history for %s", session_id
@@ -1601,7 +1841,7 @@ async def warmup_session_context(
             fork_source_session_id,
         )
 
-    session = resolve_live_agent_session(deep_agent, session_id)
+    session = session or resolve_live_agent_session(deep_agent, session_id)
     if session is None:
         # 正常调用点（start_interaction 之后）live session 必在；兜底临时 Session。
         try:
@@ -1612,12 +1852,15 @@ async def warmup_session_context(
             )
             await session.pre_run(inputs=None)
         except Exception as exc:
-            logger.warning("warmup_session_context: pre_run failed for %s: %s", session_id, exc)
-            return False
+            raise HistoryReplayError("Could not initialize the restored session") from exc
 
+    original_context_state = existing_context.save_state() if existing_context is not None else None
+    previous_session_context = session.get_state("context") if callable(getattr(session, "get_state", None)) else None
+    if isinstance(previous_session_context, dict):
+        previous_session_context = {key: dict(value) for key, value in previous_session_context.items()}
     try:
         if existing_context is not None:
-            context_state = existing_context.save_state()
+            context_state = dict(original_context_state)
             context_state["messages"] = context_messages
             existing_context.load_state({existing_context.context_id(): context_state})
         await context_engine.create_context(
@@ -1627,14 +1870,32 @@ async def warmup_session_context(
         )
         restored_context = context_engine.get_context(session_id=session_id)
         if restored_context is not None:
+            restored_context.duplex_history_cursor = (
+                replay_cursor if replay_cursor is not None and replay_cursor.path.suffix.lower() == ".jsonl" else None
+            )
+            if replay_cursor is not None:
+                from jiuwenswarm.server.runtime.session.context_snapshot import bind_recovery_boundary
+
+                restored_ids = set()
+                if replay_cursor.path.suffix.lower() != ".jsonl":
+                    restored_ids = {
+                        str(record.get("request_id"))
+                        for record in history_records if record.get("request_id")
+                    }
+                bind_recovery_boundary(restored_context, replay_cursor, restored_ids)
             restored_context.duplex_history_ids = {
                 record.get("id") or record.get("request_id")
                 for record in history_records
                 if record.get("channel_id") == "video_duplex"
             }
-    except Exception as exc:
-        logger.warning("warmup_session_context: create_context failed for %s: %s", session_id, exc)
-        return False
+    except BaseException as exc:
+        if existing_context is not None and original_context_state is not None:
+            existing_context.load_state({existing_context.context_id(): original_context_state})
+        if callable(getattr(session, "update_state", None)):
+            session.update_state({"context": previous_session_context})
+        if not isinstance(exc, Exception):
+            raise
+        raise HistoryReplayError("Could not install the restored context") from exc
 
     logger.info(
         "warmup_session_context: session=%s restored context from disk history with %d messages "
@@ -1699,6 +1960,7 @@ async def rewind_session_context(
             turn_index=turn_index,
             context_messages=[],
             skipped=0,
+            restored_history_records=[],
         )
 
     # --- 2. Convert history.json records → openjiuwen BaseMessage list ---
@@ -1719,6 +1981,7 @@ async def rewind_session_context(
         turn_index=turn_index,
         context_messages=context_messages,
         skipped=skipped,
+        restored_history_records=history_records,
     )
 
 
@@ -1762,6 +2025,9 @@ async def _wipe_session_runtime_state(
 
     try:
         session.update_state({"context": None})
+        from jiuwenswarm.server.runtime.session.context_snapshot import SNAPSHOT_KEY
+
+        session.update_state({SNAPSHOT_KEY: None})
         session.update_state({_SESSION_STATE_KEY: None})
         try:
             from openjiuwen.core.single_agent.interrupt.state import (
@@ -1833,6 +2099,7 @@ async def _apply_rewound_context(
     turn_index: int,
     context_messages: list[Any],
     skipped: int,
+    restored_history_records: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Clear + rebuild context_engine and sync the Session the next turn will use."""
     from openjiuwen.core.single_agent import create_agent_session
@@ -1874,6 +2141,11 @@ async def _apply_rewound_context(
             processors=_get_context_processors(react_agent),
             history_messages=context_messages,
         )
+        rebuilt = context_engine.get_context(session_id=session_id)
+        if rebuilt is not None:
+            rebuilt.history_recovery_covered = {
+                str(record.get("request_id")) for record in restored_history_records or () if record.get("request_id")
+            }
     except Exception as exc:
         logger.warning("rewind_session_context: create_context failed for %s: %s", session_id, exc)
         return False

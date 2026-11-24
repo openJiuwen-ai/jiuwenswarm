@@ -414,7 +414,7 @@
   padding: 6px;
   border: 1px solid var(--color-border-default);
   border-radius: 10px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
   z-index: 40;
 }
@@ -1109,6 +1109,7 @@
 }
 
 .designer-chat-panel__composer-box {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1179,6 +1180,70 @@
 
 .designer-chat-panel__composer-actions .chat-mode-select__label {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "@" node picker, floating above the composer box. */
+.designer-chat-panel__at-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--color-surface-card);
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 20;
+}
+
+.designer-chat-panel__at-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.designer-chat-panel__at-menu button:hover,
+.designer-chat-panel__at-menu button.is-active {
+  background: var(--color-action-secondary);
+}
+
+.designer-chat-panel__at-thumb {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--color-surface-shell);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.designer-chat-panel__at-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.designer-chat-panel__at-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2320,7 +2385,7 @@
   padding: 14px;
   border: 1px solid #25252510;
   border-radius: 6px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: 0 2px 12px 0 #00000006;
   box-sizing: border-box;
 }
@@ -2611,15 +2676,42 @@
   color: var(--color-feedback-danger);
 }
 
-.designer-media-settings__model {
-  flex-shrink: 1;
+.designer-media-settings__model-menu {
+  position: relative;
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 45%;
+}
+
+.designer-media-settings__model-menu .designer-media-settings__trigger {
+  max-width: 100%;
+}
+
+.designer-media-settings__model-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  max-height: 320px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-popover);
+  box-shadow: var(--shadow-lg);
+}
+
+.designer-media-settings__model-popover > :first-child {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.designer-media-settings__model-popover .model-select__add-btn {
+  flex: 0 0 auto;
 }
 
 .designer-media-settings__field {
@@ -2981,7 +3073,7 @@ textarea.designer-node-toolbar__param-input {
   list-style: none;
   border: 1px solid var(--color-border-default);
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
 }
 
@@ -3561,6 +3653,8 @@ textarea.designer-node-toolbar__prompt.designer-edit-control,
 .designer-node__resize.designer-edit-control *,
 .designer-media-settings.designer-edit-control,
 .designer-media-settings.designer-edit-control *,
+.designer-chat-panel__composer-actions .designer-model-selector.designer-edit-control,
+.designer-chat-panel__composer-actions .designer-model-selector.designer-edit-control *,
 .designer-node-toolbar__comfyui.designer-edit-control,
 .designer-node-toolbar__comfyui.designer-edit-control * {
   cursor: not-allowed;

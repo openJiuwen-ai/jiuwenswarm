@@ -1,17 +1,19 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Duration, resolution, and reference limits for the configured video model.
 
-Figures follow the vendor docs as of 2026-09 (Wan 3.0, Seedance 2.5, MiniMax-H3,
-MiniMax-H3-Max). Canvas video settings are snapped onto the active entry, and
-the Design toolbar only offers its values. Whichever video model is configured
-with an API key is the one that applies.
+Figures follow the vendor docs as of 2026-11 (Wan 3.0, Seedance 2.5, MiniMax-H3,
+MiniMax-H3-Highspeed, MiniMax-H3-Lite, MiniMax-H3-Max). Canvas video settings
+are snapped onto the active entry, and the Design toolbar only offers its
+values. Whichever video model is configured with an API key is the one that applies.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
+
+from jiuwenswarm.common.minimax_video_models import MiniMaxH3Variant, minimax_h3_variant
 
 
 @dataclass(frozen=True)
@@ -95,7 +97,8 @@ _SEEDANCE_20_FAST = VideoModelCapacity(
     supports_reference_images=True,
 )
 
-# MiniMax-H3: 4–15s, 768P/2K, up to 9 reference images.
+# MiniMax-H3: 4–15s, 768P/2K (no 480P), up to 9 reference images.
+# https://platform.minimax.cn/docs/api-reference/video-generation-v2-create
 _H3 = VideoModelCapacity(
     model_id="MiniMax-H3",
     provider="minimax",
@@ -108,7 +111,12 @@ _H3 = VideoModelCapacity(
     supports_reference_images=True,
 )
 
-# MiniMax-H3-Max: 5–15s, 480P/768P. Reference images are rejected by the API.
+# MiniMax-H3-Highspeed / Lite: 4–15s, 480P/768P (no 2K).
+_H3_HIGHSPEED = replace(_H3, model_id="MiniMax-H3-Highspeed", resolutions=("480P", "768P"))
+_H3_LITE = replace(_H3_HIGHSPEED, model_id="MiniMax-H3-Lite")
+
+
+# MiniMax-H3-Max: 5–15s, 480P/768P (no 2K). Reference images are rejected by the API.
 _H3_MAX = VideoModelCapacity(
     model_id="MiniMax-H3-Max",
     provider="minimax",
@@ -121,12 +129,20 @@ _H3_MAX = VideoModelCapacity(
     supports_reference_images=False,
 )
 
+_MINIMAX_H3_CAPACITY = {
+    MiniMaxH3Variant.MAX: _H3_MAX,
+    MiniMaxH3Variant.HIGHSPEED: _H3_HIGHSPEED,
+    MiniMaxH3Variant.LITE: _H3_LITE,
+}
+
 _CATALOG: tuple[VideoModelCapacity, ...] = (
     _WAN3,
     _SEEDANCE_25,
     _SEEDANCE_20,
     _SEEDANCE_20_FAST,
     _H3,
+    _H3_HIGHSPEED,
+    _H3_LITE,
     _H3_MAX,
 )
 
@@ -140,8 +156,9 @@ def capacity_for_model(model_id: str) -> VideoModelCapacity:
     key = _norm(model_id)
     if not key:
         return _WAN3
-    if "h3max" in key or ("minimax" in key and key.endswith("max")):
-        return _H3_MAX
+    variant = minimax_h3_variant(model_id)
+    if variant is not None:
+        return _MINIMAX_H3_CAPACITY[variant]
     if "minimaxh3" in key or key in {"h3", "minimaxh3"}:
         return _H3
     if "seedance" in key and ("25" in key or "260628" in key):

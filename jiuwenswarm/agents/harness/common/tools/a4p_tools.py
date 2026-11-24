@@ -244,14 +244,25 @@ async def request_a4p_intent_authorization(
     _session_id: str | None = None,
 ) -> dict[str, Any]:
     """Request a user-authorized A4P intent token for future tool calls."""
-    if not is_a4p_preauthorization_active(get_config()):
+    session_id = str(_session_id or "").strip()
+    # Prefer session-bound gate when present; else this module's get_config()
+    # (tests commonly monkeypatch it).
+    if not is_a4p_preauthorization_active(
+        get_config(),
+        session_id=session_id or None,
+    ):
         return {
             "ok": False,
             "error": "A4P preauthorization is available only in default permission mode with A4P enabled",
             "code": "A4P_DISABLED",
         }
-    session_id = str(_session_id or "").strip()
     execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
+    if execution_context is not None and execution_context.is_cron_execution:
+        return {
+            "ok": False,
+            "error": "Unattended cron execution cannot request interactive A4P authorization",
+            "code": "A4P_CRON_AUTHORIZATION_UNAVAILABLE",
+        }
     if execution_context is None or not execution_context.is_interactive_web:
         return {
             "ok": False,

@@ -206,8 +206,8 @@ export function selectionRanges(
   return ranges;
 }
 
-/** A diagnosis may cover at most this many trajectory records. One more and it cannot start. */
-export const DIAGNOSIS_NODE_LIMIT = 1_500;
+/** A diagnosis may cover at most this many OTel spans. One more and it cannot start. */
+export const DIAGNOSIS_NODE_LIMIT = 10_000;
 
 /**
  * Whether the per-agent include checkbox should appear for one agent.

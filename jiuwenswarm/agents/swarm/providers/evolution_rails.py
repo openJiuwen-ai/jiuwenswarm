@@ -72,8 +72,7 @@ def build_symphony_graph_evolution_rail(
     config = load_symphony_config(ctx.config)
     if ctx.role != "leader":
         return None
-    core_evolution_enabled = config.enabled and config.evolution.flow.enabled
-    if not core_evolution_enabled:
+    if not config.orchestration.experience_enabled:
         return None
     try:
         from jiuwenswarm.runtime.symphony.adapter import model_from_config
@@ -81,7 +80,7 @@ def build_symphony_graph_evolution_rail(
         from jiuwenswarm.runtime.symphony.llm import LLMConfig
 
         return _build_graph_evolution_rail(
-            config.paths.graph_dir,
+            (Path(config.storage.artifact_root) / "graph"),
             capture_mode="team",
             model=model_from_config(LLMConfig.from_default_model()),
             channel_id=lambda: ctx.channel_id,

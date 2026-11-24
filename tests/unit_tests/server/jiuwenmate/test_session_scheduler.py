@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -510,9 +511,59 @@ async def test_direct_message_gets_search_port_without_group_trigger_preflight(h
     from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
 
     assert isinstance(port, GuardedGroupChatPort)
-    assert isinstance(port._delegate, HostGroupChatPort)
-    assert port._delegate._search is not None and port._delegate._cursors is not None
+    assert port.scope[0] == NS
+    assert callable(port.search_content)
     assert trigger_calls == []
+
+
+@pytest.mark.parametrize("missing_im_dependency", ["groups", "group_archive"])
+async def test_swarmchat_keeps_its_history_port_without_im(tmp_path, monkeypatch, missing_im_dependency):
+    from unittest.mock import AsyncMock
+    from openjiuwen.agent_teams.schema.conversation import ConversationMessage
+    from jiuwenswarm.server.jiuwenmate import agent_manager, execution_driver
+    from jiuwenswarm.server.jiuwenmate.execution_models import RequestRouteSnapshot
+    from jiuwenswarm.server.jiuwenmate.swarmchat import membership, port
+    from jiuwenswarm.server.runtime.group_service import GroupService
+
+    def build_driver(**kwargs):
+        kwargs[missing_im_dependency] = None
+        return execution_driver.ExecutionDriver(**kwargs)
+
+    monkeypatch.setattr(agent_manager, "ExecutionDriver", build_driver)
+    colleague = SimpleNamespace(enabled=True, agent_id="mate_dev")
+    monkeypatch.setattr(FakeService, "get_colleague", lambda *_: colleague)
+    monkeypatch.setattr(FakeService, "get_config", lambda *_: colleague, raising=False)
+    monkeypatch.setattr(FakeService, "connection_of", lambda *_: None, raising=False)
+    group = {"group_id": "group", "name": "Research", "team_name": "team",
+             "user_id": ACCESS.principal_ref, "channel_id": "web", "members": []}
+    for module in (membership, port):
+        monkeypatch.setattr(module, "require_membership", lambda *_: (group, {}))
+    message = ConversationMessage(
+        message_id="trigger", team_name="team", session_id="group", client_message_id="client",
+        sender="user", sender_name="User", content="Fresh", timestamp=int(NOW.timestamp() * 1000),
+    )
+    read = AsyncMock(return_value=[message])
+    monkeypatch.setattr(GroupService, "public_messages", read)
+    host = Host(tmp_path)
+    await host.manager.start()
+    try:
+        host.core.release("Fresh")
+        session = host.sessions.resolve_session("local", "mate_dev", ConversationRef(
+            kind="swarm_group", channel="swarmchat", key="group",
+        ), now=NOW)
+        await host.scheduler.accept(
+            session, snapshot=host.service.snapshot("local", "mate_dev", "v1"), source_ref="swarmchat:trigger",
+            access=ACCESS, request_input=core.RequestInput(
+                kind="group_message", text="Stale", reply_target="group",
+                source=core.GroupMessage(message_id="trigger", sender_id="user", sender_name="User",
+                                         sender_kind="human", received_at=NOW, text="Stale"),
+            ), received_at=NOW, route_snapshot=RequestRouteSnapshot(channel="swarmchat", target_id="group"),
+        )
+        await settle(lambda: "Fresh" in host.core.ended)
+        assert isinstance(host.core.contexts["Fresh"].ports.group_chat, port.SwarmChatGroupChatPort)
+        read.assert_awaited_once_with("group", user_id=ACCESS.principal_ref, channel_id="web")
+    finally:
+        await host.manager.aclose()
 
 
 async def test_scheduled_execution_does_not_get_group_search_port(host):
@@ -572,8 +623,8 @@ async def test_group_message_keeps_current_trigger_preflight_and_search_port(hos
     from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
 
     assert isinstance(port, GuardedGroupChatPort)
-    assert isinstance(port._delegate, HostGroupChatPort)
-    assert port._delegate._search is not None and port._delegate._cursors is not None
+    assert port.scope[0] == NS
+    assert callable(port.search_content)
     assert trigger_calls == ["group-trigger"]
     assert host.status(state) == ("ended", "completed")
 
@@ -810,3 +861,105 @@ async def test_expired_window_data_is_purged_periodically(tmp_path):
         assert await backend.get("pa:mate_dev:sess-1:summary") == "摘要"
     finally:
         await host.manager.aclose()
+
+
+@pytest.mark.parametrize("drain_during_dispatch", [False, True])
+async def test_dispatch_is_reported_running_before_start_execution_returns(host, monkeypatch, drain_during_dispatch):
+    stored = threading.Event()
+    release = threading.Event()
+    start_execution = host.sessions.start_execution
+
+    def delayed_start(*args, **kwargs):
+        execution = start_execution(*args, **kwargs)
+        stored.set()
+        if not release.wait(5):
+            raise TimeoutError("dispatch test was not released")
+        return execution
+
+    monkeypatch.setattr(host.sessions, "start_execution", delayed_start)
+    sending = asyncio.create_task(host.send("dispatch-race"))
+    draining = None
+    try:
+        await settle(stored.is_set)
+        state = host.sessions.session_requests(NS, host.session().session_id)[0]
+        view = await host.manager.request_view(NS, state.record.request_id)
+        assert view.state.status == "dispatched"
+        assert view.running is True
+        if drain_during_dispatch:
+            draining = asyncio.create_task(host.scheduler.drain())
+            await asyncio.sleep(0.01)
+            assert not draining.done()
+    finally:
+        release.set()
+        await sending
+        host.core.release("dispatch-race")
+        if draining is not None:
+            await asyncio.wait_for(draining, 2)
+
+
+async def test_failed_dispatch_does_not_leave_a_running_registration(host, monkeypatch):
+    start_execution = host.sessions.start_execution
+
+    def refused_start(*args, **kwargs):
+        raise PersistentAgentError("dispatch refused", code="CONFLICT")
+
+    monkeypatch.setattr(host.sessions, "start_execution", refused_start)
+    with pytest.raises(PersistentAgentError, match="dispatch refused"):
+        await host.send("retry-dispatch")
+    assert host.scheduler.running == []
+    monkeypatch.setattr(host.sessions, "start_execution", start_execution)
+    host.core.release("retry-dispatch")
+    accepted = await host.send("retry-dispatch")
+    await host.scheduler.drain()
+    assert host.status(accepted) == ("ended", "completed")
+
+
+@pytest.mark.parametrize("reader", ["request", "history"])
+async def test_status_read_finishing_during_query_is_not_reported_interrupted(host, monkeypatch, reader):
+    accepted = await host.send("finish-race")
+    await settle(lambda: "finish-race" in host.core.started)
+    snapshot_read = threading.Event()
+    release = threading.Event()
+    method = "get_request" if reader == "request" else "session_requests"
+    read = getattr(host.sessions, method)
+
+    def stale_read(*args, **kwargs):
+        snapshot = read(*args, **kwargs)
+        if not snapshot_read.is_set():
+            snapshot_read.set()
+            if not release.wait(5):
+                raise TimeoutError("status test was not released")
+        return snapshot
+
+    monkeypatch.setattr(host.sessions, method, stale_read)
+    if reader == "request":
+        query = asyncio.create_task(host.manager.request_view(NS, accepted.record.request_id))
+    else:
+        query = asyncio.create_task(host.manager.conversation_requests(NS, "mate_dev", ConversationRef.web("conv-1")))
+    try:
+        await settle(snapshot_read.is_set)
+        host.core.release("finish-race")
+        await host.scheduler.drain()
+    finally:
+        release.set()
+    result = await query
+    view = result if reader == "request" else result[0]
+    assert view.state.status == "ended"
+    assert view.state.outcome == "completed"
+    assert view.running is False
+
+
+async def test_a_genuinely_orphaned_dispatch_is_still_reported_not_running(host):
+    session = host.session()
+    accepted, _ = host.sessions.accept_request(
+        session,
+        snapshot=host.service.snapshot(NS, "mate_dev", "v1"),
+        source_ref="orphaned-dispatch",
+        access=ACCESS,
+        request_input=core.RequestInput(kind="scheduled", text="interrupted", reply_target="conv-1"),
+        received_at=NOW,
+    )
+    host.sessions.start_execution(NS, accepted.record.request_id, now=NOW)
+    view = await host.manager.request_view(NS, accepted.record.request_id)
+    assert view.state.status == "dispatched"
+    assert view.running is False

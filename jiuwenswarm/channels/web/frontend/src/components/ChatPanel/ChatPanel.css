@@ -161,6 +161,17 @@
   display: block;
 }
 
+.chat-panel-header__plugin-action.ant-btn-icon-only {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.chat-panel-header__plugin-action.ant-btn-icon-only svg {
+  width: 18px;
+  height: 18px;
+}
+
 .chat-input-container {
   container-type: inline-size;
   display: flex;
@@ -175,7 +186,7 @@
 .chat-input-container--work-home {
   border: 0;
   border-radius: 24px;
-  background: var(--color-action-secondary);
+  background: var(--color-chat-composer-context-surface);
   box-shadow: var(--effect-chat-composer-shadow);
   padding: 4px 4px 0;
   overflow: visible;
@@ -186,7 +197,7 @@
   position: relative;
   border: 1px solid var(--color-border-default);
   border-radius: 20px;
-  background: var(--color-surface-card);
+  background: var(--color-chat-composer-surface);
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.06);
   overflow: hidden;
   z-index: 2;
@@ -548,7 +559,7 @@
   overflow: hidden;
   border: 1px solid var(--color-border-default);
   border-radius: 4px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-chat-modal-shadow);
 }
 
@@ -1796,7 +1807,7 @@
   padding: 8px;
   border: 1px solid var(--color-border-default);
   border-radius: 10px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
 }
 
@@ -1945,7 +1956,7 @@
   padding: 24px 8px 8px;
   border: 1px solid var(--color-border-default);
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
   box-sizing: border-box;
 }
@@ -2611,10 +2622,15 @@
   opacity: .72;
 }
 
-.chat-work-select__trigger:focus,
-.chat-work-select__trigger:focus-visible {
+.chat-work-select__trigger:focus:not(:focus-visible) {
   box-shadow: none;
   outline: none;
+}
+
+/* 与同排 chat-mode-select__trigger 保持同一种焦点样式 */
+.chat-work-select__trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(var(--color-action-primary-rgb), 0.18);
 }
 
 /* 欢迎页放宽常态的 160px 上限、让项目名尽量展示完整，但不能放宽到无上限：
@@ -2835,6 +2851,13 @@
   background: var(--color-icon-btn-hover-surface);
 }
 
+/* 选中项与非选中项底色相同，聚焦时额外用描边区分 */
+.chat-work-select__option:focus-visible:not(:disabled) {
+  background: var(--color-icon-btn-hover-surface);
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: -2px;
+}
+
 .chat-work-select__check {
   margin-left: auto;
   flex: 0 0 auto;
@@ -3032,7 +3055,7 @@
 .perm-warning-modal {
   width: 420px;
   max-width: calc(100vw - 48px);
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   border: 1px solid var(--color-border-default);
   border-radius: 16px;
   box-shadow: var(--effect-shadow-lg);
@@ -3314,7 +3337,7 @@
   padding: 14px 16px;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-md, 0 4px 12px rgba(0, 0, 0, 0.08));
 }
 
@@ -3445,7 +3468,7 @@
   padding: 8px;
   border: 1px solid var(--color-border-default);
   border-radius: 14px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
   box-sizing: border-box;
 }
@@ -3936,7 +3959,7 @@
   padding: 8px 10px;
   border: 1px solid rgba(var(--color-border-default-rgb), 0.9);
   border-radius: 10px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-chat-menu-shadow);
 }
 
@@ -4025,7 +4048,7 @@
   padding: 6px;
   border: 1px solid rgba(var(--color-border-default-rgb), 0.74);
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-chat-popover-shadow);
 }
 
@@ -4058,6 +4081,20 @@
   width: min(620px, calc(100% - 32px));
   transform: translateX(-50%);
   pointer-events: none;
+}
+
+.chat-input-webui-above {
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--color-surface-muted);
+  overflow-wrap: anywhere;
+}
+
+.chat-input-webui-above > .webui-host-instance {
+  min-width: 0;
 }
 
 .chat-input-local-alert {
@@ -4427,6 +4464,12 @@
   background: rgba(25, 25, 25, 0.08);
 }
 
+.chat-welcome__campaign-close:focus-visible,
+.chat-welcome__campaign-claim:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
 .chat-welcome__campaign-close svg {
   width: 15px;
   height: 15px;
@@ -4619,6 +4662,15 @@
   margin-bottom: 0;
 }
 
+/* Scope changes clear the slate before its replacement arrives. Keep room for
+   the heading (26px), four single-line cards (32px each), and four gaps (10px)
+   so the vertically centered heading and composer do not jump during the read.
+   Longer cards can still grow naturally instead of being clipped. */
+.chat-welcome:not(.chat-welcome--group-create) > .chat-suggestions {
+  min-height: 194px;
+  flex-shrink: 0;
+}
+
 .chat-suggestions__title {
   margin: 0 0 0.25rem 0.875rem;
   color: var(--color-text-secondary);
@@ -4662,6 +4714,12 @@
 .chat-suggestion-card:hover,
 .chat-suggestion-card:focus-within {
   background: var(--color-surface-hover);
+}
+
+.chat-suggestion-card__main:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: -2px;
+  border-radius: 10px;
 }
 
 .chat-suggestion-card__text {

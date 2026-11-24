@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """企业版 config.yaml 生成器
-用法：python3 update_conf.py [config_dir]（缺省 = 数据根 infra/config；config.yaml 文件名固定）
+用法：python3 update_conf.py [config_dir]（缺省 = $JIUWENSWARM_CONFIG_DIR；config.yaml 文件名固定）
 """
 
 from __future__ import annotations
@@ -17,14 +17,15 @@ logger = logging.getLogger("update_conf")
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 SRC_FILE = REPO_ROOT / "jiuwenswarm" / "resources" / "config.yaml"
-DEFAULT_CONFIG_DIR = Path.home() / ".jiuwenswarm" / "infra" / "config"
+DEFAULT_CONFIG_DIR = Path.home() / ".jiuwenswarm" / "config"
 
 
 def config_dir() -> Path:
-    """配置目录：CLI 参数（argv[1]）> 默认目录（数据根 infra/config）。"""
+    """配置目录：CLI 参数（argv[1]）> ``JIUWENSWARM_CONFIG_DIR`` > 默认目录。"""
     if len(sys.argv) > 1:
         return Path(sys.argv[1]).expanduser()
-    return DEFAULT_CONFIG_DIR
+    env = os.getenv("JIUWENSWARM_CONFIG_DIR", "").strip()
+    return Path(env).expanduser() if env else DEFAULT_CONFIG_DIR
 
 
 def setpath(d, dotted_path: str, value) -> None:
@@ -38,6 +39,32 @@ def setpath(d, dotted_path: str, value) -> None:
             cur[key] = node
         cur = node
     cur[keys[-1]] = value
+
+
+def apply_react_max_iterations(data) -> bool:
+    """按 AGENT_SERVER_REACT_MAX_ITER 写入或删除 react.max_iterations。
+
+    未设置或空字符串时不写该项，与个人版模板一样表示不限制。
+    正整数写入上限。0、负数、前导零或其他文字视为非法。
+    """
+    raw = os.getenv("AGENT_SERVER_REACT_MAX_ITER")
+    react = data.get("react")
+    if raw is None or raw.strip() == "":
+        if isinstance(react, dict):
+            react.pop("max_iterations", None)
+        return True
+    text = raw.strip()
+    if not text.isdigit() or text[0] == "0":
+        logger.error(
+            "AGENT_SERVER_REACT_MAX_ITER must be a positive integer or unset, got %r",
+            raw,
+        )
+        return False
+    if not isinstance(react, dict):
+        react = {}
+        data["react"] = react
+    react["max_iterations"] = int(text)
+    return True
 
 
 def inject_feishu_bots(data) -> None:
@@ -70,8 +97,7 @@ def inject_feishu_bots(data) -> None:
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="[update_conf] %(levelname)s %(message)s")
 
-    config = config_dir()
-    dest = config / "config.yaml"
+    dest = config_dir() / "config.yaml"
     if not SRC_FILE.is_file():
         logger.error("source not found: %s", SRC_FILE)
         return 1
@@ -87,10 +113,11 @@ def main() -> int:
     setpath(data, "gateway.edition", "enterprise")
     setpath(data, "config.source", "enterprise")
     setpath(data, "gateway.session_map_scope", "${GATEWAY_SESSION_MAP_SCOPE:-per_chat_bot}")
-    setpath(data, "react.max_iterations", "${AGENT_SERVER_REACT_MAX_ITER:-100}")
+    if not apply_react_max_iterations(data):
+        return 1
     setpath(data, "react.evolution.enabled", False)
-    # 用户面团队下拉框。个人版模板保持 false，企业版默认打开。
-    setpath(data, "experimental.team_organization_ui_enabled", True)
+    # 用户面组织视图保持关闭，与模板一致。
+    setpath(data, "experimental.team_organization_ui_enabled", False)
     # 沙箱可插拔：由部署工具 SANDBOX_TYPE 控制（jiuwenbox 才启用沙箱域）
     # 非 jiuwenbox 时整个 sandbox 域不写入，业务路由走 LOCAL 直跑
     sandbox_enabled = os.getenv("SANDBOX_TYPE", "jiuwenbox").strip().lower() == "jiuwenbox"
@@ -101,11 +128,11 @@ def main() -> int:
         setpath(data, "sandbox.idle_check_interval", 180)
         setpath(data, "sandbox.url", "${JIUWENBOX_URL:-http://127.0.0.1:8321}")
         setpath(data, "sandbox.type", "jiuwenbox")
-    setpath(data, "channels.ssh.host_key_path", str(config / "ssh_host_key"))
+    setpath(data, "channels.ssh.host_key_path", "${JIUWENSWARM_CONFIG_DIR:-}/ssh_host_key")
 
     inject_feishu_bots(data)
 
-    config.mkdir(parents=True, exist_ok=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     with open(dest, "w", encoding="utf-8") as f:
         parser.dump(data, f)
 

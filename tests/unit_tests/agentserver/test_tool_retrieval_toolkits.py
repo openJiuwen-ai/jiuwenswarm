@@ -100,7 +100,7 @@ def test_tool_search_card_is_registered_with_tool_search_name() -> None:
     tools = toolkit.get_tools()
 
     assert [tool.card.name for tool in tools] == ["tool_search"]
-    # Mirrors the skill_index card contract: same parameter set and limits,
+    # Mirrors the capability_search card contract: same parameter set and limits,
     # reworded for tools (call_goal is NOT in the card — stream_event_rail
     # injects it uniformly into the model-facing ToolInfo; the singular
     # string ``tool`` drives the schema-read phase). ``keyword`` (BM25

@@ -21,6 +21,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import AS
 from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract import (
     build_manual_approval_required_response,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit import LocalAuditDetails
 
 
 class AutoPermissionManualAuthorizationMixin:
@@ -38,6 +39,7 @@ class AutoPermissionManualAuthorizationMixin:
         tool_call_id: str | None = None,
         include_prompt_payload: bool = True,
         channel_kind: str | None = None,
+        local_details: LocalAuditDetails | None = None,
     ) -> Any:
         resolved_channel_kind = _normalize_channel_kind(
             channel_kind or metadata.get("channel_kind")
@@ -67,6 +69,7 @@ class AutoPermissionManualAuthorizationMixin:
             reason=reason,
             degraded=True,
             extra=metadata,
+            local_details=local_details,
         )
         visible_reason = ""
         for value in (

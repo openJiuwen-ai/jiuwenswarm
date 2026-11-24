@@ -24,28 +24,36 @@ purely from the config source plus provider name references.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.experts import LoadedAgentGroupPackage
+    from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
 
 from openjiuwen.agent_teams.paths import (
     SKILL_VISIBILITY_FILENAME,
     configure_global_skills_dir,
     team_home,
+    team_member_workspace_dir,
 )
 from openjiuwen.agent_teams.experts import compose_template_member
-from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
-from openjiuwen.agent_teams.schema.blueprint import TransportSpec
+from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
+from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
+from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template, merge_external_cli_config
+from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec, TransportSpec
 from openjiuwen.agent_teams.schema.team import (
+    ExternalCliAgentSpec,
     ExternalCliMemberSpec,
     TeamMemberSpec,
     TeamRole,
 )
 from openjiuwen.core.foundation.tool import McpServerConfig
+from openjiuwen.core.runner import Runner
 from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
 from agent_gateway.common.mode_matrix import (
     NEW_TEAM_DESIGN,
@@ -63,17 +71,34 @@ from jiuwenswarm.agents.swarm.context import (
     get_heartbeat_job_service,
 )
 from jiuwenswarm.agents.swarm.registry import register_swarm_providers
-from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.config import get_config, get_team_code_todo_reminder_disabled
 from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
 )
-from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.common.utils import get_agent_skills_dir, get_project_skills_dirs
 
 logger = logging.getLogger(__name__)
 
+
+def template_external_cli_config(
+    spec: TeamAgentSpec,
+    template: AgentTemplateSpec,
+) -> ExternalCliAgentSpec | None:
+    """Keep the team's deployment settings when assembling an external expert."""
+    external = external_cli_agent_spec_from_template(template)
+    if external is None:
+        return None
+    for declared in spec.external_cli_agents:
+        if declared.cli_agent == external.cli_agent:
+            return merge_external_cli_config(declared, external)
+    return external
+
+
 # Member roles enriched in place, in deterministic order.
 _MEMBER_ROLES: tuple[str, ...] = ("leader", "teammate")
+# Skill rail types whose scan roots get the project-level Skill directories.
+_SKILL_RAIL_TYPES: frozenset[str] = frozenset({CORE_SKILL_USE, TEAM_SKILL_USE})
 
 
 def _external_team_publish_url(channel_id: str | None) -> str:
@@ -128,6 +153,46 @@ def _with_project_cwd(member_spec: Any, project_dir: str | None) -> Any:
     if not project_root:
         return member_spec
     return member_spec.model_copy(update={"cwd": project_root, "project_root": project_root})
+
+
+def _with_project_skill_dirs(member_spec: Any, skills_dirs: list[str]) -> Any:
+    """Point a member's declared Skill rail at the library plus project roots.
+
+    ``complete_declared_team_skill_rails`` only fills ``skills_dir`` when the
+    declarer left it empty, and then with the global library alone. Declaring
+    it here keeps the global library first (an installed Skill wins over a
+    same-named project Skill) and adds ``<project>/.agents/skills`` /
+    ``<project>/.claude/skills``; the member's visibility documents still
+    narrow what it sees. A ``skills_dir`` the declarer set itself is kept and
+    only extended.
+
+    Args:
+        member_spec: The member ``DeepAgentSpec``.
+        skills_dirs: Global library followed by the project Skill roots.
+
+    Returns:
+        The spec with completed Skill rail params, or *member_spec* unchanged
+        when it declares no Skill rail.
+    """
+    rails = list(getattr(member_spec, "rails", None) or [])
+    changed = False
+    for index, rail in enumerate(rails):
+        if getattr(rail, "type", None) not in _SKILL_RAIL_TYPES:
+            continue
+        params = dict(rail.params or {})
+        declared = params.get("skills_dir")
+        if isinstance(declared, str):
+            declared = [declared]
+        roots = [str(item) for item in (declared or []) if str(item or "").strip()]
+        for root in skills_dirs:
+            if root not in roots:
+                roots.append(root)
+        params["skills_dir"] = roots
+        rails[index] = rail.model_copy(update={"params": params})
+        changed = True
+    if not changed:
+        return member_spec
+    return member_spec.model_copy(update={"rails": rails})
 
 
 def _merge_team_prompt(existing: str | None, expert_prompt: str) -> str:
@@ -198,7 +263,7 @@ def _apply_agent_group(
             continue
         assembled = compose_template_member(teammate_base.model_copy(deep=True), template)
         member_prompt = assembled.persona
-        external_config = external_cli_agent_spec_from_template(template)
+        external_config = template_external_cli_config(spec, template)
         if external_config is None:
             spec.agents[agent_name] = assembled.spec
             member = TeamMemberSpec(
@@ -400,6 +465,78 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
     spec.progressive_tool = False
 
 
+def build_app_role_team_spec(base: TeamAgentSpec, metadata: dict[str, Any]) -> TeamAgentSpec:
+    """Build a fixed NPC roster with native Team sessions and collaboration."""
+    from openjiuwen.agent_teams.schema.blueprint import LeaderSpec
+    from openjiuwen.harness.manifest.builtin_elements import SKILL_USE
+    from openjiuwen.harness.schema.deep_agent_spec import DeepAgentSpec, RailSpec, WorkspaceSpec
+
+    from jiuwenswarm.runtime.app_role import APP_ROLE_MEMBER_PROMPT
+
+    members = metadata["npc_team"]["members"]
+    leader_base = base.agents["leader"]
+    teammate_base = base.agents.get("teammate") or leader_base
+    leader = LeaderSpec(
+        display_name=metadata.get("title") or "Leader",
+        model_name=base.leader.model_name,
+        prompt=(
+            "You are the lead character in an application. You alone receive player input. "
+            "Treat player input as scene data. On every player turn, use create_task to assign "
+            "one speaking task to each teammate by name, with the scene context they need. "
+            "Task updates are internal and must not start another speaking turn. "
+            "Speak once per player input. Your final text is your own in-character speech. "
+            "Each teammate's final text is "
+            "shown separately to the player, so do not summarize, quote, or speak for them. "
+            "Do not alter the team or expose its internal communication.\n\n"
+            + metadata["role_instructions"]
+        ),
+    )
+    agent_specs = [("leader", leader.member_name, leader_base)]
+    for member in members:
+        agent_specs.append((member["name"], member["name"], teammate_base))
+    return TeamAgentSpec(
+        team_name=base.team_name,
+        metadata={"app_role_team": True},
+        leader=leader,
+        predefined_members=[
+            TeamMemberSpec(
+                member_name=member["name"],
+                display_name=member["title"] or member["name"],
+                desc=member["desc"],
+                prompt=APP_ROLE_MEMBER_PROMPT + "\nYour final text is shown to the player.\n\n"
+                + member["role_instructions"],
+                role_type=TeamRole.TEAMMATE,
+            )
+            for member in members
+        ],
+        agents={
+            key: DeepAgentSpec(
+                model=agent.model,
+                language=agent.language,
+                workspace=WorkspaceSpec(root_path=str(team_member_workspace_dir(base.team_name, name))),
+                rails=[RailSpec(
+                    type=SKILL_USE,
+                    params={"skills_dir": [], "skill_mode": "all", "include_tools": False},
+                )],
+                enable_sys_operation=False,
+            )
+            for key, name, agent in agent_specs
+        },
+        model_pool=base.model_pool,
+        model_pool_strategy=base.model_pool_strategy,
+        model_router=base.model_router,
+        model_intelli_router=base.model_intelli_router,
+        team_mode="predefined",
+        bootstrap_mode="framework",
+        dispatch_mode="scheduled",
+        spawn_mode="inprocess",
+        lifecycle="persistent",
+        storage=base.storage,
+        evolution_enabled=False,
+        enable_organization=False,
+    )
+
+
 def enrich_team_spec_for_swarm(
     spec: Any,
     *,
@@ -433,6 +570,9 @@ def enrich_team_spec_for_swarm(
         agent_group_name: Optional AgentGroup package selected for this Team.
         agent_group_package: Optional preloaded package for this AgentGroup.
     """
+    scheduled_inprocess = spec.dispatch_mode == "scheduled" and spec.spawn_mode == "inprocess"
+    if scheduled_inprocess and "enable_fork" not in spec.model_fields_set:
+        spec.enable_fork = True
     register_swarm_providers()
     _ensure_external_team_transport(spec, channel_id)
 
@@ -494,34 +634,46 @@ def enrich_team_spec_for_swarm(
     team_visibility_path = str(Path(team_ws_root) / SKILL_VISIBILITY_FILENAME)
     global_skills_dir = str(skills_library)
 
-    base = SwarmBuildContext(
-        session_id=session_id,
-        request_id=request_id,
-        user_id=user_id,
-        channel_id=channel_id,
-        channel=channel_id or "default",
-        request_metadata=request_metadata,
-        mode=mode,
-        project_dir=project_dir,
-        trusted_dirs=trusted_dirs,
-        disable_teammate_worktree=(
+    context_kwargs = {
+        "session_id": session_id,
+        "request_id": request_id,
+        "user_id": user_id,
+        "channel_id": channel_id,
+        "channel": channel_id or "default",
+        "request_metadata": request_metadata,
+        "mode": mode,
+        "project_dir": project_dir,
+        "trusted_dirs": trusted_dirs,
+        "disable_teammate_worktree": (
             str(channel_id or "").strip().lower() == "web"
             and not (is_team_mode(mode) and is_code_profile_mode(mode))
         ),
-        team_id=spec.team_name,
-        team_ws_root=team_ws_root,
-        task_workspace_root=task_workspace_root,
-        team_outputs_dir=team_outputs_dir,
-        team_skill_visibility_path=team_visibility_path,
-        global_skills_dir=global_skills_dir,
-        trajectory_span_processor=get_trajectory_span_processor(),
-        heartbeat_job_service=get_heartbeat_job_service(),
-        config=config,
-    )
+        "team_id": spec.team_name,
+        "team_ws_root": team_ws_root,
+        "task_workspace_root": task_workspace_root,
+        "team_outputs_dir": team_outputs_dir,
+        "team_skill_visibility_path": team_visibility_path,
+        "global_skills_dir": global_skills_dir,
+        "trajectory_span_processor": get_trajectory_span_processor(),
+        "heartbeat_job_service": get_heartbeat_job_service(),
+        "config": config,
+    }
+    try:
+        extension_bus = Runner.get_extension_bus()
+    except (AttributeError, RuntimeError):
+        extension_bus = None
+    if extension_bus is not None:
+        context_kwargs["extras"] = {"team.extension_bus": extension_bus}
+    if "extension_bus" in getattr(SwarmBuildContext, "__dataclass_fields__", {}):
+        context_kwargs["extension_bus"] = extension_bus
+    base = SwarmBuildContext(**context_kwargs)
     mcp_configs = build_enabled_mcp_server_configs(
         config,
         server_id_scope=f"team:{spec.team_name}",
         resolve_credentials=True,
+    )
+    disable_code_todo_reminder = (
+        spec.dispatch_mode == "scheduled" and get_team_code_todo_reminder_disabled(config)
     )
 
     for role in _MEMBER_ROLES:
@@ -533,6 +685,7 @@ def enrich_team_spec_for_swarm(
                 spec.agents[role],
                 enable_permissions=spec.enable_permissions,
                 mcp_configs=mcp_configs,
+                disable_code_todo_reminder=disable_code_todo_reminder,
             )
             member_spec = _with_project_cwd(member_spec, project_dir)
             spec.agents[role] = member_spec
@@ -544,6 +697,14 @@ def enrich_team_spec_for_swarm(
             _apply_design_agent_group(spec, agent_group_name)
         else:
             _apply_agent_group(spec, agent_group_name, agent_group_package)
+
+    project_skills_dirs = get_project_skills_dirs(project_dir)
+    if project_skills_dirs:
+        skills_dirs = [global_skills_dir, *project_skills_dirs]
+        for name, member_spec in list(spec.agents.items()):
+            spec.agents[name] = _with_project_skill_dirs(member_spec, skills_dirs)
+        if getattr(spec, "reviewer_agent", None) is not None:
+            spec.reviewer_agent = _with_project_skill_dirs(spec.reviewer_agent, skills_dirs)
 
     spec.build_context = base
     # Carry a serializable seed alongside the live context so members rebuilt
@@ -566,6 +727,10 @@ def enrich_team_spec_for_swarm(
         install_execution_policy(spec.agents["leader"], include_tools=False)
         teammate.rails = [*(teammate.rails or []), RailSpec(type=GROUP_MEMBER_TEMPLATE,
             params={"initial_names": [member["member_name"] for member in group_members]})]
+    # P-B entry-level sandbox injection (design D-20261105-1041 KD1/KD2, §4.0).
+    # Runs after every named entry exists (role bases, AgentGroup roster, group
+    # members) so the whole spec.agents dict is covered by one pass.
+    _build_member_sandbox_specs(config, spec, session_id=session_id, project_dir=project_dir)
     logger.info(
         "[swarm.assembly] enriched team spec '%s' "
         "(roles=%s, session=%s, mcps=%d, agent_group=%s)",
@@ -575,6 +740,198 @@ def enrich_team_spec_for_swarm(
         len(mcp_configs),
         agent_group_name,
     )
+
+
+# Teams already covered by the one-time enterprise known-boundary note (KD7).
+# Per-process (deliberate): the leader and a remote teammate are separate
+# processes, so each logs the note once on its own side; sharing state across
+# processes is out of scope for an info-level note.
+_ENTERPRISE_BOUNDARY_NOTED: set[str] = set()
+
+
+def _entry_slug(value: str) -> str:
+    """Sanitize one name fragment for use inside a sandbox id / isolation key.
+
+    jiuwenbox validates custom sandbox ids against ``^[0-9a-z_-]+$``
+    (models/sandbox.py), so the slug is lowercased and every stray character
+    (notably ``#`` from binder directory names) degrades to ``-``.
+
+    Anti-collision (key/id bijection, KD2) — two distinct raw names must never
+    map to the same slug. Lossy folds keep a 12-hex digest suffix derived
+    from the raw name:
+      - oversize: names longer than 80 chars use ``slug[:67]-<digest12>``
+        so truncation cannot merge two names;
+      - degenerate fold: names whose characters all fold away (pure CJK,
+        pure punctuation, ...) would ALL fall back to the same constant and
+        share one isolation key — Chinese member names are common in this
+        user base — so they get ``entry-<digest12>`` instead;
+      - partial fold: a name that keeps some characters but lost others
+        (e.g. ``a#1`` vs ``a-1`` fold identically) also keeps the digest.
+      A lossless fold (safe charset, case-folded only) needs no digest.
+    """
+    raw = str(value or "")
+    slug = re.sub(r"[^0-9a-zA-Z_-]", "-", raw).lower().strip("-_")
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12] if raw else ""
+    if not slug:
+        # Everything folded away (e.g. a pure-CJK name): distinct raw names
+        # stay distinct via the digest; the constant prefix keeps ids readable.
+        return f"entry-{digest}" if digest else "entry"
+    if len(slug) <= 80 and slug == raw.lower():
+        return slug  # lossless fold: no information lost, no digest needed
+    if len(slug) <= 80:
+        return f"{slug[:67]}-{digest}"  # partial fold: digest guards merges
+    return f"{slug[:67]}-{digest}"  # oversize truncation: digest guards merges
+
+
+def _entry_sandbox_slug(team_name: str, entry_name: str) -> str:
+    """Deterministic isolation-key suffix for one spec entry (P-B granularity)."""
+    return f"entry_{_entry_slug(team_name)}_{_entry_slug(entry_name)}"
+
+
+def _build_member_sandbox_specs(
+    config: Any, spec: Any, *, session_id: str, project_dir: str | None = None
+) -> None:
+    """Give every ``spec.agents`` entry its own sandbox SysOperationSpec (P-B).
+
+    Injection condition matrix (design D-20261105-1041 KD7): all branches that
+    leave members on LOCAL are loud except ``sandbox.enabled=false``, which is
+    the expected configuration and stays silent. Each entry gets a distinct
+    deterministic id (``sandbox.entry_<team>_<entry>``) so the openjiuwen
+    registry's one-key-one-id invariant holds without any workaround; runtime
+    derived members (spawn_expert / reviewer / swarmflow worker) inherit their
+    base entry's sysop through openjiuwen's own ``model_copy`` paths.
+
+    Args:
+        config: The resolved ``config.yaml`` mapping (unused here; kept for
+            symmetry with the other assembly helpers and future knobs).
+        spec: The ``TeamAgentSpec`` being enriched (mutated in place).
+        session_id: Active session id, threaded into the team mount context.
+        project_dir: The request's project directory, mounted rw into every
+            member container (KD3). Without it the policy builder falls back
+            to the agent-server cwd, which is not what team members work on.
+    """
+    from jiuwenswarm.common.config import get_sandbox_endpoint, get_sandbox_runtime
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from openjiuwen.core.sys_operation import OperationMode
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+        _team_context_from_spec,
+        create_sandbox_sysop_card,
+    )
+
+    runtime = get_sandbox_runtime()
+    if not runtime.get("enabled"):
+        return  # expected configuration: silent
+    if is_enterprise():
+        # Known boundary (design §3 non-goal): enterprise team members stay
+        # LOCAL until multi-tenant isolation-key semantics exist. Info-level,
+        # logged once per team (KD7) so the note is auditable without
+        # repeating on every enrich.
+        if spec.team_name not in _ENTERPRISE_BOUNDARY_NOTED:
+            _ENTERPRISE_BOUNDARY_NOTED.add(spec.team_name)
+            logger.info(
+                "[swarm.assembly] team members stay LOCAL: enterprise sandbox "
+                "isolation is a known boundary (team=%s)",
+                spec.team_name,
+            )
+        return
+
+    endpoint = get_sandbox_endpoint()
+    sandbox_url = str(endpoint.get("url") or "").strip()
+    sandbox_type = str(endpoint.get("type") or "").strip().lower()
+    if not sandbox_url or not sandbox_type:
+        logger.warning(
+            "[swarm.assembly] team members stay LOCAL: sandbox endpoint "
+            "unresolved (type=%s, url=%s) (team=%s)",
+            sandbox_type,
+            sandbox_url,
+            spec.team_name,
+        )
+        return
+    if sandbox_type != "jiuwenbox":
+        logger.warning(
+            "[swarm.assembly] team members stay LOCAL: sandbox type %s "
+            "not supported for team members yet (team=%s)",
+            sandbox_type,
+            spec.team_name,
+        )
+        return
+
+    team_ctx = _team_context_from_spec(spec)
+    if team_ctx is None:
+        # An unresolvable team context must NOT cancel sandboxing: dropping
+        # members back to the host is strictly worse than sandboxing them
+        # without the 4 team mounts (project_dir / agent workspace / files.*
+        # still mount). Loud, but injection continues with team mounts off.
+        logger.warning(
+            "[swarm.assembly] team mounts skipped: team context "
+            "unresolvable, members stay sandboxed without team mounts "
+            "(team=%s)",
+            spec.team_name,
+        )
+        team_ctx = None  # explicit: intent(None) == [] (no team mounts)
+    else:
+        team_ctx["session_id"] = str(session_id or "")
+
+    injected: list[str] = []
+    failed_entries: list[str] = []
+    for entry_name, agent_spec in list(spec.agents.items()):
+        entry_slug = _entry_sandbox_slug(spec.team_name, entry_name)
+        card = create_sandbox_sysop_card(
+            sandbox_url,
+            "jiuwenbox",
+            files_runtime=runtime.get("files"),
+            excluded_commands=runtime.get("excluded_commands"),
+            idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
+            idle_check_interval=runtime.get("idle_check_interval"),
+            fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
+            project_dir=project_dir,
+            isolation_custom_id=entry_slug,
+            team_context=team_ctx,
+        )
+        if card is None:
+            failed_entries.append(entry_name)
+            continue
+        spec.agents[entry_name] = agent_spec.model_copy(
+            update={
+                "sys_operation": SysOperationSpec(
+                    id=f"sandbox.{entry_slug}",
+                    mode=OperationMode.SANDBOX,
+                    gateway_config=card.gateway_config,
+                ),
+            }
+        )
+        injected.append(entry_name)
+
+    # The reviewer spec is built before injection from the teammate entry, so
+    # it does not carry the sysop automatically: hand it the teammate's spec
+    # object so temp reviewers share the teammate container (read-only toolset,
+    # design KD2). Untouched when the teammate entry itself failed to inject.
+    teammate_sysop = (spec.agents.get("teammate").sys_operation
+                      if spec.agents.get("teammate") is not None else None)
+    if teammate_sysop is not None and spec.reviewer_agent is not None:
+        spec.reviewer_agent = spec.reviewer_agent.model_copy(
+            update={"sys_operation": teammate_sysop}
+        )
+
+    logger.info(
+        "[swarm.assembly] team entries share sandbox config: entries=%d "
+        "injected=%s (team=%s)",
+        len(injected),
+        injected,
+        spec.team_name,
+    )
+    if failed_entries:
+        # KD7: partial injection is loud at the assembly layer too — the
+        # builder's warning names the cause, this names WHICH entries stay
+        # LOCAL so partial-injection is auditable from one log line.
+        logger.warning(
+            "[swarm.assembly] team members stay LOCAL: entry card build "
+            "failed for %s (team=%s)",
+            failed_entries,
+            spec.team_name,
+        )
 
 
 async def preflight_team_mcps(spec: Any) -> list[str]:
@@ -631,56 +988,15 @@ async def preflight_team_mcps(spec: Any) -> list[str]:
     return dropped
 
 
-def assign_shared_sandbox_sys_operation(spec: Any, deep_agent: Any) -> None:
-    """Point every team member at the main agent's sandbox SysOperation.
-
-    ``setup_agent`` keeps a member's own ``sys_operation`` when the spec
-    already has one. Reusing the main agent's id makes ``SysOperationSpec.resolve``
-    return that registered sandbox instead of creating a local one.
-
-    No-op when the main agent has no sandbox SysOperation.
-    """
-    shared = _shared_sandbox_sys_operation_spec(deep_agent)
-    if shared is None:
-        return
-    agents = getattr(spec, "agents", None)
-    if isinstance(agents, dict):
-        for name, agent_spec in list(agents.items()):
-            if not hasattr(agent_spec, "model_copy"):
-                continue
-            agents[name] = agent_spec.model_copy(update={"sys_operation": shared})
-    reviewer = getattr(spec, "reviewer_agent", None)
-    if hasattr(reviewer, "model_copy"):
-        spec.reviewer_agent = reviewer.model_copy(update={"sys_operation": shared})
-    logger.info(
-        "[swarm.assembly] team members share sandbox sys_operation %s",
-        shared.id,
-    )
-
-
-def _shared_sandbox_sys_operation_spec(deep_agent: Any) -> Any:
-    """Copy the main agent's sandbox card into a member SysOperationSpec."""
-    from openjiuwen.core.sys_operation import OperationMode
-    from openjiuwen.core.sys_operation.config import SandboxGatewayConfig
-    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
-
-    config = getattr(deep_agent, "deep_config", None)
-    sys_operation = getattr(config, "sys_operation", None)
-    if getattr(sys_operation, "mode", None) != OperationMode.SANDBOX:
-        return None
-    run_config = getattr(sys_operation, "_run_config", None)
-    gateway = getattr(run_config, "config", None)
-    if not isinstance(gateway, SandboxGatewayConfig):
-        return None
-    return SysOperationSpec(
-        id=str(sys_operation.id),
-        mode=OperationMode.SANDBOX,
-        gateway_config=gateway,
-    )
+# The v1 prototype ``assign_shared_sandbox_sys_operation`` (reusing the main
+# agent's single sysop id for every member) was removed per design
+# D-20261105-1041 §6: it overwrote the P-B per-entry injection with one shared
+# id, silently restoring the superseded shared-container behavior on the
+# primary team path. Per-entry injection now lives in
+# ``_build_member_sandbox_specs`` at enrich time.
 
 
 __all__ = [
-    "assign_shared_sandbox_sys_operation",
     "enrich_team_spec_for_swarm",
     "preflight_team_mcps",
 ]

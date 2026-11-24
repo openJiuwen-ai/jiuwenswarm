@@ -72,11 +72,13 @@ def test_python_desktop_records_persistence_failure_after_worker_disappears(tmp_
     runtime_class = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "DesktopRuntime")
     method = next(node for node in runtime_class.body if isinstance(node, ast.FunctionDef) and node.name == "shutdown")
     namespace = {"time": time, "asyncio": asyncio, "logger": logging.getLogger(__name__),
+                 "DESKTOP_SHUTDOWN_TIMEOUT_SECONDS": 30.0,
                  "complete_shutdown_receipt": complete_shutdown_receipt,
                  "_terminate_process_tree": Mock(), "_kill_process_tree": Mock()}
     exec(compile(ast.Module(body=[method], type_ignores=[]), "desktop-shutdown", "exec"), namespace)
     receipt = create_shutdown_receipt(tmp_path)
     runtime = SimpleNamespace(_lock=threading.Lock(), _is_shutting_down=False, _startup_cancelled=threading.Event(),
+        _shutdown_complete=threading.Event(),
         _abort_all_blob_saves=Mock(), processes={"agent": SimpleNamespace(poll=lambda: 0)},
         _update_shutdown_receipt=receipt)
     if failure == "missing_receipt":
@@ -142,12 +144,13 @@ def test_python_linux_updater_forwards_its_attempt_receipt_before_replacing_file
     method = next(node for node in runtime_class.body if isinstance(node, ast.FunctionDef)
                   and node.name == "_launch_linux_install_helper")
     namespace = {"Path": Path, "os": os, "shlex": shlex, "EXECUTABLE_NAME": "workswarm",
-                 "get_infra_data_dir": lambda: tmp_path / "infra", "logger": logging.getLogger(__name__),
+                 "get_user_workspace_dir": lambda: tmp_path,
+                 "get_infra_data_dir": lambda: tmp_path, "logger": logging.getLogger(__name__),
                  "subprocess": SimpleNamespace(DEVNULL=-3, Popen=Mock())}
     exec(compile(ast.Module(body=[method], type_ignores=[]), "linux-updater", "exec"), namespace)
     receipt = create_shutdown_receipt(tmp_path / "attempt with spaces")
     runtime = SimpleNamespace(_update_shutdown_receipt=receipt)
     assert namespace[method.name](runtime, tmp_path / "update.tar.gz", tmp_path / "app/workswarm")
-    helper = (tmp_path / "infra/.updates/_install_helper.sh").read_text(encoding="utf-8")
+    helper = (tmp_path / ".updates/_install_helper.sh").read_text(encoding="utf-8")
     assert f"--shutdown-receipt {shlex.quote(str(receipt))}" in helper
     assert helper.index("--shutdown-receipt") < helper.index("mv ")

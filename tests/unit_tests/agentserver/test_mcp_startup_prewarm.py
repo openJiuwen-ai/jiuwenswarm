@@ -164,3 +164,30 @@ async def test_actual_missing_stdio_command_makes_capability_failed() -> None:
     assert registry.first_pass_settled
     assert not registry.fully_warm
     await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_prewarm_settles_connecting_records_without_failing_readiness() -> None:
+    """The startup probe settles leftover connecting records; a stale one must
+    not mark the MCP capability unavailable."""
+
+    async def probe(name: str) -> tuple[bool, str]:
+        return name != "stale-bad", "" if name != "stale-bad" else "auth failed"
+
+    with patch(
+        "jiuwenswarm.common.mcp_config.probe_mcp_live_connection", new=probe,
+    ), patch(
+        "jiuwenswarm.server.runtime.mcp.state_store.list_truly_connected_mcps",
+        return_value=_connected(["online"]),
+    ), patch(
+        "jiuwenswarm.server.runtime.mcp.state_store.list_connecting_mcps",
+        return_value=_connected(["stale-ok", "stale-bad"]),
+    ), patch(
+        "jiuwenswarm.server.runtime.mcp.registry.settle_connecting_mcp",
+    ) as settle:
+        assert await prewarm_connected_mcps(
+            report_status=True, settle_connecting=True,
+        ) is True
+
+    calls = {call.args[0]: call.kwargs.get("probe_ok") for call in settle.call_args_list}
+    assert calls == {"stale-ok": True, "stale-bad": False}

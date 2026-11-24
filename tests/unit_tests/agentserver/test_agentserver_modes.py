@@ -286,7 +286,8 @@ def test_team_plan_mode_sets_spec_field_without_metadata_package():
     assert "team_plan" not in spec.metadata
 
 
-def test_team_mode_does_not_enable_team_plan():
+@pytest.mark.parametrize("mode", ["team", "code.team"])
+def test_non_plan_team_modes_do_not_enable_team_plan(mode):
     from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
 
@@ -296,22 +297,7 @@ def test_team_mode_does_not_enable_team_plan():
         enable_team_plan=False,
     )
 
-    TeamManager.apply_team_plan_mode(spec, request_metadata={"mode": "team"})
-
-    assert spec.enable_team_plan is False
-
-
-def test_code_team_mode_does_not_enable_team_plan():
-    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
-    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
-
-    spec = TeamAgentSpec.model_construct(
-        team_name="demo_team",
-        agents={},
-        enable_team_plan=False,
-    )
-
-    TeamManager.apply_team_plan_mode(spec, request_metadata={"mode": "code.team"})
+    TeamManager.apply_team_plan_mode(spec, request_metadata={"mode": mode})
 
     assert spec.enable_team_plan is False
 
@@ -649,21 +635,74 @@ def test_agent_ws_resuming_tool_interrupt_recognizes_evolution_interrupt_approva
     assert not is_interrupt_resume_payload(passive_params)
 
 
-def test_build_inputs_maps_team_plan_confirm_interrupt_answers_to_interactive_input(monkeypatch):
+@pytest.fixture(
+    params=[
+        pytest.param(
+            ("Approve", "", {"approved": True, "auto_confirm": False, "feedback": ""}),
+            id="tui-approve",
+        ),
+        pytest.param(
+            (
+                "plan_execute",
+                "",
+                {"approved": True, "auto_confirm": False, "feedback": "", "plan_execute": True},
+            ),
+            id="execute",
+        ),
+        pytest.param(
+            (
+                "plan_skip",
+                "",
+                {
+                    "approved": False,
+                    "auto_confirm": False,
+                    "feedback": "用户选择跳过本次计划审批，暂不执行，也未提出修改意见。",
+                    "plan_skip": True,
+                },
+            ),
+            id="skip",
+        ),
+        pytest.param(
+            (
+                "plan_revise",
+                "把任务拆得再细一点",
+                {
+                    "approved": False,
+                    "auto_confirm": False,
+                    "feedback": "把任务拆得再细一点",
+                    "plan_revise": True,
+                },
+            ),
+            id="revise",
+        ),
+    ],
+)
+def team_plan_approval_answer(request):
+    """Cover Web plan actions while retaining the TUI approval contract."""
+    return request.param
+
+
+@pytest.mark.parametrize("mode", ["team.work.plan", "team.code.plan"])
+def test_build_inputs_maps_team_plan_confirm_interrupt_answers_to_interactive_input(
+    monkeypatch,
+    mode,
+    team_plan_approval_answer,
+):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
 
-    answers = [{"selected_options": ["Approve"], "custom_input": ""}]
+    selected_option, custom_input, expected_payload = team_plan_approval_answer
+    answers = [{"selected_options": [selected_option], "custom_input": custom_input}]
     request = AgentRequest(
         request_id="req-answer",
         channel_id="tui",
         session_id="team-session",
         params={
             "query": "",
-            "mode": "team.plan",
+            "mode": mode,
             "request_id": "exit_plan_mode_call_1",
             "answers": answers,
             "source": "confirm_interrupt",
@@ -677,16 +716,13 @@ def test_build_inputs_maps_team_plan_confirm_interrupt_answers_to_interactive_in
 
     assert isinstance(inputs["query"], InteractiveInput)
     assert inputs["query"].user_inputs == {
-        "exit_plan_mode_call_1": {
-            "approved": True,
-            "auto_confirm": False,
-            "feedback": "",
-        }
+        "exit_plan_mode_call_1": expected_payload,
     }
     assert raw_query.text is inputs["query"]
 
 
-def test_build_inputs_maps_team_plan_reject_answers_to_interactive_input(monkeypatch):
+@pytest.mark.parametrize("mode", ["team.plan", "team.work.plan", "team.code.plan"])
+def test_build_inputs_maps_team_plan_reject_answers_to_interactive_input(monkeypatch, mode):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -699,7 +735,7 @@ def test_build_inputs_maps_team_plan_reject_answers_to_interactive_input(monkeyp
         session_id="team-session",
         params={
             "query": "",
-            "mode": "team.plan",
+            "mode": mode,
             "request_id": "exit_plan_mode_call_1",
             "answers": [{"selected_options": ["Reject"], "custom_input": "把任务拆得再细一点"}],
             "source": "confirm_interrupt",
@@ -845,7 +881,12 @@ def test_build_inputs_drops_bare_other_without_custom_input(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeypatch):
+@pytest.mark.parametrize("mode", ["team.work.plan", "team.code.plan"])
+async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(
+    monkeypatch,
+    mode,
+    team_plan_approval_answer,
+):
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     class FakeAdapter:
@@ -865,6 +906,7 @@ async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeyp
     fake_adapter = FakeAdapter()
     monkeypatch.setattr(interface_module, "create_adapter", lambda _sdk, mode="agent": fake_adapter)
 
+    selected_option, custom_input, _expected_payload = team_plan_approval_answer
     request = AgentRequest(
         request_id="req-answer",
         req_method=ReqMethod.CHAT_ANSWER,
@@ -872,9 +914,9 @@ async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeyp
         session_id="team-session",
         params={
             "query": "",
-            "mode": "team.plan",
+            "mode": mode,
             "request_id": "exit_plan_mode_call_1",
-            "answers": [{"selected_options": ["Approve"], "custom_input": ""}],
+            "answers": [{"selected_options": [selected_option], "custom_input": custom_input}],
             "source": "confirm_interrupt",
             "plan_approval_kind": "plan_approval",
             "plan_content": "# Team Plan",
@@ -890,8 +932,11 @@ async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["team.work.plan", "team.code.plan"])
 async def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team_follow_up(
     monkeypatch,
+    mode,
+    team_plan_approval_answer,
 ):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
@@ -950,15 +995,16 @@ async def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team
         lambda _channel_id: FakeTeamManager(),
     )
 
+    selected_option, custom_input, expected_payload = team_plan_approval_answer
     request = AgentRequest(
         request_id="req-stream-answer",
         channel_id="tui",
         session_id="team-session",
         params={
             "query": "",
-            "mode": "team.plan",
+            "mode": mode,
             "request_id": "exit_plan_mode_call_1",
-            "answers": [{"selected_options": ["Approve"], "custom_input": ""}],
+            "answers": [{"selected_options": [selected_option], "custom_input": custom_input}],
             "source": "confirm_interrupt",
             "plan_approval_kind": "plan_approval",
             "plan_content": "# Team Plan",
@@ -975,7 +1021,8 @@ async def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team
     assert FakeSessionManager.submit_task_calls == []
     assert len(FakeTeamManager.interact_calls) == 0
     assert isinstance(fake_adapter.seen_inputs["query"], InteractiveInput)
-    assert fake_adapter.seen_inputs["query"].user_inputs["exit_plan_mode_call_1"]["approved"] is True
+    assert fake_adapter.seen_inputs["query"].user_inputs == {"exit_plan_mode_call_1": expected_payload}
+    assert request.params["mode"] == mode
     assert chunks[0].payload == {"event_type": "chat.done"}
     assert chunks[0].is_complete is True
     assert chunks[-1].is_complete is True
@@ -1116,144 +1163,104 @@ async def test_process_message_stream_persists_team_ask_user_answer_with_origina
     assert any(chunk.payload.get("event_type") == "chat.final" for chunk in chunks)
 
 
-@pytest.mark.asyncio
-async def test_process_message_stream_routes_web_evolution_interrupt_without_user_history(
-    monkeypatch,
-):
-    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
-
-    class FakeSessionManager:
-        @staticmethod
-        def get_session_id(session_id=None):
-            return session_id or "default"
-
-        @staticmethod
-        async def submit_task(_session_id, task_factory):
-            await task_factory()
-
-    class FakeAdapter:
-        seen_inputs = None
-
-        @staticmethod
-        async def process_message_stream_impl(*_args, **_kwargs):
-            _request, inputs = _args
-            FakeAdapter.seen_inputs = inputs
-            yield AgentResponseChunk(
-                request_id="req-stream-answer",
-                channel_id="web",
-                payload={"event_type": "chat.done"},
-                is_complete=True,
-            )
-
-    history_records = []
-
-    monkeypatch.setattr(interface_module, "SessionManager", FakeSessionManager)
-    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
-    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
-    monkeypatch.setattr(
-        interface_module.JiuWenSwarm,
-        "_ensure_adapter",
-        lambda self, mode="agent": FakeAdapter(),
-    )
-    monkeypatch.setattr(
-        interface_module,
-        "append_history_record",
-        lambda **kwargs: history_records.append(kwargs),
-    )
-
-    request = AgentRequest(
-        request_id="req-stream-answer",
-        channel_id="web",
-        session_id="web-session",
-        params={
-            "query": "",
-            "mode": "agent.plan",
-            "request_id": "call_evolve_1",
-            "answers": [{"selected_options": ["allow_always"], "custom_input": ""}],
-            "source": "evolution_interrupt",
-            "approval_kind": "evolve",
-        },
-        is_stream=True,
-    )
-
-    async def collect_chunks():
-        return [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
-
-    chunks = await collect_chunks()
-
-    assert isinstance(FakeAdapter.seen_inputs["query"], InteractiveInput)
-    assert FakeAdapter.seen_inputs["query"].user_inputs == {
-        "call_evolve_1": {"action": "allow_always"}
-    }
-    assert [record for record in history_records if record["role"] == "user"] == []
-    assert chunks[0].payload == {"event_type": "chat.done"}
-    assert chunks[-1].is_complete is True
-
-
-@pytest.mark.asyncio
-async def test_process_message_stream_keeps_passive_evolution_approval_as_user_history(
-    monkeypatch,
-):
-    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
-
-    class FakeSessionManager:
-        @staticmethod
-        def get_session_id(session_id=None):
-            return session_id or "default"
-
-        @staticmethod
-        async def submit_task(_session_id, task_factory):
-            await task_factory()
-
-    class FakeAdapter:
-        seen_inputs = None
-
-        @staticmethod
-        async def process_message_stream_impl(*_args, **_kwargs):
-            _request, inputs = _args
-            FakeAdapter.seen_inputs = inputs
-            yield AgentResponseChunk(
-                request_id="req-stream-answer",
-                channel_id="web",
-                payload={"event_type": "chat.done"},
-                is_complete=True,
-            )
-
-    history_records = []
-
-    monkeypatch.setattr(interface_module, "SessionManager", FakeSessionManager)
-    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
-    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
-    monkeypatch.setattr(
-        interface_module.JiuWenSwarm,
-        "_ensure_adapter",
-        lambda self, mode="agent": FakeAdapter(),
-    )
-    monkeypatch.setattr(
-        interface_module,
-        "append_history_record",
-        lambda **kwargs: history_records.append(kwargs),
-    )
-
-    request = AgentRequest(
-        request_id="req-stream-answer",
-        channel_id="web",
-        session_id="web-session",
-        params={
-            "query": "",
-            "mode": "agent.plan",
-            "request_id": "regular_evolve_1",
-            "answers": [{"selected_options": ["allow_always"], "custom_input": ""}],
-            "source": "skill_evolution_approval",
-            "approval_schema": "openjiuwen.skill_evolution_approval.v1",
-            "evolution_meta": {
-                "event_kind": "approval",
-                "rail_kind": "regular",
+@pytest.mark.parametrize(
+    ("params", "expected_user_inputs", "expected_first_payload", "expects_user_history"),
+    [
+        pytest.param(
+            {
+                "query": "",
+                "mode": "agent.plan",
+                "request_id": "call_evolve_1",
+                "answers": [{"selected_options": ["allow_always"], "custom_input": ""}],
+                "source": "evolution_interrupt",
                 "approval_kind": "evolve",
             },
-        },
+            {"call_evolve_1": {"action": "allow_always"}},
+            {"event_type": "chat.done"},
+            False,
+            id="interrupt_resume",
+        ),
+        pytest.param(
+            {
+                "query": "",
+                "mode": "agent.plan",
+                "request_id": "regular_evolve_1",
+                "answers": [{"selected_options": ["allow_always"], "custom_input": ""}],
+                "source": "skill_evolution_approval",
+                "approval_schema": "openjiuwen.skill_evolution_approval.v1",
+                "evolution_meta": {
+                    "event_kind": "approval",
+                    "rail_kind": "regular",
+                    "approval_kind": "evolve",
+                },
+            },
+            None,
+            None,
+            True,
+            id="passive_approval",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_process_message_stream_routes_evolution_approval_answers_by_source(
+    monkeypatch,
+    params,
+    expected_user_inputs,
+    expected_first_payload,
+    expects_user_history,
+):
+    """Route evolution approval answers by source.
+
+    Interrupt-resume answers reach the adapter without user history, while
+    passive skill evolution approvals are persisted as user history.
+    """
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    class FakeSessionManager:
+        @staticmethod
+        def get_session_id(session_id=None):
+            return session_id or "default"
+
+        @staticmethod
+        async def submit_task(_session_id, task_factory):
+            await task_factory()
+
+    class FakeAdapter:
+        seen_inputs = None
+
+        @staticmethod
+        async def process_message_stream_impl(*_args, **_kwargs):
+            _request, inputs = _args
+            FakeAdapter.seen_inputs = inputs
+            yield AgentResponseChunk(
+                request_id="req-stream-answer",
+                channel_id="web",
+                payload={"event_type": "chat.done"},
+                is_complete=True,
+            )
+
+    history_records = []
+
+    monkeypatch.setattr(interface_module, "SessionManager", FakeSessionManager)
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    monkeypatch.setattr(
+        interface_module.JiuWenSwarm,
+        "_ensure_adapter",
+        lambda self, mode="agent": FakeAdapter(),
+    )
+    monkeypatch.setattr(
+        interface_module,
+        "append_history_record",
+        lambda **kwargs: history_records.append(kwargs),
+    )
+
+    request = AgentRequest(
+        request_id="req-stream-answer",
+        channel_id="web",
+        session_id="web-session",
+        params=params,
         is_stream=True,
     )
 
@@ -1263,7 +1270,15 @@ async def test_process_message_stream_keeps_passive_evolution_approval_as_user_h
     chunks = await collect_chunks()
 
     assert isinstance(FakeAdapter.seen_inputs["query"], InteractiveInput)
-    assert [record for record in history_records if record["role"] == "user"]
+    if expected_user_inputs is not None:
+        assert FakeAdapter.seen_inputs["query"].user_inputs == expected_user_inputs
+    user_history = [record for record in history_records if record["role"] == "user"]
+    if expects_user_history:
+        assert user_history
+    else:
+        assert user_history == []
+    if expected_first_payload is not None:
+        assert chunks[0].payload == expected_first_payload
     assert chunks[-1].is_complete is True
 
 
@@ -2825,7 +2840,8 @@ async def test_deep_adapter_unregisters_ttse_rail_when_disabled(monkeypatch):
     assert adapter._instance.unregistered == [ttse_rail]
 
 
-def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, tmp_path):
+@pytest.mark.parametrize("model_available", [True, False])
+def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, tmp_path, model_available):
     captured: dict[str, object] = {}
     fake_processor = object()
     tenant_ws = tmp_path / "tenant_ws"
@@ -2852,8 +2868,9 @@ def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, t
 
     adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
     adapter._workspace_dir = str(tenant_ws)
-    adapter._model = Mock()
-    adapter._default_model_name = "test-model"
+    adapter._model = Mock(model_config=None) if model_available else None
+    adapter._model_request_config = Mock(model_name="test-model")
+    adapter._default_model_name = "model:mdl_internal"
 
     rail = adapter._build_ttse_rail(
         {
@@ -2884,6 +2901,31 @@ def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, t
     assert induce_policy.total_budget_secs == 300.0
     assert captured["rail"]["model"] == "test-model"
     assert captured["rail"]["trajectory_span_processor"] is fake_processor
+
+
+@pytest.mark.parametrize("model_available", [True, False])
+def test_ttse_hot_reload_uses_current_client_model_name(monkeypatch, model_available):
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._ttse_rail = Mock()
+    adapter._skill_evolution_rail = None
+    adapter._skill_rail = None
+    adapter._heartbeat_rail = Mock()
+    adapter._permission_state.permission_update_in_progress = True
+    monkeypatch.setattr(adapter, "_build_skill_rail", lambda *args, **kwargs: None)
+    monkeypatch.setattr(adapter, "_filesystem_rail_enabled_for_profile", lambda: False)
+
+    for reference, api_model in (
+        ("model:mdl_first", "pool_0024"),
+        ("model:mdl_second", "pool_0025"),
+        ("model:mdl_missing_config", "unknown"),
+    ):
+        adapter._default_model_name = reference
+        adapter._model = Mock(model_config=None) if model_available else None
+        adapter._model_request_config = Mock(model_name=api_model) if api_model != "unknown" else None
+
+        adapter._get_current_agent_rails({"model_name": "stale-model"})
+
+        adapter._ttse_rail.update_llm.assert_called_with(adapter._model, api_model)
 
 
 def test_build_ttse_rail_skips_when_trajectory_processor_unavailable(monkeypatch, tmp_path):

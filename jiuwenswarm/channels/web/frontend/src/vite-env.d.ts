@@ -11,7 +11,6 @@ interface ImportMetaEnv {
   readonly VITE_WEB_HTTP_BASE?: string;
   readonly VITE_JIUWENSWARM_EDITION?: string;
   readonly VITE_LOGIN_AUTH_SIMULATE?: string;
-  readonly VITE_API_PREFIX?: string;
 }
 
 interface ImportMeta {
@@ -37,6 +36,7 @@ interface Window {
   /** Set by desktop_app.py when OS file-drag accept handlers are injected. */
   __JIUWEN_DESKTOP_DND__?: boolean;
   jiuwenDesktop?: import('./types/electron').JiuwenElectronDesktopApi;
+  jiuwenPresentation?: import('./features/webui/presentation/protocol').PresentationWindowApi;
   pywebview?: {
     api?: {
       paste_clipboard?: () => Promise<void>;

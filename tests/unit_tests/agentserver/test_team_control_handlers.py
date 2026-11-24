@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openjiuwen_protocol.e2a.wire_codec import parse_agent_server_wire_unary
+from e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.request_identity import apply_routing_metadata
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods

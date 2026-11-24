@@ -38,8 +38,8 @@ function EntityTag({ item }: { item: EntityHeaderTagItem }) {
     <>
       <span
         className="entity-header__tag"
-        data-testid={item.testId}
-        data-variant={item.variant}
+        data-testid={item.testId ?? 'entity-header-tag'}
+        data-variant={item.variant ?? item.label}
         data-tooltip={item.tooltip}
         {...(item.tooltip ? handlers : {})}
       >
@@ -71,26 +71,20 @@ export function EntityTagList({ tags }: { tags: EntityHeaderTag[] }) {
   const [visibleCount, setVisibleCount] = useState(items.length);
 
   useLayoutEffect(() => {
-    if (items.length <= 2) {
-      setVisibleCount(items.length);
-      return;
-    }
-
     const tagsRow = tagsRef.current;
     const measure = measureRef.current;
     if (!tagsRow || !measure) return;
 
     const update = () => {
       const available = tagsRow.getBoundingClientRect().width;
-      if (available <= 0) return;
 
       const styles = window.getComputedStyle(tagsRow);
       const gap = Number.parseFloat(styles.columnGap) || 0;
       const overflowW = Number.parseFloat(styles.getPropertyValue('--entity-header-tag-overflow-width')) || 20;
       const tagWidths = Array.from(measure.children).map((child) => child.getBoundingClientRect().width);
-      const totalW = tagWidths.reduce((sum, w) => sum + w, 0) + gap * (tagWidths.length - 1);
+      const totalW = tagWidths.reduce((sum, w) => sum + w, 0) + gap * Math.max(0, tagWidths.length - 1);
 
-      if (totalW <= available + 0.5) {
+      if (totalW <= available) {
         setVisibleCount(items.length);
         return;
       }
@@ -99,17 +93,19 @@ export function EntityTagList({ tags }: { tags: EntityHeaderTag[] }) {
       let count = 0;
       for (const w of tagWidths) {
         const next = acc + (count > 0 ? gap : 0) + w;
-        if (next + gap + overflowW > available + 0.5) break;
+        if (next + gap + overflowW > available) break;
         acc = next;
         count += 1;
       }
-      setVisibleCount(Math.max(1, count));
+      // Keep only the indicator when even the first tag cannot fit beside it.
+      setVisibleCount(count);
     };
 
     update();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(update);
     observer.observe(tagsRow);
+    observer.observe(measure);
     return () => observer.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items.length, items.map((item) => item.label).join('')]);
@@ -119,12 +115,17 @@ export function EntityTagList({ tags }: { tags: EntityHeaderTag[] }) {
   const visible = items.slice(0, visibleCount);
 
   return (
-    <span ref={tagsRef} className="entity-header__tags">
+    <span ref={tagsRef} className="entity-header__tags" data-testid="entity-header-tags">
       {visible.map((item, i) => (
         <EntityTag key={`${i}-${item.label}`} item={item} />
       ))}
       {hasOverflow ? (
-        <span className="entity-header__tag-overflow" title={allTags} aria-label={allTags}>
+        <span
+          className="entity-header__tag-overflow"
+          title={allTags}
+          aria-label={allTags}
+          data-testid="entity-header-tag-overflow"
+        >
           <svg viewBox="0 0 16 16" fill="currentColor" width={16} height={16} aria-hidden="true">
             <circle cx="4" cy="8" r="1.5" />
             <circle cx="8" cy="8" r="1.5" />
@@ -132,16 +133,14 @@ export function EntityTagList({ tags }: { tags: EntityHeaderTag[] }) {
           </svg>
         </span>
       ) : null}
-      {items.length > 2 ? (
-        <span ref={measureRef} className="entity-header__tags-measure" aria-hidden="true">
-          {items.map((item, i) => (
-            <span key={`measure-${i}-${item.label}`} className="entity-header__tag">
-              {item.icon}
-              {item.label}
-            </span>
-          ))}
-        </span>
-      ) : null}
+      <span ref={measureRef} className="entity-header__tags-measure" aria-hidden="true">
+        {items.map((item, i) => (
+          <span key={`measure-${i}-${item.label}`} className="entity-header__tag">
+            {item.icon}
+            {item.label}
+          </span>
+        ))}
+      </span>
     </span>
   );
 }

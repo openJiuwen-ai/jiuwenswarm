@@ -1,0 +1,8 @@
+id: rea-setup
+name: REA Setup
+version: 1.0.0
+description: Reverse engineering setup and capability management
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.8"
+package_type: application
+dependencies: {}

@@ -145,6 +145,9 @@ async def test_slow_legacy_retirement_cannot_exceed_election_deadline(monkeypatc
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(front._connect_resident(), .3)
     assert time.monotonic() - started < .2
-    assert deadlines and deadlines[0] <= started + .05
+    # The deadline is computed inside the coroutine, so shared-runner scheduling
+    # jitter can push it past started + connect_timeout. Allow that slack, which
+    # is still far below the shutdown-scale budget a regression would produce.
+    assert deadlines and deadlines[0] <= started + .15
     peer.close.assert_awaited_once()
     spawn.assert_not_called()

@@ -100,13 +100,18 @@ export function markQuestionsAnswered(sessionId: string, requestIds: Iterable<st
   }
 }
 
+/** History echoes are identified by session/request even when source was not persisted. */
+export function isQuestionAnswered(sessionId: string, rawRequestId: string): boolean {
+  const requestId = boundedIdentity(rawRequestId, 512);
+  return Boolean(requestId && answeredQuestionKeys.has(answeredQuestionKey(sessionId, requestId)));
+}
+
 export function isAnsweredAskUserQuestion(
   sessionId: string,
   payload: AskUserQuestionPayload,
 ): boolean {
   if (payload.source !== ASK_USER_SOURCE) return false;
-  const requestId = boundedIdentity(payload.request_id, 512);
-  return Boolean(requestId && answeredQuestionKeys.has(answeredQuestionKey(sessionId, requestId)));
+  return isQuestionAnswered(sessionId, payload.request_id);
 }
 
 export function dropAnsweredAskUserQuestions(

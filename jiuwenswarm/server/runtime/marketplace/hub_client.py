@@ -70,7 +70,9 @@ class HubTransport(Protocol):
         ...
 
 
-_SHARED_HTTP_CLIENTS: dict[tuple[str, float, asyncio.AbstractEventLoop], httpx.AsyncClient] = {}
+_SHARED_HTTP_CLIENTS: dict[
+    tuple[str, float, bool, asyncio.AbstractEventLoop], httpx.AsyncClient
+] = {}
 _MAX_SHARED_CLIENTS = 8
 
 
@@ -82,6 +84,7 @@ class HttpHubTransport:
         timeout: float | None = None,
         token: str | None = None,
         system_token: str | None = None,
+        verify: bool = True,
     ) -> None:
         configured = (
             base_url or os.getenv("TEAM_SKILLS_HUB_BASE_URL") or DEFAULT_HUB_BASE_URL
@@ -102,6 +105,9 @@ class HttpHubTransport:
         )
         self.token = (token or "").strip()
         self.system_token = (system_token or "").strip()
+        # Default True keeps existing callers (Skill plaza / MCP / publish) unchanged.
+        # Connector SPI may pass SourceConfig.verify_ssl explicitly.
+        self.verify = bool(verify)
 
     def _headers(self) -> dict[str, str] | None:
         if self.system_token:
@@ -110,8 +116,13 @@ class HttpHubTransport:
             return {"Authorization": f"Bearer {self.token}"}
         return None
 
+    def _client_key(
+        self, loop: asyncio.AbstractEventLoop
+    ) -> tuple[str, float, bool, asyncio.AbstractEventLoop]:
+        return (self.base_url, self.timeout, self.verify, loop)
+
     async def aclose(self) -> None:
-        key = (self.base_url, self.timeout, asyncio.get_running_loop())
+        key = self._client_key(asyncio.get_running_loop())
         client = _SHARED_HTTP_CLIENTS.pop(key, None)
         if client is not None and not client.is_closed:
             await client.aclose()
@@ -124,11 +135,15 @@ class HttpHubTransport:
         recycled ``id()`` can never hit a client bound to a closed loop.
         """
         loop = asyncio.get_running_loop()
-        key = (self.base_url, self.timeout, loop)
+        key = self._client_key(loop)
         client = _SHARED_HTTP_CLIENTS.get(key)
         if client is not None and not client.is_closed and not loop.is_closed():
             return client
-        client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=False)
+        client = httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=False,
+            verify=self.verify,
+        )
         _SHARED_HTTP_CLIENTS[key] = client
         while len(_SHARED_HTTP_CLIENTS) > _MAX_SHARED_CLIENTS:
             old_key = next(iter(_SHARED_HTTP_CLIENTS))
@@ -186,6 +201,7 @@ class HubClient(HubAssetPort):
         token: str | None = None,
         system_token: str | None = None,
         publisher: HubPublishPort | None = None,
+        verify: bool = True,
     ) -> None:
         self._publisher = publisher
         self.transport = transport or HttpHubTransport(
@@ -193,6 +209,7 @@ class HubClient(HubAssetPort):
             timeout=timeout,
             token=token,
             system_token=system_token,
+            verify=verify,
         )
         configured_base_url = (
             base_url
@@ -329,6 +346,28 @@ class HubClient(HubAssetPort):
         content = payload.get("content") if isinstance(payload, dict) else None
         return content[:20000] if isinstance(content, str) else ""
 
+    async def list_version_files(
+        self, asset_id: str, version: str, *, with_content: str | None = None
+    ) -> dict[str, Any]:
+        """Return one version's file listing, optionally with a file's text content.
+
+        Uses the same version files endpoint as ``read_public_readme``, so previews
+        never download the package archive.
+        """
+        wanted = str(asset_id or "").strip()
+        wanted_version = str(version or "").strip()
+        if not wanted or not wanted_version:
+            raise ValueError("asset_id and version are required")
+        files_path = (
+            f"/api/v1/plugins/{quote(wanted, safe='')}/versions/"
+            f"{quote(wanted_version, safe='')}/files"
+        )
+        params = {"with_content": with_content} if with_content else None
+        payload = await self.transport.get_data(files_path, params=params)
+        if not isinstance(payload, dict) or not isinstance(payload.get("files"), list):
+            raise HubProtocolError("Hub file listing is malformed")
+        return payload
+
     async def get_artifact(
         self, asset_id: str, *, version: str | None = None, is_cli_download: bool = False
     ) -> HubArtifact:
@@ -402,7 +441,7 @@ class HubClient(HubAssetPort):
             request.asset_id, plugin_type=contract.hub_plugin_type
         )
         self._require_request_kind(request.kind, item.plugin_type, item.asset_type)
-        version = item.public_latest_version
+        version = (request.version or "").strip() or item.public_latest_version
         if not version:
             raise HubProtocolError(f"Hub asset has no public version: {request.asset_id}")
         detail = await self.get_version(item.asset_id, version)
@@ -419,16 +458,35 @@ class HubClient(HubAssetPort):
             icon_uri=self._normalize_icon_uri(detail.icon_uri or item.icon_uri),
             tags=detail.tags,
             package_name=detail.name or item.name,
+            category_name=item.category_name,
+            preview_url=self._normalize_icon_uri(detail.preview_url),
             package_profile=detail.package_profile,
+            versions=item.all_versions,
+            file_size=detail.file_size,
+            source_size=detail.source_size,
+            requires_project=detail.requires_project,
+            permissions=detail.permissions,
+            has_server_script=detail.has_server_script,
+            checksum_sha256=detail.checksum_sha256,
         )
 
     async def resolve_download(
         self, request: HubDownloadRequest
     ) -> HubResolvedDownload:
-        artifact = await self.get_artifact(request.asset_id, version=request.version)
+        # Apps are distributed as the original market-wrapped ZIP. raw.zip must
+        # never be requested for an app: it is not generated for this type.
+        is_cli_download = request.kind == "app"
+        artifact = await self.get_artifact(
+            request.asset_id,
+            version=request.version,
+            is_cli_download=is_cli_download,
+        )
         self._require_request_kind(
             request.kind, artifact.plugin_type, artifact.asset_type
         )
+        if request.kind == "app":
+            if artifact.file_size is None or artifact.file_size <= 0:
+                raise HubProtocolError("Hub app artifact is missing file_size")
         return HubResolvedDownload(
             kind=request.kind,
             asset_id=artifact.asset_id,
@@ -436,4 +494,5 @@ class HubClient(HubAssetPort):
             download_url=artifact.download_url,
             checksum_sha256=artifact.checksum_sha256,
             package_name=artifact.name,
+            file_size=artifact.file_size,
         )

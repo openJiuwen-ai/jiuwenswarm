@@ -552,9 +552,5 @@ async def handle_org_snapshot(ctx: RequestContext) -> None:
     )
 
 
-async def handle_a4p_request(ctx: RequestContext) -> None:
-    """处理网页授权那边转发来的 a4p 请求。"""
-    from jiuwenswarm.agents.harness.common.a4p.rpc import dispatch_a4p_request
-
-    resp = await dispatch_a4p_request(ctx.request)
-    await ctx.sink.send_response(resp)
+# 兼容旧 import 路径：handle_a4p_request 已迁到 handlers.a4p
+from jiuwenswarm.server.handlers.a4p import handle_a4p_request  # noqa: F401

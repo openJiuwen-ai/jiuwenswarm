@@ -162,16 +162,6 @@ def _gateway_preflight_wait_seconds() -> float:
     return float(default.value)
 
 
-def _python_shutdown_budget_seconds() -> float:
-    """DesktopRuntime.shutdown 内 SIGTERM→强杀的统一预算(desktop_app.py 字面量)。"""
-    fn = _function_def(_desktop_app_module(), "shutdown")
-    segment = ast.get_source_segment(_read(DESKTOP_APP_PY), fn)
-    assert segment is not None
-    match = re.search(r"time\.monotonic\(\) \+ (\d+(?:\.\d+)?)", segment)
-    assert match, "shutdown 预算字面量未找到, 请同步更新本测试"
-    return float(match.group(1))
-
-
 def _data_url_export_specs() -> dict[str, dict[str, frozenset]]:
     value = _desktop_app_assignments()["DATA_URL_EXPORT_SPECS"]
     assert isinstance(value, ast.Dict)
@@ -382,6 +372,7 @@ BASE_PORT_NAME_MAP = {
     "web": "gatewayApi",
     "gateway": "gatewayInternal",
     "frontend": "frontend",
+    "office_tls": "officeTls",
 }
 
 
@@ -413,7 +404,7 @@ def test_shutdown_budget_is_the_documented_divergence() -> None:
     Electron 单个传输进程 SIGTERM 等待 5s + 强杀等待 1.5s。
     钉住当前值: 任一侧改动都会红灯, 迫使重新评审该分歧。
     """
-    assert _python_shutdown_budget_seconds() == 30.0
+    assert _py_assignment_value(DESKTOP_APP_PY, "DESKTOP_SHUTDOWN_TIMEOUT_SECONDS") == 30.0
     assert _js_number_const(_read(MAIN_CJS), "RUNTIME_SHUTDOWN_TIMEOUT_MS") == 30_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_SHUTDOWN_TIMEOUT_MS") == 5_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_KILL_TIMEOUT_MS") == 1_500
@@ -613,15 +604,18 @@ def test_windows_electron_sets_amd64_before_any_preflight() -> None:
     assert "--extra codex" not in source
 
 
-def test_windows_electron_enforces_its_node_minimum_without_changing_python_default() -> None:
-    """Electron 43 需要 Node >=22.12；Python 打包仍沿用共享的 22.11 默认值。"""
+def test_electron_builds_enforce_node_minimum_without_changing_python_default() -> None:
+    """Electron 出包要求 Node >=22.13；Python 打包沿用共享的 22.11 默认值。"""
     module_source = _read(BUILD_RUNTIMES_PSM1)
     electron_source = _read(BUILD_ELECTRON_PS1)
+    macos_source = _read(BUILD_ELECTRON_SH)
     python_source = _read(BUILD_EXE_PS1)
-    assert '$ElectronMinimumNodeVersion = [version]"22.12.0"' in electron_source
-    assert 'Get-RuntimeBundleSettings -DefaultNodeVersion "v22.12.0"' in electron_source
+    assert '$ElectronMinimumNodeVersion = [version]"22.13.0"' in electron_source
+    assert 'Get-RuntimeBundleSettings -DefaultNodeVersion "v22.13.0"' in electron_source
     assert "-MinimumVersion $ElectronMinimumNodeVersion" in electron_source
-    assert "22.12.0" not in python_source
+    assert "NODE_MINIMUM_VERSION=22.13.0" in macos_source
+    assert "NODE_DEFAULT_VERSION=v22.13.0" in macos_source
+    assert "22.13.0" not in python_source
     assert "Get-NodeRuntimeVersion -RuntimeDir $RuntimeDir" in module_source
     assert "$actualVersion -lt $MinimumVersion" in module_source
     assert "$requestedVersion -lt $MinimumVersion" in module_source
@@ -1008,11 +1002,15 @@ def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
 
 
 def test_electron_module_map_matches_python_entry_points() -> None:
-    """开发模式 serviceCommand 的 -m 模块映射须与 pyproject 入口点一致。
+    """开发模式 serviceCommand 的 -m 模块映射须与 Python 入口一致。
 
     M0-c 盲区回归：main.cjs 曾长期残留 gateway.app_gateway
     （Python 侧与打包模式都已改 gateway.app_gateway），契约测试不覆盖
     该映射导致 CI 抓不到开发模式启动断链。
+
+    gateway 例外：桌面开发模式有意经 `jiuwenswarm.channels.desktop.gateway_entry`
+    包装 Gateway，在导入 `agent_gateway.app_gateway` 前完成本地配置准备
+    （见 B_20261119_1416）；pyproject 的 `jiuwenswarm-gateway` CLI 入口保持不变。
     """
     import re as _re
 
@@ -1029,7 +1027,8 @@ def test_electron_module_map_matches_python_entry_points() -> None:
     # 对应的 agent / gateway 两项。
     expected = {
         "agent": entry_points["jiuwenswarm-agentserver"].split(":")[0],
-        "gateway": entry_points["jiuwenswarm-gateway"].split(":")[0],
+        # 桌面开发模式走 desktop wrapper（内部仍调用 pyproject 的 Gateway 入口）。
+        "gateway": "jiuwenswarm.channels.desktop.gateway_entry",
     }
     for service, module in expected.items():
         assert electron_map[service] == module, (

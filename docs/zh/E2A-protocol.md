@@ -1,6 +1,6 @@
 # E2A（Everything-to-Agent）协议说明
 
-> **实现**：`jiuwenswarm/common/e2a/`（`models.py`、`adapters.py`、`constants.py`、`__init__.py`）。**版本**：`E2A_PROTOCOL_VERSION`（默认 `1.0`）。**冲突时**：以 `models.py` 中 dataclass 字段为最终实现源，并回头修正本文。请求：`E2AEnvelope`；响应：`E2AResponse`。  
+> **实现**：`e2a/`（`models.py`、`adapters.py`、`constants.py`、`__init__.py`）。**版本**：`E2A_PROTOCOL_VERSION`（默认 `1.0`）。**冲突时**：以 `models.py` 中 dataclass 字段为最终实现源，并回头修正本文。请求：`E2AEnvelope`；响应：`E2AResponse`。  
 > **English**：[../en/E2A-protocol.md](../en/E2A-protocol.md)
 
 ---
@@ -11,10 +11,10 @@
 |------|------|
 | **docs/zh/E2A-protocol.md**（本文，中文） | 规范说明、易混点、示例 |
 | **docs/en/E2A-protocol.md** | 同上，英文版 |
-| `jiuwenswarm/common/e2a/models.py` | 请求 `E2AEnvelope`、响应 `E2AResponse` 与子结构；`from_dict` / `to_dict` |
-| `jiuwenswarm/common/e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**、**`E2A_RESPONSE_KINDS`**、**`E2A_RESPONSE_STATUS_*`**、ACP 方法名与 SessionUpdate 字符串（运行时以元组为准） |
-| `jiuwenswarm/common/e2a/adapters.py` | ACP / A2A → E2A；E2A → ACP JSON-RPC；**`E2AResponse` → ACP / A2A 投影**（见 §8） |
-| `jiuwenswarm/common/e2a/__init__.py` | 对外导出 |
+| `e2a/models.py` | 请求 `E2AEnvelope`、响应 `E2AResponse` 与子结构；`from_dict` / `to_dict` |
+| `e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**、**`E2A_RESPONSE_KINDS`**、**`E2A_RESPONSE_STATUS_*`**、ACP 方法名与 SessionUpdate 字符串（运行时以元组为准） |
+| `e2a/adapters.py` | ACP / A2A → E2A；E2A → ACP JSON-RPC；**`E2AResponse` → ACP / A2A 投影**（见 §8） |
+| `e2a/__init__.py` | 对外导出 |
 
 ---
 
@@ -29,6 +29,8 @@
 不读取本地 MoA 配置。成功响应包含 `configured`，配置就绪时还包含
 `aggregator_model_name` 和 `aggregator_alias`，不包含凭据。AgentServer 客户端
 缺失或尚未就绪时，Gateway 返回 `SERVICE_UNAVAILABLE`，不在自身目录中回退执行配置检查。
+
+AgentServer 将 Gateway 注入的顶层 `traceparent` 映射到请求 metadata，经 Worker IPC 透传；顶层真值优先于 channel_context 中的同名值，顶层缺失时保留 channel_context 中的同名值（兼容只写 channel_context 的入口）。Worker 仅在请求执行任务内绑定有效的 W3C 父上下文，并在正常结束、异常和取消时恢复原上下文。缺失或无效输入保留 SDK 原有上下文行为；采集开关与 exporter 配置沿用原有优先级。
 
 ---
 
@@ -70,6 +72,7 @@
 | `session_id` | string / null | 会话 |
 | `message_id` | string / null | 平台或 A2A 消息 id；语义勿与 `request_id` 混 |
 | `is_stream` | boolean | 是否流式响应 |
+| `traceparent` | string / null | Gateway 注入的 W3C 父上下文；AgentServer 将其归一进请求 metadata，顶层真值优先于 `channel_context` 同名值，顶层缺失时保留 channel 值 |
 
 ### 4.2 `provenance`（`E2AProvenance`）
 
@@ -100,6 +103,8 @@
 | `ext_method` | `method == "ext"` 时的真实名 |
 | `session_update_kind` | 桥接 ACP `session/update` 时，与 `constants.ACP_SESSION_UPDATE_KINDS` 一致 |
 | `expected_output_modes` | A2A `acceptedOutputModes` |
+
+AgentServer 的 Gateway WebSocket 入口将显式传入的方法名转换为本服务的 `ReqMethod`；未知或非字符串方法返回终态错误响应，`payload.code` 为 `METHOD_NOT_FOUND`。未传方法的内部请求保持原有处理路径。
 
 **`params` 常用键约定**（可按业务扩展，以下为与 ACP 桥接协作的推荐名）：
 
@@ -133,7 +138,7 @@
 
 ## 6. `constants.py` 中的 ACP 字符串（桥接参考）
 
-以下**仅**用于 ACP 桥接或文档对照，**运行时**以 `jiuwenswarm.common.e2a.constants` 中元组为准：
+以下**仅**用于 ACP 桥接或文档对照，**运行时**以 `e2a.constants` 中元组为准：
 
 - **`ACP_CLIENT_TO_AGENT_METHODS`**：客户端 → Agent 的 JSON-RPC method 名
 - **`ACP_AGENT_TO_CLIENT_METHODS`**、**`ACP_NOTIFICATION_NAMES`**：下行 / 通知
@@ -146,7 +151,7 @@
 
 ## 7. `merge_params_to_acp_prompt`
 
-Python：`jiuwenswarm.common.e2a.merge_params_to_acp_prompt(envelope)`。
+Python：`e2a.merge_params_to_acp_prompt(envelope)`。
 
 当且仅当 **`method == "session/prompt"`** 时：
 
@@ -397,7 +402,7 @@ Agent → 网关 → 客户端的**每一条**出站记录（含流式多帧）�
 
 ---
 
-*本文与 `jiuwenswarm/common/e2a/models.py`（`E2AEnvelope`、`E2AResponse`）同步维护。*
+*本文与 `e2a/models.py`（`E2AEnvelope`、`E2AResponse`）同步维护。*
 
 ## 变更记录
 
@@ -432,3 +437,62 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 结构；Server 不可用、传输失败或 Hub 查询失败时，返回空 `items` 与错误说明。
 不回退到 Gateway 本地查询。缓存冷启动与后台刷新语义沿用 Server 现有实现。
 `hub.expert_packages.catalog` 由锁定版本的 `openjiuwen-protocol` 正式定义，无需应用侧临时注册。
+
+## 历史原文引用与分块读取
+
+大型工具结果保留短预览，并可携带 `payload_refs`。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径。客户端通过会话和摘要读取原文，已保存的 prompt 引用仍可通过同一接口读取。
+
+通过 `tool_call` 调度工具时，如果目标工具返回的对象明确报告失败，工具结果事件携带 `success: false`、`status: "error"` 和 `is_error: true`。即使调度成功，客户端也会将该工具调用显示为失败。
+
+`text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，对应的 `payload_refs` 引用用于读取完整工件。工件存储失败时，工具事件仍发送有界预览，不携带不可用的引用，并记录失败日志。已有小结果和内联历史保持原语义。
+
+使用非流式 `history.get` 请求，传入以下 `params`：
+
+```json
+{"session_id":"web_example","artifact_sha256":"<64 位小写 SHA-256>","offset":0,"max_bytes":65536}
+```
+
+响应 payload 包含 `content`、`offset`、`next_offset`、`eof`、`bytes` 和 `sha256`。会话优先取 `params.session_id`，缺失时使用请求 envelope 的 `session_id`。offset 为 UTF-8 字节位置，必须落在字符边界；每次最多 64 KiB。客户端使用返回的 `next_offset` 继续读取，直到 `eof=true`。摘要限定在该会话目录内，接口不接受任意文件路径。无效摘要、范围、编码边界或缺失工件返回 `HISTORY_ARTIFACT_FAILED`。
+
+省略 `artifact_sha256` 时仍使用原历史分页/流式读取行为；E2A envelope 和协议版本不变。
+
+旧 `page_idx` 分页按块扫描历史，只保留请求页，保持最新到最旧的顺序及准确的 `total_pages`；旧 JSON 数组也使用流式读取。单次扫描最多 8 GiB / 120 秒，请求页保留内容最多 16 MiB；超大诊断字段不会整体加载。预算或内存分配失败返回明确的 `HISTORY_RESTORE_LIMIT`，源文件被替换或截断返回 `HISTORY_RESTORE_CHANGED`，不返回空历史成功。
+
+旧历史的上下文恢复仍使用扫描预算；分批恢复之间等待模型压缩的时间不计入扫描耗时，实际磁盘读取和解析仍受时间限制。
+
+旧历史分页保留 `event_payload`、`usage` 和 `session_usage`，用于恢复工具详情与用量摘要；这些字段仍受语义字段和页面预算限制。上下文恢复继续使用独立的诊断字段过滤规则。
+
+每页使用已提交历史的字节长度边界，并发追加的记录在后续分页请求中可见；文件替换或截断返回历史变更错误。页面扫描期间允许继续写入历史，普通与流式历史查询均保持 Front 事件循环响应。
+
+SDK 先发 usage 时，适配器最多暂存一条用量事件，等待同次调用结束。缺少结束事件时，在下一次调用、回答或流结束时正常输出。
+
+输出消费者取消或关闭时，待发的 usage 保存到会话审计。正常发出的 usage 仍由既有历史写入路径保存。
+
+大型工具结果工件化后，在既有 1 MiB raw_output 预算内保留 `skill_tree`、`beam_search`、`planned_graph`、`graph_status` 和 `graph_build` 等展示字段；MCP Apps 保持既有投影。完整原文仍由 `payload_refs` 引用。实时消息和历史回放均保留引用，并按当前产品会话读取，fork 后使用目标会话范围。
+
+对于已转发历史游标的 Gateway 路由，可使用 `history.get`，传入 `cursor: "history-artifact:v1:<sha256>:<offset>"` 和 `limit: 1`。响应包含一条 `history.artifact` 记录，字段与普通工件分块读取一致，随后发送既有历史 done 帧。每次最多读取 8 KiB，并保持 UTF-8 字符边界；非法或缺失工件返回 `HISTORY_ARTIFACT_FAILED`，不接受任意文件路径。普通历史订阅忽略这些工件游标；原 `artifact_sha256` 普通接口继续保留。
+
+Web 仅在用户查看原文时读取内容，本地只保留最多 64 KiB 的当前阅读窗口，支持上一段与下一段。关闭视图或切换会话、引用时取消读取并释放原文，不把完整工件回填到全局聊天状态。
+
+## 模型调用状态与增量历史
+
+`chat.llm_call_start` 与 `chat.llm_call_end` 记录模型调用生命周期，携带成员和角色等关联信息。
+调用开始事件可在正文为空时持久化。`llm_start_ts` 在每次调用开始时生成，用于关联开始与用量事件。
+
+会话历史按新增消息和事件追加。主智能体与子智能体的调用事件省略输入 prompt 及其工件引用，
+用户消息、工具调用、工具结果与回复分别通过各自事件保存。
+客户端应允许调用事件缺少 `prompt`，调用详情中的完整输入展示据此降级。
+
+`chat.usage_metadata` 的输入、输出、缓存 token、费用和耗时统计继续上报。
+上下文占用使用 `context.usage`，累计用量使用既有 session usage 快照。
+历史读取兼容已保存的含 `prompt` 记录。
+
+## 会话快照与模型列表的自动恢复
+
+`session.get_metadata` 的运行时快照通过共享 Worker IPC 查询。等待发送超时或连接回收取消发送时，元数据请求仍返回 `runtime.recovery_pending=true`；对应的 `recovery_reason` 分别为 `snapshot_transport_timeout`、`snapshot_transport_cancelled`。这类响应保留持久化元数据中的 `is_processing` 和 `status`，不能把尚未取得快照解释为会话已经空闲。查询等待超时不会取消共享管道写；连接回收仍负责取消和清理发送任务。
+
+替换 Worker 启动时，新聊天请求会等待该 Worker 完成 IPC 握手。等待超时时，请求在分发前返回 `RUNTIME_WARMING`。冷会话的恢复队列已满或排队超时时，返回 `HISTORY_RESTORE_BUSY`。收到这两种错误时，客户端均可稍后重试。历史迁移返回 `HISTORY_RESTORE_LIMIT` 表示超出了恢复预算，对未变化的历史重复同一请求可能再次触及该限制。
+
+Team 聊天在分发前因历史恢复失败时，如果会话内没有其他进行中的团队任务，客户端会先收到 `chat.processing_status`（`is_processing=false`、`is_complete=true`），再收到带恢复错误码的请求错误。如果还有其他团队任务在执行，本次请求仍会返回该错误，会话继续显示处理中。
+
+模型设置页在保持连接且页面可用时，对 `models.list` 返回的 `WORKER_CLOSED`、`WORKER_UNSTABLE`、`RUNTIME_WARMING`、`RUNTIME_FAILED` 和 `SERVICE_UNAVAILABLE` 自动重试：先等待 1、2、4 秒，之后每 10 秒继续查询。`RUNTIME_FAILED` 也可能表示后端正在等待自动恢复，因此不能仅凭该错误码停止观察。成功后更新列表、清除临时错误并恢复添加按钮；断开连接或离开页面会清理重试定时器。该恢复流程不需要手动重新加载入口。

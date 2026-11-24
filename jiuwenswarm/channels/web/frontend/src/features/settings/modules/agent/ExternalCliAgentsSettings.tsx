@@ -507,6 +507,7 @@ function ExternalCliSettings({
       ) : null}
       <ExternalCliAgentsSection
         draftValues={draftValues}
+        persistedValues={savedValues}
         onChange={(key, value) => {
           setDraftValues((current) => ({ ...current, [key]: value }));
           setSaveError('');

@@ -140,7 +140,7 @@ export interface TemplateSkillRecommendations {
 
 export interface TemplateSkillSearchContext {
   name: string;
-  coreAbilities?: readonly { title: string }[];
+  coreAbilities?: readonly { title?: string; name?: string }[];
   skills?: readonly { name: string }[];
   skillSearchTerms?: readonly string[];
 }
@@ -184,7 +184,7 @@ export function buildTemplateSkillSearchQuery(template: TemplateSkillSearchConte
   if (curated.length > 0) return curated.join(' ');
   const fallback = [
     template.name,
-    ...(template.coreAbilities ?? []).map((ability) => ability.title),
+    ...(template.coreAbilities ?? []).map((ability) => ability.title ?? ability.name ?? ''),
     ...(template.skills ?? []).map((skill) => skill.name),
   ];
   return [...new Set(fallback.map((value) => value.trim()).filter(Boolean))].join(' ');

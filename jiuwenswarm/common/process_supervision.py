@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 logger = logging.getLogger("jiuwenswarm.app")
@@ -114,7 +114,7 @@ def _upgrade_pending_for(pid: int) -> bool:
 def _breadcrumb_path():
     from jiuwenswarm.common.utils import get_logs_dir
 
-    return get_logs_dir() / "agent" / "service_exits.jsonl"
+    return get_logs_dir() / "service_exits.jsonl"
 
 
 def _record_exit_breadcrumb(
@@ -372,7 +372,14 @@ def _reap_lingering_tree(child: _Child) -> None:
             os.killpg(proc.pid, signal.SIGKILL)
 
 
-def supervise(commands: Mapping[str, Sequence[str]], popen_kwargs: Mapping[str, Any]) -> int:
+def supervise(
+    commands: Mapping[str, Sequence[str]],
+    popen_kwargs: Mapping[str, Any],
+    *,
+    restart_requested: Callable[[], bool] | None = None,
+    restart_names: Sequence[str] = (),
+    before_restart: Callable[[], None] | None = None,
+) -> int:
     """Run *commands* (spawned in order) until one stops for good; return its exit code.
 
     Returns 130 on KeyboardInterrupt. All children are terminated on return.
@@ -386,6 +393,9 @@ def supervise(commands: Mapping[str, Sequence[str]], popen_kwargs: Mapping[str, 
         for child in children:
             child.spawn(popen_kwargs)
         while True:
+            if restart_requested is not None and restart_requested():
+                if _restart_selected_children(children, popen_kwargs, restart_names, before_restart):
+                    continue
             for child in children:
                 proc = child.proc
                 if proc is None:
@@ -425,3 +435,32 @@ def supervise(commands: Mapping[str, Sequence[str]], popen_kwargs: Mapping[str, 
         return 130
     finally:
         _terminate_all([child.proc for child in children if child.proc is not None])
+
+
+def _restart_selected_children(
+    children: Sequence[_Child],
+    popen_kwargs: Mapping[str, Any],
+    names: Sequence[str],
+    before_restart: Callable[[], None] | None,
+) -> bool:
+    """Restart explicitly selected services after the owner has retired its Worker."""
+    selected = [child for child in children if child.name in names]
+    if not selected:
+        return False
+    by_name = {child.name: child for child in selected}
+    stop_order = [by_name[name] for name in names if name in by_name]
+    with application_shutdown():
+        _terminate_all([child.proc for child in stop_order if child.proc is not None])
+        if before_restart is not None:
+            before_restart()
+        try:
+            for child in selected:
+                child.spawn(popen_kwargs)
+                logger.info("[app] %s restarted (pid %s)", child.name, child.proc.pid)
+        except BaseException:
+            # A partial replacement may already have started a fresh resident Worker.
+            _terminate_all([child.proc for child in stop_order if child.proc is not None])
+            if before_restart is not None:
+                before_restart()
+            raise
+    return True

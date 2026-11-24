@@ -95,8 +95,8 @@ fi
 # macOS 冻结后端入口在 <.app>/Contents/Resources/node-runtime/bin 查找并前置
 # PATH（jiuwenswarm_exe_entry.py），Agent 技能（ppt-creation 等 node 脚本）
 # 因此不依赖用户机器的 Node.js。
-NODE_MINIMUM_VERSION=22.12.0
-NODE_DEFAULT_VERSION=v22.12.0
+NODE_MINIMUM_VERSION=22.13.0
+NODE_DEFAULT_VERSION=v22.13.0
 source "$PROJECT_ROOT/scripts/build-runtimes.sh"
 NODE_SRC="$(resolve_node_dir)"
 export PATH="$NODE_SRC/bin:$PATH"
@@ -150,6 +150,10 @@ if [ ! -d "node_modules" ]; then
     npm ci --prefer-offline --no-audit --no-fund
 fi
 ELECTRON=true npm run build
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+cd "$PROJECT_ROOT/packages/jiuwenswarm-office-addin"
+npm ci --prefer-offline --no-audit --no-fund
+npm run build:desktop
 cd "$PROJECT_ROOT"
 
 # ── 3. Install Electron desktop dependencies ─────────────────────────────────
@@ -237,10 +241,15 @@ if [ "$FRONTEND_ONLY" = false ]; then
 
     # Verify the actual frozen runtime, not only the source configuration
     # (same self-check as the Python packaging build in build-macos.sh).
+    uv run --no-sync python "$PROJECT_ROOT/scripts/verify_memory_bundle.py" \
+        --executable "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME"
+
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_a2ui_bundle.py"
 
     # Same RSI Harness baseline self-check as build-macos.sh.
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_rsi_bundle.py"
+
+    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gateway_extensions_bundle.py"
 
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_computer_use_bundle.py"
 
@@ -277,11 +286,17 @@ cp "$DESKTOP_DIR/main.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/update_shutdown.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/cdp_port.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_panels.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/app_market_windows.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/app_market_resources.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_downloads.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_download_bubble.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/share_image_export.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/display_media_picker.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/media_device_permissions.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/preload.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/application_presentation.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/application_transition.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/presentation_preload.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/target_mcp_wrapper.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/macos_update.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/install_macos_update.sh" "$APP_DIR/"
@@ -360,9 +375,9 @@ if [ ! -d "$APP_DIR/node_modules/@playwright/mcp" ]; then
     exit 1
 fi
 
-REQUIRED_FILES=(main.cjs update_shutdown.cjs cdp_port.cjs preload.cjs browser_panels.cjs
-    share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
-    browser_downloads.cjs browser_download_bubble.cjs dist/bubble.html
+REQUIRED_FILES=(main.cjs update_shutdown.cjs cdp_port.cjs preload.cjs application_presentation.cjs application_transition.cjs presentation_preload.cjs browser_panels.cjs
+    app_market_windows.cjs app_market_resources.cjs share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
+    media_device_permissions.cjs browser_downloads.cjs browser_download_bubble.cjs dist/bubble.html
     macos_update.cjs install_macos_update.sh package.json dist/index.html
     node_modules/@playwright/mcp/package.json node_modules/@playwright/mcp/cli.js)
 for required in "${REQUIRED_FILES[@]}"; do

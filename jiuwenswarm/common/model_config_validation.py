@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from jiuwenswarm.common.model_error_messages import is_non_retryable_model_error
 from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,15 @@ async def probe_model_connection(
                 raise ValueError("Empty response from model")
             return ModelProbeResult(response=response, content=content)
         except Exception as exc:  # noqa: BLE001
+            # 欠费、鉴权失败、模型不存在是永久性错误：换一个 max_tokens 再试
+            # 只会多等一轮、多打一条同样的失败日志，直接反馈给用户更快。
+            if is_non_retryable_model_error(exc):
+                logger.info(
+                    "[%s] non-retryable model error, aborting probe: %s",
+                    log_context,
+                    exc,
+                )
+                raise
             if attempt + 1 >= len(limits):
                 raise
             next_max_tokens = limits[attempt + 1]
@@ -165,6 +175,52 @@ def _validate_patch(value: Any, location: str, errors: list[str]) -> None:
     forbidden = sorted(set(value).intersection(FORBIDDEN_REQUEST_KEYS))
     if forbidden:
         errors.append(f"{location} contains forbidden fields: {', '.join(forbidden)}")
+
+
+def vendor_provider_error(client_cfg: Any) -> str | None:
+    """Return why an OpenCode Go entry names the wrong transport, else ``None``.
+
+    OpenCode Go is an OpenAI-compatible dialect, and the runtime decides it
+    belongs by ``vendor_key`` alone: ``is_opencode_go_client_config`` never
+    looks at ``client_provider``. An entry that pairs the vendor key with
+    another transport therefore gets the ``x-opencode-session`` header injected
+    into a protocol that never asked for it, and fails authentication or
+    routing in a way the header's shape does not explain.
+
+    Both save paths - the Web panel and the TUI command - call this, so the
+    rule is enforced wherever a catalog is written rather than only on the
+    path that happened to be remembered. The comparison mirrors the TUI's
+    historical check: case-insensitive against the provider enum, and blank
+    when unset so a legacy entry keeps its previous meaning.
+
+    Args:
+        client_cfg: A ``model_client_config`` mapping, or anything else.
+
+    Returns:
+        A user-facing error message, or ``None`` when the pairing is valid.
+    """
+    # Imported here rather than at module scope: this module is loaded by the
+    # config validation entry points, and opencode_go pulls in the gateway
+    # selection schema and the config loader, which would close a cycle.
+    from jiuwenswarm.common.config import resolve_env_vars
+    from jiuwenswarm.common.opencode_go import is_opencode_go_client_config
+
+    if not isinstance(client_cfg, Mapping) or not is_opencode_go_client_config(
+        dict(client_cfg)
+    ):
+        return None
+    from openjiuwen.core.foundation.llm.schema.config import ProviderType
+
+    raw = resolve_env_vars(str(client_cfg.get("client_provider") or "")).strip()
+    if not raw:
+        # No transport named at all: the persisted entry keeps whatever the
+        # previous save wrote, so there is nothing yet to contradict.
+        return None
+    known = {provider.value.lower(): provider.value for provider in ProviderType}
+    provider = known.get(raw.lower(), raw)
+    if provider != ProviderType.OpenAI.value:
+        return "OpenCode Go models require model_provider OpenAI"
+    return None
 
 
 def _validate_model_detail(entry: dict[str, Any], location: str, errors: list[str]) -> None:
@@ -257,6 +313,9 @@ def validate_models_config(models: dict[str, Any]) -> list[str]:
                     errors.append(
                         f"{source}[{index}].model_client_config.custom_headers must be an object or JSON string"
                     )
+                reason = vendor_provider_error(client)
+                if reason:
+                    errors.append(f"{source}[{index}].model_client_config: {reason}")
             _validate_model_detail(entry, f"{source}[{index}]", errors)
 
     group_ids: set[str] = set()

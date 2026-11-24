@@ -132,6 +132,7 @@
 | `components/ExtensionsHubPanel` | `extensions-hub-panel` | 扩展中心面板 |
 | `components/HarnessPackagePanel` | `harness-package-panel` | harness 包面板 |
 | `components/UpdatePanel` | `update-panel` | 更新面板 |
+| `components/AppMarketPanel` | `app-market` | 应用市场、应用预览与资源展示 |
 | `components/BrowserPanel` | `browser-panel` | 浏览器面板 |
 | `components/DesktopBrowserPane` | `desktop-browser` | Electron 浏览器面板及成员页面切换 |
 | `components/ChannelsPanel` | `channels-panel` | 频道面板 |
@@ -143,6 +144,7 @@
 | `components/ModelProviderIcon` | `model-provider-icon` | 模型供应商图标 |
 | `components/Switch` | `switch` | 通用开关(无透传,调用处编号兜底,自身不加) |
 | `components/ui/PageCard` | `page-card` | 通用卡片;卡片右上角浮现主操作按钮(defaultButton) |
+| `components/ui/EntityHeader` | `entity-header` | 实体头部;标签行与溢出提示 |
 | `features/trajectory` | `trajectory` | 轨迹面板(zip/JSONL 归档流式导入/导出;保留期检查点播种;原始数据检视器;诊断与归因面板 `trajectory-diagnosis-*`) |
 | `features/trajectory` | `single-agent` | 单 Agent 工作台(chat/trajectory 双 tab 切换) |
 | `features/trajectory` | `team-trajectory` | 团队轨迹工作台(泳道视图) |

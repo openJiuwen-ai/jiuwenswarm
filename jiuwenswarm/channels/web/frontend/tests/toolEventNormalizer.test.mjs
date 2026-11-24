@@ -7,6 +7,55 @@ import {
   plannedGraphToMermaid,
 } from '../node_modules/.cache/tool-event-normalizer/toolEventNormalizer.js';
 
+for (const toolName of ['agent_memory_video_submit', 'agent_memory_video_status']) {
+  for (const rawKey of ['raw_output', 'rawOutput']) {
+    test(`${toolName} completes when ${rawKey} reports a pending video job`, () => {
+      const output = { job_id: 'ing-video', status: 'pending', unit_ids: [] };
+      const rendered = JSON.stringify(output);
+      const normalized = normalizeToolResultPayload({
+        tool_result: {
+          tool_name: toolName,
+          tool_call_id: 'video-call:target',
+          [rawKey]: output,
+          rendered_result: rendered,
+        },
+      });
+      assert.equal(normalized.success, true);
+      assert.equal(normalized.pending, undefined);
+      assert.equal(normalized.toolCallId, 'video-call:target');
+      assert.equal(normalized.result, rendered);
+    });
+  }
+
+  test(`${toolName} preserves explicit execution pending, failure and timeout`, () => {
+    for (const status of ['pending', 'error', 'timeout']) {
+      const normalized = normalizeToolResultPayload({
+        tool_name: toolName,
+        status,
+        raw_output: { job_id: 'ing-video', status: 'pending' },
+      });
+      assert.equal(normalized.pending, status === 'pending' ? true : undefined);
+      assert.equal(normalized.success, status === 'pending');
+      assert.equal(normalized.timedOut, status === 'timeout' ? true : undefined);
+    }
+    const failed = normalizeToolResultPayload({
+      tool_name: toolName,
+      success: false,
+      raw_output: { status: 'pending' },
+    });
+    assert.equal(failed.pending, undefined);
+    assert.equal(failed.success, false);
+  });
+}
+
+test('other tools retain pending execution semantics from structured output', () => {
+  for (const raw_output of [{ status: 'pending' }, { data: { status: 'pending' } }]) {
+    const normalized = normalizeToolResultPayload({ tool_name: 'bash', raw_output });
+    assert.equal(normalized.pending, true);
+    assert.equal(normalized.success, true);
+  }
+});
+
 
 function payload(nodes, edges = []) {
   return {
@@ -85,6 +134,28 @@ test('aliases Unicode and Mermaid-conflicting IDs without losing labels or edges
   );
 });
 
+test('renders one arrow per directed pair while preserving the original port mappings', () => {
+  const rawOutput = payload(['task-3', 'task-2', 'task-1'], [
+    { source: 'task-2', target: 'task-3', relation: 'can_feed' },
+    { source: 'task-1', target: 'task-2', relation: 'can_feed', source_output: 'brief', target_input: 'brief' },
+    { source: 'task-2', target: 'task-1', relation: 'can_feed' },
+    { source: 'task-1', target: 'task-3', relation: 'can_feed' },
+    { source: 'task-1', target: 'task-2', relation: 'can_feed', source_output: 'facts', target_input: 'facts' },
+  ]);
+  const original = structuredClone(rawOutput);
+  const result = normalizeToolResultPayload({
+    tool_name: 'symphony_compose_graph',
+    success: true,
+    raw_output: rawOutput,
+  });
+
+  assert.deepEqual(
+    result.mermaid.split('\n').filter(line => line.includes(' --> ')),
+    ['task-1 --> task-2', 'task-1 --> task-3', 'task-2 --> task-1', 'task-2 --> task-3'],
+  );
+  assert.deepEqual(rawOutput, original);
+});
+
 test('falls back when the graph is empty or structurally invalid', () => {
   const invalidGraphs = [
     payload([]),
@@ -128,6 +199,24 @@ test('only successful symphony_compose_graph results receive Mermaid', () => {
   ]) {
     assert.equal(normalizeToolResultPayload(result).mermaid, undefined);
   }
+});
+
+test('shows a deferred memory operation as failed when its tool event reports failure', () => {
+  const error = 'AgentMemory add failed (server unavailable).';
+  const normalized = normalizeToolResultPayload({
+    tool_result: {
+      tool_name: 'tool_call',
+      tool_call_id: 'call-1',
+      success: false,
+      status: 'error',
+      is_error: true,
+      rendered_result: JSON.stringify({ success: false, error }),
+    },
+  });
+
+  assert.equal(normalized.success, false);
+  assert.equal(normalized.pending, undefined);
+  assert.match(normalized.result, /AgentMemory add failed/);
 });
 
 test('displays rendered_result instead of the compatibility result string', () => {

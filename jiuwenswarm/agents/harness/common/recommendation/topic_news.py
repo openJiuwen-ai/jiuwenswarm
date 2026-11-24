@@ -33,6 +33,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
+from .topic_primitives import plain_int as _plain_int
 
 NEWS_FEED_PROVIDER_ID = "bing-news-rss"
 NEWS_FEED_RECEIPT_VERSION = "topic-starter-v6-news-feed-v1"
@@ -54,11 +55,6 @@ _VERSION_OR_DATE_TOKEN = re.compile(
     r"|^(?:19|20)\d{2}(?:年|[-/]\d{1,2}(?:[-/]\d{1,2})?)?$",
     re.IGNORECASE,
 )
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def normalize_news_query(query: str) -> str:

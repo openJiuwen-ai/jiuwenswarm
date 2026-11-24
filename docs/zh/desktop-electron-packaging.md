@@ -76,7 +76,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
        node_modules/           ← 内置 @playwright/mcp 运行时（见 §5）
      backend/                  ← PyInstaller COLLECT 产物（workswarm.exe + _internal）
    ```
-6. Inno Setup `scripts/installer-electron.iss`：版本与后端 exe 名经 `/DMyAppVersion=` / `/DBackendExecutableName=` 传入（`#ifndef` 兜底）；`PrivilegesRequired=lowest` per-user 安装、`AppMutex` 四互斥体（运行中拒绝安装/卸载，同 installer.iss）、卸载执行 `--desktop-reset-external-cli-config` 并清理 `{app}\resources`（FrontendOnly 无后端，跳过该步）
+6. Inno Setup `scripts/installer-electron.iss`：版本与后端 exe 名经 `/DMyAppVersion=` / `/DBackendExecutableName=` 传入（`#ifndef` 兜底）；`PrivilegesRequired=lowest` per-user 安装、`AppMutex` 四互斥体（运行中拒绝安装/卸载，同 installer.iss）、卸载执行 `--desktop-reset-external-cli-config` 并清理 `{app}\resources`（FrontendOnly 无后端，跳过该步）。编译器优先 Inno Setup 7（支持扩展长度路径，不受 `MAX_PATH` 限制），未安装时回退 Inno Setup 6；两者都缺失时复用 `scripts/build-inno-setup.psm1` 中带 SHA-256 校验的流程安装 7.1.1。仅回退到 6 时，脚本在压缩前扫描 `dist/<应用名>-Electron`：路径超过 `MAX_PATH`（260 字符）直接报错并提示安装 7 或改用更短的构建目录；`-SkipInstaller` 目录包不触发该检查。
 
 版本号硬编码位置已全部消除：ps1/iss/组装 package.json 均来自 `build_config.py`（即 pyproject.toml）。
 
@@ -135,6 +135,7 @@ app.whenReady
 JIUWENSWARM_DESKTOP=1  JIUWENSWARM_ELECTRON=1
 WEB_PORT=<gatewayApi>  GATEWAY_PORT=<gatewayInternal>
 AGENT_SERVER_PORT=AGENT_PORT=<agentServer>  FRONTEND_PORT=<frontend>
+OFFICE_TLS_PORT=<officeTls>（Office 加载项任务窗格的 HTTPS 监听端口）
 JIUWENSWARM_RUNTIME_WORKSPACE_READY=1
 删除 AGENT_SERVER_URL（防 .env 里的陈旧 URL 绕过重映射端口）
 ```
@@ -361,3 +362,11 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 | `src/features/singleAgentPanelState.ts` / `teamPanelStateNormalize.ts` | tab 状态（含 'browser'） |
 | `src/utils/env.ts` | apiBase/wsBase（Electron FrontendOnly 走 jiuwenDesktop） |
 | `src/types/electron.ts` | jiuwenDesktop 类型 |
+
+
+## 扩展包命令入口
+
+冻结后端增加 `extension` 分发，位置在桌面单实例锁之前，复用 `jiuwenswarm.channels.cli.extension`。
+EXE 与 DMG 都通过现有后端程序执行，路径由 `JIUWENSWARM_EXECUTABLE` 提供；不新增系统级命令启动器。
+PyInstaller spec 显式收集 CLI 模块与本机管理通道。命令结果及退出码沿用源码、Wheel 入口。
+运行中的后端自动提供本机连接信息；具体用法见[命令行指令](命令行指令.md#扩展包管理extension)。

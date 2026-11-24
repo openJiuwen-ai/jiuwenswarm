@@ -184,3 +184,141 @@ async def test_ended_question_owner_is_not_restored_as_an_unanswerable_card(serv
     gc.collect()
     assert store.pending() == []
     assert len(store.read()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fail_send', [False, True])
+async def test_answers_are_visible_before_native_resume_and_rollback_on_failure(service, push, fail_send):
+    group = await create(service)
+    gid = group['group_id']
+    owner = QuestionOwner()
+    target = register_question_target(gid, gid, 'advisor', owner)
+    store = GroupQuestions(gid)
+    await store.ask({'request_id': 'native', 'questions': [{'question': 'Market?'}]}, target,
+                    'advisor', None, client_message_id='original-org')
+    key = next(iter(store.read()))
+    answers = [{'question': 'Market?', 'custom_input': 'China'}]
+
+    async def resume(query):
+        record = store.read()[key]
+        assert record['status'] == 'answered' and record['answers'] == answers
+        assert record['client_message_id'] == 'original-org'
+        if fail_send:
+            raise RuntimeError('queue unavailable')
+
+    owner.send.side_effect = resume
+    if fail_send:
+        with pytest.raises(RuntimeError, match='queue unavailable'):
+            await store.answer(key, answers)
+        assert store.read()[key]['status'] == 'pending'
+        assert 'answers' not in store.read()[key]
+    else:
+        await store.answer(key, answers)
+        await store.answer(key, answers)
+        owner.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['agent_template', 'agent_group', 'mixed', 'private'])
+async def test_direct_clarification_does_not_acquire_organization_binding(service, push, kind):
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs
+    from jiuwenswarm.agents.swarm.group_turn import TURN_KEY
+    from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
+
+    members = [{'kind': 'agent_template' if kind == 'agent_template' else 'agent_group',
+                'id': 'one', 'member_name': 'advisor'}]
+    if kind == 'mixed':
+        members.append({'kind': 'agent_template', 'id': 'two', 'member_name': 'writer'})
+    group = await create(service, members=members)
+    gid = group['group_id']
+    sid = 'private-session' if kind == 'private' else gid
+    owner = QuestionOwner()
+    rail = GroupAskUserRail(SimpleNamespace(session_id=sid, member_name='advisor'), {'group_id': gid})
+    target = register_question_target(gid, sid, 'advisor', owner)
+    store = GroupQuestions(gid)
+    await store.ask({'request_id': 'native', 'questions': [{'question': 'Market?'}]}, target, 'advisor', None)
+    query = build_ask_user_interactive_input('native', [{'question': 'Market?', 'custom_input': 'China'}])
+    ctx = AgentCallbackContext(agent=owner, inputs=InvokeInputs(query=query))
+    await rail.before_invoke(ctx)
+    assert TURN_KEY not in ctx.extra
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mismatch', ['native_id', 'target', 'member', 'private_execution'])
+async def test_resume_does_not_restore_another_questions_org(service, push, mismatch):
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs
+    from jiuwenswarm.agents.swarm.group_turn import TURN_KEY
+    from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
+
+    group = await create(service)
+    gid = group['group_id']
+    owner = QuestionOwner()
+    target = register_question_target(gid, gid, 'advisor', owner)
+    store = GroupQuestions(gid)
+    await store.ask({'request_id': 'native', 'questions': [{'question': 'Market?'}]},
+                    'other-target' if mismatch == 'target' else target,
+                    'other-member' if mismatch == 'member' else 'advisor',
+                    'private-execution' if mismatch == 'private_execution' else None,
+                    client_message_id='other-org')
+    query = build_ask_user_interactive_input('unrelated' if mismatch == 'native_id' else 'native',
+                                             [{'question': 'Market?', 'custom_input': 'China'}])
+    ctx = AgentCallbackContext(agent=owner, inputs=InvokeInputs(query=query))
+    rail = GroupAskUserRail(SimpleNamespace(session_id=gid, member_name='advisor'), {})
+    await rail.before_invoke(ctx)
+    assert TURN_KEY not in ctx.extra
+
+
+@pytest.mark.asyncio
+async def test_colleague_permission_question_resumes_exact_tool_call(service, push):
+    group = await create(service)
+    manager = Mock()
+    manager.is_swarmchat_approval_pending.return_value = True
+    manager.answer_swarmchat_approval = AsyncMock()
+    target = register_question_target(group["group_id"], "colleague-session", "advisor", manager)
+    store = GroupQuestions(group["group_id"])
+    await store.ask({"request_id": "approval-1", "questions": [{
+        "question": "Approve operation?", "options": [
+            {"label": "Allow", "tool_call_id": "call-1"}, {"label": "Deny"},
+        ],
+    }]}, target, "advisor", None, source="colleague_permission")
+    pending, = store.pending()
+    await store.answer(pending["request_id"], [{"question": "Approve operation?", "selected_options": ["Allow"]}])
+    manager.answer_swarmchat_approval.assert_awaited_once_with(
+        group["group_id"], "approval-1", "approve", tool_call_id="call-1",
+    )
+    assert not store.pending()
+    assert push.await_args.args[-1]["payload"]["event_type"] == "chat.ask_user_answer"
+    assert push.await_args.args[-1]["payload"]["request_id"] == pending["request_id"]
+
+
+async def test_colleague_approval_shows_distinct_redacted_call_details(monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.server.jiuwenmate.swarmchat import bridge
+    from jiuwenswarm.server.runtime import group_questions
+
+    monkeypatch.setattr(bridge, "require_membership", lambda *args: (
+        {"group_id": "group", "name": "Project chat"}, {"member_name": "mate"},
+    ))
+    monkeypatch.setattr(group_questions, "register_question_target", lambda *args: "target")
+    ask = AsyncMock()
+    monkeypatch.setattr(group_questions, "GroupQuestions", lambda *args: SimpleNamespace(ask=ask))
+    calls = [
+        {"tool_name": "bash", "tool_call_id": "call-1",
+         "arguments": json.dumps({"description": "Inspect repository", "command": "git status"})},
+        {"tool_name": "bash", "tool_call_id": "call-2",
+         "arguments": json.dumps({"description": "Fetch summary", "command": "API_KEY=secret-value ./summary"})},
+    ]
+    await bridge.publish_permission_approval(object(), SimpleNamespace(
+        route=SimpleNamespace(target_id="group"), agent_id="mate", session_id="session",
+        approval_id="approval", intercepted=calls,
+    ))
+    question = ask.await_args.args[0]["questions"][0]
+    assert "Project chat" in question["question"]
+    first, second, reject = question["options"]
+    assert first["tool_call_id"] == "call-1" and "git status" in first["description"]
+    assert second["tool_call_id"] == "call-2" and "Fetch summary" in second["description"]
+    assert "secret-value" not in second["description"]
+    assert "tool_call_id" not in reject

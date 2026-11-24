@@ -11,7 +11,9 @@ AgentServer keeps the capabilities and the resource with the conversation
 (``client_capabilities.json``: the conversation's resource outlives any lease),
 and lists the attachment (``directory``) for as long as the client
 renews it (``client.renew``, every ``renew_every_seconds`` of the attach
-response). A renew refused with ``NOT_ATTACHED`` (the lease lapsed, the
+response). The client's messages may carry the resource's state as the user
+sent them (``chat.send`` ``client_state``), kept beside the capabilities for the
+app's rail to show the model. A renew refused with ``NOT_ATTACHED`` (the lease lapsed, the
 Worker restarted, the socket reconnected) makes the client attach again; one
 refused with ``DISPLACED`` (another client attached the same resource, as when
 a copied file is open too) makes it stop renewing and leave the resource to the
@@ -43,9 +45,9 @@ from pathlib import Path
 from typing import Any
 
 from agent_gateway.common.protocol_ids import validate_session_id
+from e2a.wire_codec import encode_agent_response_for_wire
 
 from jiuwenswarm.server.client_attachments.errors import ClientAttachError, ClientAttachErrorCode
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_sessions_dir
@@ -72,6 +74,9 @@ CLIENT_ATTACH_REQ_METHODS = frozenset({
 
 _CAPABILITIES_FILE = "client_capabilities.json"
 _MAX_CAPABILITIES_BYTES = 64 * 1024
+_STATE_FILE = "client_state.json"
+# Room for a short Word document's full text and a large workbook's first-turn sheet list.
+_MAX_STATE_BYTES = 256 * 1024
 _RESOURCE_FIELDS = ("key", "display_name", "kind", "host_vendor")
 _LEASE = {"lease_seconds": LEASE_SECONDS, "renew_every_seconds": RENEW_EVERY_SECONDS}
 
@@ -199,7 +204,10 @@ def _renew(request: AgentRequest, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _conversations(request: AgentRequest, params: dict[str, Any]) -> list[dict[str, Any]]:
-    """The requester's conversations of the app ``client_app`` last attached to the resource ``resource_key``."""
+    """The requester's conversations of the app ``client_app`` last attached to the resource ``resource_key``.
+
+    One nobody has written in yet is left out: the pane shows the one it is in anyway.
+    """
     from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
 
     client_app, key = params.get("client_app"), params.get("resource_key")
@@ -211,7 +219,8 @@ def _conversations(request: AgentRequest, params: dict[str, Any]) -> list[dict[s
     owner = str(request.user_id or "").strip()
     conversations = []
     for metadata in collect_all_sessions_metadata(enable_writeback=False):
-        if str(metadata.get("user_id") or "").strip() != owner or metadata.get("client_app") != client_app:
+        if (str(metadata.get("user_id") or "").strip() != owner or metadata.get("client_app") != client_app
+                or not metadata.get("message_count")):
             continue
         session_id = metadata["session_id"]
         resource = _saved_capabilities(session_id).get("resource")
@@ -275,8 +284,11 @@ def _capabilities_path(session_id: str) -> Path:
 def save_client_capabilities(
     session_id: str, capabilities: dict[str, Any], *, attachment_id: str, resource: dict[str, str],
 ) -> None:
-    saved = {"capabilities": capabilities, "attachment_id": attachment_id, "resource": resource}
-    path = _capabilities_path(session_id)
+    _write_json(_capabilities_path(session_id),
+                {"capabilities": capabilities, "attachment_id": attachment_id, "resource": resource})
+
+
+def _write_json(path: Path, saved: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -289,12 +301,16 @@ def save_client_capabilities(
         temporary.unlink(missing_ok=True)
 
 
-def _saved_capabilities(session_id: str) -> dict[str, Any]:
+def _read_json(path: Path) -> dict[str, Any]:
     try:
-        raw = json.loads(_capabilities_path(session_id).read_text("utf-8"))
+        raw = json.loads(path.read_text("utf-8"))
     except (OSError, ValueError):
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _saved_capabilities(session_id: str) -> dict[str, Any]:
+    return _read_json(_capabilities_path(session_id))
 
 
 def load_client_capabilities(session_id: str) -> dict[str, Any] | None:
@@ -310,3 +326,45 @@ def load_attached_resource(session_id: str) -> dict[str, Any] | None:
     if not isinstance(attachment_id, str) or not isinstance(resource, dict):
         return None
     return {"attachment_id": attachment_id, "resource": resource}
+
+
+# --- The resource's state when the user last sent a message ------------------------------
+
+
+def _state_path(session_id: str) -> Path:
+    return Path(get_agent_sessions_dir()) / validate_session_id(session_id) / _STATE_FILE
+
+
+def save_client_state(session_id: str, state: Any) -> None:
+    """Keep the ``client_state`` a message of the conversation's client carried, numbered after the last one.
+
+    It is the text the client's ``read_surface_context`` tool gives for the
+    resource as the user sent the message; the client is its only source and
+    only the latest is kept. A turn the client did not send (a resume, another
+    conversation's message) carries none and leaves it as it is.
+    """
+    if not isinstance(state, str) or len(state.encode("utf-8")) > _MAX_STATE_BYTES:
+        raise ValueError(f"client_state must be text of at most {_MAX_STATE_BYTES // 1024} KiB")
+    path = _state_path(session_id)
+    saved = _read_json(path)
+    sequence = saved.get("sequence")
+    _write_json(path, {**saved, "sequence": (sequence if isinstance(sequence, int) else 0) + 1, "state": state})
+
+
+def load_unshown_client_state(session_id: str) -> tuple[int, str] | None:
+    """``(sequence, state)`` of the latest ``client_state`` the conversation's client sent, unless already shown."""
+    saved = _read_json(_state_path(session_id))
+    sequence, state, shown = saved.get("sequence"), saved.get("state"), saved.get("shown")
+    if not isinstance(sequence, int) or not isinstance(state, str):
+        return None
+    return None if isinstance(shown, int) and sequence <= shown else (sequence, state)
+
+
+def mark_client_state_shown(session_id: str, sequence: int) -> None:
+    """Record that the model was shown state ``sequence``.
+
+    The record lives here rather than in the conversation, where compaction
+    may drop the message that showed it.
+    """
+    path = _state_path(session_id)
+    _write_json(path, {**_read_json(path), "shown": sequence})

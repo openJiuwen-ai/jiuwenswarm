@@ -1,7 +1,11 @@
 import { scheduleCatalogRefresh, catalogScope } from '../features/catalogCache';
 import { create } from 'zustand';
 import { extractRpcErrorMessage } from '../features/agentManagement/upload';
-import { PluginInstallPendingError, pluginPackagesApi } from '../services/pluginPackagesApi';
+import {
+  PluginInstallPendingError, PluginReplacementError, pluginPackagesApi,
+  type PluginInstallOptions, type PluginReplacementConflict,
+} from '../services/pluginPackagesApi';
+import i18n from '../i18n';
 import type { PluginConnectionState, PluginPackageDetail, PluginPackageSummary } from '../types/pluginPackage';
 
 // 2026-08-07：installed/enabledMap 已经改成以后端 list/show 真实下发的字段为准（对齐
@@ -105,8 +109,11 @@ interface PluginPackageState {
   successMessage: string | null;
   busyId: string | null;
   installingIds: Record<string, boolean>;
+  replacement: { id: string; conflict: PluginReplacementConflict } | null;
+  replacementRetries: Record<string, PluginInstallOptions | undefined>;
+  cancelReplacement: () => void;
 
-  loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean }) => Promise<void>;
+  loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean; refresh?: boolean }) => Promise<boolean>;
   // 返回是否成功，供详情页在加载失败时保留当前导航状态。
   loadDetail: (id: string) => Promise<boolean>;
   create: (params: {
@@ -119,11 +126,11 @@ interface PluginPackageState {
   importLocal: (
     params: { path: string },
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
-  install: (id: string) => Promise<void>;
+  install: (id: string, options?: PluginInstallOptions) => Promise<void>;
   uninstall: (id: string) => Promise<void>;
   deletePackage: (id: string) => Promise<boolean>;
   /** 组件层的连接续跑走完/用户取消后调用，清掉 installPendingMap[id]，不留残留状态。 */
-  clearInstallPending: (id: string) => void;
+  clearInstallPending: (id: string, preserveReplacement?: boolean) => void;
   clearError: () => void;
   clearNotice: () => void;
   clearSuccess: () => void;
@@ -169,6 +176,9 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
   successMessage: null,
   busyId: null,
   installingIds: {},
+  replacement: null,
+  replacementRetries: {},
+  cancelReplacement: () => set({ replacement: null }),
 
   // silent=true 仅用于安装/卸载后的快速校准，不改变页面的加载状态。
   loadList: async (filter, options) => {
@@ -178,10 +188,10 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
     const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
-      const freshPackages = await pluginPackagesApi.list(filter);
-      if (requestScope !== catalogScope()) return;
+      const freshPackages = await pluginPackagesApi.list(filter, '', { refresh: options?.refresh === true });
+      if (requestScope !== catalogScope()) return true;
       scheduleCatalogRefresh('pluginPackageStore.ts:' + seqKey, freshPackages.cache, () => { void get().loadList(filter, { silent: true }); }, () => listRequestSeq[seqKey] === mySeq);
-      if (listRequestSeq[seqKey] !== mySeq) return; // 已有更新的同桶调用发起过，这次结果作废
+      if (listRequestSeq[seqKey] !== mySeq) return true; // 已有更新的同桶调用发起过，这次结果作废
       const packages = freshPackages;
       set((state) => {
         // installed/connectionStateMap 是 packages+localPackages 两份列表的并集，合并写入而不是
@@ -201,13 +211,16 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
           connectionStateMap: nextConnectionStateMap,
         };
       });
+      return true;
     } catch (error) {
-      if (listRequestSeq[seqKey] !== mySeq) return;
-      if (silent) return;
-      set({
-        isLoading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (listRequestSeq[seqKey] !== mySeq) return true;
+      if (!silent) {
+        set({
+          isLoading: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return false;
     }
   },
 
@@ -274,16 +287,20 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
   // 做法，成功就乐观 patch connectionStateMap 为 'connected'，不用干等下一次拉取；随后再
   // scheduleQuickRefresh 一次真实 loadList('local') 兜底校准（同 connectorStore.ts 的
   // scheduleQuickRefresh，避免乐观值和后端真实状态长期不同步）。
-  install: async (id: string) => {
+  install: async (id: string, options: PluginInstallOptions = {}) => {
     if (get().installingIds[id]) return;
+    options = get().replacementRetries[id] ?? options;
+    const card = get().packages.find((item) => item.id === id) ?? get().detailCache[id];
+    if (card?.source === 'hub') options = { ...options, from_hub: true };
     set((state) => ({
       installingIds: { ...state.installingIds, [id]: true },
       error: null,
       successMessage: null,
       installPendingMap: { ...state.installPendingMap, [id]: undefined },
+      replacement: options.replace_local ? null : state.replacement,
     }));
     try {
-      await pluginPackagesApi.install(id);
+      await pluginPackagesApi.install(id, options);
       set((state) => {
         const nextInstalled = { ...state.installed, [id]: true };
         persistLocalState({ installed: nextInstalled });
@@ -292,18 +309,38 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
           installingIds: { ...state.installingIds, [id]: false },
           successMessage: successKey.pluginInstalled,
           connectionStateMap: { ...state.connectionStateMap, [id]: 'connected' },
+          replacement: null,
+          detailCache: {},
+          replacementRetries: { ...state.replacementRetries, [id]: undefined },
         };
       });
       scheduleQuickRefresh();
     } catch (error) {
-      if (error instanceof PluginInstallPendingError) {
+      if (error instanceof PluginReplacementError) {
         set((state) => ({
           installingIds: { ...state.installingIds, [id]: false },
-          installPendingMap: { ...state.installPendingMap, [id]: error.pendingConnectors },
+          replacement: error.conflict ? { id, conflict: error.conflict } : null,
+          replacementRetries: { ...state.replacementRetries, [id]: undefined },
+          error: error.conflict ? null : i18n.t(
+            error.code === 'PLUGIN_REPLACEMENT_BUSY' ? 'pluginReplacement.busy' : 'pluginReplacement.stale',
+          ),
         }));
         return;
       }
-      set((state) => ({ installingIds: { ...state.installingIds, [id]: false }, error: error instanceof Error ? error.message : String(error) }));
+      if (error instanceof PluginInstallPendingError) {
+        // Resume connector setup with the exact confirmation fingerprint.
+        set((state) => ({
+          installingIds: { ...state.installingIds, [id]: false },
+          installPendingMap: { ...state.installPendingMap, [id]: error.pendingConnectors },
+          replacementRetries: { ...state.replacementRetries, [id]: options },
+        }));
+        return;
+      }
+      set((state) => ({
+        installingIds: { ...state.installingIds, [id]: false },
+        replacementRetries: { ...state.replacementRetries, [id]: undefined },
+        error: error instanceof Error ? error.message : String(error),
+      }));
     }
   },
 
@@ -367,8 +404,12 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
     }
   },
 
-  clearInstallPending: (id: string) =>
-    set((state) => ({ installPendingMap: { ...state.installPendingMap, [id]: undefined } })),
+  clearInstallPending: (id: string, preserveReplacement = false) =>
+    set((state) => ({
+      installPendingMap: { ...state.installPendingMap, [id]: undefined },
+      replacementRetries: preserveReplacement ? state.replacementRetries
+        : { ...state.replacementRetries, [id]: undefined },
+    })),
 
   clearError: () => set({ error: null }),
   clearNotice: () => set({ noticeMessage: null }),

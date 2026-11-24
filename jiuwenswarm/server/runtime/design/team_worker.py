@@ -89,7 +89,7 @@ def _design_member_roster(team_spec: Any) -> list[Any]:
         resolve_agent_group_dir,
         resolve_agent_group_member_display_name,
     )
-    from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
+    from jiuwenswarm.agents.swarm.assembly import template_external_cli_config
     from openjiuwen.agent_teams.schema.team import (
         ExternalCliMemberSpec,
         TeamMemberSpec,
@@ -118,7 +118,7 @@ def _design_member_roster(team_spec: Any) -> list[Any]:
             member_name,
             fallback=template.agent_card.name or member_name,
         )
-        external_config = external_cli_agent_spec_from_template(template)
+        external_config = template_external_cli_config(team_spec, template)
         if external_config is None:
             roster.append(
                 TeamMemberSpec(

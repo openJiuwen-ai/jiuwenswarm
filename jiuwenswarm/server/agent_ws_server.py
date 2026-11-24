@@ -9,7 +9,6 @@ import datetime as _dt
 import inspect
 import json
 import logging
-import math
 import os
 import shutil
 import sys
@@ -22,7 +21,6 @@ from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
-
 from agent_gateway.common.mode_matrix import (
     deprecate_mode,
     is_plan_mode,
@@ -49,6 +47,23 @@ from agent_gateway.common.ws_diagnostics import (
     format_ws_diagnostics,
 )
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+    E2A_WIRE_INTERNAL_METADATA_KEYS,
+)
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import (
+    encode_agent_chunk_for_wire,
+    encode_agent_response_for_wire,
+    encode_json_parse_error_wire,
+)
+from e2a.gateway_normalize import (
+    E2A_FALLBACK_FAILED_KEY,
+    E2A_INTERNAL_CONTEXT_KEY,
+    E2A_LEGACY_AGENT_REQUEST_KEY,
+)
+
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
 )
@@ -92,22 +107,6 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.request_ext import lift_from_metadata, reset_ext
-from jiuwenswarm.common.e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
-    E2A_WIRE_INTERNAL_METADATA_KEYS,
-)
-from jiuwenswarm.common.e2a.gateway_normalize import (
-    E2A_FALLBACK_FAILED_KEY,
-    E2A_INTERNAL_CONTEXT_KEY,
-    E2A_LEGACY_AGENT_REQUEST_KEY,
-)
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import (
-    encode_agent_chunk_for_wire,
-    encode_agent_response_for_wire,
-    encode_json_parse_error_wire,
-)
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.log_preview import preview_text
@@ -170,6 +169,10 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
 )
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+from jiuwenswarm.server.heartbeat_push import (
+    merge_heartbeat_push_metadata,
+    should_skip_heartbeat_push,
+)
 from jiuwenswarm.server.middleware.chat import (
     should_trigger_before_chat_request,
     trigger_before_chat_request,
@@ -196,16 +199,15 @@ from jiuwenswarm.server.runtime.session.session_message_store import (
     SessionMessageRecord,
     SessionMessageStore,
 )
+from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 from jiuwenswarm.server.runtime.session.session_history import (
     HistorySnapshotChanged,
     InvalidHistoryCursor,
     append_compact_history_records,
     append_history_record,
     enqueue_history_request_completion,
-    history_exists,
     is_valid_session_id,
     list_session_subagent_ids,
-    load_history_records,
     read_history_cursor_page,
     read_member_history_records,
     read_team_history_records,
@@ -227,6 +229,7 @@ from jiuwenswarm.server.runtime.agent_manager import (
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
+    MultimodalConfigAdapter,
     DesignerAdapter,
     HarmonyOSAdapter,
     MemoryAdapter,
@@ -237,7 +240,10 @@ from jiuwenswarm.server.runtime.gateway_adapter import (
 from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
     reload_runtime_after_config_save,
 )
+from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
+from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
+from jiuwenswarm.server.runtime.session.workspace_files import SessionWorkspaceFiles
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
 from jiuwenswarm.server.utils.utils import is_team_params
@@ -285,9 +291,15 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _workflow_run_meta,
     split_history_record_for_stream,
 )
+from jiuwenswarm.server.interrupt_intent import (
+    normalized_intent_request,
+    reject_interrupt_result_payload,
+    unknown_interrupt_intent_error,
+)
 from jiuwenswarm.server.ws_send import send_wire_payload
 
 logger = logging.getLogger(__name__)
+
 _MANUAL_COMPACT_PROCESSOR_TYPES = [
     "MessageSummaryOffloader",
     "RoundLevelCompressor",
@@ -1278,7 +1290,6 @@ class AgentWebSocketServer:
     _runtime = _AppField("runtime")
     _agent_manager = _AppField("agent_manager")
     _session_message_service = _AppField("session_message_service")
-    _proactive_engine = _AppField("proactive_engine")
     _scheduler_service = _AppField("scheduler_service")
     _scheduler_agent = _AppField("scheduler_agent")
     _jiuwenbox_runner = _AppField("jiuwenbox_runner")
@@ -1337,6 +1348,11 @@ class AgentWebSocketServer:
             plan_controller=_SERVER_PLAN_CONTROLLER,
         )
         self._agent_manager = self._runtime.agent_manager
+        self.session_workspace_files = SessionWorkspaceFiles(
+            snapshot=lambda channel_id, session_id: self._agent_manager.get_session_workspace_paths(
+                channel_id, session_id,
+            ),
+        )
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False
@@ -1368,11 +1384,16 @@ class AgentWebSocketServer:
         # injected data directory. Register adapters once per server; request
         # dispatch occurs before the legacy handler chain below.
         self._jiuwenmate_web = JiuwenMateWebAdapter(
-            push=self.send_push, inspect_feishu_group=self._inspect_feishu_group,
+            push=self.send_push,
+            inspect_feishu_group=self._inspect_feishu_group,
+            dingtalk_group_status=lambda ns, agent, app: (
+                self._dingtalk_group_poller.status(ns, agent, app) if self._dingtalk_group_poller is not None
+                else {'status': 'unavailable', 'group_count': 0}
+            ),
         )
         self._adapter_registry = AdapterRegistry()
         for adapter in (
-            VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
+            VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt, self._execution_runtime),
             SessionAdapter(),
             WorkspaceFileAdapter(),
             MemoryAdapter(),
@@ -1380,6 +1401,9 @@ class AgentWebSocketServer:
             DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
+            WebUIDispatchAdapter(),
+            PackageManagementAdapter(),
+            MultimodalConfigAdapter(on_config_saved=self._reload_after_config_save),
             self._jiuwenmate_web,
         ):
             self._adapter_registry.register(adapter)
@@ -1425,8 +1449,6 @@ class AgentWebSocketServer:
         # Archive service for session/project lifecycle management
         self._archive_service = None
         self._login_credential_refresh_task: Optional[asyncio.Task] = None
-        # Proactive recommendation engine (set by app_agentserver for debug trigger)
-        self._proactive_engine: Any = None
         self._on_runtime_ready: Any = None
         self._on_runtime_warmup_retry: Any = None
         self._on_runtime_failed: Any = None
@@ -1435,7 +1457,6 @@ class AgentWebSocketServer:
         self._execution_minimum_observed = False
         self._preparation_registry: Any = None
         self._startup_preparation_tokens: set = set()
-        self.proactive_preparation_task: asyncio.Task | None = None
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
@@ -1472,10 +1493,6 @@ class AgentWebSocketServer:
             record.target_session_id,
             request_id=record.execution_request_id,
         )
-
-    def set_proactive_engine(self, engine: Any) -> None:
-        """Store the proactive engine instance for debug trigger interface."""
-        self._proactive_engine = engine
 
     def set_runtime_lifecycle_hooks(
         self,
@@ -1650,13 +1667,10 @@ class AgentWebSocketServer:
         try:
             # Disabled Flow still supports Skill discovery through the toolkit;
             # it does not need the heavy recovery service at process startup.
-            from jiuwenswarm.common.symphony_config import (
-                evolution_flow_enabled,
-                load_symphony_config,
-            )
+            from jiuwenswarm.common.symphony_config import load_symphony_config
 
             config = await asyncio.to_thread(load_symphony_config)
-            if not config.enabled or not evolution_flow_enabled(config):
+            if not config.orchestration.experience_enabled:
                 return True
             import importlib
 
@@ -1837,6 +1851,10 @@ class AgentWebSocketServer:
                     retry_delay = min(30.0, retry_delay * 2)
                     continue
                 try:
+                    await self._jiuwenmate_web.start()
+                except Exception:
+                    logger.exception("[AgentWebSocketServer] JiuwenMate Web runtime startup failed")
+                try:
                     await self._ensure_persistent_group_fanout()
                 except Exception:
                     # JM-08 is optional: a local JM binding must not prevent
@@ -1867,7 +1885,13 @@ class AgentWebSocketServer:
         async def _warmup_mcp_connections() -> bool:
             try:
                 from jiuwenswarm.common.mcp_config import prewarm_connected_mcps
-                return await prewarm_connected_mcps(report_status=True) is not False
+
+                return await prewarm_connected_mcps(
+                    report_status=True,
+                    # Tests start with bind_transport=True; only production
+                    # settles stale connecting records.
+                    settle_connecting=not bind_transport,
+                ) is not False
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[AgentWebSocketServer] MCP prewarm failed "
@@ -2276,12 +2300,6 @@ class AgentWebSocketServer:
         if preparation is not None:
             await preparation.close()
             self._preparation_registry = None
-        proactive = getattr(self, "_proactive_engine", None)
-        if proactive is not None:
-            close = getattr(proactive, "close", None)
-            if callable(close):
-                await close()
-            self._proactive_engine = None
         sandbox_start = getattr(self, "_sandbox_start_task", None)
         self._sandbox_start_task = None
         if sandbox_start is not None:
@@ -2435,7 +2453,7 @@ class AgentWebSocketServer:
                 self._install_session_message_service()
                 self._adapter_registry = AdapterRegistry()
                 for adapter in (
-                    VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
+                    VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt, self._execution_runtime),
                     SessionAdapter(),
                     WorkspaceFileAdapter(),
                     MemoryAdapter(),
@@ -2443,6 +2461,9 @@ class AgentWebSocketServer:
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
+                    WebUIDispatchAdapter(),
+                    PackageManagementAdapter(),
+                    MultimodalConfigAdapter(on_config_saved=self._reload_after_config_save),
                     self._jiuwenmate_web,
                 ):
                     self._adapter_registry.register(adapter)
@@ -2797,13 +2818,23 @@ class AgentWebSocketServer:
         """Build every AgentServer Runtime through one product composition root."""
         from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
         from jiuwenswarm.runtime.team_controller import process_team_controller
+        from jiuwenswarm.server.runtime.session.attach_notifications import (
+            ExtensionSessionAttachParticipant,
+        )
+        from jiuwenswarm.server.runtime.session.end_notifications import (
+            ExtensionSessionEndParticipant,
+        )
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
             get_kv_cache_application_owner,
         )
 
         owner = get_kv_cache_application_owner()
         self._kv_cache_application_owner = owner
-        registry = RuntimeParticipantRegistry()
+        self._session_association_participant = ExtensionSessionAttachParticipant()
+        registry = RuntimeParticipantRegistry(host_run_end=(ExtensionSessionEndParticipant(
+            release_attachments=self._session_association_participant.release_for_end,
+        ),))
+        registry.register_host_foreground(self._session_association_participant)
         lease = owner.attach_runtime(registry)
         return AgentRuntime(
             agent_manager=agent_manager,
@@ -2933,6 +2964,17 @@ class AgentWebSocketServer:
             return False
         try:
             response = await adapter.handle(request)
+            if (request.req_method in {
+                ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS, ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL,
+                ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN,
+            } and response.ok and isinstance(response.payload, dict)):
+                auth = response.payload.get('dingtalk_auth') or response.payload.get('authorization')
+                if isinstance(auth, dict) and auth.get('status') == 'connected':
+                    try:
+                        # A first binding can be added after startup, before any bot callback exists.
+                        await self._ensure_persistent_group_fanout()
+                    except Exception as exc:
+                        logger.warning('DingTalk authorized group runtime startup failed (%s)', type(exc).__name__)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "[AgentWebSocketServer] Gateway adapter failed: request_id=%s method=%s",
@@ -3050,6 +3092,22 @@ class AgentWebSocketServer:
                 )
             return
 
+        from jiuwenswarm.server.front.protocol import unsupported_method_wire
+
+        if isinstance(data, dict):
+            method = data.get("method")
+            if method is None:
+                method = data.get("req_method")
+            error_wire = unsupported_method_wire(
+                method,
+                request_id=data.get("request_id"),
+                channel_id=data.get("channel") or data.get("channel_id"),
+            )
+            if error_wire is not None:
+                async with send_lock:
+                    await send_wire_payload(ws, error_wire)
+                return
+
         try:
             env = E2AEnvelope.from_dict(data)
         except Exception as parse_err:
@@ -3068,6 +3126,15 @@ class AgentWebSocketServer:
                 )
                 if not isinstance(legacy, dict):
                     raise ValueError("legacy_agent_request missing or not a dict")
+                error_wire = unsupported_method_wire(
+                    legacy.get("req_method"),
+                    request_id=legacy.get("request_id"),
+                    channel_id=legacy.get("channel_id"),
+                )
+                if error_wire is not None:
+                    async with send_lock:
+                        await send_wire_payload(ws, error_wire)
+                    return
                 request = _payload_to_request(legacy)
             else:
                 logger.info(
@@ -3412,13 +3479,6 @@ class AgentWebSocketServer:
                         # /sandbox enable retry and the existing backend/error
                         # resolution available after a failed warm pass.
                         logger.warning("[AgentServer] Sandbox bootstrap unavailable")
-            if request.req_method is not None and request.req_method.value.startswith("proactive."):
-                preparation = getattr(self, "proactive_preparation_task", None)
-                if preparation is not None:
-                    if registry is not None:
-                        await registry.ensure("proactive")
-                    else:
-                        await asyncio.shield(preparation)
             from jiuwenswarm.server.runtime.group_requests import dispatch_group_request
 
             if await dispatch_group_request(self, ws, request, send_lock):
@@ -3465,6 +3525,11 @@ class AgentWebSocketServer:
 
             if await self._handle_lifecycle_request(ws, request, send_lock):
                 return
+            # A4P configuration belongs to the application. A legacy client
+            # may still provide a session ID, even for an archived session.
+            if request.req_method in {ReqMethod.A4P_CONFIG_GET, ReqMethod.A4P_CONFIG_UPDATE}:
+                await self._handle_a4p_request(ws, request, send_lock)
+                return
             from jiuwenswarm.server.runtime.session.lifecycle import (
                 LifecycleError,
                 guard,
@@ -3475,6 +3540,9 @@ class AgentWebSocketServer:
                 "session.list", "project.list", "project.info", "project.get_sessions",
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
                 "session.stop", "voice.task.checkpoint.ack", "recommendation.job",
+                # A released view only cleans up its existing association;
+                # its exact identity is checked even if the Session archived.
+                "session.detach",
             }
             # 仅广场/目录只读 RPC 跳过会话存活校验（#5886）。不要复用
             # _is_stateless_method_request：其前缀含 skills.toggle / rebuild 等写操作。
@@ -3526,6 +3594,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.SESSION_SWITCH:
                 await self._handle_session_switch(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.SESSION_DETACH:
+                await self._handle_session_detach(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.SESSION_PLAN_STATUS:
                 await self._handle_session_plan_status(ws, request, send_lock)
@@ -3860,7 +3931,30 @@ class AgentWebSocketServer:
                 await self._handle_agents_tools_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
+                request, intent = normalized_intent_request(request)
                 params = request.params if isinstance(request.params, dict) else {}
+                # 断连合成请求不是用户输入的 intent，跳过契约校验，确保连接断开后
+                # cleanup_client_disconnect_session_runtime 仍能执行清理。
+                if not self._is_client_disconnect_cancel_request(request):
+                    # 契约校验前置（早退分支也覆盖）：未知 intent 直接回错误应答、
+                    # 不做任何会话/任务操作。
+                    intent_error = unknown_interrupt_intent_error(intent)
+                    if intent_error:
+                        logger.error(
+                            "[AgentWebSocketServer] cancel: 拒绝未知 intent（未做任何会话操作）: session_id=%s intent=%s",
+                            request.session_id or "default",
+                            intent,
+                        )
+                        response = AgentResponse(
+                            request_id=request.request_id, channel_id=request.channel_id,
+                            ok=False,
+                            payload=reject_interrupt_result_payload(intent, intent_error),
+                        )
+                        async with send_lock:
+                            await send_wire_payload(
+                                ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+                            )
+                        return
                 # Runtime owns exact execution cancellation for a
                 # target_request_id. Do not first terminate every response
                 # stream in the Session bucket.
@@ -3894,7 +3988,6 @@ class AgentWebSocketServer:
                     return
                 # 中断请求：根据 intent 决定是否取消流式任务
                 sid = request.session_id or "default"
-                intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
                 cleanup_after_cancel = self._is_client_disconnect_cancel_request(request)
 
                 # 只有 cancel/supplement 才取消流式任务
@@ -3959,10 +4052,6 @@ class AgentWebSocketServer:
                                 await send_wire_payload(ws, wire)
                 return
             await self._ensure_auto_team_binding_for_chat(request)
-            # chat.send 入口采集隐式反馈：用户在推荐后的文本回复关联到最近推荐。
-            # best-effort，失败绝不影响主 chat 流（见方法实现）。
-            if request.req_method == ReqMethod.CHAT_SEND:
-                await self._try_record_implicit_feedback(request)
             if request.is_stream:
                 await self._handle_stream(ws, request, send_lock)
             else:
@@ -4063,58 +4152,6 @@ class AgentWebSocketServer:
                 runtime.end_chat_request(session_id, request_id)
             _tenant_cm.__exit__(None, None, None)
 
-    async def _try_record_implicit_feedback(self, request: AgentRequest) -> None:
-        """Best-effort 采集隐式反馈：用户在收到推荐后的文本回复。
-
-        主动推荐送达后，用户若直接用文本回复（"简洁点""不需要"…）而不是点卡片
-        上的赞/踩按钮，这条回复就是隐式反馈。把它关联到该会话最近一条推荐，
-        交由 ``record_implicit_feedback`` 做情感分类后入 buffer，供下次 tick 梯度更新。
-
-        与 Runtime activity participant 同款 best-effort：任何异常只 log debug，
-        绝不阻断主 chat 流。只在 ``chat.send`` 且来源不是 proactive 自己触发的
-        推荐指令时才介入（``source=proactive_recommendation`` 是系统主动塞给主
-        agent 的指令，不是用户说的话，见 proactive_adapter 触发处）。
-        """
-        try:
-            params = request.params if isinstance(request.params, dict) else {}
-            # proactive 自己触发主 agent 的指令带 source=proactive_recommendation，
-            # 那不是用户输入，跳过
-            if str(params.get("source") or "").strip() == "proactive_recommendation":
-                return
-            session_id = str(request.session_id or params.get("session_id") or "").strip()
-            if not session_id:
-                return
-            query = _request_query_text(request)
-            if not query:
-                return
-
-            from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
-                find_latest_recommendation,
-                record_implicit_feedback,
-            )
-
-            # max_age_seconds=0 砍掉时间窗：不靠时间硬挡"无关反馈"——是否相关、是否
-            # 产生梯度交给梯度更新器的模型判断（看 rec_content + user_reply 语义）。
-            # 配合 record_feedback 的"同 rec_id 只采紧跟第一条、后续不覆盖"逻辑，
-            # 每条推荐只关联它之后紧跟的第一条用户回复。
-            latest = find_latest_recommendation(session_id, max_age_seconds=0)
-            if latest is None:
-                return
-            rec_id = latest.get("id")
-            if not rec_id:
-                return
-
-            # 已对该 rec_id 给过显式反馈（赞/踩）的话，record_feedback 的去重逻辑
-            # 会自动丢弃隐式补充——无需在此预判。
-            record_implicit_feedback(rec_id, query)
-        except Exception as exc:
-            logger.debug(
-                "[AgentWebSocketServer] implicit feedback hook failed; preserving chat: "
-                "session_id=%s error=%s",
-                request.session_id,
-                exc,
-            )
-
     @staticmethod
     def _is_client_disconnect_cancel_request(request: AgentRequest) -> bool:
         metadata = request.metadata if isinstance(request.metadata, dict) else {}
@@ -4184,6 +4221,23 @@ class AgentWebSocketServer:
         ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
         """
         params = request.params if isinstance(request.params, dict) else {}
+        if params.get("intent", "cancel") == "cancel" and request.session_id:
+            # Colleague cancellation is additive: it must never block the existing
+            # expert / organization stop below, and groups without colleagues skip it.
+            try:
+                from jiuwenswarm.server.runtime.group_service import read_group
+
+                group = read_group(request.session_id)
+                if group is not None and any(item.get("kind") == "colleague" for item in group.get("members", [])):
+                    await self._jiuwenmate_web.stop_swarmchat_group(
+                        request.session_id, user_id=str(getattr(request, "user_id", "") or ""),
+                        channel_id=request.channel_id or "default",
+                    )
+            except Exception:
+                logger.warning(
+                    "[AgentWebSocketServer] SwarmChat colleague stop failed; continuing group cancel: session=%s",
+                    request.session_id, exc_info=True,
+                )
         if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
             resp = await self._cancel_organization(request)
         elif self._is_targeted_expert_cancel_request(request):
@@ -4732,6 +4786,7 @@ class AgentWebSocketServer:
         channel_id = request.channel_id or "web"
         params = request.params if isinstance(request.params, dict) else {}
         prompt = str(params.get("content") or params.get("query") or "")
+        route_metadata = dict(request.metadata or {})
         await self.send_push(
             {
                 "request_id": request.request_id,
@@ -4789,6 +4844,18 @@ class AgentWebSocketServer:
                         or payload.get("message")
                         or "Runtime execution failed"
                     )
+                pushed_event_type = (
+                    str(payload.get("event_type") or "")
+                    if isinstance(payload, dict)
+                    else ""
+                )
+                # IM channels do not render runtime telemetry; forwarding it
+                # duplicates the answer that chat.final already delivered.
+                if should_skip_heartbeat_push(
+                    pushed_event_type,
+                    event.channel_id or channel_id,
+                ):
+                    continue
                 is_processing_start = (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.processing_status"
@@ -4809,10 +4876,8 @@ class AgentWebSocketServer:
                         "payload": payload,
                         "agent_ref": event.agent_ref,
                         "is_complete": event.is_complete,
-                        "metadata": (
-                            event.metadata
-                            if event.metadata is not None
-                            else request.metadata
+                        "metadata": merge_heartbeat_push_metadata(
+                            route_metadata, event.metadata
                         ),
                     }
                 )
@@ -5669,7 +5734,9 @@ class AgentWebSocketServer:
                         error_value
                         if error_value is not None
                         else "Runtime execution failed"
-                    )
+                    ),
+                    **({"code": event.payload["code"]}
+                       if isinstance(event.payload, dict) and isinstance(event.payload.get("code"), str) else {}),
                 },
                 agent_ref=event.agent_ref,
                 metadata=event.metadata,
@@ -5678,6 +5745,7 @@ class AgentWebSocketServer:
                 message,
                 response_id=event.request_id,
             )
+            wire["session_id"] = event.session_id
         elif streaming:
             payload = dict(event.payload) if event.payload is not None else None
             if not event.ok:
@@ -6036,6 +6104,35 @@ class AgentWebSocketServer:
             await send_wire_payload(
                 ws, encode_agent_response_for_wire(response, response_id=request.request_id)
             )
+
+    async def _handle_session_detach(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """Release one current view identity without ending its Session."""
+        params = request.params if isinstance(request.params, dict) else {}
+        participant = getattr(self, "_session_association_participant", None)
+        if participant is None:
+            ok, payload = False, {"error": "Session associations are not ready", "code": "NOT_READY"}
+        else:
+            try:
+                detached = await participant.detach(
+                    channel_id=request.channel_id,
+                    session_id=params.get("session_id"),
+                    view_id=params.get("view_id"),
+                    attachment_id=params.get("attachment_id"),
+                )
+                ok, payload = True, {
+                    "session_id": params["session_id"], "surface_id": params["view_id"],
+                    "attachment_id": params["attachment_id"], "detached": detached,
+                }
+            except ValueError as exc:
+                ok, payload = False, {"error": str(exc), "code": "BAD_REQUEST"}
+            except LookupError as exc:
+                ok, payload = False, {"error": str(exc), "code": "STALE_ATTACHMENT"}
+        response = AgentResponse(
+            request_id=request.request_id, channel_id=request.channel_id, ok=ok,
+            payload=payload, metadata=request.metadata,
+        )
+        async with send_lock:
+            await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
 
     async def _handle_session_switch(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Translate ``session.switch`` between WebSocket wire and Runtime."""
@@ -7270,11 +7367,20 @@ class AgentWebSocketServer:
         session_id = params.get("session_id")
         page_idx = params.get("page_idx")
         subagent_id = params.get("subagent_id")
-        data = self.get_conversation_history(
-            session_id=session_id,
-            page_idx=page_idx,
-            subagent_id=subagent_id if isinstance(subagent_id, str) else None,
-        )
+        try:
+            data = await asyncio.to_thread(
+                self.get_conversation_history, session_id=session_id, page_idx=page_idx,
+                subagent_id=subagent_id if isinstance(subagent_id, str) else None,
+            )
+        except HistoryReplayError as exc:
+            resp = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id, ok=False,
+                payload={"error": str(exc), "code": exc.code},
+            )
+            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+            return
         if data is None:
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -7342,7 +7448,10 @@ class AgentWebSocketServer:
             timestamp = _dt.datetime.now().timestamp()
 
         try:
-            await run_history_io(append_history_record,
+            from jiuwenswarm.server.runtime.session.history_events import try_append_platform_history
+            from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError
+
+            record_kwargs = dict(
                 session_id=session_id,
                 request_id=request_id,
                 channel_id=channel_id,
@@ -7354,6 +7463,17 @@ class AgentWebSocketServer:
                 extra={"cron_failure_record": True, "error": str(content)}
                 if params.get("cron_failure_record") is True else None,
             )
+            handled, append_result = await try_append_platform_history(
+                record_kwargs, source="history.append_record",
+                idempotency_key=f"history.append_record:{request_id}:{role}",
+            )
+            if handled:
+                if append_result is None:
+                    raise SessionHistoryError("INVALID_MESSAGE")
+                if append_result.status == "rejected":
+                    raise SessionHistoryError("APPEND_REJECTED")
+            else:
+                await run_history_io(append_history_record, **record_kwargs)
             # Cron 失败补写可能落到尚未有标题的会话（会话分配失败的 run 写
             # 占位会话）。assistant 记录不触发 auto_title，这里按调用方传入
             # 的 title 回填空标题；已有标题（正常 run 的 auto_title）不覆盖。
@@ -7413,100 +7533,25 @@ class AgentWebSocketServer:
 
 
     async def _handle_proactive_tick(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Handle proactive.tick request from CronScheduler.
-
-        This is called by Gateway's CronScheduler to trigger a recommendation tick.
-        Respects cooldown and daily limits.
-        """
-        if self._proactive_engine is None:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": "ProactiveEngine not initialized"},
-            )
-        else:
-            try:
-                # Extract target_channel from params
-                params = request.params or {}
-                target_channel = params.get("target_channel")
-
-                # Run the tick (respects cooldown and daily limits)
-                success = await self._proactive_engine.tick_now(target_channel=target_channel)
-
-                status = "tick_executed" if success else "no_recommendation"
-                last_tick = self._proactive_engine.last_tick_at
-                if last_tick > 0:
-                    status = f"{status} (last_tick_at={last_tick:.0f})"
-
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={"status": status, "success": success},
-                )
-            except Exception as e:
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={"error": str(e)},
-                )
-
+        """Soft no-op: proactive recommendation removed; keep gateway cron sync happy."""
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"status": "skipped", "success": False, "reason": "proactive_removed"},
+        )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
 
     async def _handle_proactive_feedback(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Handle proactive.feedback request from frontend.
-
-        Receives user feedback (like/dislike) on proactive recommendations.
-        Stores feedback in buffer for next tick to update strategy gradients.
-        """
-        try:
-            params = request.params or {}
-            rec_id = params.get("rec_id")
-            feedback_type = params.get("feedback_type")
-            # 前端从 message 上带的推荐元数据，history 尚未写入时兜底填充反馈记录。
-            rec_type = str(params.get("rec_type") or params.get("proactive_type") or "")
-            rec_target = str(params.get("rec_target") or params.get("proactive_target") or "")
-
-            if not rec_id or feedback_type not in ("explicit_like", "explicit_dislike"):
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={
-                        "error": (
-                            "Invalid params: rec_id and feedback_type "
-                            "(explicit_like|explicit_dislike) required"
-                        ),
-                    },
-                )
-            else:
-                from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
-                    RecMeta,
-                    record_explicit_feedback,
-                )
-                record_explicit_feedback(
-                    rec_id, feedback_type,
-                    meta=RecMeta(rec_type=rec_type, rec_target=rec_target),
-                )
-
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={"status": "feedback_recorded", "rec_id": rec_id},
-                )
-        except Exception as e:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(e)},
-            )
-
+        """Soft no-op: proactive recommendation feedback path removed."""
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"status": "skipped", "reason": "proactive_removed"},
+        )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
@@ -8026,6 +8071,7 @@ class AgentWebSocketServer:
 
         snapshot: dict[str, Any] | None = None
         source = "empty"
+        runtime_available: bool | None = True if live_matches_request else None
         if live_matches_request:
             try:
                 snapshot = await monitor_handler.get_team_snapshot()
@@ -8040,18 +8086,25 @@ class AgentWebSocketServer:
             tasks = payload.get("tasks")
             return tasks if isinstance(tasks, list) else []
 
-        # 请求的 team 活着、但 session 级 monitor 不是它（多 team 并发的会话）：另开一个
-        # 精确绑定 (team_name, session_id) 的只读 monitor 读一次。单个 monitor 实例会读
-        # 全量成员/消息，会话一多就是 N 倍 DB 开销，所以只在"请求的 team 不是当前
-        # monitor"这个确实需要区分的场景才走这条路，且用完即弃。
-        if snapshot is None and requested_team_name and session_id:
+        # Resolve one exact identity for the runtime probe and DB fallback.
+        # A session monitor may belong to another Team; a replacement worker
+        # may have none. Probe only when the matching live board is missing.
+        snapshot_team_name = requested_team_name
+        if not snapshot_team_name and session_id:
+            snapshot_team_name = str(team_manager.get_active_team_name(session_id) or "").strip()
+            if not snapshot_team_name:
+                snapshot_team_name = str(
+                    (get_session_metadata(session_id) or {}).get("team_name") or ""
+                ).strip()
+        if snapshot is None and snapshot_team_name and session_id:
             try:
                 from openjiuwen.core.runner.runner import GLOBAL_RUNNER
 
                 scoped_monitor = await GLOBAL_RUNNER.get_agent_team_monitor(
-                    team_name=requested_team_name,
+                    team_name=snapshot_team_name,
                     session_id=session_id,
                 )
+                runtime_available = scoped_monitor is not None
                 if scoped_monitor is not None:
                     scoped_snapshot = await TeamMonitorHandler(
                         scoped_monitor, session_id
@@ -8064,7 +8117,7 @@ class AgentWebSocketServer:
                     "[AgentWebSocketServer] team.snapshot (scoped live) failed: "
                     "session_id=%s team_name=%s error=%s",
                     session_id,
-                    requested_team_name,
+                    snapshot_team_name,
                     e,
                 )
 
@@ -8075,15 +8128,7 @@ class AgentWebSocketServer:
         # title/content. Fall back whenever live has no tasks.
         needs_db = snapshot is None or not _snapshot_tasks(snapshot)
         if needs_db and session_id:
-            team_name = requested_team_name
-            if not team_name:
-                team_name = str(
-                    team_manager.get_active_team_name(session_id) or ""
-                ).strip()
-            if not team_name:
-                team_name = str(
-                    (get_session_metadata(session_id) or {}).get("team_name") or ""
-                ).strip()
+            team_name = snapshot_team_name
             if team_name:
                 try:
                     db_snapshot = await TeamMonitorHandler.get_team_snapshot_from_db(
@@ -8107,19 +8152,39 @@ class AgentWebSocketServer:
                     snapshot = db_snapshot
                     source = "db"
 
+        # A replacement worker can read the old DB's busy/running rows without
+        # having restored any TeamAgent. Do not mutate those historical rows or
+        # infer completion from a ready worker. Expose the independent runtime
+        # probe and whether unfinished work needs an explicit recovery action.
+        unfinished = any(
+            isinstance(task, dict)
+            and task.get("status")
+            and task["status"] not in {"completed", "cancelled", "failed"}
+            for task in _snapshot_tasks(snapshot)
+        )
+        recovery_required = (
+            False if runtime_available else (
+                None if runtime_available is None or snapshot is None else unfinished
+            )
+        )
         payload = {
             **(snapshot or empty_payload),
             "members_source": source if snapshot is not None else "empty",
+            "members_live": source in {"live", "live-scoped"},
+            "runtime_available": runtime_available,
+            "recovery_required": recovery_required,
         }
         members = payload.get("members") if isinstance(payload, dict) else []
         tasks = _snapshot_tasks(payload if isinstance(payload, dict) else None)
         logger.info(
             "[AgentWebSocketServer] team.snapshot session_id=%s source=%s "
-            "tasks_count=%s members_count=%s",
+            "tasks_count=%s members_count=%s runtime_available=%s recovery_required=%s",
             session_id or "-",
             source if snapshot is not None else "empty",
             len(tasks),
             len(members) if isinstance(members, list) else 0,
+            runtime_available,
+            recovery_required,
         )
 
         resp = AgentResponse(
@@ -9247,11 +9312,13 @@ class AgentWebSocketServer:
                     page_idx=page_idx,
                     subagent_id=subagent_id if isinstance(subagent_id, str) else None,
                 )
-        except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
+        except (InvalidHistoryCursor, HistorySnapshotChanged, HistoryReplayError) as exc:
             error_code = (
-                "HISTORY_SNAPSHOT_CHANGED"
-                if isinstance(exc, HistorySnapshotChanged)
-                else "INVALID_HISTORY_CURSOR"
+                exc.code if isinstance(exc, HistoryReplayError) else (
+                    "HISTORY_SNAPSHOT_CHANGED"
+                    if isinstance(exc, HistorySnapshotChanged)
+                    else "INVALID_HISTORY_CURSOR"
+                )
             )
             error_chunk = AgentResponseChunk(
                 request_id=request.request_id,
@@ -9585,6 +9652,16 @@ class AgentWebSocketServer:
                 execution_subject=execution_subject,
             )
             try:
+                # TODO(compact): Keep command.compact on its original path; extension integration is deferred.
+                # options = {"session_id": session_id, "return_state": True,
+                #            "processor_types": _MANUAL_COMPACT_PROCESSOR_TYPES}
+                # instructions = params.get("instructions")
+                # if instructions is not None:
+                #     if not isinstance(instructions, str):
+                #         raise ValueError("compact instructions must be a string")
+                #     options["instructions"] = instructions
+                # result_data = await agent.compress_context(**options)
+
                 result_data = await agent.compress_context(
                     session_id=session_id,
                     return_state=True,
@@ -9694,6 +9771,8 @@ class AgentWebSocketServer:
                     payload={
                         "result": result,
                         "stats": stats,
+                        # TODO(compact): Do not add extension decisions to the native command response yet.
+                        # **({"skip": result_data["skip"]} if result_data.get("skip") else {}),
                         **({"summary": summary} if summary else {}),
                         **({"compact_summary": summary} if summary else {}),
                     },
@@ -10988,7 +11067,8 @@ class AgentWebSocketServer:
     ) -> None:
         """Handle ``mcp.list`` RPC: list marketplace MCPs (read-only).
 
-        filter: builtin(预置目录) | local(已连接预置 + 全部自定义)。兜底 builtin。
+        filter: builtin(单机广场) | hub(企业远端广场) | local(我的)。
+        单机省略时由 marketplace 默认 builtin；企业必须显式 hub|local。
         web 不转发此入口（网关本地已处理），保留只为语义对齐。
         """
         try:
@@ -10996,14 +11076,14 @@ class AgentWebSocketServer:
                 list_mcps_with_hub,
             )
             params = request.params or {}
-            filter_val = str(params.get("filter") or "builtin").strip().lower() or "builtin"
-            if filter_val not in ("builtin", "local"):
-                filter_val = "builtin"
+            filter_val = str(params.get("filter") or "").strip().lower() or None
             items = await list_mcps_with_hub(
                 filter_val,
                 cache_mode=params.get("cache_mode"),
                 refresh=params.get("refresh") is True,
                 query=str(params.get("query") or ""),
+                source_id=str(params.get("source_id") or "").strip() or None,
+                metadata=request.metadata if isinstance(request.metadata, dict) else None,
             )
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -11033,7 +11113,11 @@ class AgentWebSocketServer:
             name = str(params.get("id") or params.get("name") or "").strip()
             if not name:
                 raise ValueError("mcp id or name is required")
-            item = await show_mcp_with_hub(name)
+            item = await show_mcp_with_hub(
+                name,
+                source_id=str(params.get("source_id") or "").strip() or None,
+                metadata=request.metadata if isinstance(request.metadata, dict) else None,
+            )
             if item is None:
                 raise KeyError(f"mcp '{name}' not found")
             # Connected MCP but ToolMgr returned no tools: fall back to a
@@ -11118,8 +11202,15 @@ class AgentWebSocketServer:
             from jiuwenswarm.server.runtime.mcp.marketplace import install_hub_mcp
             from jiuwenswarm.server.runtime.mcp.registry import CliConnectError
 
-            asset_id = str((request.params or {}).get("id") or "").strip()
-            item = await install_hub_mcp(asset_id)
+            params = request.params or {}
+            asset_id = str(params.get("id") or "").strip()
+            item = await install_hub_mcp(
+                asset_id,
+                source_id=str(params.get("source_id") or "").strip() or None,
+                version_id=str(params.get("version_id") or "").strip() or None,
+                package_name=str(params.get("package_name") or "").strip() or None,
+                metadata=request.metadata if isinstance(request.metadata, dict) else None,
+            )
             name = str(item.get("name") or "").strip()
             # Connect failure is non-fatal after a successful download.
             try:
@@ -11262,6 +11353,7 @@ class AgentWebSocketServer:
         self, name: str, *, rollback_on_probe_failure: bool = True
     ) -> dict[str, Any]:
         """Run the shared connect flow and return a frontend payload."""
+        from jiuwenswarm.common.mcp_config import discard_probed_mcp
         from jiuwenswarm.server.runtime.mcp.registry import (
             connect_mcp,
             was_connect_cancelled,
@@ -11280,8 +11372,15 @@ class AgentWebSocketServer:
             # Required-token fields are metadata, not secrets.
             return {"type": "credentials_required", **item}
         # Confirm server-bearing MCPs are actually usable before connected.
-        probe_ok, _probe_reason = await self._agent_manager.probe_mcp_live_connection(name)
+        probe_ok, probe_reason = await self._agent_manager.probe_mcp_live_connection(name)
+        # Cancel may land while the probe is in flight; cancel_connect already
+        # rolled the record back, so a late result must not override it.
+        if was_connect_cancelled(name):
+            logger.info("[mcp] connect '%s' cancelled during probe", name)
+            await discard_probed_mcp(name)
+            return {"type": "cancelled", "name": name}
         if not probe_ok:
+            logger.warning("[mcp] probe failed for '%s': %s", name, probe_reason)
             if rollback_on_probe_failure:
                 try:
                     from jiuwenswarm.server.runtime.mcp.registry import (
@@ -11793,6 +11892,7 @@ class AgentWebSocketServer:
         self, name: str, *, max_attempts: int = 200, delay: float = 1.0
     ) -> dict[str, Any]:
         """Poll locally stored OAuth credentials until the loopback callback lands."""
+        from jiuwenswarm.common.mcp_config import discard_probed_mcp
         from jiuwenswarm.server.runtime.mcp.oauth_flow import load_oauth_credentials
         from jiuwenswarm.server.runtime.mcp.registry import (
             complete_host_oauth_auth,
@@ -11806,8 +11906,17 @@ class AgentWebSocketServer:
             credentials = await asyncio.to_thread(load_oauth_credentials, name)
             if credentials is not None:
                 item = await asyncio.to_thread(complete_host_oauth_auth, name)
-                probe_ok, _reason = await self._agent_manager.probe_mcp_live_connection(name)
+                probe_ok, probe_reason = await self._agent_manager.probe_mcp_live_connection(name)
+                # Cancel may land during auth completion or the probe;
+                # cancel_connect already rolled the record back.
+                if was_connect_cancelled(name):
+                    logger.info("[mcp] host OAuth '%s' cancelled during probe", name)
+                    await discard_probed_mcp(name)
+                    return {"type": "cancelled", "name": name}
                 if not probe_ok:
+                    logger.warning(
+                        "[mcp] host OAuth probe failed for '%s': %s", name, probe_reason,
+                    )
                     try:
                         from jiuwenswarm.server.runtime.mcp.registry import (
                             rollback_failed_connect,
@@ -13464,13 +13573,6 @@ class AgentWebSocketServer:
         from jiuwenswarm.common.auth.login_credentials import apply_credential_update
 
         applied = apply_credential_update(request.params)
-        proactive = getattr(self, "_proactive_engine", None)
-        if applied and proactive is not None:
-            from jiuwenswarm.server.runtime.proactive_adapter import (
-                build_proactive_agent,
-            )
-
-            proactive.rebuild_proactive_agent(build_proactive_agent)
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -13609,23 +13711,6 @@ class AgentWebSocketServer:
                         "[AgentWebSocketServer] failed to stop paused team runtimes after agent.reload_config: %s",
                         exc,
                     )
-
-            # Hot-reload ProactiveEngine config if available
-            should_reload_proactive = not reload_scopes or bool(reload_scopes & {"model", "proactive", "agent_runtime"})
-            if self._proactive_engine is not None and should_reload_proactive:
-                cfg = get_config()
-                proactive_cfg = cfg.get("proactive_recommendation", {})
-                self._proactive_engine.reload_config(proactive_cfg)
-                # 重建 proactive agent——它启动时建一次，模型配置固化在实例里。
-                # 用户改模型后主 agent 会热更新，但 proactive agent 不在主 agent
-                # 链路里，不重建会继续用旧模型（可能已失效/欠费）。
-                try:
-                    from jiuwenswarm.server.runtime.proactive_adapter import (
-                        build_proactive_agent,
-                    )
-                    self._proactive_engine.rebuild_proactive_agent(build_proactive_agent)
-                except Exception as exc:
-                    logger.warning("[AgentWebSocketServer] proactive agent rebuild failed: %s", exc)
 
             payload = {"reloaded": True}
             if should_warm_tokenizers:
@@ -13816,22 +13901,12 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    def _recommendation_active_request_ids(self) -> frozenset[str]:
-        runtime = self._execution_runtime()
-        pending = getattr(runtime, "_pending_chat_requests", None) or {}
-        return frozenset(
-            request_id
-            for bucket in pending.values()
-            for request_id in bucket
-        )
-
     def _recommendation_host_instance(self) -> Any:
         from jiuwenswarm.server.runtime.recommendation_host import RecommendationHost
 
         host = getattr(self, "_recommendation_host", None)
         if host is None:
             host = RecommendationHost()
-            host.bind_active_requests(self._recommendation_active_request_ids)
             host.bind_push(self._push_recommendation_event)
             self._recommendation_host = host
         return host
@@ -14031,72 +14106,9 @@ class AgentWebSocketServer:
         *,
         subagent_id: str | None = None,
     ) -> dict[str, Any] | None:
-        # 按照 session_id 和分页消息获取历史记录
-        if not isinstance(session_id, str) or not session_id.strip():
-            return None
-        if not isinstance(page_idx, int) or page_idx <= 0:
-            return None
+        from jiuwenswarm.server.control.history_service import load_history_page
 
-        normalized_session_id = session_id.strip()
-        normalized_subagent_id = (
-            subagent_id.strip() if isinstance(subagent_id, str) and subagent_id.strip() else None
-        )
-        if normalized_subagent_id:
-            if not history_exists(normalized_session_id, subagent_id=normalized_subagent_id):
-                return {
-                    "messages": [],
-                    "total_pages": 1,
-                    "page_idx": page_idx,
-                    "subagent_id": normalized_subagent_id,
-                }
-        elif not history_exists(normalized_session_id):
-            return None
-        try:
-            raw = load_history_records(
-                normalized_session_id,
-                subagent_id=normalized_subagent_id,
-            )
-        except Exception:
-            return None
-        if not isinstance(raw, list):
-            return None
-
-        page_size = _HISTORY_PAGE_SIZE
-        restorable = [
-            item for item in raw
-            if _is_restorable_history_record(item)
-        ]
-        total = len(restorable)
-        total_pages = max(1, math.ceil(total / page_size))
-        if page_idx > total_pages:
-            return None
-
-        ordered = list(reversed(restorable))
-        start = (page_idx - 1) * page_size
-        end = start + page_size
-        # 不在此处 sanitize：split_history_record_for_stream（在 _handle_history_get_stream
-        # 里调）需要拿到原文 content 才能正确切片；先 sanitize 会把 content 砍到 16KB，
-        # 切片器拿到的就只剩 16KB，分片就失去意义。
-        page_messages = list(ordered[start:end])
-        logger.debug(
-            "[history.get] session_id=%s subagent_id=%s page_idx=%s "
-            "raw_total=%s restorable_total=%s total_pages=%s returned=%s",
-            normalized_session_id,
-            normalized_subagent_id or "",
-            page_idx,
-            len(raw),
-            total,
-            total_pages,
-            len(page_messages),
-        )
-        result = {
-            "messages": page_messages,
-            "total_pages": total_pages,
-            "page_idx": page_idx,
-        }
-        if normalized_subagent_id:
-            result["subagent_id"] = normalized_subagent_id
-        return result
+        return load_history_page(session_id, page_idx, subagent_id=subagent_id)
 
     @staticmethod
     def get_conversation_history_cursor(
@@ -14299,6 +14311,10 @@ class AgentWebSocketServer:
                     moa_enabled=params.get("moa_enabled"),
                     cron_id=str(params.get("cron_id") or "").strip(),
                     client_app=str(params.get("client_app") or "").strip(),
+                    execution_profile=params.get("execution_profile", "default"),
+                    role_instructions=params.get("role_instructions", ""),
+                    npc_team=params.get("npc_team"),
+                    role_tools=params.get("tools"),
                 )
             )
             params.pop("_work_mode_explicit", None)
@@ -14321,6 +14337,9 @@ class AgentWebSocketServer:
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
+            if result.execution_profile != "default":
+                payload["execution_profile"] = result.execution_profile
+                payload["mode"] = result.canonical_mode
             if result.explicit_id_compatibility:
                 payload.update(
                     {

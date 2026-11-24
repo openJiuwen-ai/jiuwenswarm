@@ -13,17 +13,13 @@ import asyncio
 import json
 import logging
 import sys
+import uuid
 from typing import Any
 from urllib.parse import parse_qs
 
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from openjiuwen_protocol.e2a.runtime_http_routes import (
-    RUNTIME_HTTP_API_PREFIX as API_PREFIX,
-    RUNTIME_HTTP_STREAM_OVERRIDES,
-    resolve_runtime_http_route,
-)
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -32,6 +28,7 @@ from jiuwenswarm.common.log_context import (
     current_log_session_id,
     unbind_log_session,
 )
+from jiuwenswarm.common.request_ext import METADATA_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import http_chat
@@ -44,6 +41,7 @@ from jiuwenswarm.server.transports.http_sink import SSESink, UnaryHTTPSink
 logger = logging.getLogger(__name__)
 
 HTTP_CONNECTION_ID = "http"
+API_PREFIX = "/api/v1"
 
 
 class _RequestBodyTooLarge(Exception):
@@ -161,11 +159,11 @@ def build_http_app(app_services: AppServices) -> FastAPI:
         await invoke_unary(ctx, http_chat.handle_http_chat)
         return JSONResponse(ctx.sink.body or {}, status_code=ctx.sink.status_code)
 
-    @app.post(f"{API_PREFIX}{resolve_runtime_http_route(ReqMethod.CHAT_SEND.value).path}")
+    @app.post(f"{API_PREFIX}/chat/completions")
     async def chat_completions(request: Request):
         return await _runtime_chat(app_services, request, ReqMethod.CHAT_SEND)
 
-    @app.post(f"{API_PREFIX}{resolve_runtime_http_route(ReqMethod.CHAT_RESUME.value).path}")
+    @app.post(f"{API_PREFIX}/chat/resume")
     async def chat_resume(request: Request):
         return await _runtime_chat(app_services, request, ReqMethod.CHAT_RESUME)
 
@@ -189,15 +187,16 @@ def _register_declared_routes(app: FastAPI, app_services: AppServices) -> None:
     for method, verb, path in declared_http_routes():
         _add_declared_route(app, app_services, method, verb, path)
     _register_enterprise_expert_routes(app, app_services)
-    for method, verb, path in RUNTIME_HTTP_STREAM_OVERRIDES:
-        handler = _handler_for(method)
-        if handler is not None:
-            app.add_api_route(
-                f"{API_PREFIX}{path}",
-                _make_method_endpoint(app_services, method, handler, force_stream=True),
-                methods=[verb],
-                name=f"{verb} {path}",
-            )
+    history = _handler_for(ReqMethod.HISTORY_GET.value)
+    if history is not None:
+        app.add_api_route(
+            f"{API_PREFIX}/sessions/{{session_id}}/history/stream",
+            _make_method_endpoint(
+                app_services, ReqMethod.HISTORY_GET.value, history, force_stream=True
+            ),
+            methods=["GET"],
+            name="GET /sessions/{session_id}/history/stream",
+        )
 
 
 def _add_declared_route(app: FastAPI, app_services: AppServices, method: str, verb: str, path: str) -> None:
@@ -434,6 +433,11 @@ def _header(request: Request, name: str, default: str) -> str:
     return text or default
 
 
+def _default_request_id() -> str:
+    """缺省 request_id 一次一个：同会话并发聊天不再登记同一条 push 路由。"""
+    return f"http-{uuid.uuid4().hex[:12]}"
+
+
 def _client_json(body: dict[str, Any]) -> dict[str, Any]:
     """收成 runtime 客户端认识的 ``{ok, data, error}``。"""
     ok = bool(body.get("ok"))
@@ -489,7 +493,6 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
         metadata["targets"] = cron_targets
     from jiuwenswarm.common.request_ext import (
         INTERNAL_HEADER_NAME,
-        METADATA_KEY,
         RequestExtCodecError,
         decode_internal_header,
     )
@@ -536,7 +539,7 @@ def _context_from_runtime(
         session_id = str(body.get("session_id") or "").strip()
     user_id, metadata = _rebuild_identity_from_headers(request)
     agent_request = AgentRequest(
-        request_id=_header(request, "x-request-id", "http"),
+        request_id=_header(request, "x-request-id", "") or _default_request_id(),
         channel_id=_header(request, "x-channel-id", "http"),
         session_id=session_id or None,
         req_method=req_method,
@@ -589,14 +592,20 @@ def _context_from_mapping(
     is_stream: bool,
 ) -> RequestContext:
     params = body.get("params")
+    metadata = body.get("metadata")
+    if isinstance(metadata, dict):
+        # Request-scoped credentials must not come from client-supplied metadata.
+        metadata = {key: value for key, value in metadata.items() if key != METADATA_KEY}
+    else:
+        metadata = None
     agent_request = AgentRequest(
-        request_id=str(body.get("request_id") or "http"),
+        request_id=str(body.get("request_id") or "") or _default_request_id(),
         channel_id=str(body.get("channel_id") or "http"),
         session_id=str(body.get("session_id") or "") or None,
         req_method=req_method,
         params=params if isinstance(params, dict) else {},
         is_stream=is_stream,
-        metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
+        metadata=metadata,
         user_id=str(body.get("user_id") or "").strip(),
     )
     return RequestContext(

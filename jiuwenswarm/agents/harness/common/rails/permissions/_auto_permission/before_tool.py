@@ -51,6 +51,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models
     ToolInvocation,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import NATIVE_PATH_ACCESS
+from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
+    peek_reviewer_tool_result_metadata,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import resolve_tool_binding
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.readonly_tool_bindings import (
     trusted_readonly_binding,
@@ -200,6 +203,9 @@ class AutoPermissionBeforeToolMixin:
             queue = optional_root_permission_queue()
             if key is not None and queue is not None:
                 queue.finish_active(key)
+            artifact_owner = getattr(self, "session_artifact_paths", None)
+            if artifact_owner is not None and key is not None:
+                artifact_owner.clear_pending(key)
             raise
         finally:
             NATIVE_PATH_ACCESS.reset(native_token)
@@ -233,6 +239,10 @@ class AutoPermissionBeforeToolMixin:
         clear_send_file_execution_grant()
         clear_trusted_search_producer()
         invocation = _extract_invocation(args, kwargs)
+        artifact_key = tool_invocation_key_from_context(invocation.ctx)
+        artifact_owner = getattr(self, "session_artifact_paths", None)
+        if artifact_owner is not None and artifact_key is not None:
+            artifact_owner.clear_pending(artifact_key)
         if plan_hard_rejected(invocation.ctx):
             return None
         wrapper_resume = consume_permission_wrapper_resume(invocation.ctx)
@@ -395,21 +405,38 @@ class AutoPermissionBeforeToolMixin:
                         "final_reviewer_status": "approved",
                     },
                 )
+            if self.session_artifact_paths is not None and artifact_key is not None:
+                if result is None or classify_permission_result(result) == "allow":
+                    self.session_artifact_paths.stage(
+                        artifact_key, tool_name=facts.tool_name,
+                        tool_args=facts.untrusted_args, facts=facts,
+                    )
             if (
                 manual_resume
                 and decision_source == "manual_approval"
                 and classify_permission_result(result) == "allow"
             ):
+                approval_metadata = peek_reviewer_tool_result_metadata(
+                    getattr(invocation.ctx, "extra", None), tool_call_id=tool_call_id,
+                ) or {}
+                reason = (
+                    "manual_allow_once_remember_unavailable"
+                    if approval_metadata.get("reviewer_reason_code") == "manual_allow_once_remember_unavailable"
+                    else "manual_approval"
+                )
+                success_metadata = {
+                    "decision_source": "manual_approval",
+                    "reviewer_status": "approved",
+                    "final_reviewer_status": "approved",
+                }
+                if reason != "manual_approval":
+                    success_metadata["reviewer_reason_code"] = reason
                 self._record_reviewer_success_metadata(
                     invocation.ctx,
                     facts,
                     tool_call_id=tool_call_id,
-                    reason="manual_approval",
-                    metadata={
-                        "decision_source": "manual_approval",
-                        "reviewer_status": "approved",
-                        "final_reviewer_status": "approved",
-                    },
+                    reason=reason,
+                    metadata=success_metadata,
                 )
             self._emit_permission_result_observation(
                 facts,

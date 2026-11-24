@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / im-direct-message-and-delivery |
 | 关联模块 | Gateway 钉钉渠道与投递选择、AgentServer 钉钉入站、jiuwenmate 请求与投递账本 |
-| 最近一次修订日期 | 2026-10-31 |
+| 最近一次修订日期 | 2026-11-09 |
 | 关联 feature | [F_21_02 钉钉单聊](../features/F_21_02_dingtalk-direct-message.md)、[F_02_02 配置与连接](../features/F_02_02_colleague-connections.md)、[F_08](../features/F_08_feishu-group-fanout.md)、[F_09](../features/F_09_web-and-feishu-result-delivery.md) |
 
 本规约维护 Swarm 宿主的钉钉单聊、群聊接线契约，不改变 PA 执行协议。同事、连接与运行 Agent 的关系及飞书、钉钉共用的连接检查见 [S_04](S_04_colleague-connections.md)。群聊回复模式复用 [F_23](../features/F_23_group-reply-mode.md)。源码与替身验证通过不等于平台联调通过，证据见 F_21_02。
@@ -55,13 +55,14 @@
 ## 4. 接口契约
 
 - `channel.dingtalk.bind_agent(client_id, client_secret, config_id, robot_code?)`：先经内部方法 `jiuwenmate.connection.attach` 取得该同事这个应用的运行 Agent（S_04），再把它写入应用的 `persistent_agent_id`；绑定普通应用即把它转为 JM；新应用以空白名单创建，其他应用的已保存字段（含格式错误的白名单）不变。AgentServer 拒绝时原样返回其错误码，无法回答时返回 `SERVICE_UNAVAILABLE`，都不保存；违反不变量 4 返回 `BAD_REQUEST`；落盘成功但通道重启失败返回 `CHANNEL_APPLY_FAILED`。
-- `channel.dingtalk.unbind_agent(client_id)`：删除该应用条目，仅当它绑定了 Agent；其运行 Agent 与数据保留。
+- `channel.dingtalk.unbind_agent(client_id)`：仅对绑定了 Agent 的应用，先清理该员工用户 CLI 授权并确认成功，再删除应用条目；清理失败保留绑定，运行 Agent 与聊天数据保留，重绑后需重新授权用户账号。授权清理及应用锁边界见 [CLI 规约](S_06_employee-dingtalk-cli.md)。
+- 普通群消息监听与 @ 回调使用相同的员工身份校验：新式 canonical 绑定不要求历史连接行，但须核验配置员工可见；历史独立连接须精确匹配钉钉平台和当前 app。监听发现、读前授权复核及消息读取均显式使用该绑定的 app_id，不能以默认应用替代。确认机器人已不在群时，canonical 员工同样更新为失去该群访问；隐藏、停用、被动回复、未授权或已解绑员工不进入普通消息判断。
 - `channel.dingtalk.get_conf`：返回共享键与归一化的 `apps[]`。
 - `channel.dingtalk.set_conf({apps})`：只接受 `apps[]`；每项先按 client_id 合并到已保存的应用，再推导与校验，所以未提交的字段（含 `enabled`、应用级 API 地址、白名单、`persistent_agent_id`、`robot_code`）保持原值，空的 `client_secret` 表示不变；未保存过的 client_id 没有原值，必须提交 `allow_from`，否则返回 `BAD_REQUEST`；默认标志由服务端推导。列表中不存在的应用被删除，不影响其他应用和 Agent 数据。
 - 保存语义（`set_conf` 与 `bind_agent` 共用）：在配置写锁内以文件中的 `channels.dingtalk` 为基础合并、校验并写回，再用写回结果重启钉钉通道；重启串行执行，每次在旧实例停止后读取最新配置，停止旧实例不按 channel_id 注销，因此重叠的重启不会让已保存的应用缺少通道；并发保存不会互相覆盖，普通渠道写入文件的 `last_*` 不会被内存中的旧值覆盖。`bind_agent` 取得运行 Agent 在读取配置之前完成。
 - `jiuwenmate.dingtalk.inbound`：Gateway 到 AgentServer 的内部 E2A 方法，不对 Web 公开。入站的处置结果仅用于日志。连接相关的内部方法见 S_04。
 - 投递推送：载荷携带 `channel`、`app_id`、`chat_id`、`is_direct_message`；缺少 `channel` 的旧推送按飞书处理。ACK 信封渠道与推送一致。
-- 已确认的群聊文本回复写入该平台群的公开记录，平台回执作为消息 ID，源消息作为 `reply_to`；飞书与钉钉均支持重启后只重试归档、不重发消息。钉钉 processQueryKey 与用户历史 messageId 不同；完整有界回读后，仅对确认同一机器人、相同非空无附件文字、时间差不超过十秒且双向唯一的回执/回读记录归并，保留真实 messageId/平台时间及本地员工身份和 reply_to。两侧各自前后十秒必须处于完整读取窗口内，歧义或未覆盖窗口不归并；delivery-echo 来源阻止归档重试复活回执重复行，原发送回执保留在投递日志中，不触发重发。
+- 已确认的群聊文本回复写入该平台群的公开记录，平台回执作为消息 ID，源消息作为 `reply_to`；飞书与钉钉均支持重启后只重试归档、不重发消息。钉钉 processQueryKey 与用户历史 messageId 不同；完整有界回读后，仅对确认同一机器人、相同非空无附件文字、时间差不超过十秒且双向唯一的回执/回读记录归并。除逐字相等外，钉钉仅兼容简单 Markdown 加粗、标题、无序列表及布局空白形成的等价展示文本；数字与标点保留，代码、转义、链接及 HTML 仅精确匹配，不按昵称或模糊相似度去重。多个文字投影命中同一消息 ID 只算一个候选，但不同消息 ID 的歧义不能被消除。保留真实 messageId/平台时间及本地员工身份和 reply_to。两侧各自前后十秒必须处于完整读取窗口内，歧义或未覆盖窗口不归并；delivery-echo 来源阻止归档重试复活回执重复行，原发送回执保留在投递日志中，不触发重发。
 
 `send_persistent_result` 的钉钉结果分类：
 
@@ -96,7 +97,7 @@ Stream 回调把认领的事件调度到后台后立即 ACK；ACK 不代表受�
 
 ## 8. 钉钉普通群文字的保守摄入
 
-- 仅对已登记且访问权 active、员工启用、精确连接仍有效并开启 adaptive 的群周期读取。使用员工自己的 OAuth；同 namespace、同授权账号摘要、同群合并读取，回复仍由路由中的应用机器人发回原群。
+- 员工用户授权成功后，宿主自动分批发现账号可见且当前员工机器人确实在内的群，核验后登记访问权，无需先 @ 建立记录；普通消息仍仅对访问权 active、员工启用、精确连接仍有效并开启 adaptive 的群周期读取。使用员工自己的 OAuth；同 namespace、同授权账号摘要、同群合并读取，回复仍由路由中的应用机器人发回原群。首次发现允许有界衔接发现期间的人类消息，最多最近五分钟且不早于本进程首次确认当前员工授权的时间；不重放授权前或重启前任务，机器人身份按已核验 sender 识别。群发现与状态边界见 [CLI 规约](S_06_employee-dingtalk-cli.md#3-生命周期)。English: Authorized employees discover bot-verified groups without a first mention. Discovery bridges at most five minutes of recent human messages, never before this process confirmed the current employee's OAuth. Verified bot messages cannot become human tasks.
 - 每次读取前核对实时群机器人列表的 robotCode。不能将 openBotId 当作 robotCode；机器人缺席时撤销相应缓存成员权并停止摄入。查询失败不能撤销权限或使用旧缓存继续读取。新机器人回调可恢复成员权和可见起点，旧回调不能推翻较新的离群证据。
 - 历史入口独立于机器人回调，不能凭用户能读群创建机器人群成员权。senderOpenDingTalkId 以 `dingtalk-open:` 命名空间保存，不进入 staffId-only 日历、群文件上传或 DOCX 编辑路径；受限员工白名单不能靠猜测身份映射绕过。
 - 已验证人类发送、正文不含 ASCII 或全角 @、创建时间晚于该次观察执行下限的新增文字，才复用既有 Session/Request/scheduler 参与判断。机器人消息、旧消息、含 @ 文字只归档；passive 不主动参与。此为文本保守过滤，不保证完整提及语义。

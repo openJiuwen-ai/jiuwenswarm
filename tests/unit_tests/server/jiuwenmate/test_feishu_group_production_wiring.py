@@ -8,14 +8,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+from e2a.agent_compat import e2a_to_agent_request
 from agent_gateway.channel_manager.persistent_events import FeishuInboundEvent as GatewayFeishuEvent, InboundDisposition as GatewayDisposition
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
 from agent_gateway.message_handler.message_handler import MessageHandler
+
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
     FeishuBinding,
     FeishuInboundEvent,
@@ -383,6 +383,19 @@ async def test_default_feishu_runtime_uses_one_owner_sqlite_store_and_closes_man
     await manager.aclose()
 
     assert (tmp_path / "jiuwenmate" / "agents.sqlite3").is_file()
+
+
+@pytest.mark.asyncio
+async def test_im_runtime_does_not_claim_web_scheduled_requests(tmp_path, monkeypatch):
+    _fanout, manager = create_default_persistent_group_fanout(tmp_path / "jiuwenmate")
+    sweep = AsyncMock(return_value=0)
+    monkeypatch.setattr(manager.schedules, "sweep", sweep)
+    try:
+        await manager.start()
+        await asyncio.sleep(0)
+        sweep.assert_not_awaited()
+    finally:
+        await manager.aclose()
 
 
 @pytest.mark.asyncio

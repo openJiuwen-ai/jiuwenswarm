@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 from jiuwenswarm.runtime.cron.cron_expr import normalize_cron_expr
-from jiuwenswarm.runtime.cron.store import CronJobStore, _PROACTIVE_TICK_MODE
+from jiuwenswarm.runtime.cron.store import CronJobStore
 from jiuwenswarm.runtime.cron.models import (
     CronJob,
     CronTargetChannel,
@@ -315,7 +315,7 @@ class CronTools:
         return bool(getattr(self._gateway_push, "supports_cron_command_ack", False))
 
     async def _send_split(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
-        from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_KIND_CRON
+        from e2a.constants import E2A_RESPONSE_KIND_CRON
 
         r = self._route()
         # ``send_push`` is delivered on a side channel.  The originating chat
@@ -541,18 +541,7 @@ class CronTools:
             result = await self._send("list", {})
             return list(result.get("data") or [])
         jobs = await self._view_jobs()
-        # 给受保护的 proactive.tick job 标记 protected，让 LLM 在批量操作时
-        # （如"删除所有定时任务"）能识别并优雅跳过，而不是删到一半才遇错。
-        out = []
-        for j in jobs:
-            d = j.to_dict()
-            if str(d.get("mode") or "").strip().lower() == _PROACTIVE_TICK_MODE:
-                d["protected"] = True
-                d["protected_reason"] = (
-                    "由主动推荐开关自动维护，不可删除/启停；如需关闭请到设置→主动推荐关闭开关。"
-                )
-            out.append(d)
-        return out
+        return [j.to_dict() for j in jobs]
 
     async def get_authoritative_job(self, job_id: str) -> Any:
         """Read the owner-scoped host store, never a snapshot or local projection."""
@@ -621,7 +610,12 @@ class CronTools:
             if inherited_model:
                 normalized["model_name"] = inherited_model
         model_name_raw = normalized.get("model_name")
-        if model_name_raw is not None and str(model_name_raw).strip():
+        if normalized.get("model_selection") is not None:
+            # Preserve stable identity; the name is compatibility/display data.
+            model_kw["model_selection"] = normalized["model_selection"]
+            if model_name_raw is not None and str(model_name_raw).strip():
+                model_kw["model_name"] = str(model_name_raw).strip()
+        elif model_name_raw is not None and str(model_name_raw).strip():
             model_kw["model_name"] = resolve_agent_cron_model(model_name_raw)
         # mcp：会话级 MCP 选择（backend 层已继承 chat-session 快照或显式传入），
         # 只做类型规范化（strip/去空/去重），不校验存在性——MCP 断连后 job 应降级运行。
@@ -715,7 +709,25 @@ class CronTools:
         if "mode" in normalized_patch:
             normalized_patch["mode"] = normalize_cron_job_mode(normalized_patch.get("mode"))
         if "model_name" in normalized_patch:
-            normalized_patch["model_name"] = resolve_agent_cron_model(normalized_patch.get("model_name"))
+            requested_model = str(normalized_patch.get("model_name") or "").strip()
+            normalized_patch["model_name"] = resolve_agent_cron_model(requested_model)
+            if "model_selection" not in normalized_patch:
+                from jiuwenswarm.enterprise import is_enterprise
+
+                if not is_enterprise():
+                    from jiuwenswarm.common.model_catalog import ModelCatalog
+
+                    matches = [
+                        model for model in ModelCatalog().list_public_models()
+                        if requested_model and requested_model in {model["model_name"], model["alias"]}
+                    ]
+                    if len(matches) > 1:
+                        raise ValueError("ambiguous model name; select a unique alias or model_selection")
+                    # Aliases can share a canonical name. Preserve the target ID
+                    # rather than letting an equal name retain the previous ID.
+                    normalized_patch["model_selection"] = (
+                        {"type": "model", "id": matches[0]["model_id"]} if matches else None
+                    )
         if "mcp" in normalized_patch:
             # 显式传 null/[] 归 None（清除选择）；元素不规范的非列表值同样归 None。
             normalized_patch["mcp"] = normalize_cron_job_mcp(normalized_patch.get("mcp"))
@@ -760,14 +772,8 @@ class CronTools:
         return result
 
     async def delete_job(self, job_id: str) -> Any:
-        # proactive.tick 保护：读只读视图拦截（与 toggle_job 一致），
-        # 避免把受保护的定时任务删除请求转发给 Gateway 后再报错。
         existing = await self._view_job(job_id)
         remote_gateway = self._uses_gateway_command_ack()
-        if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
-            raise RuntimeError(
-                "主动推荐定时任务由设置→主动推荐开关控制，不能删除；请到设置关闭开关。"
-            )
         if existing is None:
             if remote_gateway:
                 result = await self._send("delete", {"job_id": job_id})
@@ -792,14 +798,8 @@ class CronTools:
         return True
 
     async def toggle_job(self, job_id: str, enabled: bool) -> Any:
-        # proactive.tick job 的开关由 config 的 proactive_recommendation.enabled 驱动，
-        # 禁止手动 toggle——否则会与 config 开关不一致。引导用户去设置关开关。
         existing = await self._view_job(job_id)
         remote_gateway = self._uses_gateway_command_ack()
-        if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
-            raise RuntimeError(
-                "主动推荐定时任务由设置→主动推荐开关控制，不能手动启停；请到设置→主动推荐操作。"
-            )
         if existing is None:
             if remote_gateway:
                 return (await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})).get("data")

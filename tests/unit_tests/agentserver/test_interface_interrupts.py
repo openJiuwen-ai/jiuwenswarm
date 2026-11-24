@@ -9,15 +9,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+)
 
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface import (
     _is_ask_user_answer_resume,
     _should_record_user_history,
-)
-from jiuwenswarm.common.e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -587,11 +587,11 @@ async def test_deliver_control_input_binds_expert_packages_for_resume(
     """企业版续聊不走 process_message，仍要看到当次请求带上的专家包名单。"""
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setattr(
-        "jiuwenswarm.enterprise.capabilities.experts.allowlist._is_user_owned",
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages._is_user_owned",
         lambda kind, package_id: False,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.enterprise.capabilities.experts.allowlist._candidate_ids",
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages._candidate_ids",
         lambda kind, package_id: {package_id},
     )
     claw = _InterruptHarness()
@@ -599,7 +599,7 @@ async def test_deliver_control_input_binds_expert_packages_for_resume(
     seen: list[bool] = []
 
     async def _fake_stream_impl(_self, _request, _inputs):
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import allows
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import allows
 
         seen.append(allows("agent_template", "granted-expert"))
         yield AgentResponseChunk(

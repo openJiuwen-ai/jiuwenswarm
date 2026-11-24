@@ -487,7 +487,7 @@ class SessionAdapter(GatewayAdapter):
 
                         identity = request_identity(request)
                         owner = identity.user_id or str(request.user_id or "").strip()
-                        from jiuwenswarm.infrastructure.db.team_mysql_actor import (
+                        from jiuwenswarm.infrastructure.db.team_store_actor import (
                             run_team_store,
                         )
 

@@ -211,7 +211,7 @@ def test_windows_sdk_path_is_independent_of_application_layout(monkeypatch, tmp_
     from jiuwenswarm.common import utils
 
     monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
-    monkeypatch.setattr(runtime, "get_infra_data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: tmp_path / "data")
     for executable in (tmp_path / "app" / "workswarm.exe", tmp_path / "app" / "resources" / "backend" / "workswarm.exe"):
         monkeypatch.setattr(runtime.sys, "executable", str(executable))
         assert runtime.external_cli_site_packages("claude") == tmp_path / "data/runtime/external-cli/claude/site-packages"

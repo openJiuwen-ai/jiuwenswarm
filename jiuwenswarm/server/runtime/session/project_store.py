@@ -59,7 +59,7 @@ _LOCK_TIMEOUT_SEC = 10.0
 if sys.platform == "win32":
     import msvcrt
 
-    def _acquire(fd: int) -> None:
+    def _acquire(fd: int, *, blocking: bool) -> None:
         # LK_LOCK retries once a second: a millisecond metadata write in
         # another process can otherwise delay admission by a full second.
         deadline = time.monotonic() + _LOCK_TIMEOUT_SEC
@@ -72,6 +72,8 @@ if sys.platform == "win32":
 
                 if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
                     raise
+                if not blocking:
+                    raise BlockingIOError("resource file lock is busy") from exc
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise OSError("timeout acquiring resource file lock") from exc
@@ -86,13 +88,15 @@ if sys.platform == "win32":
 else:
     import fcntl
 
-    def _acquire(fd: int) -> None:
+    def _acquire(fd: int, *, blocking: bool) -> None:
         deadline = time.monotonic() + _LOCK_TIMEOUT_SEC
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return
             except BlockingIOError as exc:
+                if not blocking:
+                    raise
                 if time.monotonic() >= deadline:
                     # 保留原始 BlockingIOError 的调用栈,便于排查锁竞争来源
                     raise OSError("timeout acquiring projects.json lock") from exc
@@ -106,7 +110,7 @@ else:
 
 
 @contextmanager
-def file_lock(data_path: Path) -> Iterator[None]:
+def file_lock(data_path: Path, *, blocking: bool = True) -> Iterator[None]:
     """跨进程文件锁。锁文件为 ``<data_path>.lock``,与数据文件分离,
     因此数据文件的原子替换不会破坏锁。
     """
@@ -118,7 +122,7 @@ def file_lock(data_path: Path) -> Iterator[None]:
             f.write(b"\x00")
             f.flush()
         f.seek(0)
-        _acquire(f.fileno())
+        _acquire(f.fileno(), blocking=blocking)
         try:
             yield
         finally:

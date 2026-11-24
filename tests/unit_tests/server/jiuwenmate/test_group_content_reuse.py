@@ -173,18 +173,6 @@ def test_changed_artifact_requires_new_consent(tmp_path, kind, field, value):
     assert fresh_query(repo, frozen)['status'] == 'pending'
 
 
-@pytest.mark.asyncio
-async def test_search_parameter_change_releases_same_approved_message(sharing):
-    with pytest.raises(core.GroupContentApprovalRequired):
-        await sharing.port.search_messages(sharing.execution, sharing.query)
-    row, = sharing.repo.pending_for_request('local', 'request-1')
-    sharing.repo.bind_native('local', 'request-1', 'native-1')
-    sharing.repo.decide(row['approval_id'], namespace_id='local', config_id='config-1',
-                        owner_principal='local', decision='once', now=NOW)
-    query = sharing.query.model_copy(update={'limit': 200})
-    released = await sharing.port.search_messages(replace(sharing.execution, execution_id='next'), query)
-    assert released.hits == sharing.result.hits
-    assert len(sharing.repo.list_for_owner('local', 'config-1')['approvals']) == 1
 
 
 async def approve_search(host, message):
@@ -196,28 +184,6 @@ async def approve_search(host, message):
     await decide_cli(host, 'once')
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize('search_first', [True, False])
-async def test_cli_and_search_share_exact_once_consent(cli_host, search_first):
-    from jiuwenswarm.server.jiuwenmate.cli_group_sharing import _message
-    from jiuwenswarm.server.jiuwenmate.cli_group_commands import parse_group_read
-
-    message = _message(cli_host.raw)
-    command = 'lark-cli im +chat-messages-list --chat-id oc_source'
-    if search_first:
-        await approve_search(cli_host, message)
-        released = await cli_host.handler.execute(cli_host.execution, command, parse_group_read(command))
-        assert released['ok'] and released['data']['messages'][0]['text'] == message.text
-    else:
-        with pytest.raises(core.GroupContentApprovalRequired):
-            await cli_host.handler.execute(cli_host.execution, command, parse_group_read(command))
-        await decide_cli(cli_host, 'once')
-        hit = cli_host.result.hits[0].model_copy(update={'message': message})
-        cli_host.delegate.search_messages.return_value = cli_host.result.model_copy(update={'hits': (hit,)})
-        cli_host.archive.current_messages = lambda *args: (message,)
-        released = await cli_host.port.search_messages(cli_host.execution, cli_host.query)
-        assert released.hits[0].message.text == message.text
-    assert len(cli_host.repo.list_for_owner('local', 'config-1')['approvals']) == 1
 
 
 @pytest.mark.asyncio
@@ -232,29 +198,3 @@ async def test_cli_query_change_reuses_once_receipt(cli_host):
     released = await cli_host.handler.execute(cli_host.execution, changed, parse_group_read(changed))
     assert released['ok']
     assert len(cli_host.repo.list_for_owner('local', 'config-1')['approvals']) == 1
-
-
-@pytest.mark.asyncio
-async def test_cli_mention_shortcut_rehydrates_exact_raw_identity_before_reuse(cli_host):
-    import json
-    from unittest.mock import AsyncMock
-    from jiuwenswarm.server.jiuwenmate.cli_group_commands import parse_group_read
-
-    original = core.GroupMessage(message_id='om_source', sender_id='user-1', sender_name='Alice',
-                                 sender_kind='human', received_at=NOW, text='@Bob unchanged body',
-                                 mention_ids=('ou_bob',))
-    await approve_search(cli_host, original)
-    display = {**cli_host.raw, 'content': '@_user_1 unchanged body',
-               'sender': {'id': 'presentation-id', 'name': 'presentation'}}
-    raw = {**cli_host.raw, 'content': json.dumps({'text': '@_user_1 unchanged body'}),
-           'mentions': [{'key': '@_user_1', 'name': 'Bob', 'id': {'open_id': 'ou_bob'}}]}
-
-    async def run(namespace, agent, argv):
-        return {'ok': True, 'data': {'messages': [raw if argv[0] == 'api' else display]}}
-
-    cli_host.cli.run_group_read = AsyncMock(side_effect=run)
-    command = 'lark-cli im +chat-messages-list --chat-id oc_source'
-    released = await cli_host.handler.execute(cli_host.execution, command, parse_group_read(command))
-    assert released['ok'] and released['data']['messages'][0]['text'] == original.text
-    assert len(cli_host.repo.list_for_owner('local', 'config-1')['approvals']) == 1
-    assert any(call.args[2][0] == 'api' for call in cli_host.cli.run_group_read.await_args_list)

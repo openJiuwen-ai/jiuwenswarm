@@ -73,6 +73,7 @@ class EmployeePermissionRailFactory:
             workspace_root=workspace,
             sys_operation=sys_operation,
             auto_reviewer=reviewer,
+            swarmchat=str(getattr(execution, "source_ref", "")).startswith("swarmchat:"),
         )
 
 

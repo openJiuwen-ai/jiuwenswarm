@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { groupTimeline, groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
+import { filterGroupMembers, matchesMemberQuery, groupTimeline, groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
 import { parseChatRoute, chatRoutePath } from '../node_modules/.cache/group-chat/multi-session/routing/route.js';
 
 const message = (id, timestamp, content = id) => ({ message_id: id, timestamp, content });
@@ -74,6 +74,23 @@ test('display names are never used as core member identities', () => {
   assert.deepEqual(selectedMentions('@小九', [], [a, b]), []);
   assert.deepEqual(selectedMentions('@小九2', [a.member_name], [a]), []);
   assert.deepEqual(selectedMentions('@小九，请分析', [a.member_name], [a]), [a.member_name]);
+});
+
+test('group member search never matches internal member ids', () => {
+  const members = [
+    { kind: 'agent_group', id: 'team-ad', member_name: 'member-3ad9f1c2-77b4-4d0e-9f5a-1c2b3d4e5f60', display_name: '商业策划专家团' },
+    { kind: 'agent_group', id: 'team-ad-2', member_name: 'member-8b7fad21-5c6d-4e3f-a0b1-c2d3e4f5a6b7', display_name: '小红书爆款打造专家团' },
+    { kind: 'agent_template', id: 'expert-grace', member_name: 'member-11c3d5e7-9f20-4a6b-8c1d-2e3f4a5b6c7d', display_name: 'Grace' },
+  ];
+  // Regression for #6318: a query that only occurs inside member_name must not return any row.
+  assert.deepEqual(filterGroupMembers(members, 'ad'), []);
+  assert.deepEqual(filterGroupMembers(members, 'GRACE').map((member) => member.display_name), ['Grace']);
+  assert.deepEqual(filterGroupMembers(members, '专家团').map((member) => member.display_name),
+    ['商业策划专家团', '小红书爆款打造专家团']);
+  assert.deepEqual(filterGroupMembers(members, '   '), members);
+  assert.equal(matchesMemberQuery('Me', 'me'), true);
+  assert.equal(matchesMemberQuery('我', '  '), true);
+  assert.equal(matchesMemberQuery('Me', 'ad'), false);
 });
 
 test('group routes support refresh, IDs and existing chat routes', () => {
@@ -272,8 +289,11 @@ test('file rename and delete call the group file APIs with the attachment path',
 test('confirmed file changes update loaded messages and keep untouched records identical', () => {
   const kept = { id: 'kept', attachments: [{ name: 'b.md', path: '/b.md' }] };
   const records = [{ id: 'one', attachments: [{ name: 'a.md', path: '/a.md' }, { name: 'b.md', path: '/b.md' }] }, kept];
-  const renamed = updateAttachments(records, '/a.md', 'final.md');
+  records[0].attachments[0].download_url = '/old-download';
+  const renamed = updateAttachments(records, '/a.md', 'final.md', '/final.md');
   assert.deepEqual(renamed[0].attachments.map((file) => file.name), ['final.md', 'b.md']);
+  assert.equal(renamed[0].attachments[0].path, '/final.md');
+  assert.equal(renamed[0].attachments[0].download_url, undefined);
   assert.equal(renamed[1], kept);
   const removed = updateAttachments(records, '/b.md', null);
   assert.deepEqual(removed.map((record) => record.attachments.length), [1, 0]);
@@ -353,8 +373,9 @@ test('no child data does not create fake subtasks or show raw task text', () => 
   const html = renderToStaticMarkup(createElement(ExecutionCard, { execution: {
     ...execution('one', 1), task: '简短标题。PRIVATE_TASK_CONTENT', tasks: {},
   } }));
-  assert.match(html, /groupChat.noSubtasks/);
-  assert.doesNotMatch(html, /PRIVATE_TASK_CONTENT|data-testid="group-chat-subtask"/);
+  assert.match(html, /data-testid="group-chat-execution-summary"/);
+  assert.match(html, /data-testid="group-chat-execution-task" title="简短标题">简短标题</);
+  assert.doesNotMatch(html, /PRIVATE_TASK_CONTENT|data-testid="group-chat-subtask"|groupChat.noSubtasks/);
 });
 
 
@@ -390,18 +411,41 @@ test('single expert cards show execution status without subtask statistics', () 
   }
 });
 
-test('team and organization cards preserve subtask statistics and empty state', () => {
-  for (const execution_kind of ['team', 'organization']) {
-    const record = { ...execution('team', 1), execution_kind };
-    const empty = renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
-    assert.match(empty, /group-chat-task-counts/);
-    assert.match(empty, /groupChat.noSubtasks/);
-    const populated = renderToStaticMarkup(createElement(ExecutionCard, {
-      execution: { ...record, tasks: { research: 'completed' }, task_details: { research: { title: 'Research' } } },
-    }));
-    assert.match(populated, /data-testid="group-chat-subtask" data-variant="research"/);
-    assert.doesNotMatch(populated, /groupChat.noSubtasks/);
+test('a team without subtasks uses the single-row layout until its first subtask arrives', () => {
+  const brief = '杭州有哪些合适年轻人玩的地方。这是一个简单问答场景，不需要完整旅行规划链路';
+  const render = (status, tasks = {}) => renderToStaticMarkup(createElement(ExecutionCard, {
+    execution: { ...execution('team', 1, status), execution_kind: 'team', display_name: '旅行规划专家团',
+      task: brief, tasks, task_details: { research: { title: 'Research' } } },
+    result: status === 'completed' ? { message_id: 'final' } : undefined,
+  }));
+  for (const status of ['queued', 'running', 'completed', 'failed', 'cancelled']) {
+    const empty = render(status);
+    assert.match(empty, /data-testid="group-chat-execution-summary"/);
+    assert.match(empty, /旅行规划专家团/);
+    assert.match(empty, new RegExp(`data-testid="group-chat-execution-status" data-variant="${status}"`));
+    assert.doesNotMatch(empty, /group-chat-task-counts|group-chat-no-subtasks|groupChat.noSubtasks|groupChat.generatingTasks/);
+    // The delegation brief after the first sentence stays hidden, including on hover.
+    assert.doesNotMatch(empty, /简单问答场景/);
   }
+  assert.match(render('completed'), /href="#group-chat-message-final"/);
+  const populated = render('running', { research: 'in_progress' });
+  assert.match(populated, /group-chat-task-counts/);
+  assert.match(populated, /data-testid="group-chat-subtask" data-variant="research"/);
+  assert.doesNotMatch(populated, /group-chat-execution-summary|groupChat.noSubtasks/);
+});
+
+test('organization cards keep subtask statistics and their empty state', () => {
+  const record = { ...execution('org', 1), execution_kind: 'organization' };
+  const empty = renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
+  assert.match(empty, /group-chat-task-counts/);
+  assert.match(empty, /groupChat.noSubtasks/);
+  assert.match(empty, /groupChat.generatingTasks/);
+  assert.doesNotMatch(empty, /group-chat-execution-summary/);
+  const populated = renderToStaticMarkup(createElement(ExecutionCard, {
+    execution: { ...record, tasks: { research: 'completed' }, task_details: { research: { title: 'Research' } } },
+  }));
+  assert.match(populated, /data-testid="group-chat-subtask" data-variant="research"/);
+  assert.doesNotMatch(populated, /groupChat.noSubtasks/);
 });
 
 
@@ -418,16 +462,17 @@ test('pasted mentions resolve unique experts and teams without a picker selectio
 });
 
 
-test('new team cards show task generation and expose the full parent task name on hover', () => {
+test('new team cards expose the full parent task name on hover while waiting for subtasks', () => {
   const title = '按照已冻结的需求开发完整的房屋搭建装修小游戏';
   const render = (status, tasks = {}) => renderToStaticMarkup(createElement(ExecutionCard, {
     execution: { ...execution('new-team', 1, status), execution_kind: 'team', title, tasks },
   }));
   const initial = render('running');
-  assert.match(initial, /groupChat.generatingTasks/);
   assert.ok(initial.includes(`data-testid="group-chat-execution-title" title="${title}"`));
-  assert.doesNotMatch(render('completed'), /groupChat.generatingTasks/);
-  assert.doesNotMatch(render('failed'), /groupChat.generatingTasks/);
+  assert.match(initial, /data-testid="group-chat-execution-status" data-variant="running"/);
+  for (const status of ['running', 'completed', 'failed']) {
+    assert.doesNotMatch(render(status), /groupChat.generatingTasks/);
+  }
   assert.doesNotMatch(render('running', { child: 'in_progress' }), /groupChat.generatingTasks/);
 });
 
@@ -472,17 +517,31 @@ test('pending mention bubbles recover from unfinished executions after a refresh
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice', 'bob'])], [run('e1', 'alice', 2, 'running')], members, fresh,
   )), { m1: ['alice:e1'] });
-  // A finished execution or a member reply clears it; an old ask with no execution never reappears.
+  // A finished execution clears it; an old ask with no execution never reappears.
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice'])], [run('e1', 'alice', 2, 'completed')], members, fresh,
   )), {});
+  // The bubble follows the execution: a message the member posts while it runs does not clear it.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }],
+    [run('e1', 'alice', 2, 'running')], members, new Set(['client-m1']),
+  )), { m1: ['alice:e1'] });
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }],
     [run('e1', 'alice', 2, 'running')], members, fresh,
+  )), { m1: ['alice:e1'] });
+  // Without an execution the member answered directly, so its reply clears the bubble.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }], [], members, new Set(['client-m1']),
   )), {});
   // One execution belongs only to the latest ask before it, so older asks do not duplicate the bubble.
   assert.deepEqual(waiting(pendingMentionReplies(
     [ask('m1', 1000, ['alice']), ask('m2', 5000, ['alice'])], [run('e1', 'alice', 6, 'running')], members, fresh,
+  )), { m2: ['alice:e1'] });
+  // A newer execution must not revive an answered ask sent from the same page.
+  assert.deepEqual(waiting(pendingMentionReplies(
+    [ask('m1', 1000, ['alice']), { ...ask('r1', 3000, []), sender: 'alice' }, ask('m2', 5000, ['alice'])],
+    [run('e1', 'alice', 6, 'running')], members, new Set(['client-m1', 'client-m2']),
   )), { m2: ['alice:e1'] });
   // A message sent from this page waits even before its execution exists.
   assert.deepEqual(waiting(pendingMentionReplies(
@@ -524,4 +583,127 @@ test('the group chat model is selectable only before the chat starts', async () 
   assert.equal(groupModelLocked([], [{ execution_id: 'e1', status: 'running', created_at: 1 }], false), true);
   // Older pages not loaded yet still mean the chat has already run.
   assert.equal(groupModelLocked([], [], true), true);
+});
+
+test('organization mentions show only their owner and follow the exact request through completion', async () => {
+  const { pendingMentionReplies, mentionExecutionPhase } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const members = ['finance', 'ppt', 'ops'].map((member_name) => ({ member_name, kind: 'agent_group' }));
+  const ask = (id) => ({ message_id: id, client_message_id: id, sender: 'user', timestamp: 1000,
+    content: 'prepare report', mentions: ['finance', 'ppt', 'ops'] });
+  const run = { execution_id: 'org-run', execution_kind: 'organization', organization_plan_id: 'ask',
+    owner_member: 'finance', created_at: 0.5, status: 'running', tasks: {}, organization_stage: 'starting' };
+  const sent = new Set(['ask', 'next']);
+  const pending = (messages, executions, ids = sent) => pendingMentionReplies(messages, executions, members, ids);
+  const initial = pending([ask('ask')], []).get('ask');
+  assert.equal(initial.length, 1);
+  assert.equal(initial[0].memberName, 'finance');
+  assert.equal(initial[0].organization, true);
+  assert.equal(mentionExecutionPhase(undefined, true).key, 'organizationPending');
+  assert.equal(pending([{ ...ask('ask'), pending: true }], []).size, 0);
+  const refreshed = pending([ask('ask')], [run], new Set()).get('ask');
+  assert.equal(refreshed.length, 1);
+  assert.equal(refreshed[0].execution, run);
+  for (const organization_stage of ['starting', 'processing', 'executing', undefined]) {
+    assert.equal(mentionExecutionPhase({ ...run, organization_stage, progress: { completed: 0, total: 0 } }, true).key,
+      'organizationReceived');
+  }
+  assert.deepEqual(mentionExecutionPhase({ ...run, progress: { completed: 0, total: 3 } }, true),
+    { key: 'executing', completed: 0, total: 3 });
+  assert.deepEqual(mentionExecutionPhase({ ...run, progress: { completed: 1, total: 3 } }, true),
+    { key: 'executing', completed: 1, total: 3 });
+  assert.equal(mentionExecutionPhase({ ...run, organization_stage: 'summarizing' }, true).key, 'organizationSummarizing');
+  const next = pending([ask('ask'), ask('next')], [run]);
+  assert.equal(next.get('ask')[0].execution, run);
+  assert.equal(next.get('next')[0].execution, undefined);
+  for (const sender of ['finance', 'ppt']) {
+    assert.equal(pending([ask('ask'), { ...ask('reply'), sender, timestamp: 2000 }], [run]).get('ask').length, 1);
+  }
+  const result = { ...ask('result'), sender: 'finance', execution_id: run.execution_id, timestamp: 2000 };
+  assert.equal(pending([ask('ask'), result], [run]).size, 0);
+  for (const status of ['completed', 'failed', 'cancelled', 'interrupted', 'timed_out', 'stopped']) {
+    assert.equal(pending([ask('ask')], [{ ...run, status }]).size, 0);
+  }
+  assert.equal(pending([ask('ask')], [{ ...run, owner_member: 'ppt' }]).get('ask')[0].memberName, 'ppt');
+});
+
+test('single experts, single teams and mixed mentions keep their existing per-member bubbles', async () => {
+  const { pendingMentionReplies, mentionExecutionPhase } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const members = [{ member_name: 'expert', kind: 'agent_template' },
+    { member_name: 'finance', kind: 'agent_group' }, { member_name: 'ppt', kind: 'agent_group' }];
+  for (const mentions of [['expert'], ['finance'], ['expert', 'finance', 'ppt']]) {
+    const ask = { message_id: 'ask', client_message_id: 'ask', sender: 'user', timestamp: 1000, content: '', mentions };
+    const pending = pendingMentionReplies([ask], [], members, new Set(['ask'])).get('ask');
+    assert.deepEqual(pending.map((item) => item.memberName), mentions);
+    assert.ok(pending.every((item) => !item.organization));
+  }
+  assert.equal(mentionExecutionPhase(undefined).key, 'dispatching');
+  assert.equal(mentionExecutionPhase({ status: 'planning' }).key, 'planning');
+});
+
+test('owner routing restores pending chat and closes only its exact request after reply', async () => {
+  const { pendingMentionReplies, mentionExecutionPhase } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const members = ['owner', 'other'].map((member_name) => ({ member_name, kind: 'agent_group' }));
+  const ask = (id) => ({ ...message(id, 1000), client_message_id: id, sender: 'user', mentions: ['owner', 'other'] });
+  const routes = ['one', 'two'].map((plan_id) => ({ plan_id, owner_member: 'owner', members: ['owner', 'other'], status: 'pending' }));
+  const pending = (rs) => pendingMentionReplies([ask('one'), ask('two')], [], members, new Set(), rs);
+  assert.equal(pending(routes).size, 2);
+  assert.equal(pending(routes).get('one')[0].memberName, 'owner');
+  assert.equal(mentionExecutionPhase(undefined, true, routes[0]).key, 'organizationPending');
+  assert.equal(mentionExecutionPhase(undefined, true, { ...routes[0], status: 'clarification' }).key, 'organizationClarification');
+  assert.equal(mentionExecutionPhase(undefined, true, { ...routes[0], status: 'task' }).key, 'organizationReceived');
+  assert.equal(mentionExecutionPhase(undefined, true, { ...routes[0], status: 'failed' }).key, 'organizationFailed');
+  const finished = [{ ...routes[0], status: 'completed', reply_message_id: 'reply' }, routes[1]];
+  assert.deepEqual([...pending(finished).keys()], ['two']);
+  assert.equal(pending([{ ...routes[0], status: 'failed' }]).get('one')[0].route.status, 'failed');
+});
+
+
+test('organization expert boards are collapsed and keep top-level counts unchanged', () => {
+  const details = { chapter: { title: '商业评估', member_id: '商业策划专家团', expert_tasks: [
+    { task_id: 'research', title: '市场调研', assignee: 'market_analyst', status: 'in_progress' },
+    { task_id: 'risk', title: '风险评估', assignee: 'risk_expert', status: 'completed' },
+  ] } };
+  const record = { ...execution('nested', 1), execution_kind: 'organization',
+    tasks: { chapter: 'in_progress' }, task_details: details };
+  const html = renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
+  assert.match(html, /<details[^>]*data-testid="group-chat-expert-tasks"/);
+  assert.doesNotMatch(html, /<details[^>]*\bopen(?:=|\s|>)/);
+  assert.match(html, /<summary[^>]*data-testid="group-chat-expert-tasks-toggle"/);
+  assert.match(html, /市场调研/);
+  assert.match(html, /market_analyst/);
+  assert.match(html, /group-chat-expert-task-status[^>]*data-variant="in_progress"/);
+  assert.match(html, /group-chat-expert-task-status[^>]*data-variant="completed"/);
+  assert.match(html, /data-variant="total">groupChat.counts.total <b>1/);
+  for (const kind of ['agent', 'team']) {
+    const render = (task_details) => renderToStaticMarkup(createElement(ExecutionCard, {
+      execution: { ...record, execution_kind: kind, task_details },
+    }));
+    assert.equal(render(details), render({ chapter: { title: '商业评估', member_id: '商业策划专家团' } }));
+  }
+});
+
+
+test('empty and unavailable expert boards have distinct messages', () => {
+  const render = (detail) => renderToStaticMarkup(createElement(ExecutionCard, { execution: {
+    ...execution('nested', 1), execution_kind: 'organization', tasks: { chapter: 'in_progress' },
+    task_details: { chapter: detail },
+  } }));
+  assert.match(render({ expert_tasks: [] }), /group-chat-expert-tasks-empty/);
+  const unavailable = render({ expert_tasks: [], expert_tasks_unavailable: true });
+  assert.match(unavailable, /group-chat-expert-tasks-unavailable/);
+  assert.doesNotMatch(unavailable, /group-chat-expert-tasks-empty/);
+  assert.doesNotMatch(render({ title: 'Historical card' }), /group-chat-expert-tasks-toggle/);
+});
+
+test('only interrupted organization cards explain runtime loss', () => {
+  const render = (kind, status) => renderToStaticMarkup(createElement(ExecutionCard, { execution: {
+    execution_id: 'lost', execution_kind: kind, member_name: null, title: 'Task', task: 'Task',
+    status, error_code: 'ORGANIZATION_RUNTIME_LOST', tasks: { child: 'interrupted' },
+    task_details: { child: { title: 'Child', status: 'interrupted' } },
+  } }));
+  assert.match(render('organization', 'interrupted'), /group-chat-organization-interrupted/);
+  assert.doesNotMatch(render('organization', 'running'), /group-chat-organization-interrupted/);
+  for (const kind of ['team', 'agent']) {
+    assert.doesNotMatch(render(kind, 'interrupted'), /group-chat-organization-interrupted/);
+  }
 });
