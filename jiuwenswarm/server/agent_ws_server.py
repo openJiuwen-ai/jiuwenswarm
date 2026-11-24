@@ -4258,7 +4258,8 @@ class AgentWebSocketServer:
         ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
         """
         params = request.params if isinstance(request.params, dict) else {}
-        if params.get("intent", "cancel") == "cancel" and request.session_id:
+        session_cancel = params.get("intent", "cancel") == "cancel" and bool(request.session_id)
+        if session_cancel:
             # Colleague cancellation is additive: it must never block the existing
             # expert / organization stop below, and groups without colleagues skip it.
             try:
@@ -4275,9 +4276,26 @@ class AgentWebSocketServer:
                     "[AgentWebSocketServer] SwarmChat colleague stop failed; continuing group cancel: session=%s",
                     request.session_id, exc_info=True,
                 )
-        if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
+        organization_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
+        targeted_stop = not organization_stop and self._is_targeted_expert_cancel_request(request)
+        scoped_stop = organization_stop or targeted_stop or bool(str(params.get("target_request_id") or "").strip())
+        if session_cancel and not scoped_stop and not self._is_client_disconnect_cancel_request(request):
+            # Also additive: a whole-group stop withdraws judgements and notifications nobody consumed yet.
+            try:
+                from jiuwenswarm.server.runtime import group_auto_reply
+                from jiuwenswarm.server.runtime.group_service import read_group
+
+                group = read_group(request.session_id)
+                if group is not None:
+                    await group_auto_reply.stop(group)
+            except Exception:
+                logger.warning(
+                    "[AgentWebSocketServer] Group auto-reply stop failed; continuing group cancel: session=%s",
+                    request.session_id, exc_info=True,
+                )
+        if organization_stop:
             resp = await self._cancel_organization(request)
-        elif self._is_targeted_expert_cancel_request(request):
+        elif targeted_stop:
             resp = await self._cancel_targeted_expert(request)
         else:
             from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped

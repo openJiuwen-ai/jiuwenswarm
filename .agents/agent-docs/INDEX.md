@@ -14,6 +14,7 @@ generated: true
 
 | 模块 |
 |---|
+| [agent-core/openjiuwen/agent_teams](#module-agent-core-openjiuwen-agent_teams) |
 | [agent_gateway/channel_manager/im_platforms/xiaoyi](#module-agent_gateway-channel_manager-im_platforms-xiaoyi) |
 | [agent_gateway/message_handler](#module-agent_gateway-message_handler) |
 | [agent_teams](#module-agent_teams) |
@@ -83,6 +84,14 @@ generated: true
 | [tests/unit_tests/server](#module-tests-unit_tests-server) |
 | [tests/unit_tests/server/extensions](#module-tests-unit_tests-server-extensions) |
 | [未分类](#module-unclassified) |
+
+<a id="module-agent-core-openjiuwen-agent_teams"></a>
+
+## agent-core/openjiuwen/agent_teams
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | D | SwarmChat 群成员自动判断是否回复设计方案 | weichenhao | — |
 
 <a id="module-agent_gateway-channel_manager-im_platforms-xiaoyi"></a>
 
@@ -288,9 +297,11 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F-20261118-1150-team-document-memory](features/F_20261118_1150_team-document-memory.md) | F | Team 接入 Jiuwen 文档记忆 | Wang Tao | 无独立 D：依据 D-20261113-2017-jiuwen-memory-team-upgrade 及已确认的跨仓 Team 方案。 |
+| [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | D | SwarmChat 群成员自动判断是否回复设计方案 | weichenhao | — |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
+| [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
@@ -348,6 +359,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | D | SwarmChat 群成员自动判断是否回复设计方案 | weichenhao | — |
 | [SDD-0026](designs/proposals/SDD-0026-trajectory-observability-web-ui/design.md) | D | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | @alan_cheng | — |
 | [F_20261029_1757_mcp-app-agent-stack-refresh](features/F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 | [F_20261103_1106_app-market-containers-and-editing](features/app-market-implementation.md) | F | 应用市场浏览器容器与编辑会话 | default | 无独立 D：用户明确授权初步本地实现，无独立设计文档。 |
@@ -357,6 +369,7 @@ generated: true
 | [F_20261117_1730_diff-files-tool](features/F_20261117_1730_diff-files-tool.md) | F | 新增跨平台文件与文本结构化差异对比工具 (diff_files) | zhuxiangju | 无独立 D：新增基于标准库 difflib 的跨平台文件与文本差异比对工具 diff_files，无独立前置设计文档。 |
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261119_1039_app-hub](features/F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
+| [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [B_20261030_1250_org-snapshot-removes-mirrored-workers](bugfix/jiuwenswarm/channels/web/frontend/B_20261030_1250_org-snapshot-removes-mirrored-workers.md) | B | 组织 UI 快照投影整表覆盖导致镜像 workflow worker 从成员面板消失 | xiajing | 无独立 D：对既有"快照完整替换"契约（跨 Team 切换不串数据）的成员级例外修复，属 F_20261027_1026 特性线的验证期 bugfix，无独立设计文档。 |
 | [B_20261103_1112_raw-file-range-seek](bugfix/jiuwenswarm/channels/web/B_20261103_1112_raw-file-range-seek.md) | B | /file-api/raw-file 不支持 Range 请求导致 design 模式视频预览进度条不可快进 | openjiuwen_ai | 无独立 D：根因与修法均为标准 HTTP 单区间 Range 语义（对齐 gateway 既有 serve_file_chunks 实现），无独立设计。 |
 | [B_20261105_0941_app-stop-graceful-and-page-close](bugfix/jiuwenswarm/extensions/app_market/app-stop-graceful-and-page-close.md) | B | 应用市场停止强杀跳过应用清理与页面关闭无感知 | kdgmpw | 无独立 D：修复依据既有契约（app-builder SKILL.md 的"应用负责优雅退出和会话清理、市场只终止进程"与扩展 README 的运行描述），无独立 D；新增契约已固化为 specs/jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md。 |
@@ -369,6 +382,7 @@ generated: true
 | [B_20261117_1522_team-plan-toggle-lock](bugfix/jiuwenswarm/B_20261117_1522_team-plan-toggle-lock.md) | B | 集群会话计划模式开关是假开关：建队后冻结并让位动态工作流 | chenchunzhou | 无独立 D：由 issue 6361 现象逆向定位，无独立设计文档；方案与取舍记录在 OpenSpec 变更 issue-6361-team-plan-toggle-lock 的 proposal/design/specs，修复范围限定 Web 前端开关闸门与提示文案。 |
 | [B_20261118_1055_worker-close-after-final-error](bugfix/jiuwenswarm/channels/web/frontend/B_20261118_1055_worker-close-after-final-error.md) | B | 任务正常收尾后 worker 关闭被渲染为对话错误 | openjiuwen_ai | 无独立 D：只在 Web 前端区分「本轮已收尾」与「处理中失败」，不改 supervisor/gateway 的错误码与生命周期协议；无独立设计。 |
 | [B_20261118_1527_session-delete-plan-runtime](bugfix/jiuwenswarm/channels/web/frontend/B_20261118_1527_session-delete-plan-runtime.md) | B | 侧边栏删除会话漏清 planStore runtime，Plan 模式状态在内存永久残留 | gunner_beat | 无独立 D：会话生命周期清理的一致性补齐，复用 usePlanStore 既有 removeRuntime，无独立设计文档。缺陷检视清单 |
+| [B_20261119_1039_video-memory-submit-pending](bugfix/jiuwenswarm/channels/web/frontend/B_20261119_1039_video-memory-submit-pending.md) | B | 视频记忆任务 pending 导致提交工具持续执行中 | ToNy_St4rk | 无独立 D：现有工具结果状态的局部修复，无独立设计。 |
 | [B_20261119_1150_chat-terminal-reasoning-close](bugfix/jiuwenswarm/channels/web/frontend/B_20261119_1150_chat-terminal-reasoning-close.md) | B | 消息出错后思考段不收口，「思考中…」永久转圈直到下次发消息 | gunner_beat | 无独立 D：交互层缺陷修复，复用同文件 chat.processing_status(false) 分支已有的「终态兜底收口」口径（幂等空操作），无独立设计文档。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
@@ -643,7 +657,9 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | D | SwarmChat 群成员自动判断是否回复设计方案 | weichenhao | — |
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
+| [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 
 <a id="module-jiuwenswarm-server-runtime"></a>
@@ -653,9 +669,11 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) | D | NPC 主从会话与按需搜索工具 | kdgmpw | — |
+| [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | D | SwarmChat 群成员自动判断是否回复设计方案 | weichenhao | — |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
+| [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [B_20261110_1849_group-lock-cancellation](bugfix/jiuwenswarm/server/runtime/B_20261110_1849_group-lock-cancellation.md) | B | 群任务取消期间等待文件锁清理完成 | ShowHsiang | 无独立 D：修复现有群锁的取消清理契约，不新增管理器或调整任务并发策略。 |
 | [B_20261116_1701_my-plugin-installed-only](bugfix/jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
@@ -835,6 +853,7 @@ generated: true
 | [REGISTRY](designs/REGISTRY.md) | D | SDD 编号台账 (REGISTRY) | 待确认 | — |
 | [legacy-documents](designs/legacy-documents.md) | D | 旧格式设计资料 | 待确认 | — |
 | [migration-20261026](designs/migration-20261026.md) | D | 设计文档迁移与跨仓引用 | 待确认 | — |
+| [overview](designs/proposals/D-20261120-1701-swarmchat-auto-reply/assets/overview.md) | D | SwarmChat 群聊自动判断回复：方案说明 | weichenhao | — |
 | [team_expert_group_manifest_design](designs/archive/team_expert_group_manifest_design.md) | D | Team 模式接入专家团 Manifest 加载设计 | 待确认 | — |
 | [team_permission_design](designs/archive/team_permission_design.md) | D | Team 模式 Permissions 设计方案 | 待确认 | — |
 | [team_plan_design](designs/archive/team_plan_design.md) | D | Team Plan 模式设计文档 | 待确认 | — |

@@ -173,6 +173,7 @@ generated: true
 | [F_20261104_1225_npc-team-member-sessions](F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](../designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261117_1752_colleague-swarmchat](F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
+| [F_20261121_0906_swarmchat-auto-reply](F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](../designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 
 <a id="module-jiuwenswarm-channels-desktop"></a>
 
@@ -220,6 +221,7 @@ generated: true
 | [F_20261117_1730_diff-files-tool](F_20261117_1730_diff-files-tool.md) | F | 新增跨平台文件与文本结构化差异对比工具 (diff_files) | zhuxiangju | 无独立 D：新增基于标准库 difflib 的跨平台文件与文本差异比对工具 diff_files，无独立前置设计文档。 |
 | [F_20261117_1752_colleague-swarmchat](F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261119_1039_app-hub](F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
+| [F_20261121_0906_swarmchat-auto-reply](F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](../designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
 
@@ -371,6 +373,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261117_1752_colleague-swarmchat](F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
+| [F_20261121_0906_swarmchat-auto-reply](F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](../designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 
 <a id="module-jiuwenswarm-server-runtime"></a>
 
@@ -381,6 +384,7 @@ generated: true
 | [F_20261104_1225_npc-team-member-sessions](F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](../designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261117_1752_colleague-swarmchat](F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
+| [F_20261121_0906_swarmchat-auto-reply](F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](../designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 
 <a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 

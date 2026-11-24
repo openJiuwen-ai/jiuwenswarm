@@ -989,7 +989,6 @@
       "affinityCapability": "此服务支持 Ascend KV-Cache 算力亲和",
       "affinityCapabilityDescription": "仅适用于已适配 agent_hint 协议的自定义服务。此项是人工声明，普通连通性测试不验证亲和能力。",
       "affinityAutoDisabled": "模型配置已保存；控制模型不再支持算力亲和，已自动关闭。若提示需要重启，请重启后使用。",
-
       "customModels": "自定义模型",
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
@@ -7943,6 +7942,21 @@
       "in_progress": "执行中",
       "blocked": "等待中",
       "stopped": "已停止"
+    },
+    "autoReply": {
+      "title": "自动判断回复",
+      "hint": "消息没有 @ 任何成员时，由判断模型决定哪些成员需要回复。@ 成员的消息始终由被 @ 的成员回复。",
+      "model": "判断模型",
+      "sessionModel": "跟随群会话模型",
+      "unavailableModel": "已保存的模型不可用",
+      "modelHint": "选用响应快的小模型可以降低开销和等待时间。",
+      "pending": "正在判断由谁回复…",
+      "notified": "自动判断：已通知 {{names}} 回复",
+      "coordinated": "自动判断：已请 {{owner}} 协调 {{names}} 共同完成",
+      "separator": "、",
+      "none": "自动判断：无需成员回复",
+      "failed": "未能自动判断由谁回复，可 @ 成员",
+      "stopped": "已停止，未判断由谁回复"
     }
   },
   "webuiFileImport": {
