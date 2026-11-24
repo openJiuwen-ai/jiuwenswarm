@@ -60,6 +60,14 @@ _GROUP_PACKAGE_TYPE = "agent_group"
 _GROUP_TENANT_REQUIRED = "AGENT_GROUP_TENANT_REQUIRED"
 _GROUP_DUPLICATE = "AGENT_GROUP_DUPLICATE"
 
+# 包管理导入链路的本地冲突消息标记（_assert_package_id_available /
+# _assert_agent_group_name_available 口径），命中任一即收敛 ALREADY_EXISTS。
+_DUPLICATE_MESSAGE_MARKERS = (
+    "already exists in local",
+    "display name already exists",
+    "package conflict",
+)
+
 
 def _root_package_type(package_dir: Path) -> str:
     """读包根 manifest.json 的 package_type；缺失/损坏返回空串。"""
@@ -235,12 +243,8 @@ def _reraise_import_failure(exc: Exception) -> NoReturn:
     message = str(exc) or exc.__class__.__name__
     if "already exists in built_in" in message or "already exists in resources" in message:
         raise AssetError(AssetErrorCode.BUILTIN_READ_ONLY, message) from exc
-    if (
-        "already exists in local" in message
-        or "display name already exists" in message
-        or "package conflict" in message
-        or getattr(exc, "code", "") == _GROUP_DUPLICATE
-    ):
+    duplicated = any(marker in message for marker in _DUPLICATE_MESSAGE_MARKERS)
+    if duplicated or getattr(exc, "code", "") == _GROUP_DUPLICATE:
         raise AssetError(AssetErrorCode.ALREADY_EXISTS, message) from exc
     raise AssetError(AssetErrorCode.INVALID_PACKAGE, message) from exc
 
@@ -299,7 +303,8 @@ class AgentTemplateAdapter:
 
     kind = AssetKind.AGENT_TEMPLATE
 
-    def locate_export(self, local_id: str, version: str | None) -> ExportSource:
+    @staticmethod
+    def locate_export(local_id: str, version: str | None) -> ExportSource:
         package_id = _runtime_package_id(_TEMPLATE_PACKAGE_KIND, local_id)
         try:
             pkg_dir = package_manager.resolve_agent_template_dir(package_id)
@@ -320,10 +325,12 @@ class AgentTemplateAdapter:
             )
         return source
 
-    def sniff_package(self, package_dir: Path) -> bool:
+    @staticmethod
+    def sniff_package(package_dir: Path) -> bool:
         return _root_package_type(package_dir) == _TEMPLATE_PACKAGE_TYPE
 
-    def import_package(self, package_dir: Path) -> ImportOutcome:
+    @staticmethod
+    def import_package(package_dir: Path) -> ImportOutcome:
         manifest = _require_root_manifest(package_dir, _TEMPLATE_PACKAGE_TYPE, label="专家")
         _ensure_template_readme(package_dir, manifest)
         try:
@@ -342,7 +349,8 @@ class AgentGroupAdapter:
 
     kind = AssetKind.AGENT_GROUP
 
-    def locate_export(self, local_id: str, version: str | None) -> ExportSource:
+    @staticmethod
+    def locate_export(local_id: str, version: str | None) -> ExportSource:
         package_id = _runtime_package_id(_GROUP_PACKAGE_KIND, local_id)
         try:
             pkg_dir = package_manager.resolve_agent_group_publish_dir(package_id)
@@ -350,12 +358,14 @@ class AgentGroupAdapter:
             _raise_not_found(exc, local_id, label="专家团")
         return _export_source(pkg_dir, version, label="专家团")
 
-    def sniff_package(self, package_dir: Path) -> bool:
+    @staticmethod
+    def sniff_package(package_dir: Path) -> bool:
         # 只认包根标记：成员专家包的 manifest 位于 agents/<id>/ 下，
         # 不会落入本判定。
         return _root_package_type(package_dir) == _GROUP_PACKAGE_TYPE
 
-    def import_package(self, package_dir: Path) -> ImportOutcome:
+    @staticmethod
+    def import_package(package_dir: Path) -> ImportOutcome:
         manifest = _require_root_manifest(package_dir, _GROUP_PACKAGE_TYPE, label="专家团")
         raw_name = manifest.get("name")
         if not isinstance(raw_name, str) or not raw_name.strip():

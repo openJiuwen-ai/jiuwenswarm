@@ -564,14 +564,9 @@ def _extra_entry_name(root_name: str, rel: str) -> str:
     目录约束。
     """
     posix = PurePosixPath(rel) if isinstance(rel, str) else None
-    if (
-        posix is None
-        or not rel.strip()
-        or "\\" in rel
-        or posix.is_absolute()
-        or ".." in posix.parts
-        or posix.as_posix() != rel
-    ):
+    if posix is None or not rel.strip() or "\\" in rel:
+        raise ValueError(f"invalid extra file path: {rel!r}")
+    if posix.is_absolute() or ".." in posix.parts or posix.as_posix() != rel:
         raise ValueError(f"invalid extra file path: {rel!r}")
     return f"{root_name}/{posix.as_posix()}"
 
