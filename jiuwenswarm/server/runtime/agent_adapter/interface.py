@@ -3285,8 +3285,20 @@ class JiuWenSwarm:
             )
             adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(chat_request))
             inputs, _, _ = await self._build_inputs_async(chat_request)
+            # 静默流里的错误会被 finalize 的阶段错误覆盖（如"缺少 SKILL.md"），
+            # 保留首个 chat.error 原文，便于把真实原因透传给调用方。
+            stream_error = ""
             async for _chunk in adapter.process_message_stream_impl(chat_request, inputs):
-                pass
+                chunk_payload = getattr(_chunk, "payload", None)
+                if (
+                    not stream_error
+                    and isinstance(chunk_payload, dict)
+                    and chunk_payload.get("event_type") == "chat.error"
+                ):
+                    stream_error = str(chunk_payload.get("error") or "").strip()
+                    logger.error(
+                        "[JiuWenSwarm] 知识转技能静默流返回错误: %s", stream_error
+                    )
 
             after_names = set(self._skill_manager.list_installed_skill_dir_names())
             skip_names = {
@@ -3306,11 +3318,18 @@ class JiuWenSwarm:
                 for name in sorted(after_names - before_names)
                 if name not in skip_names
             ]
-            result = self._skill_manager.finalize_create_from_knowledge(
-                output_dir,
-                workspace_candidates=workspace_candidates,
-                existing_skill_names=before_names,
-            )
+            try:
+                result = self._skill_manager.finalize_create_from_knowledge(
+                    output_dir,
+                    workspace_candidates=workspace_candidates,
+                    existing_skill_names=before_names,
+                )
+            except SkillRpcError as exc:
+                if stream_error:
+                    raise SkillRpcError(
+                        exc.code, f"{exc.message} ({stream_error})"
+                    ) from exc
+                raise
             if result.get("success"):
                 await self._refresh_skill_rails_after_change()
             return result
