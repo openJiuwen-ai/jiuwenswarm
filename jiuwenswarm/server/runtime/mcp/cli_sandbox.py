@@ -256,11 +256,16 @@ def kill_process(pid: int) -> None:
     p = int(pid)
     run_in_sandbox(
         # TERM the session first so the login can flush credentials/log output,
-        # then escalate after a grace period. ``kill -- -PID`` targets the
-        # process group setsid created; ``2>/dev/null`` absorbs "no such
-        # process" when the group is already gone.
-        f"kill -TERM -- -{p} {p} 2>/dev/null; sleep 0.3; "
-        f"kill -KILL -- -{p} {p} 2>/dev/null; true"
+        # then escalate after a grace period. The negative operand targets the
+        # process group setsid created. Do not write the POSIX ``--`` delimiter
+        # here: dash's kill builtin (the /bin/sh some sandbox providers run
+        # commands with) rejects it, which would abort the whole command before
+        # any signal is sent and leave the login running. With the signal given
+        # as the first option, both bash and dash treat ``-PID`` as a pid.
+        # ``2>/dev/null`` absorbs "no such process" when the group is already
+        # gone.
+        f"kill -TERM -{p} {p} 2>/dev/null; sleep 0.3; "
+        f"kill -KILL -{p} {p} 2>/dev/null; true"
     )
 
 
