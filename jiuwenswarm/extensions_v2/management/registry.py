@@ -27,7 +27,7 @@ from openjiuwen.core.extension import (
     PackageResourceCleanup,
     Registry,
 )
-from openjiuwen.core.extension.data import JsonState, JsonStore
+from openjiuwen.core.extension.data import JsonState, JsonStore, StateDependencies
 from openjiuwen.core.extension.data.files import run_file_operation
 from openjiuwen.core.extension.errors import OperationError, operation_error
 from openjiuwen.core.extension.manifest import has_manifest, load_manifest
@@ -76,6 +76,7 @@ class ExtensionManager:
         self._lock_timeout = lock_timeout
         self._store = JsonStore(store_dir) if store_dir is not None else None
         self._states = JsonState(state_dir) if state_dir is not None else None
+        self._state_dependencies = StateDependencies() if self._states is not None else None
         self._registry = Registry()
         self._operation_lock = asyncio.Lock()
         self._bus: ExtensionEventBus | None = None
@@ -91,6 +92,18 @@ class ExtensionManager:
     @property
     def registry(self) -> Registry:
         return self._registry
+
+    @property
+    def state_store(self) -> JsonState | None:
+        """Return the host-owned state service used by package Ops."""
+
+        return self._states
+
+    @property
+    def state_dependencies(self) -> StateDependencies | None:
+        """Return the collector shared by Core state Ops and the WebUI host."""
+
+        return self._state_dependencies
 
     async def init(
         self,
@@ -117,6 +130,7 @@ class ExtensionManager:
                     host_handlers=host_handlers,
                     store=self._store,
                     states=self._states,
+                    state_dependencies=self._state_dependencies,
                     cleanup_callbacks=cleanup_callbacks,
                 )
                 await self._registry.open_install_dir(
