@@ -517,3 +517,150 @@ async def test_import_upload_returns_inventory_busy_and_preserves_zip_on_lock_ti
     assert result["detail_key"] == "skills.inventoryBusy"
     assert "inventory.lock" not in result["detail"]
     assert zip_path.is_file(), "Uploaded zip must be preserved for retry on SKILL_INVENTORY_BUSY"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_list_and_import_local_preserve_both_records_in_skills_state(
+    manager: SkillManager,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent skills.list discovery and skills.import_local must preserve both skills_state.json records."""
+    _install_slow_index_probe(monkeypatch, delay_seconds=0.1)
+
+    unmanaged = manager._skills_dir / "manual-concurrent"
+    unmanaged.mkdir(parents=True)
+    (unmanaged / "SKILL.md").write_text(_skill_md("manual-concurrent"), encoding="utf-8")
+
+    local_src = tmp_path / "imported-concurrent"
+    local_src.mkdir()
+    (local_src / "SKILL.md").write_text(_skill_md("imported-concurrent"), encoding="utf-8")
+
+    list_result, import_result = await asyncio.gather(
+        manager.handle_skills_list({}),
+        manager.handle_skills_import_local({"path": str(local_src), "force": False}),
+    )
+
+    assert import_result["success"] is True
+    assert any(s.get("name") == "manual-concurrent" for s in list_result["skills"])
+
+    persisted = json.loads(manager._state_file.read_text(encoding="utf-8"))
+    persisted_names = {item["name"] for item in persisted.get("local_skills", [])}
+    assert {"manual-concurrent", "imported-concurrent"}.issubset(persisted_names)
+
+
+@pytest.mark.asyncio
+async def test_skillpack_commit_cancellation_waits_before_deleting_staging(
+    tmp_path: Path,
+) -> None:
+    """Cancelling SkillPackInstaller.commit must not remove staging while the worker thread is still committing."""
+    workspace = tmp_path / "workspace"
+    manager = SkillManager(workspace_dir=str(workspace))
+    hub = HubFixture()
+    installer = SkillPackInstaller(
+        manager._skills_dir,
+        "https://localhost",
+        hub,
+        state_files=(manager._state_file, manager._agent_root / "agent-data.json"),
+        downloader=HubPackageDownloader(fetch_bytes=hub.fetch),
+        enabled_for=manager.get_skill_enabled,
+    )
+    artifact = hub.artifacts["release-pack"]
+    plan = await installer.prepare(artifact, hub.bodies[artifact.download_url])
+
+    started = threading.Event()
+    staging_alive_at_end: list[bool] = []
+
+    def _slow_on_committed(records: list[dict[str, Any]]) -> None:
+        started.set()
+        time.sleep(0.15)
+        staging_dirs = list(installer.work_dir.glob("skillpack-stage-*"))
+        staging_alive_at_end.append(bool(staging_dirs and staging_dirs[0].is_dir()))
+        manager._register_skillpack_install(records)
+
+    task = asyncio.create_task(
+        installer.commit(plan["plan_id"], on_committed=_slow_on_committed),
+    )
+    assert await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert staging_alive_at_end == [True]
+    assert list(installer.work_dir.glob("skillpack-stage-*")) == []
+
+
+@pytest.mark.asyncio
+async def test_create_from_knowledge_cancellation_waits_before_deleting_output_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling create_from_knowledge must wait for finalize worker thread before finally deletes output_dir."""
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    out_dir = tmp_path / "knowledge-cancel-out"
+    gen_dir = out_dir / "cancel-safe-skill"
+    gen_dir.mkdir(parents=True)
+    (gen_dir / "SKILL.md").write_text(_skill_md("cancel-safe-skill"), encoding="utf-8")
+
+    started = threading.Event()
+    output_alive_at_end: list[bool] = []
+    original_finalize = manager.finalize_create_from_knowledge
+
+    def _slow_finalize(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        started.set()
+        time.sleep(0.15)
+        output_alive_at_end.append(out_dir.is_dir())
+        return original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "finalize_create_from_knowledge", _slow_finalize)
+
+    class _FakeAdapter:
+        async def process_message_stream_impl(self, request: Any, inputs: Any):
+            _ = (request, inputs)
+            for _item in ():
+                yield _item
+
+    swarm = interface_module.JiuWenSwarm()
+    swarm._skill_manager = manager
+    swarm._refresh_skill_rails_after_change = AsyncMock()
+    swarm.create_instance = AsyncMock()
+    swarm._reload_team_skill_rails = AsyncMock()
+    monkeypatch.setattr(swarm, "_ensure_adapter", lambda **_kwargs: _FakeAdapter())
+    monkeypatch.setattr(
+        swarm,
+        "_build_inputs",
+        lambda request: ({"query": request.params.get("query")}, "disabled", ""),
+    )
+
+    async def _fake_prepare(params: dict[str, Any]) -> dict[str, Any]:
+        _ = params
+        return {
+            "success": True,
+            "result_type": "followup",
+            "followup_prompt": "generate skill",
+            "skills": ["skill-omni-creation"],
+            "output_dir": str(out_dir),
+            "trusted_dirs": [str(out_dir)],
+            "input_file": "",
+        }
+
+    monkeypatch.setattr(manager, "handle_skills_create_from_knowledge", _fake_prepare)
+
+    req = AgentRequest(
+        request_id="req-knowledge-cancel",
+        channel_id="web",
+        session_id="sess-knowledge-cancel",
+        req_method=ReqMethod.SKILLS_CREATE_FROM_KNOWLEDGE,
+        params={"link": "https://example.com/doc"},
+    )
+
+    task = asyncio.create_task(swarm._handle_skills_request(req))
+    assert await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert output_alive_at_end == [True]
+    assert not out_dir.exists()

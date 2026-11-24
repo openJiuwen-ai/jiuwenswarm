@@ -363,6 +363,20 @@ _REBUILD_JOBS_BY_ID: dict[str, dict[str, Any]] = {}
 _REBUILD_TASKS: dict[str, asyncio.Task[None]] = {}
 _REBUILD_FILE_LOCK = threading.Lock()
 _AGENT_DATA_WRITE_LOCK = threading.Lock()
+_LOCAL_STATE_LOCKS_GUARD = threading.Lock()
+_LOCAL_STATE_LOCKS: dict[str, threading.RLock] = {}
+_LOCAL_STATE_TX_DEPTH = threading.local()
+
+
+def _get_local_state_lock(state_file: Path) -> threading.RLock:
+    """Return a per-state-file reentrant lock for in-process SkillManager state mutations."""
+    key = str(state_file.resolve())
+    with _LOCAL_STATE_LOCKS_GUARD:
+        lock = _LOCAL_STATE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _LOCAL_STATE_LOCKS[key] = lock
+        return lock
 
 
 def note_rebuild_live(rebuild_id: str, live: bool) -> None:
@@ -4102,30 +4116,31 @@ class SkillManager:
                         else:
                             resolved_display_name = slug
 
-                        self._add_local_skill(
-                            {
-                                "name": skill_name,
-                                "display_name": resolved_display_name,
-                                "origin": (
-                                    f"clawhub:{owner_handle}/{slug}"
-                                    if owner_handle
-                                    else f"clawhub:{slug}"
-                                ),
-                                "source": "clawhub",
-                                "installed_at": datetime.now(timezone.utc).isoformat(),
-                            }
-                        )
-                        self._add_installed_plugin(
-                            {
-                                "name": skill_name,
-                                "display_name": resolved_display_name,
-                                "marketplace": "clawhub",
-                                "version": meta.get("version", ""),
-                                "commit": "",
-                                "source": "clawhub",
-                                "installed_at": datetime.now(timezone.utc).isoformat(),
-                            }
-                        )
+                        with self.state_transaction():
+                            self._add_local_skill(
+                                {
+                                    "name": skill_name,
+                                    "display_name": resolved_display_name,
+                                    "origin": (
+                                        f"clawhub:{owner_handle}/{slug}"
+                                        if owner_handle
+                                        else f"clawhub:{slug}"
+                                    ),
+                                    "source": "clawhub",
+                                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
+                            self._add_installed_plugin(
+                                {
+                                    "name": skill_name,
+                                    "display_name": resolved_display_name,
+                                    "marketplace": "clawhub",
+                                    "version": meta.get("version", ""),
+                                    "commit": "",
+                                    "source": "clawhub",
+                                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
                         self._refresh_agent_data_indexes()
                         _safe_rmtree(skill_dir)
                         return {
@@ -4860,6 +4875,7 @@ class SkillManager:
                     if use_custom_output
                     else self._skills_dir
                 )
+
                 def _commit_install() -> dict[str, Any]:
                     with inventory_mutex(install_root):
                         self.reload_state()
@@ -4945,25 +4961,26 @@ class SkillManager:
                             )
 
                         installed_at = datetime.now(timezone.utc).isoformat()
-                        self._add_local_skill(
-                            {
-                                "name": skill_name,
-                                "display_name": resolved_display_name,
-                                "origin": f"teamskillshub:{asset_id}",
-                                "source": "teamskillshub",
-                                "installed_at": installed_at,
-                            }
-                        )
-                        self._add_installed_plugin(
-                            {
-                                "name": skill_name,
-                                "display_name": resolved_display_name,
-                                "marketplace": "teamskillshub",
-                                "commit": "",
-                                "source": "teamskillshub",
-                                "installed_at": installed_at,
-                            }
-                        )
+                        with self.state_transaction():
+                            self._add_local_skill(
+                                {
+                                    "name": skill_name,
+                                    "display_name": resolved_display_name,
+                                    "origin": f"teamskillshub:{asset_id}",
+                                    "source": "teamskillshub",
+                                    "installed_at": installed_at,
+                                }
+                            )
+                            self._add_installed_plugin(
+                                {
+                                    "name": skill_name,
+                                    "display_name": resolved_display_name,
+                                    "marketplace": "teamskillshub",
+                                    "commit": "",
+                                    "source": "teamskillshub",
+                                    "installed_at": installed_at,
+                                }
+                            )
                         self._refresh_agent_data_indexes()
                         return {
                             "success": True,
@@ -5814,6 +5831,7 @@ class SkillManager:
             return {"success": False, "detail": f"未找到技能 {member_name} 的本地备份"}
 
         dest = pack_dir / member_name if is_skillpack(pack_dir) else container_members_root(pack_dir) / member_name
+
         def _restore_member_and_refresh() -> dict[str, Any] | None:
             try:
                 if _exists_long(dest):
@@ -5965,6 +5983,7 @@ class SkillManager:
                     ) from exc
             if not self._is_skill_package_file(src):
                 raise SkillRpcError(ERROR_SKILL_DOWNLOAD_TOKEN_INVALID, "令牌文件不是可识别的 .skill 或 Skill zip 包")
+
             def _extract_and_install_token() -> dict[str, Any]:
                 try:
                     skill_dir = self._extract_skill_package_file(src, tmp_path)
@@ -6773,18 +6792,27 @@ class SkillManager:
             # 清掉同名 local_skills，避免与安装账本双口径残留。
             self._remove_local_skill(skill_name)
         else:
-            record = {
-                "name": skill_name,
-                "origin": origin,
-                "source": (
-                    existing_record.get("source")
-                    if isinstance(existing_record, dict) and existing_record.get("source")
-                    else preserved_source
-                ),
-            }
-            if isinstance(existing_record, dict) and existing_record.get("display_name"):
-                record["display_name"] = existing_record.get("display_name")
-            self._add_local_skill(record)
+            with self.state_transaction():
+                existing_record = next(
+                    (
+                        s
+                        for s in self._state.get("local_skills", [])
+                        if isinstance(s, dict) and s.get("name") == skill_name
+                    ),
+                    None,
+                )
+                record = {
+                    "name": skill_name,
+                    "origin": origin,
+                    "source": (
+                        existing_record.get("source")
+                        if isinstance(existing_record, dict) and existing_record.get("source")
+                        else preserved_source
+                    ),
+                }
+                if isinstance(existing_record, dict) and existing_record.get("display_name"):
+                    record["display_name"] = existing_record.get("display_name")
+                self._add_local_skill(record)
         self._refresh_agent_data_indexes()
 
         skill_type = detect_skill_type(dest)
@@ -8636,8 +8664,12 @@ class SkillManager:
         except Exception:
             try:
                 _long_path(tmp_path).unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                logger.debug(
+                    "清理临时 agent-data 文件失败: path=%s error=%s",
+                    tmp_path,
+                    cleanup_exc,
+                )
             raise
 
     def _refresh_agent_data_indexes(self) -> None:
@@ -10593,7 +10625,8 @@ class SkillManager:
         refresh_skill_rails 调用本方法先重载再算 disabled_skills，确保磁盘最新值
         生效。
         """
-        self._state = self._load_state()
+        with _get_local_state_lock(self._state_file):
+            self._state = self._load_state()
 
     def skillpack_inventory_snapshot(self, *, lock_timeout: float = 0) -> dict[str, Any]:
         """Return current typed inventory for confirmed SkillPack routing."""
@@ -10657,27 +10690,29 @@ class SkillManager:
         return _is_dir_long(dest) and dest.resolve() == builtin_skill_path.resolve()
 
     def _add_installed_plugin(self, plugin: dict) -> None:
-        plugins = self._state.setdefault("installed_plugins", [])
-        plugin = self._normalize_plugin(plugin)
-        key = self._record_identity_key(plugin)
-        for i, p in enumerate(plugins):
-            if self._record_identity_key(p) == key:
-                plugins[i] = plugin
-                self._save_state()
-                return
-        plugins.append(plugin)
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            plugins = self._state.setdefault("installed_plugins", [])
+            plugin = self._normalize_plugin(plugin)
+            key = self._record_identity_key(plugin)
+            for i, p in enumerate(plugins):
+                if self._record_identity_key(p) == key:
+                    plugins[i] = plugin
+                    self._save_state()
+                    return
+            plugins.append(plugin)
+            self._save_state()
 
     def _remove_installed_plugin(self, name: str, origin: str | None = None) -> None:
-        plugins = self._state.get("installed_plugins", [])
-        if origin is not None:
-            self._state["installed_plugins"] = [
-                p for p in plugins
-                if not self._record_matches(p, name=name, origin=origin)
-            ]
-        else:
-            self._state["installed_plugins"] = [p for p in plugins if p.get("name") != name]
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            plugins = self._state.get("installed_plugins", [])
+            if origin is not None:
+                self._state["installed_plugins"] = [
+                    p for p in plugins
+                    if not self._record_matches(p, name=name, origin=origin)
+                ]
+            else:
+                self._state["installed_plugins"] = [p for p in plugins if p.get("name") != name]
+            self._save_state()
 
     def _set_plugin_enabled(self, name: str, enabled: bool, origin: str | None = None) -> bool:
         """设置插件的启用/禁用状态。传入 origin 时按来源精确匹配。"""
@@ -10708,26 +10743,28 @@ class SkillManager:
         return p
 
     def _add_local_skill(self, skill: dict) -> None:
-        local = self._state.setdefault("local_skills", [])
-        key = self._record_identity_key(skill)
-        for i, s in enumerate(local):
-            if self._record_identity_key(s) == key:
-                local[i] = skill
-                self._save_state()
-                return
-        local.append(skill)
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            local = self._state.setdefault("local_skills", [])
+            key = self._record_identity_key(skill)
+            for i, s in enumerate(local):
+                if self._record_identity_key(s) == key:
+                    local[i] = skill
+                    self._save_state()
+                    return
+            local.append(skill)
+            self._save_state()
 
     def _remove_local_skill(self, name: str, origin: str | None = None) -> None:
-        local = self._state.get("local_skills", [])
-        if origin is not None:
-            self._state["local_skills"] = [
-                s for s in local
-                if not self._record_matches(s, name=name, origin=origin)
-            ]
-        else:
-            self._state["local_skills"] = [s for s in local if s.get("name") != name]
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            local = self._state.get("local_skills", [])
+            if origin is not None:
+                self._state["local_skills"] = [
+                    s for s in local
+                    if not self._record_matches(s, name=name, origin=origin)
+                ]
+            else:
+                self._state["local_skills"] = [s for s in local if s.get("name") != name]
+            self._save_state()
 
     # -----------------------------------------------------------------------
     # ClawHub 相关方法
@@ -12948,7 +12985,23 @@ class SkillManager:
         instances yield immediately (no lock, no reload).
         """
         if not is_enterprise() or not self._persist_skills_state:
-            yield
+            with _get_local_state_lock(self._state_file):
+                depth_map: dict[str, int] = getattr(_LOCAL_STATE_TX_DEPTH, "depths", None)
+                if depth_map is None:
+                    depth_map = {}
+                    _LOCAL_STATE_TX_DEPTH.depths = depth_map
+                key = str(self._state_file.resolve())
+                depth = depth_map.get(key, 0)
+                depth_map[key] = depth + 1
+                try:
+                    if depth == 0 and self._persist_skills_state:
+                        self._state = self._load_state()
+                    yield
+                finally:
+                    if depth == 0:
+                        depth_map.pop(key, None)
+                    else:
+                        depth_map[key] = depth
             return
         with skill_state_lock(self._state_file) as outermost:
             if outermost:

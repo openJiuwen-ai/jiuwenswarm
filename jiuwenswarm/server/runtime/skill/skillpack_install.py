@@ -385,12 +385,25 @@ class SkillPackInstaller:
                     validate_ordinary_skill(source, record["name"])
                 record["content_sha256"] = compute_content_checksum(source)
                 _archive_install(source, staging / record["name"], record)
-            await asyncio.to_thread(
-                self._commit_staged_records,
-                records,
-                staging,
-                on_committed,
+            commit_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self._commit_staged_records,
+                    records,
+                    staging,
+                    on_committed,
+                )
             )
+            try:
+                await asyncio.shield(commit_task)
+            except asyncio.CancelledError:
+                try:
+                    await commit_task
+                except Exception as exc:
+                    logger.warning(
+                        "skillpack.install.commit failed during cancellation: %s",
+                        exc,
+                    )
+                raise
         shutil.rmtree(directory)
         logger.info("skillpack.install.committed plan=%s member_count=%d", token, len(records) - 1)
         return {"success": True, "skill": {"name": pack["name"], "skill_type": "skillpack"}}
