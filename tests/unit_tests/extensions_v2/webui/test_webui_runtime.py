@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
-from openjiuwen.core.events import ExtensionEventBus
+from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
 
 from jiuwenswarm.extensions_v2.event_types.context_usage import register_context_usage_events
 from jiuwenswarm.extensions_v2.management import ExtensionManager
@@ -17,10 +18,49 @@ from jiuwenswarm.extensions_v2.webui.models import (
 )
 from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry
 from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
+from tests.unit_tests.extensions_v2.management.support import write_package
 
 SLOT = "conversation.input.below"
 PACKAGE = "webui.token-weather-glass"
 INSTANCE = "token-weather.summary"
+
+STATEFUL_EXTENSION = '''\
+from dataclasses import replace
+
+from openjiuwen.core.events import Event
+from openjiuwen.core.extension.data import StateRef
+
+from jiuwenswarm.extensions_v2.webui.models import RenderNode
+
+
+PACKAGE_ID = "webui.state-refresh"
+
+
+class Extension:
+    def register(self, registrar):
+        registrar.register_event_handler(
+            "ui.render", self.render, {"target.package_id": PACKAGE_ID},
+        )
+        registrar.register_event_handler("test.event", self.update, {})
+
+    async def render(self, event, ops, next_handler):
+        ref = StateRef(PACKAGE_ID, event.event_input.target.instance_key)
+        snapshot = await ops.state.get(ref)
+        value = snapshot.value if snapshot.exists else 0
+        request = replace(event.event_input, root=RenderNode("Text", {"value": str(value)}))
+        return await next_handler(Event(event.event_type, request))
+
+    async def update(self, event, ops, next_handler):
+        await ops.state.set(
+            StateRef(PACKAGE_ID, event.event_input["key"]),
+            event.event_input["value"],
+        )
+        return await next_handler(event)
+
+
+def create_extension():
+    return Extension()
+'''
 
 
 class FakeTransport:
@@ -47,9 +87,33 @@ class FakeTransport:
         return True
 
 
+class DelayedTransport(FakeTransport):
+    def __init__(self, blocked_instance: str) -> None:
+        super().__init__()
+        self.blocked_instance = blocked_instance
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def send_frame(self, frame) -> bool:
+        if frame.target.instance_key == self.blocked_instance and not self.entered.is_set():
+            self.entered.set()
+            await self.release.wait()
+        return await super().send_frame(frame)
+
+
 async def _runtime(tmp_path: Path, transport: FakeTransport, registry=None) -> tuple[WebUIRuntime, ExtensionManager]:
     bus = ExtensionEventBus()
-    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
+
+    async def test_core(event, ops, next_handler):
+        del ops, next_handler
+        return event.event_input
+
+    bus.register_event_type("test.event", lambda event_input, pattern: not pattern, test_core)
+    manager = ExtensionManager(
+        tmp_path / "store",
+        report_path=tmp_path / "report.yaml",
+        state_dir=tmp_path / "state",
+    )
     runtime = WebUIRuntime(
         bus=bus,
         transport=transport,
@@ -66,7 +130,18 @@ async def _runtime(tmp_path: Path, transport: FakeTransport, registry=None) -> t
         host_event_types=host_event_types,
         host_handlers=runtime.register_handlers,
     )
+    assert manager.state_store is not None
+    assert manager.state_dependencies is not None
+    runtime.bind_state(manager.state_store, manager.state_dependencies)
     return runtime, manager
+
+
+async def _wait_for_frames(transport: FakeTransport, count: int) -> None:
+    for _ in range(100):
+        if len(transport.frames) >= count:
+            return
+        await asyncio.sleep(0.01)
+    assert len(transport.frames) >= count
 
 
 @pytest.mark.asyncio
@@ -170,3 +245,123 @@ async def test_eviction_happens_after_the_new_frame_is_delivered(tmp_path: Path)
     assert runtime.registry.get(first) is None
     assert runtime.registry.get(second) is not None
     assert [frame.target.key for frame in transport.clears] == [first.key]
+
+
+@pytest.mark.asyncio
+async def test_state_set_rebuilds_the_delivered_dependent_target(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    runtime, manager = await _runtime(tmp_path, transport)
+    package = write_package(
+        tmp_path / "source",
+        package_id="webui.state-refresh",
+        module_source=STATEFUL_EXTENSION,
+    )
+    assert (await manager.install([package]))[0].status == "SUCCESS"
+    target = RenderTarget("session-1", SLOT, "webui.state-refresh", "panel")
+
+    try:
+        delivered = await runtime.render(
+            UiRenderInput(target=target, root=RenderNode("Text", {"value": "placeholder"})),
+            SessionContext("session-1"),
+        )
+        assert delivered is not None and delivered.status is RenderStatus.DELIVERED
+        assert transport.frames[-1].root.props["value"] == "0"
+
+        await runtime.bus.trigger(
+            Event("test.event", {"key": "panel", "value": 7}),
+            SessionContext("session-1"),
+        )
+        await _wait_for_frames(transport, 2)
+
+        assert transport.frames[-1].target.key == target.key
+        assert transport.frames[-1].root.props["value"] == "7"
+        assert transport.frames[-1].revision == 2
+    finally:
+        await runtime.shutdown()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cleared_target_no_longer_refreshes_after_state_changes(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    runtime, manager = await _runtime(tmp_path, transport)
+    package = write_package(
+        tmp_path / "source",
+        package_id="webui.state-refresh",
+        module_source=STATEFUL_EXTENSION,
+    )
+    assert (await manager.install([package]))[0].status == "SUCCESS"
+    target = RenderTarget("session-1", SLOT, "webui.state-refresh", "panel")
+
+    try:
+        await runtime.render(
+            UiRenderInput(target=target, root=RenderNode("Text", {"value": "placeholder"})),
+            SessionContext("session-1"),
+        )
+        await runtime.render(UiRenderInput(target=target, mode=RenderMode.CLEAR), SessionContext("session-1"))
+        frame_count = len(transport.frames)
+
+        await runtime.bus.trigger(
+            Event("test.event", {"key": "panel", "value": 9}),
+            SessionContext("session-1"),
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert len(transport.frames) == frame_count
+        assert runtime.registry.get(target) is None
+    finally:
+        await runtime.shutdown()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_render_delivery_keeps_state_dependencies_per_target(tmp_path: Path) -> None:
+    transport = DelayedTransport("left")
+    runtime, manager = await _runtime(tmp_path, transport)
+    package = write_package(
+        tmp_path / "source",
+        package_id="webui.state-refresh",
+        module_source=STATEFUL_EXTENSION,
+    )
+    assert (await manager.install([package]))[0].status == "SUCCESS"
+    left = RenderTarget("session-1", SLOT, "webui.state-refresh", "left")
+    right = RenderTarget("session-1", SLOT, "webui.state-refresh", "right")
+    context = SessionContext("session-1")
+    left_render = asyncio.create_task(
+        runtime.render(UiRenderInput(left, root=RenderNode("Text", {"value": "left"})), context)
+    )
+
+    try:
+        await asyncio.wait_for(transport.entered.wait(), 2)
+        right_output = await runtime.render(
+            UiRenderInput(right, root=RenderNode("Text", {"value": "right"})),
+            context,
+        )
+        transport.release.set()
+        left_output = await left_render
+        assert right_output is not None and right_output.status is RenderStatus.DELIVERED
+        assert left_output is not None and left_output.status is RenderStatus.DELIVERED
+
+        transport.frames.clear()
+        await runtime.bus.trigger(
+            Event("test.event", {"key": "left", "value": 11}),
+            context,
+        )
+        await _wait_for_frames(transport, 1)
+        assert transport.frames[-1].target.key == left.key
+        assert transport.frames[-1].root.props["value"] == "11"
+
+        transport.frames.clear()
+        await runtime.bus.trigger(
+            Event("test.event", {"key": "right", "value": 22}),
+            context,
+        )
+        await _wait_for_frames(transport, 1)
+        assert transport.frames[-1].target.key == right.key
+        assert transport.frames[-1].root.props["value"] == "22"
+    finally:
+        transport.release.set()
+        await asyncio.gather(left_render, return_exceptions=True)
+        await runtime.shutdown()
+        await manager.shutdown()
