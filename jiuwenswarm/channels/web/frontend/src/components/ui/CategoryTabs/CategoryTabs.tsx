@@ -9,6 +9,7 @@ import './CategoryTabs.css';
 export interface CategoryTabsOption<T extends string = string> {
   value: T;
   label: ReactNode;
+  testId?: string;
 }
 
 export interface CategoryTabsProps<T extends string = string> {
@@ -54,7 +55,7 @@ export function CategoryTabs<T extends string = string>({ items, value, onChange
             <button
               type="button"
               onClick={() => onChange(item.value)}
-              data-testid={itemTestId}
+              data-testid={item.testId ?? itemTestId}
               data-variant={item.value}
               className={`whitespace-nowrap ${
                 value === item.value

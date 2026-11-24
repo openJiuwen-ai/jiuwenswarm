@@ -61,9 +61,9 @@ Choose **Convert to Local App** on an installed Hub app to edit, run, or publish
 
 The publish drawer previews the app icon, name, version, and description. App Market reports actions such as stopping or deleting an app in the upper-right corner, keeping the card list in place.
 
-在详情页删除或卸载成功后会返回全部应用。从详情页选择重新安装会进入应用广场。详情页会显示更新进度，并提供取消入口。
+应用市场默认打开「我的应用」。点击运行中的应用卡片可打开应用，从卡片菜单可查看详情。在详情页删除或卸载成功后会返回「我的应用」。从详情页选择重新安装会进入「应用广场」。详情页会显示更新进度，并提供取消入口。
 
-After deleting or uninstalling an app from its detail page, App Market returns to All Apps. Choosing **Reinstall** opens App Plaza. The detail page shows update progress and lets you cancel the update.
+App Market opens to **My Apps** by default. Click a running app's card to open the app, or choose **View details** from the card menu. Deleting or uninstalling an app from its detail page returns you to **My Apps**. Choosing **Reinstall** opens **App Plaza**. The detail page shows update progress and lets you cancel the update.
 
 更新前，应用绑定的所有编辑会话都必须空闲。更新只替换程序文件和版本、名称、简介、图标等描述字段，保留 `app_id`、市场登记、pin 状态、创建时间、项目与编辑会话绑定。更新时会备份完整的旧工作目录，成功提示会显示备份位置。安装目录内的 `data/` 和 Git 仓库会复制到新版本。Hub 随包服务脚本仅继承启动所需的系统环境变量，默认在 WebChannel 绑定回环地址的部署开启。共享部署可设 `APP_MARKET_ALLOW_HUB_CODE=0`，受信部署可设为 `1`。
 
