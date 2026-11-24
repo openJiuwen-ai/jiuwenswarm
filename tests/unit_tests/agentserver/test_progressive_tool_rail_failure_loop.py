@@ -66,6 +66,14 @@ def _fake_ctx(tool_name: str, arguments: dict, tool_result: object):
     return _FakeContext()
 
 
+def _rail(enabled: bool = True, threshold: int = 3) -> ProgressiveToolRail:
+    """Build a rail with the failure-loop policy pinned (no host get_config())."""
+    rail = _rail()
+    rail._failure_loop_enabled = enabled
+    rail._failure_loop_threshold = threshold
+    return rail
+
+
 def _invoke_arguments(target: str = "open_pptx", **inner) -> dict:
     return {"tool_name": target, "arguments": inner}
 
@@ -75,7 +83,7 @@ async def test_inner_error_payload_is_reported_as_failure():
     """An MCP result whose text carries {"error": ...} must not be success."""
     card = _card()
     target = SimpleNamespace(invoke=AsyncMock(return_value=_inner_error()))
-    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
+    rail = _rail()
     rail._cached_deferred_tool_infos = [card]
 
     with patch.object(
@@ -96,7 +104,7 @@ async def test_inner_error_payload_is_reported_as_failure():
 @pytest.mark.asyncio
 async def test_repeated_identical_tool_failures_force_finish():
     """Same target + args + error three times stops the round with an answer."""
-    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
+    rail = _rail()
     ctx = _fake_ctx(
         "invoke_tool",
         _invoke_arguments("open_pptx", requestId="copy_002"),
@@ -118,7 +126,7 @@ async def test_repeated_identical_tool_failures_force_finish():
 @pytest.mark.asyncio
 async def test_false_success_wrapper_still_counts_as_failure():
     """Defensive: even an un-normalized success:True wrapper is unwrapped."""
-    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
+    rail = _rail()
     ctx = _fake_ctx(
         "invoke_tool",
         _invoke_arguments("switch_file", requestId="switch_001"),
@@ -135,7 +143,7 @@ async def test_false_success_wrapper_still_counts_as_failure():
 @pytest.mark.asyncio
 async def test_different_errors_do_not_trip():
     """A different error text is new information, not a stuck loop."""
-    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
+    rail = _rail()
     ctx = _fake_ctx("invoke_tool", _invoke_arguments("open_pptx", requestId="copy_002"), None)
 
     for message in ("first failure", "second failure", "third failure"):
@@ -151,7 +159,7 @@ async def test_different_errors_do_not_trip():
 @pytest.mark.asyncio
 async def test_success_resets_the_streak():
     """A successful call with the same arguments clears the counter."""
-    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
+    rail = _rail()
     ctx = _fake_ctx("invoke_tool", _invoke_arguments("open_pptx", requestId="copy_002"), None)
     failure = {"status": "error", "success": False, "error_message": "same error"}
     success = {"status": "success", "success": True, "data": {"ok": True}}
@@ -165,7 +173,7 @@ async def test_success_resets_the_streak():
 @pytest.mark.asyncio
 async def test_direct_tool_failures_are_counted_by_tool_name():
     """Direct (non invoke_tool) calls use their own name in the key."""
-    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
+    rail = _rail()
     ctx = _fake_ctx("open_pptx", {"workingPath": "D:/x.pptx", "requestId": "copy_002"}, None)
     ctx.inputs.tool_result = {
         "status": "error",
@@ -178,3 +186,86 @@ async def test_direct_tool_failures_are_counted_by_tool_name():
 
     assert len(ctx.force_finish_calls) == 1
     assert "open_pptx" in ctx.force_finish_calls[0]["output"]
+
+
+@pytest.mark.asyncio
+async def test_success_payload_is_not_treated_as_failure():
+    """A successful MCP result nested under ``result`` must not trip the guard."""
+    rail = _rail()
+    ctx = _fake_ctx("invoke_tool", _invoke_arguments("open_pptx", requestId="copy_002"), None)
+    ctx.inputs.tool_result = {
+        "success": True,
+        "tool_name": "open_pptx",
+        "result": {"result": json.dumps({"status": "ready", "documentId": "doc-1"})},
+    }
+
+    for _ in range(5):
+        await rail.after_tool_call(ctx)
+
+    assert ctx.force_finish_calls == []
+
+
+@pytest.mark.asyncio
+async def test_disabled_guard_does_not_trip():
+    """``enabled: false`` keeps the loop running (explicit opt-out)."""
+    rail = _rail(enabled=False)
+    ctx = _fake_ctx("invoke_tool", _invoke_arguments("open_pptx", requestId="copy_002"), None)
+    ctx.inputs.tool_result = {
+        "status": "error",
+        "success": False,
+        "error_message": "same error",
+    }
+
+    for _ in range(5):
+        await rail.after_tool_call(ctx)
+
+    assert ctx.force_finish_calls == []
+
+
+@pytest.mark.asyncio
+async def test_errors_sharing_display_prefix_are_distinguished():
+    """Errors that differ only beyond 300 chars are still different errors."""
+    rail = _rail(threshold=3)
+    ctx = _fake_ctx("invoke_tool", _invoke_arguments("open_pptx", requestId="copy_002"), None)
+    prefix = "x" * 350
+
+    for message in (prefix + "A", prefix + "B", prefix + "A", prefix + "B", prefix + "A"):
+        ctx.inputs.tool_result = {
+            "status": "error",
+            "success": False,
+            "error_message": message,
+        }
+        await rail.after_tool_call(ctx)
+        assert ctx.force_finish_calls == []
+
+
+@pytest.mark.asyncio
+async def test_guard_exception_does_not_skip_deepresearch_release():
+    """The observation-only guard must never block tool lifecycle cleanup."""
+    from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
+        _EAGER_DEEPRESEARCH_BINDINGS_KEY,
+    )
+
+    rail = _rail()
+    ctx = _fake_ctx(
+        "deepresearch_execute",
+        {"query": "x"},
+        {"status": "success", "success": True},
+    )
+    released = []
+
+    class _Manager:
+        def __exit__(self, *_args):
+            released.append(True)
+            return False
+
+    ctx.extra[_EAGER_DEEPRESEARCH_BINDINGS_KEY] = {"call_1": _Manager()}
+
+    with patch(
+        "jiuwenswarm.agents.harness.common.rails.progressive_tool_rail._unwrap_tool_failure",
+        side_effect=RuntimeError("boom"),
+    ):
+        await rail.after_tool_call(ctx)
+
+    assert released == [True]
+    assert ctx.force_finish_calls == []

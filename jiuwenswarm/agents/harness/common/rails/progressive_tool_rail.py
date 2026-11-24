@@ -17,6 +17,7 @@ Fixed schema maximizes LLM prefix caching while keeping rarely used tools reacha
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -180,11 +181,28 @@ def _read_failure_loop_config() -> tuple[bool, int]:
         try:
             threshold = int(policy.get("threshold", _DEFAULT_FAILURE_LOOP_THRESHOLD))
         except (TypeError, ValueError):
+            logger.warning(
+                "%s invalid tool_failure_loop.threshold=%r; using default %s",
+                _LOG_PREFIX,
+                policy.get("threshold"),
+                _DEFAULT_FAILURE_LOOP_THRESHOLD,
+            )
             threshold = _DEFAULT_FAILURE_LOOP_THRESHOLD
         if threshold < 2:
+            logger.warning(
+                "%s tool_failure_loop.threshold=%s is below 2; using default %s",
+                _LOG_PREFIX,
+                threshold,
+                _DEFAULT_FAILURE_LOOP_THRESHOLD,
+            )
             threshold = _DEFAULT_FAILURE_LOOP_THRESHOLD
         return enabled, threshold
     except Exception:
+        logger.warning(
+            "%s tool_failure_loop config unreadable; using defaults",
+            _LOG_PREFIX,
+            exc_info=True,
+        )
         return True, _DEFAULT_FAILURE_LOOP_THRESHOLD
 
 
@@ -798,8 +816,12 @@ class ProgressiveToolRail(DeepAgentRail):
         bindings[tool_call_id] = manager
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
-        """Stop identical failure loops, then release DeepResearch bindings."""
-        await self._stop_repeated_tool_failure(ctx)
+        """Release DeepResearch bindings, then stop identical failure loops.
+
+        The failure-loop guard is observation-only and must never block the
+        cleanup below (or the tool lifecycle): it runs after the release and
+        swallows its own exceptions.
+        """
         inputs = getattr(ctx, "inputs", None)
         tool_call = getattr(inputs, "tool_call", None)
         tool_name = str(
@@ -807,15 +829,15 @@ class ProgressiveToolRail(DeepAgentRail):
             or getattr(tool_call, "name", "")
             or ""
         ).strip()
-        if tool_name not in {"deepresearch_execute", "deepresearch_stream"}:
-            return
-        tool_call_id = str(getattr(tool_call, "id", "") or id(inputs))
-        bindings = ctx.extra.get(_EAGER_DEEPRESEARCH_BINDINGS_KEY, {})
-        manager = bindings.pop(tool_call_id, None) if isinstance(bindings, dict) else None
-        if not bindings:
-            ctx.extra.pop(_EAGER_DEEPRESEARCH_BINDINGS_KEY, None)
-        if manager is not None:
-            manager.__exit__(None, None, None)
+        if tool_name in {"deepresearch_execute", "deepresearch_stream"}:
+            tool_call_id = str(getattr(tool_call, "id", "") or id(inputs))
+            bindings = ctx.extra.get(_EAGER_DEEPRESEARCH_BINDINGS_KEY, {})
+            manager = bindings.pop(tool_call_id, None) if isinstance(bindings, dict) else None
+            if not bindings:
+                ctx.extra.pop(_EAGER_DEEPRESEARCH_BINDINGS_KEY, None)
+            if manager is not None:
+                manager.__exit__(None, None, None)
+        await self._stop_repeated_tool_failure(ctx)
 
     def _failure_loop_policy(self) -> tuple[bool, int]:
         """Resolve (enabled, threshold) once; defaults apply when config is absent."""
@@ -874,7 +896,22 @@ class ProgressiveToolRail(DeepAgentRail):
         )
 
     async def _stop_repeated_tool_failure(self, ctx: AgentCallbackContext) -> None:
-        """Force-finish after the same tool+args+error repeats to the threshold."""
+        """Force-finish after the same tool+args+error repeats to the threshold.
+
+        Observation-only: any internal failure is logged and swallowed so the
+        tool lifecycle (in particular DeepResearch binding release) is never
+        blocked by this guard.
+        """
+        try:
+            self._enforce_repeated_tool_failure(ctx)
+        except Exception:
+            logger.warning(
+                "%s failure-loop guard skipped; keep tool result unchanged",
+                _LOG_PREFIX,
+                exc_info=True,
+            )
+
+    def _enforce_repeated_tool_failure(self, ctx: AgentCallbackContext) -> None:
         enabled, threshold = self._failure_loop_policy()
         if not enabled:
             return
@@ -894,14 +931,21 @@ class ProgressiveToolRail(DeepAgentRail):
         if not failed:
             store.pop(key, None)
             return
-        error_text = (error_text or "unknown error")[:_FAILURE_LOOP_ERROR_MAX_CHARS]
-        count, last_error = store.get(key, (0, ""))
-        if last_error != error_text:
+        raw_error = error_text or "unknown error"
+        # Compare the full error via digest: a 300-char display prefix could
+        # otherwise treat two different errors as the same one and stop early.
+        error_digest = hashlib.sha256(
+            raw_error.encode("utf-8", "replace")
+        ).hexdigest()
+        display_error = raw_error[:_FAILURE_LOOP_ERROR_MAX_CHARS]
+        count, last_digest, last_error = store.get(key, (0, "", ""))
+        if last_digest != error_digest:
             # A new error is new information, not a stuck loop.
             count = 0
-            last_error = error_text
+            last_digest = error_digest
+            last_error = display_error
         count += 1
-        store[key] = (count, last_error)
+        store[key] = (count, last_digest, last_error)
         if count < threshold:
             return
         extra[_FAILURE_LOOP_TRIPPED_KEY] = True
