@@ -4383,6 +4383,12 @@
   margin-bottom: 24px;
 }
 
+.chat-welcome__composer .chat-input-container--enterprise {
+  /* Enterprise composers do not use the work-home input card. */
+  position: relative;
+  z-index: 2;
+}
+
 .chat-welcome__banner {
   position: absolute;
   max-width: 100%;
