@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 编号 / slug | S_05 / agent-skill-rails |
-| 关联模块 | jiuwenswarm/agents/harness/common/rails/skill_*.py + subagent_skill_authorization_rail.py + rails/permissions/skill_authorization/（file_store + runtime） |
-| 最近一次修订日期 | 2026-11-17 |
+| 关联模块 | jiuwenswarm/agents/harness/common/rails/skill_*.py + runtime_prompt_rail.py + subagent_skill_authorization_rail.py + rails/permissions/skill_authorization/（file_store + runtime）；flash/prompt/content/{tools,persona}.py |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联 feature | B_02_skill-state-storage-failure-degradation.md（bugfix 归档：存储失败双路径语义） |
 
 ## 范围 / 边界
@@ -141,6 +141,13 @@ swarm 子类只做四件事：
 实现要点：每次从 `ctx.agent` 现取最新 `system_prompt_builder`（防热重载后指向旧 builder）；`uninit` 先同步到当前生效 builder 再 `remove_section`。
 
 与相邻 prompt 段的分工：技能**清单与加载约定**归 core `SkillUseRail` 的 `skills` 段（priority 40）；**加速通道指引**归 `SkillTurboPromptRail` 的 `skill_turbo_guide` 段（skill_turbo 模块）；本段只管**执行过程规范**，互不重复。
+
+### 运行时目录提示与查询去重
+
+- `RuntimePromptRail` 每次模型调用通过当前宿主 DeepAgent 的公开 `find_rails_by_type((SkillUseRail,))` 读取实际加载根目录，兼容团队子类；目录采用 `SkillUseRail.normalize_skill_dirs` 的解析口径，按配置顺序去重。不得用工作区存储目录替代当前加载目录，也不保存旧 rail 的目录快照。
+- 提示区分“Agent 工作区技能存储目录”和“当前技能发现根目录”。没有加载目录信息时明确提示未提供，不推断技能不存在；安装/可用状态仍须由管理查询工具确认。
+- Flash 工具选择规则的去重范围限定在本次用户请求内。新请求需要核实安装、卸载或当前可用状态时，相同工具和参数也必须重新查询；保留同一请求内无状态变化的重复调用约束。
+- 验证覆盖中英文目录提示与去重规则、团队子类、加载 rail 替换/移除，以及共享根目录与工作区残留目录分离。故障与验证记录见 [B_03_skill-install-state-and-runtime-paths.md](../bugfix/B_03_skill-install-state-and-runtime-paths.md)。
 
 ## SkillRetrievalPromptRail — Agentic 树检索提示
 

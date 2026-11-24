@@ -1284,7 +1284,9 @@ async def test_runtime_rail_multi_tenant_workspace_dirs(monkeypatch):
     assert "workspace" in prompt
     assert "workspace_abc" in prompt
     assert "Agent 内部数据目录" in prompt
-    assert "Agent 技能目录" in prompt
+    assert "Agent 工作区技能存储目录" in prompt
+    assert "当前技能发现根目录（按配置顺序）" in prompt
+    assert "未提供可用目录信息" in prompt
 
     expected_config = str(global_root / "config")
     expected_workspace = str(workspace_root)
