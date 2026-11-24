@@ -44,6 +44,20 @@ async def handle_initialize(ctx: RequestContext) -> None:
 
     try:
         params = request.params if isinstance(request.params, dict) else {}
+        from jiuwenswarm.server.handlers.acp_session import (
+            ACP_SESSION_EXTENSION,
+            native_acp_session_response,
+        )
+
+        if request.channel_id == "acp" and isinstance(params.get(ACP_SESSION_EXTENSION), dict):
+            payload = await native_acp_session_response(services.execution_runtime(), request)
+            resp = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True, payload=payload,
+            )
+            await ctx.sink.send_response(resp)
+            return
+
         client_capabilities = params.get("clientCapabilities", {})
         logger.info(
             "[AgentServer] initialize clientCapabilities: %s",

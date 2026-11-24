@@ -22,7 +22,7 @@ import time
 import weakref
 from collections import Counter
 from collections.abc import Awaitable, Mapping
-from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager
+from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -1368,15 +1368,8 @@ _AGENT_CARD_ID = "jiuwenswarm"
 _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
 
-_ACP_BLOCKED_DEFAULT_TOOL_NAMES = frozenset(
-    {
-        "read_file",
-        "write_file",
-        "edit_file",
-        "bash",
-        "code",
-    }
-)
+_ACP_LOCAL_FILE_TOOLS = frozenset({"read_file", "write_file", "edit_file"})
+_ACP_LOCAL_TERMINAL_TOOLS = frozenset({"bash", "code", "cmd", "powershell", "mcp_exec_command"})
 _TOOL_RETRIEVAL_TOOL_NAMES = frozenset(
     {
         "tool_search",
@@ -2697,6 +2690,8 @@ class JiuWenSwarmDeepAdapter:
         self._active_request_model: Model | None = None
         self._context_model_binding: tuple[Any, Model, tuple[Any, ...]] | None = None
         self._selected_model_context_window_tokens: int | None = None
+        # (base model, ACP thinking level, turn-local model) of the last ACP override.
+        self._acp_thinking_model: tuple[Model, str, Model] | None = None
         self._model_config_source: str = "config.yaml"
         self._enterprise_config: Any = None
         self._enterprise_config_resource_id: str | None = None
@@ -10036,6 +10031,31 @@ class JiuWenSwarmDeepAdapter:
         return self._model
 
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
+        model = self._resolve_base_model_for_request(request)
+        if self._moa_runtime is not None or request.channel_id != "acp":
+            return model
+
+        from jiuwenswarm.acp.session_protocol import ACP_THINKING_PARAM
+
+        params = request.params or {}
+        if ACP_THINKING_PARAM not in params:
+            return model
+        previous = self._acp_thinking_model
+        if previous is not None and model is previous[2]:
+            model = previous[0]
+        level = params[ACP_THINKING_PARAM]
+        if level is None:
+            return model
+        if previous is not None and model is previous[0] and level == previous[1]:
+            return previous[2]
+
+        from jiuwenswarm.server.runtime.acp_thinking import apply_thinking_level
+
+        adjusted = apply_thinking_level(model, level)
+        self._acp_thinking_model = (model, level, adjusted)
+        return adjusted
+
+    def _resolve_base_model_for_request(self, request: AgentRequest) -> Model:
         """根据请求中的 model_name 参数查找对应模型（支持别名），未匹配则回退默认模型。
 
         支持两种格式：
@@ -16362,6 +16382,7 @@ class JiuWenSwarmDeepAdapter:
         request_id: str | None,
         channel_id: str | None,
         request_metadata: dict[str, Any] | None,
+        cwd: str | None = None,
     ) -> None:
         """Refresh ACP tools for the current request based on client capabilities."""
         acp_tool_names = (
@@ -16372,9 +16393,15 @@ class JiuWenSwarmDeepAdapter:
             "wait_for_terminal_exit",
             "release_terminal",
         )
+        fs_enabled, terminal_enabled = self._acp_runtime_tools_enabled(request_metadata)
         if channel_id == "acp":
+            blocked_tools = set()
+            if fs_enabled:
+                blocked_tools.update(_ACP_LOCAL_FILE_TOOLS)
+            if terminal_enabled:
+                blocked_tools.update(_ACP_LOCAL_TERMINAL_TOOLS)
             for existing in list(self._instance.ability_manager.list() or []):
-                if getattr(existing, "name", "") in _ACP_BLOCKED_DEFAULT_TOOL_NAMES:
+                if getattr(existing, "name", "") in blocked_tools:
                     self._instance.ability_manager.remove(existing.name)
         for existing in list(self._instance.ability_manager.list() or []):
             if getattr(existing, "name", "") in acp_tool_names:
@@ -16383,7 +16410,6 @@ class JiuWenSwarmDeepAdapter:
                 # instead of piling up under a dead id.
                 self._instance.ability_manager.remove_ability(existing.name)
 
-        fs_enabled, terminal_enabled = self._acp_runtime_tools_enabled(request_metadata)
         has_runtime_capability = fs_enabled or terminal_enabled
         can_register_acp_runtime_tools = self._should_register_acp_runtime_tools(
             channel_id=channel_id,
@@ -16392,7 +16418,9 @@ class JiuWenSwarmDeepAdapter:
             has_runtime_capability=has_runtime_capability,
         )
         if can_register_acp_runtime_tools:
-            for tool in get_acp_output_tools(session_id=session_id, request_id=request_id):
+            for tool in get_acp_output_tools(
+                session_id=session_id, request_id=request_id, default_cwd=cwd,
+            ):
                 if tool.card.name in {"read_text_file", "write_text_file"}:
                     if not fs_enabled:
                         continue
@@ -16915,6 +16943,7 @@ class JiuWenSwarmDeepAdapter:
                 runtime_config.request_id,
                 runtime_config.channel_id,
                 runtime_config.request_metadata,
+                runtime_config.cwd,
             )
 
         stage_timer.mark("acp_tools")
@@ -17479,6 +17508,36 @@ class JiuWenSwarmDeepAdapter:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] session agent callback release error: %s", exc
             )
+
+    @contextmanager
+    def bind_acp_mcp_tools(self, request: AgentRequest):
+        """Register the ACP bridge's session MCP tools for one turn.
+
+        Args:
+            request: Runtime request whose params may declare bridge-owned tools.
+
+        Yields:
+            None. The tools are removed again when the turn leaves the block.
+        """
+        from jiuwenswarm.server.runtime.agent_adapter.acp_mcp import acp_mcp_tools
+
+        tools = acp_mcp_tools(request, self._collect_registered_ability_names)
+        if not tools:
+            yield
+            return
+        manager = self._instance.ability_manager
+        registered = set()
+        try:
+            for tool in tools:
+                self._register_agent_owned_tool(tool, self._tool_owner_id())
+                manager.add(tool.card)
+                registered.add(tool.card.name)
+            yield
+        finally:
+            for name in registered:
+                manager.remove_ability(name)
+            if registered:
+                self._prune_tool_cards(registered)
 
     def _collect_registered_ability_names(self) -> set[str]:
         ability_names: set[str] = set()
@@ -21862,10 +21921,17 @@ class JiuWenSwarmDeepAdapter:
                     await session_adapter.configure_process_cli_run(
                         max_turns=process_options.max_turns, host_tools=process_options.host_tools
                     )
-                child_stream = session_adapter.process_message_stream_impl(request, inputs)
-                async with aclosing(child_stream):
-                    async for chunk in child_stream:
-                        yield chunk
+                from jiuwenswarm.server.runtime.agent_adapter.acp_mcp import declares_acp_mcp_tools
+
+                acp_tools = (
+                    session_adapter.bind_acp_mcp_tools(request)
+                    if declares_acp_mcp_tools(request) else nullcontext()
+                )
+                with acp_tools:
+                    child_stream = session_adapter.process_message_stream_impl(request, inputs)
+                    async with aclosing(child_stream):
+                        async for chunk in child_stream:
+                            yield chunk
                 return
             finally:
                 session_adapter._unregister_session_agent_task(  # pylint: disable=protected-access
