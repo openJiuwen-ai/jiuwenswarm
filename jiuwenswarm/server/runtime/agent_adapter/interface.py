@@ -25,6 +25,7 @@ from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
 from jiuwenswarm.common.local_env_config import promote_staged_env
 from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.perf.interface_hooks import mark_request_stage
 from jiuwenswarm.server.runtime.reload_result import ReloadResult
 from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
     AgentAdapter,
@@ -3857,6 +3858,7 @@ class JiuWenSwarm:
                                 "[latency] stage=4 name=first_token request_id=%s",
                                 rid,
                             )
+                            mark_request_stage(rid, "first_out")
                         await stream_queue.put(("chunk", chunk))
                 except asyncio.CancelledError:
                     logger.info("[JiuWenSwarm] 流式任务被取消: request_id=%s session_id=%s", rid, session_id)

@@ -28,6 +28,7 @@ class PerfCollector:
     """In-memory request summary aggregator with process-wide routing."""
 
     _MAX_WRITTEN_IDS = 4096
+    _MAX_FINALIZED_SUMMARIES = 4096
     _STALE_ORPHAN_AGE_S = 7200.0
 
     def __init__(self) -> None:
@@ -36,6 +37,16 @@ class PerfCollector:
         self._active_request_ids: set[str] = set()
         self._written_request_ids: set[str] = set()
         self._inflight_finalize_ids: set[str] = set()
+        # Finalized summaries retained for the pipeline's monitoring summary
+        # log (#6745). finalize_request pops the accumulator, but the pipeline
+        # finally-block runs AFTER the adapter's finalize — without this cache
+        # the pipeline could no longer read the summary. Consumed via
+        # pop_finalized_summary(); insert-order eviction bounds memory.
+        self._finalized_summaries: dict[str, dict[str, Any]] = {}
+        # session_key → (request_id, ask_wall_time); written at finalize of a
+        # request that emitted an ask_user card, consumed by the following
+        # resume request to report cross-request HITL wait.
+        self._hitl_asks: dict[str, tuple[str, float]] = {}
 
     def begin_request(
         self,
@@ -146,6 +157,144 @@ class PerfCollector:
             return
         acc.set_first_answer_latency_ms(latency_ms)
 
+    def mark_stage(self, request_id: str, stage: str) -> None:
+        """First-mark-wins stage timestamp (monotonic) for the summary log."""
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.mark_stage(stage, time.monotonic())
+
+    def pop_finalized_summary(self, request_id: str) -> dict[str, Any] | None:
+        """Consume the retained finalized summary for this request (once)."""
+        rid = (request_id or "").strip()
+        if not rid:
+            return None
+        with self._lock:
+            return self._finalized_summaries.pop(rid, None)
+
+    def pop_hitl_ask(
+        self,
+        session_id: str,
+        *,
+        exclude_request_id: str | None = None,
+    ) -> tuple[str, float] | None:
+        """Consume the pending ask_user registration for this session.
+
+        ``exclude_request_id`` keeps the entry in place (returns None) when the
+        pending ask was registered by the request currently finalizing — the
+        ask line itself must not consume its own registration.
+        """
+        key = (session_id or "").strip()
+        if not key:
+            return None
+        exclude = (exclude_request_id or "").strip()
+        with self._lock:
+            entry = self._hitl_asks.get(key)
+            if entry is None or (exclude and entry[0] == exclude):
+                return None
+            return self._hitl_asks.pop(key)
+
+    def record_llm_stream_timing(
+        self,
+        request_id: str,
+        *,
+        ttft_ms: float | None,
+        total_ms: float,
+        chunk_count: int,
+        status: str,
+    ) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.record_llm_stream_timing(
+            ttft_ms=ttft_ms,
+            total_ms=total_ms,
+            chunk_count=chunk_count,
+            status=status,
+        )
+
+    def record_skill_usage(self, request_id: str, skill_name: str) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.record_skill_usage(skill_name)
+
+    def record_context_usage(
+        self,
+        request_id: str,
+        *,
+        limit_tokens: Any,
+        occupancy_rate: Any,
+    ) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.record_context_usage(limit_tokens=limit_tokens, occupancy_rate=occupancy_rate)
+
+    def record_chat_error(self, request_id: str) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.record_chat_error()
+
+    def record_chunk_sent(self, request_id: str) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.record_chunk_sent()
+
+    def mark_llm_in_flight(self, request_id: str, active: bool) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.set_llm_in_flight(active)
+
+    def mark_tool_in_flight(self, request_id: str, active: bool) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.set_tool_in_flight(active)
+
+    def mark_ask_emitted(self, request_id: str) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.set_ask_emitted()
+
+    def record_thinking_segment(self, request_id: str, duration_ms: float) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.record_thinking_segment(duration_ms)
+
+    def record_message_gen(self, request_id: str, duration_ms: float) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.record_message_gen(duration_ms)
+
+    def record_stream_gap(self, request_id: str, duration_ms: float) -> None:
+        acc = self.get_accumulator(request_id)
+        if acc is None:
+            return
+        acc.record_stream_gap(duration_ms)
+
+    def _register_hitl_ask_locked(self, rid: str, session_id: str, ask_wall: float) -> None:
+        if not session_id:
+            return
+        self._hitl_asks[session_id] = (rid, ask_wall)
+        overflow = len(self._hitl_asks) - self._MAX_FINALIZED_SUMMARIES
+        while overflow > 0 and self._hitl_asks:
+            self._hitl_asks.pop(next(iter(self._hitl_asks)))
+            overflow -= 1
+
+    def _retain_finalized_summary_locked(self, rid: str, summary: dict[str, Any]) -> None:
+        self._finalized_summaries[rid] = summary
+        overflow = len(self._finalized_summaries) - self._MAX_FINALIZED_SUMMARIES
+        while overflow > 0 and self._finalized_summaries:
+            self._finalized_summaries.pop(next(iter(self._finalized_summaries)))
+            overflow -= 1
+
     def finalize_request(
         self,
         request_id: str,
@@ -192,6 +341,17 @@ class PerfCollector:
                     )
 
                 summary = acc.finalize(status=status, ended_at=ended_at)
+
+                # Retain for the pipeline's monitoring summary log (#6745),
+                # regardless of whether the jsonl write below succeeds.
+                with self._lock:
+                    self._retain_finalized_summary_locked(rid, summary)
+                    if acc.ask_emitted:
+                        self._register_hitl_ask_locked(
+                            rid,
+                            acc.meta.session_id,
+                            acc.ended_at if acc.ended_at is not None else time.time(),
+                        )
 
                 def _write_summary() -> None:
                     append_request_summary(

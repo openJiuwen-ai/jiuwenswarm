@@ -836,14 +836,19 @@ from jiuwenswarm.common.mcp_tool_list_refresh_patch import (
     resolve_mcp_tool_list_ttl_s,
 )
 from jiuwenswarm.perf.context import DeepResearchReportType
+from jiuwenswarm.perf.context import get_current_llm_call
 from jiuwenswarm.perf.interface_hooks import (
     clear_perf_summary_context,
     finalize_perf_summary_request,
+    has_request_in_flight,
     mark_request_first_answer,
     mark_request_first_byte,
+    mark_request_stage,
     merge_perf_summary_usage_fallback,
     maybe_mark_answer_first_byte,
     record_deepresearch_sdk_token_usage,
+    record_stream_context_usage,
+    record_stream_metric,
     set_perf_summary_context,
     snapshot_perf_summary_usage,
 )
@@ -3846,6 +3851,7 @@ class JiuWenSwarmDeepAdapter:
             set_agent_office_claw_tool_ids(self._instance, ())
             self._sync_office_claw_allowlist_to_progressive_rail(None)
         logger.info("[latency] stage=2 name=mcp request_id=%s", registration.request_id)
+        mark_request_stage(registration.request_id, "mcp")
         return registration
 
     async def _register_mcp_from_registry(
@@ -3967,6 +3973,7 @@ class JiuWenSwarmDeepAdapter:
 
             if not replace_request_scoped_mcp_registration(generation, generation):
                 logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
+                mark_request_stage(request.request_id, "mcp")
                 return generation
             # There must be no await from this guard through publication: a slow
             # old discovery must never overwrite a newer request's tool bindings.
@@ -3999,6 +4006,7 @@ class JiuWenSwarmDeepAdapter:
                 len(buffers.tool_ids), len(buffers.pending_tools) - len(buffers.tool_ids), install_ms,
             )
             logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
+            mark_request_stage(request.request_id, "mcp")
             return registration
         except (asyncio.CancelledError, McpRegistryChatError, UnknownMcpServerError, DisabledMcpServerError):
             await self.cleanup_request_scoped_office_claw_mcp(registration or _registration())
@@ -10229,6 +10237,7 @@ class JiuWenSwarmDeepAdapter:
                     "[latency] stage=1 name=init request_id=%s",
                     _LLM_TRACE_REQUEST_ID.get() or "-",
                 )
+                mark_request_stage(_LLM_TRACE_REQUEST_ID.get(), "init")
 
                 # 加载已激活的 packages（skills, rails, tools）
                 await self._load_active_packages()
@@ -17597,6 +17606,82 @@ class JiuWenSwarmDeepAdapter:
             first_answer_marked = True
             mark_request_first_answer()
 
+        # --- 监控汇总流内分段（#6745）---
+        # 思考段 = chat.reasoning 起点 → 下一个可见输出事件；消息生成段 =
+        # chat.delta 起点 → chat.final；空窗 = 相邻事件间隔且两端均无 LLM/工具
+        # 在途（近似"框架处理间隙"）。全部 first-class 进 perf accumulator。
+        _stream_prev_ts: float | None = None
+        _stream_prev_in_flight = False
+        _thinking_open_ts: float | None = None
+        _msg_open_ts: float | None = None
+
+        def _note_stream_metrics(event_type: str, payload: dict[str, Any]) -> None:
+            nonlocal _stream_prev_ts, _stream_prev_in_flight
+            nonlocal _thinking_open_ts, _msg_open_ts
+            now = time.monotonic()
+            # 在途判定：hook 任务与本流任务不共享 ContextVar，rail 的在途
+            # 计数落在共享 accumulator 上，这里以它为准（ContextVar 仅兜底）。
+            try:
+                llm_ctx_active = bool(get_current_llm_call()[0])
+            except Exception:
+                llm_ctx_active = False
+            in_flight = llm_ctx_active or has_request_in_flight(rid)
+            if (
+                _stream_prev_ts is not None
+                and not in_flight
+                and not _stream_prev_in_flight
+            ):
+                record_stream_metric(
+                    rid, "gap", duration_ms=(now - _stream_prev_ts) * 1000.0
+                )
+            _stream_prev_ts = now
+            _stream_prev_in_flight = in_flight
+            if event_type == "chat.reasoning":
+                if _thinking_open_ts is None:
+                    _thinking_open_ts = now
+            elif event_type in ("chat.delta", "chat.final", "chat.tool_call", "chat.error"):
+                if _thinking_open_ts is not None:
+                    record_stream_metric(
+                        rid,
+                        "thinking",
+                        duration_ms=(now - _thinking_open_ts) * 1000.0,
+                    )
+                    _thinking_open_ts = None
+            if event_type == "chat.delta":
+                if _msg_open_ts is None:
+                    _msg_open_ts = now
+            elif event_type == "chat.final":
+                if _msg_open_ts is not None:
+                    record_stream_metric(
+                        rid,
+                        "msg_gen",
+                        duration_ms=(now - _msg_open_ts) * 1000.0,
+                    )
+                    _msg_open_ts = None
+            if event_type in ("chat.error", ERROR_EVENT_TYPE):
+                record_stream_metric(rid, "chat_error")
+            if event_type == "chat.ask_user_question":
+                record_stream_metric(rid, "ask_emitted")
+            if event_type == "context.usage":
+                window = (
+                    payload.get("context_window")
+                    if isinstance(payload, dict)
+                    else None
+                )
+                limit_tokens = window.get("limit_tokens") if isinstance(window, dict) else None
+                occupancy = window.get("occupancy_rate") if isinstance(window, dict) else None
+                if limit_tokens is None and isinstance(payload, dict):
+                    limit_tokens = payload.get("context_max")
+                if occupancy is None and isinstance(payload, dict):
+                    try:
+                        rate = float(payload.get("rate") or 0.0)
+                        occupancy = rate / 100.0 if rate > 1.0 else rate
+                    except (TypeError, ValueError):
+                        occupancy = None
+                record_stream_context_usage(
+                    rid, limit_tokens=limit_tokens, occupancy_rate=occupancy
+                )
+
         def note_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
             nonlocal had_assistant_output, emitted_terminal_chat_final
             nonlocal saw_approved_plan_exit_result, had_reasoning_output
@@ -17608,6 +17693,11 @@ class JiuWenSwarmDeepAdapter:
             if _is_foreign_stream_source(payload):
                 return payload
             event_type = payload.get("event_type")
+            # 监控汇总流内分段（#6745）：在 first_byte 标记同一收口点记录
+            try:
+                _note_stream_metrics(str(event_type or ""), payload)
+            except Exception:
+                pass
             if event_type == "chat.reasoning":
                 had_reasoning_output = True
             if event_type == "chat.tool_call":

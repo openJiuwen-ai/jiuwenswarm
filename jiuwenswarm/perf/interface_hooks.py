@@ -145,6 +145,209 @@ def set_perf_summary_context(
     )
 
 
+def mark_request_stage(request_id: str | None, stage: str) -> None:
+    """Record a stage timestamp for the monitoring summary log (#6745).
+
+    First mark per stage wins; no-op when no accumulator exists for the
+    request (perf collection disabled). Safe to call from log-only sites.
+    """
+    rid = (request_id or "").strip()
+    if not rid:
+        return
+
+    def _mark() -> None:
+        get_perf_collector().mark_stage(rid, stage)
+
+    run_perf_safe(
+        _COMPONENT,
+        f"perf summary stage mark request_id={rid} stage={stage}",
+        _mark,
+    )
+
+
+def resolve_stream_request_id() -> str:
+    """Resolve the request id for model-client-stream-level hooks (#6745).
+
+    The model client stream may run on long-lived runtime tasks that do NOT
+    inherit the stream-task ContextVars, so resolution falls back to contexts
+    that the runtime propagates itself:
+
+    1. perf request ContextVar (direct inheritance, the common case);
+    2. openjiuwen trace session id → perf session registry (the runtime
+       re-binds its own session context on its worker tasks — the same channel
+       the ``[MODEL_HTTP]`` log lines use);
+    3. deep-adapter LLM trace request-id ContextVar.
+    """
+    from jiuwenswarm.perf.context import get_request_context
+
+    rid = str((get_request_context() or {}).get("request_id") or "").strip()
+    if rid:
+        return rid
+    try:
+        from openjiuwen.core.common.logging import get_session_id
+
+        sid = str(get_session_id() or "").strip()
+        if sid and sid not in ("default", "default_trace_id"):
+            rid = str(
+                (get_request_context(session_id=sid) or {}).get("request_id") or ""
+            ).strip()
+    except Exception:
+        rid = ""
+    if rid:
+        return rid
+    try:
+        from jiuwenswarm.server.runtime.agent_adapter.deep.llm_io_trace_patch import (
+            _LLM_TRACE_REQUEST_ID,
+        )
+
+        rid = (_LLM_TRACE_REQUEST_ID.get() or "").strip()
+    except Exception:
+        rid = ""
+    return rid
+
+
+def record_llm_stream_timing(
+    *,
+    ttft_ms: float | None,
+    total_ms: float,
+    chunk_count: int,
+    status: str,
+) -> None:
+    """Record LLM HTTP stream timing from llm_sse_patch (last call wins)."""
+    rid = resolve_stream_request_id()
+    if not rid:
+        return
+
+    def _record() -> None:
+        get_perf_collector().record_llm_stream_timing(
+            rid,
+            ttft_ms=ttft_ms,
+            total_ms=total_ms,
+            chunk_count=chunk_count,
+            status=status,
+        )
+
+    run_perf_safe(
+        _COMPONENT,
+        f"llm stream timing request_id={rid}",
+        _record,
+    )
+
+
+def record_stream_metric(
+    request_id: str | None,
+    metric: str,
+    *,
+    duration_ms: float | None = None,
+    name: str | None = None,
+) -> None:
+    """Record one stream-level metric for the monitoring summary log.
+
+    Metrics: "thinking" | "msg_gen" | "gap" (duration_ms), "chat_error",
+    "ask_emitted" (no payload), "skill" (name = skill display name).
+    """
+    rid = (request_id or "").strip()
+    if not rid:
+        return
+    collector = get_perf_collector()
+    if metric == "thinking":
+        if duration_ms is None:
+            return
+
+        def _action() -> None:
+            collector.record_thinking_segment(rid, duration_ms)
+    elif metric == "msg_gen":
+        if duration_ms is None:
+            return
+
+        def _action() -> None:
+            collector.record_message_gen(rid, duration_ms)
+    elif metric == "gap":
+        if duration_ms is None:
+            return
+
+        def _action() -> None:
+            collector.record_stream_gap(rid, duration_ms)
+    elif metric == "chat_error":
+
+        def _action() -> None:
+            collector.record_chat_error(rid)
+    elif metric == "ask_emitted":
+
+        def _action() -> None:
+            collector.mark_ask_emitted(rid)
+    elif metric == "skill":
+        if not (name or "").strip():
+            return
+
+        def _action() -> None:
+            collector.record_skill_usage(rid, name or "")
+    else:
+        return
+    run_perf_safe(
+        _COMPONENT,
+        f"stream metric request_id={rid} metric={metric}",
+        _action,
+    )
+
+
+def record_chunk_sent(request_id: str | None) -> None:
+    """Count one wire chunk actually sent to the client (summary ``chunks``)."""
+    rid = (request_id or "").strip()
+    if not rid:
+        return
+
+    def _record() -> None:
+        get_perf_collector().record_chunk_sent(rid)
+
+    run_perf_safe(
+        _COMPONENT,
+        f"chunk sent count request_id={rid}",
+        _record,
+    )
+
+
+def has_request_in_flight(request_id: str | None) -> bool:
+    """True while a rail-tracked model call or tool is running for this request.
+
+    Cross-task safe: the counters live on the shared accumulator (hook tasks
+    and the stream task do not share ContextVars).
+    """
+    rid = (request_id or "").strip()
+    if not rid:
+        return False
+    try:
+        acc = get_perf_collector().get_accumulator(rid)
+    except Exception:
+        return False
+    return acc.has_in_flight() if acc is not None else False
+
+
+def record_stream_context_usage(
+    request_id: str | None,
+    *,
+    limit_tokens: Any,
+    occupancy_rate: Any,
+) -> None:
+    """Record a context.usage snapshot for the monitoring summary log."""
+    rid = (request_id or "").strip()
+    if not rid:
+        return
+
+    def _record() -> None:
+        get_perf_collector().record_context_usage(
+            rid,
+            limit_tokens=limit_tokens,
+            occupancy_rate=occupancy_rate,
+        )
+
+    run_perf_safe(
+        _COMPONENT,
+        f"context usage request_id={rid}",
+        _record,
+    )
+
+
 def mark_request_first_byte() -> None:
     """Record first history-visible assistant event latency."""
     run_perf_safe(

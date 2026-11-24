@@ -34,6 +34,7 @@ from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
     format_ws_diagnostics,
 )
+from jiuwenswarm.perf.interface_hooks import record_chunk_sent
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
     _CODE_MODE_SYNC_METHODS,
@@ -1051,6 +1052,9 @@ async def _handle_stream_impl(
                 nonlocal chunk_count
                 for outgoing in batch:
                     chunk_count += 1
+                    # 监控汇总日志（#6745）：tenant pool 分支与 _emit_agent
+                    # 同口径，按实际写出的 chunk 数计（逐 chunk 记录）。
+                    record_chunk_sent(request.request_id)
                     sent_original = await ctx.sink.send_chunk(
                         outgoing,
                         sequence=chunk_count - 1,
@@ -1163,6 +1167,10 @@ async def _handle_stream_impl(
         nonlocal chunk_count
         for outgoing in batch:
             chunk_count += 1
+            # 监控汇总日志（#6745）：chunks 字段按实际写出的 chunk 数计。
+            # 逐 chunk 记录 —— adapter 的 finalize 先于本函数所在流的 finally，
+            # 收尾补记会落在已弹出的 accumulator 之外。
+            record_chunk_sent(request.request_id)
             # 诊断：打印前 3 个和每 50 个实际写出的 chunk。
             # wire 只在这里算 —— 编码本身由 ctx.sink 负责，不必为一条偶尔打印
             # 的日志给每个 chunk 都编一次。
