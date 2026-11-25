@@ -44,10 +44,12 @@ generated: true
 | [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
 | [jiuwenswarm/server](#module-jiuwenswarm-server) |
 | [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
+| [jiuwenswarm/server/control/store](#module-jiuwenswarm-server-control-store) |
 | [jiuwenswarm/server/ipc](#module-jiuwenswarm-server-ipc) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
+| [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
 | [jiuwenswarm/server/supervisor](#module-jiuwenswarm-server-supervisor) |
 | [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
@@ -194,6 +196,7 @@ generated: true
 | [B_20261119_1039_video-memory-submit-pending](jiuwenswarm/channels/web/frontend/B_20261119_1039_video-memory-submit-pending.md) | B | 视频记忆任务 pending 导致提交工具持续执行中 | ToNy_St4rk | 无独立 D：现有工具结果状态的局部修复，无独立设计。 |
 | [B_20261119_1150_chat-terminal-reasoning-close](jiuwenswarm/channels/web/frontend/B_20261119_1150_chat-terminal-reasoning-close.md) | B | 消息出错后思考段不收口，「思考中…」永久转圈直到下次发消息 | gunner_beat | 无独立 D：交互层缺陷修复，复用同文件 chat.processing_status(false) 分支已有的「终态兜底收口」口径（幂等空操作），无独立设计文档。 |
 | [B_20261121_1529_skill-install-toast-display-name-width](jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
+| [B_20261125_0115_cron-pin-sidebar-blackhole](jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 
@@ -341,6 +344,14 @@ generated: true
 | [B_20261112_1716_affinity-status-read](jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
 | [B_20261112_2025_permission-profile-refresh](jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
 
+<a id="module-jiuwenswarm-server-control-store"></a>
+
+## jiuwenswarm/server/control/store
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261125_0115_cron-pin-sidebar-blackhole](jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
+
 <a id="module-jiuwenswarm-server-ipc"></a>
 
 ## jiuwenswarm/server/ipc
@@ -378,6 +389,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261116_2059_hub-package-root](jiuwenswarm/server/runtime/B_20261116_2059_hub-package-root.md) | B | Hub 安装把包内子资产 manifest 误判为多个包根 | openjiuwen_ai | 无独立 D：仅修正包根识别的深度判定，不改变 Hub 包格式、安装状态机与 marketplace 契约；无独立设计。 |
+
+<a id="module-jiuwenswarm-server-runtime-session"></a>
+
+## jiuwenswarm/server/runtime/session
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261125_0115_cron-pin-sidebar-blackhole](jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 

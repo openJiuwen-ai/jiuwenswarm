@@ -70,6 +70,7 @@ generated: true
 | [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
 | [jiuwenswarm/server](#module-jiuwenswarm-server) |
 | [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
+| [jiuwenswarm/server/control/store](#module-jiuwenswarm-server-control-store) |
 | [jiuwenswarm/server/ipc](#module-jiuwenswarm-server-ipc) |
 | [jiuwenswarm/server/jiuwenmate](#module-jiuwenswarm-server-jiuwenmate) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
@@ -394,6 +395,7 @@ generated: true
 | [B_20261119_1039_video-memory-submit-pending](bugfix/jiuwenswarm/channels/web/frontend/B_20261119_1039_video-memory-submit-pending.md) | B | 视频记忆任务 pending 导致提交工具持续执行中 | ToNy_St4rk | 无独立 D：现有工具结果状态的局部修复，无独立设计。 |
 | [B_20261119_1150_chat-terminal-reasoning-close](bugfix/jiuwenswarm/channels/web/frontend/B_20261119_1150_chat-terminal-reasoning-close.md) | B | 消息出错后思考段不收口，「思考中…」永久转圈直到下次发消息 | gunner_beat | 无独立 D：交互层缺陷修复，复用同文件 chat.processing_status(false) 分支已有的「终态兜底收口」口径（幂等空操作），无独立设计文档。 |
 | [B_20261121_1529_skill-install-toast-display-name-width](bugfix/jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
+| [B_20261125_0115_cron-pin-sidebar-blackhole](bugfix/jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
@@ -701,6 +703,14 @@ generated: true
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
+<a id="module-jiuwenswarm-server-control-store"></a>
+
+## jiuwenswarm/server/control/store
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261125_0115_cron-pin-sidebar-blackhole](bugfix/jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
+
 <a id="module-jiuwenswarm-server-ipc"></a>
 
 ## jiuwenswarm/server/ipc
@@ -791,6 +801,7 @@ generated: true
 | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) | D | NPC 主从会话与按需搜索工具 | kdgmpw | — |
 | [F_20261103_1501_app-role-session](features/app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
+| [B_20261125_0115_cron-pin-sidebar-blackhole](bugfix/jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>

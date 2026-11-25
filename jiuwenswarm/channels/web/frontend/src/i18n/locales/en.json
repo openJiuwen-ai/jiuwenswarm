@@ -5840,7 +5840,8 @@
         "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
         "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again.",
         "archiveSessionFinalizing": "This conversation is still finishing up. Try archiving again shortly.",
-        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly."
+        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly.",
+        "pinCronNoIdentity": "This scheduled-task session has no job identity; pinning it would hide it from the sidebar, so the pin was cancelled"
       },
       "cancel": "Cancel",
       "confirm": "Confirm"
