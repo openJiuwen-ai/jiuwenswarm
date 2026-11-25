@@ -138,6 +138,25 @@ export function selectNativeWebUIPanelTab(state: WebUIPluginPanelTabsState): Web
 }
 
 /**
+ * Hide plugin tabs whose instance-visibility preference is off instead of deleting them.
+ *
+ * The tab ids stay in the list so re-enabling the preference brings the tab back in its original
+ * position without activation; the tab bar itself only renders tabs backed by the visible
+ * discovery result, so a hidden tab does not show. When the hidden tab owns the content area the
+ * native page takes over, matching the documented "hidden → native, re-enabled → not re-selected"
+ * behaviour.
+ */
+export function hideWebUIPluginPanels(
+  state: WebUIPluginPanelTabsState,
+  hiddenPanelIds: readonly string[],
+): WebUIPluginPanelTabsState {
+  const hiddenTabs = new Set(hiddenPanelIds.map(webUIPluginPanelTabId));
+  const activeId = state.activeId !== null && hiddenTabs.has(state.activeId) ? null : state.activeId;
+  if (activeId === state.activeId) return state;
+  return { ...state, activeId };
+}
+
+/**
  * Drop only contributions observed disappearing in the current conversation.
  */
 export function removeWebUIPluginPanels(

@@ -75,8 +75,10 @@ async def test_bind_request_tenant_scopes_manager_and_restores(monkeypatch):
     async with bind_request_tenant(ctx):
         assert services.agent_manager.tenant_key == expected_key
         assert TenantContext.current_tenant_key() == expected_key
+        assert TenantContext.current_triple() == ("g1", "b1", "u1")
     assert services.agent_manager is default_manager
     assert TenantContext.current_tenant_key() is None
+    assert TenantContext.current_triple() == ("", "", "")
 
 
 @pytest.mark.asyncio

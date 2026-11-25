@@ -532,6 +532,7 @@ export function ToolPanel({
     slotId: 'conversation.panel.right',
     sessionId: resolvedSessionId && resolvedSessionId !== 'new' ? resolvedSessionId : null,
     panels: webUIPanels.panels,
+    hiddenPanels: webUIPanels.hiddenPanels,
     renderPanel: webUIPanels.renderPanel,
     openRequest: webUIPanels.openRequest,
     consumeOpenRequest: webUIPanels.consumeOpenRequest,

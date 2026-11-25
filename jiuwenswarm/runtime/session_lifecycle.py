@@ -251,6 +251,7 @@ class SessionRuntimeLifecyclePort(Protocol):
         *,
         reason: str,
         channel_id: str | None = None,
+        expected_request_ids: frozenset[str] | None = None,
     ) -> Any:
         """Return structured pause result (or legacy bool) for one Team generation."""
         ...
@@ -262,6 +263,20 @@ class SessionRuntimeLifecyclePort(Protocol):
         reason: str,
     ) -> bool:
         """Return whether one Team Session generation was stopped."""
+        ...
+
+    def begin_request_stop(
+        self,
+        session_id: str,
+    ) -> None:
+        """Hold new team input until the caller's pause teardown finishes."""
+        ...
+
+    def end_request_stop(
+        self,
+        session_id: str,
+    ) -> None:
+        """Release one ``begin_request_stop`` hold for the session."""
         ...
 
     async def publish_pause_completed(
