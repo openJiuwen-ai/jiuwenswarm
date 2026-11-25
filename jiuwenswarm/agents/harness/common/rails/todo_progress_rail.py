@@ -41,7 +41,9 @@ from openjiuwen.harness.workspace.workspace import WorkspaceNode
 from jiuwenswarm.agents.harness.common.rails.todo_progress_receipt import receipt_suffix
 from jiuwenswarm.agents.harness.common.rails.todo_progress_reminder import build_reminder, unfinished
 from jiuwenswarm.agents.harness.common.rails.todo_progress_snapshot import (
+    CompletionChange,
     TodoSnapshotError,
+    TodoReceiptChange,
     error_fields,
     read_todo_snapshot,
     snapshot_key,
@@ -285,6 +287,9 @@ class TodoProgressRail(DeepAgentRail):
         succeeded = False
         change: Change = "unknown"
         receipt_chars = 0
+        before = state.pre_write.get(call_id)
+        rebuild = inputs.tool_name == "todo_create"
+        completion = CompletionChange.between(before, None, rebuild=rebuild)
         try:
             if not inputs.execution_started:
                 return  # 被前置钩子拦下（如权限拒绝），工具没有执行，不算写入
@@ -302,7 +307,7 @@ class TodoProgressRail(DeepAgentRail):
                 state.change_unknown += 1
                 return  # 写入后快照不可用：保留工具原回执
             after = snapshot_key(todos)
-            before = state.pre_write.get(call_id)
+            completion = CompletionChange.between(before, after, rebuild=rebuild)
             if before is None:
                 state.change_unknown += 1  # 写入前快照不可用，不能拿空列表代替
             elif before != after:
@@ -313,24 +318,30 @@ class TodoProgressRail(DeepAgentRail):
                 state.noops += 1
                 change = "noop"
             if succeeded:
-                receipt_chars = self._enhance_receipt(inputs, state, todos, noop=change == "noop")
+                receipt_change = completion.receipt_change(before)
+                receipt_chars = self._enhance_receipt(inputs, state, todos, noop=change == "noop",
+                                                      change=receipt_change)
         except Exception as exc:
             self._rail_error(state, "after_tool_call", exc)
         finally:
             state.pre_write.pop(call_id, None)
             if executed:
                 try:
-                    self._log_write(state, inputs.tool_name, succeeded, change, receipt_chars)
+                    self._log_write(state, inputs.tool_name, succeeded, change, receipt_chars, completion)
                 except Exception as exc:
                     self._rail_error(state, "after_tool_call", exc)
 
-    def _enhance_receipt(self, inputs: ToolCallInputs, state: _RunState, todos: list[TodoItem], *, noop: bool) -> int:
+    def _enhance_receipt(self, inputs: ToolCallInputs, state: _RunState, todos: list[TodoItem], *, noop: bool,
+                         change: TodoReceiptChange | None = None) -> int:
         """追加回执并返回追加的字符数；没有增强时返回 0。"""
         tool_msg = inputs.tool_msg
         content = getattr(tool_msg, "content", None)
         if tool_msg is None or not isinstance(content, str) or not hasattr(tool_msg, "model_copy"):
             return 0
-        suffix = receipt_suffix(inputs.tool_name, todos, noop=noop, language=self._language)
+        suffix = receipt_suffix(inputs.tool_name, todos, noop=noop, language=self._language,
+                                change=change)
+        if not suffix:
+            return 0
         # 只改给模型的工具消息（保留 tool_call_id）；界面卡片取自 tool_result，不受影响
         inputs.tool_msg = tool_msg.model_copy(update={"content": content + suffix})
         state.receipts += 1
@@ -339,7 +350,8 @@ class TodoProgressRail(DeepAgentRail):
         return len(suffix)
 
     @staticmethod
-    def _log_write(state: _RunState, tool_name: str, succeeded: bool, change: Change, receipt_chars: int) -> None:
+    def _log_write(state: _RunState, tool_name: str, succeeded: bool, change: Change, receipt_chars: int,
+                   completion: CompletionChange) -> None:
         intervals = state.intervals
         after_reminder = intervals.record_write(change)
         _log("write", {
@@ -352,6 +364,7 @@ class TodoProgressRail(DeepAgentRail):
             "after_reminder": after_reminder,
             "iters_since_inject": state.iteration - intervals.inject_iter if intervals.seq else None,
             "receipt_chars": receipt_chars,
+            **completion.log_fields(),
         })
 
     async def after_react_iteration(self, ctx: AgentCallbackContext) -> None:

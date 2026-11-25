@@ -22,12 +22,16 @@ from openjiuwen.core.single_agent.rail.base import (
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from openjiuwen.core.sys_operation import LocalWorkConfig, SysOperation, SysOperationCard
+from openjiuwen.harness.schema.task import TodoItem
 from openjiuwen.harness.tools import create_todos_tool
 
 from jiuwenswarm.agents.harness.common.rails import todo_progress_snapshot as snapshot_mod
 from jiuwenswarm.agents.harness.common.rails.todo_progress_rail import TodoProgressRail
-from jiuwenswarm.agents.harness.common.rails.todo_progress_receipt import _HINTS
-from jiuwenswarm.agents.harness.common.rails.todo_progress_snapshot import read_todo_snapshot
+from jiuwenswarm.agents.harness.common.rails.todo_progress_receipt import _HINTS, receipt_suffix
+from jiuwenswarm.agents.harness.common.rails.todo_progress_snapshot import (
+    TodoReceiptChange,
+    read_todo_snapshot,
+)
 
 SID = "desktop_test_session_0001"
 SENTINEL = "SENTINEL_TODO_BODY_7f3a"
@@ -238,6 +242,9 @@ async def test_pre_write_snapshot_unavailable(env, caplog):
     assert st.last_change_iter == 0  # 无法判断不重置间隔
     assert st.pre_write == {}
     assert [e["category"] for e in _events(caplog, "rail_error")] == ["invalid_json", "invalid_json"]
+    [write] = _events(caplog, "write")
+    assert write["completed_before"] is None and write["completed_after"] == 0
+    assert write["completed_to_unfinished_count"] is None
 
 
 @pytest.mark.asyncio
@@ -604,9 +611,149 @@ async def test_create_receipt_appends_hint_only(env):
     assert "当前 todo 列表" not in suffix and _HINTS["cn"]["advance"] in suffix
 
 
+MISSING_HEAD = "重建后的清单缺少原已完成项："
+
+
+def _item(task_id, content, status) -> dict:
+    item = {"content": content, "activeForm": content, "description": content, "status": status}
+    return item if task_id is None else {"id": task_id, **item}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rebuilt, action", [
+    # 沿用旧 id、整条漏掉 t1：插到第一个未完成项之前
+    ([_item("t2", "task2", "in_progress"), _item("t3", "task3", "pending")],
+     "todo_modify insert_before（target_id 为 t2）"),
+    # 沿用旧 id、把 t1 改写成新 id 新内容：代码无法判定，提示交给模型判断
+    ([_item("merged", "合并后的工作", "completed"), _item("t2", "task2", "in_progress"),
+      _item("t3", "task3", "pending")], "todo_modify insert_before（target_id 为 t2）"),
+    # 新清单已没有未完成项：追加到末尾
+    ([_item("t2", "task2", "completed"), _item("t3", "task3", "completed")], "todo_modify append"),
+])
+async def test_rebuild_missing_completed_is_hinted(env, caplog, rebuilt, action):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("completed", "in_progress", "pending")}, "c1")
+    tctx = await _tool(env, ictx, env.create, "todo_create", {"tasks": rebuilt}, "c2")
+    suffix = _suffix(tctx)
+    assert suffix.startswith(f"\n\n{MISSING_HEAD}t1（task1）。")  # 遗漏提示排在最前
+    assert f"下一次 todo 调用用 {action} 按原 id、原内容以 completed 状态补回" in suffix
+    assert "这些工作仍属于当前任务时" in suffix
+    assert "用户要求删除的、已经以新 id 保留在清单中的不补" in suffix
+    assert all(text not in suffix for text in _HINTS["cn"].values())  # 不给继续执行类提示
+    assert _events(caplog, "write")[-1]["completed_missing_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_restore_before_in_progress_keeps_completed_items_together(env):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create",
+                {"tasks": _tasks("completed", "completed", "in_progress", "pending")}, "c1")
+    rebuilt = [_item("t2", "task2", "completed"), _item("t3", "task3", "in_progress"),
+               _item("t4", "task4", "pending")]
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": rebuilt}, "c2")
+    # 照提示用 insert_before 把已完成项补到进行中项之前
+    await _tool(env, ictx, env.modify, "todo_modify", {"action": "insert_before", "todo_data": {
+        "target_id": "t3", "items": [_item("t1", "task1", "completed")]}}, "c3")
+    listed = await env.list_tool.invoke({}, session=env.session)
+    assert [(t["id"], t["status"]) for t in listed["tasks"]] == [
+        ("t2", "completed"), ("t1", "completed"), ("t3", "in_progress"), ("t4", "pending")]
+
+
+def test_missing_hint_truncates_content_and_respects_cap():
+    todos = [TodoItem(id="next", content="Next", status="in_progress")]
+    missing = [(f"done-{i}", "很长的已完成工作内容" * 10) for i in range(30)]
+    for language in ("cn", "en"):
+        text = receipt_suffix(
+            "todo_create",
+            todos,
+            noop=False,
+            language=language,
+            change=TodoReceiptChange(regressed_ids=("next",), missing_items=tuple(missing)),
+        )
+        assert len(text) <= 600
+        assert "done-0" in text and "…" in text and ("未列出" if language == "cn" else "not shown") in text
+        head = "重建后的清单缺少原已完成项：" if language == "cn" else "Completed items missing from the rebuilt list: "
+        regressed = "已完成项退回未完成：" if language == "cn" else "Completed items became unfinished: "
+        assert text.index(head) < text.index(regressed)
+
+
+@pytest.mark.parametrize("language, keeps_generic", [("cn", True), ("en", False)])
+def test_regressed_hint_takes_room_from_generic_hint(language, keeps_generic):
+    # 8 个 47 字符的 id 退回 pending、另有一项进行中：中文连同通用提示放得下；
+    # 英文带通用提示时只能列出一半，省略通用提示后可以列全
+    ids = tuple(f"rebuild_step_{i}_".ljust(47, "x") for i in range(8))
+    todos = [TodoItem(id="current", content="Current", status="in_progress")]
+    todos += [TodoItem(id=i, content="Step", status="pending") for i in ids]
+    text = receipt_suffix("todo_create", todos, noop=False, language=language,
+                          change=TodoReceiptChange(regressed_ids=ids))
+    assert len(text) <= 600
+    assert all(i in text for i in ids)
+    assert ("未列出" if language == "cn" else "not shown") not in text
+    assert (_HINTS[language]["advance"] in text) is keeps_generic
+
+
+def test_regressed_hint_keeps_short_last_id_when_full_hint_fits():
+    ids = tuple(f"{i:032d}" for i in range(1, 8)) + ("qa",)
+    todos = [TodoItem(id="current", content="Current", status="in_progress")]
+    todos += [TodoItem(id=i, content="Step", status="pending") for i in ids]
+    text = receipt_suffix("todo_create", todos, noop=False, language="en",
+                          change=TodoReceiptChange(regressed_ids=ids))
+    assert len(text) <= 600
+    assert _HINTS["en"]["advance"] in text
+    assert ", ".join(ids) in text
+    assert "not shown" not in text
+
+
+@pytest.mark.parametrize("language", ["cn", "en"])
+def test_short_regressed_hint_keeps_generic_hint(language):
+    todos = [TodoItem(id="current", content="Current", status="in_progress"),
+             TodoItem(id="t1", content="Step", status="pending")]
+    text = receipt_suffix("todo_create", todos, noop=False, language=language,
+                          change=TodoReceiptChange(regressed_ids=("t1",)))
+    assert "t1" in text
+    assert _HINTS[language]["advance"] in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rebuilt, missing_count", [
+    # 新清单不沿用任何旧 id：视为开始新任务，只计数不提示
+    ([_item("n1", "新任务一", "in_progress"), _item("n2", "新任务二", "pending")], 1),
+    # 同内容换 id、省略 id 由工具生成 uuid、同内容但状态改为 pending：都不算遗漏
+    ([_item("renamed", "task1", "completed"), _item("t2", "task2", "in_progress")], 0),
+    ([_item(None, "task1", "completed"), _item("t2", "task2", "in_progress")], 0),
+    ([_item("redo", "task1", "pending"), _item("t2", "task2", "in_progress")], 0),
+])
+async def test_rebuild_without_missing_hint(env, caplog, rebuilt, missing_count):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("completed", "in_progress")}, "c1")
+    tctx = await _tool(env, ictx, env.create, "todo_create", {"tasks": rebuilt}, "c2")
+    assert MISSING_HEAD not in tctx.inputs.tool_msg.content
+    write = _events(caplog, "write")[-1]
+    assert write["result"] == "ok" and write["completed_missing_count"] == missing_count
+
+
+@pytest.mark.asyncio
+async def test_modify_delete_of_completed_is_not_missing(env, caplog):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("completed", "in_progress")}, "c1")
+    tctx = await _tool(env, ictx, env.modify, "todo_modify", {"action": "delete", "ids": ["t1"]}, "c2")
+    assert MISSING_HEAD not in _suffix(tctx)
+    assert "completed_missing_count" not in _events(caplog, "write")[-1]
+
+
+@pytest.mark.asyncio
+async def test_missing_count_unknown_when_snapshot_unavailable(env, caplog):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("completed", "in_progress")}, "c1")
+    tctx = await _tool(env, ictx, env.create, "todo_create", {"tasks": [_item("t2", "task2", "in_progress")]}, "c2",
+                       skip_before=True)
+    assert MISSING_HEAD not in tctx.inputs.tool_msg.content
+    assert _events(caplog, "write")[-1]["completed_missing_count"] is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("count, update, expected", [
-    # todo_create 固定把第一项设为 in_progress、其余为 pending，状态由随后的 modify 构造
+    # 从显式 pending 清单更新到各类目标状态
     (2, [{"id": "t1", "status": "completed"}], "start_next"),
     (3, [{"id": "t1", "status": "completed"}, {"id": "t2", "status": "in_progress"}], "advance"),
     (2, [{"id": "t1", "status": "completed"}, {"id": "t2", "status": "in_progress"}], "last_item"),
@@ -842,7 +989,7 @@ async def test_leftover_list_reminded_after_interval_in_long_task(env, caplog):
     await _iteration(env, 10)
     await _model_call(env)
     [note] = _injected(env)
-    assert "- t2 [in_progress] task2" in note and "todo_create" in note
+    assert "- t2 [in_progress] task2" in note and "todo_modify" in note
     await _tool(env, ictx, env.modify, "todo_modify", {"action": "delete", "ids": ["t1", "t2"]}, "c3")
     await _end(env, ictx)
     end = _events(caplog, "run_end")[-1]
@@ -1009,7 +1156,8 @@ async def test_write_log_fields_and_after_reminder(env, caplog):
     await _end(env, ictx)
     first, second = _events(caplog, "write")[1:]
     assert set(first) == {"run_id", "tool", "reminder_seq", "iteration", "result", "change",
-                          "after_reminder", "iters_since_inject", "receipt_chars"}
+                          "after_reminder", "iters_since_inject", "receipt_chars", "completed_before",
+                          "completed_after", "completed_to_unfinished_count"}
     assert (first["after_reminder"], second["after_reminder"]) == (True, False)
     assert (first["iters_since_inject"], second["iters_since_inject"]) == (0, 1)
     assert first["reminder_seq"] == second["reminder_seq"] == 1
@@ -1026,7 +1174,7 @@ async def test_failed_and_blocked_writes_in_write_log(env, caplog):
     await _tool(env, ictx, env.modify, "todo_modify", NOOP_ARGS, "c3", started=False)  # 执行前被拦下
     await _end(env, ictx)
     assert [(w["result"], w["receipt_chars"] > 0) for w in _events(caplog, "write")] == \
-        [("ok", True), ("failed", False)]
+        [("ok", False), ("failed", False)]
 
 
 @pytest.mark.asyncio
@@ -1057,7 +1205,7 @@ def test_reminder_is_capped_and_marked_internal(language):
     assert len(reminder) <= NOTE_MAX
     assert reminder.startswith("<system-reminder>") and reminder.endswith("</system-reminder>")
     assert "id05" in reminder        # 列表放不下时先省略已关闭项
-    assert "12" in reminder and "todo_create" in reminder
+    assert "12" in reminder and "todo_modify" in reminder
 
 
 # -- 与上下文压缩的衔接 -----------------------------------------------------

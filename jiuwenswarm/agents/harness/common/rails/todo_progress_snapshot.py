@@ -7,6 +7,7 @@ import json
 import os
 import traceback
 from collections import Counter
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from openjiuwen.harness.schema.task import TodoItem, TodoStatus
@@ -14,6 +15,8 @@ from openjiuwen.harness.tools import TodoListTool
 from pydantic import ValidationError
 
 VALID_STATUSES = frozenset(s.value for s in TodoStatus)
+_COMPLETED = TodoStatus.COMPLETED.value
+_UNFINISHED = frozenset({TodoStatus.PENDING.value, TodoStatus.IN_PROGRESS.value})
 
 
 class TodoSnapshotError(Exception):
@@ -97,6 +100,93 @@ def status_counts(todos: list[TodoItem]) -> dict[str, int]:
     return {status: counts.get(status, 0) for status in sorted(VALID_STATUSES)}
 
 
+def completed_regressions(before: Optional[list[dict]], after: Optional[list[dict]]) -> Optional[list[str]]:
+    """写入前已 completed、写入后变回 pending/in_progress 的 id；任一快照不可用时返回 None。"""
+    if before is None or after is None:
+        return None
+    completed = {item["id"] for item in before if item["status"] == _COMPLETED}
+    return [item["id"] for item in after if item["id"] in completed and item["status"] in _UNFINISHED]
+
+
+def completed_missing(before: Optional[list[dict]], after: Optional[list[dict]]) -> Optional[list[str]]:
+    """写入前已 completed、写入后 id 不在清单中且清单里没有 content 完全相同条目的 id；任一快照不可用时返回 None。
+
+    同内容换 id 的条目（含省略 id 由工具生成新 id）不算遗漏：按原 id 补回会让同一任务出现两次。
+    """
+    if before is None or after is None:
+        return None
+    ids = {item["id"] for item in after}
+    contents = {item["content"] for item in after}
+    return [item["id"] for item in before
+            if item["status"] == _COMPLETED and item["id"] not in ids and item["content"] not in contents]
+
+
+def _reuses_id(before: Optional[list[dict]], after: Optional[list[dict]]) -> bool:
+    if before is None or after is None:
+        return False
+    return not {item["id"] for item in before}.isdisjoint(item["id"] for item in after)
+
+
+def _completed_count(snapshot: Optional[list[dict]]) -> Optional[int]:
+    return None if snapshot is None else sum(item["status"] == _COMPLETED for item in snapshot)
+
+
+@dataclass(frozen=True)
+class TodoReceiptChange:
+    """回执需要展示的清单变化。"""
+
+    regressed_ids: Optional[tuple[str, ...]] = None
+    missing_items: Optional[tuple[tuple[str, str], ...]] = None
+
+
+@dataclass(frozen=True)
+class CompletionChange:
+    """一次写入前后 completed 项的变化；对应快照不可用时字段为 None。
+
+    missing_ids 只在整体重建（rebuild）时计算：todo_modify 的 delete 是逐项的明确意图，不算遗漏。
+    """
+
+    before: Optional[int]
+    after: Optional[int]
+    regressed_ids: Optional[list[str]]
+    rebuild: bool = False
+    missing_ids: Optional[list[str]] = None
+    reuses_id: bool = False
+
+    @classmethod
+    def between(cls, before: Optional[list[dict]], after: Optional[list[dict]], *,
+                rebuild: bool = False) -> "CompletionChange":
+        return cls(_completed_count(before), _completed_count(after), completed_regressions(before, after),
+                   rebuild=rebuild, missing_ids=completed_missing(before, after) if rebuild else None,
+                   reuses_id=_reuses_id(before, after))
+
+    @property
+    def missing_to_notify(self) -> Optional[list[str]]:
+        """回执中要提示的遗漏 id。新清单没有沿用任何旧 id 时视为开始新任务，不提示。"""
+        return self.missing_ids if self.reuses_id else None
+
+    def receipt_change(self, before: Optional[list[dict]]) -> TodoReceiptChange:
+        missing_items = None
+        missing_ids = self.missing_to_notify
+        if missing_ids is not None:
+            missing_set = set(missing_ids)
+            missing_items = tuple(
+                (item["id"], item["content"])
+                for item in before or ()
+                if item["id"] in missing_set
+            )
+        regressed_ids = None if self.regressed_ids is None else tuple(self.regressed_ids)
+        return TodoReceiptChange(regressed_ids=regressed_ids, missing_items=missing_items)
+
+    def log_fields(self) -> dict[str, Any]:
+        regressed = None if self.regressed_ids is None else len(self.regressed_ids)
+        fields = {"completed_before": self.before, "completed_after": self.after,
+                  "completed_to_unfinished_count": regressed}
+        if self.rebuild:
+            fields["completed_missing_count"] = None if self.missing_ids is None else len(self.missing_ids)
+        return fields
+
+
 def error_fields(exc: Exception) -> dict[str, Any]:
     """把异常转成白名单字段；不使用 str(exc)/repr(exc)/异常链，避免带出 todo 正文。"""
     if isinstance(exc, TodoSnapshotError):
@@ -114,4 +204,5 @@ def error_fields(exc: Exception) -> dict[str, Any]:
     return {"category": "unexpected", "exc_type": type(exc).__name__, "frames": frames}
 
 
-__all__ = ["TodoSnapshotError", "VALID_STATUSES", "error_fields", "read_todo_snapshot", "snapshot_key", "status_counts"]
+__all__ = ["CompletionChange", "TodoReceiptChange", "TodoSnapshotError", "VALID_STATUSES", "completed_missing", "completed_regressions",
+           "error_fields", "read_todo_snapshot", "snapshot_key", "status_counts"]

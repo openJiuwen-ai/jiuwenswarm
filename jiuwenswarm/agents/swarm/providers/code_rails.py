@@ -36,6 +36,7 @@ from openjiuwen.harness.rails import SkillUseRail
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_builtin_memory_enabled
+from jiuwenswarm.agents.harness.common.rails.todo_policy import build_product_task_planning_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -434,7 +435,7 @@ def build_code_task_planning(params: dict[str, Any], ctx: SwarmBuildContext) -> 
     try:
         from jiuwenswarm.agents.harness.code.rails import CodeTaskPlanningRail
 
-        return CodeTaskPlanningRail()
+        return CodeTaskPlanningRail(**build_product_task_planning_kwargs())
     except Exception as exc:
         logger.warning("[swarm.code_task_planning] create failed: %s", exc)
         return None

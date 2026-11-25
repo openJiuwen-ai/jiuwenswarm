@@ -179,6 +179,7 @@ from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.xiaoyi_reference import resolve_append_reference_enabled
 from jiuwenswarm.agents.harness.common.rails.cspl import CsplConfig, CsplSentinelRail
 from jiuwenswarm.agents.harness.common.rails.todo_progress_rail import TodoProgressRail
+from jiuwenswarm.agents.harness.common.rails.todo_policy import build_product_task_planning_kwargs
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.server.runtime.agent_adapter.assembly_hooks import (
@@ -5262,7 +5263,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         不使用 todo，涉及工具调用/任务拆分的情景都需要调用 todo 工具。
         """
         try:
-            task_planning_rail = TaskPlanningRail(inject_prompt=True)
+            task_planning_rail = TaskPlanningRail(
+                inject_prompt=True,
+                **build_product_task_planning_kwargs(),
+            )
             logger.info("[JiuWenSwarmDeepAdapter] TaskPlanningRail create success")
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] TaskPlanningRail create failed: %s", exc)
