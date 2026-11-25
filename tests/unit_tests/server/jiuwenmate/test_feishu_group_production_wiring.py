@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from agent_gateway.channel_manager.persistent_events import FeishuInboundEvent as GatewayFeishuEvent, InboundDisposition as GatewayDisposition
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig

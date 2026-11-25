@@ -323,7 +323,7 @@ async def execute_core_agent(
 ) -> dict[str, Any]:
     """Run one delegated video task through the standard, full Core Agent API."""
     from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
-    from e2a.gateway_normalize import e2a_from_agent_fields
+    from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
     from jiuwenswarm.common.schema.message import ReqMethod
 
     client = (

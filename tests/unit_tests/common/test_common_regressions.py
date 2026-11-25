@@ -26,7 +26,8 @@ from agent_gateway.auth import session_store as store_mod
 from agent_gateway.auth.account_kit import Credential, LoginOutcome, OAuthError
 from agent_gateway.auth.service import AuthService
 import logging
-from e2a.message import ReqMethod as ProtocolReqMethod
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common import filesystem_paths
 import json
@@ -228,10 +229,11 @@ def test_a_test_without_caplog_leaves_propagation_alone():
     "CHAT_SEND", "A4P_CONFIG_GET", "A4P_CONFIG_UPDATE", "WORKSPACE_TREE",
     "FILE_READ_UPLOAD_CHUNK", "SKILLS_ENTERPRISE_INSTALL",
 ])
-def test_rpc_members_share_identity_across_protocol_consumers(name):
+def test_rpc_members_restore_local_identity_across_protocol_consumers(name):
     local = getattr(ReqMethod, name)
-    assert ReqMethod is ProtocolReqMethod
-    assert ProtocolReqMethod(local.value) is local
+    envelope = e2a_from_agent_fields(request_id="enterprise-method", req_method=local)
+    assert envelope.to_dict()["method"] == local.value
+    assert e2a_to_agent_request(envelope).req_method is local
 
 @pytest.mark.asyncio
 async def test_application_plugin_awaits_host_attachment_persistence():

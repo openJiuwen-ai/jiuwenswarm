@@ -2,12 +2,19 @@
 
 """Register a Swarm-owned request without changing the Gateway package."""
 
+from enum import StrEnum
 from typing import Any
 
 from agent_gateway.extensions.sdk import ApplicationPluginExtension
 from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
 from jiuwenswarm.common.schema.message import ReqMethod
+
+
+class _GatewayMethod(StrEnum):
+    """The Gateway reads .value for tracing; its E2A encoder accepts strings."""
+
+    ADD = ReqMethod.ORG_EXPERT_TEAMS_ADD.value
 
 
 class ExpertTeamsExtension(ApplicationPluginExtension):
@@ -24,13 +31,13 @@ class ExpertTeamsExtension(ApplicationPluginExtension):
             await proxy_unary_request(
                 channel=channel, ws=ws, req_id=req_id,
                 agent_client=services.require_agent_client(),
-                req_method=ReqMethod.ORG_EXPERT_TEAMS_ADD,
+                req_method=_GatewayMethod.ADD,
                 params=params, session_id=session_id,
                 user_id=channel.connection_user_id(ws),
-                timeout_seconds=180, label="org.expert_teams.add",
+                timeout_seconds=180, label=_GatewayMethod.ADD.value,
             )
 
-        channel.register_method("org.expert_teams.add", add_teams, local_only=True)
+        channel.register_method(_GatewayMethod.ADD.value, add_teams, local_only=True)
 
 
 async def register_extensions(registry: Any) -> list[ExpertTeamsExtension]:
