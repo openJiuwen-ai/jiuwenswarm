@@ -106,6 +106,9 @@ export function seedDesignerChatHistory(sessionId: string, messages: DesignerCha
   }
 }
 
+/** 当前版本不引入该特性：发送给 leader 时不附带 @ 提及节点 appendix。 */
+const DESIGNER_MENTION_APPENDIX_ENABLED = false;
+
 /**
  * One leader round: echo the user bubble, then ``chat.send(mode='team.design')``.
  * "@Label" mentions of canvas nodes reach the leader with their node ids appended.
@@ -134,7 +137,9 @@ export async function sendDesignerLeaderMessage(params: {
     await flushApplicationConversationHistory(sessionId);
     await webClient.request('chat.send', {
       session_id: sessionId,
-      query: withMentionAppendix(prompt, useDesignerStore.getState().domainGraph),
+      query: DESIGNER_MENTION_APPENDIX_ENABLED
+        ? withMentionAppendix(prompt, useDesignerStore.getState().domainGraph)
+        : prompt,
       mode: DESIGNER_TEAM_MODE,
       ...buildConversationModelPayload({
         mode: DESIGNER_TEAM_MODE,

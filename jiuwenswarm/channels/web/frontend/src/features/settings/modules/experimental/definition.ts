@@ -11,7 +11,8 @@ import {
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
-import { MusicGenSettings } from '../agent/AgentSettings';
+// 当前版本不引入该特性：不在设置页挂载音乐生成模型配置入口。
+// import { MusicGenSettings } from '../agent/AgentSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
   id: 'experimental',
@@ -156,7 +157,8 @@ export const experimentalModule: SettingsModuleDefinition = {
           component: 'switch',
           key: 'comfyui_workflow_enabled',
         },
-        { id: 'music-gen-settings', component: 'custom', render: MusicGenSettings },
+        // 当前版本不引入该特性：不展示音频生成模型配置与启用开关。
+        // { id: 'music-gen-settings', component: 'custom', render: MusicGenSettings },
       ],
     },
   ],

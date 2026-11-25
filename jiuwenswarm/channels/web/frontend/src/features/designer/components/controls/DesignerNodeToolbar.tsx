@@ -15,7 +15,7 @@ import {
   readMediaConfig,
   writeMediaGeneratePatch,
 } from '../../mediaNodeConfig';
-import { DESIGNER_NODE_ROLE_MUSIC, type DesignerComfyuiConfig } from '../../executionGraphTypes';
+import { type DesignerComfyuiConfig } from '../../executionGraphTypes';
 import { DesignerAudioSettingsMenu } from './DesignerAudioSettingsMenu';
 import { DesignerComfyuiParamsForm } from './DesignerComfyuiParamsForm';
 import { DesignerMaterialStrip } from './DesignerMaterialStrip';
@@ -42,8 +42,10 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const config = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.config ?? {},
   );
-  const generatesMusic = (config as { pipeline?: unknown }).pipeline === DESIGNER_NODE_ROLE_MUSIC;
-  const canGenerate = (nodeType !== 'audio' || generatesMusic) && !uploadedMedia;
+  // 当前版本不引入该特性：不在节点工具栏暴露音乐生成与时长设置入口。
+  // const generatesMusic = (config as { pipeline?: unknown }).pipeline === DESIGNER_NODE_ROLE_MUSIC;
+  // const canGenerate = (nodeType !== 'audio' || generatesMusic) && !uploadedMedia;
+  const canGenerate = nodeType !== 'audio' && !uploadedMedia;
   const media = readMediaConfig(config, nodeType);
   const comfyui =
     isMedia && isComfyuiNodeConfig(config)

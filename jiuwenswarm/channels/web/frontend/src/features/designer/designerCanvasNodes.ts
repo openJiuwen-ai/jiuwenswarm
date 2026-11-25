@@ -84,6 +84,14 @@ export const DESIGNER_ADD_TEMPLATES: DesignerAddTemplate[] = [
   },
 ];
 
+/**
+ * 当前版本不引入该特性：不在画布工具栏、端口加号菜单等前端入口提供 BGM / 音乐生成节点。
+ * 模板与构建逻辑仍保留在 DESIGNER_ADD_TEMPLATES 中，上传/素材库音频不受影响。
+ */
+export function isDesignerAddTemplateVisible(item: DesignerAddTemplate): boolean {
+  return item.id !== 'audio';
+}
+
 /** Dropped or uploaded audio files stay plain audio references, not BGM. */
 const UPLOADED_AUDIO_TEMPLATE: DesignerAddTemplate = {
   id: 'audio',
