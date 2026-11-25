@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import datetime
 import hashlib
 import json
@@ -14,6 +15,7 @@ import re
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import Future, InvalidStateError
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +38,8 @@ _WORKER_LOCK = threading.Lock()
 _LEGACY_HISTORY_FILENAME = "history.json"
 _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
+_BOOTSTRAP_ERRORS: OrderedDict[Path, tuple[tuple[int, int, int, int, int], str, str]] = OrderedDict()
+_BOOTSTRAP_ERROR_LOCK = threading.Lock()
 _PROBE_OK_TOKENS = {"HEALTH_CHECK_OK", "HEARTBEAT_OK"}
 SESSION_REQUEST_TERMINAL_STATUSES = frozenset({
     "success",
@@ -186,6 +190,8 @@ def project_completed_session_prefix(
     for ordinal, record in enumerate(records):
         if not isinstance(record, dict):
             continue
+        if record.get("transcript_only") is True:
+            continue
         request_id = str(record.get("request_id") or "").strip()
         role = str(record.get("role") or "").strip().lower()
         if not request_id:
@@ -307,6 +313,23 @@ def project_completed_session_records(
         else:
             projected.append(record)
     return projected
+
+
+@dataclass(frozen=True)
+class PreparedHistoryRecord:
+    """A canonical record and host-only facts for its metadata update."""
+
+    session_id: str
+    record: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+class HistoryAppendConflict(ValueError):
+    """An existing append identity has a different original request."""
+
+
+class HistoryAppendOutcomeUnknown(OSError):
+    """A failed write could not be rolled back to its original length."""
 
 
 def collapse_file_content_blocks(content: str) -> str:
@@ -500,9 +523,8 @@ def _has_persistable_assistant_payload(
     if et == "chat.ask_user_answer":
         answers = payload.get("answers")
         return isinstance(answers, list) and bool(answers)
-    # Prompt / usage capture records — no display content but persisted so
-    # the exact LLM prompt can be retrieved offline.
-    if et == "chat.llm_call_start" and str(payload.get("prompt") or "").strip():
+    # Persist lifecycle and usage records even without a prompt body.
+    if et == "chat.llm_call_start":
         return True
     if et == "chat.usage_metadata" and payload.get("metadata"):
         return True
@@ -724,18 +746,19 @@ def _read_history(path: Path) -> list[dict[str, Any]]:
     return []
 
 
-def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
+def iter_history_jsonl_rows(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield one parsed, file-content-collapsed row per JSONL line.
 
-    records: list[dict[str, Any]] = []
-    try:
-        # JSONL records are delimited by "\n" only. Do NOT use str.splitlines():
-        # inlined file bodies may contain Unicode line separators (U+2028 etc.)
-        # that splitlines() treats as breaks, corrupting a single JSON object
-        # into fragments and dropping the user turn on refresh.
-        text = path.read_text(encoding="utf-8")
-        for lineno, raw_line in enumerate(text.split("\n"), start=1):
+    Iterating the file keeps a transcript out of memory. JSONL records are
+    delimited by "\\n" only — do NOT use str.splitlines(): inlined file bodies
+    may contain Unicode line separators (U+2028 etc.) that splitlines() treats
+    as breaks, corrupting one JSON object into fragments and dropping the user
+    turn on refresh.
+    """
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as source:
+        for lineno, raw_line in enumerate(source, start=1):
             line = raw_line.rstrip("\r").strip()
             if not line:
                 continue
@@ -746,26 +769,30 @@ def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
                     "读取 history.jsonl 第 %d 行失败，已跳过: %s", lineno, exc
                 )
                 continue
-            if isinstance(item, dict):
-                content = item.get("content")
-                if (
-                    item.get("role") in {"user", "human"}
-                    and isinstance(content, str)
-                    and "<file-content" in content
-                ):
-                    item = dict(item)
-                    item["content"] = collapse_file_content_blocks(content)
-                records.append(item)
-            else:
+            if not isinstance(item, dict):
                 logger.warning(
                     "读取 history.jsonl 第 %d 行不是对象记录，已跳过: %s",
                     lineno,
                     type(item).__name__,
                 )
+                continue
+            content = item.get("content")
+            if (
+                item.get("role") in {"user", "human"}
+                and isinstance(content, str)
+                and "<file-content" in content
+            ):
+                item = dict(item)
+                item["content"] = collapse_file_content_blocks(content)
+            yield item
+
+
+def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
+    try:
+        return list(iter_history_jsonl_rows(path))
     except Exception as exc:  # noqa: BLE001
         logger.warning("读取 history.jsonl 失败，已忽略: %s", exc)
         return []
-    return records
 
 
 def load_history_records(session_id: str, *, subagent_id: str | None = None) -> list[dict[str, Any]]:
@@ -778,6 +805,35 @@ def load_history_records(session_id: str, *, subagent_id: str | None = None) -> 
 def flush_history_writes() -> None:
     """Wait until all history records queued before this call are durable."""
     WRITE_QUEUE.join()
+
+
+def read_committed_main_history(session_id: str) -> list[dict[str, Any]] | None:
+    """Read a strict main-transcript snapshot after the queued-write boundary.
+
+    Unlike display-oriented history readers, this statistics input must not
+    silently turn corrupted or unavailable records into an empty transcript.
+    No session directory is created. Call from a worker thread.
+    """
+    if not session_id or not is_valid_session_id(session_id):
+        raise ValueError("invalid session_id")
+    if not flush_pending_writes():
+        raise TimeoutError("session history write boundary timed out")
+    with FILE_LOCK:
+        path = get_read_history_path(session_id)
+        if not path.parent.is_dir():
+            return None
+        if not path.exists():
+            return []
+        if path.resolve().parent != path.parent.resolve():
+            raise ValueError("session history path escapes managed storage")
+        text = path.read_text(encoding="utf-8")
+        records = (
+            [json.loads(line) for line in text.split("\n") if line.strip()]
+            if path.suffix.lower() == ".jsonl" else json.loads(text)
+        )
+        if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+            raise ValueError("session history must contain object records")
+        return records
 
 
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
@@ -822,6 +878,14 @@ def _write_records_unfenced(path: Path, records: list[dict[str, Any]]) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(temporary_path, path)
+    from jiuwenswarm.server.runtime.session.history_replay import invalidate_history_head
+
+    invalidate_history_head(path)
+    sid = _managed_history_session_id(path)
+    if sid is not None:
+        from jiuwenswarm.server.runtime.session.context_snapshot import invalidate_snapshot_hint
+
+        invalidate_snapshot_hint(sid)
 
 
 def _append_record_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -836,9 +900,18 @@ def _append_record_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 def _append_record_unfenced(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    sid = _managed_history_session_id(path)
+    if sid is not None:
+        from jiuwenswarm.server.runtime.session.history_artifacts import externalize_history_record
+
+        record = externalize_history_record(sid, record)
+    before = path.stat() if path.exists() else None
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False))
         fh.write("\n")
+    from jiuwenswarm.server.runtime.session.history_replay import note_history_append
+
+    note_history_append(path, record, before)
 
 
 def _ensure_jsonl_bootstrap(session_id: str) -> Path:
@@ -848,8 +921,37 @@ def _ensure_jsonl_bootstrap(session_id: str) -> Path:
 
     legacy_path = _history_file(session_id)
     if legacy_path.exists():
-        legacy_records = _read_history(legacy_path)
-        _write_records_to_path(jsonl_path, legacy_records)
+        from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError, _identity
+        from jiuwenswarm.server.runtime.session.history_stream import convert_legacy_jsonl
+
+        identity = _identity(legacy_path.stat())
+        with _BOOTSTRAP_ERROR_LOCK:
+            failure = _BOOTSTRAP_ERRORS.get(legacy_path)
+        if failure is not None and failure[0] == identity:
+            raise HistoryReplayError("Legacy conversion remains blocked until the source changes: " + failure[2],
+                                     code=failure[1])
+        try:
+            convert_legacy_jsonl(session_id, legacy_path, jsonl_path)
+        except HistoryReplayError as exc:
+            if exc.code in {"HISTORY_RESTORE_FAILED", "HISTORY_RESTORE_LIMIT"}:
+                with _BOOTSTRAP_ERROR_LOCK:
+                    _BOOTSTRAP_ERRORS[legacy_path] = (identity, exc.code, str(exc))
+                    _BOOTSTRAP_ERRORS.move_to_end(legacy_path)
+                    while len(_BOOTSTRAP_ERRORS) > 128:
+                        _BOOTSTRAP_ERRORS.popitem(last=False)
+            logger.error("Legacy history conversion failed; original preserved: session=%s code=%s error=%s",
+                         session_id, exc.code, exc)
+            raise
+        except OSError as exc:
+            logger.error(
+                "Legacy history conversion I/O failed; original preserved: "
+                "session=%s code=HISTORY_RESTORE_FAILED",
+                session_id,
+                exc_info=True,
+            )
+            raise HistoryReplayError("Legacy history conversion I/O failed") from exc
+        with _BOOTSTRAP_ERROR_LOCK:
+            _BOOTSTRAP_ERRORS.pop(legacy_path, None)
     else:
         jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     return jsonl_path
@@ -858,6 +960,35 @@ def _ensure_jsonl_bootstrap(session_id: str) -> Path:
 def _cursor_stream_key(session_id: str, subagent_id: str | None) -> str:
     raw = f"{session_id}\0{subagent_id or ''}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def read_history_index_page(
+    session_id: str,
+    *,
+    page_idx: int,
+    page_size: int,
+    is_restorable: Callable[[dict[str, Any]], bool],
+    subagent_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Drain writes and read one legacy page without materializing all history."""
+    from jiuwenswarm.server.runtime.session.history_paging import read_indexed_history
+
+    def restorable_record(record: dict[str, Any]) -> bool:
+        content = record.get("content")
+        if record.get("role") in {"user", "human"} and isinstance(content, str):
+            record["content"] = collapse_file_content_blocks(content)
+        return is_restorable(record)
+
+    with _QUEUE_ENQUEUE_LOCK:
+        WRITE_QUEUE.join()
+        with FILE_LOCK:
+            path = get_read_history_path(session_id, subagent_id=subagent_id)
+            source_stat = path.stat()
+    # Release global locks before scanning the committed prefix.
+    return read_indexed_history(
+        path, session_id=session_id, page_idx=page_idx, page_size=page_size,
+        is_restorable=restorable_record, source_stat=source_stat,
+    )
 
 
 def _encode_history_cursor(payload: dict[str, Any]) -> str:
@@ -962,6 +1093,11 @@ def read_history_cursor_page(
         raise InvalidHistoryCursor("history limit must be positive")
     if read_block_bytes <= 0:
         raise InvalidHistoryCursor("history read block size must be positive")
+
+    from jiuwenswarm.server.runtime.session.history_artifacts import ARTIFACT_CURSOR_PREFIX, read_artifact_cursor
+
+    if isinstance(cursor, str) and cursor.startswith(ARTIFACT_CURSOR_PREFIX):
+        return read_artifact_cursor(normalized_session_id, cursor)
 
     stream_key = _cursor_stream_key(normalized_session_id, normalized_subagent_id)
     cursor_payload = _decode_history_cursor(cursor) if cursor is not None else None
@@ -1091,8 +1227,9 @@ def _ensure_legacy_json_bootstrap(session_id: str) -> Path:
 
     jsonl_path = _history_jsonl_file(session_id)
     if jsonl_path.exists():
-        jsonl_records = _read_history_jsonl(jsonl_path)
-        _write_records_to_path(legacy_path, jsonl_records)
+        from jiuwenswarm.server.runtime.session.history_stream import rewrite_legacy_json
+
+        rewrite_legacy_json(session_id, jsonl_path, legacy_path)
     else:
         legacy_path.parent.mkdir(parents=True, exist_ok=True)
     return legacy_path
@@ -1154,37 +1291,43 @@ def _is_team_relevant(item: dict[str, Any]) -> bool:
     return False
 
 
-def read_team_history_records(session_id: str) -> list[dict[str, Any]]:
-    """读取指定会话的历史记录，仅返回 team 模式相关的记录。"""
+def _load_history_records_with_retry(
+    session_id: str,
+    *,
+    label: str,
+) -> list[dict[str, Any]]:
+    """Read all records, retrying the non-atomic write window.
+
+    ``write_text`` truncates before writing, so a read landing in that window
+    sees an empty file; retry with increasing waits instead of mistaking a
+    rewrite for a deleted session.
+    """
     fpath = get_read_history_path(session_id)
     all_records = load_history_records(session_id)
-    # write_text 非原子写入（先截断再写入），读取可能命中截断窗口，
-    # 用递增间隔重试最多 5 次等待写入完成
-    if not all_records and fpath.exists():
-        for attempt in range(1, 6):
-            time.sleep(0.2 * attempt)
-            all_records = load_history_records(session_id)
-            if all_records:
-                logger.info("read_team_history_records: recovered on retry %d", attempt)
-                break
-        if not all_records:
-            logger.warning(
-                "read_team_history_records: all retries exhausted, file_size=%d",
-                fpath.stat().st_size,
-            )
+    if all_records or not fpath.exists():
+        return all_records
+    for attempt in range(1, 6):
+        time.sleep(0.2 * attempt)
+        all_records = load_history_records(session_id)
+        if all_records:
+            logger.info("%s: recovered on retry %d", label, attempt)
+            break
+    if not all_records:
+        logger.warning(
+            "%s: all retries exhausted, file_size=%d", label, fpath.stat().st_size
+        )
+    return all_records
 
+
+def read_team_history_records(session_id: str) -> list[dict[str, Any]]:
+    """读取指定会话的历史记录，仅返回 team 模式相关的记录。"""
+    records = _load_history_records_with_retry(
+        session_id, label="read_team_history_records"
+    )
     return [
-        item
-        for item in all_records
+        item for item in records
         if isinstance(item, dict) and _is_team_relevant(item)
     ]
-
-
-def _read_history_by_path(path: Path) -> list[dict[str, Any]]:
-    """根据文件扩展名选择正确的读取函数。"""
-    if path.suffix.lower() == ".jsonl":
-        return _read_history_jsonl(path)
-    return _read_history(path)
 
 
 def _is_member_relevant(item: dict[str, Any], member_name: str) -> bool:
@@ -1258,26 +1401,10 @@ def read_session_history_records(session_id: str) -> list[dict[str, Any]]:
 
     用于 auto memory 功能提取对话消息。
     """
-    fpath = get_read_history_path(session_id)
-    all_records = _read_history_by_path(fpath)
-    # write_text 非原子写入（先截断再写入），读取可能命中截断窗口，
-    # 用递增间隔重试最多 5 次等待写入完成
-    if not all_records and fpath.exists():
-        for attempt in range(1, 6):
-            time.sleep(0.2 * attempt)
-            all_records = _read_history_by_path(fpath)
-            if all_records:
-                logger.info(
-                    "read_session_history_records: recovered on retry %d", attempt
-                )
-                break
-        if not all_records:
-            logger.warning(
-                "read_session_history_records: all retries exhausted, file_size=%d",
-                fpath.stat().st_size,
-            )
-
-    return [item for item in all_records if isinstance(item, dict)]
+    records = _load_history_records_with_retry(
+        session_id, label="read_session_history_records"
+    )
+    return [item for item in records if isinstance(item, dict)]
 
 
 def _write_item(
@@ -1285,7 +1412,7 @@ def _write_item(
     item: dict[str, Any],
     *,
     subagent_id: str | None = None,
-    require_written: bool = False,
+    require_write: bool = False,
 ) -> None:
     with FILE_LOCK:
         if subagent_id:
@@ -1295,8 +1422,8 @@ def _write_item(
                 create=True,
             )
             if error is not None or target_path is None:
-                if require_written:
-                    raise ValueError(f"subagent history target rejected: {error or 'invalid path'}")
+                if require_write:
+                    raise ValueError(error or "invalid subagent history target")
                 logger.warning(
                     "skip subagent history write: session_id=%s subagent_id=%s error=%s",
                     session_id,
@@ -1314,15 +1441,17 @@ def _write_item(
 
         if use_legacy_history_json():
             target_path = _ensure_legacy_json_bootstrap(session_id)
-            records = _read_history(target_path)
-            if _is_error_record(item) and _has_request_error(records, item):
-                return
-            records.append(item)
-            _write_records_to_path(target_path, records)
+            from jiuwenswarm.server.runtime.session.history_artifacts import externalize_history_record
+            from jiuwenswarm.server.runtime.session.history_stream import rewrite_legacy_json
+
+            item = externalize_history_record(session_id, item)
+            skip_append = (lambda record: _has_request_error([record], item)) if _is_error_record(item) else None
+            rewrite_legacy_json(session_id, target_path, target_path, append_record=item,
+                                skip_append=skip_append)
             return
 
         target_path = _ensure_jsonl_bootstrap(session_id)
-        if _is_error_record(item) and _has_request_error(_read_history_jsonl(target_path), item):
+        if _is_error_record(item) and _has_request_error(_iter_error_records(target_path), item):
             return
         _append_record_jsonl(target_path, item)
 
@@ -1333,7 +1462,31 @@ def _is_error_record(item: dict[str, Any]) -> bool:
     }
 
 
-def _has_request_error(records: list[dict[str, Any]], item: dict[str, Any]) -> bool:
+def _iter_error_records(path: Path) -> Iterator[dict[str, Any]]:
+    """Error persistence must not load a failing session's full audit history."""
+    if not path.exists():
+        return
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayLimits
+
+    limit = HistoryReplayLimits().max_record_bytes
+    with path.open("rb") as source:
+        while True:
+            raw = source.readline(limit + 1)
+            if not raw:
+                return
+            if len(raw) > limit:
+                while raw and not raw.endswith(b"\n"):
+                    raw = source.readline(64 * 1024)
+                continue
+            try:
+                record = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeError):
+                continue
+            if isinstance(record, dict) and _is_error_record(record):
+                yield record
+
+
+def _has_request_error(records: Iterator[dict[str, Any]] | list[dict[str, Any]], item: dict[str, Any]) -> bool:
     """Deduplicate cron fallback and primary error regardless of write order."""
     if not item.get("request_id") or item.get("role") != "assistant":
         return False
@@ -1369,10 +1522,7 @@ def _ensure_worker_started() -> None:
                         from jiuwenswarm.server.runtime.session import lifecycle as lc
                         with lc.resource_lock("session", sid):
                             lc.write_guard(sid, generation)
-                            if receipt is not None and subagent_id:
-                                _write_item(sid, item, subagent_id=subagent_id, require_written=True)
-                            else:
-                                _write_item(sid, item, subagent_id=subagent_id)
+                            _write_item(sid, item, subagent_id=subagent_id, require_write=receipt is not None)
                     context.run(write)
                 except Exception as exc:  # noqa: BLE001
                     _settle_history_receipt(receipt, error=exc)
@@ -1473,7 +1623,7 @@ def resolve_final_record_timestamp(
     return segment_started_at
 
 
-def append_history_record(
+def prepare_history_record(
     *,
     session_id: str,
     request_id: str,
@@ -1486,15 +1636,8 @@ def append_history_record(
     channel_metadata: dict[str, Any] | None = None,
     mode: str | None = None,
     subagent_id: str | None = None,
-    wait_for_write: bool = False,
-) -> None:
-    """Append history, optionally awaiting this exact writer-owned receipt.
-
-    The default preserves asynchronous queue admission. ``wait_for_write=True``
-    must run off the event loop: it waits without a timeout or re-enqueue until
-    the writer has either appended this record or raised its actual error.
-    Filtered heartbeat/empty assistant records intentionally perform no write.
-    """
+) -> PreparedHistoryRecord | None:
+    """Build a canonical history record without performing persistence."""
     sid = (session_id or "default").strip() or "default"
     if _is_ephemeral_heartbeat_session(sid):
         logger.debug(
@@ -1502,7 +1645,7 @@ def append_history_record(
             sid,
             event_type,
         )
-        return
+        return None
     rid = str(request_id or "").strip()
     cid = str(channel_id or "").strip()
     role_norm = "assistant" if role == "assistant" else "user"
@@ -1517,7 +1660,7 @@ def append_history_record(
             sid,
             event_type or "",
         )
-        return
+        return None
 
     item: dict[str, Any] = {
         "id": f"{rid}:{role_norm}",
@@ -1548,18 +1691,24 @@ def append_history_record(
     if mode:
         item["mode"] = str(mode)
 
+    return PreparedHistoryRecord(sid, item, {
+        "request_id": rid, "channel_id": cid, "role": role_norm,
+        "content": content_text, "timestamp": float(timestamp), "extra": extra,
+        "channel_metadata": channel_metadata, "mode": mode, "subagent_id": subagent_id,
+    })
+
+
+def _update_history_record_metadata(prepared: PreparedHistoryRecord) -> None:
+    facts = prepared.metadata
+    sid, rid, cid = prepared.session_id, facts["request_id"], facts["channel_id"]
+    role_norm, content_text = facts["role"], facts["content"]
+    timestamp, extra = facts["timestamp"], facts["extra"]
+    channel_metadata, mode, subagent_id = facts["channel_metadata"], facts["mode"], facts["subagent_id"]
     is_cross_session_user = bool(
         role_norm == "user"
         and isinstance(extra, dict)
         and extra.get("message_origin") == SESSION_MESSAGE_ORIGIN
     )
-
-    if wait_for_write:
-        receipt: Future[None] = Future()
-        _enqueue_history_item(sid, item, subagent_id=subagent_id, receipt=receipt)
-        receipt.result()
-    else:
-        _enqueue_history_item(sid, item, subagent_id=subagent_id)
 
     # 更新会话元数据
     try:
@@ -1605,6 +1754,159 @@ def append_history_record(
             )
     except Exception as exc:
         logger.warning("更新会话元数据失败: %s", exc)
+
+
+def enqueue_ask_user_stop(
+    *,
+    session_id: str,
+    request_id: str,
+    timestamp: float,
+    question_ids: set[str] | None = None,
+) -> Future[None] | None:
+    """Persist a confirmed stop boundary in the session history."""
+    if question_ids == set() or not history_exists(session_id):
+        return None
+    record = {
+        "id": f"{request_id}:ask_user_closed",
+        "role": "assistant",
+        "request_id": request_id,
+        "channel_id": "web",
+        "timestamp": timestamp,
+        "content": "",
+        "event_type": "chat.ask_user_closed",
+    }
+    if question_ids is not None:
+        record["question_request_ids"] = sorted(question_ids)
+    receipt: Future[None] = Future()
+    _enqueue_history_item(session_id, record, receipt=receipt)
+    return receipt
+
+
+def _precheck_workspace_quota_for_history_append(item: dict[str, Any]) -> None:
+    """会话历史追加前的配额门禁（设计 §2.3）。
+
+    满额抛 ``WorkspaceQuotaExceeded``；特性关闭或门禁依赖不可用时不阻断。
+    """
+    try:
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+            WorkspaceQuotaExceeded,
+            check_workspace_write,
+            is_workspace_quota_enabled,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if not is_workspace_quota_enabled():
+        return
+    try:
+        approx = len(
+            json.dumps(item, ensure_ascii=False, default=str).encode("utf-8")
+        ) + 1  # jsonl 换行
+        check_workspace_write(additional_bytes=max(64, approx))
+    except WorkspaceQuotaExceeded:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[workspace.quota] history precheck skipped: %s", exc)
+
+
+def append_history_record(
+    *,
+    session_id: str,
+    request_id: str,
+    channel_id: str,
+    role: str,
+    content: Any,
+    timestamp: float,
+    event_type: str | None = None,
+    extra: dict[str, Any] | None = None,
+    channel_metadata: dict[str, Any] | None = None,
+    mode: str | None = None,
+    subagent_id: str | None = None,
+    wait_for_write: bool = False,
+) -> None:
+    """Queue a canonical record using the existing asynchronous writer."""
+    prepared = prepare_history_record(
+        session_id=session_id, request_id=request_id, channel_id=channel_id,
+        role=role, content=content, timestamp=timestamp, event_type=event_type,
+        extra=extra, channel_metadata=channel_metadata, mode=mode, subagent_id=subagent_id,
+    )
+    if prepared is None:
+        return
+    # §2.3：会话历史落盘前查配额；满额拒绝本条追加（与 origin/dev-stable 对齐）。
+    _precheck_workspace_quota_for_history_append(prepared.record)
+    if wait_for_write:
+        receipt: Future[None] = Future()
+        _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id, receipt=receipt)
+        receipt.result()
+    else:
+        _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id)
+    _update_history_record_metadata(prepared)
+
+
+def _iter_committed_history(path: Path) -> Iterator[dict[str, Any]]:
+    if path.suffix != ".jsonl":
+        yield from (row for row in _read_history(path) if isinstance(row, dict))
+        return
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def commit_history_record(
+    prepared: PreparedHistoryRecord,
+    *,
+    append_key: str,
+    fingerprint: str,
+    update_metadata: bool,
+) -> tuple[dict[str, Any], bool]:
+    """Commit after queued writes, returning the stored record and duplicate flag.
+
+    No extension code executes while queue/file/lifecycle locks are held.
+    The deduplication marker is written in the same record as its content.
+    """
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    sid = prepared.session_id
+    if prepared.metadata.get("subagent_id"):
+        raise ValueError("committed appends only support main session history")
+    with _QUEUE_ENQUEUE_LOCK:
+        WRITE_QUEUE.join()
+        with FILE_LOCK, lc.resource_lock("session", sid):
+            lc.write_guard(sid, generation=prepared.metadata.get("append_generation"))
+            path = _ensure_legacy_json_bootstrap(sid) if use_legacy_history_json() else _ensure_jsonl_bootstrap(sid)
+            for previous in _iter_committed_history(path):
+                marker = previous.get("_session_append")
+                if isinstance(marker, dict) and marker.get("key") == append_key:
+                    if marker.get("fingerprint") != fingerprint:
+                        raise HistoryAppendConflict("append identity already has different content")
+                    return copy.deepcopy(previous), True
+            record = copy.deepcopy(prepared.record)
+            record["_session_append"] = {"key": append_key, "fingerprint": fingerprint}
+            if path.suffix == ".jsonl":
+                previous_size = path.stat().st_size if path.exists() else 0
+                try:
+                    _append_record_unfenced(path, record)
+                except OSError:
+                    try:
+                        if path.exists():
+                            with path.open("r+b") as stream:
+                                stream.truncate(previous_size)
+                    except OSError as rollback_error:
+                        raise HistoryAppendOutcomeUnknown("history append rollback failed") from rollback_error
+                    raise
+            else:
+                records = _read_history(path)
+                records.append(record)
+                _write_records_unfenced(path, records)
+    if update_metadata:
+        _update_history_record_metadata(prepared)
+    return record, False
 
 
 def enqueue_history_request_completion(

@@ -18,6 +18,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
+import portalocker
+
 if TYPE_CHECKING:
     from jiuwenswarm.enterprise.team.control_store import OwnerIdentity
 
@@ -60,11 +62,11 @@ def _purge_mysql(
     """Read and delete team rows in one MySQL call, then drop the local binding."""
     from sqlalchemy import text
 
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import get_team_mysql_actor, run_tx
+    from jiuwenswarm.infrastructure.db.team_store_actor import get_team_store_actor, run_tx
     from jiuwenswarm.enterprise.team.control_store import TEAM_STATUS_DELETED
     from jiuwenswarm.enterprise.team.quota import KIND_TEAM_CREATE, team_create_key
 
-    actor = get_team_mysql_actor()
+    actor = get_team_store_actor()
     key = team_create_key(session_id) if session_id else ""
 
     async def _op() -> tuple[bool, str | None]:
@@ -291,7 +293,7 @@ def purge_team_for_deleted_session(
     if not sid and not name:
         return None
 
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import use_team_mysql
+    from jiuwenswarm.infrastructure.db.team_store_actor import use_shared_team_store
     from jiuwenswarm.enterprise.team.quota import get_team_quota_service
 
     # Injected SQLite stores keep the original path. Production MySQL uses one call.
@@ -300,7 +302,7 @@ def purge_team_for_deleted_session(
         quota_on_mysql = bool(get_team_quota_service().use_mysql())
     except Exception:  # noqa: BLE001
         quota_on_mysql = False
-    if use_team_mysql() and quota_on_mysql:
+    if use_shared_team_store() and quota_on_mysql:
         return _purge_mysql(
             session_id=sid,
             team_name=name,
@@ -496,11 +498,18 @@ def _sweep_lock(volume: Path) -> Iterator[None]:
     """One AgentServer replica sweeps at a time. The purge itself is idempotent."""
     import portalocker
 
-    with portalocker.Lock(
-        str(volume / _SWEEP_LOCK_NAME), mode="a+",
-        flags=portalocker.LOCK_EX, timeout=None,
-    ):
-        yield
+    with (volume / _SWEEP_LOCK_NAME).open("a+") as handle:
+        while True:
+            try:
+                portalocker.lock(handle, portalocker.LOCK_EX)
+                break
+            except portalocker.AlreadyLocked:
+                # Windows blocking byte-range locks have a finite retry period.
+                continue
+        try:
+            yield
+        finally:
+            portalocker.unlock(handle)
 
 
 def reconcile_teams_with_sessions(*, identity: OwnerIdentity | None = None) -> int:
@@ -591,7 +600,7 @@ async def wait_for_startup_sweep() -> None:
 
 async def run_startup_sweep() -> int:
     """Sweep once. There is no repeating interval."""
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
     try:
         purged = await run_team_store(reconcile_teams_with_sessions)

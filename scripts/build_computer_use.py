@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 import shutil
 import subprocess
@@ -28,11 +29,12 @@ def bundle_data(project_root: Path) -> list[tuple[str, str]]:
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
+    macos_bundle: Path | None = None
     if sys.platform == "darwin":
         source = executable.parents[2]
-        destination = stage / source.relative_to(root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source, destination, symlinks=True)
+        macos_bundle = stage / source.relative_to(root)
+        macos_bundle.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, macos_bundle, symlinks=True)
     else:
         for source in (executable, executable.with_name("computer-use-capture.exe"),
                        executable.with_name("Interop.NativeUIA.dll")):
@@ -40,20 +42,41 @@ def bundle_data(project_root: Path) -> list[tuple[str, str]]:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
     assets = root / "os_adapter/assets"
-    shutil.copytree(assets, stage / "os_adapter/assets")
+    # Windows wheels can ship only the prebuilt driver bundle and its metadata.
+    backend_manifest = root / "backend.json"
+    prebuilt_windows = sys.platform == "win32" and backend_manifest.is_file()
+    if not prebuilt_windows or assets.exists():
+        shutil.copytree(assets, stage / "os_adapter/assets")
+    if prebuilt_windows:
+        shutil.copy2(backend_manifest, stage / backend_manifest.name)
     # The external SDK materializes these immutable resources by manifest hash.
     # Include native binaries in the identity so upgrades cannot reuse an old driver.
     manifest = {path.relative_to(stage).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in sorted(stage.rglob("*")) if path.is_file()}
     (stage / "manifest.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
-    return [(str(path), str(RESOURCE_DESTINATION / path.relative_to(stage).parent))
-            for path in sorted(stage.rglob("*")) if path.is_file()]
+    # PyInstaller separates binaries from data on macOS. Restore the signed app
+    # as a whole during finalization, keeping its staged files in the manifest.
+    return [
+        (str(path), str(RESOURCE_DESTINATION / path.relative_to(stage).parent))
+        for path in sorted(stage.rglob("*"))
+        if path.is_file() and (macos_bundle is None or not path.is_relative_to(macos_bundle))
+    ]
+
+
+def macos_bundle_relative_path(root: Path) -> Path:
+    """Return the macOS app path relative to the SDK resource root."""
+    from computer_use.paths import native_driver
+
+    root = root.resolve()
+    executable = Path(native_driver(platform="darwin", root=root)["command"])
+    return (root / executable).resolve().relative_to(root).parents[2]
 
 
 def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle: Path) -> None:
     """Preserve the signed helper bundle after PyInstaller resource relocation."""
-    relative = Path("os_adapter/macos/.build/ComputerUseDriver.app")
-    source = project_root / "build/computer-use/resources" / relative
+    stage = project_root / "build/computer-use/resources"
+    relative = macos_bundle_relative_path(stage)
+    source = stage / relative
     for runtime_root in (collection_root, app_bundle / "Contents/Resources"):
         destination = runtime_root / RESOURCE_DESTINATION / relative
         if destination.is_symlink():
@@ -63,3 +86,10 @@ def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, destination, symlinks=True)
     subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app_bundle)], check=True)
+
+
+if __name__ == "__main__":
+    stage = Path(__file__).resolve().parents[1] / "build/computer-use/resources"
+    name = macos_bundle_relative_path(stage).name
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+    logging.getLogger(__name__).info("%s", name)

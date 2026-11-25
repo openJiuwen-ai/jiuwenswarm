@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""cron 数据结构契约：``openjiuwen_protocol.cron_models`` 为唯一 source of truth。
+"""cron 数据结构契约：``e2a.cron_models`` 为唯一 source of truth。
 
 两仓只子类化并补充行为（to_dict / from_dict），不得重新声明字段或改变默认可变性。
 本用例锁定「可变 dataclass + 字段集合 + 默认值 + 常量」四项，防止协议仓或本仓
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from openjiuwen_protocol import cron_models as protocol
+from e2a import cron_models as protocol
 
 from agent_gateway.runtime.cron import models as gateway_models
 from jiuwenswarm.runtime.cron import models as jiuwenswarm_models

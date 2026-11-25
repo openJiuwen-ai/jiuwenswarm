@@ -23,7 +23,7 @@ import pytest
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.ipc.protocol import IpcError, KIND_HEARTBEAT, KIND_WIRE, encode_frame
 from jiuwenswarm.server.ipc import stream as stream_module
-from jiuwenswarm.server.ipc.stream import PipeConnection
+from jiuwenswarm.server.ipc.stream import IpcConnection, PipeConnection
 from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.supervisor import runtime_supervisor as module
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
@@ -42,13 +42,19 @@ def _capture_supervisor_logs(caplog):
         module.logger.removeHandler(caplog.handler)
 
 
-class _Connection:
+class _Connection(IpcConnection):
     def __init__(self) -> None:
+        super().__init__()
         self.messages: asyncio.Queue[dict] = asyncio.Queue()
         self.closed = False
 
     async def recv(self) -> dict:
-        return await self.messages.get()
+        frame = await self.messages.get()
+        self._record_frame(frame)
+        return frame
+
+    async def send(self, frame) -> None:
+        pass
 
     async def close(self) -> None:
         self.closed = True

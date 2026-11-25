@@ -9,25 +9,28 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
 
 from jiuwenswarm.common._build_config import PACKAGE_NAME
 from jiuwenswarm.common.config import get_config_raw
-from jiuwenswarm.common.version import __version__, get_runtime_build_date, get_runtime_version
+from jiuwenswarm.common.version import get_runtime_build_date, get_runtime_version
 from jiuwenswarm.common.upgrade_executor import create_executor
 from jiuwenswarm.common.version_source import (
+    PYPI_INDEX_URL,
     GitHubReleasesSource,
     GitCodeReleasesSource,
     PyPIVersionSource,
     ReleaseAsset,
     ReleaseInfo,
+    is_newer_distribution_version,
+    normalize_pypi_index_url,
+    pypi_project_url,
     release_timestamp_key,
+    strip_build_suffix,
 )
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
 DEFAULT_RELEASE_API_GITCODE = "https://api.gitcode.com/api/v5/repos/{owner}/{repo}/releases/latest"
 DEFAULT_RELEASE_API_GITHUB = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
-DEFAULT_RELEASE_API_PYPI = "https://pypi.org/simple/{package}/"
 DEFAULT_ASSET_PATTERN_LINUX = "JiuwenSwarm-{version}.tar.gz"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_TEXT = "WbrW92Yn6jif-4Ks3kvzhWVv"
@@ -40,7 +43,7 @@ DEFAULT_SOURCE_CONFIG: dict[str, Any] = {
     "repo_name": "jiuwenswarm",
     "package_name": PACKAGE_NAME,
     "release_api_url": "",
-    "pypi_mirror": "https://mirrors.aliyun.com/pypi",
+    "pypi_mirror": "https://mirrors.aliyun.com/pypi/simple/",
     "asset_name_pattern": "",
     "asset_name_pattern_windows": "",
     "asset_name_pattern_macos": "",
@@ -63,9 +66,12 @@ def _is_newer_version(candidate: str, current: str) -> bool:
       dev < alpha < beta < rc < pre.
     - Within the same type, a larger pre-release number is newer
       (``0.2.3.beta2`` > ``0.2.3.beta1``).
+
+    Build-date suffixes are normalized on both sides so a daily channel can
+    offer the next day's build while never ranking a daily build below the
+    release it was cut from (#6849).
     """
-    from jiuwenswarm.common.version_source import release_sort_key
-    return release_sort_key(candidate) > release_sort_key(current)
+    return is_newer_distribution_version(candidate, current)
 
 
 def _is_newer_release(candidate_published_at: str, current_published_at: str) -> bool:
@@ -307,8 +313,18 @@ class UpdaterService:
 
     def _check(self, config: dict[str, Any]) -> None:
         source = self._create_version_source(config)
+        # Compare against the installed distribution version, the same value the
+        # status reports as current_version. Daily wheel builds can carry a
+        # distribution version that differs from the packaged source version,
+        # and comparing different bases made the panel advertise an "upgrade" to
+        # an older release (#6849).
+        current_version = get_runtime_version()
+        # A dated build suffix (``0.2.9.beta5.dev20261119``) identifies the
+        # artifact, not a newer release; ordering it raw ranks the installed
+        # build below an obsolete pre-release of the same base.
+        comparison_version = strip_build_suffix(current_version)
         try:
-            release = source.fetch_latest(__version__)
+            release = source.fetch_latest(comparison_version)
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to fetch latest release from {config['release_api_type']}: {exc}"
@@ -327,14 +343,14 @@ class UpdaterService:
             if not release.current_release_published_at:
                 raise RuntimeError(
                     "Current desktop release timestamp is missing for version "
-                    f"{__version__}."
+                    f"{current_version}."
                 )
             has_update = _is_newer_release(
                 release.published_at,
                 release.current_release_published_at,
             )
         else:
-            has_update = _is_newer_version(latest_version, __version__)
+            has_update = _is_newer_version(latest_version, current_version)
 
         if not has_update:
             if install_mode == "desktop":
@@ -519,16 +535,15 @@ class UpdaterService:
         owner = str(updater.get("repo_owner") or "openJiuwen").strip()
         repo = str(updater.get("repo_name") or "jiuwenswarm").strip()
         package = PACKAGE_NAME
+        pypi_mirror = str(updater.get("pypi_mirror") or "").strip()
+        if api_type == "pypi":
+            pypi_mirror = normalize_pypi_index_url(pypi_mirror)
         release_api_url = str(updater.get("release_api_url") or "").strip()
         if not release_api_url:
             if api_type == "github":
                 release_api_url = DEFAULT_RELEASE_API_GITHUB.format(owner=owner, repo=repo)
             elif api_type == "pypi":
-                pypi_mirror = str(updater.get("pypi_mirror") or "").strip()
-                if pypi_mirror:
-                    release_api_url = urljoin(pypi_mirror, f"simple/{package}/")
-                else:
-                    release_api_url = DEFAULT_RELEASE_API_PYPI.format(package=package)
+                release_api_url = pypi_project_url(pypi_mirror or PYPI_INDEX_URL, package)
             else:
                 release_api_url = DEFAULT_RELEASE_API_GITCODE.format(owner=owner, repo=repo)
         timeout_seconds = updater.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
@@ -565,7 +580,7 @@ class UpdaterService:
             ),
             "timeout_seconds": timeout_seconds,
             "access_token": get_access_token(),
-            "pypi_mirror": str(updater.get("pypi_mirror") or "").strip(),
+            "pypi_mirror": pypi_mirror,
         }
 
     def _update_status(self, **updates: Any) -> None:

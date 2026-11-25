@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Any
 
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 
@@ -80,7 +80,6 @@ class RecommendationsManagement:
         host = getattr(owner, "_recommendation_host", None)
         if host is None:
             host = RecommendationHost()
-            host.bind_active_requests(owner._recommendation_active_request_ids)
             host.bind_push(owner._push_recommendation_event)
             owner._recommendation_host = host
         return host

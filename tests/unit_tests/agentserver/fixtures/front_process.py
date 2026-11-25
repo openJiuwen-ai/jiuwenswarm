@@ -9,14 +9,66 @@ import shutil
 import socket
 import time
 from pathlib import Path
+from typing import Any
 
 import psutil
+from websockets.legacy.client import connect
+
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
 
 def free_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+async def connect_front(process, port: int, log_path: Path, *, timeout: float = 30.0, ack_timeout: float = 10.0):
+    """Wait for Front's acknowledgement and report subprocess startup failures."""
+    uri = f"ws://127.0.0.1:{port}"
+    started = time.monotonic()
+    phase = "connect"
+    last_error = None
+    ws = None
+    try:
+        # Cold imports under CI load are not bounded by a fixed retry count.
+        async with asyncio.timeout(timeout):
+            while process.poll() is None:
+                try:
+                    ws = await connect(uri, open_timeout=1, close_timeout=1)
+                    break
+                except (OSError, TimeoutError) as exc:
+                    last_error = exc
+                    await asyncio.sleep(.05)
+        if ws is not None:
+            phase = "connection.ack"
+            acknowledged = False
+            try:
+                acknowledgement = json.loads(await asyncio.wait_for(ws.recv(), timeout=ack_timeout))
+                assert acknowledgement.get("event") == "connection.ack", acknowledgement
+                acknowledged = True
+                return ws
+            finally:
+                if not acknowledged:
+                    await ws.close()
+    except Exception as exc:
+        last_error = exc
+    log_tail = log_path.read_text(encoding="utf-8", errors="replace")[-16000:] if log_path.exists() else "<missing>"
+    raise AssertionError(
+        f"Front startup failed during {phase}: {uri}, pid={process.pid}, "
+        f"exit_code={process.poll()}, elapsed={time.monotonic() - started:.2f}s, "
+        f"timeout={timeout if phase == 'connect' else ack_timeout}s\n"
+        f"Last error: {last_error!r}\n{log_path}:\n{log_tail}"
+    ) from last_error
+
+
+async def receive_business_frame(ws: Any) -> str | bytes:
+    """Read a business response without counting unsolicited server pushes."""
+    while True:
+        raw = await ws.recv()
+        wire = json.loads(raw)
+        if wire.get("metadata", {}).get(E2A_WIRE_SERVER_PUSH_KEY) is not True:
+            return raw
 
 
 async def receive(ws, request_id):

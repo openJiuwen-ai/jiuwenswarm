@@ -13,6 +13,7 @@ ACP 是编辑器走的那条连接。它报上来的能力按这条连接记住�
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import sys
 
@@ -43,6 +44,20 @@ async def handle_initialize(ctx: RequestContext) -> None:
 
     try:
         params = request.params if isinstance(request.params, dict) else {}
+        from jiuwenswarm.server.handlers.acp_session import (
+            ACP_SESSION_EXTENSION,
+            native_acp_session_response,
+        )
+
+        if request.channel_id == "acp" and isinstance(params.get(ACP_SESSION_EXTENSION), dict):
+            payload = await native_acp_session_response(services.execution_runtime(), request)
+            resp = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True, payload=payload,
+            )
+            await ctx.sink.send_response(resp)
+            return
+
         client_capabilities = params.get("clientCapabilities", {})
         logger.info(
             "[AgentServer] initialize clientCapabilities: %s",
@@ -83,6 +98,57 @@ async def handle_initialize(ctx: RequestContext) -> None:
             payload={"error": str(e)},
         )
         await ctx.sink.send_response(resp)
+
+
+async def _reload_session_create_quota_policies_if_enabled() -> None:
+    """``session.create`` 前刷新策略；身份由 ``bind_request_tenant`` 信封覆盖整次请求。"""
+    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+        is_workspace_quota_enabled,
+    )
+    from jiuwenswarm.enterprise.capabilities.workspace.policy_reload import (
+        reload_quota_policies_from_gateway_db,
+    )
+
+    if not is_workspace_quota_enabled():
+        return
+    await reload_quota_policies_from_gateway_db()
+
+
+async def _reject_session_create_if_quota_blocked(ctx: RequestContext) -> bool:
+    """超限时拒绝新建会话；返回 True 表示已回写错误响应。
+
+    依赖请求信封上的明文三元组与租户根（``bind_request_tenant``）。
+    """
+    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+        WorkspaceQuotaExceeded,
+        check_workspace_write,
+        is_workspace_quota_enabled,
+    )
+
+    if not is_workspace_quota_enabled():
+        return False
+
+    request = ctx.request
+    try:
+        # 与 init_session_metadata 写盘门禁同量级的最小净增探测。
+        # 冷缓存/近限时可能同步 du，放线程避免堵事件循环（对齐 fs_quota_guard）。
+        await asyncio.to_thread(
+            functools.partial(check_workspace_write, additional_bytes=64)
+        )
+    except WorkspaceQuotaExceeded:
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={
+                "error": "WORKSPACE_QUOTA_EXCEEDED",
+                "code": "WORKSPACE_QUOTA_EXCEEDED",
+                "detail": "WORKSPACE_QUOTA_EXCEEDED",
+            },
+        )
+        await ctx.sink.send_response(resp)
+        return True
+    return False
 
 
 async def handle_session_create(ctx: RequestContext) -> None:
@@ -131,6 +197,10 @@ async def handle_session_create(ctx: RequestContext) -> None:
             )
 
     try:
+        await _reload_session_create_quota_policies_if_enabled()
+        if await _reject_session_create_if_quota_blocked(ctx):
+            return
+
         channel_id = request.channel_id or "default"
         params = request.params if isinstance(request.params, dict) else {}
         persist_session_supplied = "persist_session" in params
@@ -195,6 +265,11 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 moa_enabled=params.get("moa_enabled"),
                 cron_id=str(params.get("cron_id") or "").strip(),
                 client_app=str(params.get("client_app") or "").strip(),
+                execution_profile=params.get("execution_profile", "default"),
+                role_instructions=params.get("role_instructions", ""),
+                npc_team=params.get("npc_team"),
+                role_tools=params.get("tools"),
+                npc_session=params.get("npc_session", False),
             )
         )
         params.pop("_work_mode_explicit", None)
@@ -217,6 +292,11 @@ async def handle_session_create(ctx: RequestContext) -> None:
             "prewarm_hit": result.prewarm_hit,
             "prewarm_status": result.prewarm_status,
         }
+        if result.execution_profile != "default":
+            payload["execution_profile"] = result.execution_profile
+            payload["mode"] = result.canonical_mode
+        if result.npc_session:
+            payload["npc_session"] = True
         if result.explicit_id_compatibility:
             payload.update(
                 {

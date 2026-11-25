@@ -1,20 +1,24 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Validated, manifest-driven access to an MCP asset package."""
+"""Manifest-driven access to an MCP asset package.
+
+Manifest metadata is advisory: a bad value is logged and degraded instead of
+blocking installation. Only ``package_type``, the integration declaration and
+path safety reject a package.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
-_SAFE_PACKAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _INTEGRATION_TYPES = frozenset({"stdio-mcp", "remote-mcp", "cli", "skill-only"})
 _CREDENTIAL_TYPES = frozenset({"token", "cli-oauth", "oauth"})
+MCP_PACKAGE_ENTRYPOINT_ARG = "${MCP_PACKAGE_ENTRYPOINT}"
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +29,7 @@ class McpPackageError(ValueError):
 
 @dataclass(frozen=True)
 class McpPackageManifest:
-    """Validated MCP package metadata and resolved declared paths."""
+    """MCP package metadata and resolved declared paths."""
 
     root: Path
     package_id: str
@@ -55,26 +59,34 @@ def _read_json(path: Path, field: str) -> dict[str, Any]:
     return value
 
 
-def _required_text(data: dict[str, Any], field: str) -> str:
+def _optional_text(data: dict[str, Any], field: str, fallback: str) -> str:
+    """Return *field* as text, falling back to *fallback* when absent or blank."""
     value = data.get(field)
-    if not isinstance(value, str) or not value.strip():
-        raise McpPackageError(f"manifest field {field} must be a non-empty string")
-    return value.strip()
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    logger.warning("manifest field %s is missing; falling back to %r", field, fallback)
+    return fallback
 
 
-def _required_localized_text(data: dict[str, Any], field: str) -> dict[str, str]:
+def _warn_localized_text(data: dict[str, Any], field: str, fallback: str) -> None:
+    """Warn when *field* is not usable ``{zh, en}`` display text; never fails."""
     value = data.get(field)
     if not isinstance(value, dict):
-        raise McpPackageError(f"manifest field {field} must be an object")
-    result: dict[str, str] = {}
+        logger.warning(
+            "manifest field %s is missing or not an object; falling back to %r",
+            field,
+            fallback,
+        )
+        return
     for language in ("zh", "en"):
         text = value.get(language)
         if not isinstance(text, str) or not text.strip():
-            raise McpPackageError(
-                f"manifest field {field}.{language} must be a non-empty string"
+            logger.warning(
+                "manifest field %s.%s is missing; falling back to %r",
+                field,
+                language,
+                fallback,
             )
-        result[language] = text.strip()
-    return result
 
 
 def _declared_path(root: Path, value: Any, field: str, *, directory: bool = False) -> Path:
@@ -124,7 +136,7 @@ def _load_server(integration_file: Path, integration_type: str) -> tuple[str, di
 
 
 def load_mcp_package(package_dir: Path, *, expected_id: str | None = None) -> McpPackageManifest:
-    """Load and validate one MCP package rooted at *package_dir*.
+    """Load one MCP package rooted at *package_dir*.
 
     Every capability path comes from ``manifest.json``. Fixed filenames that
     are present but undeclared do not participate in package classification.
@@ -140,21 +152,24 @@ def load_mcp_package(package_dir: Path, *, expected_id: str | None = None) -> Mc
     if raw.get("package_type") != "mcp":
         raise McpPackageError("manifest field package_type must equal mcp")
 
-    package_id = _required_text(raw, "id")
-    if not _SAFE_PACKAGE_ID.fullmatch(package_id) or package_id in {".", ".."}:
-        raise McpPackageError("manifest field id must be a safe directory name")
-    if root.name != package_id:
-        raise McpPackageError("manifest id must match the package directory name")
+    package_id = root.name
+    declared_id = str(raw.get("id") or "").strip()
+    if declared_id != package_id:
+        logger.warning(
+            "manifest id %r does not match package directory %r; using the directory name",
+            declared_id or None,
+            package_id,
+        )
     if expected_id is not None and package_id != str(expected_id).strip():
         raise McpPackageError(
-            f"manifest id does not match expected package id: {expected_id}"
+            f"package directory does not match expected package id: {expected_id}"
         )
 
-    version = _required_text(raw, "version")
-    name = _required_text(raw, "name")
-    description = _required_text(raw, "description")
-    _required_localized_text(raw, "display_name")
-    _required_localized_text(raw, "display_description")
+    version = _optional_text(raw, "version", "")
+    name = _optional_text(raw, "name", package_id)
+    description = _optional_text(raw, "description", "")
+    _warn_localized_text(raw, "display_name", name)
+    _warn_localized_text(raw, "display_description", description)
     integration = raw.get("integration")
     if not isinstance(integration, dict):
         raise McpPackageError("manifest field integration must be an object")
@@ -174,51 +189,100 @@ def load_mcp_package(package_dir: Path, *, expected_id: str | None = None) -> Mc
         else:
             _read_json(integration_file, "integration.file")
     elif integration.get("file") is not None:
-        raise McpPackageError("skill-only integration must not declare integration.file")
+        logger.warning("skill-only integration declares integration.file; ignoring it")
+
+    if "entrypoint" in integration:
+        if integration_type != "stdio-mcp" or server_config is None:
+            raise McpPackageError("manifest integration.entrypoint requires stdio-mcp")
+        entrypoint = _declared_path(root, integration["entrypoint"], "integration.entrypoint")
+        args = server_config.get("args")
+        if not isinstance(args, list) or args.count(MCP_PACKAGE_ENTRYPOINT_ARG) != 1:
+            raise McpPackageError(
+                f"integration.entrypoint requires exactly one {MCP_PACKAGE_ENTRYPOINT_ARG} argument"
+            )
+        server_config["args"] = [
+            str(entrypoint) if arg == MCP_PACKAGE_ENTRYPOINT_ARG else arg for arg in args
+        ]
 
     credentials = raw.get("credentials")
     credentials_type = "none"
     credentials_file: Path | None = None
     if credentials is not None:
         if not isinstance(credentials, dict):
-            raise McpPackageError("manifest field credentials must be an object")
-        credentials_type = str(credentials.get("type") or "").strip()
-        if credentials_type not in _CREDENTIAL_TYPES:
-            raise McpPackageError(
-                "manifest credentials.type must be token or cli-oauth"
+            logger.warning("manifest field credentials is not an object; ignoring it")
+            credentials = {}
+        declared_type = str(credentials.get("type") or "").strip()
+        if declared_type not in _CREDENTIAL_TYPES:
+            if declared_type:
+                logger.warning(
+                    "manifest credentials.type %r is not supported; treating it as none",
+                    declared_type,
+                )
+            declared_type = "none"
+        declared_file = credentials.get("file")
+        if declared_type == "token" and declared_file is None:
+            logger.warning(
+                "token credentials declare no credentials.file; treating them as none"
             )
-        if credentials_type == "token" and credentials.get("file") is None:
-            raise McpPackageError("token credentials must declare credentials.file")
-        if credentials_type in {"cli-oauth", "oauth"} and credentials.get("file") is not None:
-            raise McpPackageError(f"{credentials_type} credentials must not declare credentials.file")
-        if credentials.get("file") is not None:
-            credentials_file = _declared_path(
-                root, credentials.get("file"), "credentials.file"
+            declared_type = "none"
+        elif declared_type in {"cli-oauth", "oauth"} and declared_file is not None:
+            logger.warning(
+                "%s credentials must not declare credentials.file; ignoring the file",
+                declared_type,
             )
-            _read_json(credentials_file, "credentials.file")
+            declared_file = None
+        credentials_type = declared_type
+        if declared_file is not None:
+            try:
+                credentials_file = _declared_path(
+                    root, declared_file, "credentials.file"
+                )
+                _read_json(credentials_file, "credentials.file")
+            except McpPackageError as exc:
+                # A token declaration whose file is unreadable/unsafe leaves no
+                # usable token schema. Downgrade the kind as well, otherwise the
+                # downstream detects KIND_TOKEN and prompts for credentials whose
+                # required_tokens schema is empty (load_token_schema returns None).
+                # Keep the "no file" branch above consistent with this outcome.
+                logger.warning("ignoring credentials.file: %s", exc)
+                credentials_file = None
+                if credentials_type == "token":
+                    credentials_type = "none"
 
     icon_file = None
     if raw.get("icon") is not None:
-        icon_file = _declared_path(root, raw.get("icon"), "icon")
-        if icon_file.suffix.lower() != ".png":
-            raise McpPackageError("manifest field icon must reference a PNG file")
+        try:
+            candidate = _declared_path(root, raw.get("icon"), "icon")
+        except McpPackageError as exc:
+            logger.warning("ignoring icon: %s", exc)
+        else:
+            if candidate.suffix.lower() == ".png":
+                icon_file = candidate
+            else:
+                logger.warning("manifest icon is not a PNG file; ignoring %s", candidate)
 
     skills = raw.get("skills", [])
     if not isinstance(skills, list):
-        raise McpPackageError("manifest field skills must be an array")
+        logger.warning("manifest field skills is not an array; ignoring it")
+        skills = []
     skill_dirs: list[Path] = []
     for index, skill in enumerate(skills):
         if not isinstance(skill, dict):
-            raise McpPackageError(f"manifest field skills[{index}] must be an object")
-        skill_dirs.append(
-            _declared_path(root, skill.get("dir"), f"skills[{index}].dir", directory=True)
-        )
-        if not _contains_skill(skill_dirs[-1]):
-            raise McpPackageError(
-                f"manifest field skills[{index}].dir must contain at least one SKILL.md"
+            logger.warning("manifest field skills[%d] is not an object; skipping it", index)
+            continue
+        try:
+            skill_dir = _declared_path(
+                root, skill.get("dir"), f"skills[{index}].dir", directory=True
             )
+        except McpPackageError as exc:
+            logger.warning("skipping skills[%d]: %s", index, exc)
+            continue
+        if not _contains_skill(skill_dir):
+            logger.warning("skills[%d].dir contains no SKILL.md; skipping it", index)
+            continue
+        skill_dirs.append(skill_dir)
     if integration_type == "skill-only" and not skill_dirs:
-        raise McpPackageError("skill-only integration requires at least one declared SKILL.md")
+        logger.warning("skill-only integration declares no usable SKILL.md")
 
     return McpPackageManifest(
         root=root.resolve(),

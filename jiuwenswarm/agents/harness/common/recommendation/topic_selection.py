@@ -17,6 +17,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     LearnedComponentReceipt,
 )
+from .topic_primitives import nonempty as _nonempty, plain_int as _plain_int
 
 UTILITY_COMPONENT_ID = "interaction_utility_scorer"
 # Where a fixed condition on a card comes from, as the utility scorer lists it.
@@ -33,7 +34,7 @@ PREFERENCE_PAIR_VERSION = "topic-starter-v6-preference-pair-v1"
 
 FIRST_SCREEN_CARD_TARGET = 4
 """Cards one screen shows at once."""
-GLOBAL_POOL_TARGET_SIZE = 7
+GLOBAL_POOL_TARGET_SIZE = 6
 """Cards a global round prepares: one screen, then the cards that replace opened or dismissed ones."""
 
 _GLOBAL_SCOPE = "global_new_chat"
@@ -47,15 +48,6 @@ _PROJECT_QUOTAS = {
     "project_continuation": 3,
     "project_domain_progress": 1,
 }
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _nonempty(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
 
 
 def _nullable_score(value: Any, *, field_name: str) -> float | None:
@@ -79,7 +71,6 @@ class SelectionCandidate:
     stable_rank: int
     evidence_eligible: bool
     freshness_eligible: bool
-    negative_preference_hit: bool
     interest_summary_id: str | None
     identity_anchor: str | None
     source_memory_unit_ids: tuple[str, ...]
@@ -96,7 +87,6 @@ class SelectionCandidate:
         _value_items = (
             self.evidence_eligible,
             self.freshness_eligible,
-            self.negative_preference_hit,
         )
         if any(
             not isinstance(value, bool)
@@ -222,7 +212,7 @@ class ListSearchConstraints:
 
     @property
     def target_size(self) -> int:
-        """D10: the global pool holds up to seven cards whatever the mix, a leading card included."""
+        """D10: the global pool holds up to six cards whatever the mix, a leading card included."""
 
         return (
             GLOBAL_POOL_TARGET_SIZE - self.leading_cards
@@ -377,9 +367,148 @@ async def score_interaction_utility(
         )
 
 
+_UTILITY_SCORE_FIELDS = (
+    "candidate_id",
+    "question_focus",
+    "assertion_spans",
+    "given_conditions",
+    "click_score_nullable",
+    "depth_score_nullable",
+    "combined_utility_nullable",
+    "admitted",
+    "reason",
+)
+_GIVEN_CONDITION_FIELDS = ("card_quote", "condition", "source", "source_quote")
+
+
+def _coerce_json_bool(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    return value
+
+
+def _coerce_json_number_or_null(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() in {"null", "none"}:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return value
+    return value
+
+
+_UTILITY_SCORE_FIELD_ALIASES = {
+    "id": "candidate_id",
+    "click_score": "click_score_nullable",
+    "depth_score": "depth_score_nullable",
+    "combined_utility": "combined_utility_nullable",
+    "utility": "combined_utility_nullable",
+    "utility_score": "combined_utility_nullable",
+}
+_UTILITY_SCORES_WRAPPER_ALIASES = (
+    "scores",
+    "items",
+    "results",
+    "utility_scores",
+    "candidates",
+)
+
+
+def _utility_scores_list(raw: Any) -> list[Any] | None:
+    if isinstance(raw, list):
+        return raw
+    if not isinstance(raw, dict):
+        return None
+    for key in _UTILITY_SCORES_WRAPPER_ALIASES:
+        value = raw.get(key)
+        if isinstance(value, list):
+            return value
+    return None
+
+
+def coerce_utility_scorer_payload(raw: Any) -> Any:
+    """Drop Flash-typical extras and loosen bool/number spellings before validate."""
+
+    scores = _utility_scores_list(raw)
+    if scores is None:
+        return raw
+    coerced_scores: list[Any] = []
+    for item in scores:
+        if not isinstance(item, dict):
+            coerced_scores.append(item)
+            continue
+        normalized = dict(item)
+        for source_key, target_key in _UTILITY_SCORE_FIELD_ALIASES.items():
+            if target_key not in normalized and source_key in normalized:
+                normalized[target_key] = normalized[source_key]
+        row = {
+            key: normalized[key] for key in _UTILITY_SCORE_FIELDS if key in normalized
+        }
+        if "assertion_spans" not in row:
+            row["assertion_spans"] = []
+        elif isinstance(row["assertion_spans"], str):
+            span = row["assertion_spans"].strip()
+            row["assertion_spans"] = [span] if span else []
+        if "given_conditions" not in row:
+            row["given_conditions"] = []
+        for field_name in (
+            "click_score_nullable",
+            "depth_score_nullable",
+            "combined_utility_nullable",
+        ):
+            if field_name not in row:
+                row[field_name] = None
+            else:
+                row[field_name] = _coerce_json_number_or_null(row[field_name])
+        if "admitted" in row:
+            row["admitted"] = _coerce_json_bool(row["admitted"])
+        spans = row.get("assertion_spans")
+        if isinstance(spans, list):
+            row["assertion_spans"] = [
+                span.strip() if isinstance(span, str) else span for span in spans
+            ]
+        conditions = row.get("given_conditions")
+        if isinstance(conditions, list):
+            cleaned_conditions: list[Any] = []
+            for condition in conditions:
+                if not isinstance(condition, dict):
+                    cleaned_conditions.append(condition)
+                    continue
+                cleaned_conditions.append(
+                    {
+                        key: condition[key]
+                        for key in _GIVEN_CONDITION_FIELDS
+                        if key in condition
+                    }
+                )
+            row["given_conditions"] = cleaned_conditions
+        coerced_scores.append(row)
+    return {"scores": coerced_scores}
+
+
 def utility_scores_by_id(raw: Any, candidate_ids: Sequence[str]) -> dict[str, UtilityScore]:
     """Validate one utility response covering exactly these candidates, once each."""
 
+    raw = coerce_utility_scorer_payload(raw)
     if (
         not isinstance(raw, dict)
         or set(raw) != {"scores"}
@@ -388,17 +517,7 @@ def utility_scores_by_id(raw: Any, candidate_ids: Sequence[str]) -> dict[str, Ut
         raise ValueError("utility scorer output schema invalid")
 
     by_id: dict[str, UtilityScore] = {}
-    expected_fields = {
-        "candidate_id",
-        "question_focus",
-        "assertion_spans",
-        "given_conditions",
-        "click_score_nullable",
-        "depth_score_nullable",
-        "combined_utility_nullable",
-        "admitted",
-        "reason",
-    }
+    expected_fields = set(_UTILITY_SCORE_FIELDS)
     for item in raw["scores"]:
         _rejected3 = (
             not isinstance(item, dict)
@@ -456,6 +575,57 @@ def _valid_given_conditions(value: Any) -> bool:
     )
 
 
+def coerce_diversity_scorer_payload(raw: Any) -> Any:
+    """Drop extras and loosen bool/number spellings for diversity batches."""
+
+    if not isinstance(raw, dict):
+        return raw
+    pairwise = raw.get("pairwise_scores")
+    marginal = raw.get("marginal_scores")
+    if not isinstance(pairwise, list) or not isinstance(marginal, list):
+        return {
+            key: raw[key]
+            for key in ("pairwise_scores", "marginal_scores")
+            if key in raw
+        }
+    pair_fields = (
+        "left_candidate_id",
+        "right_candidate_id",
+        "diversity_score_nullable",
+        "compatible",
+        "reason",
+    )
+    marginal_fields = ("candidate_id", "marginal_diversity_nullable")
+    coerced_pairs: list[Any] = []
+    for item in pairwise:
+        if not isinstance(item, dict):
+            coerced_pairs.append(item)
+            continue
+        row = {key: item[key] for key in pair_fields if key in item}
+        if "compatible" in row:
+            row["compatible"] = _coerce_json_bool(row["compatible"])
+        if "diversity_score_nullable" in row:
+            row["diversity_score_nullable"] = _coerce_json_number_or_null(
+                row["diversity_score_nullable"]
+            )
+        coerced_pairs.append(row)
+    coerced_marginal: list[Any] = []
+    for item in marginal:
+        if not isinstance(item, dict):
+            coerced_marginal.append(item)
+            continue
+        row = {key: item[key] for key in marginal_fields if key in item}
+        if "marginal_diversity_nullable" in row:
+            row["marginal_diversity_nullable"] = _coerce_json_number_or_null(
+                row["marginal_diversity_nullable"]
+            )
+        coerced_marginal.append(row)
+    return {
+        "pairwise_scores": coerced_pairs,
+        "marginal_scores": coerced_marginal,
+    }
+
+
 def _pair_key(left: str, right: str) -> tuple[str, str]:
     return (left, right) if left < right else (right, left)
 
@@ -472,12 +642,16 @@ async def score_diversity(
     candidate_ids = [candidate.candidate_id for candidate in candidates]
     if len(set(candidate_ids)) != len(candidate_ids):
         raise ValueError("candidate IDs must be unique")
-    raw = await invoke_scorer(
-        {
-            "input_snapshot_id": receipt.input_snapshot_id,
-            "request_id": receipt.request_id,
-            "candidates": [candidate.as_scoring_payload() for candidate in candidates],
-        }
+    raw = coerce_diversity_scorer_payload(
+        await invoke_scorer(
+            {
+                "input_snapshot_id": receipt.input_snapshot_id,
+                "request_id": receipt.request_id,
+                "candidates": [
+                    candidate.as_scoring_payload() for candidate in candidates
+                ],
+            }
+        )
     )
     _rejected = (
         not isinstance(raw, dict)
@@ -588,8 +762,6 @@ def _candidate_hard_reasons(
         reasons.append("evidence_ineligible")
     if not candidate.freshness_eligible:
         reasons.append("freshness_ineligible")
-    if candidate.negative_preference_hit:
-        reasons.append("negative_preference")
     if constraints.context_scope == _GLOBAL_SCOPE:
         if not _nonempty(candidate.interest_summary_id):
             reasons.append("missing_personalized_interest")

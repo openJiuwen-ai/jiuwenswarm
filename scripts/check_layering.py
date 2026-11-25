@@ -66,12 +66,10 @@ _ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
 # Enterprise 合入临时白名单：common 侧租户/路径/兼容 shim 仍引用 enterprise。
 # 燃尽方向：注入化或下沉到 enterprise 包，消除后再缩减本表。
 KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {
-    "jiuwenswarm.common.e2a.agent_compat": {"jiuwenswarm.enterprise"},
     "jiuwenswarm.common.file_download_token": {
         "jiuwenswarm.enterprise",
         "jiuwenswarm.enterprise.tenant.tenant_context",
     },
-    "jiuwenswarm.common.local_env_config": {"jiuwenswarm.enterprise"},
     "jiuwenswarm.common.projectless_workspace": {"jiuwenswarm.enterprise"},
     "jiuwenswarm.common.schema.message": {"jiuwenswarm.enterprise.edition"},
     "jiuwenswarm.common.utils": {

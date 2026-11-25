@@ -8,7 +8,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-from jiuwenswarm.common.utils import get_domain_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 # Local catalog package name; trajectories live under the data dir instead.
 _PACKAGE_DIRNAME = "designer_catalog_skills_reports_trajectory"
@@ -55,7 +55,7 @@ def skills_dir() -> Path:
 
 def design_trajectory_dir() -> Path:
     """Sibling of the session trajectory store under ``<data dir>/.trace``."""
-    return get_domain_data_dir() / ".trace" / "designer"
+    return get_user_workspace_dir() / ".trace" / "designer"
 
 
 def design_trajectory_key(project_id: str) -> str:

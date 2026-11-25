@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Protocol
 
-from jiuwenswarm.common.e2a.wire_codec import (
+from e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )

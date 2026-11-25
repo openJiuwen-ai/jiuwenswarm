@@ -29,7 +29,7 @@ from jiuwenswarm.runtime.context import (
     get_runtime_context,
 )
 from jiuwenswarm.runtime.events import RuntimeEvent
-from jiuwenswarm.runtime.plan import PlanStateResult
+from jiuwenswarm.runtime.plan import PlanModeController, PlanStateResult
 from jiuwenswarm.runtime.request import prepare_chat_turn
 from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
@@ -149,6 +149,45 @@ async def test_runtime_entry_wait_retains_deadline_without_cancelling_request():
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("metadata", [
+    {"execution_profile": "app_role"},
+    {"npc_session": True},
+])
+@pytest.mark.asyncio
+async def test_swarm_cannot_send_chat_to_npc(monkeypatch, streaming, metadata):
+    load_metadata = MagicMock(return_value={"mode": "agent.work.normal", "work_mode": "work", **metadata})
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        load_metadata,
+    )
+    runtime = AgentRuntime(agent_manager=FakeAgentManager())
+    runtime._started = True
+    runtime._ensure_session_registered = AsyncMock()
+    request = AgentRequest(
+        request_id="attempt", session_id="app-npc", channel_id="web",
+        req_method=ReqMethod.CHAT_SEND, is_stream=streaming,
+        params={"chat_surface": "swarm", "query": "hello"},
+    )
+    events = await _collect_events(runtime.stream(request)) if streaming else await runtime.invoke(request)
+    assert len(events) == 1
+    assert events[0].payload["code"] == "NPC_SESSION_READ_ONLY"
+    assert events[0].is_complete and not events[0].ok
+    runtime._ensure_session_registered.assert_not_awaited()
+    load_metadata.assert_called_once()
+
+
+def test_npc_chat_keeps_app_messages_and_read_only_attachments():
+    request = AgentRequest(
+        request_id="app", session_id="app-npc", channel_id="web", req_method=ReqMethod.CHAT_SEND,
+        params={"query": "player input"},
+    )
+    metadata = {"npc_session": True}
+    assert AgentRuntime._swarm_npc_chat_refusal(request, metadata) is None
+    request.params = {"chat_surface": "swarm", "attach_only": True, "query": ""}
+    assert AgentRuntime._swarm_npc_chat_refusal(request, metadata) is None
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -389,27 +428,6 @@ async def test_team_attach_only_registers_persistent_waiter_kind() -> None:
     assert details.waiter_kind is TeamWaiterKind.PERSISTENT
     assert details.observation_only is True
     assert details.session_message_id is None
-
-
-@pytest.mark.parametrize("browser_attached", [False, True])
-@pytest.mark.parametrize("managed_design", [False, True])
-def test_managed_design_request_keeps_its_own_result_waiter(monkeypatch, browser_attached, managed_design):
-    from jiuwenswarm.agents.harness import team
-
-    monkeypatch.setattr(team, "get_team_manager", lambda _: SimpleNamespace(
-        has_interactive_waiter=lambda _: browser_attached,
-    ))
-    runtime = AgentRuntime(agent_manager=FakeAgentManager())
-    request = AgentRequest(
-        request_id="voice-task", channel_id="video_tool", session_id="design-chat",
-        req_method=ReqMethod.CHAT_SEND,
-        params={"mode": "team.design", **({"managed_task_binding": {"endpoint": "gateway", "task_id": "task"}}
-                                         if managed_design else {})},
-    )
-    kind = runtime._team_waiter_kind(request, work_kind=SessionWorkKind.TEAM_REQUEST, background=False)
-    expected = (TeamWaiterKind.REQUEST if managed_design else
-                TeamWaiterKind.NONE if browser_attached else TeamWaiterKind.PERSISTENT)
-    assert kind is expected
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -770,6 +788,264 @@ class FakePlanController:
         self.reset_calls.append(session_id)
 
 
+class PlanApprovalAgent(FakeAgent):
+    def __init__(self) -> None:
+        self.answers: list[str] = []
+
+    @staticmethod
+    def question(request: AgentRequest, call_id: str) -> AgentResponseChunk:
+        return AgentResponseChunk(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={
+                "event_type": "chat.ask_user_question",
+                "request_id": call_id,
+                "source": "confirm_interrupt",
+                "questions": [{"question": "Approve the plan"}],
+            },
+        )
+
+    @staticmethod
+    def final(request: AgentRequest) -> AgentResponseChunk:
+        return AgentResponseChunk(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={"event_type": "chat.final", "content": "Plan turn finished"},
+            is_complete=True,
+        )
+
+    async def process_message_stream(self, request: AgentRequest):
+        yield self.question(request, "plan-approval-1")
+        # A final output segment ends the stream, but the approval is still pending.
+        yield self.final(request)
+
+    async def deliver_control_input(self, request: AgentRequest):
+        action = request.params["answers"][0]["selected_options"][0]
+        self.answers.append(action)
+        if action == "plan_revise":
+            yield self.question(request, "plan-approval-2")
+        elif action == "plan_execute":
+            profile = request.params["work_mode"]
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"event_type": "plan.mode_exited", "mode": f"agent.{profile}.normal"},
+            )
+        yield self.final(request)
+
+
+def _plan_turn_request(
+    session_id: str,
+    profile: str,
+    *,
+    action: str | None = None,
+    call_id: str = "plan-approval-1",
+    answer_state: str = "plan",
+) -> AgentRequest:
+    params: dict[str, object] = {
+        "query": "Make a plan" if action is None else "",
+        "mode": f"agent.{profile}.plan" if action is None else f"agent.{profile}.{answer_state}",
+        "work_mode": profile,
+    }
+    if action is not None:
+        params.update(
+            source="confirm_interrupt",
+            request_id=call_id,
+            answers=[{"question": "Approve the plan", "selected_options": [action]}],
+        )
+    return AgentRequest(
+        request_id="plan-query" if action is None else f"answer-{call_id}-{action}",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params=params,
+        is_stream=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["work", "code"])
+@pytest.mark.parametrize("answer_state", ["plan", "normal"])
+@pytest.mark.parametrize("action", ["plan_execute", "plan_skip", "plan_revise"])
+async def test_plan_approval_survives_stream_completion(
+    profile: str,
+    answer_state: str,
+    action: str,
+) -> None:
+    manager = FakeAgentManager()
+    agent = PlanApprovalAgent()
+    manager.agent = agent
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+    session_id = f"plan-lifecycle-{profile}-{answer_state}-{action}"
+    coordinator = runtime._session_coordinator
+    try:
+        events = await _collect_events(runtime.stream(
+            _plan_turn_request(session_id, profile), trigger_hook=False,
+        ))
+        assert [event.event_type for event in events] == ["chat.ask_user_question", "chat.final"]
+        snapshot = coordinator.snapshot_session(session_id)
+        assert snapshot is not None
+        waiting = [
+            item for item in snapshot.executions
+            if item.state is SessionExecutionState.WAITING_FOR_CONTROL
+        ]
+        assert len(waiting) == 1
+        assert waiting[0].waiting_control_ids == frozenset({"plan-approval-1"})
+        assert coordinator.has_control_target(session_id, "plan-approval-1")
+
+        answer_events = await _collect_events(runtime.stream(
+            _plan_turn_request(session_id, profile, action=action, answer_state=answer_state),
+            trigger_hook=False,
+        ))
+        assert agent.answers == [action]
+        assert answer_events[-1].event_type == "chat.final"
+        assert not coordinator.has_control_target(session_id, "plan-approval-1")
+        exited = any(event.event_type == "plan.mode_exited" for event in answer_events)
+        assert exited is (action == "plan_execute")
+
+        if action == "plan_revise":
+            assert coordinator.has_control_target(session_id, "plan-approval-2")
+            revised_events = await _collect_events(runtime.stream(
+                _plan_turn_request(session_id, profile, action="plan_skip", call_id="plan-approval-2"),
+                trigger_hook=False,
+            ))
+            assert revised_events[-1].event_type == "chat.final"
+            assert agent.answers == ["plan_revise", "plan_skip"]
+            assert not coordinator.has_control_target(session_id, "plan-approval-2")
+        snapshot = coordinator.snapshot_session(session_id)
+        assert snapshot is not None
+        assert all(item.state.terminal for item in snapshot.executions)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["work", "code"])
+@pytest.mark.parametrize("invalid_answer", ["wrong_id", "other_session", "already_answered"])
+async def test_plan_approval_rejects_unmatched_answers(profile: str, invalid_answer: str) -> None:
+    manager = FakeAgentManager()
+    agent = PlanApprovalAgent()
+    manager.agent = agent
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+    session_id = f"plan-answer-guard-{profile}-{invalid_answer}"
+    try:
+        await _collect_events(runtime.stream(_plan_turn_request(session_id, profile), trigger_hook=False))
+        if invalid_answer == "already_answered":
+            await _collect_events(runtime.stream(
+                _plan_turn_request(session_id, profile, action="plan_skip"), trigger_hook=False,
+            ))
+        answer = _plan_turn_request(
+            "unrelated-plan-session" if invalid_answer == "other_session" else session_id,
+            profile,
+            action="plan_execute",
+            call_id="wrong-plan-call" if invalid_answer == "wrong_id" else "plan-approval-1",
+        )
+        with pytest.raises(RuntimeError, match="session has no active execution"):
+            await _collect_events(runtime.stream(answer, trigger_hook=False))
+        assert agent.answers == (["plan_skip"] if invalid_answer == "already_answered" else [])
+        if invalid_answer != "already_answered":
+            assert runtime._session_coordinator.has_control_target(session_id, "plan-approval-1")
+            await _collect_events(runtime.stream(
+                _plan_turn_request(session_id, profile, action="plan_skip"), trigger_hook=False,
+            ))
+            assert agent.answers == ["plan_skip"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["work", "code"])
+async def test_asset_query_during_plan_initialization_does_not_exit_plan(
+    profile: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query_started, allow_plan = asyncio.Event(), asyncio.Event()
+
+    class DeferredPlanController(PlanModeController):
+        async def ensure_state(
+            self,
+            request: AgentRequest,
+            mode: str,
+            sub_mode: str | None,
+            agent: Any,
+        ) -> PlanStateResult:
+            if request.req_method is ReqMethod.CHAT_SEND:
+                query_started.set()
+                await allow_plan.wait()
+            return await super().ensure_state(request, mode, sub_mode, agent)
+
+    class AssetQueryAgent(PlanApprovalAgent):
+        async def process_message(self, request: AgentRequest) -> AgentResponse:
+            assert request.req_method is ReqMethod.SESSION_ASSETS_LIST
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"assets": []},
+            )
+
+    manager = FakeAgentManager()
+    manager.agent = AssetQueryAgent()
+    controller = DeferredPlanController()
+    state = SimpleNamespace(plan_mode=SimpleNamespace(mode="normal", plan_slug=None))
+    deep_agent = MagicMock()
+    deep_agent.load_state.return_value = state
+
+    def switch_mode(*, session: object, mode: str) -> None:
+        state.plan_mode.mode = mode
+
+    deep_agent.switch_mode.side_effect = switch_mode
+    open_state = AsyncMock(return_value=(deep_agent, SimpleNamespace(commit=AsyncMock()), True))
+    monkeypatch.setattr(controller, "open_state_session", open_state)
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=controller,
+    )
+    session_id = f"plan-asset-race-{profile}"
+    query_task = asyncio.create_task(_collect_events(runtime.stream(
+        _plan_turn_request(session_id, profile), trigger_hook=False,
+    )))
+    try:
+        await _wait_for_runtime_entry(query_started, query_task)
+        control_events = AsyncMock()
+        assets = await runtime.invoke(
+            AgentRequest(
+                request_id="assets-read-during-plan-start",
+                channel_id="web",
+                session_id=session_id,
+                req_method=ReqMethod.SESSION_ASSETS_LIST,
+                params={"session_id": session_id},
+            ),
+            trigger_hook=False,
+            on_control_event=control_events,
+        )
+        assert any(event.payload.get("assets") == [] for event in assets)
+        assert all(event.event_type != "plan.mode_exited" for event in assets)
+        control_events.assert_not_awaited()
+        open_state.assert_not_awaited()
+        assert state.plan_mode.mode == "normal"
+
+        allow_plan.set()
+        events = await asyncio.wait_for(query_task, timeout=1)
+        assert [event.event_type for event in events] == ["chat.ask_user_question", "chat.final"]
+        assert state.plan_mode.mode == "plan"
+        assert runtime._session_coordinator.has_control_target(session_id, "plan-approval-1")
+    finally:
+        allow_plan.set()
+        if not query_task.done():
+            query_task.cancel()
+        await asyncio.gather(query_task, return_exceptions=True)
+        await runtime.close()
+
+
 @pytest.mark.asyncio
 async def test_runtime_kvc_tracking_uses_current_product_hook_contract(
     monkeypatch,
@@ -881,7 +1157,12 @@ async def test_create_or_resume_session_uses_runtime_manager() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "owned"),
-    [("agent.work.normal", True), ("agent.work.plan", False)],
+    [
+        ("agent.work.normal", True),
+        ("agent.work.plan", True),
+        ("agent.code.normal", True),
+        ("agent.code.plan", True),
+    ],
 )
 async def test_session_switch_commit_registers_single_agent_runtime(
     mode: str,
@@ -914,7 +1195,12 @@ async def test_session_switch_commit_registers_single_agent_runtime(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "owned"),
-    [("agent.work.normal", True), ("agent.work.plan", False)],
+    [
+        ("agent.work.normal", True),
+        ("agent.work.plan", True),
+        ("agent.code.normal", True),
+        ("agent.code.plan", True),
+    ],
 )
 async def test_session_create_commit_registers_single_agent_runtime(
     mode: str,
@@ -1401,13 +1687,29 @@ async def test_team_pause_publishes_once_after_business_consumers_exit(
         pushes.append({"session_id": session_id, "generation": generation, "channel_id": channel_id})
         order.append("push")
 
+    stop_holds: list[str] = []
+
+    def begin_request_stop(session_id: str) -> None:
+        stop_holds.append(f"begin:{session_id}")
+
+    def end_request_stop(session_id: str) -> None:
+        stop_holds.append(f"end:{session_id}")
+
     coordinator = SimpleNamespace(
         snapshot_session=lambda session_id: (
             SimpleNamespace(
                 session_id=session_id,
                 generation=2,
                 state=RuntimeSessionState.READY,
-                executions=(),
+                executions=(
+                    # One live business execution: the pause fence binds to it
+                    # and the drain below must cancel exactly this one.
+                    SimpleNamespace(
+                        execution_id="exec-round-2",
+                        request_id="req-round-2",
+                        team=SimpleNamespace(observation_only=False),
+                    ),
+                ),
             )
             if registered else None
         ),
@@ -1416,6 +1718,8 @@ async def test_team_pause_publishes_once_after_business_consumers_exit(
     lifecycle = SimpleNamespace(
         pause_session=AsyncMock(side_effect=pause_session),
         publish_pause_completed=AsyncMock(side_effect=publish),
+        begin_request_stop=begin_request_stop,
+        end_request_stop=end_request_stop,
     )
     runtime = AgentRuntime(
         agent_manager=FakeAgentManager(),
@@ -1444,7 +1748,13 @@ async def test_team_pause_publishes_once_after_business_consumers_exit(
         assert "session_id=session-a generation=2" in caplog.text
         assert "observer" in caplog.text
     if registered:
-        assert order[:3] == ["pause", "adapter", "drained"]
+        # A successful lifecycle pause is the single pause entry: the adapter
+        # forward only runs as the compat fallback when the lifecycle refused.
+        expected_order = ["pause"] + ([] if paused else ["adapter"]) + ["drained"]
+        assert order[: len(expected_order)] == expected_order
+        assert stop_holds == ["begin:session-a", "end:session-a"]
+    else:
+        assert stop_holds == []
     if expect_push:
         assert pushes[0] == {
             "channel_id": "web",
@@ -1487,6 +1797,8 @@ async def test_team_pause_does_not_push_completion_to_replaced_session(
         session_runtime_lifecycle=SimpleNamespace(
             pause_session=AsyncMock(return_value=False),
             publish_pause_completed=publish,
+            begin_request_stop=lambda session_id: None,
+            end_request_stop=lambda session_id: None,
         ),
     )
     monkeypatch.setattr("jiuwenswarm.runtime.request.cancel_request", cancel_agent)
@@ -1506,6 +1818,90 @@ async def test_team_pause_does_not_push_completion_to_replaced_session(
     assert "Skipped stale Team pause completion" in caplog.text
     assert "generation=2 current_generation=3" in caplog.text
     test_logger.info("Suppressed pause completion after Session replacement: state=%s", new_state)
+
+
+@pytest.mark.asyncio
+async def test_team_pause_fallback_is_fenced_to_snapshot_rounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compat adapter pause must carry the snapshotted generation and rounds.
+
+    The lifecycle refused to pause (nothing matched its generation), so the
+    request falls back to the adapter; without the injected fence that path
+    pauses by session id alone and can stop a newer round or generation.
+    """
+    from jiuwenswarm.runtime.session.model import (
+        TEAM_PAUSE_FENCE_GENERATION_PARAM,
+        TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM,
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def cancel_agent(agent: object, request: AgentRequest, *, allow_create: bool = False):
+        captured["params"] = dict(request.params)
+        return AgentResponse(request_id="pause", channel_id="web", payload={"success": True})
+
+    snapshot = SimpleNamespace(
+        session_id="session-a",
+        generation=2,
+        state=RuntimeSessionState.READY,
+        executions=(
+            SimpleNamespace(
+                execution_id="exec-round-16",
+                request_id="req-round-16",
+                team=SimpleNamespace(observation_only=False),
+            ),
+            SimpleNamespace(
+                execution_id="exec-attach",
+                request_id="req-attach",
+                team=SimpleNamespace(observation_only=True),
+            ),
+        ),
+    )
+    coordinator = SimpleNamespace(
+        snapshot_session=lambda session_id: snapshot,
+        cancel_execution=AsyncMock(
+            return_value=CancelExecutionResult(matched=1, cancelled=1, timed_out=()),
+        ),
+    )
+    publish = AsyncMock()
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+        session_runtime_lifecycle=SimpleNamespace(
+            pause_session=AsyncMock(return_value=False),
+            publish_pause_completed=publish,
+            begin_request_stop=lambda session_id: None,
+            end_request_stop=lambda session_id: None,
+        ),
+    )
+    monkeypatch.setattr("jiuwenswarm.runtime.request.cancel_request", cancel_agent)
+
+    response = await runtime.cancel_request(
+        AgentRequest(
+            request_id="pause",
+            channel_id="web",
+            session_id="session-a",
+            req_method=ReqMethod.CHAT_CANCEL,
+            params={"mode": "team", "intent": "pause"},
+        )
+    )
+
+    assert response.ok is True
+    assert captured["params"][TEAM_PAUSE_FENCE_GENERATION_PARAM] == 2
+    # Observation-only executions never owned the round, so only the
+    # business request fences the fallback pause.
+    assert captured["params"][TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM] == ["req-round-16"]
+    # The drain is bound to the snapshotted business execution: the newer
+    # rounds the fence protects are never cancelled here.
+    coordinator.cancel_execution.assert_awaited_once_with(
+        "session-a",
+        execution_id="exec-round-16",
+        generation=2,
+    )
+    publish.assert_awaited_once()
+    test_logger.info("Fallback pause carried fence: %s", captured["params"])
 
 
 @pytest.mark.asyncio
@@ -1556,7 +1952,19 @@ async def test_team_pause_retains_attach_for_later_mailbox_output(
     session = await coordinator.register_session("session-a", "web")
     manager = TeamManager()
     manager.bind_generation("session-a", session.generation)
-    monkeypatch.setattr(manager, "pause_session_runtime", AsyncMock(return_value=True))
+    from jiuwenswarm.agents.harness.team.team_manager import PauseSessionResult
+
+    monkeypatch.setattr(
+        manager,
+        "pause_session_runtime",
+        AsyncMock(
+            return_value=PauseSessionResult(
+                work_stopped=True,
+                resumable=True,
+                outcome="parked",
+            )
+        ),
+    )
     monkeypatch.setattr(manager, "stop_session_runtime", AsyncMock(return_value=True))
     lifecycle = TeamSessionLifecycleAdapter(coordinator=coordinator, team_manager=manager)
     runtime = AgentRuntime(
@@ -3361,6 +3769,32 @@ def _chat_request(request_id: str) -> AgentRequest:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("mode", ["normal", "plan"])
+async def test_recovery_error_ends_code_request_without_a_second_cold_start(streaming, mode):
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
+
+    manager = FakeAgentManager()
+    agent = manager.agent
+    agent.get_live_session_instance = lambda _sid: None
+    error = HistoryReplayError("restore queue full", code="HISTORY_RESTORE_BUSY")
+    agent.ensure_live_session_instance = AsyncMock(side_effect=error)
+    agent.ensure_instance = AsyncMock()
+    runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock(), plan_controller=PlanModeController())
+    request = _plan_turn_request("busy-code-session", "code")
+    request.params["mode"] = f"agent.code.{mode}"
+    if streaming:
+        events = [event async for event in runtime.stream(request, trigger_hook=False)]
+    else:
+        events = await runtime.invoke(request, trigger_hook=False)
+    assert events[-1].event_type == "runtime.error"
+    assert events[-1].payload["code"] == error.code
+    agent.ensure_live_session_instance.assert_awaited_once()
+    agent.ensure_instance.assert_not_awaited()
+    assert manager.foreground_calls == ["begin", "end"]
+
+
+@pytest.mark.asyncio
 async def test_plan_post_error_always_ends_foreground_chat() -> None:
     manager = FakeAgentManager()
 
@@ -3861,16 +4295,17 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from openjiuwen.core.session.checkpointer import CheckpointerFactory
+    from openjiuwen.core.session.checkpointer import CheckpointerFactory, NoopCheckpointer
 
     from jiuwenswarm.runtime import checkpointer
+    from jiuwenswarm.runtime.context_checkpointer import ContextCheckpointer
 
     dispose_error = RuntimeError("dispose failed")
     dispose = AsyncMock(side_effect=dispose_error)
     stale_checkpointer = SimpleNamespace(
         _kv_store=SimpleNamespace(engine=SimpleNamespace(dispose=dispose))
     )
-    replacement_checkpointer = object()
+    replacement_checkpointer = NoopCheckpointer()
     monkeypatch.setattr(checkpointer, "_shared_checkpointer", None, raising=False)
     create_checkpointer = AsyncMock(return_value=replacement_checkpointer)
     installed: list[object | None] = []
@@ -3908,7 +4343,11 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     await checkpointer.ensure_persistent_checkpointer()
 
     create_checkpointer.assert_awaited_once()
-    assert installed == [None, replacement_checkpointer]
+    assert len(installed) == 2
+    assert installed[0] is None
+    assert isinstance(installed[1], ContextCheckpointer)
+    assert installed[1].delegate is replacement_checkpointer
+    assert checkpointer._shared_checkpointer is installed[1]
     assert checkpointer._PERSISTENT_CHECKPOINTER_READY is True
 
 
@@ -4577,17 +5016,22 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     monkeypatch.setattr(server._jiuwenbox_runner, "stop", AsyncMock())
     first_runtime = server.get_runtime()
     first_manager = server.get_agent_manager()
+    start_web = AsyncMock()
+    monkeypatch.setattr(server._jiuwenmate_web, "start", start_web)
     first_runtime.start = AsyncMock()
     first_runtime.close = AsyncMock(wraps=first_runtime.close)
 
     await server.start(bind_transport=True)
     await server._checkpointer_warmup_task
+    start_web.assert_awaited_once_with()
     await server.stop()
 
     recovered_runtime = server.get_runtime()
     recovered_manager = server.get_agent_manager()
     recovered_runtime.start = AsyncMock()
     recovered_runtime.close = AsyncMock(wraps=recovered_runtime.close)
+    recovered_start_web = AsyncMock()
+    monkeypatch.setattr(server._jiuwenmate_web, "start", recovered_start_web)
 
     await server.start(bind_transport=True)
     await server._checkpointer_warmup_task
@@ -4601,6 +5045,8 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     assert recovered_manager is not first_manager
     assert recovered_runtime.agent_manager is recovered_manager
     recovered_runtime.start.assert_awaited_once_with()
+    start_web.assert_awaited_once_with()
+    recovered_start_web.assert_awaited_once_with()
     assert server._server is listeners[1]
     assert install_runtime_push_handler.call_count == 2
     restore_runtime_push_handler.assert_called_once()

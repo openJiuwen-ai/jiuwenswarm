@@ -27,11 +27,20 @@ if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []):
     from jiuwenswarm.server.worker import stub
     original = stub._serve_one
     class LegacyConnection:
-        def __init__(self, connection): self.connection = connection
+        def __init__(self, connection):
+            self.connection, self.hello, self.accepted = connection, None, False
         def __getattr__(self, name): return getattr(self.connection, name)
+        async def recv(self):
+            if self.hello is not None and not self.accepted:
+                from jiuwenswarm.server.ipc.startup import startup_acceptance
+                self.accepted = True
+                return startup_acceptance(self.hello)
+            return await self.connection.recv()
         async def send(self, message):
             message = dict(message)
             if message.get('kind') == 'hello':
+                # The simulated v1 peer has no startup-permission handshake.
+                self.hello = dict(message)
                 message['protocol'] = 1
                 for key in ['data_scope', 'deployment_scope', 'process_created', 'code_identity', 'shutdown_ack']:
                     message.pop(key, None)
@@ -110,7 +119,7 @@ async def test_unknown_legacy_worker_does_not_block_startup_and_requires_explici
 
 
 @pytest.mark.asyncio
-async def test_changed_installed_dependency_replaces_resident_worker(monkeypatch, tmp_path):
+async def test_changed_installed_dependency_replaces_resident_worker(monkeypatch, tmp_path, ipc_dir):
     dependencies = tmp_path / "dependencies"
     distribution = dependencies / "worker_probe-1.0.dist-info"
     distribution.mkdir(parents=True)
@@ -119,7 +128,7 @@ async def test_changed_installed_dependency_replaces_resident_worker(monkeypatch
     monkeypatch.syspath_prepend(str(dependencies))
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(dependencies), str(SOURCE)]))
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
-    path = str(tmp_path / "runtime.pipe")
+    path = str(ipc_dir / "runtime.pipe")
     first = RuntimeSupervisor(Readiness(), socket_path=path, stub=True, max_restarts=0)
     second = None
     owned = None
@@ -203,7 +212,7 @@ async def test_shared_data_instances_keep_independent_resident_workers(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_shutdown_ack_does_not_hide_a_surviving_worker_thread(monkeypatch, tmp_path):
+async def test_shutdown_ack_does_not_hide_a_surviving_worker_thread(monkeypatch, tmp_path, ipc_dir):
     shim = tmp_path / "blocked-exit"
     shim.mkdir()
     (shim / "sitecustomize.py").write_text(
@@ -220,7 +229,7 @@ async def test_shutdown_ack_does_not_hide_a_surviving_worker_thread(monkeypatch,
         "    stub._serve_one = serve\n", encoding="utf-8")
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(shim), str(SOURCE)]))
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
-    path = str(tmp_path / "runtime.pipe")
+    path = str(ipc_dir / "runtime.pipe")
     front = RuntimeSupervisor(Readiness(), stub=True, socket_path=path, max_restarts=0)
     owned = None
     try:

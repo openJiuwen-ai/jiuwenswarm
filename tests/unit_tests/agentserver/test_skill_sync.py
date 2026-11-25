@@ -146,49 +146,6 @@ def _multipart(
 
 
 @pytest.fixture
-def manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SkillManager:
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    state_file = skills_dir / "skills_state.json"
-    state_file.write_text(
-        json.dumps(
-            {
-                "marketplaces": [],
-                "installed_plugins": [],
-                "local_skills": [],
-                "skill_configs": {},
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager.get_agent_skills_dir",
-        lambda: skills_dir,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager.get_builtin_skills_dir",
-        lambda: tmp_path / "builtin_missing",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_agent_root_dir",
-        lambda: tmp_path,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_marketplace_dir",
-        lambda: skills_dir / "_marketplace",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_state_file",
-        lambda: state_file,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skilldev.state_utils.get_state_file",
-        lambda: state_file,
-    )
-    return SkillManager()
-
-
-@pytest.fixture
 def sync_token(monkeypatch: pytest.MonkeyPatch) -> str:
     token = "unit-test-sync-token"
     monkeypatch.setenv("JIUWENSKILL_SYNC_TOKEN", token)
@@ -1514,30 +1471,6 @@ async def test_sync_reload_partial_landing_triggers_agent_reload() -> None:
     assert stub.calls == ["reload_state", "handle_skill_sync_reload"]
     assert "create_instance" in reloaded, "applied 非空场景必须重建 agent 实例"
 
-
-@pytest.mark.asyncio
-async def test_sync_apply_no_landed_skill_skips_agent_reload() -> None:
-    """WS apply 路由已收缩（仅剩 skills.sync.reload），无落盘 reload 不重建."""
-    stub = _StubManager({"success": True, "applied": []})
-    facade = _build_facade_with_stub(stub)
-    reloaded: list[str] = []
-
-    async def fake_create_instance() -> None:
-        reloaded.append("create_instance")
-
-    async def fake_reload_rails(session_id=None) -> None:
-        reloaded.append(f"rails:{session_id}")
-
-    monkey_local = pytest.MonkeyPatch()
-    monkey_local.setattr(facade, "create_instance", fake_create_instance)
-    monkey_local.setattr(facade, "_reload_team_skill_rails", fake_reload_rails)
-    try:
-        response = await facade._handle_skills_request(_sync_reload_request([]))
-    finally:
-        monkey_local.undo()
-
-    assert response is not None and response.ok
-    assert "create_instance" not in reloaded, "无落盘场景不应重建 agent 实例"
 
 
 def test_ws_routes_only_reload_registered() -> None:

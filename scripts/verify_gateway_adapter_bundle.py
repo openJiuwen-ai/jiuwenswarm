@@ -30,7 +30,7 @@ def verify_gateway_extensions() -> None:
     extension_dir = Path(package.__file__).resolve().parent / "extensions"
     # These built-ins belong to the pinned Gateway dependency. Checking names
     # explicitly prevents an empty/missing directory from passing verification.
-    for name in ("adx", "agentos", "agent_client"):
+    for name in ("adx", "agentos", "runtime_management_extension"):
         root = extension_dir / name
         for filename in ("extension.yaml", "extension.py"):
             if not (root / filename).is_file():
@@ -69,7 +69,7 @@ def run_isolated(executable: Path) -> int:
     script = Path(__file__).resolve()
     with TemporaryDirectory(prefix="gateway-bundle-check-") as directory:
         root = Path(directory).resolve()
-        (root / "infra/config").mkdir(parents=True)
+        (root / "config").mkdir(parents=True)
         env = os.environ.copy()
         env["JIUWENSWARM_DATA_DIR"] = str(root)
         env["JIUWENSWARM_HOME"] = str(root)

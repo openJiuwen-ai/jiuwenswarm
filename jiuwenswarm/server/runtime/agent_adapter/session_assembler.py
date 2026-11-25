@@ -18,6 +18,8 @@ from typing import Any, Callable
 from agent_gateway.common.mode_matrix import is_team_mode
 
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
+from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
+from jiuwenswarm.server.runtime.session.recovery_budget import LegacyGroupLimit, serialize_adapter_assembly
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.client_attachments.registry import conversation_app
@@ -74,9 +76,14 @@ class SessionAssembler:
         model_selection: Any = None,
         moa_can_access: Callable[[str, str], bool] | None = None,
         retain_moa_snapshot: bool = False,
+        reuse_without_reload: bool = False,
+        required_app_role_member: dict[str, str] | None = None,
     ) -> Any:
         """Return the session-owned adapter, creating and initializing it once."""
         owner = self._owner
+        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _model_name_names_selection
+        from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueueError
+
         if self._closing:
             raise RuntimeError("session assembler is closing")
         if moa_enabled is not None and not isinstance(moa_enabled, bool):
@@ -90,15 +97,66 @@ class SessionAssembler:
             set(pending_mcp_scan_names) if pending_mcp_scan_names is not None else None
         )
         lock = self.locks.setdefault(sid, asyncio.Lock())
-        async with lock:
+        async with serialize_adapter_assembly(lock) as (prior_limit, assembly):
             if self._closing:
                 raise RuntimeError("session assembler is closing")
             failed = self.failed_cleanup.get(sid)
             if failed is not None and not await self._cleanup_failed_child(sid, failed):
-                raise RuntimeError(
-                    "session_cleanup_pending"
-                ) from self._cleanup_errors.get(sid)
-            existing = self.adapters.get(sid)
+                raise RuntimeError("session_cleanup_pending") from self._cleanup_errors.get(sid)
+            from jiuwenswarm.runtime.app_role import app_role_instructions, is_app_role_team, validate_app_role_member
+            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+            # Shared read stays keyword-free to match the persisted call sites
+            # and session-scoped test doubles that expose the positional form.
+            role_metadata = get_session_metadata(sid)
+            if required_app_role_member is not None:
+                from jiuwenswarm.server.runtime.session.lifecycle import guard
+
+                # Member consultations must validate against fresh metadata,
+                # because the binding is written right before this lookup.
+                role_metadata = get_session_metadata(sid, cache_bust=True, enable_writeback=False)
+                validate_app_role_member(role_metadata, required_app_role_member)
+                guard(sid, str(role_metadata.get("project_id") or ""))
+            if app_role_instructions(role_metadata) is not None and not is_app_role_team(role_metadata):
+                from jiuwenswarm.server.runtime.agent_adapter.interface_app_role import AppRoleAdapter
+
+                adapter = owner._session_adapters.get(sid)
+                if adapter is not None and not isinstance(adapter, AppRoleAdapter):
+                    raise ValueError("session execution profile cannot change")
+                if adapter is None:
+                    adapter = AppRoleAdapter()
+                    adapter.mark_as_session_scoped(sid)
+                    adapter.adopt_model_selection_access(owner._model_selection_can_access)
+                    await adapter.create_instance(
+                        {"channel_id": role_metadata.get("channel_id", "web")},
+                        mode=role_metadata.get("mode", "agent"),
+                    )
+                    # Lead sessions consult members through the channel-level
+                    # facade so each member keeps its own session-scoped
+                    # AppRoleAdapter and history. Member sessions simply never
+                    # expose ask_<name> tools, so the binding stays inert.
+                    from jiuwenswarm.server.runtime.agent_adapter.interface_app_role import (
+                        AppRoleMemberExecutor,
+                    )
+
+                    adapter.bind_member_executor(
+                        AppRoleMemberExecutor(owner, sid) if not owner._is_session_scoped_adapter else None
+                    )
+                    owner._session_adapters[sid] = adapter
+                owner._touch_session_adapter(sid)
+                if reserve_activity:
+                    adapter.register_session_agent_task(sid)
+                return adapter
+            existing = owner._session_adapters.get(sid)
+            # Goal status observes the installed adapter; execution requests
+            # own cron mode reconciliation and config adoption.
+            if (
+                reuse_without_reload
+                and existing is not None
+                and not existing._permission_state.permission_isolated  # pylint: disable=protected-access
+            ):
+                owner._touch_session_adapter(sid)
+                return existing
             cron_execution = getattr(owner, "_channel_id", None) == "__cron__" or bool(
                 execution_request is not None and (execution_request.metadata or {}).get("cron")
             )
@@ -196,11 +254,27 @@ class SessionAssembler:
                     or existing._has_live_root_permission_owner(sid)  # pylint: disable=protected-access
                 )
                 if busy:
-                    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-                        _model_name_names_selection,
-                    )
-
+                    effective_moa = getattr(existing, "_moa_enabled", False)
                     installed_selection = existing._collaboration_model_selection  # pylint: disable=protected-access
+                    legacy_model_requested = selection is None and bool(model_name)
+                    can_normalize_legacy_model = (
+                        legacy_model_requested
+                        and installed_selection is not None
+                        and not getattr(existing, "_moa_enabled", False)
+                    )
+                    if can_normalize_legacy_model:
+                        # Compare legacy transport choices using the same routing as execution.
+                        model_request = execution_request or AgentRequest(
+                            request_id="", session_id=sid, params={"model_name": model_name},
+                        )
+                        reference = existing._requested_model_name(model_request)  # pylint: disable=protected-access
+                        if reference.startswith(("model:", "model_group:")):
+                            kind, identifier, *route = reference.split(":", 2)
+                            selection = ModelSelection(
+                                type=kind, id=identifier, route_id=route[0] if route else None,
+                            )
+                        elif _model_name_names_selection(reference, installed_selection):
+                            selection = installed_selection
                     if (
                         installed_selection is None
                         and selection is not None
@@ -214,13 +288,21 @@ class SessionAssembler:
                         # stable reference to that same model are not a switch.
                         installed_selection = selection
                     if selection is not None and not getattr(existing, "_moa_enabled", False):
+                        # Ordinary routing can apply a stable model after the child
+                        # was built. Compare with that actual model, not its initial selection.
                         suffix = f":{selection.route_id}" if selection.route_id else ""
                         reference = f"{selection.type}:{selection.id}{suffix}"
                         cached = getattr(existing, "_stable_selection_cache", {}).get(reference)
                         if cached is not None and cached[1] is getattr(existing, "_last_resolved_model", None):
                             installed_selection = selection
                     explicit_switch = model_selection is not None or bool(model_name)
-                    if not retain_moa_snapshot and explicit_switch and selection != installed_selection:
+                    changes_moa_runtime = effective_moa and selection != installed_selection
+                    if not effective_moa and explicit_switch and not retain_moa_snapshot:
+                        changes_moa_runtime = effective_moa_enabled(
+                            self._configuration(), raw_selection, mode=mode,
+                            is_cron=owner._is_cron_execution_session(sid),
+                        )
+                    if not retain_moa_snapshot and explicit_switch and changes_moa_runtime:
                         logger.warning(
                             "[JiuWenSwarm] model switch rejected on busy session: session_id=%s "
                             "requested=%s model_name=%s installed=%s",
@@ -230,10 +312,10 @@ class SessionAssembler:
                             installed_selection,
                         )
                         raise RuntimeError("Model selection cannot change while the session is executing")
-                    # Global settings and metadata changes never replace a running
-                    # or permission-suspended invocation's installed snapshot.
-                    effective_moa = getattr(existing, "_moa_enabled", False)
-                    selection = installed_selection
+                    # Preserve snapshots for MoA work and passive lookups.
+                    # Ordinary requests keep their request-scoped model selection.
+                    if effective_moa or not explicit_switch:
+                        selection = installed_selection
                     moa_fingerprint = getattr(existing, "_moa_fingerprint", None)
                     if effective_moa and moa_can_access is not None:
                         # Read the same-class child's installed snapshot, not global settings.
@@ -263,6 +345,7 @@ class SessionAssembler:
                         )
                     else:
                         moa_snapshot = None
+                if not busy or not effective_moa:
                     if model_selection is not None and selection is not None:
                         from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection
                         update_session_model_selection(sid, selection.model_dump())
@@ -299,6 +382,11 @@ class SessionAssembler:
                         await existing.cleanup()
                         owner._drop_session_adapter_cache_entry(sid, remove_lock=False)
                         existing = None
+                    elif model_selection is not None and selection is not None:
+                        # A child built without a selection (e.g. by an attach-only
+                        # subscription) must retain the one it accepts while idle;
+                        # later busy turns compare against this snapshot.
+                        existing._collaboration_model_selection = selection  # pylint: disable=protected-access
             # Same-class child cleanup remains serialized by this session lock.
             if (
                 existing is not None and existing._permission_state.permission_isolated  # pylint: disable=protected-access
@@ -313,12 +401,33 @@ class SessionAssembler:
                     remove_runtime_state=False,
                 )
                 existing = None
-            if existing is not None and not is_external_harness and not busy:
-                retrieval_changed = getattr(existing, "_tool_retrieval_enable_flip_pending", None)
-                if callable(retrieval_changed) and retrieval_changed():
-                    await existing.cleanup()
-                    owner._drop_session_adapter_cache_entry(sid, remove_lock=False)
-                    existing = None
+            _tool_retrieval_flip_pending = (
+                existing is not None
+                and not is_external_harness
+                and not busy
+                and callable(
+                    getattr(
+                        existing,
+                        "_tool_retrieval_enable_flip_pending",
+                        None,
+                    )
+                )
+                and existing._tool_retrieval_enable_flip_pending()  # pylint: disable=protected-access
+            )
+            if _tool_retrieval_flip_pending:
+                # 优化开关与本会话冻结的披露画像已不一致（开↔关任一方向）：中途
+                # 状态手术无法在两套披露系统（我们的目录层 vs 引擎 bundled
+                # ProgressiveToolRail）之间保证干净交接，像上方 MoA 切换一样重建
+                # 会话 adapter——重建后整个会话只属于开关当前指向的一套系统，
+                # 重建路径会重读 config 并从磁盘恢复会话上下文。
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] rebuilding session adapter for tool "
+                    "retrieval enable: session_id=%s",
+                    sid,
+                )
+                await existing.cleanup()
+                owner._drop_session_adapter_cache_entry(sid, remove_lock=False)
+                existing = None
             if existing is not None:
                 first_mcp_reconcile = requested_mcp_scan_names is not None and not bool(
                     getattr(
@@ -425,7 +534,7 @@ class SessionAssembler:
                 binding_write = self._persist_binding(sid, external_harness_binding)
                 if inspect.isawaitable(binding_write):
                     await binding_write
-                self.adapters[sid] = adapter
+                owner._session_adapters[sid] = adapter
                 owner._session_adapter_versions[sid] = (
                     owner._session_adapter_config_version
                 )
@@ -445,8 +554,7 @@ class SessionAssembler:
             # Execution selection is request-local, rather than a persisted
             # Skill retrieval budget's older model construction choice.
             adapter.configure_initial_execution(
-                model_name=model_name,
-                request=execution_request,
+                model_name=model_name, request=execution_request,
                 can_access=getattr(owner, "_model_selection_can_access", None),
             )
             restored_profile = owner._load_skill_retrieval_session_profile(sid)
@@ -479,112 +587,113 @@ class SessionAssembler:
             if moa_snapshot is not None:
                 config["moa_config_snapshot"] = moa_snapshot
                 config["moa_can_access"] = moa_can_access
-            restoring_permission = False
             history_preparation = None
-            if history_before_request_id:
-                from jiuwenswarm.agents.harness.common.session_ops_service import (
-                    prefetch_session_history,
-                )
-
-                history_preparation = asyncio.create_task(
-                    self._history_io(
-                        prefetch_session_history,
-                        sid,
-                        history_before_request_id=history_before_request_id,
-                    ),
-                    name=f"session-history-prepare:{sid}",
-                )
+            if history_before_request_id and (
+                prior_limit is None or prior_limit.before_request_id != history_before_request_id
+            ):
+                from jiuwenswarm.agents.harness.common.session_ops_service import prefetch_session_history
+                history_preparation = asyncio.create_task(self._history_io(
+                    prefetch_session_history, sid, history_before_request_id=history_before_request_id,
+                ))
+            restoring_permission = False
             try:
+                await adapter.create_instance(
+                    config,
+                    mode=owner._session_instance_mode,
+                    sub_mode=owner._session_instance_sub_mode,
+                    **owner._session_instance_extra_create_kwargs(),
+                )
                 try:
-                    await adapter.create_instance(
-                        config,
-                        mode=owner._session_instance_mode,
-                        sub_mode=owner._session_instance_sub_mode,
-                        **owner._session_instance_extra_create_kwargs(),
-                    )
-                    adapter._collaboration_model_selection = selection
+                    # The same-class child retains the selection used to build its runtime.
+                    adapter._collaboration_model_selection = selection  # pylint: disable=protected-access
+                    adapter._collaboration_model_name = str(model_name or "")  # pylint: disable=protected-access
                     adapter.persist_skill_retrieval_session_profile()
                     instance_ready_at = time.monotonic()
-
                     await adapter.start_interaction(session_id=sid)
-                    interaction_ready_at = time.monotonic()
-                    adapter._collaboration_model_name = str(model_name or "")
-                    if execution_request is not None:
-                        restoring_permission = adapter._restored_permission_fresh_input(execution_request)
+                except BaseException:
+                    await adapter.close_moa_runtime(suppress_errors=True)
+                    raise
+                interaction_ready_at = time.monotonic()
 
-                    # A brand-new child uses the template config. Apply any pending
-                    # global reload before restoring context or accepting input.
-                    if not restoring_permission:
-                        await owner._reload_session_adapter_if_stale(
-                            sid,
-                            adapter,
-                            host_external_input=host_external_input,
-                            freshly_built=True,
-                        )
-                    history_snapshot = None
-                    if history_preparation is not None:
-                        try:
-                            history_snapshot = await history_preparation
-                        except Exception as exc:
-                            logger.debug(
-                                "session history preparation failed for %s: %s",
-                                sid,
-                                exc,
-                            )
-                    # Restart/eviction restoration still uses the original context
-                    # conversion after SDK initialization, start and config reload.
+                # Keep this child unpublished until cold permission settlement succeeds.
+                restoring_permission = execution_request is not None
+                if restoring_permission:
+                    restoring_permission = adapter._restored_permission_fresh_input(  # pylint: disable=protected-access
+                        execution_request,
+                    )
+                if metadata.get("moa_enabled") is not effective_moa:
+                    update_session_metadata(
+                        session_id=sid, moa_enabled=effective_moa,
+                        touch_last_message_at=False, sync_write=True,
+                    )
+                # A brand-new child uses the template config. Apply any pending
+                # global reload before restoring context or accepting input.
+                if not restoring_permission:
+                    await owner._reload_session_adapter_if_stale(
+                        sid,
+                        adapter,
+                        host_external_input=host_external_input,
+                        freshly_built=True,
+                    )
+                history_snapshot = None
+                if history_preparation is not None:
                     try:
-                        from jiuwenswarm.agents.harness.common.session_ops_service import (
-                            warmup_session_context,
-                        )
-
-                        restored = await warmup_session_context(
-                            deep_agent=getattr(adapter, "_instance", None),
-                            session_id=sid,
-                            history_before_request_id=history_before_request_id,
-                            **(
-                                {"history_snapshot": history_snapshot}
-                                if history_snapshot is not None
-                                else {}
-                            ),
-                        )
-                        if restoring_permission:
-                            from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
-                                RootPermissionQueueError,
-                            )
-
-                            if not restored:
-                                raise RootPermissionQueueError("permission_continuation_context_missing")
-                            await discard_restored_permission_batch(
-                                adapter._instance, sid, adapter._deep_agent_loop_session_id(),
-                            )
-                            await owner._reload_session_adapter_if_stale(
-                                sid, adapter, host_external_input=host_external_input, freshly_built=True,
-                            )
+                        history_snapshot = await history_preparation
+                    except HistoryReplayError:
+                        raise
                     except Exception as exc:
-                        if restoring_permission:
-                            raise
-                        logger.warning(
-                            "[JiuWenSwarmDeepAdapter] session context warmup failed: "
-                            "session_id=%s error=%s",
-                            sid,
-                            exc,
+                        logger.debug(
+                            "session history preparation failed for %s: %s", sid, exc
                         )
-                finally:
-                    await owner._drain_history_preparation(history_preparation)
-            except BaseException:
+                # Restart/eviction restoration still uses the original context
+                # conversion after SDK initialization, start and config reload.
+                try:
+                    from jiuwenswarm.agents.harness.common.session_ops_service import (
+                        warmup_session_context,
+                    )
+
+                    restored = await warmup_session_context(
+                        deep_agent=getattr(adapter, "_instance", None),
+                        session_id=sid,
+                        history_before_request_id=history_before_request_id,
+                        **({"prior_limit": prior_limit} if prior_limit is not None else {}),
+                        **(
+                            {"history_snapshot": history_snapshot}
+                            if history_snapshot is not None
+                            else {}
+                        ),
+                    )
+                    if restoring_permission and not restored:
+                        raise RootPermissionQueueError("permission_continuation_context_missing")
+                except Exception as exc:
+                    if restoring_permission or isinstance(exc, (HistoryReplayError, MemoryError)):
+                        raise
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session context warmup failed: "
+                        "session_id=%s error=%s",
+                        sid,
+                        exc,
+                    )
+                if restoring_permission:
+                    await discard_restored_permission_batch(
+                        adapter._instance, sid,  # pylint: disable=protected-access
+                        adapter._deep_agent_loop_session_id(),  # pylint: disable=protected-access
+                    )
+                    await owner._reload_session_adapter_if_stale(
+                        sid, adapter, host_external_input=host_external_input, freshly_built=True,
+                    )
+                # Publish only after context recovery and permission settlement.
+                # The session assembly lock already owns this in-flight child.
+                owner._session_adapters[sid] = adapter
+            except BaseException as exc:
                 if restoring_permission:
                     await adapter._isolate_permission_instance()
                 await self._cleanup_failed_child(sid, adapter)
+                if isinstance(exc, LegacyGroupLimit):
+                    assembly.source = exc.source
                 raise
-            if metadata.get("moa_enabled") is not effective_moa:
-                update_session_metadata(
-                    session_id=sid, moa_enabled=effective_moa,
-                    touch_last_message_at=False, sync_write=True,
-                )
-            # Cache readers outside ensure() must never observe a partially
-            # installed permission/interaction/history owner.
-            self.adapters[sid] = adapter
+            finally:
+                await owner._drain_history_preparation(history_preparation)
             if requested_mcp_scan_names is not None or restored_profile is not None:
                 adapter.mark_session_mcp_reconcile_started()
             owner._touch_session_adapter(sid)
@@ -603,6 +712,7 @@ class SessionAssembler:
                     sid
                 )
             return adapter
+
 
     async def _cleanup_failed_child(self, session_id: str, adapter: Any) -> bool:
         """Keep the singleflight lock until failed resources have drained."""

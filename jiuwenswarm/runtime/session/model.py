@@ -12,6 +12,13 @@ from typing import Any
 
 TEAM_EXECUTION_CONTEXT_METADATA_KEY = "_team_execution_context"
 
+# ``chat.interrupt`` params injected in-process by AgentRuntime before the
+# Team pause request falls back to the adapter path. They bind the compat
+# pause to the generation and Team rounds the runtime snapshotted, so a
+# round admitted afterwards is never paused by a stale request.
+TEAM_PAUSE_FENCE_GENERATION_PARAM = "_team_pause_fence_generation"
+TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM = "_team_pause_fence_request_ids"
+
 # ``chat.send`` requests carrying this truthy param attach a response
 # subscription to an already-running Team Session without submitting input.
 from jiuwenswarm.common.schema.message import TEAM_ATTACH_ONLY_PARAM  # noqa: F401,E402  re-export
@@ -194,6 +201,7 @@ class SessionExecutionHandle:
     # The interactions (questions, approvals, ...) this execution's pause emitted;
     # an answer to any of them resumes it.
     waiting_control_ids: frozenset[str] = frozenset()
+    answered_control_ids: frozenset[str] = frozenset()
     state: SessionExecutionState = SessionExecutionState.QUEUED
     created_at: float = field(default_factory=time.monotonic)
     started_at: float | None = None
@@ -218,6 +226,7 @@ class SessionExecutionHandle:
             root_work_kind=self.root_work_kind,
             root_request_id=self.root_request_id,
             waiting_control_ids=self.waiting_control_ids,
+            answered_control_ids=self.answered_control_ids,
             state=self.state,
             created_at=self.created_at,
             started_at=self.started_at,
@@ -246,6 +255,7 @@ class SessionExecutionSnapshot:
     finished_at: float | None
     error: str | None
     cancellation_requested: bool
+    answered_control_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)

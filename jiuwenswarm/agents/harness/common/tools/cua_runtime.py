@@ -5,9 +5,14 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import os
+from pathlib import Path
+import sys
 import weakref
 
-from mcp.types import CallToolResult
+from filelock import FileLock, Timeout as FileLockTimeout
+from mcp.types import CallToolResult, TextContent
+
+from jiuwenswarm.common.cua_config import cua_repl_unavailable_reason
 
 
 class DesktopLane:
@@ -33,6 +38,29 @@ def desktop_lane() -> DesktopLane:
     return _LANES[loop]
 
 
+def _prepare_native_driver() -> None:
+    reason = cua_repl_unavailable_reason()
+    if reason:
+        raise RuntimeError(f"Computer Use native backend is unavailable ({reason}).")
+
+    from computer_use.paths import native_driver, repository_root
+    from computer_use_native_tools.native import build_native
+
+    root = repository_root()
+    executable = Path(native_driver(root=root)["command"])
+    incomplete = root / ".jiuwenswarm-build-incomplete"
+    if executable.is_file() and not incomplete.exists():
+        return
+    with FileLock(root / ".jiuwenswarm-build.lock", timeout=300):
+        if executable.is_file() and not incomplete.exists():
+            return
+        incomplete.touch()
+        build_native(root=root)
+        if not executable.is_file():
+            raise RuntimeError("Computer Use did not produce a native driver.")
+        incomplete.unlink()
+
+
 class ReplRuntime:
     """One persistent engine session per delegation; the engine owns its worker."""
 
@@ -40,6 +68,7 @@ class ReplRuntime:
         # Align the embedded REPL with the host's single-step desktop tools.
         os.environ.setdefault("COMPUTER_USE_DESKTOP", "exclusive")
         self.session = session
+        self._banner = None
         self.call_lock = asyncio.Lock()
         self.close_task = None
         self.closing = False
@@ -53,7 +82,27 @@ class ReplRuntime:
                 if self.session is None:
                     from computer_use_mcp.session import ExecutionSession
 
-                    self.session = ExecutionSession()
+                    if not getattr(sys, "frozen", False):
+                        try:
+                            await asyncio.to_thread(_prepare_native_driver)
+                        except FileLockTimeout:
+                            message = (
+                                "Another session is preparing the desktop driver. "
+                                "No REPL code was executed. Retry after the build finishes."
+                            )
+                            return CallToolResult(isError=True, content=[TextContent(type="text", text=message)])
+                        except Exception as error:
+                            reason = str(error).strip() or type(error).__name__
+                            message = (
+                                f"Failed to prepare the native desktop driver. {reason}\n"
+                                "No REPL code was executed."
+                            )
+                            return CallToolResult(isError=True, content=[TextContent(type="text", text=message)])
+                    if sys.platform == "win32":
+                        from computer_use_mcp.windows_banner import DEFAULT_AGENT_DISPLAY_NAME, WindowsExecutionBanner
+
+                        self._banner = WindowsExecutionBanner(DEFAULT_AGENT_DISPLAY_NAME)
+                    self.session = ExecutionSession(banner=self._banner)
                 # No retained-history capability is advertised: reads stay full.
                 result = await self.session.execute(code, title=title.strip() or None)
                 return CallToolResult.model_validate(result)
@@ -68,11 +117,15 @@ class ReplRuntime:
 
     async def _close(self):
         try:
-            if self.session is not None:
-                result = await self.session.close()
-                if result.get("isError"):
-                    detail = "\n".join(part["text"] for part in result["content"] if part["type"] == "text")
-                    raise RuntimeError(detail or "The engine could not confirm native cleanup.")
+            try:
+                if self.session is not None:
+                    result = await self.session.close()
+                    if result.get("isError"):
+                        detail = "\n".join(part["text"] for part in result["content"] if part["type"] == "text")
+                        raise RuntimeError(detail or "The engine could not confirm native cleanup.")
+            finally:
+                if self._banner is not None:
+                    await self._banner.close()
         except Exception as error:
             self.cleanup_error = str(error) or type(error).__name__
             desktop_lane().blocker = self.cleanup_error

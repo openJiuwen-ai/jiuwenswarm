@@ -42,8 +42,12 @@ interface RawConnectorSummary {
   has_bundled_skills: boolean;
   icon?: string | null;
   source?: string;
+  source_id?: string;
   installed?: boolean;
   version?: string;
+  version_id?: string;
+  installed_version?: string;
+  has_update?: boolean;
   tags?: string[];
   // connected 布尔镜像字段已删（2026-08-10 状态机重构，types/connector.ts 注释见说明），
   // 后端仍下发但我们不再读取——statusFilter/卡片态一律走 connection_state。
@@ -75,10 +79,56 @@ function fromRawSummary(raw: RawConnectorSummary): ConnectorSummary {
     hasBundledSkills: raw.has_bundled_skills,
     icon: raw.icon,
     source: source === 'builtin' ? 'built_in' : source === 'local' ? 'customize' : 'hub',
+    sourceId: typeof raw.source_id === 'string' && raw.source_id.trim() ? raw.source_id.trim() : undefined,
     installed: raw.installed ?? source !== 'hub',
-    version: raw.version,
+    version: (() => {
+      const versionId =
+        typeof raw.version_id === 'string' && raw.version_id.trim()
+          ? raw.version_id.trim()
+          : '';
+      const version =
+        typeof raw.version === 'string' && raw.version.trim() ? raw.version.trim() : '';
+      return versionId || version || undefined;
+    })(),
+    installedVersion:
+      typeof raw.installed_version === 'string' && raw.installed_version.trim()
+        ? raw.installed_version.trim()
+        : undefined,
+    hasUpdate: raw.has_update === true,
     tags: raw.tags ?? [],
   };
+}
+
+export type ConnectorSourceProvider = {
+  source_id: string;
+  display_name?: string;
+  enabled: boolean;
+  capabilities?: string[];
+  provider_type?: string;
+  priority?: number;
+};
+
+/** Aligns with swarm_connector_hub OPENJIUWEN_HUB_SOURCE_ID (SPI default Hub). */
+export const DEFAULT_CONNECTOR_SOURCE_ID = 'openjiuwen-hub';
+
+type CatalogSourceOptions = {
+  sourceId?: string;
+  refresh?: boolean;
+};
+
+type ConnectorInstallOptions = CatalogSourceOptions & {
+  /** Required for enterprise SPI install (aligned with skill version_id). */
+  versionId?: string;
+  /** Optional early conflict hint; final id comes from ZIP manifest. */
+  packageName?: string;
+};
+
+function withSourceId(
+  params: Record<string, unknown>,
+  sourceId?: string,
+): Record<string, unknown> {
+  const value = typeof sourceId === 'string' ? sourceId.trim() : '';
+  return value ? { ...params, source_id: value } : params;
 }
 
 interface RawConnectorTool {
@@ -197,28 +247,48 @@ const UNINSTALL_TIMEOUT_MS = 60 * 1000;
 const CONNECT_TIMEOUT_MS = 10 * 60 * 1000;
 
 export const connectorApi = {
-  // 2026-08-17 按 MCP 接口文档 v2：mcp.list 现在需要 filter 参数区分"广场"(builtin)/"我的"
-  // (local，= 已连接的预置 + 全部自定义)。实测过 dev_aipc_feat_v2 分支：缺省 filter 时后端按
-  // "builtin" 处理，之前不传 filter 的单次调用会让"我的MCP"完全看不到自定义 MCP，是真实 bug，
-  // 不是理论风险（评估过程见 cjh/feature/MCP/_migration/mcp-interface-v2-gap-assessment.md）。
-  list: async (filter: 'builtin' | 'local', query = ''): Promise<CatalogItems<ConnectorSummary>> => {
+  // 2026-08-17 按 MCP 接口文档 v2：mcp.list 用 filter 区分广场/我的。
+  // 单机广场=builtin；企业远端广场=hub（强制 source_id）；我的=local。
+  list: async (
+    filter: 'builtin' | 'hub' | 'local',
+    query = '',
+    options?: CatalogSourceOptions,
+  ): Promise<CatalogItems<ConnectorSummary>> => {
     const payload = await requestEquipmentList<{ items: RawConnectorSummary[]; cache?: CatalogCacheMetadata }>(
       webRequest,
       'mcp.list',
-      { filter, ...(query ? { query } : {}) },
-      !query,
+      withSourceId({ filter, ...(query ? { query } : {}) }, options?.sourceId),
+      { preferCache: !query, refresh: options?.refresh === true },
     );
     return withCatalogCache(payload.items.map(fromRawSummary), payload.cache);
   },
-  show: async (id: string): Promise<ConnectorDetail> => {
-    const payload = await webRequest<{ item: RawConnectorDetail }>('mcp.show', { id }, { timeoutMs: 90000 });
+  listSourceProviders: async (): Promise<ConnectorSourceProvider[]> => {
+    const payload = await webRequest<{ type?: string; providers?: ConnectorSourceProvider[] }>(
+      'mcp.sources.providers',
+      {},
+    );
+    return Array.isArray(payload.providers) ? payload.providers : [];
+  },
+  show: async (id: string, options?: CatalogSourceOptions): Promise<ConnectorDetail> => {
+    const payload = await webRequest<{ item: RawConnectorDetail }>(
+      'mcp.show',
+      withSourceId({ id }, options?.sourceId),
+      { timeoutMs: 90000 },
+    );
     return fromRawDetail(payload.item);
   },
   // mcp.install embeds the connect result used by the same token/OAuth flow.
-  install: async (id: string): Promise<ConnectorInstallResponse> => {
+  // Enterprise SPI install needs version_id from the catalogue card (no get_detail).
+  install: async (id: string, options?: ConnectorInstallOptions): Promise<ConnectorInstallResponse> => {
+    const params: Record<string, unknown> = withSourceId({ id }, options?.sourceId);
+    const versionId = typeof options?.versionId === 'string' ? options.versionId.trim() : '';
+    if (versionId) params.version_id = versionId;
+    const packageName =
+      typeof options?.packageName === 'string' ? options.packageName.trim() : '';
+    if (packageName) params.package_name = packageName;
     const payload = await webRequest<{ type: 'installed'; item: ConnectorInstallResponse['item']; connect?: RawConnectResponse }>(
       'mcp.install',
-      { id },
+      params,
       { timeoutMs: CONNECT_TIMEOUT_MS },
     );
     return {

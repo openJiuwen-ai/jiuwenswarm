@@ -1,8 +1,12 @@
+import type { JiuwenMateCategory } from '../jiuwenmate/types';
 import type { ModelSelection, AskUserQuestionPayload, UserAnswer } from '../../types';
 import { webClient, webRequest } from '../../services/webClient';
 
 export interface GroupMember {
-  kind: 'agent_template' | 'agent_group';
+  kind: 'agent_template' | 'agent_group' | 'colleague';
+  avatar_url?: string;
+  colleague_category?: JiuwenMateCategory;
+  is_default?: boolean;
   cli_agent?: 'claude' | 'codex';
   id: string;
   member_name: string;
@@ -15,7 +19,33 @@ export interface GroupQuestion extends AskUserQuestionPayload {
   execution_id?: string | null;
 }
 
+export interface GroupRoute {
+  plan_id: string;
+  owner_member: string;
+  members: string[];
+  status: 'pending' | 'chat' | 'clarification' | 'task' | 'completed' | 'failed';
+  reply_message_id?: string | null;
+}
+
+/** One unmentioned user message as judged by the group's auto-reply model. */
+export interface GroupAutoReply {
+  status: 'pending' | 'notified' | 'none' | 'failed' | 'stopped';
+  client_message_id?: string | null;
+  /** member_name of every member asked to respond. */
+  notified: string[];
+  /** Set when the model asked expert teams for one joint result; then only the owner is notified. */
+  organization?: { owner: string; members: string[] };
+}
+
+export interface GroupAutoReplySettings {
+  enabled: boolean;
+  /** null judges with the group session model. */
+  model_selection: ModelSelection | null;
+}
+
 export interface GroupInfo {
+  auto_reply?: GroupAutoReplySettings;
+  organization_routes?: GroupRoute[];
   pending_questions?: GroupQuestion[];
   group_id: string;
   session_id: string;
@@ -63,7 +93,10 @@ export const groupChatClient = {
   get: (groupId: string) => webRequest<GroupInfo>('group.get', { group_id: groupId }),
   list: (page: PageInput = {}) =>
     webRequest<{ groups: GroupInfo[]; total: number; limit: number; offset: number }>('group.list', { ...page }),
-  update: (groupId: string, patch: { name?: string; description?: string; avatar?: string }) =>
+  update: (groupId: string, patch: {
+    name?: string; description?: string; avatar?: string;
+    auto_reply?: Partial<GroupAutoReplySettings>;
+  }) =>
     webRequest<GroupInfo>('group.update', { group_id: groupId, ...patch }),
   addMember: (groupId: string, member: GroupMember, clientRequestId: string) =>
     webRequest<{ group_id: string; member: GroupMember; status: 'registered'; event_type: 'group.member.added' }>(
@@ -71,7 +104,10 @@ export const groupChatClient = {
       { group_id: groupId, member, client_request_id: clientRequestId },
     ),
   history: (groupId: string, page: PageInput = {}) =>
-    webRequest<{ messages: GroupMessage[]; total: number; next_offset: number | null; limit: number; offset: number }>(
+    webRequest<{
+      messages: GroupMessage[]; total: number; next_offset: number | null; limit: number; offset: number;
+      auto_replies?: Record<string, GroupAutoReply>;
+    }>(
       'group.history.get',
       { group_id: groupId, ...page },
     ),
@@ -122,7 +158,9 @@ export const groupChatClient = {
       group_id: groupId, query: '', source: 'ask_user_interrupt', request_id: requestId, answers,
     }),
   renameFile: (groupId: string, path: string, name: string) =>
-    webRequest<{ group_id: string; path: string; name: string }>('group.file.rename', { group_id: groupId, path, name }),
+    webRequest<{ group_id: string; path: string; old_path: string; name: string }>(
+      'group.file.rename', { group_id: groupId, path, name },
+    ),
   deleteFile: (groupId: string, path: string) =>
     webRequest<{ group_id: string; path: string; deleted: true; file_removed: boolean }>(
       'group.file.delete', { group_id: groupId, path },
@@ -133,6 +171,13 @@ export const groupChatClient = {
     webRequest<{ group_id: string; deleted: boolean }>('group.delete', { group_id: groupId }),
 };
 
+export interface GroupExpertTask {
+  task_id: string;
+  title: string;
+  assignee: string;
+  status: string;
+}
+
 export interface GroupExecution {
   group_id?: string;
   execution_id: string;
@@ -142,6 +187,7 @@ export interface GroupExecution {
   execution_kind: 'agent' | 'team' | 'organization';
   organization_stage?: 'starting' | 'processing' | 'executing' | 'summarizing' | null;
   organization_plan_id?: string | null;
+  error_code?: string;
   title: string;
   task: string;
   status: string;
@@ -151,7 +197,11 @@ export interface GroupExecution {
   updated_at: number;
   progress: { completed: number; total: number } | null;
   tasks?: Record<string, string>;
-  task_details?: Record<string, { title?: string; content?: string; member_id?: string; status?: string }>;
+  task_details?: Record<string, {
+    title?: string; content?: string; member_id?: string; status?: string;
+    expert_tasks?: GroupExpertTask[];
+    expert_tasks_unavailable?: boolean;
+  }>;
   result?: string | null;
   message_id?: string | null;
   attachments?: Record<string, unknown>[];

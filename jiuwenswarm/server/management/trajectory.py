@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Any
 
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 

@@ -16,6 +16,8 @@ import logging
 from typing import Any
 
 from agent_gateway.common.mode_matrix import is_team_mode
+
+from jiuwenswarm.common.i18n import t
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
@@ -431,7 +433,7 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
             from jiuwenswarm.enterprise.team.quota import TeamQuotaExceeded, team_quota_user_message
 
             try:
-                from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
                 await run_team_store(
                     ensure_session_team_occupancy,
@@ -520,7 +522,7 @@ async def handle_team_delete(ctx: RequestContext) -> None:
                         purge_team_for_deleted_session,
                     )
 
-                    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
                     for sid in result.session_ids:
                         await run_team_store(
@@ -592,6 +594,7 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
 
     snapshot: dict[str, Any] | None = None
     source = "empty"
+    runtime_available: bool | None = True if live_matches_request else None
     if live_matches_request:
         try:
             snapshot = await monitor_handler.get_team_snapshot()
@@ -606,15 +609,27 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
         tasks = payload.get("tasks")
         return tasks if isinstance(tasks, list) else []
 
-    # 点名的团队还活着，但会话级看板不是它：另开一个只读看板读一次，用完就丢。
-    if snapshot is None and requested_team_name and session_id:
+    # Resolve one exact identity for the runtime probe and DB fallback.
+    # A session monitor may belong to another Team; a replacement worker
+    # may have none. Probe only when the matching live board is missing.
+    snapshot_team_name = requested_team_name
+    if not snapshot_team_name and session_id:
+        snapshot_team_name = str(team_manager.get_active_team_name(session_id) or "").strip()
+        if not snapshot_team_name:
+            snapshot_team_name = str(
+                (_server_global("get_session_metadata")(session_id) or {}).get("team_name") or ""
+            ).strip()
+    if snapshot is None and snapshot_team_name and session_id:
         try:
             from openjiuwen.core.runner.runner import GLOBAL_RUNNER
 
             scoped_monitor = await GLOBAL_RUNNER.get_agent_team_monitor(
-                team_name=requested_team_name,
+                team_name=snapshot_team_name,
                 session_id=session_id,
             )
+            if runtime_available is None:
+                # A running session monitor already proved the runtime is up.
+                runtime_available = scoped_monitor is not None
             if scoped_monitor is not None:
                 scoped_snapshot = await TeamMonitorHandler(scoped_monitor, session_id).get_team_snapshot()
                 if scoped_snapshot is not None:
@@ -625,7 +640,7 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
                 "[AgentWebSocketServer] team.snapshot (scoped live) failed: "
                 "session_id=%s team_name=%s error=%s",
                 session_id,
-                requested_team_name,
+                snapshot_team_name,
                 e,
             )
 
@@ -636,15 +651,7 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
     # title/content. Fall back whenever live has no tasks.
     needs_db = snapshot is None or not _snapshot_tasks(snapshot)
     if needs_db and session_id:
-        team_name = requested_team_name
-        if not team_name:
-            team_name = str(
-                team_manager.get_active_team_name(session_id) or ""
-            ).strip()
-        if not team_name:
-            team_name = str(
-                (_server_global("get_session_metadata")(session_id) or {}).get("team_name") or ""
-            ).strip()
+        team_name = snapshot_team_name
         if team_name:
             try:
                 db_snapshot = await TeamMonitorHandler.get_team_snapshot_from_db(
@@ -668,19 +675,39 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
                 snapshot = db_snapshot
                 source = "db"
 
+    # A replacement worker can read the old DB's busy/running rows without
+    # having restored any TeamAgent. Do not mutate those historical rows or
+    # infer completion from a ready worker. Expose the independent runtime
+    # probe and whether unfinished work needs an explicit recovery action.
+    unfinished = any(
+        isinstance(task, dict)
+        and task.get("status")
+        and task["status"] not in {"completed", "cancelled", "failed"}
+        for task in _snapshot_tasks(snapshot)
+    )
+    recovery_required = (
+        False if runtime_available else (
+            None if runtime_available is None or snapshot is None else unfinished
+        )
+    )
     payload = {
         **(snapshot or empty_payload),
         "members_source": source if snapshot is not None else "empty",
+        "members_live": source in {"live", "live-scoped"},
+        "runtime_available": runtime_available,
+        "recovery_required": recovery_required,
     }
     members = payload.get("members") if isinstance(payload, dict) else []
     tasks = _snapshot_tasks(payload if isinstance(payload, dict) else None)
     logger.info(
         "[AgentWebSocketServer] team.snapshot session_id=%s source=%s "
-        "tasks_count=%s members_count=%s",
+        "tasks_count=%s members_count=%s runtime_available=%s recovery_required=%s",
         session_id or "-",
         source if snapshot is not None else "empty",
         len(tasks),
         len(members) if isinstance(members, list) else 0,
+        runtime_available,
+        recovery_required,
     )
 
     resp = AgentResponse(
@@ -806,11 +833,20 @@ async def handle_swarmflow_control(ctx: RequestContext) -> None:
             payload={"error": "run_id is required"},
         )
     elif not team_runtime_running:
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=channel_id,
             ok=False,
-            payload={"error": "工作流控制不可用，发送一条消息唤醒团队后即可使用。"},
+            payload={
+                "error": t(
+                    "enterprise.team.workflow_unavailable",
+                    language=resolve_preferred_language(),
+                )
+            },
         )
     else:
         run_id = run_id.strip()

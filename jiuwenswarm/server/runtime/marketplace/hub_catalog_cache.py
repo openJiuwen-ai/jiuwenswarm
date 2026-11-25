@@ -51,8 +51,10 @@ def safe_metadata(value, depth=0):
     if depth > 8:
         return None
     if isinstance(value, dict):
-        return {k: safe_metadata(v, depth + 1) for k, v in value.items()
-                if k in _ALLOWED and not _unsafe_url_leaf(v)}
+        # Allowed keys always survive with a blanked value instead of being dropped:
+        # cards promise a fixed field set (e.g. icon_uri), and a signed URL that no
+        # longer fits the cache must read as "no icon", not as a missing key.
+        return {k: safe_metadata(v, depth + 1) for k, v in value.items() if k in _ALLOWED}
     if isinstance(value, (list, tuple)):
         return [safe_metadata(v, depth + 1) for v in value[:10000] if not _unsafe_url_leaf(v)]
     if isinstance(value, str):
@@ -360,10 +362,10 @@ async def start_hub_catalog_preload(skill_manager=None):
 
     Skill Plaza home keys are swarmskill/skill × top_k=6 (see useHubMarketplace).
     """
-    from .hub_asset_port import create_default_hub_asset_port
-    port = create_default_hub_asset_port()
+    from .hub_asset_port import create_package_hub_port
+
     for kind in ('agent_template', 'agent_group', 'plugin', 'mcp'):
-        await cached_asset_catalog(port, kind, preload=True)
+        await cached_asset_catalog(create_package_hub_port(kind), kind, preload=True)
     if skill_manager is None:
         return
 

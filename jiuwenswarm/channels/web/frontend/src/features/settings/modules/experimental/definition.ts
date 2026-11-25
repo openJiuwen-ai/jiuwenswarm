@@ -1,12 +1,12 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
   ExternalCliCustomAgentsItem,
-  ProactiveLimitsSetting,
+  REASetting,
   RSISetting,
-  TaskAsrSetting,
-  TaskFullDuplexSetting,
   TrajectoryDiagnosisSetting,
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
@@ -20,16 +20,6 @@ export const experimentalModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
-      id: 'asr',
-      titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
-    },
-    {
-      id: 'task-full-duplex',
-      titleKey: 'settingsPanel.experimental.taskFullDuplex',
-      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
-    },
-    {
       id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
       items: [{ id: 'external-cli-custom-agents', component: 'custom', render: ExternalCliCustomAgentsItem }],
@@ -38,6 +28,11 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'rsi',
       titleKey: 'settingsPanel.experimental.rsi',
       items: [{ id: 'rsi-enabled', component: 'custom', render: RSISetting }],
+    },
+    {
+      id: 'rea',
+      titleKey: 'settingsPanel.experimental.rea',
+      items: [{ id: 'rea-enabled', component: 'custom', render: REASetting }],
     },
     {
       id: 'a2ui',
@@ -76,6 +71,8 @@ export const experimentalModule: SettingsModuleDefinition = {
           id: 'kv-cache-affinity-enabled',
           component: 'switch',
           key: 'kv_cache_affinity_enabled',
+          optimistic: false,
+          errorDisplay: 'toast',
         },
       ],
     },
@@ -97,26 +94,12 @@ export const experimentalModule: SettingsModuleDefinition = {
             disabled: 'when-parent-unchecked',
             uncheckWithParent: true,
             items: [
+              { id: 'team-leader-goal-enabled', component: 'switch', key: 'team_leader_goal_enabled' },
               { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
               { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
               { id: 'team-member-subtasks-enabled', component: 'switch', key: 'team_member_subtasks_enabled' },
+              { id: 'team-code-todo-reminder-disabled', component: 'switch', key: 'team_code_todo_reminder_disabled' },
             ],
-          },
-        },
-      ],
-    },
-    {
-      id: 'proactive-recommendation',
-      titleKey: 'settingsPanel.experimental.proactive',
-      items: [
-        {
-          id: 'proactive-recommendation',
-          component: 'switch',
-          key: 'proactive_recommendation_enabled',
-          subItems: {
-            show: 'always',
-            disabled: 'when-parent-unchecked',
-            items: [{ id: 'proactive-limits', component: 'custom', render: ProactiveLimitsSetting }],
           },
         },
       ],
@@ -153,9 +136,16 @@ export const experimentalModule: SettingsModuleDefinition = {
     },
     {
       id: 'computer-control',
-      visibleWhen: 'cua_backend_available',
       titleKey: 'settingsPanel.experimental.computerControl',
-      items: [{ id: 'cua-agent-enabled', component: 'switch', key: 'cua_agent_enabled' }],
+      items: [
+        {
+          id: 'cua-agent-enabled',
+          component: 'switch',
+          key: 'cua_agent_enabled',
+          availableWhen: 'cua_backend_available',
+          unavailableReasonKey: 'cua_backend_unavailable_reason',
+        },
+      ],
     },
     {
       id: 'design-mode',

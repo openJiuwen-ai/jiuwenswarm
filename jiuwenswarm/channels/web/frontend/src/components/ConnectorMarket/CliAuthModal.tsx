@@ -30,101 +30,112 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
   const { t } = useTranslation();
   const waitAuth = useConnectorStore((s) => s.waitAuth);
   const startOAuth = useConnectorStore((s) => s.startOAuth);
-  const [step, setStep] = useState(initial);
+  const [{ step, round }, setAuthorization] = useState({ step: initial, round: 0 });
   const [status, setStatus] = useState<'waiting' | 'error'>('waiting');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [justAdvanced, setJustAdvanced] = useState(false);
   const requestSeqRef = useRef(0);
-  const hostOAuthStartedRef = useRef(false);
+  const onConnectedRef = useRef(onConnected);
+  const tRef = useRef(t);
+  const openedAuthRef = useRef(new Set<string>());
+  const hostOAuthRequestRef = useRef<{
+    key: string;
+    promise: Promise<ConnectorConnectResponse | null>;
+  } | null>(null);
+  const waitAuthRequestRef = useRef<{
+    key: string;
+    promise: Promise<ConnectorConnectResponse | null>;
+  } | null>(null);
   const [retrySeq, setRetrySeq] = useState(0);
 
   // Host OAuth connectors (Canva) return an explicit backend sentinel; only then
   // do we call mcp.oauth.start to fetch the real authorize URL.
   const isHostOAuth = initial.hostOAuth === true;
+  const currentAuthUrl = step.authUrl;
+  const currentStepIndex = step.stepIndex ?? 0;
 
   useEffect(() => {
-    return () => {
-      // 组件卸载后让 in-flight 的 waitAuth 结果失效，避免用户关掉弹窗后过很久收到的
-      // connected/失败还去 setStep/setStatus（这个 promise 本身取消不了，只能靠序号丢弃结果）。
-      requestSeqRef.current += 1;
-    };
-  }, []);
+    // Callback and locale updates must not restart authorization side effects.
+    onConnectedRef.current = onConnected;
+    tRef.current = t;
+  }, [onConnected, t]);
 
   useEffect(() => {
-    if (isHostOAuth) {
-      if (hostOAuthStartedRef.current) return;
-      hostOAuthStartedRef.current = true;
-      const seq = ++requestSeqRef.current;
-      setStatus('waiting');
-      setErrorMessage(null);
-      void startOAuth(name).then((response) => {
-        if (seq !== requestSeqRef.current) return;
-        if (!response?.flow || !response.authUrl) {
-          setStatus('error');
-          setErrorMessage(t('connectorMarket.cliAuth.error'));
-          return;
-        }
-        window.open(response.authUrl, '_blank', 'noopener,noreferrer');
-        void waitAuth(name, response.stepIndex ?? 0).then((result) => {
-          if (seq !== requestSeqRef.current) return;
-          if (result?.type === 'connected') {
-            onConnected();
-            return;
-          }
-          setStatus('error');
-          setErrorMessage(t('connectorMarket.cliAuth.error'));
-        });
-      }).catch(() => {
-        if (seq !== requestSeqRef.current) return;
-        setStatus('error');
-        setErrorMessage(t('connectorMarket.cliAuth.error'));
-      });
-      return;
-    }
-    if (step.authUrl) {
-      // 收到响应后自动开窗——不是在用户点击事件里同步触发，可能被浏览器弹窗拦截器挡掉；
-      // 挡掉了也没关系，下面渲染的"打开授权链接"按钮可以让用户自己手动开一次。
-      window.open(step.authUrl, '_blank', 'noopener,noreferrer');
-    }
     const seq = ++requestSeqRef.current;
     setStatus('waiting');
     setErrorMessage(null);
-    waitAuth(name, step.stepIndex ?? 0).then((response) => {
+
+    async function authenticate() {
+      let authUrl = currentAuthUrl;
+      let stepIndex = currentStepIndex;
+      if (isHostOAuth) {
+        const key = JSON.stringify([name, retrySeq]);
+        if (hostOAuthRequestRef.current?.key !== key) {
+          hostOAuthRequestRef.current = { key, promise: startOAuth(name) };
+        }
+        const response = await hostOAuthRequestRef.current.promise;
+        if (seq !== requestSeqRef.current) return null;
+        if (!response?.flow || !response.authUrl) {
+          return null;
+        }
+        authUrl = response.authUrl;
+        stepIndex = response.stepIndex ?? 0;
+      }
+
+      const openKey = JSON.stringify([name, stepIndex, authUrl, retrySeq]);
+      if (authUrl && !openedAuthRef.current.has(openKey)) {
+        openedAuthRef.current.add(openKey);
+        window.open(authUrl, '_blank', 'noopener,noreferrer');
+      }
+      // Reuse effect replays within a round. Each auth_required response starts a new wait.
+      const key = JSON.stringify([name, stepIndex, authUrl, retrySeq, round]);
+      if (waitAuthRequestRef.current?.key !== key) {
+        waitAuthRequestRef.current = { key, promise: waitAuth(name, stepIndex) };
+      }
+      return waitAuthRequestRef.current.promise;
+    }
+
+    void authenticate().then((response) => {
       if (seq !== requestSeqRef.current) return; // 已卸载/已发起新一轮，丢弃过期结果
       if (!response) {
         setStatus('error');
-        setErrorMessage(t('connectorMarket.cliAuth.error'));
+        setErrorMessage(tRef.current('connectorMarket.cliAuth.error'));
         return;
       }
       if (response.type === 'connected') {
-        onConnected();
+        onConnectedRef.current();
         return;
       }
-      if (response.type === 'auth_required') {
-        // 多步授权推进到下一步：更新 authUrl/stepIndex，effect 会因为 step 变化自动重新走一遍
-        // （新一步该不该开窗、要不要等，跟这一步无关，各自独立判断）。
-        setJustAdvanced(true);
-        setStep(response);
+      if (!isHostOAuth && response.type === 'auth_required') {
+        setJustAdvanced((response.stepIndex ?? 0) > currentStepIndex);
+        setAuthorization((current) => ({ step: response, round: current.round + 1 }));
         return;
       }
       setStatus('error');
-      setErrorMessage(t('connectorMarket.cliAuth.error'));
+      setErrorMessage(tRef.current('connectorMarket.cliAuth.error'));
+    }).catch(() => {
+      if (seq !== requestSeqRef.current) return;
+      setStatus('error');
+      setErrorMessage(tRef.current('connectorMarket.cliAuth.error'));
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, name, retrySeq, isHostOAuth, startOAuth, t, waitAuth, onConnected]);
+    return () => {
+      // Invalidate this subscription while retaining requests for effect replay.
+      requestSeqRef.current += 1;
+    };
+  }, [currentAuthUrl, currentStepIndex, name, retrySeq, round, isHostOAuth, startOAuth, waitAuth]);
 
   function handleManualOpen() {
     if (step.authUrl) window.open(step.authUrl, '_blank', 'noopener,noreferrer');
   }
 
   function handleRetry() {
-    hostOAuthStartedRef.current = false;
     setJustAdvanced(false);
     setRetrySeq((v) => v + 1);
   }
 
   // 用户中途放弃连接/授权
   function handleCancel() {
+    requestSeqRef.current += 1;
     void useConnectorStore.getState().cancelConnectAction(name);
     onCancel();
   }

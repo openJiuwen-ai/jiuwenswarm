@@ -306,3 +306,15 @@ async def test_team_terminal_and_default_transport_use_same_resident_push_owner(
     assert sink.await_count == 2
     assert sink.await_args_list[0].args[0]["session_id"] == "session-team"
     assert sink.await_args_list[1].args[0] is message
+
+
+@pytest.mark.parametrize("provider", ["webui", "packages", "voice", "session", "workspace", "memory", "project", "harmonyos", "config", "multimodal", "designer", "jiuwenmate"])
+def test_lazy_management_registry_retains_each_provider_public_methods(provider):
+    """Upstream adapter additions remain routable through the lazy host."""
+    from importlib import import_module
+    from jiuwenswarm.server.worker.management_adapters import LazyAdapterRegistry, _PROVIDERS
+
+    module, symbol, _methods = _PROVIDERS[provider]
+    adapter_type = getattr(import_module(module), symbol)
+    registry = LazyAdapterRegistry(object())
+    assert adapter_type.methods <= registry.methods()

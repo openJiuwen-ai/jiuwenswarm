@@ -93,7 +93,7 @@ class ProductionHostServices:
     def encode_response(
         response: Any, *, response_id: str, sequence: int = 0
     ) -> dict[str, Any]:
-        from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+        from e2a.wire_codec import encode_agent_response_for_wire
 
         return encode_agent_response_for_wire(
             response, response_id=response_id, sequence=sequence
@@ -103,7 +103,7 @@ class ProductionHostServices:
     def encode_chunk(
         chunk: Any, *, response_id: str, sequence: int, is_stream: bool = True
     ) -> dict[str, Any]:
-        from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
+        from e2a.wire_codec import encode_agent_chunk_for_wire
 
         return encode_agent_chunk_for_wire(
             chunk, response_id=response_id, sequence=sequence, is_stream=is_stream

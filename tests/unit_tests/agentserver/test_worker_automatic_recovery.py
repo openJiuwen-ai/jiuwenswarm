@@ -15,7 +15,7 @@ from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ipc_mode", ["resident", "front_loopback"])
-async def test_invalid_build_identity_requires_correction_and_explicit_recovery(monkeypatch, tmp_path, ipc_mode):
+async def test_invalid_build_identity_requires_correction_and_explicit_recovery(monkeypatch, tmp_path, ipc_dir, ipc_mode):
     from jiuwenswarm.server.supervisor import identity
 
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
@@ -26,7 +26,7 @@ async def test_invalid_build_identity_requires_correction_and_explicit_recovery(
     monkeypatch.setattr(identity, "_identity_path", lambda: invalid)
     readiness = Readiness()
     supervisor = RuntimeSupervisor(readiness, stub=True, max_restarts=1,
-        socket_path=str(tmp_path / "runtime.pipe"))
+        socket_path=str(ipc_dir / "runtime.pipe"))
     try:
         with pytest.raises(identity.WorkerIdentityError, match="Invalid Worker build identity"):
             identity.code_identity()
@@ -45,7 +45,7 @@ async def test_invalid_build_identity_requires_correction_and_explicit_recovery(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ipc_mode", ["resident", "front_loopback"])
-async def test_bootstrap_recovers_automatically_after_resource_failure(monkeypatch, tmp_path, ipc_mode):
+async def test_bootstrap_recovers_automatically_after_resource_failure(monkeypatch, tmp_path, ipc_dir, ipc_mode):
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", ipc_mode)
     monkeypatch.setenv("JIUWENSWARM_HOME", str(tmp_path))
@@ -63,7 +63,7 @@ async def test_bootstrap_recovers_automatically_after_resource_failure(monkeypat
 
     monkeypatch.setattr(WorkerProcess, "spawn", failing_spawn)
     readiness = Readiness()
-    supervisor = RuntimeSupervisor(readiness, stub=True, socket_path=str(tmp_path / "runtime.pipe"),
+    supervisor = RuntimeSupervisor(readiness, stub=True, socket_path=str(ipc_dir / "runtime.pipe"),
         max_restarts=1, connect_timeout=10)
     frames = []
 
@@ -96,7 +96,7 @@ async def test_bootstrap_recovers_automatically_after_resource_failure(monkeypat
 async def test_stop_cancels_delayed_recovery_without_starting_worker(monkeypatch):
     monkeypatch.setattr(module, "_RECOVERY_BACKOFF_INITIAL", 60)
     supervisor = RuntimeSupervisor(Readiness())
-    supervisor._mark_restart_exhausted("temporary resource pressure")
+    supervisor._mark_retryable_failure("temporary resource pressure")
     delayed = supervisor._automatic_recovery_task
     await supervisor.stop()
     assert delayed.done()
@@ -118,7 +118,7 @@ async def test_identity_failure_does_not_start_automatic_recovery():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ipc_mode", ["resident", "front_loopback"])
-async def test_real_worker_exit_before_ipc_recovers_without_config_reload(monkeypatch, tmp_path, ipc_mode):
+async def test_real_worker_exit_before_ipc_recovers_without_config_reload(monkeypatch, tmp_path, ipc_dir, ipc_mode):
     import os
     from pathlib import Path
     import psutil
@@ -142,16 +142,17 @@ async def test_real_worker_exit_before_ipc_recovers_without_config_reload(monkey
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     monkeypatch.setattr(module, "_RECOVERY_BACKOFF_INITIAL", .3)
     readiness = Readiness()
-    supervisor = RuntimeSupervisor(readiness, stub=True, socket_path=str(tmp_path / "runtime.pipe"),
-        max_restarts=1, connect_timeout=5)
+    # The recovering subprocess imports the worker before opening IPC.
+    supervisor = RuntimeSupervisor(readiness, stub=True, socket_path=str(ipc_dir / "runtime.pipe"),
+        max_restarts=1, connect_timeout=10)
     try:
         with pytest.raises(RuntimeError):
-            await asyncio.wait_for(supervisor.run_until_ipc_ready(), 20)
+            await asyncio.wait_for(supervisor.run_until_ipc_ready(), 30)
         assert readiness.state is ReadinessState.FAILED
         failed = [int(pid) for pid in attempts.read_text().splitlines()]
         assert len(failed) == 2 and all(not psutil.pid_exists(pid) for pid in failed)
         blocked.unlink()
-        async with asyncio.timeout(40):
+        async with asyncio.timeout(30):
             while not readiness.snapshot()["agent_ready"]:
                 await asyncio.sleep(.01)
         assert supervisor.worker_pid not in failed
@@ -161,13 +162,13 @@ async def test_real_worker_exit_before_ipc_recovers_without_config_reload(monkey
 
 
 @pytest.mark.asyncio
-async def test_confirmed_stalled_resident_is_replaced_instead_of_reattached(monkeypatch, tmp_path):
+async def test_confirmed_stalled_resident_is_replaced_instead_of_reattached(monkeypatch, tmp_path, ipc_dir):
     import time
     import psutil
 
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     readiness = Readiness()
-    supervisor = RuntimeSupervisor(readiness, stub=True, socket_path=str(tmp_path / "runtime.pipe"),
+    supervisor = RuntimeSupervisor(readiness, stub=True, socket_path=str(ipc_dir / "runtime.pipe"),
         max_restarts=1)
     try:
         await asyncio.wait_for(supervisor.run_until_ipc_ready(), 15)

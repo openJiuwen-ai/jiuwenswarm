@@ -81,6 +81,34 @@ test('chat.send is completions SSE with query dual-write', () => {
   assert.equal(assembled.jsonBody.content, 'hi');
 });
 
+test('session assets use the dedicated urls', () => {
+  const listed = assembleWebRest('session.assets.list', { session_id: 'sid' }, BASE);
+  assert.ok(listed);
+  assert.equal(listed.verb, 'GET');
+  assert.equal(listed.url, '/api/v1/sessions/sid/assets');
+  assert.equal(listed.jsonBody, null);
+
+  const registered = assembleWebRest(
+    'session.assets.register',
+    { session_id: 'sid', items: [{ path: '/tmp/a.pdf' }] },
+    BASE
+  );
+  assert.ok(registered);
+  assert.equal(registered.verb, 'POST');
+  assert.equal(registered.url, listed.url);
+  assert.deepEqual(registered.jsonBody, { items: [{ path: '/tmp/a.pdf' }] });
+
+  const renamed = assembleWebRest(
+    'session.assets.rename',
+    { session_id: 'sid', asset_id: 'asset_ab', name: 'brief' },
+    BASE
+  );
+  assert.ok(renamed);
+  assert.equal(renamed.verb, 'PATCH');
+  assert.equal(renamed.url, '/api/v1/sessions/sid/assets/asset_ab');
+  assert.deepEqual(renamed.jsonBody, { name: 'brief' });
+});
+
 test('interrupt and answer put session_id in path', () => {
   const interrupt = assembleWebRest(
     'chat.interrupt',
@@ -241,6 +269,30 @@ const ENTERPRISE_ASSEMBLE = [
   ['skills.skillnet.evaluate', 'POST', '/api/v1/skills/skillnet/actions/evaluate', { url: 'http://s' }, 'unary'],
   ['skills.evolution.get', 'GET', '/api/v1/skills/evolution', { name: 'evo-1' }, 'unary'],
   ['skills.evolution.save', 'PUT', '/api/v1/skills/evolution', { name: 'evo-1', entries: [] }, 'unary'],
+  ['a4p.config.get', 'GET', '/api/v1/a4p/config', { session_id: 'sid' }, 'unary'],
+  ['a4p.config.update', 'PUT', '/api/v1/a4p/config', { session_id: 'sid', enabled: true }, 'unary'],
+  ['a4p.authorization.pending', 'GET', '/api/v1/a4p/authorization/pending', { session_id: 'sid' }, 'unary'],
+  [
+    'a4p.authorization.complete',
+    'POST',
+    '/api/v1/a4p/authorization/actions/complete',
+    { session_id: 'sid', requestId: 'r1' },
+    'unary',
+  ],
+  [
+    'a4p.authorization.reject',
+    'POST',
+    '/api/v1/a4p/authorization/actions/reject',
+    { session_id: 'sid', requestId: 'r1', reason: 'no' },
+    'unary',
+  ],
+  [
+    'a4p.authorization.reprepare',
+    'POST',
+    '/api/v1/a4p/authorization/actions/reprepare',
+    { session_id: 'sid', requestId: 'r1', selectedActionIndexes: [0] },
+    'unary',
+  ],
   ['team.list', 'GET', '/api/v1/teams', {}, 'unary'],
   ['team.history.get', 'GET', '/api/v1/sessions/sid/team/history', { session_id: 'sid', cursor: 0, limit: 500 }, 'unary'],
   ['team.snapshot', 'GET', '/api/v1/sessions/sid/team/snapshot', { session_id: 'sid', team_name: 'alpha' }, 'unary'],
@@ -250,7 +302,7 @@ const ENTERPRISE_ASSEMBLE = [
 ];
 
 test('every enterprise mapped method assembles verb+url+kind', () => {
-  assert.equal(ENTERPRISE_ASSEMBLE.length, 48);
+  assert.equal(ENTERPRISE_ASSEMBLE.length, 54);
   const seen = new Set();
   for (const [method, verb, url, params, kind] of ENTERPRISE_ASSEMBLE) {
     seen.add(method);

@@ -123,7 +123,7 @@ async def test_model_transport_uses_selected_connection_and_text_only(monkeypatc
     await helper.request_review({"user_request": "你好", "joyai_response": "你好"})
     connection = build_calls[0]["model_client_config"]
     assert connection.api_key == "review-key" and connection.max_retries == 0
-    assert connection.timeout == 10  # The action reviewer has a bounded ten-second budget.
+    assert connection.timeout == 120  # Preserve the configured model timeout.
     messages = invoke.await_args.args[0]
     assert all(isinstance(message["content"], str) for message in messages)
     assert "image_url" not in json.dumps(messages)

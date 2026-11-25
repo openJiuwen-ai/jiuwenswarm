@@ -109,7 +109,7 @@ async def test_retry_does_not_append_history_twice(channel):
 async def test_runtime_http_append_uses_session_owner_and_deduplicates(channel):
     import httpx
 
-    from openjiuwen_protocol.e2a.models import E2AEnvelope
+    from e2a.models import E2AEnvelope
     from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import assemble_rest_request
     from jiuwenswarm.server.agent_http_routes import build_http_app
     from jiuwenswarm.server.app_services import AppServices

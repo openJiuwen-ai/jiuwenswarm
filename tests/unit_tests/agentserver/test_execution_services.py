@@ -24,7 +24,7 @@ def test_shared_helpers_and_services_import_without_delivery_adapters(tmp_path):
     script = f"""
 import importlib.abc, sys
 sys.path.insert(0, {str(root)!r})
-blocked = ('websockets', 'jiuwenswarm.common.e2a.wire_codec',
+blocked = ('websockets', 'e2a.wire_codec',
     'jiuwenswarm.server.ws_send', 'agent_gateway.common.ws_diagnostics',
     'jiuwenswarm.common.hook_event', 'jiuwenswarm.common.hooks_context')
 class RejectAdapters(importlib.abc.MetaPathFinder):
@@ -33,9 +33,12 @@ class RejectAdapters(importlib.abc.MetaPathFinder):
             raise AssertionError('eager delivery adapter: ' + fullname)
 sys.meta_path.insert(0, RejectAdapters())
 from jiuwenswarm.server.worker.execution_services import ProductionHostServices
-from jiuwenswarm.server.worker.execution_support import _StreamKeepalive, _TurnOutcomeTracker
 services = ProductionHostServices()
 assert services.capabilities.keepalive
+assert not any(name in sys.modules for name in blocked)
+# e2a now initializes its pure codec alongside the protocol enums used below.
+blocked = tuple(name for name in blocked if name != 'e2a.wire_codec')
+from jiuwenswarm.server.worker.execution_support import _StreamKeepalive, _TurnOutcomeTracker
 assert not any(name in sys.modules for name in blocked)
 print('LAZY_EXECUTION_SERVICES_OK')
 """
@@ -92,7 +95,7 @@ async def test_delivery_preserves_size_fallback_result(monkeypatch):
 
 
 def test_response_and_error_encoders_keep_existing_wire_contract(monkeypatch):
-    from jiuwenswarm.common.e2a import wire_codec
+    from e2a import wire_codec
     from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 
     encoded = {}
@@ -144,7 +147,7 @@ async def test_injected_before_chat_hook_and_disabled_capability():
 async def test_default_hook_preserves_mutable_request_context(monkeypatch, params):
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
-    from jiuwenswarm.common.hook_event import AgentServerHookEvents
+    from e2a.hooks import AgentServerHookEvents
     from agent_gateway.extensions.registry import ExtensionRegistry
 
     request = AgentRequest(

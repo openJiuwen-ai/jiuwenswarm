@@ -28,6 +28,10 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_PROMPT_PREFIX_EN,
     HOST_USER_PROMPT_PREFIX_ZH,
 )
+from jiuwenswarm.extensions_v2.event_types.prompt_context import (
+    InstructionFile,
+    PromptContextBlock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +141,9 @@ class UserTurn:
         text: The user's own words. ``str`` for ordinary turns, ``dict`` for an
             A2UI client event, or an ``InteractiveInput`` resuming an interrupt.
         channel: Originating channel id (``web`` / ``feishu`` / ``cron`` / ...).
-        language: Preferred response language (``zh`` / ``en``).
+        language: UI / lead-in language (``zh`` / ``en``). Reply language is
+            decided in the envelope as ``preferred_response_language``
+            (``match`` for user turns; ``language`` for system / cross-session).
         files: ``chat.send`` files mapping (``uploaded_documents`` / ``uploaded_images``).
         trusted_dirs: Directories the client declared as trusted, if any.
         skills: Skill names explicitly selected by the client, if any.
@@ -153,10 +159,47 @@ class UserTurn:
     skills: list[str] | None = None
     metadata: dict[str, Any] | None = None
     origin_kind: str = HOST_USER_ORIGIN_INTERNAL
+    prepared_contexts: tuple[PromptContextBlock, ...] | None = None
+    prepared_instruction_files: tuple[InstructionFile, ...] | None = None
 
     def with_text(self, text: Any) -> "UserTurn":
         """Return a copy carrying rewritten user text, keeping all context."""
         return replace(self, text=text)
+
+    @property
+    def resolved_skills(self) -> list[str]:
+        """Return this turn's explicit selectors using the prompt's rules."""
+        return self._resolve_skills(self.text)
+
+    def with_prompt_contexts(
+        self,
+        blocks: list[PromptContextBlock],
+        instruction_files: list[InstructionFile] | None,
+    ) -> "UserTurn":
+        """Return a copy carrying the event-prepared context collection."""
+        return replace(
+            self,
+            prepared_contexts=tuple(blocks),
+            prepared_instruction_files=(
+                None if instruction_files is None else tuple(instruction_files)
+            ),
+        )
+
+    def build_prompt_contexts(self) -> list[PromptContextBlock]:
+        """Build the context blocks that the host exposes to ``prompt.context``."""
+        tz_name, tz = self._resolve_timezone()
+        blocks = [
+            PromptContextBlock(
+                name="currentDate",
+                text=_render_timestamp(datetime.now(tz), tz_name),
+            )
+        ]
+        interaction_context = self._interaction_context_text()
+        if interaction_context:
+            blocks.append(
+                PromptContextBlock(name="interactionContext", text=interaction_context)
+            )
+        return blocks
 
     def render(self) -> Any:
         """Render this turn into the prompt an agent receives.
@@ -211,20 +254,28 @@ class UserTurn:
         is_system = prompt_channel in _SYSTEM_CHANNELS
         is_agent_session = prompt_channel == "agent_session"
         tz_name, tz = self._resolve_timezone()
-        now = datetime.now(tz)
-        envelope: dict[str, Any] = {
-            "source": "system" if is_system else prompt_channel,
-            "timestamp": _render_timestamp(now, tz_name),
-            "preferred_response_language": self.language,
-            "content": content,
-            "type": (
-                prompt_channel
-                if is_system
-                else "cross_session_message"
-                if is_agent_session
-                else "user input"
-            ),
-        }
+        envelope: dict[str, Any] = {"source": "system" if is_system else prompt_channel}
+        prepared_current_date = self._prepared_context("currentDate")
+        envelope["timestamp"] = (
+            prepared_current_date.text
+            if prepared_current_date is not None and prepared_current_date.text.strip()
+            else _render_timestamp(datetime.now(tz), tz_name)
+        )
+        envelope.update(
+            {
+                "preferred_response_language": self._envelope_response_language(
+                    prompt_channel
+                ),
+                "content": content,
+                "type": (
+                    prompt_channel
+                    if is_system
+                    else "cross_session_message"
+                    if is_agent_session
+                    else "user input"
+                ),
+            }
+        )
         if is_agent_session and self.metadata:
             raw_cross_session = self.metadata.get(SESSION_MESSAGE_INTERNAL_KEY)
             if isinstance(raw_cross_session, dict):
@@ -259,7 +310,30 @@ class UserTurn:
                 )
             elif raw_mcp_app_contexts is not None:
                 logger.warning("[UserTurn] ignored invalid MCP App model context")
+        self._add_prepared_context_carrier(envelope)
         return envelope
+
+    def _keeps_configured_response_language(self, prompt_channel: str) -> bool:
+        """Whether this turn keeps yaml/memo UI language instead of ``match``."""
+        if prompt_channel in _SYSTEM_CHANNELS or prompt_channel in {
+            "agent_session",
+            "__cron__",
+        }:
+            return True
+        return isinstance(self.metadata, dict) and isinstance(
+            self.metadata.get("cron"), dict
+        )
+
+    def _envelope_response_language(self, prompt_channel: str) -> str:
+        """Return envelope ``preferred_response_language``.
+
+        User-authored turns use ``match`` so the model follows ``content``.
+        System (cron / heartbeat / ``__cron__``) and cross-session turns keep
+        the configured UI language — they have no user utterance to match.
+        """
+        if self._keeps_configured_response_language(prompt_channel):
+            return self.language
+        return "match"
 
     def _prompt_channel(self) -> str:
         """Return the model-visible channel for this turn."""
@@ -271,6 +345,10 @@ class UserTurn:
         if isinstance(self.metadata.get(SESSION_MESSAGE_INTERNAL_KEY), dict):
             return "agent_session"
         return self.channel
+
+    def prompt_channel(self) -> str:
+        """Return the model-visible channel for host-side context metadata."""
+        return self._prompt_channel()
 
     def _resolve_timezone(self) -> tuple[str, ZoneInfo]:
         """Return the envelope timezone as ``(name, tzinfo)``.
@@ -306,12 +384,15 @@ class UserTurn:
         """
         if self._prompt_channel() == "agent_session":
             return []
+        from jiuwenswarm.common.builtin_skills import with_builtin_catalog
+        from jiuwenswarm.common.utils import get_agent_skills_dir
+
         if self.skills:
-            return list(self.skills)
+            return with_builtin_catalog(list(self.skills), get_agent_skills_dir())
         if not isinstance(content, str):
             return []
         parsed_skills, _stripped = _handle_skills_use_slash_command(content)
-        return parsed_skills
+        return with_builtin_catalog(parsed_skills, get_agent_skills_dir())
 
     def _sender_fields(self) -> dict[str, str]:
         """Return sender / chat_type fields when the channel reports them."""
@@ -359,21 +440,75 @@ class UserTurn:
         name = str(prefer.get("display_name") or prefer.get("id") or "").strip()
         if not name:
             return {}
-        return {
-            "prefer_mcp": (
+        from jiuwenswarm.common.i18n import try_normalize_preferred_language
+
+        ui_lang = try_normalize_preferred_language(self.language) or "zh"
+        if ui_lang == "en":
+            directive = (
+                f'For this task, prefer tools or skills from the enabled MCP "{name}"; '
+                "only fall back to other approaches if that MCP is insufficient."
+            )
+        else:
+            directive = (
                 f"本次任务请优先使用已启用的 MCP「{name}」提供的工具或技能来完成；"
                 "若该 MCP 能力不足，再考虑其它方式。"
             )
-        }
+        return {"prefer_mcp": directive}
 
     def _interaction_prefix(self) -> str:
         """Return the interaction-context preamble, or an empty string."""
-        if not self.metadata:
-            return ""
-        interaction_ctx = str(self.metadata.get("interaction_context") or "").strip()
+        prepared_interaction = self._prepared_context("interactionContext")
+        interaction_ctx = (
+            self._interaction_context_text()
+            if self.prepared_contexts is None
+            else prepared_interaction.text
+            if prepared_interaction is not None
+            else ""
+        )
         if not interaction_ctx:
             return ""
         return f"\n{interaction_ctx}\n\n"
+
+    def _interaction_context_text(self) -> str:
+        """Return the unprepared interaction context from request metadata."""
+        if not self.metadata:
+            return ""
+        return str(self.metadata.get("interaction_context") or "").strip()
+
+    def _prepared_context(self, name: str) -> PromptContextBlock | None:
+        """Return one prepared block, or ``None`` when it was deleted."""
+        if self.prepared_contexts is None:
+            return None
+        for block in self.prepared_contexts:
+            if block.name == name:
+                return block
+        return None
+
+    def _add_prepared_context_carrier(self, envelope: dict[str, Any]) -> None:
+        """Project unrecognised prepared blocks without silently dropping them."""
+        if self.prepared_contexts is None:
+            return
+        mapped_names = {"currentDate", "interactionContext"}
+        blocks = [
+            {"name": block.name, "text": block.text}
+            for block in self.prepared_contexts
+            if block.name not in mapped_names
+        ]
+        if not blocks and self.prepared_instruction_files is None:
+            return
+        carrier: dict[str, Any] = {"blocks": blocks}
+        if self.prepared_instruction_files is not None:
+            carrier["instructionFiles"] = [
+                {
+                    "path": item.path,
+                    "kind": item.kind,
+                    "content": item.content,
+                    "parent": item.parent,
+                    "isUnverified": item.isUnverified,
+                }
+                for item in self.prepared_instruction_files
+            ]
+        envelope["prompt_context"] = carrier
 
 
 def _lead_in(channel: str, language: str) -> str:

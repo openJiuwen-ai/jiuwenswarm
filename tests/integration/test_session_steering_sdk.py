@@ -357,7 +357,7 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
     agent; it does not start the desktop application or external IM services.
     """
     from websockets.legacy.server import serve
-    from jiuwenswarm.common.e2a.models import E2AEnvelope
+    from e2a.models import E2AEnvelope
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
     from jiuwenswarm.common.schema.message import Message
@@ -470,7 +470,7 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
     def message(rid, streaming, **params):
         return Message(
             id=rid, type="req", channel_id="web", session_id=sid, timestamp=0,
-            req_method=ReqMethod.CHAT_SEND, is_stream=streaming, ok=True,
+            req_method=ReqMethod.CHAT_SEND.value, is_stream=streaming, ok=True,
             params={"query": "run the gate", "mode": "agent", **params},
         )
 

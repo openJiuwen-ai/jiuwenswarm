@@ -1,11 +1,15 @@
 import { webRequest } from '../../../services/webClient';
+import i18n from '../../../i18n';
 import type { Message } from '../../../types/message';
 import { useGoalStore } from '../../../stores/goalStore';
 import { usePlanStore } from '../../../stores/planStore';
 import { isSessionBusyForPlanToggle } from '../../../features/planMode/planModeGate';
 import { evaluateGoalArm } from '../../../features/goalMode/goalModeGate';
 import { NEW_CONVERSATION_ID } from '../../../multi-session/state/newConversationLifecycle';
+import { isEnterprise } from '../../../edition';
 import { resolvePlanGoalInterlock } from './semantics';
+import { runExtensionCommand } from './extension';
+import type { ExtensionManagementResult } from './extension';
 
 /**
  * 斜杠命令注册表（/fork、/compact、/plan、/goal、/persist）。
@@ -96,6 +100,10 @@ export function togglePlanFromSlash(
   // executeSlashCommand 守卫、输入框旁 Plan 开关、「计划」chip 关闭按钮共用
   // 同一套 planModeGate 判断（ask_user 待回答时 isProcessing 已回到 false，
   // 只看它的旧闸门会漏放）。默认参数便于单测注入。
+  //
+  // 这里只判忙态与 Goal 互锁、不判 planModeGate 的集群锁：本函数只对非集群会话
+  // 可达（集群在下面 planCommand.execute 的 `ctx.mode === 'team'` 处已整体拦下），
+  // 集群锁在此恒为假。真正的用户路径也都先过 InputArea 的守卫，这里是竞态兜底。
   sessionBusy: boolean = isSessionBusyForPlanToggle(sessionId),
 ): PlanSlashToggleResult {
   planStore.ensureRuntime(sessionId);
@@ -180,6 +188,7 @@ export function parseSlashLine(raw: string): { name: string; args: string } {
 
 export function findSlashCommand(name: string): SlashCommand | undefined {
   const lower = name.toLowerCase();
+  if (lower === 'plan' && isEnterprise()) return undefined;
   return SLASH_COMMANDS.find((c) => c.name === lower);
 }
 
@@ -206,10 +215,19 @@ const forkCommand: SlashCommand = {
     try {
       await ctx.forkConversation(ctx.sessionId);
     } catch {
-      ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, '分叉会话失败，请稍后再试。'));
+      ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, i18n.t('chat.slash.forkFailed')));
     }
   },
 };
+
+/** Match the server's one-decimal, ties-to-even formatting. */
+function formatCompactDecimal(value: number): string {
+  // Among exact binary midpoints at this precision, .25 rounds down to .2.
+  if (Math.abs(value % 1) === 0.25) {
+    return value.toFixed(2).slice(0, -1);
+  }
+  return value.toFixed(1);
+}
 
 /** /compact —— 压缩对话历史为摘要；token 计数刷新由 context.* 事件监听处理。 */
 const compactCommand: SlashCommand = {
@@ -226,20 +244,25 @@ const compactCommand: SlashCommand = {
         { timeoutMs: 600000 },
       );
       if (res.result === 'busy') {
-        output = '压缩已在进行中，请稍候。';
+        output = i18n.t('chat.slash.compactBusy');
       } else if (res.result === 'noop') {
-        output = '上下文已是最优，无需压缩。';
+        output = i18n.t('chat.slash.compactNoop');
       } else if (res.result === 'compressed') {
         const before = res.stats?.raw_total_tokens ?? 0;
         const after = res.stats?.total_tokens ?? 0;
-        const rate = before > 0 ? Math.round(((before - after) / before) * 100) : 0;
-        const fmt = (n: number) => Math.max(1, Math.round(n / 1000));
-        output = `✓ 上下文已压缩：${fmt(after)}K / ${fmt(before)}K tokens（节省 ${rate}%）`;
+        const rate = before > 0 ? ((before - after) / before) * 100 : 0;
+        const beforeText = formatCompactDecimal(before / 1000);
+        const afterText = formatCompactDecimal(after / 1000);
+        output = i18n.t('chat.slash.compactDone', {
+          after: afterText,
+          before: beforeText,
+          rate: formatCompactDecimal(rate),
+        });
       } else {
-        output = '压缩未完成，请稍后再试。';
+        output = i18n.t('chat.slash.compactIncomplete');
       }
     } catch {
-      output = '压缩失败：网络异常或请求超时。';
+      output = i18n.t('chat.slash.compactFailed');
     }
     ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, output));
   },
@@ -264,7 +287,7 @@ const planCommand: SlashCommand = {
     if (ctx.mode === 'team') {
       ctx.addMessage(
         ctx.sessionId,
-        commandResultMessage(ctx.inputLine, '计划模式仅对单 agent 开放，集群会话不支持。'),
+        commandResultMessage(ctx.inputLine, i18n.t('chat.slash.planTeamUnsupported')),
       );
       return;
     }
@@ -278,15 +301,14 @@ const planCommand: SlashCommand = {
 };
 
 function goalStatusOutput(goal: GoalSlashSnapshot): string {
-  if (!goal) return '当前会话没有持续目标。';
-  const statusLabel =
-    {
-      active: '进行中',
-      paused: '已暂停',
-      completed: '已完成',
-      blocked: '已阻塞',
-    }[goal.status] ?? goal.status;
-  return `当前目标（${statusLabel}）：${goal.objective}`;
+  if (!goal) return i18n.t('chat.slash.goalNone');
+  const statusLabel = i18n.t(`chat.slash.goalStatus.${goal.status}`, {
+    defaultValue: goal.status,
+  });
+  return i18n.t('chat.slash.goalCurrent', {
+    status: statusLabel,
+    objective: goal.objective,
+  });
 }
 
 /**
@@ -308,7 +330,7 @@ const goalCommand: SlashCommand = {
     if (intent.action === 'set' && !intent.objective) {
       ctx.addMessage(
         ctx.sessionId,
-        commandResultMessage(ctx.inputLine, '用法：/goal [set <目标>|pause|resume|clear]'),
+        commandResultMessage(ctx.inputLine, i18n.t('chat.slash.goalUsage')),
       );
       return;
     }
@@ -320,7 +342,7 @@ const goalCommand: SlashCommand = {
     ) {
       ctx.addMessage(
         ctx.sessionId,
-        commandResultMessage(ctx.inputLine, '请先开始一个对话再控制持续目标。'),
+        commandResultMessage(ctx.inputLine, i18n.t('chat.slash.goalNeedSession')),
       );
       return;
     }
@@ -341,14 +363,14 @@ const goalCommand: SlashCommand = {
         if (preparation === 'blocked_by_busy') {
           ctx.addMessage(
             ctx.sessionId,
-            commandResultMessage(ctx.inputLine, '对话进行中，暂时无法设置目标，请等待执行结束。'),
+            commandResultMessage(ctx.inputLine, i18n.t('chat.slash.goalBusy')),
           );
           return;
         }
         if (preparation === 'blocked_by_plan') {
           ctx.addMessage(
             ctx.sessionId,
-            commandResultMessage(ctx.inputLine, '计划模式正在进行，请先退出计划模式再设置目标。'),
+            commandResultMessage(ctx.inputLine, i18n.t('chat.slash.goalPlanActive')),
           );
           return;
         }
@@ -366,7 +388,7 @@ const goalCommand: SlashCommand = {
         if (!decision.ok) {
           ctx.addMessage(
             ctx.sessionId,
-            commandResultMessage(ctx.inputLine, '目标正在执行中，暂时无法清除，请先暂停或等待执行结束。'),
+            commandResultMessage(ctx.inputLine, i18n.t('chat.slash.goalClearBusy')),
           );
           return;
         }
@@ -379,7 +401,7 @@ const goalCommand: SlashCommand = {
     } catch {
       ctx.addMessage(
         ctx.sessionId,
-        commandResultMessage(ctx.inputLine, '目标命令执行失败，请稍后再试。'),
+        commandResultMessage(ctx.inputLine, i18n.t('chat.slash.goalFailed')),
       );
     }
   },
@@ -395,7 +417,7 @@ const persistCommand: SlashCommand = {
         ctx.sessionId,
         commandResultMessage(
           ctx.inputLine,
-          'Persist Session 只能在创建新会话时开启，并且创建后不可更改。请点击“新建任务”后再使用 /persist <任务>。',
+          i18n.t('chat.slash.persistExistingSession'),
         ),
       );
       return;
@@ -403,11 +425,31 @@ const persistCommand: SlashCommand = {
     if (!args.trim()) {
       ctx.addMessage(
         ctx.sessionId,
-        commandResultMessage(ctx.inputLine, '用法：/persist <任务>'),
+        commandResultMessage(ctx.inputLine, i18n.t('chat.slash.persistUsage')),
       );
       return;
     }
     ctx.submitMessage?.(ctx.inputLine);
+  },
+};
+
+const extensionCommand: SlashCommand = {
+  name: 'extension',
+  // Package management is available before the first chat turn creates a session.
+  requiresSession: false,
+  execute: async (ctx, args) => {
+    // The shared slash parser trims the separator, including a newline after the command name.
+    if (/[\r\n]/.test(ctx.inputLine)) {
+      ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, i18n.t('extensionCommand.singleLineOnly')));
+      return;
+    }
+    const output = await runExtensionCommand(
+      args,
+      ctx.sessionId === NEW_CONVERSATION_ID ? undefined : ctx.sessionId,
+      (method, params, options) => webRequest<ExtensionManagementResult>(method, params, options),
+      (key, values) => String(i18n.t(key, values)),
+    );
+    ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, output));
   },
 };
 
@@ -417,4 +459,5 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   planCommand,
   goalCommand,
   persistCommand,
+  extensionCommand,
 ];

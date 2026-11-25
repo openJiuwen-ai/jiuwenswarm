@@ -15,12 +15,12 @@ import sys
 from types import SimpleNamespace
 from typing import Any
 
+from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
 from jiuwenswarm.runtime.config_reload import (
     reload_runtime_after_config_save as reload_runtime_after_config_save,
 )
 
 from jiuwenswarm.common.config import resolve_env_vars
-from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
@@ -148,6 +148,23 @@ class ConfigAdapter(GatewayAdapter):
     })
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        if request.req_method in {ReqMethod.CONFIG_SET, ReqMethod.CONFIG_SAVE_ALL}:
+            from jiuwenswarm.common.config import get_config_raw
+            from jiuwenswarm.common.multimodal_models import CAPABILITIES, MultimodalError
+            from jiuwenswarm.common.multimodal_projection import FIELDS
+
+            params = request.params or {}
+            updates = params.get("config", {}) if request.req_method == ReqMethod.CONFIG_SAVE_ALL else params
+            managed_suffixes = {"model", "enabled", *FIELDS.keys()}
+            affected = []
+            if isinstance(updates, dict):
+                for tool in CAPABILITIES:
+                    if any(f"{tool}_{suffix}" in updates for suffix in managed_suffixes):
+                        affected.append(tool)
+            if affected and get_config_raw().get("multimodal") is not None:
+                error = MultimodalError("MM_LEGACY_WRITE_UNSUPPORTED", {"affected_tools": affected})
+                return AgentResponse(request_id=request.request_id, channel_id=request.channel_id, ok=False,
+                                     payload=error.payload, metadata=request.metadata)
         if request.req_method == ReqMethod.CONFIG_MOA_STATUS:
             from jiuwenswarm.common.config import get_config
             from jiuwenswarm.server.runtime.moa_runtime import moa_status
@@ -186,11 +203,38 @@ class ConfigAdapter(GatewayAdapter):
                 get_config,
                 update_preferred_language_in_config,
             )
+            from jiuwenswarm.enterprise.edition import is_enterprise
+
+            # 企业版 locale 在 Gateway 终结（写 user_preference），AS 不再写 yaml。
+            if is_enterprise():
+                from jiuwenswarm.enterprise.config.preferred_language import (
+                    resolve_preferred_language_async,
+                )
+                from jiuwenswarm.enterprise.tenant.tenant_identity import extract_triple
+
+                _g, _b, user_id = extract_triple(request)
+                if request.req_method == ReqMethod.LOCALE_GET_CONF:
+                    lang = await resolve_preferred_language_async(user_id)
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=True,
+                        payload={"preferred_language": lang},
+                        metadata=request.metadata,
+                    )
+                return build_error_response(
+                    request,
+                    "enterprise locale.set_conf is handled by Gateway; "
+                    "AgentServer does not write preferred_language",
+                    code="NOT_SUPPORTED",
+                )
 
             if request.req_method == ReqMethod.LOCALE_GET_CONF:
-                lang = str(get_config().get("preferred_language") or "zh").strip().lower()
-                if lang not in {"zh", "en"}:
-                    lang = "zh"
+                from jiuwenswarm.common.i18n import normalize_preferred_language
+
+                lang = normalize_preferred_language(
+                    get_config().get("preferred_language")
+                )
                 return AgentResponse(
                     request_id=request.request_id, channel_id=request.channel_id,
                     ok=True, payload={"preferred_language": lang}, metadata=request.metadata,
@@ -202,6 +246,19 @@ class ConfigAdapter(GatewayAdapter):
                 )
             lang = raw_lang.strip().lower()
             update_preferred_language_in_config(lang)
+            from jiuwenswarm.server.runtime.recommendation_host import (
+                active_recommendation_host,
+            )
+
+            host = active_recommendation_host()
+            if host is not None:
+                try:
+                    await host.on_language_changed(lang)
+                except Exception:  # noqa: BLE001 - language save must still succeed
+                    logger.warning(
+                        "[Config] recommendation language refresh failed",
+                        exc_info=True,
+                    )
             return AgentResponse(
                 request_id=request.request_id, channel_id=request.channel_id,
                 ok=True, payload={"preferred_language": lang}, metadata=request.metadata,

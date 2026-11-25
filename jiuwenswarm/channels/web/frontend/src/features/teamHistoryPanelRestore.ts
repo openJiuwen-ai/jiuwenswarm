@@ -1,4 +1,5 @@
 import { webClient } from '../services/webClient';
+import i18n from '../i18n';
 import { isEnterprise } from '../edition';
 import { isTeamAgentMode } from './planMode/wireMode';
 import type { Message } from '../types';
@@ -483,7 +484,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
 
     tasks.set(taskId, {
       task_id: taskId,
-      title: title || existing?.title || `任务 ${taskId}`,
+      title: title || existing?.title || i18n.t('team.taskFallback', { id: taskId }),
       content: content || existing?.content,
       status,
       assignee: assignee || existing?.assignee,
@@ -509,6 +510,13 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         Number.isFinite(rawTask.content_original_size)
           ? rawTask.content_original_size
           : existing?.content_original_size,
+      progress_frozen:
+        rawTask.progress_frozen === true ? true : existing?.progress_frozen,
+      progress_frozen_at:
+        typeof rawTask.progress_frozen_at === 'number' &&
+        Number.isFinite(rawTask.progress_frozen_at)
+          ? rawTask.progress_frozen_at
+          : existing?.progress_frozen_at,
     });
     addMember(assignee, timestamp);
   };
@@ -602,7 +610,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
               member_id: memberId,
               kind: 'final',
               timestamp,
-              title: '任务完成总结',
+              title: i18n.t('team.process.execution.final'),
               content,
             });
           }
@@ -617,7 +625,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
             member_id: memberId,
             kind: 'tool_call',
             timestamp,
-            title: `调用 ${toolName}`,
+            title: i18n.t('team.process.execution.toolCallTitle', { tool: toolName }),
             content,
             tool_name: toolName,
             tool_call_id: toolCallId || undefined,
@@ -635,7 +643,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
             member_id: memberId,
             kind: 'tool_result',
             timestamp,
-            title: `${toolName} 结果`,
+            title: i18n.t('team.process.execution.toolResultTitle', { tool: toolName }),
             content,
             tool_name: toolName,
             tool_call_id: toolCallId || undefined,
@@ -663,7 +671,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
               member_id: memberId,
               kind: 'file',
               timestamp,
-              title: '发送文件',
+              title: i18n.t('team.process.execution.sentFile'),
               content: mergedFiles.map((file) => file.name).join('\n'),
               files: mergedFiles,
             });
@@ -903,7 +911,7 @@ function snapshotItemToTask(item: Record<string, unknown>, fallbackTimestamp: nu
   const timestamp = taskTimestamp(item, fallbackTimestamp);
   return {
     task_id: taskId,
-    title: title || `任务 ${taskId}`,
+    title: title || i18n.t('team.taskFallback', { id: taskId }),
     content: content || undefined,
     status,
     assignee: assignee || undefined,
@@ -915,6 +923,21 @@ function snapshotItemToTask(item: Record<string, unknown>, fallbackTimestamp: nu
     title_original_size: readSnapshotSize(item.title_original_size),
     content_truncated: item.content_truncated === true ? true : undefined,
     content_original_size: readSnapshotSize(item.content_original_size),
+  };
+}
+
+/** Snapshot wins identity/body/status; history keeps progress_frozen across refresh. */
+export function mergeTeamSnapshotTaskWithHistory(
+  fromSnap: TeamTask,
+  existing: TeamTask | undefined,
+): TeamTask {
+  return {
+    ...fromSnap,
+    skills: fromSnap.skills || existing?.skills,
+    files: fromSnap.files || existing?.files,
+    progress_frozen: existing?.progress_frozen,
+    progress_frozen_at: existing?.progress_frozen_at,
+    timestamp: Math.max(existing?.timestamp || 0, fromSnap.timestamp || 0),
   };
 }
 
@@ -961,14 +984,7 @@ async function reconcileTasksFromSnapshot(
         continue;
       }
       const existing = existingById.get(fromSnap.task_id);
-      // Snapshot wins for identity/body/status; keep history-only extras
-      // (skills/files) when the snapshot omits them.
-      tasks.push({
-        ...fromSnap,
-        skills: fromSnap.skills || existing?.skills,
-        files: fromSnap.files || existing?.files,
-        timestamp: Math.max(existing?.timestamp || 0, fromSnap.timestamp || 0),
-      });
+      tasks.push(mergeTeamSnapshotTaskWithHistory(fromSnap, existing));
     }
     return { ...state, tasks };
   } catch {

@@ -68,6 +68,73 @@ def test_dingtalk_receipt_and_verified_bot_echo_become_one_record(records, histo
     assert merged.received_at == echo.received_at
 
 
+@pytest.mark.parametrize('history_first', [False, True])
+def test_dingtalk_markdown_receipt_matches_the_verified_rendered_bot_echo(records, history_first):
+    group = records.groups.resolve('local', 'dingtalk', 'cid', now=NOW)
+    receipt = message(1, message_id='process-key', sender_id='app', sender_name='小九', sender_kind='agent',
+                      text='推荐**西湖**。\n\n**看点**\n- 断桥\n- 苏堤', received_at=NOW + timedelta(seconds=3), reply_to='human-1')
+    echo = message(2, message_id='platform-id', sender_id='dingtalk-open:bot', sender_name='机器人昵称',
+                   sender_kind='agent', text='推荐 西湖 。\n 看点 \n•断桥\n•苏堤', received_at=NOW + timedelta(seconds=1))
+    items = [(receipt, 'delivery:del-format'), (echo, 'dingtalk:message:platform-id')]
+    for item, source in reversed(items) if history_first else items:
+        records.archive.append('local', group.group_chat_id, item, source_ref=source)
+    assert records.archive.reconcile_dingtalk_deliveries(
+        'local', group.group_chat_id, {'app': 'dingtalk-open:bot'},
+        observed_since=NOW - timedelta(seconds=20), observed_through=NOW + timedelta(seconds=30)) == 1
+    records.archive.append('local', group.group_chat_id, receipt, source_ref='delivery:del-format')
+    records.archive.append('local', group.group_chat_id, echo, source_ref='dingtalk:message:platform-id')
+    page = records.archive.recent('local', group.group_chat_id, cursor=None, limit=20, visible_from=NOW)
+    assert len(page.messages) == 1
+    merged, = page.messages
+    assert (merged.message_id, merged.sender_id, merged.sender_name, merged.reply_to) == (
+        'platform-id', 'app', '小九', 'human-1')
+    assert merged.text == echo.text
+
+
+@pytest.mark.parametrize('receipt_text,echo_text,expected_reconciled', [
+    # Layout variants of the same content project to the same rendered text and reconcile.
+    ('## 看点\n\n- 西湖\n- 断桥', '看点\n•西湖\n•断桥', 1),
+    ('推荐**西湖**。', '推荐西湖。', 1),
+    # Distinct content or complex markdown must not be erased by the projection: no reconcile.
+    ('金额**12**元。', '金额 13 元。', 0),
+    ('金额**12**元。', '金额 12 元？', 0),
+    ('1 2', '12', 0),
+    ('`**literal**`', 'literal', 0),
+    ('[文档](https://example.com/first)', '文档', 0),
+    (r'\*\*literal\*\*', 'literal', 0),
+    ('    - 12', '12', 0),
+    ('    **literal**', 'literal', 0),
+    (' \t- 12', '12', 0),
+    ('~~~\n- literal\n~~~', '~~~\nliteral\n~~~', 0),
+])
+def test_dingtalk_display_projection_reconciles_layout_variants_not_distinct_content(
+        records, receipt_text, echo_text, expected_reconciled):
+    group = records.groups.resolve('local', 'dingtalk', 'cid', now=NOW)
+    for mid, source, sender, text in [
+        ('process', 'delivery:del', 'app', receipt_text),
+        ('echo', 'dingtalk:message:echo', 'dingtalk-open:bot', echo_text),
+    ]:
+        records.archive.append('local', group.group_chat_id, message(
+            1, message_id=mid, sender_id=sender, sender_kind='agent', text=text), source_ref=source)
+    assert records.archive.reconcile_dingtalk_deliveries(
+        'local', group.group_chat_id, {'app': 'dingtalk-open:bot'},
+        observed_since=NOW - timedelta(seconds=20), observed_through=NOW + timedelta(seconds=30)) == expected_reconciled
+
+
+def test_dingtalk_formatted_candidates_remain_separate_when_two_receipts_match_one_echo(records):
+    group = records.groups.resolve('local', 'dingtalk', 'cid', now=NOW)
+    for mid, source, sender, text in [
+        ('receipt-a', 'delivery:a', 'app', '推荐**西湖**。'),
+        ('receipt-b', 'delivery:b', 'app', '推荐 西湖 。'),
+        ('echo', 'dingtalk:message:echo', 'dingtalk-open:bot', '推荐 西湖 。'),
+    ]:
+        records.archive.append('local', group.group_chat_id, message(
+            1, message_id=mid, sender_id=sender, sender_kind='agent', text=text), source_ref=source)
+    assert records.archive.reconcile_dingtalk_deliveries(
+        'local', group.group_chat_id, {'app': 'dingtalk-open:bot'},
+        observed_since=NOW - timedelta(seconds=20), observed_through=NOW + timedelta(seconds=30)) == 0
+
+
 @pytest.mark.parametrize('case', ['other_bot', 'human', 'different_text', 'late', 'attachment', 'ambiguous_echo',
                                   'ambiguous_receipt', 'unknown_bot', 'feishu'])
 def test_dingtalk_echo_reconciliation_preserves_distinct_or_ambiguous_messages(records, case):
@@ -238,7 +305,12 @@ def test_membership_does_not_reactivate_from_late_message_and_rejoin_resets_visi
     groups.update_membership("local", "agent", group_id, "app", status="active",
                              observed_at=NOW + timedelta(seconds=10), source_ref="joined:2")
     access = groups.access_for("local", "agent", group_id)
-    assert access.visible_from == NOW + timedelta(seconds=10)
+    assert access.status == "left"
+    groups.observe_access("local", "agent", group_id, "app", observed_at=NOW + timedelta(seconds=11),
+                          message_time=NOW + timedelta(seconds=11), source_ref="message:rejoined")
+    access = groups.access_for("local", "agent", group_id)
+    assert access.status == "active"
+    assert access.visible_from == NOW + timedelta(seconds=11)
 
 
 def test_literal_unicode_search_and_visibility_filter(records):
@@ -296,7 +368,12 @@ def test_joining_after_binding_retirement_starts_a_new_visibility_period(records
                                      source_ref="binding:retired")
     records.groups.update_membership(*args, status="active", observed_at=NOW + timedelta(seconds=2),
                                      source_ref="event:joined-again")
-    assert records.groups.access_for(*args[:3]).visible_from == NOW + timedelta(seconds=2)
+    assert records.groups.access_for(*args[:3]).status == "unknown"
+    records.groups.observe_access(*args, observed_at=NOW + timedelta(seconds=3),
+                                 message_time=NOW + timedelta(seconds=3), source_ref="message:rejoined")
+    access = records.groups.access_for(*args[:3])
+    assert access.status == "active"
+    assert access.visible_from == NOW + timedelta(seconds=3)
 
 
 def test_edited_message_keeps_scan_identity_and_old_redelivery_does_not_undo_it(records):

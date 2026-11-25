@@ -580,18 +580,18 @@ export function SkillNetSearchModal({
       <div data-testid="skill-net-search-modal-root" data-variant="embedded" className="flex flex-col h-full">
         <div className="overflow-auto flex-1 min-h-0">
           {installedSuccess && (
-            <div data-testid="skill-net-search-modal-installed-toast" data-variant="success" className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", width: "564px", height: "40px" }}>
+            <div data-testid="skill-net-search-modal-installed-toast" data-variant="success" className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", maxWidth: "564px", height: "40px" }}>
               <span className="w-4 h-4 rounded-full bg-[var(--color-feedback-success-indicator)] flex items-center justify-center flex-shrink-0">
                 <svg className="w-3 h-3 text-text-inverse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              {t("skills.messages.skillNetInstalled", { name: installedSuccess }).replace("√", "")}
+              <span className="truncate">{t("skills.messages.skillNetInstalled", { name: installedSuccess }).replace("√", "")}</span>
               <button
                 type="button"
                 onClick={clearInstalledSuccess}
                 data-testid="skill-net-search-modal-installed-toast-close"
-                className="ml-auto w-6 h-6 flex items-center justify-center hover:bg-card/30 rounded-full "
+                className="ml-auto w-6 h-6 flex-shrink-0 flex items-center justify-center hover:bg-card/30 rounded-full "
               >
                 <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -610,7 +610,7 @@ export function SkillNetSearchModal({
             <div data-testid="skill-net-search-modal-loading" className="flex items-center justify-center h-full text-text-muted">{t("common.loading")}</div>
           )}
           {loadState === "error" && (
-            <div data-testid="skill-net-search-modal-search-failed" className="text-sm text-text-muted">{t("skills.skillNet.searchFailed")}</div>
+            <div data-testid="skill-net-search-modal-search-failed" className="text-sm text-text-muted">{t("skills.skillNet.errors.searchFailedFallback")}</div>
           )}
           {loadState === "success" && (
             <div data-testid="skill-net-search-modal-results" data-variant="embedded" className={`mt-4 flex-1 min-h-0 overflow-y-auto ${viewMode === "grid" ? "flex flex-wrap gap-4 content-start" : "space-y-3"}`}>
@@ -911,18 +911,18 @@ export function SkillNetSearchModal({
 
         <div data-testid="skill-net-search-modal-body" className="p-5 overflow-auto flex-1 min-h-0">
           {installedSuccess && (
-            <div data-testid="skill-net-search-modal-installed-toast" data-variant="success" className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", width: "564px", height: "40px" }}>
+            <div data-testid="skill-net-search-modal-installed-toast" data-variant="success" className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", maxWidth: "564px", height: "40px" }}>
               <span className="w-4 h-4 rounded-full bg-[var(--color-feedback-success-indicator)] flex items-center justify-center flex-shrink-0">
                 <svg className="w-3 h-3 text-text-inverse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              {t("skills.messages.skillNetInstalled", { name: installedSuccess }).replace("√", "")}
+              <span className="truncate">{t("skills.messages.skillNetInstalled", { name: installedSuccess }).replace("√", "")}</span>
               <button
                 type="button"
                 onClick={clearInstalledSuccess}
                 data-testid="skill-net-search-modal-installed-toast-close"
-                className="ml-auto w-6 h-6 flex items-center justify-center hover:bg-card/30 rounded-full "
+                className="ml-auto w-6 h-6 flex-shrink-0 flex items-center justify-center hover:bg-card/30 rounded-full "
               >
                 <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

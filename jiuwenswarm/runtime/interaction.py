@@ -9,10 +9,15 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from agent_gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+from agent_gateway.common.interrupt_resume import (
+    CLIENT_TOOL_INTERRUPT_SOURCE,
+    INTERRUPT_RESUME_SOURCES,
+    answers_paused_calls,
+)
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.runtime.evolution import (
+    SKILL_EVOLUTION_APPROVAL_SOURCE,
     is_interrupt_evolution_approval_answer_payload,
 )
 
@@ -78,6 +83,60 @@ def validate_answer_items(value: object) -> tuple[Mapping[str, Any], ...]:
     if not result:
         raise InteractionAnswerError("answers must not be empty")
     return tuple(result)
+
+
+#: Sources that may legally carry interrupt answers on a ``chat.send``.
+ANSWER_SOURCE_WHITELIST = frozenset(INTERRUPT_RESUME_SOURCES) | frozenset(
+    {SKILL_EVOLUTION_APPROVAL_SOURCE}
+)
+
+
+def validate_answer_source(params: object) -> None:
+    """Reject answers lane admission would not treat as a resume (#6285, #6857).
+
+    Lane admission resumes a suspended turn only when
+    ``answers_paused_calls`` accepts the payload: a non-empty ``list`` of
+    answers under a resume ``source``, plus a non-empty ``request_id`` unless
+    the source is ``client_tool_interrupt`` (those answers name each call).
+    Anything else is classified as a plain turn and queues behind the
+    interaction still waiting for that answer, deadlocking the session without
+    a terminal frame. This guard asks that same gateway primitive before
+    admission, so a whitelisted source or a content-bearing shape cannot slip
+    through, and the client gets an error response instead of silence.
+
+    Payloads that stay ordinary turns by design are left alone. Empty
+    ``answers`` (``[]``, ``""`` or ``{}``) carry nothing to resume, and a blank
+    ``source`` claims no resume at all — the deadlock this guard prevents needs
+    a client that answers an interaction. Legacy ``skill_evolution_approval``
+    answers keep their adapter-side resume path and only need a ``request_id``.
+    """
+    if not isinstance(params, Mapping):
+        return
+    answers = params.get("answers")
+    if not answers:
+        return
+    if not isinstance(answers, list):
+        raise InteractionAnswerError("answers must be a list of answer objects")
+    if answers_paused_calls(dict(params)):
+        return
+    source = str(params.get("source") or "").strip()
+    if not source:
+        return
+    if source not in ANSWER_SOURCE_WHITELIST:
+        raise InteractionAnswerError(
+            "params.source must be one of "
+            f"{sorted(ANSWER_SOURCE_WHITELIST)} when answers are present, "
+            f"got {source!r}"
+        )
+    if source == SKILL_EVOLUTION_APPROVAL_SOURCE and str(
+        params.get("request_id") or ""
+    ).strip():
+        return
+    raise InteractionAnswerError(
+        "params.request_id is required when answers are present under "
+        f"source {source!r}; only {CLIENT_TOOL_INTERRUPT_SOURCE} names each "
+        "call in its answers"
+    )
 
 
 def _trusted_dirs(value: object) -> tuple[str, ...]:

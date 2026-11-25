@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import Any
 
 import pytest
@@ -126,6 +128,26 @@ def test_cron_tools_are_built_once_across_turns() -> None:
         "cron_create_job",
         "cron_update_job",
     }
+
+
+@pytest.mark.asyncio
+async def test_startup_cron_registration_runs_off_event_loop() -> None:
+    """The startup adapter wrapper keeps synchronous cron registration off-loop."""
+    adapter, _ = _make_adapter()
+    loop_thread = threading.get_ident()
+    calls: list[tuple[str | None, int]] = []
+
+    def register(session_id: str | None) -> None:
+        calls.append((session_id, threading.get_ident()))
+
+    adapter._ensure_cron_tools_registered = register
+
+    await adapter._ensure_cron_tools_registered_off_loop("sess_a")
+
+    assert len(calls) == 1
+    session_id, worker_thread = calls[0]
+    assert session_id == "sess_a"
+    assert worker_thread != loop_thread
 
 
 def test_language_change_rebuilds_cron_tools() -> None:
@@ -286,6 +308,17 @@ def test_heartbeat_rail_skipped_for_xiaoyi_channel(session_metadata) -> None:
     # 其它渠道不受影响。
     adapter = _make_heartbeat_adapter("sess_a", channel_id="web")
     assert isinstance(adapter._build_heartbeat_rail(), HeartbeatRail)
+
+
+def test_task_pane_conversations_get_no_scheduled_or_heartbeat_tools() -> None:
+    """Office/WPS 侧边栏对话不挂定时任务与心跳：到点触发时侧边栏可能已关，文档工具无法执行。"""
+    from jiuwenswarm.server.client_attachments.registry import client_apps
+
+    for app in client_apps().values():
+        adapter = _make_heartbeat_adapter("web_a", channel_id="web")
+        adapter._instance_overrides = {"left_out_capabilities": app.leaves_out}
+        assert adapter._build_heartbeat_rail() is None, app.id
+        assert adapter._scheduled_task_unsupported_for_current_request("web_a"), app.id
 
 
 def test_heartbeat_policy_keeps_unknown_channels_supported() -> None:

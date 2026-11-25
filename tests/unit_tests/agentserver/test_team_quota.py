@@ -295,6 +295,7 @@ def test_template_over_y_counted(tmp_path: Path) -> None:
                         {"member_name": "a", "role": "teammate"},
                         {"member_name": "b", "role": "teammate"},
                         {"member_name": "c", "role": "teammate"},
+                        {"member_name": "colleague", "role_type": "host_managed"},
                     ]
                 }
             }
@@ -341,8 +342,23 @@ def test_disabled_flag_is_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert lease.noop
 
 
-def test_team_create_quota_user_message() -> None:
-    assert team_create_quota_user_message(5) == "创建失败，一个用户最多有5个团队"
+def test_team_create_quota_user_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.common.i18n import t
+    from jiuwenswarm.enterprise.team.quota import org_team_create_quota_user_message
+
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+        lambda: "en",
+    )
+    assert team_create_quota_user_message(5) == t(
+        "enterprise.team.create_user_full", language="en", limit=5
+    )
+    assert t("enterprise.team.create_user_full", language="zh", limit=5) == (
+        "创建失败，一个用户最多有5个团队"
+    )
+    assert org_team_create_quota_user_message(3) == t(
+        "enterprise.team.create_org_full", language="en", limit=3
+    )
 
 
 def test_mark_team_deleted_releases_x_quota(tmp_path: Path) -> None:
@@ -616,7 +632,7 @@ def test_reconcile_keeps_team_when_session_dir_exists(
     from jiuwenswarm.enterprise.team.session_cleanup import reconcile_teams_with_sessions
 
     volume = _use_personal_volume(tmp_path, monkeypatch)
-    (volume / "domain" / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
+    (volume / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
     control, svc = _bind_reconcile_stores(tmp_path)
     try:
         ident = _ident()
@@ -642,7 +658,7 @@ def test_reconcile_purges_team_when_session_dir_missing(
     from jiuwenswarm.enterprise.team.session_cleanup import reconcile_teams_with_sessions
 
     volume = _use_personal_volume(tmp_path, monkeypatch)
-    (volume / "domain" / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
+    (volume / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
     control, svc = _bind_reconcile_stores(tmp_path)
     try:
         ident = _ident()
@@ -731,7 +747,7 @@ def test_reconcile_purges_when_tenant_sessions_dir_missing(
     volume.mkdir()
     ident = _ident()
     key = build_tenant_key(ident.group_id, ident.bot_id, ident.user_id)
-    (volume / "domain" / f"workspace_{key}").mkdir(parents=True)
+    (volume / f"workspace_{key}").mkdir(parents=True)
     monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: volume)
     monkeypatch.setattr(
         "jiuwenswarm.enterprise.tenant.tenant_paths.is_enterprise", lambda: True,
@@ -757,7 +773,7 @@ def test_reconcile_purges_when_tenant_sessions_dir_missing(
         )) / "sessions" / "sess-wiped"
         assert not expected.is_dir()
         assert expected == (
-            volume / "domain" / f"workspace_{key}" / "agent" / "sessions" / "sess-wiped"
+            volume / f"workspace_{key}" / "agent" / "sessions" / "sess-wiped"
         )
     finally:
         _unbind_reconcile_stores()
@@ -769,14 +785,13 @@ async def test_list_and_create_wait_for_startup_sweep_once(
 ) -> None:
     from jiuwenswarm.common.request_identity import apply_routing_metadata
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods
+    from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.enterprise.team import handlers as team_control
     from jiuwenswarm.enterprise.team import session_cleanup as cleanup
     from jiuwenswarm.enterprise.team.control_store import SqliteTeamControlStore
     from jiuwenswarm.server.context import RequestContext
     from jiuwenswarm.server.transports.ws_sink import WSSink
 
-    ensure_team_control_req_methods()
     control = SqliteTeamControlStore(tmp_path / "team_control.db")
     set_team_control_store(control)
     cleanup.reset_startup_sweep()
@@ -805,7 +820,7 @@ async def test_list_and_create_wait_for_startup_sweep_once(
 
     monkeypatch.setattr(team_control, "_server_global", _global)
     monkeypatch.setattr(
-        "jiuwenswarm.infrastructure.db.team_mysql_actor.run_team_store",
+        "jiuwenswarm.infrastructure.db.team_store_actor.run_team_store",
         _stop_after_wait,
     )
     monkeypatch.setattr(
@@ -893,9 +908,7 @@ async def test_auto_team_name_generation_failure_releases_x_lease(
     from jiuwenswarm.agents.harness.team.team_name_generator import TeamNameGenerationError
     from jiuwenswarm.common.request_identity import apply_routing_metadata
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods
-
-    ensure_team_control_req_methods()
+    from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.server.context import RequestContext
     from jiuwenswarm.enterprise.team import handlers as team_control
     from jiuwenswarm.enterprise.team.control_store import SqliteTeamControlStore
@@ -1249,6 +1262,12 @@ def test_mysql_reserve_counts_extra_teams_before_the_actor_transaction(monkeypat
     import threading
 
     svc = TeamQuotaService()
+    monkeypatch.setenv("GATEWAY_DB_TYPE", "mysql")
+    monkeypatch.setenv("GATEWAY_DB_HOST", "127.0.0.1")
+    monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+    monkeypatch.setenv("GATEWAY_DB_USER", "team")
+    monkeypatch.setenv("GATEWAY_DB_PASSWORD", "team")
+    monkeypatch.setenv("GATEWAY_DB_NAME", "team")
     monkeypatch.setattr(svc, "_use_mysql", lambda: True)
     monkeypatch.setattr(svc, "list_policies", lambda: [])
 

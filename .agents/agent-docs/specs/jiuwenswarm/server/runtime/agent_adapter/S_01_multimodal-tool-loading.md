@@ -14,7 +14,7 @@ files: []
 | --- | --- |
 | 类型 | spec |
 | 关联模块 | `jiuwenswarm/server/runtime/agent_adapter`、`jiuwenswarm/agents/harness/code`、`jiuwenswarm/agents/harness/common/tools` |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-11-23 |
 | 关联 feature | — |
 | 修复依据 | [B_20261026_1602_code-multimodal-loading](../../../../../bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261026_1602_code-multimodal-loading.md) |
 
@@ -44,6 +44,12 @@ files: []
 
 ## 生命周期和失败行为
 
+内置 JiuwenMemory SDK 独立透传每组已启用且完整的模型配置，音频为 `asr_*`、视频为 `video_*`，部署配置可以补齐另一组。Work/Code/Team 公共装配在首次创建共享 Runtime 前准备媒体配置；配置明确为完全访问（`permissions.enabled=false`，非 auto）且存在媒体模型配置时，自动创建并授权当前用户／租户的 `get_agent_sessions_dir()`，按 org、space、user、agent、session 精确绑定。无需已有上传文件，之后创建的会话目录自动落入该授权范围。该授权覆盖整个 sessions 子树的合法视频文件，不仅限于当前会话或 uploads 目录；不覆盖其他用户／租户根目录，也不改变记忆的 project/team 过滤。
+
+Work 的本地调用仍检查运行期权限覆盖及自动审批状态；沙箱调用显式传入空媒体覆盖，公共装配不再自动补入。部署者显式配置的导入目录保留，在允许自动授权时追加稳定 sessions 绑定；无部署目录时保留原工作区授权。只增加会话／上传目录不会改变媒体配置指纹，也不新增 Runtime、看门狗或文件副本。
+
+SDK 按文档根复用 Runtime，首份模型与授权配置持续有效。Rail 指纹可触发重建，但借用同一个存活 Runtime 不会热更新其模型或授权。修改模型、权限或身份后若需要底层配置生效，应释放该根目录全部借用者后重新装配，或重启 Swarm；本修复不增加热更新能力。
+
 初始装配按能力组构建并注册。构建异常时记录警告并跳过该组；组内注册异常时还需清理本组已尝试的 owned 注册，其他组仍可装配。该降级行为不代表模型调用成功。
 
 热更新复用相同工具组：启用后注册并加入能力管理器；禁用后移除本 Agent 的工具卡和能力；更新视觉／音频模型参数时保留已注册实例。默认 Code 同步维护 Spec build context 的实例记录和 `deep_config.tools`，供后续全量配置替换及回滚使用。
@@ -58,3 +64,4 @@ files: []
 - 开关热更新和实例参数刷新：`tests/unit_tests/agentserver/test_multimodal_capability_hot_reload.py`。
 - Spec 全量重载与失败回滚：`tests/unit_tests/agentserver/test_code_spec_reload.py`。
 - 配置解析和 ownership：`tests/unit_tests/agents/harness/test_multimodal_config.py`、`tests/unit_tests/agentserver/test_deep_adapter_tool_ownership.py`。
+- 内置记忆 SDK 装配、目录和身份边界、配置变更重建：`tests/unit_tests/agentserver/memory/test_jiuwen_rail_builder.py`。

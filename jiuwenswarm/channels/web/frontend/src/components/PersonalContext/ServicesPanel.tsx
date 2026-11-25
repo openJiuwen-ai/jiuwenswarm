@@ -247,7 +247,11 @@ export function PersonalContextServicesPanel({
     <div className="pc-services" data-testid="personal-context-services">
       {notice && (
         <div
-          className={`pc-services__error${notice.kind === 'success' ? ' pc-services__notice--success' : ' pc-services__error--dismissible'}`}
+          className={notice.kind === 'success'
+            ? 'pc-services__notice--success'
+            : 'pc-services__error pc-services__error--dismissible'}
+          data-testid="personal-context-services-notice"
+          data-variant={notice.kind}
           role={notice.kind === 'success' ? 'status' : 'alert'}
         >
           {notice.kind === 'success' && (
@@ -595,7 +599,7 @@ const ServiceCard = memo(function ServiceCard({
   const terminalRun = !isCollecting && !isStopping && resultRun &&
     ['succeeded', 'partial_succeeded', 'failed', 'cancelled'].includes(resultRun.run_state) &&
     (!lastRunFailed || resultRun.run_state === 'failed');
-  const resultText = terminalRun
+  const collectionResultText = terminalRun
     ? lastRunCompleted && resultRun.no_new_content === true
       ? t('personalContext.services.noNewContent')
       : [
@@ -610,6 +614,12 @@ const ServiceCard = memo(function ServiceCard({
             : null,
         ].filter(Boolean).join(' · ')
     : '';
+  const capacity = terminalRun ? resultRun.capacity_maintenance : undefined;
+  const resultText = [
+    collectionResultText,
+    capacity?.removed_count ? t('personalContext.services.capacityRemoved', { count: capacity.removed_count }) : '',
+    capacity && capacity.status !== 'succeeded' ? t('personalContext.services.capacityIncomplete') : '',
+  ].filter(Boolean).join(' · ');
 
   const percent = progress?.progress_percent;
   // 采集中即展示进度条（含 0%），避免后端尚未上报总量时进度条消失，让用户看到"采集中"进度占位。

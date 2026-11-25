@@ -66,13 +66,6 @@ class AuthorizationManagement:
         from jiuwenswarm.common.auth.login_credentials import apply_credential_update
     
         applied = apply_credential_update(request.params)
-        proactive = getattr(host, "_proactive_engine", None)
-        if applied and proactive is not None:
-            from jiuwenswarm.server.runtime.proactive_adapter import (
-                build_proactive_agent,
-            )
-    
-            proactive.rebuild_proactive_agent(build_proactive_agent)
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,

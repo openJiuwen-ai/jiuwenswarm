@@ -482,7 +482,7 @@ def owner_identity_server(monkeypatch):
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.get_team_manager", lambda _: team_manager_marker()
     )
-    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda sid: metadata.get(sid, {}))
+    monkeypatch.setattr(teams_owner, "get_session_metadata", lambda sid: metadata.get(sid, {}))
     pool = SimpleNamespace(teams_for_session=AsyncMock(return_value=live_teams))
     monkeypatch.setattr(
         "openjiuwen.core.runner.runner.GLOBAL_RUNNER",

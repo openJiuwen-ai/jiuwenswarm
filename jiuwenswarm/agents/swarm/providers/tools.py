@@ -2,12 +2,12 @@
 
 """Config-sourced swarm-owned tool providers for team assembly.
 
-Only swarm-owned tools are declared here as individual ``swarm.*`` tool
-elements, each self-gated by the config source and filtered against the swarm
-``TOOL_WHITELIST``:
+Swarm-owned tools are declared here as individual ``swarm.*`` tool
+elements and gated by the config source. Shared tool factories use
+``TOOL_WHITELIST``; discovery is built for each member's session:
 
 * ``swarm.skill_toolkit`` — skill discovery / install / uninstall tools.
-* ``swarm.skill_retrieval`` — agentic installed skill tree retrieval tools.
+* ``swarm.skill_retrieval`` — session capability search and Skill directory browsing.
 * ``swarm.user_todos`` — the personal todo tool.
 * ``swarm.video`` — the video-understanding tool (``models.video`` gated).
 * ``swarm.image_gen`` — the image-generation tool (``IMAGE_GEN_API_KEY`` gated).
@@ -58,7 +58,6 @@ from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
     SkillRetrievalToolkit,
     build_model_discovery_settings,
     is_skill_retrieval_enabled,
-    skill_sources_from_manager,
 )
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
@@ -380,7 +379,7 @@ def _build_skill_toolkit_tools() -> list[Any]:
 def skill_retrieval_toolkit_for_context(
     ctx: SwarmBuildContext,
 ) -> SkillRetrievalToolkit:
-    """Return the member runtime shared by skill_index and its prompt rail."""
+    """Return the member runtime shared by discovery and its prompt rail."""
 
     existing = getattr(ctx, "skill_retrieval_toolkit", None)
     if isinstance(existing, SkillRetrievalToolkit):
@@ -392,16 +391,17 @@ def skill_retrieval_toolkit_for_context(
         or getattr(ctx, "role", None)
         or "member"
     )
-    source_manager = SkillManager()
+    from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import skill_sources_from_directories
     toolkit = SkillRetrievalToolkit(
         skill_directories=lambda: [str(_skill_library_dir(ctx))],
-        disabled_skills=load_execution_disabled_skills,
+        disabled_skills=lambda: load_execution_disabled_skills(skills_dir=_skill_library_dir(ctx)),
         visible_skill_names=lambda: visible_skill_names_for_list_skill(ctx),
-        source_by_name=lambda: skill_sources_from_manager(source_manager),
+        source_by_name=lambda: skill_sources_from_directories([_skill_library_dir(ctx)]),
         session_scope=(
             f"{ctx.session_id or 'default'}:{ctx.team_id or 'team'}:{member_scope}"
         ),
         config_base=ctx.config,
+        model=(getattr(ctx, "extras", None) or {}).get("_parent_model"),
         settings=build_model_discovery_settings(
             ctx.config,
             model=(getattr(ctx, "extras", None) or {}).get("_parent_model"),
@@ -543,15 +543,13 @@ def build_skill_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> list[
     input_model=SkillRetrievalInput,
 )
 def build_skill_retrieval(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
-    """Build the whitelist-filtered installed-Skill directory tool."""
+    """Build the member-owned discovery tool from this member's visibility scope."""
     SkillRetrievalInput.resolve(params, ctx)
     if not is_skill_retrieval_enabled(ctx.config):
         logger.info("[swarm.skill_retrieval] skipped: disabled")
         return []
     try:
-        return _filter_whitelist(
-            list(skill_retrieval_toolkit_for_context(ctx).get_tools())
-        )
+        return skill_retrieval_toolkit_for_context(ctx).get_tools()
     except Exception as exc:
         logger.warning("[swarm.skill_retrieval] construction failed: %s", exc)
         return []
@@ -620,7 +618,7 @@ def build_xiaoyi_phone(params: dict[str, Any], ctx: SwarmBuildContext) -> list[A
 @harness_element(
     kind=ElementKind.TOOL,
     name=SYMPHONY_TOOLKIT,
-    description="Symphony planning tools (leader only, gated by symphony.enabled).",
+    description="Symphony planning tools (leader only, gated by symphony.orchestration.enabled).",
 )
 def build_symphony_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
     """Build Symphony tools for the leader; teammates get no tools."""

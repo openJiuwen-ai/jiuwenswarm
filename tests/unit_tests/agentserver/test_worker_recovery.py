@@ -16,7 +16,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front import router
@@ -75,6 +75,7 @@ async def test_snapshot_timeout_is_bounded_and_explicit(monkeypatch, blocked_sen
     assert state["recovery_reason"] == ("snapshot_transport_timeout" if blocked_send else "snapshot_timeout")
     assert "is_processing" not in state
     assert supervisor._queries == {}
+    await supervisor._cancel_side_tasks()
 
 
 @pytest.mark.asyncio

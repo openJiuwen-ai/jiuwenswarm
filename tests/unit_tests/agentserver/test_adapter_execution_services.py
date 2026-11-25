@@ -168,7 +168,11 @@ def make_assembler(monkeypatch, children, *, can_access=None):
         _requested_model_name=lambda request: request.params["model_name"],
         _is_cron_execution_session=lambda _sid: False,
     )
-    return SessionAssembler(owner, configuration=lambda: {}, load_binding=lambda _sid: None), owner
+    assembler = SessionAssembler(owner, configuration=lambda: {}, load_binding=lambda _sid: None)
+    owner._session_adapters = assembler.adapters
+    owner._session_adapter_versions = {}
+    owner._session_adapter_config_version = 0
+    return assembler, owner
 
 
 def make_child():
@@ -189,6 +193,9 @@ def make_child():
         _has_live_root_permission_owner=lambda _sid: False,
         _moa_enabled=False,
         _moa_fingerprint=None,
+        _is_cron_execution=False,
+        _restored_permission_fresh_input=lambda _request: False,
+        close_moa_runtime=AsyncMock(),
     )
 
 
@@ -367,6 +374,7 @@ async def test_sdk_stop_failure_retains_model_lease_until_stop_succeeds():
     child.release_subagent_runtime_for_session = AsyncMock()
     child.stop_interaction = AsyncMock(side_effect=[OSError("SDK still running"), None])
     child._trusted_search_urls = SimpleNamespace(dispose=Mock())
+    child._session_artifact_paths = SimpleNamespace(dispose=Mock())
     child._finalize_external_memory_session = AsyncMock()
     child._sync_personal_context_rail = AsyncMock()
     child._teardown_agent_owned_tools = Mock()
@@ -597,7 +605,9 @@ async def test_default_prewarm_and_authorized_stable_selection_share_owned_model
     warm_owner._configured_default_model_keys = ["chosen#0"]
     warm_owner._model_recipes = {"chosen#0": config["models"]["defaults"][0]}
     warm_owner._get_model_factory().configuration = config
-    request_owner = SimpleNamespace(_kernel_identity=identity)
+    request_owner = SimpleNamespace(
+        _kernel_identity=identity, _opencode_go_scope=warm_owner._opencode_go_scope,
+    )
     request_factory = ModelFactory(lambda *_: None)
     requested = "model_group:mgp_selected" if group else "model:mdl_selected"
     warmed = warm_owner._configured_default_model()

@@ -31,7 +31,8 @@ async def test_recommendation_host_retains_execution_owner_and_closes_once(monke
     assert owner._recommendation_host_instance() is runtime
     assert owner._recommendation_host_instance() is runtime
     factory.assert_called_once_with()
-    runtime.bind_active_requests.assert_called_once_with(owner._recommendation_active_request_ids)
+    # The new RecommendationHost owns request tracking internally.
+    runtime.bind_active_requests.assert_not_called()
     runtime.bind_push.assert_called_once_with(owner._push_recommendation_event)
     await owner._start_recommendation_host()
     assert recommendation_host.active_recommendation_host() is runtime
@@ -69,7 +70,7 @@ from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
 from jiuwenswarm.server.worker.management_adapters import LazyAdapterRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+from e2a.wire_codec import parse_agent_server_wire_unary
 
 class Sink:
     def __init__(self): self.rows = []
@@ -244,7 +245,7 @@ def persisted_workflows(tmp_path, monkeypatch):
 async def test_persisted_workflow_list_and_detail_keep_pagination_and_recovery(
     persisted_workflows, monkeypatch
 ):
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from e2a.wire_codec import parse_agent_server_wire_unary
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.server.management import workflow_reader
@@ -327,7 +328,7 @@ def test_recovery_does_not_overwrite_concurrent_metadata_fields(
 async def test_existing_live_handler_keeps_running_state_without_checkpoint_write(
     persisted_workflows, monkeypatch
 ):
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from e2a.wire_codec import parse_agent_server_wire_unary
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.server.management import workflow_reader

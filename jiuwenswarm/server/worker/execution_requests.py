@@ -29,6 +29,11 @@ from agent_gateway.common.session_message import (
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
 
+from jiuwenswarm.server.heartbeat_push import merge_heartbeat_push_metadata, should_skip_heartbeat_push
+from jiuwenswarm.server.interrupt_intent import (
+    normalized_intent_request, reject_interrupt_result_payload, unknown_interrupt_intent_error,
+)
+
 from jiuwenswarm.common.request_ext import lift_from_metadata
 from jiuwenswarm.common.request_ext import reset_ext
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
@@ -44,8 +49,6 @@ from jiuwenswarm.server.personal_context.ws_handler import (
 from jiuwenswarm.server.personal_context.ws_handler import handle_personal_context_request
 from jiuwenswarm.server.worker.execution_support import _DIAGNOSIS_REQ_METHODS
 from jiuwenswarm.server.worker.execution_support import _UNDELIVERED_ANSWER_ERRORS
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
-from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.common.stage_timer import async_stage
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
@@ -62,7 +65,7 @@ from jiuwenswarm.common.config import (
     get_sandbox_endpoint,
     get_sandbox_startup_mode_explicit,
 )
-from jiuwenswarm.common.e2a.constants import (
+from e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
@@ -185,6 +188,17 @@ class ExecutionRequests:
             return False
         try:
             response = await adapter.handle(request)
+            if (request.req_method in {
+                ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS, ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL,
+                ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN,
+            } and response.ok and isinstance(response.payload, dict)):
+                auth = response.payload.get('dingtalk_auth') or response.payload.get('authorization')
+                if isinstance(auth, dict) and auth.get('status') == 'connected':
+                    try:
+                        # A first binding can be added after startup, before any bot callback exists.
+                        await self._ensure_persistent_group_fanout()
+                    except Exception as exc:
+                        logger.warning('DingTalk authorized group runtime startup failed (%s)', type(exc).__name__)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "[AgentWebSocketServer] Gateway adapter failed: request_id=%s method=%s",
@@ -316,6 +330,43 @@ class ExecutionRequests:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
+            params = request.params if isinstance(request.params, dict) else {}
+            channels = params.get("channels")
+            try:
+                from jiuwenswarm.common.config import apply_channel_config_snapshot
+
+                applied = await asyncio.to_thread(apply_channel_config_snapshot, channels)
+                if applied:
+                    ok, payload = True, {"applied": True}
+                else:
+                    ok, payload = False, {
+                        "applied": False,
+                        "error": "channel snapshot was not applied",
+                        "code": "BAD_REQUEST",
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[AgentServer] channel config sync failed: %s",
+                    type(exc).__name__,
+                )
+                ok, payload = False, {
+                    "applied": False,
+                    "error": "channel config sync failed",
+                    "code": "INTERNAL_ERROR",
+                }
+            response = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=ok,
+                payload=payload,
+                metadata=request.metadata,
+            )
+            async with send_lock:
+                await self.services.send(
+                    ws, self.services.encode_response(response, response_id=request.request_id)
+                )
+            return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_PREPARE:
             params = request.params if isinstance(request.params, dict) else {}
             agent_id = params.get("agent_id")
@@ -329,7 +380,7 @@ class ExecutionRequests:
             response = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
                                      ok=True, payload=payload, metadata=request.metadata)
             async with send_lock:
-                await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
+                await self.services.send(ws, self.services.encode_response(response, response_id=request.request_id))
             return
         if request.req_method == ReqMethod.JIUWENMATE_GROUP_RESPONSE:
             await self._handle_feishu_group_response(ws, request, send_lock)
@@ -405,15 +456,6 @@ class ExecutionRequests:
                         # /sandbox enable retry and the existing backend/error
                         # resolution available after a failed warm pass.
                         logger.warning("[AgentServer] Sandbox bootstrap unavailable")
-            if request.req_method is not None and request.req_method.value.startswith(
-                "proactive."
-            ):
-                preparation = getattr(self, "proactive_preparation_task", None)
-                if preparation is not None:
-                    if registry is not None:
-                        await registry.ensure("proactive")
-                    else:
-                        await asyncio.shield(preparation)
             from jiuwenswarm.server.runtime.group_requests import dispatch_group_request
 
             if await dispatch_group_request(self, ws, request, send_lock):
@@ -465,6 +507,11 @@ class ExecutionRequests:
 
             if await self._handle_lifecycle_request(ws, request, send_lock):
                 return
+            # A4P configuration belongs to the application. A legacy client
+            # may still provide a session ID, even for an archived session.
+            if request.req_method in {ReqMethod.A4P_CONFIG_GET, ReqMethod.A4P_CONFIG_UPDATE}:
+                await self._handle_a4p_request(ws, request, send_lock)
+                return
             from jiuwenswarm.server.runtime.session.lifecycle import (
                 LifecycleError,
                 guard,
@@ -475,6 +522,9 @@ class ExecutionRequests:
                 "session.list", "project.list", "project.info", "project.get_sessions",
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
                 "session.stop", "voice.task.checkpoint.ack", "recommendation.job",
+                # A released view only cleans up its existing association;
+                # its exact identity is checked even if the Session archived.
+                "session.detach",
             }
             # 仅广场/目录只读 RPC 跳过会话存活校验（#5886）。不要复用
             # _is_stateless_method_request：其前缀含 skills.toggle / rebuild 等写操作。
@@ -543,6 +593,9 @@ class ExecutionRequests:
             if request.req_method == ReqMethod.SESSION_SWITCH:
                 await self._handle_session_switch(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.SESSION_DETACH:
+                await self._handle_session_detach(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.SESSION_PLAN_STATUS:
                 await self._handle_session_plan_status(ws, request, send_lock)
                 return
@@ -575,10 +628,10 @@ class ExecutionRequests:
                     metadata=request.metadata,
                 )
                 async with send_lock:
-                    wire_payload = encode_agent_response_for_wire(
+                    wire_payload = self.services.encode_response(
                         response, response_id=request.request_id
                     )
-                    await send_wire_payload(ws, wire_payload)
+                    await self.services.send(ws, wire_payload)
                 return
             if request.req_method == ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED:
                 await self._handle_session_message_continue_queued(
@@ -669,6 +722,12 @@ class ExecutionRequests:
                 return
             if request.req_method == ReqMethod.ORG_SNAPSHOT:
                 await self._handle_org_snapshot(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.ORG_EXPERT_TEAMS_ADD:
+                from jiuwenswarm.server.context import build_ws_request_context
+                from jiuwenswarm.server.dispatch import try_dispatch
+
+                await try_dispatch(build_ws_request_context(self, ws, request, send_lock))
                 return
             if request.req_method == ReqMethod.COMMAND_ADD_DIR:
                 await self._handle_command_add_dir(ws, request, send_lock)
@@ -893,7 +952,30 @@ class ExecutionRequests:
                 await self._handle_agents_tools_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
+                request, intent = normalized_intent_request(request)
                 params = request.params if isinstance(request.params, dict) else {}
+                # 断连合成请求不是用户输入的 intent，跳过契约校验，确保连接断开后
+                # cleanup_client_disconnect_session_runtime 仍能执行清理。
+                if not self._is_client_disconnect_cancel_request(request):
+                    # 契约校验前置（早退分支也覆盖）：未知 intent 直接回错误应答、
+                    # 不做任何会话/任务操作。
+                    intent_error = unknown_interrupt_intent_error(intent)
+                    if intent_error:
+                        logger.error(
+                            "[AgentWebSocketServer] cancel: 拒绝未知 intent（未做任何会话操作）: session_id=%s intent=%s",
+                            request.session_id or "default",
+                            intent,
+                        )
+                        response = AgentResponse(
+                            request_id=request.request_id, channel_id=request.channel_id,
+                            ok=False,
+                            payload=reject_interrupt_result_payload(intent, intent_error),
+                        )
+                        async with send_lock:
+                            await self.services.send(
+                                ws, self.services.encode_response(response, response_id=request.request_id)
+                            )
+                        return
                 # Runtime owns exact execution cancellation for a
                 # target_request_id. Do not first terminate every response
                 # stream in the Session bucket.
@@ -1031,10 +1113,6 @@ class ExecutionRequests:
                         type(exc).__name__,
                     )
             await self._ensure_auto_team_binding_for_chat(request)
-            # chat.send 入口采集隐式反馈：用户在推荐后的文本回复关联到最近推荐。
-            # best-effort，失败绝不影响主 chat 流（见方法实现）。
-            if request.req_method == ReqMethod.CHAT_SEND:
-                await self._try_record_implicit_feedback(request)
             if request.is_stream:
                 await self._handle_stream(ws, request, send_lock)
             else:
@@ -1162,59 +1240,6 @@ class ExecutionRequests:
             ReqMethod.CHAT_ANSWER,
         )
 
-    async def _try_record_implicit_feedback(self, request: AgentRequest) -> None:
-        """Best-effort 采集隐式反馈：用户在收到推荐后的文本回复。
-
-        主动推荐送达后，用户若直接用文本回复（"简洁点""不需要"…）而不是点卡片
-        上的赞/踩按钮，这条回复就是隐式反馈。把它关联到该会话最近一条推荐，
-        交由 ``record_implicit_feedback`` 做情感分类后入 buffer，供下次 tick 梯度更新。
-
-        与 Runtime activity participant 同款 best-effort：任何异常只 log debug，
-        绝不阻断主 chat 流。只在 ``chat.send`` 且来源不是 proactive 自己触发的
-        推荐指令时才介入（``source=proactive_recommendation`` 是系统主动塞给主
-        agent 的指令，不是用户说的话，见 proactive_adapter 触发处）。
-        """
-        try:
-            params = request.params if isinstance(request.params, dict) else {}
-            # proactive 自己触发主 agent 的指令带 source=proactive_recommendation，
-            # 那不是用户输入，跳过
-            if str(params.get("source") or "").strip() == "proactive_recommendation":
-                return
-            session_id = str(
-                request.session_id or params.get("session_id") or ""
-            ).strip()
-            if not session_id:
-                return
-            query = _request_query_text(request)
-            if not query:
-                return
-
-            from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
-                find_latest_recommendation,
-                record_implicit_feedback,
-            )
-
-            # max_age_seconds=0 砍掉时间窗：不靠时间硬挡"无关反馈"——是否相关、是否
-            # 产生梯度交给梯度更新器的模型判断（看 rec_content + user_reply 语义）。
-            # 配合 record_feedback 的"同 rec_id 只采紧跟第一条、后续不覆盖"逻辑，
-            # 每条推荐只关联它之后紧跟的第一条用户回复。
-            latest = find_latest_recommendation(session_id, max_age_seconds=0)
-            if latest is None:
-                return
-            rec_id = latest.get("id")
-            if not rec_id:
-                return
-
-            # 已对该 rec_id 给过显式反馈（赞/踩）的话，record_feedback 的去重逻辑
-            # 会自动丢弃隐式补充——无需在此预判。
-            record_implicit_feedback(rec_id, query)
-        except Exception as exc:
-            logger.debug(
-                "[AgentWebSocketServer] implicit feedback hook failed; preserving chat: "
-                "session_id=%s error=%s",
-                request.session_id,
-                exc,
-            )
 
     @staticmethod
     def _is_client_disconnect_cancel_request(request: AgentRequest) -> bool:
@@ -1289,9 +1314,44 @@ class ExecutionRequests:
         ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
         """
         params = request.params if isinstance(request.params, dict) else {}
-        if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
+        session_cancel = params.get("intent", "cancel") == "cancel" and bool(request.session_id)
+        if session_cancel:
+            # Colleague cancellation is additive: it must never block the existing
+            # expert / organization stop below, and groups without colleagues skip it.
+            try:
+                from jiuwenswarm.server.runtime.group_service import read_group
+
+                group = read_group(request.session_id)
+                if group is not None and any(item.get("kind") == "colleague" for item in group.get("members", [])):
+                    await self._jiuwenmate_web.stop_swarmchat_group(
+                        request.session_id, user_id=str(getattr(request, "user_id", "") or ""),
+                        channel_id=request.channel_id or "default",
+                    )
+            except Exception:
+                logger.warning(
+                    "[AgentWebSocketServer] SwarmChat colleague stop failed; continuing group cancel: session=%s",
+                    request.session_id, exc_info=True,
+                )
+        organization_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
+        targeted_stop = not organization_stop and self._is_targeted_expert_cancel_request(request)
+        scoped_stop = organization_stop or targeted_stop or bool(str(params.get("target_request_id") or "").strip())
+        if session_cancel and not scoped_stop and not self._is_client_disconnect_cancel_request(request):
+            # Also additive: a whole-group stop withdraws judgements and notifications nobody consumed yet.
+            try:
+                from jiuwenswarm.server.runtime import group_auto_reply
+                from jiuwenswarm.server.runtime.group_service import read_group
+
+                group = read_group(request.session_id)
+                if group is not None:
+                    await group_auto_reply.stop(group)
+            except Exception:
+                logger.warning(
+                    "[AgentWebSocketServer] Group auto-reply stop failed; continuing group cancel: session=%s",
+                    request.session_id, exc_info=True,
+                )
+        if organization_stop:
             resp = await self._cancel_organization(request)
-        elif self._is_targeted_expert_cancel_request(request):
+        elif targeted_stop:
             resp = await self._cancel_targeted_expert(request)
         else:
             from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
@@ -1824,6 +1884,7 @@ class ExecutionRequests:
         channel_id = request.channel_id or "web"
         params = request.params if isinstance(request.params, dict) else {}
         prompt = str(params.get("content") or params.get("query") or "")
+        route_metadata = dict(request.metadata or {})
         await self.send_push(
             {
                 "request_id": request.request_id,
@@ -1881,6 +1942,18 @@ class ExecutionRequests:
                         or payload.get("message")
                         or "Runtime execution failed"
                     )
+                pushed_event_type = (
+                    str(payload.get("event_type") or "")
+                    if isinstance(payload, dict)
+                    else ""
+                )
+                # IM channels do not render runtime telemetry; forwarding it
+                # duplicates the answer that chat.final already delivered.
+                if should_skip_heartbeat_push(
+                    pushed_event_type,
+                    event.channel_id or channel_id,
+                ):
+                    continue
                 is_processing_start = (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.processing_status"
@@ -1901,10 +1974,8 @@ class ExecutionRequests:
                         "payload": payload,
                         "agent_ref": event.agent_ref,
                         "is_complete": event.is_complete,
-                        "metadata": (
-                            event.metadata
-                            if event.metadata is not None
-                            else request.metadata
+                        "metadata": merge_heartbeat_push_metadata(
+                            route_metadata, event.metadata
                         ),
                     }
                 )
@@ -2023,6 +2094,11 @@ class ExecutionRequests:
                 error="target Session ownership changed before execution",
             )
 
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language_async,
+        )
+
+        preferred_lang = await resolve_preferred_language_async(stored_user_id or None)
         cross_session = {
             "message_id": record.message_id,
             "source_session_id": record.source_session_id,
@@ -2032,7 +2108,7 @@ class ExecutionRequests:
             "chain_id": record.chain_id,
             "parent_message_id": record.parent_message_id,
             "hop_count": record.hop_count,
-            "language": str(get_config().get("preferred_language") or "zh"),
+            "language": preferred_lang,
         }
         params: dict[str, Any] = {
             "query": record.content,
@@ -2751,7 +2827,9 @@ class ExecutionRequests:
                         error_value
                         if error_value is not None
                         else "Runtime execution failed"
-                    )
+                    ),
+                    **({"code": event.payload["code"]}
+                       if isinstance(event.payload, dict) and isinstance(event.payload.get("code"), str) else {}),
                 },
                 agent_ref=event.agent_ref,
                 metadata=event.metadata,
@@ -2760,6 +2838,7 @@ class ExecutionRequests:
                 message,
                 response_id=event.request_id,
             )
+            wire["session_id"] = event.session_id
         elif streaming:
             payload = dict(event.payload) if event.payload is not None else None
             if not event.ok:
@@ -2940,6 +3019,22 @@ class ExecutionRequests:
 
         try:
             params = request.params if isinstance(request.params, dict) else {}
+            from jiuwenswarm.server.handlers.acp_session import (
+                ACP_SESSION_EXTENSION,
+                native_acp_session_response,
+            )
+
+            if request.channel_id == "acp" and isinstance(params.get(ACP_SESSION_EXTENSION), dict):
+                payload = await native_acp_session_response(self._execution_runtime(), request)
+                resp = AgentResponse(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    ok=True, payload=payload,
+                )
+                wire = self.services.encode_response(resp, response_id=request.request_id)
+                async with send_lock:
+                    await self.services.send(ws, wire)
+                return
+
             client_capabilities = params.get("clientCapabilities", {})
             logger.info(
                 "[AgentServer] initialize clientCapabilities: %s",
@@ -3097,6 +3192,11 @@ class ExecutionRequests:
                     moa_enabled=params.get("moa_enabled"),
                     cron_id=str(params.get("cron_id") or "").strip(),
                     client_app=str(params.get("client_app") or "").strip(),
+                    execution_profile=params.get("execution_profile", "default"),
+                    role_instructions=params.get("role_instructions", ""),
+                    npc_team=params.get("npc_team"),
+                    role_tools=params.get("tools"),
+                    npc_session=params.get("npc_session", False),
                 )
             )
             params.pop("_work_mode_explicit", None)
@@ -3119,6 +3219,11 @@ class ExecutionRequests:
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
+            if result.execution_profile != "default":
+                payload["execution_profile"] = result.execution_profile
+                payload["mode"] = result.canonical_mode
+            if result.npc_session:
+                payload["npc_session"] = True
             if result.explicit_id_compatibility:
                 payload.update(
                     {
@@ -3833,7 +3938,7 @@ class ExecutionRequests:
         response = AgentResponse(request_id=request.request_id, channel_id=request.channel_id, ok=ok,
                                  payload={"accepted": ok})
         async with send_lock:
-            await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
+            await self.services.send(ws, self.services.encode_response(response, response_id=request.request_id))
 
 
     async def _send_thinking_notice(self, job: dict[str, object]) -> None:
@@ -3910,7 +4015,7 @@ class ExecutionRequests:
             metadata=request.metadata,
         )
         async with send_lock:
-            await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
+            await self.services.send(ws, self.services.encode_response(response, response_id=request.request_id))
 
 
     async def _send_result_delivery(self, job: dict[str, object]) -> dict[str, object]:
@@ -4009,9 +4114,9 @@ class ExecutionRequests:
             payload=response_payload,
             metadata=request.metadata,
         )
-        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        wire = self.services.encode_response(response, response_id=request.request_id)
         async with send_lock:
-            await send_wire_payload(ws, wire)
+            await self.services.send(ws, wire)
 
 
     async def _handle_feishu_inbound(
@@ -4049,9 +4154,9 @@ class ExecutionRequests:
             payload={"disposition": disposition.value},
             metadata=request.metadata,
         )
-        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        wire = self.services.encode_response(response, response_id=request.request_id)
         async with send_lock:
-            await send_wire_payload(ws, wire)
+            await self.services.send(ws, wire)
 
 
     async def _handle_dingtalk_inbound(
@@ -4067,13 +4172,23 @@ class ExecutionRequests:
         disposition = InboundDisposition.REJECTED
         try:
             params = request.params if isinstance(request.params, dict) else {}
-            event = DingTalkInboundEvent.from_payload(params.get("event"))
+            raw_event = params.get("event")
+            lifecycle = isinstance(raw_event, dict) and raw_event.get("event_kind") == "group_lifecycle"
+            if lifecycle:
+                from jiuwenswarm.server.jiuwenmate.dingtalk_group_events import DingTalkGroupEvent
+
+                event = DingTalkGroupEvent.from_payload(raw_event)
+            else:
+                event = DingTalkInboundEvent.from_payload(raw_event)
             if not isinstance(event.expected_agent_id, str) or not event.expected_agent_id.strip():
                 disposition = InboundDisposition.REJECTED
             else:
                 fanout = await self._ensure_persistent_group_fanout()
                 if fanout is not None:
-                    disposition = await fanout.dingtalk_inbound.handle(event)
+                    if lifecycle:
+                        disposition = await fanout.dingtalk_inbound.handle_group_change(event)
+                    else:
+                        disposition = await fanout.dingtalk_inbound.handle(event)
         except Exception as exc:
             logger.warning(
                 "[AgentWebSocketServer] JM-21 inbound event rejected: error_type=%s",
@@ -4087,9 +4202,9 @@ class ExecutionRequests:
             payload={"disposition": disposition.value},
             metadata=request.metadata,
         )
-        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        wire = self.services.encode_response(response, response_id=request.request_id)
         async with send_lock:
-            await send_wire_payload(ws, wire)
+            await self.services.send(ws, wire)
 
 
     async def _handle_dingtalk_binding_check(
@@ -4124,9 +4239,9 @@ class ExecutionRequests:
             payload=payload,
             metadata=request.metadata,
         )
-        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        wire = self.services.encode_response(response, response_id=request.request_id)
         async with send_lock:
-            await send_wire_payload(ws, wire)
+            await self.services.send(ws, wire)
 
 
     async def _handle_jiuwenmate_connection_request(
@@ -4164,9 +4279,9 @@ class ExecutionRequests:
             payload=payload,
             metadata=request.metadata,
         )
-        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        wire = self.services.encode_response(response, response_id=request.request_id)
         async with send_lock:
-            await send_wire_payload(ws, wire)
+            await self.services.send(ws, wire)
 
 
     async def _handle_welink_inbound(
@@ -4212,9 +4327,9 @@ class ExecutionRequests:
             payload={"disposition": disposition.value},
             metadata=request.metadata,
         )
-        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        wire = self.services.encode_response(response, response_id=request.request_id)
         async with send_lock:
-            await send_wire_payload(ws, wire)
+            await self.services.send(ws, wire)
 
 
     async def _answer_calls_no_client_runs(
@@ -4330,6 +4445,36 @@ class ExecutionRequests:
             ok=ok,
             payload=payload,
         )
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        wire = self.services.encode_response(resp, response_id=request.request_id)
         async with send_lock:
-            await send_wire_payload(ws, wire)
+            await self.services.send(ws, wire)
+
+    async def _handle_session_detach(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """Release one current view identity without ending its Session."""
+        params = request.params if isinstance(request.params, dict) else {}
+        participant = getattr(self, "_session_association_participant", None)
+        if participant is None:
+            ok, payload = False, {"error": "Session associations are not ready", "code": "NOT_READY"}
+        else:
+            try:
+                detached = await participant.detach(
+                    channel_id=request.channel_id,
+                    session_id=params.get("session_id"),
+                    view_id=params.get("view_id"),
+                    attachment_id=params.get("attachment_id"),
+                )
+                ok, payload = True, {
+                    "session_id": params["session_id"], "surface_id": params["view_id"],
+                    "attachment_id": params["attachment_id"], "detached": detached,
+                }
+            except ValueError as exc:
+                ok, payload = False, {"error": str(exc), "code": "BAD_REQUEST"}
+            except LookupError as exc:
+                ok, payload = False, {"error": str(exc), "code": "STALE_ATTACHMENT"}
+        response = AgentResponse(
+            request_id=request.request_id, channel_id=request.channel_id, ok=ok,
+            payload=payload, metadata=request.metadata,
+        )
+        async with send_lock:
+            await self.services.send(ws, self.services.encode_response(response, response_id=request.request_id))
+

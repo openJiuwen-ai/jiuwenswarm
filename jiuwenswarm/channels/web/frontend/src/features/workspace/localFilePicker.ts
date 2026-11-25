@@ -1,3 +1,5 @@
+import i18n from '../../i18n';
+
 export type LocalFilePick = {
   path: string;
   filename: string;
@@ -34,6 +36,11 @@ export type DesktopLocalFilesConsumer = (
   files: LocalFilePick[],
 ) => void;
 
+type DesktopLocalFilesSuppressor = (
+  detail: DesktopLocalFilesEventDetail,
+  files: LocalFilePick[],
+) => boolean;
+
 type DesktopWindowMarker = Window & {
   __JIUWEN_DESKTOP__?: boolean;
   __JIUWEN_DESKTOP_DND__?: boolean;
@@ -44,7 +51,10 @@ type DesktopWindowMarker = Window & {
 
 /** Survives ChatPanel mount/unmount — Python run_js must always find a function. */
 let desktopLocalFilesConsumer: DesktopLocalFilesConsumer | null = null;
+const desktopLocalFilesSuppressors = new Set<DesktopLocalFilesSuppressor>();
 let durableBridgeInstalled = false;
+
+const CHAT_PANEL_SHELL_SELECTOR = '.chat-panel-shell';
 
 function getDropQueue(): DesktopLocalFilesEventDetail[] {
   const marker = window as DesktopWindowMarker;
@@ -52,6 +62,11 @@ function getDropQueue(): DesktopLocalFilesEventDetail[] {
     marker.__JIUWEN_DROP_QUEUE__ = [];
   }
   return marker.__JIUWEN_DROP_QUEUE__;
+}
+
+function chatComposerIsMounted(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.querySelector(CHAT_PANEL_SHELL_SELECTOR) !== null;
 }
 
 /**
@@ -67,12 +82,31 @@ export function installDesktopLocalFilesBridge(): void {
     const files = normalizePicks(detail.files);
     // No pywebview API call here: this function runs inside Python-side run_js,
     // and a concurrent JS->Python call deadlocks the WebView2 UI thread.
+    if (Array.from(desktopLocalFilesSuppressors).some((suppress) => suppress(detail, files))) {
+      return;
+    }
     if (desktopLocalFilesConsumer) {
       desktopLocalFilesConsumer(detail, files);
-    } else {
+    } else if (chatComposerIsMounted()) {
+      // Queue only while the composer shell is still in the document.
+      // A drop on another page (skill upload, for example) has no consumer;
+      // replaying it when ChatPanel mounts later attaches the file to a
+      // conversation the user did not drop onto. The queue still covers the
+      // brief remount gap while the shell remains and its consumer is replaced.
       getDropQueue().push(detail);
     }
     window.dispatchEvent(new CustomEvent(DESKTOP_LOCAL_FILES_EVENT, { detail }));
+  };
+}
+
+/** Suppress a known duplicate desktop drop without replacing the active consumer. */
+export function registerDesktopLocalFilesSuppressor(
+  suppressor: DesktopLocalFilesSuppressor,
+): () => void {
+  installDesktopLocalFilesBridge();
+  desktopLocalFilesSuppressors.add(suppressor);
+  return () => {
+    desktopLocalFilesSuppressors.delete(suppressor);
   };
 }
 
@@ -93,6 +127,13 @@ export function registerDesktopLocalFilesConsumer(
     }
     // Keep window.__JIUWEN_INGEST_LOCAL_FILES__ — Python must always find it.
   };
+}
+
+/** Discard native drops that have not yet been claimed by a mounted consumer. */
+export function clearQueuedDesktopLocalFiles(): void {
+  if (typeof window === 'undefined') return;
+  const queue = getDropQueue();
+  queue.splice(0, queue.length);
 }
 
 /** Desktop webview shell marker and/or pywebview bridge (not browser / whl). */
@@ -375,7 +416,7 @@ async function selectLocalFilesViaBackend(
       return {
         ok: false,
         reason: 'unsupported',
-        message: '后端未注册 path.select_files，请重启 jiuwenswarm-start 后再试',
+        message: i18n.t('workspace.selectFilesUnavailable'),
       };
     }
     return {

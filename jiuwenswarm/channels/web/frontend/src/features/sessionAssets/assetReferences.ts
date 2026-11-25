@@ -84,12 +84,15 @@ export function validateAssetName(input: string): { name: string } | { error: 'i
   return { name };
 }
 
-/** 路径归一化：忽略大小写和斜杠方向（Windows 路径），可以直接当 Map/Set 的 key 用。 */
+/** 统一 Windows 路径的大小写和斜杠，保留 POSIX 路径原样。 */
 export function normalizePath(value: string): string {
-  return value.split(String.fromCharCode(92)).join('/').toLowerCase();
+  if (/^(?:[a-z]:[\\/]|\\\\|\/\/)/i.test(value)) {
+    return value.replace(/\\/g, '/').toLowerCase();
+  }
+  return value;
 }
 
-/** 路径比较：忽略大小写和斜杠方向（Windows 路径）。 */
+/** 比较归一化后的路径。 */
 export function samePath(a: string, b: string): boolean {
   return normalizePath(a) === normalizePath(b);
 }

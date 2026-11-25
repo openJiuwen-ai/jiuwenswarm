@@ -208,9 +208,21 @@ async def test_im_file_persist_concurrent_same_name_does_not_clobber(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference_only,current_content,expected_content",
+    [
+        (False, b"longer current original content", b"approved-content"),
+        (True, b"longer current original content", b"longer current original content"),
+        (True, b"x", b"x"),
+        (True, b"", b""),
+    ],
+)
 async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reference_only: bool,
+    current_content: bytes,
+    expected_content: bytes,
 ) -> None:
     from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
         VerifiedDownloadAssetOwner,
@@ -228,7 +240,8 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     asset = owner.stage(
         source,
         file_name=source.name,
-        expires_at=10_000_000_000,
+        expires_at=0 if reference_only else 10_000_000_000,
+        reference_only=reference_only,
     )
     manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
     monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
@@ -238,6 +251,7 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
         session_id="current-session",
     )
     adapter = WorkspaceFileAdapter()
+    source.write_bytes(current_content)
 
     first = await adapter.handle(
         _request(
@@ -246,9 +260,22 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
         )
     )
     assert first.ok is True
-    assert base64.b64decode(first.payload["data_base64"]) == b"approved"
+    assert base64.b64decode(first.payload["data_base64"]) == expected_content[:8]
     assert first.payload["name"] == source.name
-    assert first.payload["size"] == len(b"approved-content")
+    assert first.payload["size"] == len(expected_content)
+    tail = await adapter.handle(_request(
+        ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+        {"token": token, "offset": max(0, len(expected_content) - 3), "limit": 8},
+    ))
+    assert tail.ok
+    assert base64.b64decode(tail.payload["data_base64"]) == expected_content[-3:]
+    assert tail.payload["eof"] is True
+    past_end = await adapter.handle(_request(
+        ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+        {"token": token, "offset": len(expected_content) + 1, "limit": 8},
+    ))
+    assert not past_end.ok
+    assert past_end.payload["code"] == "BAD_REQUEST"
 
     owner.revoke(asset)
     rejected = await adapter.handle(
@@ -259,6 +286,7 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     )
     assert rejected.ok is False
     assert rejected.payload["code"] == "FORBIDDEN"
+    assert source.read_bytes() == current_content
 
 
 @pytest.mark.asyncio
@@ -299,6 +327,14 @@ def patched_sessions(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestSessionAdapter:
+    @pytest.fixture(autouse=True)
+    def checkpoint_store(self, monkeypatch):
+        """Session cleanup owns its checkpoint state, including the real release hook."""
+        from openjiuwen.core.session.checkpointer import CheckpointerFactory
+        from openjiuwen.core.session.checkpointer.inmemory import InMemoryCheckpointer
+
+        monkeypatch.setattr(CheckpointerFactory, "_default_checkpointer", InMemoryCheckpointer())
+
     async def test_history_list_turns_is_handled_as_session_rpc(self, monkeypatch) -> None:
         from jiuwenswarm.agents.harness.common import session_ops_service
 
@@ -416,12 +452,23 @@ class TestSessionAdapter:
         captured: dict[str, object] = {}
 
         def _read(sid, cache_bust=False, *, enable_writeback=True):
+            captured["sid"] = sid
+            captured["cache_bust"] = cache_bust
             captured["enable_writeback"] = enable_writeback
             return {"session_id": sid, "mode": "agent", "model": "m1"}
 
+        async def _not_paused(_sid: str) -> bool:
+            return False
+
+        # GET_METADATA stays on SessionAdapter (live PAUSED OR into is_paused),
+        # not session_repository — patch the adapter import.
         monkeypatch.setattr(
-            "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
+            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_session_metadata",
             _read,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.team.team_manager.is_team_session_paused",
+            _not_paused,
         )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_GET_METADATA, {"session_id": "sess-1"})
@@ -429,24 +476,16 @@ class TestSessionAdapter:
         assert resp.ok is True
         assert resp.payload["session_id"] == "sess-1"
         assert resp.payload["model"] == "m1"
-        # 缺省保持既有调用方（web/TUI/video_duplex）的原行为：允许推断写盘
+        assert resp.payload["is_paused"] is False
+        assert captured["cache_bust"] is True
+        # Adapter path always uses default writeback; enable_writeback param is Front-only.
         assert captured["enable_writeback"] is True
-
-        # gateway 远端读声明的只读语义随参数透传，不得静默升级为可写
-        resp = await SessionAdapter().handle(
-            _request(
-                ReqMethod.SESSION_GET_METADATA,
-                {"session_id": "sess-1", "enable_writeback": False},
-            )
-        )
-        assert resp.ok is True
-        assert captured["enable_writeback"] is False
 
         def _empty(sid, cache_bust=False, *, enable_writeback=True):
             return {}
 
         monkeypatch.setattr(
-            "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
+            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_session_metadata",
             _empty,
         )
         resp = await SessionAdapter().handle(
@@ -566,6 +605,12 @@ class TestSessionAdapter:
     async def test_enterprise_offline_team_delete_purges_by_session(self, monkeypatch) -> None:
         purged: list[dict] = []
         monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        monkeypatch.setenv("GATEWAY_DB_TYPE", "mysql")
+        monkeypatch.setenv("GATEWAY_DB_HOST", "127.0.0.1")
+        monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+        monkeypatch.setenv("GATEWAY_DB_USER", "team")
+        monkeypatch.setenv("GATEWAY_DB_PASSWORD", "team")
+        monkeypatch.setenv("GATEWAY_DB_NAME", "team")
         monkeypatch.setattr(
             "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
             lambda sid, cache_bust=False: {"mode": "team"},

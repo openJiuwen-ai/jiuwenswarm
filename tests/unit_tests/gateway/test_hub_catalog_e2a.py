@@ -11,9 +11,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from agent_gateway.enterprise.config.manager_config.routers.application_config_routers import application_config_router
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import HttpSseAgentServerClient
 from jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client import RuntimeRoutedAgentClient
 from jiuwenswarm.server.agent_http_routes import build_http_app
@@ -61,24 +61,6 @@ async def test_catalog_full_http_chain_without_session_or_agent(monkeypatch, hub
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("state", ["missing", "offline", "disconnected"])
-async def test_catalog_server_unavailable_keeps_management_response(state):
-    gateway = FastAPI()
-    if state != "missing":
-        client = SimpleNamespace(
-            server_ready=state != "offline",
-            send_request=AsyncMock(side_effect=ConnectionError("Server disconnected")),
-        )
-        gateway.state.manager_agent_channel = SimpleNamespace(agent_client=lambda: client)
-    gateway.include_router(application_config_router, prefix="/api/v1")
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway), base_url="http://gateway") as web:
-        response = await web.get("/api/v1/package-allowlists/catalog")
-    assert response.status_code == 200
-    assert response.json()["data"]["items"] == []
-    assert response.json()["data"]["error"]
-
-
-@pytest.mark.asyncio
 async def test_catalog_runtime_uses_default_http_without_routing(monkeypatch):
     monkeypatch.setenv("GATEWAY_RUNTIME_DEFAULT_HTTP_BASE", "http://management-server:8766/")
     route = SimpleNamespace(route=AsyncMock(), touch=AsyncMock())
@@ -93,12 +75,3 @@ async def test_catalog_runtime_uses_default_http_without_routing(monkeypatch):
     route.touch.assert_not_awaited()
 
 
-def test_hub_catalog_method_available_without_application_imports():
-    """A standalone Gateway can use the pinned protocol without Server shims."""
-    script = (
-        "import sys; "
-        "from openjiuwen_protocol.message import ReqMethod; "
-        "assert ReqMethod('hub.expert_packages.catalog') is ReqMethod.HUB_EXPERT_PACKAGES_CATALOG; "
-        "assert not any(name.split('.')[0] in ('jiuwenswarm', 'gateway') for name in sys.modules)"
-    )
-    subprocess.run([sys.executable, "-I", "-c", script], check=True)

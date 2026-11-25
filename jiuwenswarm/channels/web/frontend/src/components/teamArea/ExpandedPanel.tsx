@@ -2,12 +2,16 @@ import { useCallback, useEffect, useId, type ReactNode } from 'react';
 import { useFullscreenPanel } from '../../hooks';
 import { useSessionArtifactsCount } from '../ArtifactsPanel';
 import { ArtifactExpandedPanel } from '../ArtifactsPanel';
-import { ExpandedPanelTabs, useExpandedPanelTabs } from './ExpandedPanelTabs';
+import { ExpandedPanelTabs, useExpandedPanelTabs, type PanelTabAddAction, type PanelTabItem } from './ExpandedPanelTabs';
 import { OrgInfoPanel } from './OrgInfoPanel';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 import { useSessionStore, useChatStore } from '../../stores';
 import { useTranslation } from 'react-i18next';
 import { Building2 } from 'lucide-react';
+
+export interface ExpandedPanelContribution extends PanelTabItem {
+  content: ReactNode;
+}
 
 export interface ExpandedPanelProps {
   activeTab: string;
@@ -25,6 +29,9 @@ export interface ExpandedPanelProps {
   renderMiddleTabContent: () => ReactNode;
   renderPlanningContent: () => ReactNode;
   renderBrowserContent?: () => ReactNode;
+  additionalTab?: PanelTabItem & { content: ReactNode; actions?: ReactNode };
+  additionalPanels?: ExpandedPanelContribution[];
+  addTab?: PanelTabAddAction;
   testIdPrefix?: string;
 }
 
@@ -44,6 +51,9 @@ export function ExpandedPanel({
   renderMiddleTabContent,
   renderPlanningContent,
   renderBrowserContent,
+  additionalTab,
+  additionalPanels = [],
+  addTab,
   testIdPrefix = 'tool-panel',
 }: ExpandedPanelProps) {
   const { t } = useTranslation();
@@ -77,15 +87,18 @@ export function ExpandedPanel({
     }
   }, [shouldFullscreen, onCollapse, toggleFullscreen]);
 
-  const resolvedTab = activeTab === 'organization' && showOrganization ? 'organization' :
-    resolveActiveTab(activeTab === 'organization' ? 'planning' : activeTab, artifactsCount, reviewPanel);
+  const selectedPanel = additionalPanels.find((panel) => panel.key === activeTab);
+  const resolvedTab = additionalTab?.key === activeTab ? activeTab : selectedPanel?.key ?? (activeTab === 'organization' && showOrganization ? 'organization' :
+    resolveActiveTab(activeTab === 'organization' ? 'planning' : activeTab, artifactsCount, reviewPanel));
 
   const tabs = useExpandedPanelTabs({ middleTab, showMiddleTab, artifactsCount, reviewPanel, showBrowserTab });
+  if (additionalTab) tabs.push(additionalTab);
   if (showOrganization) tabs.push({
     key: 'organization',
     label: t('team.org.tab'),
     icon: <Building2 size={16} aria-hidden="true" />,
   });
+  tabs.push(...additionalPanels);
 
   return (
     <div
@@ -94,6 +107,7 @@ export function ExpandedPanel({
       className="flex h-full flex-col overflow-hidden bg-card"
     >
       <ExpandedPanelTabs
+        actions={!selectedPanel && resolvedTab === additionalTab?.key ? additionalTab.actions : undefined}
         tabs={tabs}
         activeTab={resolvedTab}
         onTabChange={onTabChange}
@@ -101,7 +115,9 @@ export function ExpandedPanel({
         onCollapse={onCollapse}
         onToggleFullscreen={handleToggleFullscreen}
         isFullscreen={isFullscreen}
+        addTab={addTab}
         testIdPrefix={testIdPrefix}
+        idPrefix={tabPanelId}
       />
 
       <div
@@ -109,9 +125,9 @@ export function ExpandedPanel({
         id={`${tabPanelId}-panel`}
         className="flex min-h-0 flex-1 overflow-hidden"
         role="tabpanel"
-        aria-labelledby={`${tabPanelId}-${resolvedTab}`}
+        aria-labelledby={`${tabPanelId}-${encodeURIComponent(resolvedTab)}`}
       >
-        {resolvedTab === 'organization' && showOrganization ? <OrgInfoPanel /> : resolvedTab === middleTab.key ? (
+        {additionalTab?.key === resolvedTab ? additionalTab.content : selectedPanel ? selectedPanel.content : resolvedTab === 'organization' && showOrganization ? <OrgInfoPanel /> : resolvedTab === middleTab.key ? (
           renderMiddleTabContent()
         ) : resolvedTab === 'artifacts' ? (
           <ArtifactExpandedPanel

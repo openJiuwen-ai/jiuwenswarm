@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from openjiuwen.harness.persistent_agent import (
@@ -32,6 +33,36 @@ class _SearchUnavailable(Exception):
     """A safe, non-disclosing reason to refuse a search or its continuation."""
 
 
+class GroupAuthorizationError(PersistentAgentError):
+    """An expected loss of group authority, classified without exposing private details."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message, code="FORBIDDEN")
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class _AuthorizationIdentity:
+    namespace_id: str
+    agent_id: str
+    group_id: str
+    app_id: str
+    status: str
+    visible_from: datetime
+
+
+def _authorization_identity(access: GroupAccess) -> _AuthorizationIdentity:
+    """Observation freshness is not a new authorization epoch."""
+    return _AuthorizationIdentity(
+        namespace_id=access.namespace_id,
+        agent_id=access.agent_id,
+        group_id=access.group_id,
+        app_id=access.app_id,
+        status=access.status,
+        visible_from=access.visible_from,
+    )
+
+
 class HostGroupChatPort:
     def __init__(self, groups: GroupChatRepository, archive: ConversationArchive, sessions,
                  *, namespace_id: str, agent_id: str, verify_membership: MembershipVerifier = unavailable_membership,
@@ -40,11 +71,16 @@ class HostGroupChatPort:
                  clock: Callable[[], datetime] | None = None) -> None:
         self._groups, self._archive, self._sessions = groups, archive, sessions
         self.scope = (namespace_id, agent_id)
+        self._related_agents = None
         self._verify = verify_membership
         self._refresh = refresh_messages
         self._search = search
         self._cursors = cursors
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def set_related_agents(self, resolver) -> None:
+        """Resolve enabled runtime identities belonging to this same colleague configuration."""
+        self._related_agents = resolver
 
     def _identity(self, execution: ExecutionContext) -> None:
         if self.scope != (execution.namespace_id, execution.agent_id):
@@ -57,9 +93,20 @@ class HostGroupChatPort:
             raise PersistentAgentError("current Session is not this Agent's group", code="FORBIDDEN")
         group_id = session.conversation.key
         group = await asyncio.to_thread(self._groups.get, execution.namespace_id, group_id)
-        access = await asyncio.to_thread(self._groups.access_for, execution.namespace_id, execution.agent_id, group_id)
-        if access.status != "active" or await self._verify(access, group) != "active":
-            raise PersistentAgentError("current group membership unavailable", code="FORBIDDEN")
+        try:
+            access = await asyncio.to_thread(
+                self._groups.access_for, execution.namespace_id, execution.agent_id, group_id,
+            )
+        except PersistentAgentError as exc:
+            if exc.code != "FORBIDDEN":
+                raise
+            raise GroupAuthorizationError(
+                "current group access unavailable", reason="group_access_unavailable",
+            ) from exc
+        if access.status != "active":
+            raise GroupAuthorizationError("current group membership unavailable", reason="group_access_lost")
+        if await self._verify(access, group) != "active":
+            raise GroupAuthorizationError("current group membership unavailable", reason="group_access_unavailable")
         return access, group
 
     async def recent_messages(self, execution: ExecutionContext, cursor: str | None = None,
@@ -96,15 +143,17 @@ class HostGroupChatPort:
         messages = await asyncio.to_thread(self._archive.current_messages, execution.namespace_id,
                                           group.group_chat_id, (message_id,))
         if messages[0].received_at < access.visible_from:
-            raise PersistentAgentError("trigger is outside readable history", code="FORBIDDEN")
+            raise GroupAuthorizationError("trigger is outside readable history", reason="group_trigger_out_of_scope")
         return (await self._checked_messages(execution, access, group, messages))[0]
 
     async def _checked_messages(self, execution, access, group, messages):
         if self._refresh is not None and messages:
             messages = await self._refresh(access, group, messages)
         checked, _ = await self._access(execution)
-        if checked != access:
-            raise PersistentAgentError("group authorization changed during read", code="FORBIDDEN")
+        if _authorization_identity(checked) != _authorization_identity(access):
+            raise GroupAuthorizationError(
+                "group authorization changed during read", reason="group_authorization_changed",
+            )
         latest = await asyncio.to_thread(self._archive.current_messages, execution.namespace_id,
                                         group.group_chat_id, tuple(item.message_id for item in messages))
         unreadable = {item.message_id for item in messages if item.status == "unavailable"}
@@ -127,7 +176,7 @@ class HostGroupChatPort:
             session = await asyncio.to_thread(self._sessions.get_session, execution.namespace_id,
                                               execution.session_id)
             if (session.agent_id != execution.agent_id or
-                    session.conversation.kind not in ("web_direct", "im_direct", "group")):
+                    session.conversation.kind not in ("web_direct", "im_direct", "group", "swarm_group")):
                 return self._search_result(execution, "forbidden", reason="This execution cannot search group history.")
         except Exception:
             return self._search_result(execution, "forbidden", reason="This execution cannot search group history.")
@@ -144,7 +193,7 @@ class HostGroupChatPort:
         self._identity(execution)
         session = await asyncio.to_thread(self._sessions.get_session, execution.namespace_id, execution.session_id)
         if (session.agent_id != execution.agent_id or
-                session.conversation.kind not in ("web_direct", "im_direct", "group")):
+                session.conversation.kind not in ("web_direct", "im_direct", "group", "swarm_group")):
             raise PersistentAgentError("this Session cannot search group history", code="FORBIDDEN")
         authorized = await self._authorized_groups(execution, query)
         targets, _ = self._resolve_targets(query, authorized)
@@ -324,8 +373,16 @@ class HostGroupChatPort:
     async def _authorized_groups(self, execution: ExecutionContext,
                                  query: GroupMessageQuery) -> dict[str, dict[str, object]]:
         try:
-            unresolved = await asyncio.to_thread(self._groups.unresolved_accesses, execution.namespace_id,
-                                                 execution.agent_id)
+            agent_ids = (execution.agent_id,)
+            resolver = getattr(self, "_related_agents", None)
+            if resolver is not None:
+                related = await asyncio.to_thread(resolver, execution.namespace_id, execution.agent_id)
+                agent_ids = tuple(dict.fromkeys((execution.agent_id, *related)))
+            unresolved = []
+            for agent_id in agent_ids:
+                unresolved.extend(await asyncio.to_thread(
+                    self._groups.unresolved_accesses, execution.namespace_id, agent_id,
+                ))
             if query.platforms:
                 matching = []
                 for access in unresolved:
@@ -337,8 +394,11 @@ class HostGroupChatPort:
             unresolved_unfiltered = not query.group_ids and not query.group_names and unresolved_ids
             if unresolved_unfiltered or unresolved_ids.intersection(query.group_ids):
                 raise _SearchUnavailable("Current group membership could not be verified.")
-            accesses = await asyncio.to_thread(self._groups.active_accesses, execution.namespace_id,
-                                               execution.agent_id)
+            accesses = []
+            for agent_id in agent_ids:
+                accesses.extend(await asyncio.to_thread(
+                    self._groups.active_accesses, execution.namespace_id, agent_id,
+                ))
         except _SearchUnavailable:
             raise
         except Exception as exc:
@@ -346,8 +406,23 @@ class HostGroupChatPort:
         by_group: dict[str, list[GroupAccess]] = {}
         for access in accesses:
             by_group.setdefault(access.group_id, []).append(access)
-        if any(len(items) != 1 for items in by_group.values()):
+        if resolver is None and any(len(items) != 1 for items in by_group.values()):
             raise _SearchUnavailable("Current group authorization is ambiguous.")
+        if resolver is not None:
+            verified = {}
+            for group_id, items in by_group.items():
+                own_access = next((item for item in items if item.agent_id == execution.agent_id), None)
+                if own_access is not None:
+                    verified[group_id] = [own_access]
+                    continue
+                group = await asyncio.to_thread(self._groups.get, execution.namespace_id, group_id)
+                live = []
+                for access in items:
+                    if await self._verify(access, group) == "active":
+                        live.append(access)
+                if live:
+                    verified[group_id] = [max(live, key=lambda item: item.visible_from)]
+            by_group = verified
 
         authorized: dict[str, dict[str, object]] = {}
         for group_id, group_accesses in sorted(by_group.items()):

@@ -5,6 +5,7 @@
  */
 
 import { create } from 'zustand';
+import i18n from '../i18n';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import {
   buildConversationModelPayload,
@@ -391,7 +392,7 @@ function saveModeToStorage(mode: AgentMode) {
 
 const DEFAULT_MODE: AgentMode = 'agent';
 
-function normalizeAgentMode(mode: unknown): AgentMode {
+export function normalizeAgentMode(mode: unknown): AgentMode {
   if (typeof mode !== 'string') return DEFAULT_MODE;
   if (isTeamAgentMode(mode)) return 'team';
   // 后端 session.mode 可能是新命名 `agent.{work|code}.plan`，先剥掉 plan 后缀
@@ -553,6 +554,16 @@ export type TeamTaskStatus =
   | 'completed'
   | 'cancelled';
 
+const RUNNING_TEAM_BOARD_STATUSES: ReadonlySet<TeamTaskStatus> = new Set([
+  'planning',
+  'in_progress',
+  'in_review',
+]);
+
+function isRunningTeamBoardStatus(status: TeamTaskStatus): boolean {
+  return RUNNING_TEAM_BOARD_STATUSES.has(status);
+}
+
 export interface TeamTask {
   task_id: string;
   title?: string;
@@ -565,6 +576,10 @@ export interface TeamTask {
   files?: string[];
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
+  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
+  progress_frozen?: boolean;
+  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
+  progress_frozen_at?: number;
   // Truncation observability flags — set by the backend on team.task.created/
   // updated events when title/content exceeded the wire limit. Carried through
   // the normalize/upsert pipeline; a status-only event MUST NOT reset these
@@ -649,11 +664,18 @@ export interface TeamMemberExecutionEvent {
   }>;
 }
 
+export interface AppMarketPreview {
+  appId: string;
+  name: string;
+  instanceId: string;
+}
+
 /**
  * 单个 session 的运行态。
  * 原 B 类全局字段全部迁移到这里，按 session 隔离。
  */
 export interface SessionRuntime {
+  appMarketPreview?: AppMarketPreview;
   mode: AgentMode;
   selectedModelName: string | null;
   /** Stable `{type,id}` selection; preferred over model_name for runtime/session APIs. */
@@ -706,6 +728,11 @@ export interface SessionRuntime {
   /** 本会话 swarmflow token 上限（留空=不限） */
   swarmflowBudget: number | null;
   /**
+   * 本会话 team 成员是否使用独立 Git 身份（会话级，code 模式随 chat.send 下发）。
+   * undefined = 用户未拨过：不随请求发送，后端沿用已提交的会话设置。
+   */
+  independentGitIdentity?: boolean;
+  /**
    * 本会话团队的任务调度模式（会话级，随 chat.send 下发并持久化到会话 metadata）。
    * undefined = 用户未拨过：开关默认关闭（自主模式）。团队建好后不可再改。
    */
@@ -717,6 +744,19 @@ export interface SessionRuntime {
   teamBootstrapMode?: TeamBootstrapMode;
   /** SwarmFlow 工作流运行列表（树视图渲染） */
   workflowRuns: WorkflowRun[];
+  /** Cosmetic task estimates, scoped to this conversation and never persisted. */
+  taskProgressEstimates: Record<string, number>;
+}
+
+function retainTaskProgressEstimates(runtime: SessionRuntime, tasks: TeamTask[]): Record<string, number> {
+  const removed = new Set(runtime.teamTasks.map((task) => task.task_id));
+  for (const task of tasks) {
+    if (task.status === 'completed' || task.status === 'cancelled') removed.add(task.task_id);
+    else removed.delete(task.task_id);
+  }
+  const estimates = runtime.taskProgressEstimates ?? {};
+  if (!Object.keys(estimates).some((id) => removed.has(id))) return estimates;
+  return Object.fromEntries(Object.entries(estimates).filter(([id]) => !removed.has(id)));
 }
 
 function createEmptyRuntime(
@@ -770,6 +810,7 @@ function createEmptyRuntime(
     enableSwarmflow: false,
     swarmflowBudget: null,
     workflowRuns: [],
+    taskProgressEstimates: {},
   };
 }
 
@@ -828,8 +869,13 @@ interface SessionState {
   setTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
   appendTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
   setTeamTasks: (sessionId: string, tasks: TeamTask[]) => void;
+  setTaskProgressEstimates: (sessionId: string, estimates: Record<string, number>) => void;
   upsertTeamTask: (sessionId: string, task: TeamTaskUpsert) => void;
   updateTeamTask: (sessionId: string, taskId: string, patch: Partial<TeamTask>) => void;
+  /** Team pause：冻结仍在跑的任务板行，立刻停转圈（不改 status，便于续跑）。 */
+  freezeRunningTeamTasks: (sessionId: string, frozenAt?: number) => void;
+  /** Team resume / 新一轮 processing：解冻此前因 pause 冻结的任务板行。 */
+  thawRunningTeamTasks: (sessionId: string) => void;
   setTeamMembers: (sessionId: string, members: TeamMember[]) => void;
   setTeamDepartedMembers: (sessionId: string, members: TeamMember[]) => void;
   /** 成员离队时把它的身份记进离队目录（同 member_id 覆盖）。 */
@@ -846,6 +892,7 @@ interface SessionState {
   clearSelectedSkills: (sessionId: string) => void;
   /** 设置/清除会话级元数据（skill-creator 统一入口等场景） */
   setSessionMetadata: (sessionId: string, metadata: Record<string, unknown> | null) => void;
+  setAppMarketPreview: (sessionId: string, preview: AppMarketPreview | undefined) => void;
   /** 输入栏智能体选择：选择、清空或恢复为不修改 */
   setAgentSelectionIntent: (sessionId: string, intent: AgentSelectionIntent) => void;
   clearAgentSelectionIntent: (sessionId: string, expectedIntent?: AgentSelectionIntent) => void;
@@ -899,6 +946,7 @@ interface SessionState {
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
   setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
+  setIndependentGitIdentity: (sessionId: string, enabled: boolean) => void;
   /** 设置本会话团队的任务调度模式（显式值，随 chat.send 下发并持久化到会话 metadata） */
   setTeamDispatchMode: (sessionId: string, mode: TeamDispatchMode) => void;
   /** 设置本会话团队的建队方式（调度模式子开关；显式值，随 chat.send 下发并持久化到会话 metadata） */
@@ -1328,6 +1376,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  setTaskProgressEstimates: (sessionId, estimates) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const previous = runtime.taskProgressEstimates ?? {};
+      if (Object.keys(previous).length === Object.keys(estimates).length &&
+        Object.entries(estimates).every(([id, value]) => previous[id] === value)) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, taskProgressEstimates: estimates },
+        },
+      };
+    });
+  },
+
   setTeamTasks: (sessionId, tasks) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -1338,6 +1402,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [sessionId]: {
             ...runtime,
             teamTasks: tasks,
+            taskProgressEstimates: retainTaskProgressEstimates(runtime, tasks),
           },
         },
       };
@@ -1379,7 +1444,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return {
           runtimes: {
             ...state.runtimes,
-            [sessionId]: { ...runtime, teamTasks: updatedTasks },
+            [sessionId]: {
+              ...runtime,
+              teamTasks: updatedTasks,
+              taskProgressEstimates: retainTaskProgressEstimates(runtime, updatedTasks),
+            },
           },
         };
       }
@@ -1387,15 +1456,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // leaving an empty title. Fall back to a placeholder built from the
       // task_id tail so the card is not rendered with a bare empty title
       // (matches the precedent in features/teamHistoryPanelRestore.ts upsertTask).
+      // Prepend so the newest card stays on top.
+      const tasks: TeamTask[] = [
+        {
+          ...task,
+          status: task.status ?? 'pending',
+          title: task.title ?? i18n.t('team.taskFallback', { id: String(task.task_id || '').slice(-6) }),
+        },
+        ...runtime.teamTasks,
+      ];
       return {
-       runtimes: {
+        runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, teamTasks: [{
-            ...task,
-            status: task.status ?? 'pending',
-            title: task.title ?? `任务 ${String(task.task_id || '').slice(-6)}`,
-          }, ...runtime.teamTasks],
-      },
+          [sessionId]: {
+            ...runtime,
+            teamTasks: tasks,
+            taskProgressEstimates: retainTaskProgressEstimates(runtime, tasks),
+          },
         },
       };
     });
@@ -1422,6 +1499,61 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         skills: patch.skills ?? updatedTasks[existingIndex].skills,
         files: patch.files ?? updatedTasks[existingIndex].files,
       };
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            teamTasks: updatedTasks,
+            taskProgressEstimates: retainTaskProgressEstimates(runtime, updatedTasks),
+          },
+        },
+      };
+    });
+  },
+
+  freezeRunningTeamTasks: (sessionId, frozenAt) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const at = frozenAt ?? Date.now();
+      let changed = false;
+      const updatedTasks = runtime.teamTasks.map((task) => {
+        if (!isRunningTeamBoardStatus(task.status) || task.progress_frozen) {
+          return task;
+        }
+        changed = true;
+        return {
+          ...task,
+          progress_frozen: true,
+          progress_frozen_at: at,
+        };
+      });
+      if (!changed) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamTasks: updatedTasks },
+        },
+      };
+    });
+  },
+
+  thawRunningTeamTasks: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      let changed = false;
+      const updatedTasks = runtime.teamTasks.map((task) => {
+        if (!task.progress_frozen) return task;
+        changed = true;
+        return {
+          ...task,
+          progress_frozen: false,
+          progress_frozen_at: undefined,
+        };
+      });
+      if (!changed) return state;
       return {
         runtimes: {
           ...state.runtimes,
@@ -1602,6 +1734,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [sessionId]: { ...runtime, selectedSkills: [] },
         },
       };
+    });
+  },
+
+  setAppMarketPreview: (sessionId, preview) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...runtime, appMarketPreview: preview } } };
     });
   },
 
@@ -2240,6 +2380,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           },
         },
       };
+    });
+  },
+
+  setIndependentGitIdentity: (sessionId, enabled) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...rt, independentGitIdentity: enabled } } };
     });
   },
 

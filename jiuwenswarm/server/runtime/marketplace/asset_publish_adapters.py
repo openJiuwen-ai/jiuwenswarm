@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path, PureWindowsPath
-from urllib.parse import urlsplit, parse_qsl, unquote
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import yaml
 
+from jiuwenswarm.common.mcp_package_manifest import (
+    MCP_PACKAGE_ENTRYPOINT_ARG,
+    McpPackageError,
+    load_mcp_package,
+)
+
 from .asset_publish_models import PublishIdentity
-from ..mcp.package_manifest import McpPackageError, load_mcp_package
 
 
 class PublishValidationError(ValueError):
@@ -406,6 +412,132 @@ def _agent_group(root: Path, identity: PublishIdentity, metadata: dict) -> dict:
     return {"normalizations": changes, "dependencies": dependencies, "wrapper": None}
 
 
+def _system_plugin(root: Path, identity: PublishIdentity, metadata: dict) -> dict:
+    """Validate a system plugin and normalize its nested package identity."""
+
+    manifest = _json(root / "manifest.json")
+    if manifest.get("package_type") != "extension":
+        _fail(field="package_type", message="System plugins require package_type=extension")
+    package = manifest.get("package")
+    if not isinstance(package, dict):
+        _fail(field="package", message="System plugins require a package object")
+    if package.get("domain") not in ("agentserver", "gateway"):
+        _fail(field="package.domain", message="System plugins must target the agentserver or gateway domain")
+    _text(package.get("id"), "package.id")
+    _text(package.get("version"), "package.version")
+    display = manifest.get("display")
+    if not isinstance(display, dict):
+        _fail(field="display", message="System plugins require display metadata")
+    changes = []
+    if package.get("id") != identity.package_name:
+        package["id"] = identity.package_name
+        changes.append("manifest.package.id")
+    if package.get("version") != identity.version:
+        package["version"] = identity.version
+        changes.append("manifest.package.version")
+    if changes:
+        (root / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    return {"normalizations": changes, "dependencies": [], "wrapper": None}
+
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_MAX_APP_ICON_BYTES = 5 * 1024 * 1024
+
+
+def _app_icon_png(root: Path, icon_href: str) -> bytes:
+    """Read the current local PNG icon from the validated publishing snapshot."""
+    try:
+        url = urlsplit(icon_href or "icon.png")
+        if url.scheme or url.netloc:
+            return b""
+        candidate = (root / unquote(url.path).lstrip("/")).resolve()
+        if not candidate.is_relative_to(root.resolve()) or candidate.suffix.lower() != ".png":
+            return b""
+        with candidate.open("rb") as icon:
+            data = icon.read(_MAX_APP_ICON_BYTES + 1)
+    except (OSError, ValueError):
+        return b""
+    if data.startswith(_PNG_MAGIC) and len(data) <= _MAX_APP_ICON_BYTES:
+        return data
+    return b""
+
+
+def _app(root: Path, identity: PublishIdentity, metadata: dict[str, object]) -> dict[str, object]:
+    from jiuwenswarm.extensions.app_market.app_ai_roles import APP_AI_ROLES_FILE, load_ai_role_groups
+    from jiuwenswarm.extensions.app_market.hub_install import (
+        AppInstallError,
+        app_package_validator,
+        read_entry_metadata,
+        validate_package_name,
+    )
+
+    try:
+        validate_package_name(identity.package_name)
+    except AppInstallError as exc:
+        _fail(field="asset_name", message=str(exc))
+    entry = _path(root, metadata.get("app_entry", "index.html"), "index.html")
+    if entry.parent != root or entry.suffix.lower() not in {".html", ".htm"}:
+        _fail("APP_INVALID_ENTRY", "index.html")
+    changes = []
+    if entry.name != "index.html":
+        index = root / "index.html"
+        case_only = entry.name.casefold() == index.name
+        if index.exists() and not (case_only and entry.samefile(index)):
+            _fail("APP_INVALID_ENTRY", "index.html")
+        if case_only:
+            entry.replace(index)
+            changes.append(f"index.html: renamed from {entry.name}")
+        else:
+            shutil.copyfile(entry, index)
+            changes.append(f"index.html: copied from {entry.name}")
+    try:
+        app_package_validator(root, identity.package_name)
+        entry_metadata = read_entry_metadata(root, identity.version)
+    except AppInstallError as exc:
+        code = "APP_VERSION_MISMATCH" if exc.code == "app_artifact_changed" else "INVALID_PACKAGE"
+        _fail(code, "index.html", str(exc))
+
+    display_name = _text(metadata.get("display_name"), "display_name").strip()
+    description = metadata.get("description", "")
+    tags = metadata.get("tags", [])
+    permissions = metadata.get("app_permissions", [])
+    types_valid = (
+        isinstance(description, str)
+        and isinstance(tags, list)
+        and isinstance(metadata.get("requires_project", True), bool)
+        and isinstance(permissions, list)
+    )
+    items_valid = (
+        all(isinstance(tag, str) for tag in tags)
+        and all(permission == "ai" for permission in permissions)
+    )
+    if len(display_name) > 128 or not types_valid or not items_valid:
+        _fail()
+    try:
+        if load_ai_role_groups(root):
+            permissions = ["ai"]
+    except ValueError as exc:
+        _fail("INVALID_PACKAGE", APP_AI_ROLES_FILE, str(exc))
+    return {
+        "normalizations": changes,
+        "icon_png": _app_icon_png(root, entry_metadata["icon_href"]),
+        "wrapper": {
+            "name": identity.package_name,
+            "version": identity.version,
+            "display_name": display_name,
+            "description": description,
+            "runtime": {"type": "app"},
+            "metadata": {
+                "author": "unknown",
+                "tags": [tag.strip() for tag in tags if tag.strip()],
+                "app": {"requires_project": True, "permissions": permissions},
+            },
+        },
+    }
+
+
 def normalize_and_validate(
     snapshot: Path, identity: PublishIdentity, metadata: dict[str, object]
 ) -> dict[str, object]:
@@ -428,6 +560,10 @@ def normalize_and_validate(
         return _skillpack(root, identity, metadata)
     if identity.kind == "agent_group":
         return _agent_group(root, identity, metadata)
+    if identity.kind == "system_plugin":
+        return _system_plugin(root, identity, metadata)
+    if identity.kind == "app":
+        return _app(root, identity, metadata)
     if len(list(root.rglob("manifest.json"))) != 1:
         _fail(
             "MULTIPLE_MANIFESTS",
@@ -530,6 +666,11 @@ def normalize_and_validate(
                     json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
                 )
                 changes.append("mcp.host_oauth_authorization")
+        if "entrypoint" in package.raw["integration"]:
+            # The loader already validated this argument. Exclude only its occurrence
+            # in args from the credential scan and leave the packaged file intact.
+            args = config["mcpServers"][package.server_name]["args"]
+            args.remove(MCP_PACKAGE_ENTRYPOINT_ARG)
         placeholders = set(_PLACEHOLDER.findall(json.dumps(config)))
         defined = set()
         if package.credentials_file:

@@ -58,7 +58,29 @@ SDK mode auto-assembles the memory kernel in-process. The three backends answer 
 
 ---
 
+### 1.4 Import video into memory from Web chat
+
+Enable the built-in JiuwenMemory SDK (`memory.engine: builtin`, `memory.builtin.provider: jiuwen`, and `memory.builtin.jiuwen.mode: sdk`) and turn on the agent's memory. Use a version of agent-memory with the automatic video assembly from `config_dict` introduced in commit `92e8624`.
+
+By default, Swarm passes a local 64-dimensional hashing embedder to the built-in JiuwenMemory SDK to vectorize text produced by video processing. This requires no embedding service configuration. To use a different embedder, set `memory.builtin.jiuwen.sdk.embedder.default` and the corresponding `globals.embedder_dim` in the SDK configuration.
+
+1. In **Settings → Agent → Tools**, configure and enable **Video Understanding** and **Audio Processing** for the capabilities your deployment does not already provide. Save the model, API URL, and API key for each. The video endpoint must support OpenAI-compatible vision chat. The audio endpoint must support OpenAI-compatible transcription with segment timestamps.
+2. In a local Web chat in Work mode, select **Full access**, click **+** next to the composer, choose a local video, and send “Remember this video.” Swarm saves the browser upload in the current session's upload directory and generates a `file:///` URI for `agent_memory_video_submit`. Use `agent_memory_video_status` with the returned `job_id` to check progress.
+3. You can also submit a URI manually. The file must be in a deployment-configured import directory or in the automatically authorized project directory or session workspace under **Full access**.
+
+Configure both video and audio models before first using memory. If the deployment already configures one model, set the other in the Web UI. With Full access configured, the first shared Runtime authorizes the current user or tenant's `<agent directory>/sessions` tree, even before any upload exists. Work, Code, and Team initialize the same base media settings. Later sessions can import uploaded videos without creating another Runtime or watcher.
+
+The grant uses the exact memory scope and covers valid video files across that sessions tree, not just the current session. It does not authorize other users' or tenants' directories. Existing deployment roots and eligible workspace grants remain, as do project/team memory filters. Swarm adds no file copy; Memory validates the source before copying it into a task temporary directory.
+
+The shared Runtime retains its first model and authorization configuration. If those settings were incomplete at startup or later change, release all borrowers and recreate the Runtime, or restart Swarm. Rebuilding one Rail does not necessarily update the underlying configuration. Default in-memory job records are lost when the Runtime is released or the process restarts.
+
 ## 2. Built-in Memory vs. JiuwenMemory
+
+When Swarm starts with the JiuwenMemory provider selected, it leaves `MEMORY.md` unseeded. The first long-term memory write in a session without a project uses the `default` project. With local Markdown storage, it creates `memory/default/MEMORY.md` under the configured Markdown root.
+
+When switching to the SDK with a Swarm-managed Markdown root, Swarm archives a leftover root `MEMORY.md` that matches a built-in template before starting the SDK. Edited files stay in place.
+
+For a selected project, Swarm derives its memory coordinate from the directory name and a hash of the normalized absolute path. Local long-term memory uses `memory/<directory-name>-<path-hash>/MEMORY.md`. Omit the memory tool's `project` argument to use the current session's coordinate. Existing memory stored under a bare directory name remains accessible by explicitly selecting that legacy coordinate.
 
 JiuwenSwarm defaults to **built-in memory** (`memory.engine: builtin`), based on local Markdown files; switching to JiuwenMemory uses remote structured backends. The key difference is not "tool names" but **how memory is triggered**:
 

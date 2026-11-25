@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 CONTROL_METHODS = ALL_CONTROL_METHODS
 
+
 _HANDLE_SESSION = None
 _HANDLE_PROJECT = None
 _HANDLE_CONFIG = None
@@ -42,6 +43,7 @@ _LOAD_HISTORY_SESSION_USAGE = None
 _STREAM_HISTORY_RECORDS = None
 _INVALID_HISTORY_CURSOR = None
 _HISTORY_SNAPSHOT_CHANGED = None
+_HISTORY_REPLAY_ERROR = None
 
 
 def _load_session_service() -> None:
@@ -83,10 +85,12 @@ def _load_history_service() -> None:
     global _HANDLE_HISTORY, _LOAD_HISTORY_QUERY, _LOAD_HISTORY_TODO_SNAPSHOT
     global _LOAD_HISTORY_SESSION_USAGE
     global _STREAM_HISTORY_RECORDS, _INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED
+    global _HISTORY_REPLAY_ERROR
     if _HANDLE_HISTORY is not None:
         return
     from jiuwenswarm.server.control.history_service import (
         HistorySnapshotChanged,
+        HistoryReplayError,
         InvalidHistoryCursor,
         handle_history_request,
         load_history_query,
@@ -101,6 +105,7 @@ def _load_history_service() -> None:
     _STREAM_HISTORY_RECORDS = stream_history_records
     _INVALID_HISTORY_CURSOR = InvalidHistoryCursor
     _HISTORY_SNAPSHOT_CHANGED = HistorySnapshotChanged
+    _HISTORY_REPLAY_ERROR = HistoryReplayError
     _HANDLE_HISTORY = handle_history_request
 
 
@@ -175,7 +180,8 @@ class MethodRouter:
                     await self._dispatch_hub_catalog(ws, request, send_lock)
                 elif request.req_method == ReqMethod.HEALTH_CHECK_GET_CONF:
                     await self._dispatch_health(ws, request, send_lock)
-                elif request.req_method == ReqMethod.HISTORY_GET and request.is_stream:
+                elif (request.req_method == ReqMethod.HISTORY_GET and request.is_stream
+                      and "artifact_sha256" not in (request.params or {})):
                     await self._dispatch_history_stream(ws, request, send_lock)
                 else:
                     await self._dispatch_control(ws, request, send_lock)
@@ -275,7 +281,10 @@ class MethodRouter:
         send_lock: Any,
     ) -> None:
         from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
-        from jiuwenswarm.enterprise.tenant.tenant_identity import extract_tenant_key
+        from jiuwenswarm.enterprise.tenant.tenant_identity import (
+            extract_tenant_key,
+            extract_triple,
+        )
 
         if _HANDLE_HISTORY is None:
             await asyncio.to_thread(_load_history_service)
@@ -287,18 +296,23 @@ class MethodRouter:
         subagent_id = params.get("subagent_id")
         # Re-bind inside worker threads: control plane never hits Runtime bind.
         tenant_key = extract_tenant_key(request)
+        group_id, bot_id, user_id = extract_triple(request)
 
         def _load_history_page():
-            with TenantContext.scoped(tenant_key):
+            with TenantContext.scoped(
+                tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
+            ):
                 return _LOAD_HISTORY_QUERY(params)
 
         try:
             data = await asyncio.to_thread(_load_history_page)
-        except (_INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED) as exc:
+        except (_INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED, _HISTORY_REPLAY_ERROR) as exc:
             error_code = (
-                "HISTORY_SNAPSHOT_CHANGED"
-                if isinstance(exc, _HISTORY_SNAPSHOT_CHANGED)
-                else "INVALID_HISTORY_CURSOR"
+                exc.code if isinstance(exc, _HISTORY_REPLAY_ERROR) else (
+                    "HISTORY_SNAPSHOT_CHANGED"
+                    if isinstance(exc, _HISTORY_SNAPSHOT_CHANGED)
+                    else "INVALID_HISTORY_CURSOR"
+                )
             )
             err = AgentResponseChunk(
                 request_id=request.request_id,
@@ -385,7 +399,9 @@ class MethodRouter:
             sid = session_id.strip()
 
             def _load_todos():
-                with TenantContext.scoped(tenant_key):
+                with TenantContext.scoped(
+                    tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
+                ):
                     return _LOAD_HISTORY_TODO_SNAPSHOT(sid)
 
             try:

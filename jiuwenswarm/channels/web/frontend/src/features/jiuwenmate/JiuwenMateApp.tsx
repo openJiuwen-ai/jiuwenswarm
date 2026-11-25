@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webClient, webRequest } from '../../services/webClient';
+import { isTransientManagementError, waitForClientContext } from '../../services/extensionsV2Api';
 import { ColleagueDeleteDialog } from './components/ColleagueDeleteDialog';
 import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
 import { WelinkOauthDialog } from './components/WelinkOauthDialog';
 import { JiuwenMateConfirmDialog, JiuwenMateDialog } from './components/JiuwenMateDialog';
 import { JiuwenMateRail, type JiuwenMateRailView } from './components/JiuwenMateRail';
+import { MAX_STARTER_PROMPTS } from './components/StarterPromptsEditor';
 import {
   cancelColleagueCreation,
   closeCustomColleagueDialog,
@@ -16,6 +18,7 @@ import {
   finishColleagueAuthorization,
   openColleagueAuthorization,
   openColleagueCreation,
+  clearWorkspaceIntent,
   openColleagueMessages,
   openColleagueProfile,
   openColleagueWorkspace,
@@ -36,11 +39,11 @@ import {
   selectableColleagueResources,
   selectableKnowledgePages,
   selectablePluginPackages,
-  withColleagueEdit,
   type ColleagueResourceOption,
   type JiuwenMateDeleteMode,
   type JiuwenMateModelCatalog,
   type JiuwenMateSchedule,
+  type JiuwenMateSettingsEdit,
 } from './jiuwenmateApi';
 import {
   templateSkillSearchQueries,
@@ -81,11 +84,20 @@ import type {
   JiuwenMateImPlatform,
 } from './types';
 import { useGroupDirectory } from '../groupChat/useGroupDirectory';
+import { useModelRefreshStatus } from '../settings/modules/models/useModelRefreshStatus';
+import {
+  requestSettingsModule,
+  SETTINGS_MODULE_NAVIGATION_EVENT,
+  type SettingsModuleTarget,
+  type SettingsNavigationTarget,
+} from '../settings/settingsNavigation';
 import './jiuwenmate.css';
 
 export interface JiuwenMateAppProps {
   onExit: () => void;
-  renderExistingPage: (nav: JiuwenMateExistingPage) => ReactNode;
+  renderExistingPage: (nav: JiuwenMateExistingPage, settingsNavigation?: SettingsNavigationTarget) => ReactNode;
+  /** Reused pages whose feature is switched off; they leave the rail and close if open. */
+  hiddenExistingPages?: readonly JiuwenMateExistingPage[];
   confirmDiscardSettings?: () => boolean;
   /** Plaza "use" on an installed expert opens the employee creation page for that package. */
   useInstalledExpertRef?: MutableRefObject<(packageName: string) => void>;
@@ -100,6 +112,7 @@ type PendingConfirm =
 type LoadStatus = 'loading' | 'ready' | 'failed';
 
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
+const NO_HIDDEN_PAGES: readonly JiuwenMateExistingPage[] = [];
 const SCHEDULE_REFRESH_INTERVAL_MS = 5_000;
 const EMPTY_MISSING_CAPABILITIES: MutableColleagueCapabilitySelections = {
   skills: [],
@@ -126,6 +139,7 @@ interface SkillInstallReply {
 export function JiuwenMateApp({
   onExit,
   renderExistingPage,
+  hiddenExistingPages = NO_HIDDEN_PAGES,
   confirmDiscardSettings,
   useInstalledExpertRef,
   groupId,
@@ -156,6 +170,7 @@ export function JiuwenMateApp({
   const [modelCatalog, setModelCatalog] = useState<JiuwenMateModelCatalog>(EMPTY_MODEL_CATALOG);
   const [activeRailView, setActiveRailView] = useState<JiuwenMateRailView>('office');
   const [existingPage, setExistingPage] = useState<JiuwenMateExistingPage | null>(null);
+  const [requestedSettingsNavigation, setRequestedSettingsNavigation] = useState<SettingsNavigationTarget>();
   const [installedExperts, setInstalledExperts] = useState<readonly JiuwenMateTemplate[]>([]);
   const visibleInstalledExperts = useMemo(
     () =>
@@ -168,6 +183,12 @@ export function JiuwenMateApp({
   const [employeeExists, setEmployeeExists] = useState(false);
   const [publicLabel, setPublicLabel] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [imNotice, setImNotice] = useState<{ platform: 'feishu' | 'dingtalk' | 'welink'; text: string } | null>(null);
+  useEffect(() => {
+    if (!imNotice) return undefined;
+    const timer = window.setTimeout(() => setImNotice(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [imNotice]);
   const [workspaceIntent, setWorkspaceIntent] = useState<{ nonce: number; intent: JiuwenMateWorkspaceIntent | null }>({
     nonce: 0,
     intent: null,
@@ -177,6 +198,9 @@ export function JiuwenMateApp({
     section: 'overview',
   });
   const [connectionEpoch, setConnectionEpoch] = useState(0);
+  const { refreshStatus: modelRefreshStatus, checkRefreshStatus } = useModelRefreshStatus(
+    webClient.getState() === 'ready', webRequest,
+  );
   const [resourceCatalog, setResourceCatalog] = useState<ColleagueResourceCatalog>({
     skills: [],
     connectors: [],
@@ -195,12 +219,18 @@ export function JiuwenMateApp({
   const [schedules, setSchedules] = useState<JiuwenMateSchedule[]>([]);
   const [savingSchedule, setSavingSchedule] = useState(false);
 
+  const colleagueLoadRequest = useRef(0);
   const loadColleagues = useCallback(async () => {
+    const requestId = ++colleagueLoadRequest.current;
     setLoadStatus('loading');
     setLoadError('');
     try {
       const [colleagues, welinkResult] = await Promise.all([
-        api.loadColleagues(),
+        api.loadColleagues().catch(async (error) => {
+          if (!isTransientManagementError(error) || requestId !== colleagueLoadRequest.current) throw error;
+          if (!(await waitForClientContext()) || requestId !== colleagueLoadRequest.current) throw error;
+          return api.loadColleagues();
+        }),
         webRequest<{
           agent_ids?: string[];
           bindings?: Array<{ config_id?: string; persistent_agent_id?: string; channel_enabled?: boolean }>;
@@ -209,6 +239,7 @@ export function JiuwenMateApp({
           () => ({ ok: false as const, value: null }),
         ),
       ]);
+      if (requestId !== colleagueLoadRequest.current) return;
       setState((current) =>
         replaceColleagues(
           current,
@@ -233,6 +264,7 @@ export function JiuwenMateApp({
       );
       setLoadStatus('ready');
     } catch (error) {
+      if (requestId !== colleagueLoadRequest.current) return;
       setLoadError(errorMessage(error));
       setLoadStatus('failed');
     }
@@ -264,11 +296,30 @@ export function JiuwenMateApp({
 
   useEffect(() => {
     void loadColleagues();
+    return () => { colleagueLoadRequest.current += 1; };
   }, [loadColleagues]);
 
-  // A group route always lands in the chat view, where group chats live.
   useEffect(() => {
-    if (!groupId || loadStatus !== 'ready') return;
+    checkRefreshStatus();
+  }, [checkRefreshStatus, connectionEpoch, existingPage]);
+
+  useEffect(() => webClient.on('models.updated', checkRefreshStatus), [checkRefreshStatus]);
+
+  useEffect(() => {
+    if (!modelRefreshStatus || modelRefreshStatus.status === 'pending' ||
+        modelRefreshStatus.status === 'unavailable' || modelRefreshStatus.generation === 0) return;
+    void loadColleagues();
+  }, [loadColleagues, modelRefreshStatus]);
+
+  const activatedGroupIdRef = useRef<string | undefined>(undefined);
+  // Activate chat on group entry, without stealing navigation after a background refresh.
+  useEffect(() => {
+    if (!groupId) {
+      activatedGroupIdRef.current = undefined;
+      return;
+    }
+    if (loadStatus !== 'ready' || activatedGroupIdRef.current === groupId) return;
+    activatedGroupIdRef.current = groupId;
     setExistingPage(null);
     setPublicLabel(null);
     setActiveRailView('messages');
@@ -373,12 +424,17 @@ export function JiuwenMateApp({
     return () => {
       active = false;
     };
-  }, [api]);
+  }, [api, connectionEpoch, existingPage, modelRefreshStatus]);
 
-  const canLeaveSettings = (nextPage: JiuwenMateExistingPage | null) => {
+  const openModelSettings = () => {
+    setExistingPage('settings');
+    requestSettingsModule('models');
+  };
+
+  const canLeaveSettings = useCallback((nextPage: JiuwenMateExistingPage | null) => {
     if (existingPage !== 'settings' || nextPage === 'settings') return true;
     return confirmDiscardSettings?.() ?? true;
-  };
+  }, [confirmDiscardSettings, existingPage]);
 
   const showFeature = (railView: JiuwenMateRailView, update: (current: JiuwenMateState) => JiuwenMateState) => {
     if (!canLeaveSettings(null)) return;
@@ -390,14 +446,35 @@ export function JiuwenMateApp({
 
   const handleRailViewChange = (view: JiuwenMateRailView) => {
     if (view === 'office' && groupId) onSelectGroup();
+    if (view === 'messages') setWorkspaceIntent(clearWorkspaceIntent);
     showFeature(view, view === 'office' ? openOffice : openColleagueMessages);
   };
 
-  const handleOpenExistingPage = (nav: JiuwenMateExistingPage, labelKey: string) => {
-    if (!canLeaveSettings(nav)) return;
-    setExistingPage(nav);
-    setPublicLabel(labelKey);
-  };
+  const handleOpenExistingPage = useCallback(
+    (nav: JiuwenMateExistingPage, labelKey: string, settingsTarget?: SettingsModuleTarget | SettingsNavigationTarget) => {
+      if (!canLeaveSettings(nav)) return;
+      setExistingPage(nav);
+      setPublicLabel(labelKey);
+      setRequestedSettingsNavigation(typeof settingsTarget === 'string' ? { moduleId: settingsTarget } : settingsTarget);
+    },
+    [canLeaveSettings],
+  );
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const target = (event as CustomEvent<SettingsModuleTarget | SettingsNavigationTarget>).detail;
+      handleOpenExistingPage('settings', 'jiuwenmate.nav.settings', target);
+    };
+    window.addEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
+    return () => window.removeEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
+  }, [handleOpenExistingPage]);
+
+  useEffect(() => {
+    if (existingPage && hiddenExistingPages.includes(existingPage)) {
+      setExistingPage(null);
+      setPublicLabel(null);
+    }
+  }, [existingPage, hiddenExistingPages]);
 
   const openPlaza = () => handleOpenExistingPage('agents', 'jiuwenmate.nav.plaza');
   const startCreation = () => {
@@ -456,7 +533,7 @@ export function JiuwenMateApp({
           connectors: available.connectors,
           plugins: available.plugins,
           knowledge: available.knowledge,
-          starterPrompts: [...template.capabilities.starterPrompts],
+          starterPrompts: template.capabilities.starterPrompts.slice(0, MAX_STARTER_PROMPTS),
         },
       }),
     );
@@ -545,6 +622,28 @@ export function JiuwenMateApp({
     if (colleague) setPendingConfirm({ kind: 'delete', colleague });
   };
 
+  const saveColleagueSettings = async (agentId: string, edit: JiuwenMateSettingsEdit) => {
+    setSavingResources(true);
+    setActionError('');
+    try {
+      const fresh = await api.saveSettings(agentId, modelCatalog.models, edit);
+      setState((current) => ({
+        ...current,
+        colleagues: current.colleagues.map((item) => item.id === fresh.id
+          ? {
+              ...fresh,
+              imConfigured: item.imConfigured,
+              feishuConfigured: item.feishuConfigured,
+              dingtalkConfigured: item.dingtalkConfigured,
+              welinkConfigured: item.welinkConfigured,
+            }
+          : item),
+      }));
+    } finally {
+      setSavingResources(false);
+    }
+  };
+
   const refreshColleague = async (colleagueId: string) => {
     const fresh = await api.getColleague(colleagueId);
     setState((current) => ({
@@ -569,8 +668,15 @@ export function JiuwenMateApp({
     if (pendingConfirm.kind === 'unbind') {
       setActionError('');
       try {
+        const platform = pendingConfirm.connection.channel;
         await api.unbindConnection(pendingConfirm.connection);
+        if (platform === 'feishu') {
+          setImNotice({ platform, text: t('jiuwenmate.profile.removeConnectionSuccess') });
+        }
         await refreshColleague(pendingConfirm.colleague.id);
+        if (platform === 'dingtalk') {
+          setImNotice({ platform, text: t('jiuwenmate.profile.removeConnectionSuccess') });
+        }
       } catch (error) {
         setActionError(errorMessage(error));
       }
@@ -854,6 +960,7 @@ export function JiuwenMateApp({
             onUpdateSchedule={updateSchedule}
             onSetScheduleEnabled={setScheduleEnabled}
             onDeleteSchedule={removeSchedule}
+            onRunSchedule={runSchedule}
             onLoadScheduleHistory={loadScheduleHistory}
           />
         );
@@ -867,36 +974,8 @@ export function JiuwenMateApp({
             resourceCatalog={resourceCatalog}
             savingResources={savingResources}
             onLoadSettings={api.readSettings}
-            onSaveSettings={(edit) => {
-              setSavingResources(true);
-              setActionError('');
-              const settings = withColleagueEdit(selectedColleague, modelCatalog.models, edit);
-              return api
-                .updateSettings(selectedColleague.id, settings)
-                .then(() => api.publish(selectedColleague.id))
-                .then(() => api.getColleague(selectedColleague.id))
-                .then((fresh) => {
-                  setState((current) => ({
-                    ...current,
-                    colleagues: current.colleagues.map((item) =>
-                      item.id === fresh.id
-                        ? {
-                            ...fresh,
-                            imConfigured: item.imConfigured,
-                            feishuConfigured: item.feishuConfigured,
-                            welinkConfigured: item.welinkConfigured,
-                            disabled: item.disabled,
-                          }
-                        : item,
-                    ),
-                  }));
-                })
-                .catch((error: unknown) => {
-                  setActionError(errorMessage(error));
-                  throw error;
-                })
-                .finally(() => setSavingResources(false));
-            }}
+            onSaveSettings={(edit) => saveColleagueSettings(selectedColleague.id, edit)}
+            onOpenModelSettings={openModelSettings}
             activity={activity?.members.find((item) => item.agentId === selectedColleague.id) ?? null}
             schedules={schedules.filter((plan) => plan.agentId === selectedColleague.id)}
             savingSchedule={savingSchedule}
@@ -928,6 +1007,7 @@ export function JiuwenMateApp({
               setAuthorizeConnection(null);
               setState((current) => openColleagueAuthorization(current, selectedColleague.id, 'welink'));
             }}
+            imNotice={imNotice}
             onRevokeChannel={(platform) => {
               const method = platform === 'welink' ? 'channel.welink.revoke' : 'channel.feishu.revoke';
               return webRequest(method, {
@@ -936,15 +1016,22 @@ export function JiuwenMateApp({
               })
                 .then(() => {
                   setState((current) => revokeColleagueAuthorization(current, selectedColleague.id, platform));
+                  setImNotice({
+                    platform,
+                    text: t(platform === 'welink'
+                      ? 'jiuwenmate.profile.cancelAuthorizationSuccess'
+                      : 'jiuwenmate.profile.removeConnectionSuccess'),
+                  });
                 })
                 .catch((error: unknown) => {
                   setActionError(errorMessage(error));
                   throw error;
                 });
             }}
-            onRemoveConnection={(connection) =>
-              setPendingConfirm({ kind: 'unbind', colleague: selectedColleague, connection })
-            }
+            onRemoveConnection={(connection) => {
+              setImNotice(null);
+              setPendingConfirm({ kind: 'unbind', colleague: selectedColleague, connection });
+            }}
             onToggleDisabled={() => requestToggleDisabled(selectedColleague.id)}
             onDelete={() => requestDelete(selectedColleague.id)}
           />
@@ -968,36 +1055,15 @@ export function JiuwenMateApp({
             onUpdateSchedule={updateSchedule}
             onSetScheduleEnabled={setScheduleEnabled}
             onDeleteSchedule={removeSchedule}
+            onRunSchedule={runSchedule}
             onLoadScheduleHistory={loadScheduleHistory}
             channelApi={api}
             modelCatalog={modelCatalog}
             savingPermissionProfile={savingResources}
-            onSavePermissionProfile={(agentId, permissionProfile) => {
-              const colleague = state.colleagues.find((item) => item.id === agentId);
-              if (!colleague) return Promise.reject(new Error('Colleague not found'));
-              setSavingResources(true);
-              setActionError('');
-              const settings = withColleagueEdit(colleague, modelCatalog.models, { permissionProfile });
-              return api
-                .updateSettings(agentId, settings)
-                .then(() => api.publish(agentId))
-                .then(() => api.getColleague(agentId))
-                .then((fresh) => {
-                  setState((current) => ({
-                    ...current,
-                    colleagues: current.colleagues.map((item) =>
-                      item.id === fresh.id
-                        ? { ...fresh, imConfigured: item.imConfigured, disabled: item.disabled }
-                        : item,
-                    ),
-                  }));
-                })
-                .catch((error: unknown) => {
-                  setActionError(errorMessage(error));
-                  throw error;
-                })
-                .finally(() => setSavingResources(false));
-            }}
+            onSavePermissionProfile={(agentId, permissionProfile) => saveColleagueSettings(agentId, { permissionProfile })}
+            savingModel={savingResources}
+            onSaveModel={(agentId, model) => saveColleagueSettings(agentId, { model })}
+            onOpenModelSettings={openModelSettings}
             onRenameColleague={async (agentId, name) => {
               const settings = await api.readSettings(agentId);
               await api.updateSettings(agentId, { ...settings, name: name.trim() });
@@ -1024,6 +1090,7 @@ export function JiuwenMateApp({
       <JiuwenMateRail
         activeView={activeRailView}
         activePublicLabel={publicLabel}
+        hiddenPages={hiddenExistingPages}
         onViewChange={handleRailViewChange}
         onOpenExistingPage={handleOpenExistingPage}
         onExit={onExit}
@@ -1035,7 +1102,7 @@ export function JiuwenMateApp({
       >
         {existingPage ? (
           <div className="jiuwenmate-reused-page" data-testid="jiuwenmate-reused-page" data-variant={existingPage}>
-            {renderExistingPage(existingPage)}
+            {renderExistingPage(existingPage, requestedSettingsNavigation)}
           </div>
         ) : (
           renderFeature()

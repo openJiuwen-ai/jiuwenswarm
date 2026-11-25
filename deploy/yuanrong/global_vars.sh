@@ -6,9 +6,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CUSTOM_ENV_FILE="${SCRIPT_DIR}/.env.custom"
 ENV_FILE="${SCRIPT_DIR}/.env"
 
-GATEWAY_CONFIG_TEMPLATE_FILE="${SCRIPT_DIR}/conf/gateway-config-yuanrong.template.yaml"
+# AgentOS Gateway 模板默认从已安装的 agent-gateway 包定位
+# ($(python -c '.../resources/config.agentos.yaml'))；如需显式覆盖，再设置
+# GATEWAY_CONFIG_TEMPLATE_FILE。JWS 的 gateway-config-yuanrong.template.yaml
+# 是拆分前的 AS+Gateway 合并模板，只保留作迁移参考，不再作为默认源。
+GATEWAY_CONFIG_TEMPLATE_FILE="${GATEWAY_CONFIG_TEMPLATE_FILE:-}"
 GATEWAY_CONFIG_FILE="${SCRIPT_DIR}/conf/gateway-config.yaml"
-GATEWAY_ENV_FILE="${SCRIPT_DIR}/conf/gateway.env"
+# Gateway/AgentServer 共用一份 env，最终落到 <workspace>/config/.env。
+# 运行期配置面板只写这一份，避免 Gateway/AS 各自持有副本后模型凭据漂移。
+SHARED_ENV_FILE="${SCRIPT_DIR}/conf/jiuwenswarm.env"
 
 REG_FUNC_FILE="${SCRIPT_DIR}/../../jiuwenswarm/extensions/clawee.py"
 
@@ -74,6 +80,10 @@ declare -A DEPLOY_VARS=(
     ["DISCONNECT_CLEANUP_TIMEOUT_SECONDS"]=""
     ["OS_TYPE"]=""
     ["EXTENSION_DIRS"]=""
+    # Gateway-only config dir override. Empty -> <workspace>/infra/config.
+    ["JIUWENSWARM_GATEWAY_CONFIG_DIR"]=""
+    # Optional explicit Gateway template path; empty -> locate AGW package resource.
+    ["GATEWAY_CONFIG_TEMPLATE_FILE"]=""
     # AgentOS IAM; empty URL → http://MASTER_NODE_IP:8090 at deploy check time
     ["AGENTOS_AUTH_SERVICE_URL"]=""
     ["AGENTOS_AUTH_TIMEOUT"]=""

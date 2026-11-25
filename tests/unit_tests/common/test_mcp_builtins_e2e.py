@@ -56,7 +56,7 @@ def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
     """
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
 
-    mcp_builtins = temp_workspace / "domain" / "agent" / "workspace" / "mcp" / "mcp_builtins"
+    mcp_builtins = temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
     assert mcp_builtins.is_dir(), "mcp_builtins 未解压"
     assert not (mcp_builtins / "index.json").exists()
     assert not (mcp_builtins / "manifest.json").exists()
@@ -81,7 +81,7 @@ def test_list_marketplace_loads_extracted_packages(temp_workspace: Path) -> None
     installed = {
         path.name
         for path in (
-            temp_workspace / "domain" / "agent" / "workspace" / "mcp" / "mcp_builtins"
+            temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
         ).iterdir()
         if path.is_dir() and not path.name.startswith(".")
     }
@@ -96,7 +96,7 @@ def test_list_marketplace_loads_extracted_packages(temp_workspace: Path) -> None
 def test_second_prepare_skips_when_version_matches(temp_workspace: Path) -> None:
     """版本一致时二次调用不应破坏用户在包目录里加的脏文件."""
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
-    mcp_builtins = temp_workspace / "domain" / "agent" / "workspace" / "mcp" / "mcp_builtins"
+    mcp_builtins = temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
     dirty = mcp_builtins / "dirty-survives.txt"
     dirty.write_text("keep", encoding="utf-8")
 
@@ -114,7 +114,7 @@ def test_prepare_workspace_leaves_no_seed_zip_leftover(temp_workspace: Path) -> 
     """
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
 
-    ws_root = temp_workspace / "domain" / "agent" / "workspace"
+    ws_root = temp_workspace / "agent" / "workspace"
     leftovers = list(ws_root.glob("mcp_builtins*.zip"))
     assert not leftovers, f"seed zip leaked to workspace root: {leftovers}"
     # 解压目录仍在。

@@ -80,7 +80,6 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
     _runtime = _AppField("runtime")
     _agent_manager = _AppField("agent_manager")
     _session_message_service = _AppField("session_message_service")
-    _proactive_engine = _AppField("proactive_engine")
     _scheduler_service = _AppField("scheduler_service")
     _scheduler_agent = _AppField("scheduler_agent")
     _session_stream_tasks = _AppField("session_stream_tasks")
@@ -185,6 +184,13 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         )
         self._runtime = self._build_runtime(plan_controller=self._plan_controller)
         self._agent_manager = self._runtime.agent_manager
+        from jiuwenswarm.server.runtime.session.workspace_files import SessionWorkspaceFiles
+
+        self.session_workspace_files = SessionWorkspaceFiles(
+            snapshot=lambda channel_id, session_id: self._agent_manager.get_session_workspace_paths(
+                channel_id, session_id,
+            ),
+        )
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False
@@ -257,7 +263,6 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         self._archive_service = None
         self._login_credential_refresh_task: Optional[asyncio.Task] = None
         # Proactive recommendation engine (set by app_agentserver for debug trigger)
-        self._proactive_engine: Any = None
         self._on_runtime_ready: Any = None
         self._on_runtime_warmup_retry: Any = None
         self._on_runtime_failed: Any = None
@@ -266,7 +271,6 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         self._execution_minimum_observed = False
         self._preparation_registry: Any = None
         self._startup_preparation_tokens: set = set()
-        self.proactive_preparation_task: asyncio.Task | None = None
         get_acp_output_manager().set_send_push_callback(
             self._schedule_acp_push
         )
@@ -339,9 +343,6 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             request_id=record.execution_request_id,
         )
 
-    def set_proactive_engine(self, engine: Any) -> None:
-        """Store the proactive engine instance for debug trigger interface."""
-        self._proactive_engine = engine
 
     def set_runtime_lifecycle_hooks(
         self,
@@ -478,13 +479,10 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         try:
             # Disabled Flow still supports Skill discovery through the toolkit;
             # it does not need the heavy recovery service at process startup.
-            from jiuwenswarm.common.symphony_config import (
-                evolution_flow_enabled,
-                load_symphony_config,
-            )
+            from jiuwenswarm.common.symphony_config import load_symphony_config
 
             config = await asyncio.to_thread(load_symphony_config)
-            if not config.enabled or not evolution_flow_enabled(config):
+            if not config.orchestration.experience_enabled:
                 return True
             import importlib
 
@@ -621,6 +619,10 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                     retry_delay = min(30.0, retry_delay * 2)
                     continue
                 try:
+                    await self._jiuwenmate_web.start()
+                except Exception:
+                    logger.exception("[AgentWebSocketServer] JiuwenMate Web runtime startup failed")
+                try:
                     await self._ensure_persistent_group_fanout()
                 except Exception:
                     # JM-08 is optional: a local JM binding must not prevent
@@ -651,7 +653,12 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             try:
                 from jiuwenswarm.common.mcp_config import prewarm_connected_mcps
 
-                return await prewarm_connected_mcps(report_status=True) is not False
+                return await prewarm_connected_mcps(
+                    report_status=True,
+                    # Tests start with bind_transport=True; only production
+                    # settles stale connecting records.
+                    settle_connecting=not bind_transport,
+                ) is not False
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[AgentWebSocketServer] MCP prewarm failed "
@@ -1036,12 +1043,6 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         if preparation is not None:
             await preparation.close()
             self._preparation_registry = None
-        proactive = getattr(self, "_proactive_engine", None)
-        if proactive is not None:
-            close = getattr(proactive, "close", None)
-            if callable(close):
-                await close()
-            self._proactive_engine = None
         sandbox_start = getattr(self, "_sandbox_start_task", None)
         self._sandbox_start_task = None
         if sandbox_start is not None:
@@ -1190,7 +1191,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             # Never allocate a replacement Runtime while shutting down.
             if runtime_close_completed or closing_runtime.closed:
                 self._runtime_services_started = False
-    
+
         try:
             from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
     
@@ -1252,13 +1253,23 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         """Build every AgentServer Runtime through one product composition root."""
         from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
         from jiuwenswarm.runtime.team_controller import process_team_controller
+        from jiuwenswarm.server.runtime.session.attach_notifications import (
+            ExtensionSessionAttachParticipant,
+        )
+        from jiuwenswarm.server.runtime.session.end_notifications import (
+            ExtensionSessionEndParticipant,
+        )
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
             get_kv_cache_application_owner,
         )
     
         owner = get_kv_cache_application_owner()
         self._kv_cache_application_owner = owner
-        registry = RuntimeParticipantRegistry()
+        self._session_association_participant = ExtensionSessionAttachParticipant()
+        registry = RuntimeParticipantRegistry(host_run_end=(ExtensionSessionEndParticipant(
+            release_attachments=self._session_association_participant.release_for_end,
+        ),))
+        registry.register_host_foreground(self._session_association_participant)
         lease = owner.attach_runtime(registry)
         return AgentRuntime(
             agent_manager=agent_manager,
@@ -1575,5 +1586,13 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         if value is None:
             from jiuwenswarm.server.jiuwenmate.web_adapter import JiuwenMateWebAdapter
 
-            value = self._jiuwenmate_web_instance = JiuwenMateWebAdapter(push=self.send_push)
+            value = self._jiuwenmate_web_instance = JiuwenMateWebAdapter(
+                push=self.send_push,
+                inspect_feishu_group=self._inspect_feishu_group,
+                dingtalk_group_status=lambda ns, agent, app: (
+                    self._dingtalk_group_poller.status(ns, agent, app)
+                    if self._dingtalk_group_poller is not None
+                    else {"status": "unavailable", "group_count": 0}
+                ),
+            )
         return value

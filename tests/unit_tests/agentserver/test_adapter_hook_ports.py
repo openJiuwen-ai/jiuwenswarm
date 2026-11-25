@@ -27,6 +27,7 @@ from jiuwenswarm.server.runtime.agent_adapter.sdk_execution import SDKExecutionD
 async def test_task_binding_stays_inside_permission_context_until_producer_closes(streaming, ending):
     calls = []
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._loaded_plugins = {}
     request = AgentRequest(request_id="request", session_id="session", channel_id="video_tool")
     inputs = {}
 
@@ -109,6 +110,7 @@ async def test_task_binding_stays_inside_permission_context_until_producer_close
 async def test_task_binding_setup_failure_releases_permissions_without_execution():
     calls = []
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._loaded_plugins = {}
 
     @asynccontextmanager
     async def admission(*_args):

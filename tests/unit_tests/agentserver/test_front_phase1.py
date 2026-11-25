@@ -538,7 +538,7 @@ async def test_front_history_restores_durable_usage_without_usage_records(
     monkeypatch: pytest.MonkeyPatch,
     query: dict,
 ) -> None:
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from jiuwenswarm.server.front import router as router_module
     from jiuwenswarm.server.runtime.session import session_history
     from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
@@ -953,7 +953,9 @@ def test_runtime_start_defaults_to_no_transport_bind() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_construct_is_off_front_process(monkeypatch, worker_callback_framework) -> None:
+async def test_runtime_construct_is_off_front_process(
+    monkeypatch, worker_callback_framework, clean_extension_registry,
+) -> None:
     import threading
     from pathlib import Path
     from types import SimpleNamespace

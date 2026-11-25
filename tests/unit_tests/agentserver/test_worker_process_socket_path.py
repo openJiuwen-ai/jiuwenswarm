@@ -51,7 +51,7 @@ def test_short_workspace_keeps_infra_socket_path(monkeypatch, _cleanup_dirs) -> 
 
     result = default_socket_path()
 
-    assert Path(result).parent == short_root / "infra" / "run"
+    assert Path(result).parent == short_root / "run"
     assert Path(result).name.startswith("runtime-")
     assert len(os.fsencode(result)) < 100
 

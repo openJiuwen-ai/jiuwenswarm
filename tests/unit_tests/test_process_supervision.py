@@ -6,6 +6,7 @@ import json
 import importlib
 import signal
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import psutil
@@ -22,18 +23,52 @@ from jiuwenswarm.common.process_supervision import (
 _COMMANDS = {"agentserver": ["agentserver"], "gateway": ["gateway"]}
 
 
-@pytest.mark.parametrize("keep_worker,worker_ok,expected", [(False, True, 0), (False, False, 1), (True, False, 0)])
-def test_application_final_exit_owns_worker_unless_launcher_delegates(monkeypatch, keep_worker, worker_ok, expected):
+@pytest.mark.parametrize(
+    "keep_worker,worker_ok,expected,gateway_config_dir",
+    [
+        (False, True, 0, None),
+        (False, False, 1, None),
+        (True, False, 0, "D:/explicit-gateway-config"),
+    ],
+)
+def test_application_final_exit_owns_worker_unless_launcher_delegates(
+    monkeypatch,
+    keep_worker,
+    worker_ok,
+    expected,
+    gateway_config_dir,
+):
     import sys
     from jiuwenswarm.common import utils
     from jiuwenswarm.server.supervisor import shutdown
 
     monkeypatch.setattr(utils, "cleanup_stale_openjiuwen_descs", lambda: None)
     monkeypatch.setattr(utils, "prepare_runtime_workspace", lambda **kwargs: None)
+    monkeypatch.setattr(utils, "ensure_gateway_config", lambda **kwargs: None)
     monkeypatch.setattr(sys, "argv", ["jiuwenswarm-app"] + (["--keep-worker"] if keep_worker else []))
     app = importlib.import_module("jiuwenswarm.app")
     order = []
-    monkeypatch.setattr(app, "supervise", lambda *args: order.append("fronts-stopped") or 0)
+    supervised = []
+
+    def supervise_application(_commands, popen_kwargs, **kwargs):
+        supervised.append((popen_kwargs, kwargs))
+        order.append("fronts-stopped")
+        return 0
+
+    monkeypatch.setattr(app, "supervise", supervise_application)
+    if gateway_config_dir is None:
+        monkeypatch.delenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", raising=False)
+        # prepare_local_gateway_config 只在无独立 Gateway 配置且非 AgentOS 时注入
+        # 实例配置目录；固定走注入分支，不依赖运行环境的真实配置文件。
+        import agent_gateway.common.paths as gateway_paths
+
+        monkeypatch.setattr(gateway_paths, "get_config_file",
+                            lambda: Path("<nonexistent>") / "gateway-config.yaml")
+        monkeypatch.setattr(utils, "is_agentos_runtime", lambda: False)
+    else:
+        monkeypatch.setenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", gateway_config_dir)
+    monkeypatch.setattr(app, "begin_system_plugin_recovery_session", lambda: None)
+    monkeypatch.setattr(app.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(poll=lambda: 0))
     monkeypatch.setattr(app.signal, "signal", lambda *args: None)
     monkeypatch.setattr(app, "install_async_dump_handler", lambda *args: None)
     monkeypatch.setattr(shutdown, "shutdown_application_worker",
@@ -42,6 +77,11 @@ def test_application_final_exit_owns_worker_unless_launcher_delegates(monkeypatc
         app.main()
     assert result.value.code == expected
     assert order == (["fronts-stopped"] if keep_worker else ["fronts-stopped", "worker-stopped"])
+    _popen_kwargs, kwargs = supervised[0]
+    agent_env = kwargs["command_popen_kwargs"]["agentserver"]["env"]
+    assert "JIUWENSWARM_GATEWAY_CONFIG_DIR" not in agent_env
+    gateway_env = kwargs["command_popen_kwargs"]["gateway"]["env"]
+    assert gateway_env["JIUWENSWARM_GATEWAY_CONFIG_DIR"] == str(app.get_gateway_config_dir())
 
 
 class _Clock:
@@ -106,6 +146,9 @@ def breadcrumb_file(monkeypatch, tmp_path):
     path = tmp_path / "service_exits.jsonl"
     monkeypatch.setattr(process_supervision, "_breadcrumb_path", lambda: path)
     _FakeProc._instances.clear()
+    # Platform branches emulate Linux even when pytest itself runs on Windows.
+    monkeypatch.setattr(process_supervision, "_POSIX_CRASH_SIGNALS", frozenset((4, 6, 7, 8, 11)))
+    monkeypatch.setattr(process_supervision.signal, "SIGKILL", process_supervision._SIGKILL, raising=False)
 
     def stop_fake_tree(pid, *, timeout):
         assert pid in _FakeProc._instances, "Unit tests must never signal a real PID"
@@ -128,6 +171,25 @@ def _script_children(monkeypatch, clock: _Clock, plans: dict[str, list[tuple[flo
 
     monkeypatch.setattr(process_supervision, "subprocess", SimpleNamespace(Popen=fake_popen))
     return spawned
+
+
+def test_command_specific_popen_kwargs_override_only_selected_child(monkeypatch, clock):
+    seen = {}
+
+    def fake_popen(command, **kwargs):
+        name = command[0]
+        seen[name] = kwargs
+        return _FakeProc(clock, None if name == "gateway" else clock.now + 100, 0)
+
+    monkeypatch.setattr(process_supervision, "subprocess", SimpleNamespace(Popen=fake_popen))
+
+    assert supervise(
+        _COMMANDS,
+        {"env": {"CHILD_ENV": "base"}},
+        command_popen_kwargs={"gateway": {"env": {"CHILD_ENV": "gateway"}}},
+    ) == 0
+    assert seen["agentserver"]["env"] == {"CHILD_ENV": "base"}
+    assert seen["gateway"]["env"] == {"CHILD_ENV": "gateway"}
 
 
 def test_gateway_restart_request_respawns_only_the_gateway(monkeypatch, clock):
@@ -251,6 +313,127 @@ def test_keyboard_interrupt_returns_130_and_terminates_children(monkeypatch, clo
     assert all(proc.terminated for _, proc in spawned)
 
 
+def test_requested_restart_restarts_only_selected_children(monkeypatch, clock):
+    spawned = _script_children(
+        monkeypatch, clock,
+        {"recovery": [(None, 0)], "agentserver": [(None, 0), (None, 0)], "gateway": [(None, 0), (None, 0)]},
+    )
+    requested = True
+    order = []
+
+    def stop(pid, *, timeout):
+        del timeout
+        name, proc = next(item for item in spawned if item[1].pid == pid)
+        order.append("stop-" + name)
+        proc.terminate()
+
+    monkeypatch.setattr(process_supervision, "terminate_service_tree", stop)
+
+    def before_restart():
+        assert len(spawned) == 3
+        assert spawned[0][1].poll() is None
+        assert spawned[1][1].poll() is not None and spawned[2][1].poll() is not None
+        order.append("worker-retired")
+
+    def restart_requested():
+        nonlocal requested
+        result, requested = requested, False
+        return result
+
+    clock.interrupt_at = 1.0
+    assert supervise(
+        {"recovery": ["recovery"], **_COMMANDS}, {},
+        restart_requested=restart_requested, restart_names=("gateway", "agentserver"), before_restart=before_restart,
+    ) == 130
+    assert [name for name, _ in spawned] == ["recovery", "agentserver", "gateway", "agentserver", "gateway"]
+    assert order[:3] == ["stop-gateway", "stop-agentserver", "worker-retired"]
+
+
+def test_recovery_worker_failure_prevents_replacement_start(monkeypatch, clock):
+    spawned = _script_children(monkeypatch, clock, {"agentserver": [(None, 0)], "gateway": [(None, 0)]})
+
+    def refuse_worker():
+        assert all(proc.poll() is not None for _, proc in spawned)
+        raise RuntimeError("Worker retirement incomplete")
+
+    with pytest.raises(RuntimeError, match="Worker retirement incomplete"):
+        supervise(_COMMANDS, {}, restart_requested=lambda: True,
+                  restart_names=("gateway", "agentserver"), before_restart=refuse_worker)
+    assert [name for name, _ in spawned] == ["agentserver", "gateway"]
+
+
+def test_recovery_service_failure_never_retires_worker_or_starts_replacements(monkeypatch, clock):
+    spawned = _script_children(monkeypatch, clock, {"agentserver": [(None, 0)], "gateway": [(None, 0)]})
+    failures = [True]
+    workers = []
+
+    def stop(pid, *, timeout):
+        del timeout
+        if failures:
+            failures.pop()
+            raise RuntimeError("Service exit unconfirmed")
+        _FakeProc._instances[pid].terminate()
+
+    monkeypatch.setattr(process_supervision, "terminate_service_tree", stop)
+    with pytest.raises(RuntimeError, match="Application services did not completely stop"):
+        supervise(_COMMANDS, {}, restart_requested=lambda: True,
+                  restart_names=("gateway", "agentserver"), before_restart=lambda: workers.append(True))
+    assert len(spawned) == 2 and workers == []
+
+
+def test_partial_recovery_start_retires_the_replacement_worker_after_front_cleanup(monkeypatch, clock):
+    spawned = _script_children(monkeypatch, clock,
+                               {"agentserver": [(None, 0), (None, 0)], "gateway": [(None, 0)]})
+    original = process_supervision.subprocess.Popen
+    gateway_starts = []
+    retirements = []
+
+    def spawn(command, **kwargs):
+        if command[0] == "gateway":
+            gateway_starts.append(True)
+            if len(gateway_starts) > 1:
+                raise OSError("replacement Gateway failed")
+        return original(command, **kwargs)
+
+    def retire():
+        assert all(proc.poll() is not None for _, proc in spawned)
+        retirements.append(True)
+
+    monkeypatch.setattr(process_supervision, "subprocess", SimpleNamespace(Popen=spawn))
+    with pytest.raises(OSError, match="replacement Gateway failed"):
+        supervise(_COMMANDS, {}, restart_requested=lambda: True,
+                  restart_names=("gateway", "agentserver"), before_restart=retire)
+    assert [name for name, _ in spawned] == ["agentserver", "gateway", "agentserver"]
+    assert len(retirements) == 2
+
+
+def test_unmatched_restart_request_keeps_the_supervisor_polling(monkeypatch, clock):
+    spawned = _script_children(
+        monkeypatch,
+        clock,
+        {"agentserver": [(None, 0)], "gateway": [(None, 0)]},
+    )
+    requested = True
+
+    def restart_requested() -> bool:
+        nonlocal requested
+        if not requested:
+            return False
+        requested = False
+        return True
+
+    clock.interrupt_at = 0.5
+    assert supervise(
+        _COMMANDS,
+        {},
+        restart_requested=restart_requested,
+        restart_names=frozenset({"missing"}),
+    ) == 130
+
+    assert [name for name, _ in spawned] == ["agentserver", "gateway"]
+    assert clock.now >= process_supervision._POLL_INTERVAL
+
+
 @pytest.mark.parametrize(
     ("platform", "returncode", "expected"),
     [
@@ -351,7 +534,7 @@ def test_posix_respawn_kills_the_dead_childs_process_group(monkeypatch, clock):
     assert supervise(_COMMANDS, {"start_new_session": True}) == 0
 
     dead_pid = spawned[0][1].pid
-    assert killpg_calls == [(dead_pid, signal.SIGKILL)]
+    assert killpg_calls == [(dead_pid, process_supervision._SIGKILL)]
 
 
 def test_posix_respawn_without_own_session_skips_killpg(monkeypatch, clock):
@@ -386,6 +569,9 @@ def test_win32_respawn_kills_verified_descendants_only(monkeypatch, clock):
     class _Victim:
         def __init__(self, pid: int) -> None:
             self.pid = pid
+
+        def create_time(self) -> float:
+            return _Dead.create_time_value
 
         def kill(self) -> None:
             killed.append(self.pid)

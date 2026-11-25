@@ -36,10 +36,14 @@ export type DesignerLoadStatus =
 
 const SAVE_DEBOUNCE_MS = 500;
 
+type DesignerSaveMode = 'full' | 'layout';
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveSeq = 0;
 // The server applies concurrent saves in any order, so an older snapshot could overwrite a newer one.
 let pendingSave: Promise<void> | null = null;
+let queuedSaveMode: DesignerSaveMode | null = null;
+let lastSavedGraph: DesignerExecutionGraph | null = null;
 let loadSeq = 0;
 const deletedNodeIds = new Set<string>();
 
@@ -106,14 +110,14 @@ type DesignerStore = {
     size: { width: number; height: number },
     options?: { userResized?: boolean },
   ) => void;
-  scheduleSave: () => void;
+  scheduleSave: (mode?: DesignerSaveMode) => void;
   flushSave: () => Promise<void>;
   /** Server-validated canvas video / image settings; rejects with the server message. */
   patchMediaSettings: (patch: DesignerMediaSettingsPatch) => Promise<void>;
   /** Stamp the chat model the design pipeline (leader + director chain) must
    * use. The canvas model switcher writes here so a mid-session change takes
    * effect on the next leader round (#5394). */
-  setChatModel: (modelName: string) => void;
+  setChatModel: (modelName: string, modelId?: string | null) => void;
   reset: () => void;
 };
 
@@ -572,7 +576,7 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
         updated_at: Date.now(),
       },
     });
-    get().scheduleSave();
+    get().scheduleSave('layout');
   },
 
   autoLayout: () => {
@@ -587,7 +591,7 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
         updated_at: Date.now(),
       },
     });
-    get().scheduleSave();
+    get().scheduleSave('layout');
   },
 
   updateNodeLayoutSize: (nodeId, size, options) => {
@@ -631,21 +635,30 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
         updated_at: Date.now(),
       },
     });
-    get().scheduleSave();
+    get().scheduleSave('layout');
   },
 
-  scheduleSave: () => {
+  scheduleSave: (mode = 'full') => {
+    queuedSaveMode = queuedSaveMode === 'full' || mode === 'full' ? 'full' : 'layout';
     clearSaveTimer();
     saveTimer = setTimeout(() => {
       void get().flushSave();
     }, SAVE_DEBOUNCE_MS);
   },
 
-  setChatModel: (modelName) => {
+  setChatModel: (modelName, modelId) => {
     const graph = get().domainGraph;
     const name = String(modelName || '').trim();
     if (!graph || !name || get().bootstrapInProgress || isDesignerPreviewGraph(graph)) return;
-    if (String((graph.metadata ?? {}).model_name || '').trim() === name) return;
+    const metadata = { ...(graph.metadata ?? {}) };
+    const currentId = String(metadata.model_id || '').trim();
+    // Omit modelId to keep a stable id already stored on the graph. An explicit
+    // null clears it. A shared model_name must not skip writing a different id.
+    const nextId = modelId === undefined ? currentId : String(modelId || '').trim();
+    if (String(metadata.model_name || '').trim() === name && currentId === nextId) return;
+    if (nextId) metadata.model_id = nextId;
+    else delete metadata.model_id;
+    metadata.model_name = name;
     // A full-graph save already in flight carries the previous model name and
     // its response would clobber this pick. Drop that response and save again
     // once the new name is live, so the server does not keep the stale
@@ -656,7 +669,7 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
       domainGraph: {
         ...graph,
         updated_at: Date.now(),
-        metadata: { ...(graph.metadata ?? {}), model_name: name },
+        metadata,
       },
     });
     if (saveInFlight) {
@@ -668,18 +681,28 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
 
   flushSave: async () => {
     clearSaveTimer();
+    const waited = pendingSave;
     while (pendingSave) await pendingSave;
     const graph = get().domainGraph;
     if (!graph || get().bootstrapInProgress || isDesignerPreviewGraph(graph)) return;
+    const mode: DesignerSaveMode = queuedSaveMode ?? 'full';
+    // Another flush already persisted this exact snapshot; don't follow a
+    // layout-only save with a default full save of the same stale config.
+    if (waited && queuedSaveMode == null && graph === lastSavedGraph) return;
+    queuedSaveMode = null;
     const seq = ++saveSeq;
     const savedGraphId = graph.graph_id;
     set({ saveStatus: 'saving' });
-    const request = designerGraphClient.save(graph);
+    const request = designerGraphClient.save(
+      graph,
+      mode === 'layout' ? { layoutOnly: true } : undefined,
+    );
     const tracked = request.then(
       () => undefined,
       () => undefined,
     );
     pendingSave = tracked;
+    lastSavedGraph = graph;
     try {
       const { graph: saved } = await request;
       if (seq !== saveSeq) return;

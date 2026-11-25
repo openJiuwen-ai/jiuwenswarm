@@ -144,6 +144,9 @@ async def test_phone_capability_gates_tool_registration(
         _tool_retrieval_tools_enabled_for_runtime=lambda _: False,
     )
 
+    adapter._get_tool_cards_sync = lambda agent_id: (
+        interface_deep.JiuWenSwarmDeepAdapter._get_tool_cards_sync(adapter, agent_id)
+    )
     cards = await interface_deep.JiuWenSwarmDeepAdapter._get_tool_cards(adapter, "phone-test")
     phone_tools = [tool for tool in captured_tools if tool.card.name in _REGISTRATION_NAMES]
     assert len(phone_tools) == expected_count

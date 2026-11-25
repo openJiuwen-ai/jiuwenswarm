@@ -127,13 +127,7 @@ class ExtensionsManagement:
             if enabled is None:
                 raise ValueError("缺少 enabled 参数")
             manager = get_rail_manager()
-            agent = host._agent_manager.get_agent_nowait()
-            if agent is not None:
-                agent_instance = await agent.ensure_instance()
-                if agent_instance is not None:
-                    manager.set_agent_instance(agent_instance)
-            extension = manager.toggle_extension(name, enabled)
-            await manager.hot_reload_rail(name, enabled)
+            extension = await manager.toggle_and_reload_rail(name, enabled)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,

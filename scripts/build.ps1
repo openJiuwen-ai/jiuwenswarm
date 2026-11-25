@@ -27,6 +27,16 @@ try {
 } finally {
     Pop-Location
 }
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+Push-Location (Join-Path $ProjectRoot "packages\jiuwenswarm-office-addin")
+try {
+    npm ci --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "Office 侧边栏依赖安装失败" }
+    npm run build:desktop
+    if ($LASTEXITCODE -ne 0) { throw "Office 侧边栏编译失败" }
+} finally {
+    Pop-Location
+}
 
 $DistDir = Join-Path $WebDir "dist"
 if (-not (Test-Path $DistDir)) {
@@ -49,7 +59,10 @@ try {
 Write-Host "[build] 正在构建 wheel 包..." -ForegroundColor Yellow
 Push-Location $ProjectRoot
 try {
-    python -m pip install --upgrade build wheel 2>$null
+    python -m pip install --upgrade build 'wheel>=0.46.3' 'setuptools>=70.1.0' 'packaging>=23.0'
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install Python build requirements"
+    }
     python -m build --wheel --no-isolation
     if ($LASTEXITCODE -ne 0) {
         throw "wheel 构建失败"

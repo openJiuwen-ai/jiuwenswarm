@@ -90,12 +90,9 @@ def _make_history_records() -> list[dict]:
 
 
 def _patch_history(monkeypatch, records: list[dict]) -> None:
-    monkeypatch.setattr(history_handler, "history_exists", lambda session_id, **_kwargs: True)
-    monkeypatch.setattr(
-        history_handler,
-        "load_history_records",
-        lambda session_id, **_kwargs: records,
-    )
+    from jiuwenswarm.server.runtime.session import session_history
+
+    session_history.write_history_records("sess-web", records)
 
 
 async def _read_stream(ws, request) -> None:

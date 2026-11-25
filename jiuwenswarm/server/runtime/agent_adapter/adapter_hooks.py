@@ -76,7 +76,7 @@ class ExtensionAdapterHookServices:
     @staticmethod
     def _context(request: Any, *, assistant_message: str | None = None):
         from jiuwenswarm.common.utils import get_agent_home_dir
-        from jiuwenswarm.common.hooks_context import MemoryHookContext
+        from e2a.hooks import MemoryHookContext
 
         fields = dict(
             session_id=request.session_id or "default",
@@ -91,7 +91,7 @@ class ExtensionAdapterHookServices:
         return MemoryHookContext(**fields)
 
     async def before_memory(self, request: Any) -> str:
-        from jiuwenswarm.common.hook_event import AgentServerHookEvents
+        from e2a.hooks import AgentServerHookEvents
         from agent_gateway.extensions.registry import ExtensionRegistry
 
         context = self._context(request)
@@ -101,7 +101,7 @@ class ExtensionAdapterHookServices:
         return "\n\n".join(block for block in context.memory_blocks if block)
 
     async def after_memory(self, request: Any, assistant_message: str) -> None:
-        from jiuwenswarm.common.hook_event import AgentServerHookEvents
+        from e2a.hooks import AgentServerHookEvents
         from agent_gateway.extensions.registry import ExtensionRegistry
 
         await ExtensionRegistry.get_instance().trigger(

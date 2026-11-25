@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, CircleAlert, Code2, Palette, Workflow } from 'lucide-react';
+import { Check, ChevronDown, CircleAlert, ClipboardList, Code2, Palette, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { isEnterprise } from '../../edition';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
@@ -16,6 +16,7 @@ import {
 import { shouldDiscoverCronActiveSessions } from '../../features/cron/cronActiveSessionDiscovery';
 import type { AgentMode, ProjectInfo, Session, WorkMode } from '../../types';
 import {
+  formatSessionTime,
   getProjectNewLabel,
   getSessionActivityAt,
   getSessionIndicator,
@@ -48,6 +49,19 @@ import PinIcon from '../../assets/work-mode/pin.svg?react';
 import PlusIcon from '../../assets/work-mode/plus.svg?react';
 import UnpinIcon from '../../assets/work-mode/unpin.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
+import { WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
+
+const pluginTaskStyles: WebUIStyleOverrides = {
+  Button: {
+    unstyled: true,
+    className: 'conversation-sidebar__new min-w-0 disabled:cursor-not-allowed disabled:opacity-50',
+    activeClassName: 'is-active',
+    icon: <ClipboardList aria-hidden />,
+    iconClassName: 'flex shrink-0 items-center justify-center',
+    labelClassName: 'min-w-0 truncate',
+  },
+  Box: { unstyled: true, className: 'flex min-w-0 flex-col gap-2' },
+};
 
 const UNREAD_KEY = 'jiuwenswarm_session_unread';
 const RELATIVE_TIME_REFRESH_MS = 60_000;
@@ -147,20 +161,6 @@ export function getProcessingTransitions(
     }
   }
   return { snapshot, completedInBackground };
-}
-
-export function formatRelativeTime(
-  activityAt: number,
-  now: number,
-  language: string,
-  translate: (key: string, options?: Record<string, unknown>) => string,
-): string {
-  const elapsed = Math.max(0, now - activityAt);
-  if (elapsed < 60_000) return translate('time.justNow');
-  if (elapsed < 3_600_000) return translate('time.minutesAgo', { count: Math.floor(elapsed / 60_000) });
-  if (elapsed < 86_400_000) return translate('time.hoursAgo', { count: Math.floor(elapsed / 3_600_000) });
-  if (elapsed < 604_800_000) return translate('time.daysAgo', { count: Math.floor(elapsed / 86_400_000) });
-  return new Date(activityAt).toLocaleDateString(language, { month: 'short', day: 'numeric' });
 }
 
 function getSessionTitle(session: Session, fallback: string): string {
@@ -268,7 +268,7 @@ function ConversationListItem({
         title={getTaskStatusLabel(indicator, t)}
         data-testid="multi-session-conversation-list-item-status-read"
       >
-        <span>{formatRelativeTime(getSessionActivityAt(session), now, i18n.language, t)}</span>
+        <span>{formatSessionTime(getSessionActivityAt(session), now, i18n.language, t)}</span>
       </span>
     );
   }
@@ -294,6 +294,11 @@ function ConversationListItem({
         >
           {title}
         </span>
+        {session.npc_session && (
+          <span className="shrink-0 text-xs text-text-muted" data-testid="multi-session-conversation-list-item-npc">
+            {t('chat.npcSessionLabel')}
+          </span>
+        )}
         <span
           className="conversation-list-item__meta"
           data-testid="multi-session-conversation-list-item-status"
@@ -1373,6 +1378,12 @@ export function ConversationSidebar({
                 <span data-testid="multi-session-open-cron-label">{t('nav.cron')}</span>
               </button>
             ) : null}
+            <WebUINavigationHost
+              slotId="task.function"
+              className="min-w-0"
+              instanceClassName="flex min-w-0 flex-col gap-2"
+              styles={pluginTaskStyles}
+            />
           </div>
           <div className="conversation-sidebar__body" data-testid="multi-session-sidebar-body">
             {hasPinnedSection ? (

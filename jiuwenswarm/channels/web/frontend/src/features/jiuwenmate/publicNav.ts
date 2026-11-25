@@ -10,9 +10,15 @@ export const JIUWENMATE_PUBLIC_PAGES: readonly JiuwenMatePublicNavItem[] = [
   { nav: 'personalContext', labelKey: 'jiuwenmate.nav.assets' },
   { nav: 'skills', labelKey: 'jiuwenmate.nav.skills' },
   { nav: 'connectorMarket', labelKey: 'jiuwenmate.nav.extensions' },
-  { nav: 'personalContext', labelKey: 'jiuwenmate.nav.knowledge' },
   { nav: 'settings', labelKey: 'jiuwenmate.nav.settings' },
 ];
+
+/** Assets (personal context) stays hidden until its switch is on, like the personal rail. */
+export function visibleJiuwenMatePublicPages(
+  hidden: readonly JiuwenMateExistingPage[],
+): readonly JiuwenMatePublicNavItem[] {
+  return JIUWENMATE_PUBLIC_PAGES.filter((item) => !hidden.includes(item.nav));
+}
 
 export interface JiuwenMateNavigationState<TNav extends string = string> {
   isJiuwenMate: boolean;

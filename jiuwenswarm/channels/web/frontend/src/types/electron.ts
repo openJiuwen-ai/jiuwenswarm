@@ -56,7 +56,15 @@ export interface ElectronBubbleAnchorRect {
 }
 
 export interface JiuwenElectronDesktopApi {
+  openMarketApp?: (appId: string, url: string, title: string, embedded?: boolean) => Promise<boolean>;
+  closeMarketApp?: (appId: string) => Promise<boolean>;
+  setMarketAppViewport?: (appId: string, bounds: ElectronBrowserBounds | null, focus?: boolean) => Promise<boolean>;
+  reloadMarketApp?: (appId: string) => Promise<boolean>;
+  getMarketAppResources?: () => Promise<import('./appMarketResources').MarketResources>;
   readonly isElectron: true;
+  readonly presentation?: import('../features/webui/presentation/protocol').PresentationNativeApi;
+  /** One identifier per application start, shared by its windows (Gateway S_09). */
+  readonly launchId?: string;
   readonly apiBase?: string;
   readonly wsBase?: string;
   minimizeWindow: () => Promise<boolean>;

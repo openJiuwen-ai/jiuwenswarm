@@ -53,8 +53,11 @@ from jiuwenswarm.common.startup_diagnostics import (
 from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
     get_config_dir,
+    ensure_gateway_config,
+    get_gateway_config_dir,
     get_infra_data_dir,
     get_logs_dir,
+    prepare_local_gateway_config,
     prepare_runtime_workspace,
     wait_for_pid_exit,
     wait_for_tcp_port,
@@ -80,10 +83,13 @@ APP_CHILD_FLAG = "--desktop-run-app"
 WEB_CHILD_FLAG = "--desktop-run-web"
 AGENT_CHILD_FLAG = "--desktop-run-agent"
 GATEWAY_CHILD_FLAG = "--desktop-run-gateway"
+RECOVERY_CHILD_FLAG = "--extension-recovery-sidecar"
 UPDATE_HELPER_FLAG = "--desktop-install-update"
 DESKTOP_ENV_FLAG = "JIUWENSWARM_DESKTOP"
 STARTUP_TIMEOUT_SECONDS = 120.0
 STARTUP_DOCTOR_TIMEOUT_SECONDS = DOCTOR_TIMEOUT_SECONDS + 15.0
+DESKTOP_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+DESKTOP_SHUTDOWN_GRACE_SECONDS = 5.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024
 MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991
@@ -527,6 +533,8 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
             flag = AGENT_CHILD_FLAG
         elif name == "gateway":
             flag = GATEWAY_CHILD_FLAG
+        elif name == "recovery":
+            flag = RECOVERY_CHILD_FLAG
         elif name == "app":
             flag = APP_CHILD_FLAG
         else:
@@ -536,6 +544,8 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
         base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
     elif name == "gateway":
         base = [sys.executable, "-m", "agent_gateway.app_gateway"]
+    elif name == "recovery":
+        base = [sys.executable, "-m", "jiuwenswarm.common.system_plugin_recovery_sidecar"]
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":
@@ -555,6 +565,8 @@ def _build_child_env(
 ) -> dict[str, str]:
     env = os.environ.copy()
     env[DESKTOP_ENV_FLAG] = "1"
+    if name == "gateway":
+        prepare_local_gateway_config(env)
     # 桌面锁定: 仅 web 静态服务的对话页面入口需要校验 token,
     # 其他子进程不注入, API/WS 保持原有访问规则。
     if desktop_token and name == "web":
@@ -562,6 +574,8 @@ def _build_child_env(
     else:
         env.pop("JIUWENSWARM_DESKTOP_TOKEN", None)
     env["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
+    if name == "gateway":
+        env["JIUWENSWARM_GATEWAY_CONFIG_DIR"] = str(get_gateway_config_dir())
     # Desktop now starts Gateway directly, so preserve the original launcher
     # command here instead of relying on jiuwenswarm.app to add it. The
     # updater inherits this value from Gateway when it constructs a restart.
@@ -580,6 +594,7 @@ def _build_child_env(
     env["AGENT_SERVER_PORT"] = str(ports["agent_server"])
     env["AGENT_PORT"] = str(ports["agent_server"])
     env["FRONTEND_PORT"] = str(ports["frontend"])
+    env["OFFICE_TLS_PORT"] = str(ports["office_tls"])
     # Gateway prefers AGENT_SERVER_URL over AGENT_SERVER_PORT; drop any stale
     # URL from the parent shell so the remapped port is used.
     env.pop("AGENT_SERVER_URL", None)
@@ -677,7 +692,7 @@ def _start_process(
 # web 子进程 import 的大头是 jiuwenswarm 自身, 放在最前优先预热; openjiuwen
 # 与 C 扩展库主要服务 app 子进程。预读块加大到 64KB 以覆盖归档多页。
 _WARMUP_PACKAGES = (
-    "jiuwenswarm", "openjiuwen", "faiss", "pymilvus", "google", "a2ui",
+    "jiuwenswarm", "openjiuwen", "pymilvus", "google", "a2ui",
     "sqlite_vec", "tree_sitter", "tiktoken", "tiktoken_ext",
 )
 _WARMUP_READ_BYTES = 64 * 1024
@@ -1300,12 +1315,15 @@ class DesktopRuntime:
         # 窗口首次导航 URL 携带 ?dt=<token> 换取 HttpOnly Cookie 后凭 Cookie
         # 访问, 浏览器直接打开对话页面时返回 403。
         self.desktop_token = secrets.token_urlsafe(32)
+        self.recovery_session_id = uuid.uuid4().hex
         self.processes: dict[str, subprocess.Popen[bytes]] = {}
         self.window = None
         self._lock = threading.Lock()
         self._blob_save_lock = threading.Lock()
         self._blob_save_transfers: dict[str, _BlobSaveTransfer] = {}
         self._is_shutting_down = False
+        self._shutdown_complete = threading.Event()
+        self._shutdown_deadline = 0.0
         self._update_shutdown_receipt: Path | None = None
         self._allow_window_close = False
         self._tray_icon = None
@@ -1440,6 +1458,138 @@ class DesktopRuntime:
             raise RuntimeError("desktop startup cancelled")
         return process
 
+    @staticmethod
+    def _stop_recovery_backends(processes: list[subprocess.Popen[bytes]]) -> None:
+        """Confirm Front/service exit before retiring this application's Worker."""
+        from jiuwenswarm.common.process_supervision import terminate_service_tree
+        from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
+
+        for process in processes:
+            if process.poll() is None:
+                terminate_service_tree(process.pid, timeout=12.0)
+            if process.poll() is None:
+                raise RuntimeError("Recovery restart refused a service that has not exited")
+        if not shutdown_application_worker(workspace=get_user_workspace_dir()):
+            raise RuntimeError("Recovery restart refused an incomplete Worker shutdown")
+
+    def _restart_backend_processes(self) -> None:
+        """Cold-restart the backend pair after an explicit recovery state change."""
+        with self._lock:
+            if self._is_shutting_down:
+                return
+            current = [self.processes.get("gateway"), self.processes.get("agent")]
+        self._stop_recovery_backends([process for process in current if process is not None])
+        self._raise_if_startup_cancelled()
+        self._preflight_gateway_singleton()
+        restarted: list[subprocess.Popen[bytes]] = []
+        try:
+            agent_process = self._start_managed_process("agent", _build_child_command("agent"))
+            restarted.append(agent_process)
+            _ensure_process_running("agent", agent_process)
+            gateway_process = self._start_managed_process("gateway", _build_child_command("gateway"))
+            restarted.append(gateway_process)
+            _ensure_process_running("gateway", gateway_process)
+            _wait_for_tcp(
+                BACKEND_HOST, self.ports["agent_server"], STARTUP_TIMEOUT_SECONDS, process=agent_process,
+            )
+            _wait_for_tcp(
+                BACKEND_HOST, self.backend_port, STARTUP_TIMEOUT_SECONDS, process=gateway_process,
+            )
+        except Exception:
+            if restarted:
+                self._stop_recovery_backends(list(reversed(restarted)))
+            raise
+
+    def _watch_backend_pair(self) -> None:
+        """Keep recovery restart handling alive after either backend exits."""
+        from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+
+        recovery = SystemPluginRecovery()
+        recovery_failed = False
+        failed_pair: tuple[
+            subprocess.Popen[bytes], subprocess.Popen[bytes]
+        ] | None = None
+        while True:
+            with self._lock:
+                if self._is_shutting_down:
+                    return
+                agent = self.processes.get("agent")
+                gateway = self.processes.get("gateway")
+            try:
+                restart_requested = recovery.consume_backend_restart(
+                    self.recovery_session_id
+                )
+            except Exception:  # noqa: BLE001 - recovery must not stop desktop supervision
+                logger.warning(
+                    "[desktop] could not read system plugin recovery restart request",
+                    exc_info=True,
+                )
+                restart_requested = False
+            if restart_requested:
+                logger.info(
+                    "[desktop] restarting AgentServer and Gateway after system plugin recovery"
+                )
+                try:
+                    self._restart_backend_processes()
+                    recovery_failed = False
+                    failed_pair = None
+                except Exception:  # noqa: BLE001 - keep the independent recovery page available
+                    logger.exception(
+                        "[desktop] could not restart backend services after system plugin recovery"
+                    )
+                    recovery_failed = True
+                continue
+            if recovery_failed:
+                time.sleep(0.25)
+                continue
+            if agent is None or gateway is None:
+                time.sleep(0.25)
+                continue
+
+            current_pair = (agent, gateway)
+            if failed_pair is not None and failed_pair != current_pair:
+                failed_pair = None
+            if failed_pair is not None:
+                if agent.poll() is not None and gateway.poll() is not None:
+                    with self._lock:
+                        if self.processes.get("agent") is agent:
+                            self.processes.pop("agent", None)
+                        if self.processes.get("gateway") is gateway:
+                            self.processes.pop("gateway", None)
+                    failed_pair = None
+                time.sleep(0.25)
+                continue
+
+            exited = (
+                ("agent", agent)
+                if agent.poll() is not None
+                else (("gateway", gateway) if gateway.poll() is not None else None)
+            )
+            if exited is not None:
+                exited_name, _ = exited
+                peer_name, peer_process = (
+                    ("gateway", gateway)
+                    if exited_name == "agent"
+                    else ("agent", agent)
+                )
+                logger.error(
+                    "[desktop] %s exited after startup; terminating %s peer",
+                    exited_name,
+                    peer_name,
+                )
+                if peer_process.poll() is None:
+                    try:
+                        _terminate_process_tree(peer_process)
+                    except Exception:  # noqa: BLE001 - recovery supervision must remain available
+                        logger.exception(
+                            "[desktop] could not terminate %s after %s exited",
+                            peer_name,
+                            exited_name,
+                        )
+                failed_pair = current_pair
+                continue
+            time.sleep(0.25)
+
     def start_services(
         self, on_web_ready: Callable[[], None] | None = None
     ) -> None:
@@ -1449,6 +1599,16 @@ class DesktopRuntime:
         # in-flight upgrade restart (old gateway shutting down) can release
         # the lock before we fail.
         self._preflight_gateway_singleton()
+        os.environ["JIUWENSWARM_RECOVERY_SESSION_ID"] = self.recovery_session_id
+        try:
+            from jiuwenswarm.common.system_plugin_recovery import begin_system_plugin_recovery_session
+
+            begin_system_plugin_recovery_session()
+        except Exception:  # noqa: BLE001 - recovery history must not block desktop startup
+            logger.warning(
+                "[desktop] could not create system plugin recovery startup record",
+                exc_info=True,
+            )
         # 先起后台预读, 与后续子进程拉起/端口等待并行, 不阻塞 start_services.
         _warmup_page_cache_background()
         # web 只需打包内的静态资源；先拉起它，使其冻结 EXE 导入与 Desktop
@@ -1470,10 +1630,16 @@ class DesktopRuntime:
 
         agent_process: subprocess.Popen[bytes] | None = None
         gateway_process: subprocess.Popen[bytes] | None = None
+        recovery_process: subprocess.Popen[bytes] | None = None
         try:
             # 在 Desktop 进程中只做一次工作区迁移/补齐，随后直接拉起
             # AgentServer 与 Gateway。跳过 app supervisor 可省去一个冻结 EXE。
             prepare_runtime_workspace()
+            ensure_gateway_config()
+            recovery_process = self._start_managed_process(
+                "recovery", _build_child_command("recovery")
+            )
+            _ensure_process_running("recovery", recovery_process)
             agent_process = self._start_managed_process(
                 "agent", _build_child_command("agent")
             )
@@ -1488,6 +1654,8 @@ class DesktopRuntime:
                 _terminate_process_tree(agent_process)
             if gateway_process is not None:
                 _terminate_process_tree(gateway_process)
+            if recovery_process is not None:
+                _terminate_process_tree(recovery_process)
             raise
 
         # The guarded startup above either raises or assigns both processes.
@@ -1576,6 +1744,8 @@ class DesktopRuntime:
                 _terminate_process_tree(agent_process)
                 _terminate_process_tree(gateway_process)
                 _terminate_process_tree(web_process)
+                if recovery_process is not None:
+                    _terminate_process_tree(recovery_process)
                 terminated_after_error = True
 
         while any(waiter.is_alive() for waiter in waiters):
@@ -1597,6 +1767,8 @@ class DesktopRuntime:
                 _terminate_process_tree(agent_process)
                 _terminate_process_tree(gateway_process)
                 _terminate_process_tree(web_process)
+                if recovery_process is not None:
+                    _terminate_process_tree(recovery_process)
             for exc in startup_errors[1:]:
                 logger.error("[desktop] startup waiter also failed: %r", exc)
             raise startup_errors[0]
@@ -1605,35 +1777,8 @@ class DesktopRuntime:
         # jiuwenswarm.app). Preserve the supervisor's paired-lifecycle rule:
         # if either backend exits after startup, promptly stop its peer so it
         # cannot keep ports, cron jobs, or the gateway singleton lock alive.
-        def _watch_backend_pair() -> None:
-            while True:
-                with self._lock:
-                    if self._is_shutting_down:
-                        return
-                exited = (
-                    ("agent", agent_process)
-                    if agent_process.poll() is not None
-                    else (("gateway", gateway_process) if gateway_process.poll() is not None else None)
-                )
-                if exited is not None:
-                    exited_name, _ = exited
-                    peer_name, peer_process = (
-                        ("gateway", gateway_process)
-                        if exited_name == "agent"
-                        else ("agent", agent_process)
-                    )
-                    logger.error(
-                        "[desktop] %s exited after startup; terminating %s peer",
-                        exited_name,
-                        peer_name,
-                    )
-                    if peer_process.poll() is None:
-                        _terminate_process_tree(peer_process)
-                    return
-                time.sleep(0.25)
-
         threading.Thread(
-            target=_watch_backend_pair,
+            target=self._watch_backend_pair,
             name="desktop-backend-pair-watch",
             daemon=True,
         ).start()
@@ -2586,7 +2731,13 @@ class DesktopRuntime:
   // Durable stub: never leave Python without a callable ingest hook.
   if (typeof window.__JIUWEN_INGEST_LOCAL_FILES__ !== 'function') {
     window.__JIUWEN_INGEST_LOCAL_FILES__ = function (detail) {
-      try { window.__JIUWEN_DROP_QUEUE__.push(detail); } catch (err) {}
+      try {
+        // Same rule as localFilePicker.ts: do not replay a drop into a later
+        // chat when the composer was not mounted.
+        if (document.querySelector('.chat-panel-shell')) {
+          window.__JIUWEN_DROP_QUEUE__.push(detail);
+        }
+      } catch (err) {}
       window.dispatchEvent(new CustomEvent('jiuwen-desktop-local-files', { detail: detail }));
     };
   }
@@ -3291,57 +3442,74 @@ nohup {q_executable} >/dev/null 2>&1 &
         with self._lock:
             if self._is_shutting_down:
                 return
+            deadline = time.monotonic() + DESKTOP_SHUTDOWN_TIMEOUT_SECONDS
+            self._shutdown_deadline = deadline
             self._is_shutting_down = True
             self._startup_cancelled.set()
             processes = list(self.processes.values())
 
-        self._abort_all_blob_saves()
-        shutdown_ok = True
-        deadline = time.monotonic() + 30.0
-        logger.info("[desktop] shutting down child processes")
-
-        for process in processes:
-            if process.poll() is None:
-                try:
-                    _terminate_process_tree(process)
-                except (OSError, RuntimeError):
-                    shutdown_ok = False
-                    logger.exception("[desktop] service tree cleanup incomplete")
-
-        # A previous launch may own a resident Worker even before this
-        # application's first service is registered. Final exit owns both.
-        from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
         try:
-            result = asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic()),
-                include_legacy=True))
-            if not isinstance(result, dict) or result.get("ok") is not True:
-                shutdown_ok = False
-                logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
-        except Exception:
-            shutdown_ok = False
-            logger.exception("[desktop] resident Worker final shutdown incomplete")
+            self._abort_all_blob_saves()
+            shutdown_ok = True
+            logger.info("[desktop] shutting down child processes")
 
-        while time.monotonic() < deadline:
-            if all(process.poll() is not None for process in processes):
-                break
-            time.sleep(0.2)
+            for process in processes:
+                if process.poll() is None:
+                    try:
+                        _terminate_process_tree(process)
+                    except (OSError, RuntimeError):
+                        shutdown_ok = False
+                        logger.exception("[desktop] service tree cleanup incomplete")
 
-        for process in processes:
-            if process.poll() is None:
-                shutdown_ok = False
-                try:
-                    _kill_process_tree(process)
-                except (OSError, RuntimeError):
-                    logger.exception("[desktop] forced service tree cleanup incomplete")
-
-        with self._lock:
-            self.processes.clear()
-        receipt = getattr(self, "_update_shutdown_receipt", None)
-        if receipt is not None:
+            # A previous launch may own a resident Worker even before this
+            # application's first service is registered. Final exit owns both.
+            from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
             try:
-                complete_shutdown_receipt(receipt, ok=shutdown_ok)
-            except (OSError, RuntimeError):
-                logger.exception("[desktop] failed to record update shutdown receipt")
+                result = asyncio.run(
+                    shutdown_resident_worker(
+                        timeout=max(.001, deadline - time.monotonic()),
+                        include_legacy=True,
+                    )
+                )
+                if not isinstance(result, dict) or result.get("ok") is not True:
+                    shutdown_ok = False
+                    logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
+            except Exception:
+                shutdown_ok = False
+                logger.exception("[desktop] resident Worker final shutdown incomplete")
+
+            while time.monotonic() < deadline:
+                if all(process.poll() is not None for process in processes):
+                    break
+                time.sleep(0.2)
+
+            for process in processes:
+                if process.poll() is None:
+                    shutdown_ok = False
+                    try:
+                        _kill_process_tree(process)
+                    except (OSError, RuntimeError):
+                        logger.exception("[desktop] forced service tree cleanup incomplete")
+
+            with self._lock:
+                self.processes.clear()
+            receipt = getattr(self, "_update_shutdown_receipt", None)
+            if receipt is not None:
+                try:
+                    complete_shutdown_receipt(receipt, ok=shutdown_ok)
+                except (OSError, RuntimeError):
+                    logger.exception("[desktop] failed to record update shutdown receipt")
+        finally:
+            self._shutdown_complete.set()
+
+    def shutdown_and_wait(self) -> None:
+        """Finish desktop cleanup before the main thread exits."""
+        self.shutdown()
+        # The owner shares its deadline with the main thread. Allow time after
+        # it for final process cleanup and writing the update receipt.
+        remaining = self._shutdown_deadline + DESKTOP_SHUTDOWN_GRACE_SECONDS - time.monotonic()
+        if not self._shutdown_complete.wait(timeout=max(0.0, remaining)):
+            logger.error("[desktop] shutdown did not complete within the shutdown budget")
 
     @staticmethod
     def _clear_wkwebview_system_cache() -> None:
@@ -3855,7 +4023,7 @@ def main() -> None:
             debug=args.debug,
         )
     finally:
-        runtime.shutdown()
+        runtime.shutdown_and_wait()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  Fragment,
   useCallback,
   useEffect,
   useId,
@@ -17,15 +18,15 @@ import './Select.css';
 export type SelectOption = {
   value: string;
   label: ReactNode;
+  title?: string;
   disabled?: boolean;
   disabledReason?: string;
   /** 行尾附加内容（如徽标）；渲染在 label 之后、对勾之前，旧版 space-between 布局的尾部子项 */
   trailing?: ReactNode;
 };
-export type SelectProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onChange'> & {
+type SelectBaseProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onChange' | 'value' | 'defaultValue'> & {
   options: readonly SelectOption[];
   invalid?: boolean;
-  onChange?: (value: string) => void;
   /** 无匹配选项时触发器显示的占位文案；不注入选项列表，仅影响触发器显示 */
   placeholder?: string;
   /** 面板顶部渲染的非交互头部（如分组标题）；不参与键盘导航与选项匹配 */
@@ -38,6 +39,10 @@ export type SelectProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onChang
   /** 面板最大宽度（px）；不传则随内容自适应。限宽后超长 label 需由调用方截断 */
   maxPanelWidth?: number;
 };
+export type SelectProps = SelectBaseProps & (
+  | { multiple?: false; value?: string | number; defaultValue?: string | number; onChange?: (value: string) => void }
+  | { multiple: true; value?: readonly string[]; defaultValue?: readonly string[]; onChange?: (value: string[]) => void }
+);
 
 const TRIGGER_GAP = 6;
 const VIEWPORT_MARGIN = 8;
@@ -46,17 +51,21 @@ const EXIT_DURATION_MS = 120;
 
 /** 自定义下拉：面板挂到所属 dialog 或 body，样式复用 ui-dropdown-menu。 */
 export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select(
-  { options, invalid = false, className, onChange, value, defaultValue, disabled, onBlur, id, placeholder, panelHeader, showSelectedCheck = false, triggerLabel, maxPanelWidth, ...props },
+  { options, invalid = false, className, onChange, value, defaultValue, multiple, disabled, onBlur, id, placeholder, panelHeader, showSelectedCheck = false, triggerLabel, maxPanelWidth, ...props },
   forwardedRef,
 ) {
   const isControlled = value !== undefined;
   const [internalValue, setInternalValue] = useState(() => String(defaultValue ?? ''));
-  const selected = isControlled ? String(value) : internalValue;
+  const [internalValues, setInternalValues] = useState<readonly string[]>(() => multiple ? (defaultValue ?? []) : []);
+  const selected = multiple ? '' : isControlled ? String(value) : internalValue;
+  const selectedValues = multiple ? (value ?? internalValues) : [];
   const selectedOption = options.find((option) => option.value === selected);
+  const selectedOptions = options.filter((option) => selectedValues.includes(option.value));
   const [open, setOpen] = useState(false);
   // 三态渲染：open 挂载并播放入场动画；closing 播完出场动画再卸载（同 DropdownMenuContent）
   const [phase, setPhase] = useState<'open' | 'closing' | null>(open ? 'open' : null);
   const [position, setPosition] = useState<{ left: number; top: number; minWidth: number } | null>(null);
+  const positioned = position !== null;
   const panelId = useId();
   const innerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -93,7 +102,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
     if (active === document.body || panelRef.current?.contains(active)) {
       innerRef.current?.focus();
     }
-  }, [open]);
+  }, [open, phase, portalHost]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -103,15 +112,17 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
 
     const reposition = () => {
       const triggerRect = trigger.getBoundingClientRect();
-      const panelRect = panel.getBoundingClientRect();
+      // Layout dimensions exclude the dropdown's opening scale animation.
+      const panelWidth = panel.offsetWidth;
+      const panelHeight = panel.offsetHeight;
       const below = triggerRect.bottom + TRIGGER_GAP;
       const top =
-        below + panelRect.height <= window.innerHeight - VIEWPORT_MARGIN
+        below + panelHeight <= window.innerHeight - VIEWPORT_MARGIN
           ? below
-          : Math.max(VIEWPORT_MARGIN, triggerRect.top - panelRect.height - TRIGGER_GAP);
+          : Math.max(VIEWPORT_MARGIN, triggerRect.top - panelHeight - TRIGGER_GAP);
       const left = Math.min(
         Math.max(triggerRect.left, VIEWPORT_MARGIN),
-        Math.max(VIEWPORT_MARGIN, window.innerWidth - panelRect.width - VIEWPORT_MARGIN),
+        Math.max(VIEWPORT_MARGIN, window.innerWidth - panelWidth - VIEWPORT_MARGIN),
       );
       setPosition({ left, top, minWidth: triggerRect.width });
     };
@@ -122,7 +133,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
       window.removeEventListener('scroll', reposition, true);
       window.removeEventListener('resize', reposition);
     };
-  }, [open]);
+  }, [open, phase, portalHost]);
 
   useEffect(() => {
     if (!open) return;
@@ -136,9 +147,9 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
   }, [open, close]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !positioned) return;
     panelRef.current?.focus({ preventScroll: true });
-  }, [open]);
+  }, [open, positioned]);
 
   const openPanel = useCallback(() => {
     if (disabled) return;
@@ -150,6 +161,14 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
 
   const select = (option: SelectOption) => {
     if (option.disabled) return;
+    if (multiple) {
+      const next = selectedValues.includes(option.value)
+        ? selectedValues.filter((item) => item !== option.value)
+        : [...selectedValues, option.value];
+      if (!isControlled) setInternalValues(next);
+      onChange?.(next);
+      return;
+    }
     // 点击已选中项不重复触发 onChange（与原生 select 一致），仅关闭面板
     if (option.value !== selected) {
       if (!isControlled) setInternalValue(option.value);
@@ -236,7 +255,9 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
         onKeyDown={handleTriggerKeyDown}
         onBlur={onBlur}
       >
-        {triggerLabel ?? selectedOption?.label ?? placeholder ?? ''}
+        {triggerLabel ?? (multiple && selectedOptions.length ? selectedOptions.map((option, index) => (
+          <Fragment key={option.value}>{index > 0 ? ', ' : ''}{option.label}</Fragment>
+        )) : selectedOption?.label ?? placeholder ?? '')}
       </button>
       {phase !== null && portalHost
         ? createPortal(
@@ -244,6 +265,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
               ref={panelRef}
               data-testid="ui-select-panel"
               role="listbox"
+              aria-multiselectable={multiple || undefined}
               id={panelId}
               aria-labelledby={id}
               tabIndex={-1}
@@ -261,7 +283,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
                 </div>
               ) : null}
               {options.map((option) => {
-                const isSelected = option.value === selected;
+                const isSelected = multiple ? selectedValues.includes(option.value) : option.value === selected;
                 return (
                   <button
                     key={option.value}
@@ -271,7 +293,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
                     role="option"
                     aria-selected={isSelected}
                     disabled={option.disabled}
-                    title={option.disabledReason}
+                    title={option.disabledReason ?? option.title}
                     className={`ui-dropdown-menu__item ui-select__option${
                       isSelected ? ' ui-select__option--selected' : ''
                     }`}
@@ -279,7 +301,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
                   >
                     <span className="ui-dropdown-menu__item-label">{option.label}</span>
                     {option.trailing}
-                    {showSelectedCheck && isSelected ? (
+                    {(showSelectedCheck || multiple) && isSelected ? (
                       <svg
                         className="ui-select__option-check"
                         viewBox="0 0 20 20"

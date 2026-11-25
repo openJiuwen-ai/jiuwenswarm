@@ -171,13 +171,13 @@ def verify_workspace_structure():
         """Verify the workspace has the expected structure."""
         expected_dirs = [
             workspace_dir / "infra" / "config",
-            workspace_dir / "domain" / "agent" / "home",
-            workspace_dir / "domain" / "agent" / "skills",
-            workspace_dir / "domain" / "agent" / "memory",
-            workspace_dir / "domain" / "agent" / "sessions",
-            workspace_dir / "domain" / "agent" / "workspace",
-            workspace_dir / "domain" / "agent" / "workspace" / "projects",
-            workspace_dir / "domain" / "agent" / ".checkpoint",
+            workspace_dir / "agent" / "home",
+            workspace_dir / "agent" / "skills",
+            workspace_dir / "agent" / "memory",
+            workspace_dir / "agent" / "sessions",
+            workspace_dir / "agent" / "workspace",
+            workspace_dir / "agent" / "workspace" / "projects",
+            workspace_dir / "agent" / ".checkpoint",
             workspace_dir / "infra" / "logs",
         ]
 
@@ -197,7 +197,7 @@ def verify_workspace_structure():
             raise FileNotFoundError(".env does not exist")
 
         # Check agent templates
-        agent_home = workspace_dir / "domain" / "agent" / "home"
+        agent_home = workspace_dir / "agent" / "home"
         expected_templates = ["PRINCIPLE.md", "TONE.md"]
         for template in expected_templates:
             template_path = agent_home / template

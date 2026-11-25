@@ -90,6 +90,7 @@ async def test_persist_session_is_create_identity_but_not_warm_key() -> None:
     manager.warm_pool = warm_pool
     manager._session_create_token_lock = asyncio.Lock()
     manager._session_create_tokens = {}
+    manager._session_create_tokens_max = 8192
     params = {
         "channel_id": "web",
         "project_id": "default",
@@ -108,6 +109,12 @@ async def test_persist_session_is_create_identity_but_not_warm_key() -> None:
     with pytest.raises(ValueError, match="different session parameters"):
         await manager.claim_prewarmed_session(**params, persist_session=False)
     assert warm_pool.claim_calls == 1
+
+    role_params = {**params, "create_token": "role-token", "execution_profile": "app_role",
+                   "role_instructions": "fisherman"}
+    await manager.claim_prewarmed_session(**role_params)
+    with pytest.raises(ValueError, match="different session parameters"):
+        await manager.claim_prewarmed_session(**{**role_params, "role_instructions": "researcher"})
 
 
 @pytest.fixture

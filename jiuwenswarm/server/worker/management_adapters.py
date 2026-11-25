@@ -14,6 +14,20 @@ from typing import Any
 from jiuwenswarm.common.schema.message import ReqMethod
 
 _PROVIDERS = {
+    "webui": (
+        "jiuwenswarm.extensions_v2.webui.adapter", "WebUIDispatchAdapter",
+        frozenset({ReqMethod.WEBUI_DISPATCH.value, ReqMethod.WEBUI_CONNECTION_CLOSED.value,
+                   ReqMethod.WEBUI_SETTINGS_CATALOG.value, ReqMethod.WEBUI_RESOURCE_READ.value}),
+    ),
+    "packages": (
+        "jiuwenswarm.extensions_v2.management.adapter", "PackageManagementAdapter",
+        frozenset({ReqMethod.EXTENSIONS_V2_QUERY.value, ReqMethod.EXTENSIONS_V2_CATALOG.value,
+                   ReqMethod.EXTENSIONS_V2_SHOW.value, ReqMethod.EXTENSIONS_V2_IMPORT.value,
+                   ReqMethod.EXTENSIONS_V2_INSTALL.value,
+                   ReqMethod.EXTENSIONS_V2_UNINSTALL.value, ReqMethod.EXTENSIONS_V2_RELOAD.value,
+                   ReqMethod.EXTENSIONS_V2_SET_ENABLED.value, ReqMethod.EXTENSIONS_V2_FILE_LIST.value,
+                   ReqMethod.EXTENSIONS_V2_FILE_READ.value}),
+    ),
     "voice": (
         "jiuwenswarm.server.runtime.video_task.server_adapter",
         "VoiceTaskServerAdapter",
@@ -21,6 +35,8 @@ _PROVIDERS = {
             {
                 ReqMethod.VOICE_TASK_CHECKPOINT_ACK.value,
                 ReqMethod.VOICE_TASK_FILES.value,
+                ReqMethod.VOICE_SESSION_RECEIPTS.value,
+                ReqMethod.VOICE_TASK_PENDING_INTERRUPT.value,
             }
         ),
     ),
@@ -54,6 +70,12 @@ _PROVIDERS = {
                 ReqMethod.PATH_SELECT_FILES.value,
                 ReqMethod.FILE_IMPORT_URL.value,
                 ReqMethod.FILE_UPLOAD_CHUNK.value,
+                ReqMethod.FILE_READ_UPLOAD_CHUNK.value,
+                ReqMethod.WORKSPACE_TREE.value,
+                ReqMethod.WORKSPACE_ENTRIES_DELETE.value,
+                ReqMethod.WORKSPACE_USAGE.value,
+                ReqMethod.WORKSPACE_DOWNLOAD.value,
+                ReqMethod.WORKSPACE_PREVIEW.value,
                 ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK.value,
                 ReqMethod.IM_FILE_PERSIST.value,
             }
@@ -78,6 +100,7 @@ _PROVIDERS = {
         frozenset(
             {
                 ReqMethod.PROJECT_INFO.value,
+                ReqMethod.PROJECT_LIFECYCLE.value,
                 ReqMethod.PROJECT_PINNED_SESSIONS.value,
                 ReqMethod.PROJECT_GET_SESSIONS.value,
                 ReqMethod.PROJECT_GET_CRON_SESSIONS.value,
@@ -116,6 +139,7 @@ _PROVIDERS = {
         frozenset(
             {
                 ReqMethod.CONFIG_GET.value,
+                ReqMethod.CONFIG_MOA_STATUS.value,
                 ReqMethod.CONFIG_SET.value,
                 ReqMethod.CONFIG_SAVE_ALL.value,
                 ReqMethod.CONFIG_VALIDATE_MODEL.value,
@@ -146,6 +170,12 @@ _PROVIDERS = {
     ),
 }
 
+_PROVIDERS["multimodal"] = (
+    "jiuwenswarm.server.runtime.gateway_adapter.multimodal_config_adapter",
+    "MultimodalConfigAdapter",
+    frozenset(method.value for method in ReqMethod if method.value.startswith("multimodal.")),
+)
+
 _PROVIDERS["designer"] = (
     "jiuwenswarm.server.runtime.gateway_adapter.designer_adapter",
     "DesignerAdapter",
@@ -158,6 +188,7 @@ _PROVIDERS["jiuwenmate"] = (
     "JiuwenMateWebAdapter",
     frozenset({
         ReqMethod.JIUWENMATE_ACTIVITY_GET.value,
+        ReqMethod.JIUWENMATE_ARTIFACT_LIST.value,
         ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_BEGIN.value,
         ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_CANCEL.value,
         ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_POLL.value,
@@ -232,9 +263,12 @@ class LazyAdapterRegistry:
             module_name, class_name, _ = _PROVIDERS[key]
             factory = getattr(import_module(module_name), class_name)
             kwargs = {}
-            if key == "project":
+            if key == "voice":
+                kwargs["pending_interrupt"] = self._host._agent_manager.session_has_pending_interrupt
+                kwargs["runtime"] = self._host._execution_runtime
+            elif key == "project":
                 kwargs["runtime_probe"] = self._host._execution_runtime
-            elif key == "config":
+            elif key in {"config", "multimodal"}:
                 kwargs["on_config_saved"] = self._host._reload_after_config_save
             # Failed construction is intentionally not cached.
             self._instances[key] = factory(**kwargs)

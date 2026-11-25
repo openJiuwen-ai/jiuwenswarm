@@ -1,0 +1,8 @@
+id: expert-teams
+name: Expert Teams
+version: 1.0.0
+description: Forward explicit expert-Team batch invitations to AgentServer
+author: JiuwenSwarm
+enabled: true
+package_type: application
+requires_transport: true

@@ -16,7 +16,8 @@ assert.doesNotMatch(callback, /setMultiModelCollaborationEnabled\(/);
 
 const dependencyNames = [
   'request', 'setA2UIFeatureEnabled', 'normalizeA2UIEnabled', 'setRSIFeatureEnabled',
-  'normalizeRSIEnabled',
+  'normalizeRSIEnabled', 'normalizeREAEnabled', 'setREAFeatureEnabled',
+  'browserClientCapabilities', 'waitForFirstDeclarations',
   'normalizeTrajectoryDiagnosisEnabled', 'setTrajectoryDiagnosisEnabled',
   'setTeamOrganizationUiEnabled', 'setComfyuiWorkflowEnabled', 'setTeamScheduledDispatchEnabled', 'setServerConfig', 'setConfigError',
   'modelSetupGuideEvaluatedRef', 'shouldPreviewModelSetupGuide', 'isSetupGuideEnabled',
@@ -74,6 +75,8 @@ function appFixture(reads, { enterprise = false, preview = false, guideEvaluated
     setServerConfig: (config) => serverConfigs.push(config),
     setTeamScheduledDispatchEnabled: (enabled) => dispatchSnapshots.push(enabled),
     isEnterprise: () => enterprise,
+    browserClientCapabilities: { getEpoch: () => 0, hasDeclarations: () => true },
+    waitForFirstDeclarations: async () => false,
     configRequestRevisionRef: { current: 0 },
     setConfigReady: (value) => ready.push(value),
     setConfigError: (value) => errors.push(value),

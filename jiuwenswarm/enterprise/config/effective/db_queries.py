@@ -11,10 +11,13 @@ from typing import Any
 from agent_gateway.storage.backends.db import reader as _db_reader
 
 from jiuwenswarm.common.utils import logger
-from .schemas import SLOT_ENTITY_TABLE, TemplateRefSlot
+from .schemas import REACT_ENTITY_TABLE, REACT_SLOT, SLOT_ENTITY_TABLE, TemplateRefSlot
 
 
 def _resolve_slot_storage(slot: str) -> tuple[str, str]:
+    if slot == REACT_SLOT:
+        # e2a 协议包尚未登记 REACT 槽位，仓内字符串接线。
+        return REACT_ENTITY_TABLE, "template_id"
     try:
         slot_key = TemplateRefSlot(slot)
     except ValueError as exc:
@@ -82,7 +85,25 @@ async def list_records(
     return await _db_reader.list_records(table, query=filters, order_by=order_by)
 
 
+async def fetch_advanced_config(
+    agent_template_id: str,
+) -> dict[str, Any] | None:
+    """按 ``agent_template_id`` 读取 advanced_config 一行。"""
+    tid = str(agent_template_id or "").strip()
+    if not tid:
+        return None
+    rows = await list_records(
+        "advanced_config",
+        filters={"agent_template_id": tid},
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    return dict(row) if isinstance(row, dict) else None
+
+
 __all__ = (
+    "fetch_advanced_config",
     "fetch_template_by_slot",
     "fetch_templates_by_slot",
     "list_records",

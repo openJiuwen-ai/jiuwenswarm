@@ -32,14 +32,14 @@ from agent_gateway.common.ws_diagnostics import (
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_INTERNAL_METADATA_KEYS
-from jiuwenswarm.common.e2a.gateway_normalize import (
+from e2a.constants import E2A_WIRE_INTERNAL_METADATA_KEYS
+from e2a.gateway_normalize import (
     E2A_FALLBACK_FAILED_KEY,
     E2A_INTERNAL_CONTEXT_KEY,
     E2A_LEGACY_AGENT_REQUEST_KEY,
 )
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import encode_json_parse_error_wire
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import encode_json_parse_error_wire
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.plan import PlanModeController
@@ -450,6 +450,20 @@ class AgentWebSocketServer(WorkerExecutionHost):
                     ),
                 )
             return
+        from jiuwenswarm.server.front.protocol import unsupported_method_wire
+
+        if isinstance(data, dict):
+            method = data.get("method")
+            if method is None:
+                method = data.get("req_method")
+            error_wire = unsupported_method_wire(
+                method, request_id=data.get("request_id"),
+                channel_id=data.get("channel") or data.get("channel_id"),
+            )
+            if error_wire is not None:
+                async with send_lock:
+                    await send_wire_payload(ws, error_wire)
+                return
         try:
             env = E2AEnvelope.from_dict(data)
         except Exception as parse_err:
@@ -467,6 +481,15 @@ class AgentWebSocketServer(WorkerExecutionHost):
                 )
                 if not isinstance(legacy, dict):
                     raise ValueError("legacy_agent_request missing or not a dict")
+                error_wire = unsupported_method_wire(
+                    legacy.get("req_method"),
+                    request_id=legacy.get("request_id"),
+                    channel_id=legacy.get("channel_id"),
+                )
+                if error_wire is not None:
+                    async with send_lock:
+                        await send_wire_payload(ws, error_wire)
+                    return
                 request = _payload_to_request(legacy)
             else:
                 logger.info(
@@ -569,40 +592,40 @@ _COMPAT_EXPORTS = {
         "e2a_to_agent_request",
     ),
     "E2A_CANCEL_SOURCE_CLIENT_DISCONNECT": (
-        "jiuwenswarm.common.e2a.constants",
+        "e2a.constants",
         "E2A_CANCEL_SOURCE_CLIENT_DISCONNECT",
     ),
     "E2A_INTERNAL_CANCEL_SOURCE_KEY": (
-        "jiuwenswarm.common.e2a.constants",
+        "e2a.constants",
         "E2A_INTERNAL_CANCEL_SOURCE_KEY",
     ),
     "E2A_WIRE_INTERNAL_METADATA_KEYS": (
-        "jiuwenswarm.common.e2a.constants",
+        "e2a.constants",
         "E2A_WIRE_INTERNAL_METADATA_KEYS",
     ),
     "E2A_FALLBACK_FAILED_KEY": (
-        "jiuwenswarm.common.e2a.gateway_normalize",
+        "e2a.gateway_normalize",
         "E2A_FALLBACK_FAILED_KEY",
     ),
     "E2A_INTERNAL_CONTEXT_KEY": (
-        "jiuwenswarm.common.e2a.gateway_normalize",
+        "e2a.gateway_normalize",
         "E2A_INTERNAL_CONTEXT_KEY",
     ),
     "E2A_LEGACY_AGENT_REQUEST_KEY": (
-        "jiuwenswarm.common.e2a.gateway_normalize",
+        "e2a.gateway_normalize",
         "E2A_LEGACY_AGENT_REQUEST_KEY",
     ),
-    "E2AEnvelope": ("jiuwenswarm.common.e2a.models", "E2AEnvelope"),
+    "E2AEnvelope": ("e2a.models", "E2AEnvelope"),
     "encode_agent_chunk_for_wire": (
-        "jiuwenswarm.common.e2a.wire_codec",
+        "e2a.wire_codec",
         "encode_agent_chunk_for_wire",
     ),
     "encode_agent_response_for_wire": (
-        "jiuwenswarm.common.e2a.wire_codec",
+        "e2a.wire_codec",
         "encode_agent_response_for_wire",
     ),
     "encode_json_parse_error_wire": (
-        "jiuwenswarm.common.e2a.wire_codec",
+        "e2a.wire_codec",
         "encode_json_parse_error_wire",
     ),
     "is_placeholder_api_base": (
@@ -627,7 +650,7 @@ _COMPAT_EXPORTS = {
         "AGENT_WS_MAX_MESSAGE_BYTES",
     ),
     "AgentServerHookEvents": (
-        "jiuwenswarm.common.hook_event",
+        "e2a.hooks",
         "AgentServerHookEvents",
     ),
     "get_rail_manager": (
@@ -639,7 +662,7 @@ _COMPAT_EXPORTS = {
         "persist_cli_trusted_directory",
     ),
     "AgentServerChatHookContext": (
-        "jiuwenswarm.common.hooks_context",
+        "e2a.hooks",
         "AgentServerChatHookContext",
     ),
     "AgentManager": ("jiuwenswarm.server.runtime.agent_manager", "AgentManager"),

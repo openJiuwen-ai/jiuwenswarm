@@ -106,6 +106,10 @@ export const OPENJIUWEN_ATTRIBUTES = {
   executionSubjectRequestNumber: OPENJIUWEN_SEMCONV.OJ_EXECUTION_SUBJECT_REQUEST_NUMBER,
   trajectoryKind: OPENJIUWEN_SEMCONV.OJ_TRAJECTORY_RECORD_KIND,
   requestPurpose: OPENJIUWEN_SEMCONV.OJ_REQUEST_PURPOSE,
+  goalId: OPENJIUWEN_SEMCONV.OJ_GOAL_ID,
+  goalAttemptNumber: OPENJIUWEN_SEMCONV.OJ_GOAL_ATTEMPT_NUMBER,
+  goalAssessmentId: OPENJIUWEN_SEMCONV.OJ_GOAL_ASSESSMENT_ID,
+  goalStrategy: OPENJIUWEN_SEMCONV.OJ_GOAL_STRATEGY,
   contextOperationId: OPENJIUWEN_SEMCONV.OJ_CONTEXT_OPERATION_ID,
   compactionNumber: OPENJIUWEN_SEMCONV.OJ_COMPACTION_NUMBER,
   requestNumber: OPENJIUWEN_SEMCONV.OJ_REQUEST_NUMBER,
@@ -158,4 +162,4 @@ export const STREAM_FRAME_KINDS = [
 ] as const
 
 /** Request purposes that select the trajectory request inspector. */
-export const REQUEST_PURPOSES = ['assistant', 'compaction'] as const
+export const REQUEST_PURPOSES = ['assistant', 'compaction', 'goal_assessment'] as const

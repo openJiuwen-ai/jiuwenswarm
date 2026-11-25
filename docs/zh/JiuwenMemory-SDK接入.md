@@ -58,7 +58,29 @@ SDK 模式会在进程内自动装配记忆内核。三个后端是记忆引擎�
 
 ---
 
+### 1.4 在 Web 会话中导入视频记忆
+
+启用内置 JiuwenMemory SDK（`memory.engine: builtin`、`memory.builtin.provider: jiuwen`、`memory.builtin.jiuwen.mode: sdk`），并打开智能体的记忆开关。使用包含 agent-memory 提交 `92e8624` 中 `config_dict` 视频自动装配能力的版本。
+
+Swarm 默认将 64 维本地 hashing embedder 传给内置 JiuwenMemory SDK，用于解析结果的文本向量化，无需单独配置 embedding 服务。部署侧可在 `memory.builtin.jiuwen.sdk.embedder.default` 配置其他 embedder，并在同一 SDK 配置的 `globals.embedder_dim` 中设置对应维度。
+
+1. 在 **设置 → 智能体 → 工具** 为部署尚未提供的能力填写并启用 **视频理解** 或 **音频处理**，保存模型、API 地址和 API Key。视频端点须兼容 OpenAI 视觉对话接口，音频端点须兼容 OpenAI 转写接口并返回分段时间戳。
+2. 在本地 Web 工作模式下选择 **完全访问权限**，点输入框旁的 **+**，选择本地视频，再发送「请记住这个视频」。Swarm 会把浏览器上传的文件保存到当前会话的上传目录，生成 `file:///` URI 供 `agent_memory_video_submit` 使用。工具返回的 `job_id` 可通过 `agent_memory_video_status` 查询。
+3. 也可继续手动提交 URI，文件需位于部署配置的导入目录，或在 **完全访问权限** 下位于自动授权的项目目录或会话工作区。
+
+请在首次使用记忆前配齐视频与音频模型。若部署侧已配置其中一组，网页只需配置另一组。配置为完全访问时，首次创建共享 Runtime 就会授权当前用户／租户的 `<agent目录>/sessions`，不必先上传视频；Work、Code、Team 谁先初始化均使用这份基础配置。后续新会话上传的视频可直接导入，不会额外创建 Runtime 或看门狗。
+
+授权绑定当前记忆身份，覆盖该 sessions 目录下各会话的合法视频文件，不限于当前会话；其他用户／租户的目录不因此获得授权。原有部署目录及符合条件的工作区授权保留，记忆的项目／团队过滤不变。Swarm 不额外复制视频，仍由 Memory 校验后复制到任务临时目录处理。
+
+共享 Runtime 沿用首次模型与授权配置。若首次初始化时配置不完整，或之后修改模型／权限，需要释放全部借用者后重建，或重启 Swarm。仅重建某个 Rail 不保证底层配置更新；默认内存任务记录在 Runtime 释放或进程重启后丢失。
+
 ## 2. 内置记忆与 JiuwenMemory 的区别
+
+Swarm 使用 JiuwenMemory 接入模式启动时不会预置 `MEMORY.md`。未选择项目的会话使用 `default` 作为记忆项目。使用本地 Markdown 存储时，第一次写入长期记忆会在配置的 Markdown 根目录下创建 `memory/default/MEMORY.md`。
+
+切换到 SDK 模式时，如果使用 Swarm 管理的 Markdown 根目录，Swarm 会在启动 SDK 前归档仍与内置模板一致的根级 `MEMORY.md`。已编辑的文件保留在原处。
+
+选中项目时，Swarm 用目录名和规范化绝对路径的哈希生成记忆项目坐标。本地长期记忆使用 `memory/<目录名>-<路径哈希>/MEMORY.md`。调用记忆工具时省略 `project` 参数即可使用当前会话的坐标。以前按目录名存放的记忆仍可通过显式指定旧坐标访问。
 
 JiuwenSwarm 默认用**内置记忆**（`memory.engine: builtin`），基于本地 Markdown 文件；切到 JiuwenMemory 则是远程结构化后端。两者最本质的差别不在"工具名"，而在**记忆如何被触发**：
 

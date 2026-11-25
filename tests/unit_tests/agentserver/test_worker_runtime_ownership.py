@@ -179,6 +179,9 @@ def shutdown_resources(monkeypatch):
         events.append("kernel.close")
 
     modules = {
+        "jiuwenswarm.server.runtime.agent_adapter.request_completion": SimpleNamespace(
+            drain_completion_announcements=AsyncMock(),
+        ),
         "jiuwenswarm.observability.gateway_hints": SimpleNamespace(
             trajectory_gateway_hint_bridge=SimpleNamespace(unbind=unbind),
         ),
@@ -217,7 +220,7 @@ async def test_shutdown_cancels_owned_tasks_before_server_and_joins_persistence(
         finally:
             resources.events.append(name + ".cancelled")
 
-    for name in ("image", "proactive", "teammate", "zen"):
+    for name in ("image", "teammate", "zen"):
         tasks[name] = asyncio.create_task(background(name))
     await asyncio.sleep(0)
 
@@ -227,7 +230,7 @@ async def test_shutdown_cancels_owned_tasks_before_server_and_joins_persistence(
 
     runtime = WorkerRuntime(
         server=SimpleNamespace(stop=stop_server), stop_event=asyncio.Event(),
-        image_task=tasks["image"], proactive_task=tasks["proactive"],
+        image_task=tasks["image"],
         teammate_task=tasks["teammate"], zen_task=tasks["zen"],
     )
     tasks["notification"] = runtime.spawn(background("notification"), name="notification-test")
@@ -340,6 +343,16 @@ async def test_service_keeps_same_constructed_owner_for_optional_tasks_and_faile
         if startup_fails:
             raise startup_error
 
+    async def wait_for_stop(stop_event):
+        await stop_event.wait()
+
+    install_extensions = AsyncMock()
+    monkeypatch.setitem(sys.modules, "jiuwenswarm.extensions_v2.assembly", SimpleNamespace(
+        install_extensions=install_extensions, shutdown_extensions=AsyncMock(),
+    ))
+    monkeypatch.setitem(sys.modules, "jiuwenswarm.agents.swarm.group_org_recovery", SimpleNamespace(
+        recovery_loop=wait_for_stop,
+    ))
     monkeypatch.setattr(lifecycle.runtime_backend, "preload_runtime_backend", lambda: None)
     monkeypatch.setattr(lifecycle.runtime_bootstrap, "construct_runtime_server", construct)
     monkeypatch.setattr(lifecycle.runtime_bootstrap, "bind_runtime_signals", lambda *_args: None)
@@ -365,6 +378,7 @@ async def test_service_keeps_same_constructed_owner_for_optional_tasks_and_faile
         owner = await service._runtime_for_shutdown(loader, loaded, timeout=1)
         assert owner is loaded["runtime"] is owners[0]
         assert owner.server is server
+        install_extensions.assert_awaited_once_with(server)
         assert not owner.image_task.done()
         dispatcher.bind_runtime.assert_awaited_once_with(server)
         server.start.assert_awaited_once_with(bind_transport=False)

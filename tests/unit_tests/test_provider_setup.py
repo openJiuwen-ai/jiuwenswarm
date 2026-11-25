@@ -86,10 +86,11 @@ def test_worker_cold_start_preload_registers_providers(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("workspace_ready", ["0", "1"])
-def test_worker_installs_providers_before_parallel_required_preparation(monkeypatch, workspace_ready) -> None:
+@pytest.mark.parametrize("early_sdk", [False, True])
+def test_worker_installs_providers_before_parallel_required_preparation(monkeypatch, workspace_ready, early_sdk) -> None:
     from jiuwenswarm.common import utils
     from jiuwenswarm.server.runtime import provider_setup
-    from jiuwenswarm.server.worker import runtime_backend
+    from jiuwenswarm.server.worker import early_import, runtime_backend
 
     events = []
     original_install = provider_setup.install_front
@@ -108,6 +109,8 @@ def test_worker_installs_providers_before_parallel_required_preparation(monkeypa
     monkeypatch.setattr(provider_setup, "install_front", install)
     monkeypatch.setattr(runtime_backend, "_prepare_worker_configuration", lambda: prepare("config"))
     monkeypatch.setattr(runtime_backend, "_preload_sdk_execution_modules", lambda: prepare("sdk"))
+    ticket = type("PreparedSDK", (), {"wait": staticmethod(lambda: prepare("sdk"))})()
+    monkeypatch.setattr(early_import, "current_import_ticket", lambda: ticket if early_sdk else None)
     monkeypatch.setattr(runtime_backend, "_configure_openjiuwen_logging", lambda: None)
     monkeypatch.setattr(runtime_backend, "_apply_runtime_entry_patches", lambda: None)
     runtime_backend.preload_runtime_backend()

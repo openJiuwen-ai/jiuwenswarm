@@ -1,0 +1,183 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { acceptsSessionEvent, GatewayClient, GatewayRequestError } from './gatewayClient';
+
+describe('acceptsSessionEvent', () => {
+  it('takes the events of the conversation, and of no conversation only the model list', () => {
+    const delta = (payload: Record<string, unknown>) => ({ event: 'chat.delta', payload });
+    expect(acceptsSessionEvent(delta({ session_id: 'current' }), 'current')).toBe(true);
+    expect(acceptsSessionEvent(delta({ session_id: 'other' }), 'current')).toBe(false);
+    expect(acceptsSessionEvent(delta({}), 'current')).toBe(false);
+    expect(acceptsSessionEvent({ event: 'models.updated', payload: {} }, 'current')).toBe(true);
+  });
+});
+
+class FakeWebSocket extends EventTarget {
+  static OPEN = 1;
+  static instances: FakeWebSocket[] = [];
+  readyState = 0;
+  readonly sent: Record<string, unknown>[] = [];
+  constructor(readonly url: string) {
+    super();
+    FakeWebSocket.instances.push(this);
+  }
+  send(data: string): void { this.sent.push(JSON.parse(data) as Record<string, unknown>); }
+  open(): void { this.readyState = 1; this.dispatchEvent(new Event('open')); }
+  close(): void { this.readyState = 3; this.dispatchEvent(new Event('close')); }
+  message(frame: unknown): void {
+    this.dispatchEvent(Object.assign(new Event('message'), { data: JSON.stringify(frame) }));
+  }
+}
+
+describe('GatewayClient', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('window', {
+      location: { protocol: 'https:', host: 'localhost:3001', search: '' },
+      localStorage: { getItem: () => 'office-test-owner' },
+      addEventListener: vi.fn(),
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('gives every host the same user without an installed one, so the hosts see each other\'s documents', async () => {
+    const stored = new Map<string, string>();
+    vi.stubGlobal('window', {
+      location: { protocol: 'http:', host: '127.0.0.1:5373', search: '?doc=a' },
+      localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => {
+        stored.set(key, value);
+      } },
+      addEventListener: vi.fn(),
+    });
+    const users = ['office_excel', 'office_powerpoint', 'office_word'].map(app => {
+      void new GatewayClient(app).connect();
+      return new URL(FakeWebSocket.instances.at(-1)!.url).searchParams.get('user_id');
+    });
+    expect(new Set(users).size).toBe(1);
+    expect(users[0]).toMatch(/^office-/);
+  });
+
+  async function connected(): Promise<{ client: GatewayClient; socket: FakeWebSocket }> {
+    const client = new GatewayClient('office_powerpoint');
+    const opening = client.connect();
+    const socket = FakeWebSocket.instances.at(-1)!;
+    socket.open();
+    await opening;
+    return { client, socket };
+  }
+
+  it('shares one opening connection and passes events on as they came', async () => {
+    const client = new GatewayClient('office_powerpoint');
+    const listener = vi.fn();
+    client.onEvent(listener);
+    const first = client.connect();
+    expect(client.connect()).toBe(first);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.instances[0].url)
+      .toBe('wss://localhost:3001/ws?app_id=office_powerpoint&user_id=office-test-owner');
+    FakeWebSocket.instances[0].open();
+    await first;
+    FakeWebSocket.instances[0].message({ type: 'event', event: 'chat.client_tool_request',
+      payload: { session_id: 'session-a', request_id: 'call-a' } });
+    expect(listener).toHaveBeenCalledWith({ event: 'chat.client_tool_request',
+      payload: { session_id: 'session-a', request_id: 'call-a' } });
+    client.disconnect();
+  });
+
+  it.each([
+    ['', 'office-test-owner'],
+    ['?u=office-installed&_host_Info=PowerPoint', 'office-installed'],
+  ])('connects as the user in the pane URL %j, else the stored one', (search, userId) => {
+    window.location.search = search;
+    void new GatewayClient('office_word').connect();
+    expect(FakeWebSocket.instances[0].url).toBe(`wss://localhost:3001/ws?app_id=office_word&user_id=${userId}`);
+  });
+
+  it('answers a request with its payload, and a refusal with the code of the frame', async () => {
+    const { client, socket } = await connected();
+    const renewed = client.request('client.renew', { attachment_id: 'att_1' });
+    await Promise.resolve();
+    const renewId = socket.sent[0].id;
+    expect(socket.sent[0])
+      .toEqual({ type: 'req', id: renewId, method: 'client.renew', params: { attachment_id: 'att_1' } });
+    socket.message({ type: 'res', id: renewId, ok: true, payload: { renew_every_seconds: 30 } });
+    await expect(renewed).resolves.toEqual({ renew_every_seconds: 30 });
+
+    const refused = client.request('client.renew');
+    await Promise.resolve();
+    // As the Gateway forwards an AgentServer refusal (gateway/channel_manager/web/web_connect.py).
+    socket.message({ type: 'res', id: socket.sent[1].id, ok: false, error: 'no such attachment: attach again',
+      code: 'NOT_ATTACHED', payload: { error: 'no such attachment: attach again', code: 'NOT_ATTACHED' } });
+    const error: unknown = await refused.catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(GatewayRequestError);
+    expect(error).toMatchObject({ code: 'NOT_ATTACHED', message: 'no such attachment: attach again' });
+    client.disconnect();
+  });
+
+  it('gives the requests of panes sharing one Office user, sent in the same instant, different ids', async () => {
+    const panes = [await connected(), await connected()];
+    const attaches = panes.map(({ client }) => client.request('client.attach'));
+    await Promise.resolve();
+    const [first, second] = panes.map(({ socket }) => socket.sent[0].id);
+    expect(first).not.toBe(second);
+    panes.forEach(({ socket }) => socket.message({ type: 'res', id: socket.sent[0].id, ok: true, payload: {} }));
+    await Promise.all(attaches);
+    panes.forEach(({ client }) => client.disconnect());
+  });
+
+  it('fails the requests of a dropped connection, reconnects, and stops for good on disconnect', async () => {
+    const { client, socket } = await connected();
+    const reconnected = vi.fn();
+    client.onReconnect(reconnected);
+    const request = client.request('client.list');
+    const rejected = expect(request).rejects.toMatchObject({ code: undefined, message: 'Gateway connection closed' });
+    await Promise.resolve();
+    socket.close();
+    await rejected;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    FakeWebSocket.instances[1].open();
+    await Promise.resolve();
+    expect(reconnected).toHaveBeenCalledOnce();
+    client.disconnect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it('tells when the connection is down, which attempt comes next and when, and when it is open again', async () => {
+    const { client, socket } = await connected();
+    const states = vi.fn();
+    client.onConnectionChange(states);
+    socket.close();
+    expect(states).toHaveBeenLastCalledWith({ kind: 'down', attempt: 1, retryAt: Date.now() + 1000 });
+    await vi.advanceTimersByTimeAsync(1000);
+    FakeWebSocket.instances[1].close();
+    await Promise.resolve();
+    expect(states).toHaveBeenLastCalledWith({ kind: 'down', attempt: 2, retryAt: Date.now() + 2000 });
+    await vi.advanceTimersByTimeAsync(2000);
+    FakeWebSocket.instances[2].open();
+    await Promise.resolve();
+    expect(states).toHaveBeenLastCalledWith({ kind: 'open' });
+    client.disconnect();
+  });
+
+  it('reports the recovery when the very first connection attempt failed', async () => {
+    const client = new GatewayClient('office_powerpoint');
+    const reconnected = vi.fn();
+    client.onReconnect(reconnected);
+    const opening = client.connect();
+    const rejected = expect(opening).rejects.toThrow(/connection closed/i);
+    FakeWebSocket.instances[0].close();
+    await rejected;
+    await vi.advanceTimersByTimeAsync(1000);
+    FakeWebSocket.instances[1].open();
+    await Promise.resolve();
+    expect(reconnected).toHaveBeenCalledOnce();
+    client.disconnect();
+  });
+});

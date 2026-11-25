@@ -16,7 +16,7 @@ from pathlib import Path
 import asyncio
 import shutil
 
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse
@@ -761,7 +761,8 @@ class McpManagement:
     ) -> None:
         """Handle ``mcp.list`` RPC: list marketplace MCPs (read-only).
 
-        filter: builtin(预置目录) | local(已连接预置 + 全部自定义)。兜底 builtin。
+        filter: builtin(单机广场) | hub(企业远端广场) | local(我的)。
+        单机省略时由 marketplace 默认 builtin；企业必须显式 hub|local。
         web 不转发此入口（网关本地已处理），保留只为语义对齐。
         """
         host = self.host
@@ -769,16 +770,14 @@ class McpManagement:
             from jiuwenswarm.server.runtime.mcp.marketplace import list_mcps_with_hub
 
             params = request.params or {}
-            filter_val = (
-                str(params.get("filter") or "builtin").strip().lower() or "builtin"
-            )
-            if filter_val not in ("builtin", "local"):
-                filter_val = "builtin"
+            filter_val = str(params.get("filter") or "").strip().lower() or None
             items = await list_mcps_with_hub(
                 filter_val,
                 cache_mode=params.get("cache_mode"),
                 refresh=params.get("refresh") is True,
                 query=str(params.get("query") or ""),
+                source_id=str(params.get("source_id") or "").strip() or None,
+                metadata=request.metadata if isinstance(request.metadata, dict) else None,
             )
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -818,7 +817,11 @@ class McpManagement:
             name = str(params.get("id") or params.get("name") or "").strip()
             if not name:
                 raise ValueError("mcp id or name is required")
-            item = await show_mcp_with_hub(name)
+            item = await show_mcp_with_hub(
+                name,
+                source_id=str(params.get("source_id") or "").strip() or None,
+                metadata=request.metadata if isinstance(request.metadata, dict) else None,
+            )
             if item is None:
                 raise KeyError(f"mcp '{name}' not found")
             from jiuwenswarm.common.mcp_config import fill_mcp_tools_fallback
@@ -877,8 +880,15 @@ class McpManagement:
             from jiuwenswarm.server.runtime.mcp.marketplace import install_hub_mcp
             from jiuwenswarm.server.runtime.mcp.registry import CliConnectError
 
-            asset_id = str((request.params or {}).get("id") or "").strip()
-            item = await install_hub_mcp(asset_id)
+            params = request.params or {}
+            asset_id = str(params.get("id") or "").strip()
+            item = await install_hub_mcp(
+                asset_id,
+                source_id=str(params.get("source_id") or "").strip() or None,
+                version_id=str(params.get("version_id") or "").strip() or None,
+                package_name=str(params.get("package_name") or "").strip() or None,
+                metadata=request.metadata if isinstance(request.metadata, dict) else None,
+            )
             name = str(item.get("name") or "").strip()
             try:
                 connect = await host._run_mcp_connect_flow(
@@ -1033,6 +1043,7 @@ class McpManagement:
     ) -> dict[str, Any]:
         """Run the shared connect flow and return a frontend payload."""
         host = self.host
+        from jiuwenswarm.common.mcp_config import discard_probed_mcp
         from jiuwenswarm.server.runtime.mcp.registry import (
             connect_mcp,
             was_connect_cancelled,
@@ -1046,10 +1057,16 @@ class McpManagement:
             return {"type": "auth_required", **host._mask_sensitive_fields(item)}
         if isinstance(item, dict) and item.get("credentials_required"):
             return {"type": "credentials_required", **item}
-        probe_ok, _probe_reason = await host._agent_manager.probe_mcp_live_connection(
-            name
-        )
+        # Confirm server-bearing MCPs are actually usable before connected.
+        probe_ok, probe_reason = await host._agent_manager.probe_mcp_live_connection(name)
+        # Cancel may land while the probe is in flight; cancel_connect already
+        # rolled the record back, so a late result must not override it.
+        if was_connect_cancelled(name):
+            logger.info("[mcp] connect '%s' cancelled during probe", name)
+            await discard_probed_mcp(name)
+            return {"type": "cancelled", "name": name}
         if not probe_ok:
+            logger.warning("[mcp] probe failed for '%s': %s", name, probe_reason)
             if rollback_on_probe_failure:
                 try:
                     from jiuwenswarm.server.runtime.mcp.registry import (
@@ -1796,6 +1813,7 @@ class McpManagement:
     ) -> dict[str, Any]:
         """Poll locally stored OAuth credentials until the loopback callback lands."""
         host = self.host
+        from jiuwenswarm.common.mcp_config import discard_probed_mcp
         from jiuwenswarm.server.runtime.mcp.oauth_flow import load_oauth_credentials
         from jiuwenswarm.server.runtime.mcp.registry import (
             complete_host_oauth_auth,
@@ -1809,8 +1827,17 @@ class McpManagement:
             credentials = await asyncio.to_thread(load_oauth_credentials, name)
             if credentials is not None:
                 item = await asyncio.to_thread(complete_host_oauth_auth, name)
-                probe_ok, _reason = await host._agent_manager.probe_mcp_live_connection(name)
+                probe_ok, probe_reason = await host._agent_manager.probe_mcp_live_connection(name)
+                # Cancel may land during auth completion or the probe;
+                # cancel_connect already rolled the record back.
+                if was_connect_cancelled(name):
+                    logger.info("[mcp] host OAuth '%s' cancelled during probe", name)
+                    await discard_probed_mcp(name)
+                    return {"type": "cancelled", "name": name}
                 if not probe_ok:
+                    logger.warning(
+                        "[mcp] host OAuth probe failed for '%s': %s", name, probe_reason,
+                    )
                     try:
                         from jiuwenswarm.server.runtime.mcp.registry import (
                             rollback_failed_connect,

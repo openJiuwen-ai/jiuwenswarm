@@ -7,6 +7,8 @@ import type { AutoReviewerMetadata } from './message';
 export type WebConnectionState = 'idle' | 'connecting' | 'ready' | 'reconnecting' | 'closed';
 
 export interface WsRequest {
+  /** Host-provided request bindings and context; never merged into business params. */
+  request_context?: Record<string, unknown>;
   type: 'req';
   id: string;
   method: string;
@@ -43,6 +45,8 @@ export interface WebRequestOptions {
   isStream?: boolean;
   /** Keep the existing request pending until the runtime confirms acceptance. */
   awaitRuntimeAccepted?: boolean;
+  /** Ignore the admission ACK for chat.user_answer and wait for its resolved result. */
+  awaitUserAnswerResult?: boolean;
   /** Called before sending, so supplemental receipts can be associated with this request. */
   onRequestId?: (requestId: string) => void;
 }
@@ -59,6 +63,8 @@ export interface WebError extends Error {
   code?: string;
   requestId?: string;
   retriable?: boolean;
+  /** The HTTP client could not map this method to a local REST route. */
+  httpRouteMissing?: true;
   /**
    * 失败响应的 payload 原样透传（此前 webClient.resolvePending 只取 message.error 拼成
    * Error，payload 整个丢弃）。专家与插件装备-前端接口_v2.md §1.6.3 的 install 两阶段流程
@@ -104,6 +110,15 @@ export type InterruptIntent = 'pause' | 'cancel' | 'supplement' | 'resume';
 /**
  * 中断结果 Payload
  */
+/** Team pause outcome for interrupt_result (C1 two-axis contract). */
+export type TeamPauseOutcome =
+  | 'parked'
+  | 'already_paused'
+  | 'already_idle'
+  | 'generation_mismatch'
+  | 'cancel_preempted'
+  | 'failed';
+
 export interface InterruptResultPayload {
   intent: InterruptIntent;
   success: boolean;
@@ -112,6 +127,12 @@ export interface InterruptResultPayload {
   merged_input?: string;
   paused_task?: string;
   has_active_task?: boolean; // 是否有活跃任务，false 表示任务已完成
+  /** Team pause: safe to clear processing / freeze board / markInterruptSettled. */
+  work_stopped?: boolean;
+  /** Team pause: enter resumable paused UI (setPaused). */
+  resumable?: boolean;
+  /** Team pause structured outcome; drives success compatibility. */
+  outcome?: TeamPauseOutcome | string;
 }
 
 /**

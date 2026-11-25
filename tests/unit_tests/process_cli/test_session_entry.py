@@ -288,7 +288,7 @@ main()
 
 
 def test_real_subprocess_query_is_fresh_read_only_and_channel_scoped(tmp_path):
-    sessions = tmp_path / "domain" / "agent" / "sessions"
+    sessions = tmp_path / "agent" / "sessions"
     for sid, channel, mode, stamp in [
         ("process_cli_old", "process_cli", "agent.code.normal", 10),
         ("process_cli_team", "process_cli", "team.work.normal", 20),

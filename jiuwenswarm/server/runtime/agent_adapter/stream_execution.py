@@ -67,7 +67,10 @@ class StreamExecutionPorts:
     complete_history_request: Callable
     session_message_owns_completion: Callable
     team_preflight_failure_chunks: Callable
+    check_user_input_guard: Callable
     await_history_receipt: Callable
+    reload_workspace_quota_policies_if_enabled: Callable
+    workspace_quota_exceeded_payload: Callable
 
 
 class StreamExecutionService:
@@ -178,6 +181,7 @@ class StreamExecutionService:
             facade._handle_skills_request,
             facade._handle_plugins_request,
             facade._handle_package_catalog_request,
+            facade._handle_assets_package_request,
         ):
             stateless_response = await stateless_handler(request)
             if stateless_response is not None:
@@ -236,22 +240,38 @@ class StreamExecutionService:
                     TEAM_EXECUTION_CONTEXT_METADATA_KEY,
                     None,
                 )
+            await ports.reload_workspace_quota_policies_if_enabled()
             if (
                 request.req_method != ReqMethod.COMMAND_GOAL
                 and ports.should_record_user_history(params_for_history)
             ):
-                await ports.run_history_io(
-                    ports.append_history_record,
-                    session_id=session_id,
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    role="user",
-                    content=ports.history_user_content(params_for_history, query),
-                    timestamp=time.time(),
-                    extra=ports.history_user_extra(params_for_history),
-                    channel_metadata=history_channel_metadata,
-                    mode=params_for_history.get("mode", "unknown"),
-                )
+                try:
+                    await ports.check_user_input_guard(adapter, request, query)
+                    await ports.run_history_io(
+                        ports.append_history_record,
+                        session_id=session_id,
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        role="user",
+                        content=ports.history_user_content(params_for_history, query),
+                        timestamp=time.time(),
+                        extra=ports.history_user_extra(params_for_history),
+                        channel_metadata=history_channel_metadata,
+                        mode=params_for_history.get("mode", "unknown"),
+                    )
+                except Exception as exc:
+                    from jiuwenswarm.enterprise.capabilities.workspace.quota import WorkspaceQuotaExceeded
+
+                    if isinstance(exc, WorkspaceQuotaExceeded):
+                        completion.status = "error"
+                        yield AgentResponseChunk(
+                            request_id=request.request_id,
+                            channel_id=request.channel_id,
+                            payload=ports.workspace_quota_exceeded_payload(stream=True),
+                            is_complete=True,
+                        )
+                        return
+                    raise
             logger.info(
                 "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
                 request.request_id,
@@ -264,7 +284,7 @@ class StreamExecutionService:
             cid = request.channel_id
 
             try:
-                inputs, memory_mode, user_turn = facade._build_inputs(request)
+                inputs, memory_mode, user_turn = await facade._build_inputs_async(request)
             except ports.team_plan_approval_payload_error as exc:
                 completion.status = "error"
                 yield AgentResponseChunk(

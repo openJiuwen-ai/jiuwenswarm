@@ -13,6 +13,7 @@ by ordinary chat or by a lookup for an unrelated method.
 from __future__ import annotations
 
 import asyncio
+import uuid
 import logging
 from pathlib import Path
 import re
@@ -39,6 +40,19 @@ from jiuwenswarm.server.runtime.agent_adapter.management_routes import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _revoke_template_memory(template: str) -> None:
+    from jiuwenswarm.agents.harness.common.memory.team_memory_members import revoke_expert_template_memory
+
+    try:
+        await revoke_expert_template_memory(template)
+    except Exception:
+        logger.exception("Could not revoke collective memory membership for expert template %s", template)
+
+
+
+
 
 
 class ManagementRequests:
@@ -126,6 +140,9 @@ class ManagementRequests:
 
     async def _handle_skills_request(self, request: AgentRequest) -> AgentResponse | None:
         """处理 Skills 相关请求，返回 None 表示不是 Skills 请求."""
+        host = self._host
+        host = self._host
+        host = self._host
         # skills.sync.diff/package/apply 已收缩出 WS 路由（经 WS 调用会绕过
         # HTTP 层 token 鉴权），但它们仍是合法 ReqMethod——若不在此显式
         # 拒绝，请求会沿 facade 链路落入聊天处理路径，空 query 触发一次
@@ -153,6 +170,10 @@ class ManagementRequests:
         handler = getattr(self._host._skill_manager, handler_name)
         try:
             params = dict(request.params) if isinstance(request.params, dict) else {}
+            # Identity lives on request.metadata (not business params). Source
+            # SPI builders read it via params["_request_metadata"].
+            if isinstance(request.metadata, dict):
+                params["_request_metadata"] = dict(request.metadata)
             if handler_name in _SKILL_SYNC_HANDLERS:
                 # 长生命周期实例先重载磁盘 state（外部流程可能已写
                 # local_skills / skill_configs），同步结果才与磁盘一致
@@ -235,22 +256,16 @@ class ManagementRequests:
             elif handler_name == "handle_skills_rebuild" and self._host._is_skills_rebuild_followup(
                 payload
             ):
-                # 与 /evolve_rebuild 同 prompt+Agent，但 RPC 内同步静默跑完，不经 Gateway chat.send
-                try:
-                    await self._host._run_skills_rebuild_followup(request, payload)
-                except SkillRpcError:
-                    raise
-                except Exception as exc:
-                    logger.exception(
-                        "[JiuWenSwarm] skills.rebuild 静默 Agent 失败: request_id=%s skill=%s",
-                        request.request_id,
-                        payload.get("skill_name"),
-                    )
-                    raise SkillRpcError(
-                        "SKILL_REBUILD_FAILED",
-                        f"rebuild Agent 失败: {exc}",
-                    ) from exc
-                payload = {"success": True}
+                # 准备（归档、清空 evolutions、拼 prompt）在这次请求里做完。
+                # 静默 Agent 没有稳定上限，不能继续占着 Gateway 的 600 秒非流式请求。
+                rebuild_id = host._schedule_skills_rebuild_followup(request, payload)
+                payload = {
+                    "success": True,
+                    "pending": True,
+                    "rebuild_id": rebuild_id,
+                    "name": payload.get("skill_name"),
+                    "status": "running",
+                }
             elif handler_name == "handle_skills_create_from_knowledge":
                 if self._host._is_skills_create_from_knowledge_followup(payload):
                     payload = await self._host._run_skills_create_from_knowledge_silent(
@@ -330,11 +345,14 @@ class ManagementRequests:
         request: AgentRequest,
         payload: dict[str, Any],
     ) -> None:
-        """同步静默执行 rebuild Agent follow-up，并按版本目标同步 workspace / 版本副本.
+        """静默执行 rebuild Agent follow-up，并按版本目标同步 workspace / 版本副本.
 
         不经外层 process_message_stream（避免写用户会话 history / 推 UI），
         直接走 adapter.process_message_stream_impl，并使用临时 session 隔离 checkpointer。
         """
+        host = self._host
+        host = self._host
+        host = self._host
         followup = str(payload.get("followup_prompt") or "").strip()
         if not followup:
             raise SkillRpcError("SKILL_REBUILD_FAILED", "evolve_rebuild follow-up prompt 为空")
@@ -386,8 +404,8 @@ class ManagementRequests:
                 timestamp=request.timestamp,
                 metadata=metadata,
             )
-            adapter = self._host._ensure_adapter(mode=self._host._adapter_mode_for_request(chat_request))
-            inputs, _, _ = self._host._build_inputs(chat_request)
+            adapter = host._ensure_adapter(mode=host._adapter_mode_for_request(chat_request))
+            inputs, _, _ = await host._build_inputs_async(chat_request)
             silent_token = SKILLS_REBUILD_SILENT.set(True)
             try:
                 async for _chunk in adapter.process_message_stream_impl(chat_request, inputs):
@@ -495,6 +513,9 @@ class ManagementRequests:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         """静默执行知识转 Skill：隔离临时目录生成 → 校验 → 安装到 workspace."""
+        host = self._host
+        host = self._host
+        host = self._host
         followup = str(payload.get("followup_prompt") or "").strip()
         output_dir = str(payload.get("output_dir") or "").strip()
         if not followup or not output_dir:
@@ -517,19 +538,19 @@ class ManagementRequests:
                 trusted_dirs=trusted_dirs,
                 input_file=input_file,
             )
-            adapter = self._host._ensure_adapter(mode=self._host._adapter_mode_for_request(chat_request))
-            inputs, _, _ = self._host._build_inputs(chat_request)
+            adapter = host._ensure_adapter(mode=host._adapter_mode_for_request(chat_request))
+            inputs, _, _ = await host._build_inputs_async(chat_request)
             async for _chunk in adapter.process_message_stream_impl(chat_request, inputs):
                 pass
 
             after_names = set(self._host._skill_manager.list_installed_skill_dir_names())
             skip_names = {
                 "_marketplace",
+                "workswarm-builtin",
                 "_pending_knowledge",
                 "skill-omni-creation",
                 "skill-creator",
                 "skill-creator-normal",
-                "skill-creator-router",
                 "swarmskill-creator",
                 "agent-creator",
                 "agent-group-creator",
@@ -586,8 +607,19 @@ class ManagementRequests:
             metadata=request.metadata,
         )
 
+    async def _prepare_live_plugin_replacement(self, package_id: str) -> Any:
+        """Detach idle selections through their execution owner before replacement."""
+        adapter = getattr(self._host, "_adapter", None)
+        prepare = getattr(adapter, "prepare_plugin_replacement", None)
+        if prepare is not None:
+            return await prepare(package_id)
+        return None
+
     async def _handle_package_catalog_request(self, request: AgentRequest) -> AgentResponse | None:
         """Route catalog / lifecycle ReqMethods to package_manager and wrap AgentResponse."""
+        host = self._host
+        host = self._host
+        host = self._host
         from jiuwenswarm.server.runtime import extension_package_manager as package_manager
 
         method = request.req_method
@@ -620,7 +652,10 @@ class ManagementRequests:
             elif method == ReqMethod.AGENT_GROUPS_IMPORT_LOCAL:
                 payload = package_manager.import_agent_group(params)
             elif method == ReqMethod.AGENT_GROUPS_INSTALL:
-                await package_manager.install_agent_group_with_hub(params)
+                await asyncio.wait_for(
+                    package_manager.install_agent_group_with_hub(params),
+                    timeout=220,
+                )
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
                 from jiuwenswarm.server.runtime.organization_packages import (
@@ -678,7 +713,10 @@ class ManagementRequests:
                     )
             elif method == ReqMethod.PLUGIN_PACKAGES_INSTALL:
                 ok, payload = await asyncio.wait_for(
-                    package_manager.install_equipment_from_hub_gated("plugin_packages", params),
+                    package_manager.install_equipment_from_hub_gated(
+                        "plugin_packages", params,
+                        before_replace=self._prepare_live_plugin_replacement,
+                    ),
                     timeout=120,
                 )
                 if not ok:
@@ -690,15 +728,14 @@ class ManagementRequests:
                         metadata=request.metadata,
                     )
             elif method == ReqMethod.AGENT_TEMPLATES_UNINSTALL:
-                unload_live = getattr(self._host, "_unload_live_equipment", None)
+                runtime_name = package_manager.resolve_equipment_runtime_id("agent_templates", name)
+                unload_live = getattr(host, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    runtime_name = package_manager.resolve_equipment_runtime_id(
-                        "agent_templates", name
-                    )
                     await unload_live("agent_templates", runtime_name)
                 payload = package_manager.uninstall_equipment_with_notice(
                     "agent_templates", params
                 )
+                await _revoke_template_memory(runtime_name)
             elif method == ReqMethod.PLUGIN_PACKAGES_UNINSTALL:
                 unload_live = getattr(self._host, "_unload_live_equipment", None)
                 if unload_live is not None:
@@ -724,14 +761,13 @@ class ManagementRequests:
                 getattr(package_manager, _PACKAGE_ROUTES[method])(params)
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_DELETE:
-                unload_live = getattr(self._host, "_unload_live_equipment", None)
+                runtime_name = package_manager.resolve_equipment_runtime_id("agent_templates", name)
+                unload_live = getattr(host, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    runtime_name = package_manager.resolve_equipment_runtime_id(
-                        "agent_templates", name
-                    )
                     await unload_live("agent_templates", runtime_name)
                 package_manager.delete_agent_template(params)
                 payload = {}
+                await _revoke_template_memory(runtime_name)
             elif method == ReqMethod.PLUGIN_PACKAGES_IMPORT_LOCAL:
                 payload = package_manager.import_plugin_package(params)
             else:
@@ -770,3 +806,162 @@ class ManagementRequests:
             payload=payload,
             metadata=request.metadata,
         )
+
+
+    async def _handle_assets_package_request(self, request: AgentRequest) -> AgentResponse | None:
+        """Handle unified asset transfer requests (assets.export / assets.import);
+        None means not one of them."""
+        host = self._host
+        if request.req_method not in (ReqMethod.ASSETS_EXPORT, ReqMethod.ASSETS_IMPORT):
+            return None
+        from jiuwenswarm.server.runtime.assets import service
+        from jiuwenswarm.server.runtime.assets.errors import converge_error_payload
+
+        params = dict(request.params) if isinstance(request.params, dict) else {}
+        try:
+            # 打包/解包为同步磁盘操作，移出事件循环；与 HTTP 北向
+            # （dispatch.HANDLERS → handlers/assets.py）共用同一编排层。
+            if request.req_method == ReqMethod.ASSETS_EXPORT:
+                payload = await asyncio.to_thread(
+                    service.export_asset,
+                    params,
+                    session_id=str(request.session_id or ""),
+                    user_id=str(request.user_id or ""),
+                )
+            else:
+                payload = await asyncio.to_thread(service.import_asset, params)
+        except Exception as exc:  # noqa: BLE001 入口统一收敛，异常不出栈
+            err_payload = converge_error_payload(exc)
+            log = logger.error if err_payload.get("code") == "INTERNAL_ERROR" else logger.warning
+            log(
+                "[JiuWenSwarm] assets request rejected: method=%s code=%s error=%s",
+                request.req_method, err_payload.get("code"), err_payload.get("error"),
+            )
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload=err_payload,
+                metadata=request.metadata,
+            )
+        # 不打 payload 内容：导出成功响应携带含下载 token 的 URL，不入日志。
+        logger.info("[JiuWenSwarm] %s ok", request.req_method)
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
+
+    def _schedule_skills_rebuild_followup(
+        self,
+        request: AgentRequest,
+        payload: dict[str, Any],
+    ) -> str:
+        """登记重建任务并在后台跑静默 Agent。调用方立刻拿到 rebuild_id。"""
+        host = self._host
+        from jiuwenswarm.server.runtime.skill.skill_manager import (
+            note_rebuild_live,
+            rebuild_heartbeat_now,
+            remember_rebuild_task,
+            write_rebuild_job,
+        )
+
+        target = payload.get("rebuild_target") if isinstance(payload.get("rebuild_target"), dict) else {}
+        raw_dir = str(target.get("skill_dir") or "").strip()
+        skill_dir = Path(raw_dir) if raw_dir else None
+        if skill_dir is not None and not skill_dir.is_dir():
+            skill_dir = None
+        rebuild_id = uuid.uuid4().hex
+        note_rebuild_live(rebuild_id, True)
+        write_rebuild_job(
+            skill_dir,
+            {
+                "rebuild_id": rebuild_id,
+                "status": "running",
+                "name": str(payload.get("skill_name") or ""),
+                "code": "",
+                "detail": "",
+                "heartbeat_at": rebuild_heartbeat_now(),
+            },
+        )
+        task = asyncio.create_task(
+            host._finish_skills_rebuild_job(rebuild_id, skill_dir, request, payload),
+            name=f"skills-rebuild-{rebuild_id[:8]}",
+        )
+        remember_rebuild_task(rebuild_id, task)
+        return rebuild_id
+
+
+    async def _finish_skills_rebuild_job(
+        self,
+        rebuild_id: str,
+        skill_dir: Path | None,
+        request: AgentRequest,
+        payload: dict[str, Any],
+    ) -> None:
+        """后台跑完静默改写后才把任务写成 done。失败只记在任务上，不再回写原 RPC。"""
+        host = self._host
+        from jiuwenswarm.server.runtime.skill.skill_manager import (
+            note_rebuild_live,
+            pop_rebuild_task,
+            pulse_rebuild_heartbeat,
+            write_rebuild_job,
+        )
+
+        job = {
+            "rebuild_id": rebuild_id,
+            "name": str(payload.get("skill_name") or ""),
+            "code": "",
+            "detail": "",
+        }
+        stop_heartbeat = asyncio.Event()
+        heartbeat = asyncio.create_task(
+            pulse_rebuild_heartbeat(rebuild_id, skill_dir, stop_heartbeat),
+            name=f"skills-rebuild-heartbeat-{rebuild_id[:8]}",
+        )
+        try:
+            await host._run_skills_rebuild_followup(request, payload)
+            write_rebuild_job(skill_dir, {**job, "status": "done", "success": True})
+        except SkillRpcError as exc:
+            write_rebuild_job(
+                skill_dir,
+                {
+                    **job,
+                    "status": "failed",
+                    "success": False,
+                    "code": exc.code,
+                    "detail": exc.message,
+                },
+            )
+        except Exception as exc:
+            logger.exception(
+                "[JiuWenSwarm] skills.rebuild 静默 Agent 失败: request_id=%s skill=%s",
+                request.request_id,
+                payload.get("skill_name"),
+            )
+            write_rebuild_job(
+                skill_dir,
+                {
+                    **job,
+                    "status": "failed",
+                    "success": False,
+                    "code": "SKILL_REBUILD_FAILED",
+                    "detail": f"rebuild Agent 失败: {exc}",
+                },
+            )
+        finally:
+            stop_heartbeat.set()
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+            note_rebuild_live(rebuild_id, False)
+            pop_rebuild_task(rebuild_id)
+
+
+
+

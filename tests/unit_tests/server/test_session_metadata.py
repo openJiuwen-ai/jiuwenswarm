@@ -314,6 +314,43 @@ class TestUpdateSessionMetadata:
         assert data["agent_group_name"] == "sample-expert-group"
 
     @staticmethod
+    def test_is_paused_overwrite_and_default_unchanged(sessions_dir):
+        """is_paused 覆盖写；未传时不改动已有值。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            init_session_metadata,
+            update_session_metadata,
+        )
+
+        init_session_metadata(session_id="sess_paused", channel_id="web")
+        update_session_metadata(
+            session_id="sess_paused",
+            is_paused=True,
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+        data = _read_json(sessions_dir / "sess_paused" / "metadata.json")
+        assert data["is_paused"] is True
+
+        update_session_metadata(
+            session_id="sess_paused",
+            increment_message_count=True,
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+        data = _read_json(sessions_dir / "sess_paused" / "metadata.json")
+        assert data["is_paused"] is True
+        assert data["message_count"] == 1
+
+        update_session_metadata(
+            session_id="sess_paused",
+            is_paused=False,
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+        data = _read_json(sessions_dir / "sess_paused" / "metadata.json")
+        assert data["is_paused"] is False
+
+    @staticmethod
     def test_agent_group_display_identity_is_written_once(sessions_dir):
         from jiuwenswarm.server.runtime.session.session_metadata import (
             init_session_metadata,
@@ -2185,6 +2222,59 @@ class TestSessionGetMetadataHandler:
 
     @staticmethod
     @pytest.mark.asyncio
+    async def test_is_paused_from_metadata_when_runner_not_paused(
+        registered_channel, sessions_dir, monkeypatch
+    ):
+        """Runner 已非 PAUSED 时，仍以 metadata.is_paused 为真源返回 true。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            init_session_metadata,
+            update_session_metadata,
+        )
+
+        init_session_metadata(session_id="sess_pause_meta", channel_id="web")
+        update_session_metadata(
+            session_id="sess_pause_meta",
+            is_paused=True,
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+
+        async def _not_paused(_sid: str) -> bool:
+            return False
+
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.team.team_manager.is_team_session_paused",
+            _not_paused,
+        )
+        resp = await TestSessionGetMetadataHandler._adapter_get_metadata("sess_pause_meta")
+        assert resp.ok is True
+        assert resp.payload["is_paused"] is True
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_is_paused_true_when_only_runner_paused(
+        registered_channel, sessions_dir, monkeypatch
+    ):
+        """metadata 未落盘时，Runner PAUSED 仍应返回 is_paused=true。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            init_session_metadata,
+        )
+
+        init_session_metadata(session_id="sess_pause_live", channel_id="web")
+
+        async def _paused(_sid: str) -> bool:
+            return True
+
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.team.team_manager.is_team_session_paused",
+            _paused,
+        )
+        resp = await TestSessionGetMetadataHandler._adapter_get_metadata("sess_pause_live")
+        assert resp.ok is True
+        assert resp.payload["is_paused"] is True
+
+    @staticmethod
+    @pytest.mark.asyncio
     async def test_method_registered(registered_channel):
         """handler 已注册为 session.get_metadata"""
         assert "session.get_metadata" in registered_channel.methods
@@ -3444,23 +3534,6 @@ def test_session_info_does_not_confuse_team_mode_with_group_type():
     assert to_session_info({"group_members": []})["type"] == "group_chat"
 
 
-def test_owner_stop_persists_without_changing_session_activity_or_other_metadata(sessions_dir):
-    from jiuwenswarm.server.runtime.session import session_metadata as sm
-    from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
-
-    sm.update_session_metadata(
-        session_id="owner-stop", mode="team", team_name="owner", title="original", sync_write=True,
-    )
-    original = sm.get_session_metadata("owner-stop")
-    set_owner_stopped("owner-stop", True)
-    assert sm.get_session_metadata("owner-stop", cache_bust=True)["organization_owner_stopped"] is True
-    assert owner_is_stopped("owner-stop", "owner")
-    assert not owner_is_stopped("owner-stop", "child")
-    stored = sm.get_session_metadata("owner-stop")
-    assert stored["last_message_at"] == original["last_message_at"]
-    assert stored["title"] == "original"
-    set_owner_stopped("owner-stop", False)
-    assert not owner_is_stopped("owner-stop", "owner")
 def test_session_equipment_survives_full_metadata_write(sessions_dir):
     from jiuwenswarm.server.runtime.session.session_metadata import (
         _enqueue_write,

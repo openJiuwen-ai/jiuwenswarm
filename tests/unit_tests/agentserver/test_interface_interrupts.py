@@ -9,18 +9,23 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+)
 
+from jiuwenswarm.agents.harness.team.team_manager import PauseSessionResult
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface import (
     _is_ask_user_answer_resume,
     _should_record_user_history,
 )
-from jiuwenswarm.common.e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
-)
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.session.model import (
+    TEAM_PAUSE_FENCE_GENERATION_PARAM,
+    TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM,
+)
 
 test_logger = logging.getLogger("tests.interface_interrupts")
 
@@ -39,13 +44,32 @@ class _FakeTeamManager:
         self.pause_result = pause_result
         self.cancel_result = cancel_result
         self.pause_calls: list[tuple[str, str]] = []
+        self.pause_fences: list[tuple[int | None, frozenset[str] | None]] = []
         self.cancel_calls: list[tuple[str, str]] = []
         self.cancel_dispositions: list[str | None] = []
         self.broadcast_events: list[dict] = []
 
-    async def pause_session_runtime(self, session_id: str, reason: str = "") -> bool:
+    async def pause_session_runtime(
+        self,
+        session_id: str,
+        reason: str = "",
+        *,
+        generation: int | None = None,
+        expected_request_ids: frozenset[str] | None = None,
+    ) -> PauseSessionResult:
         self.pause_calls.append((session_id, reason))
-        return self.pause_result
+        self.pause_fences.append((generation, expected_request_ids))
+        if self.pause_result:
+            return PauseSessionResult(
+                work_stopped=True,
+                resumable=True,
+                outcome="parked",
+            )
+        return PauseSessionResult(
+            work_stopped=False,
+            resumable=False,
+            outcome="failed",
+        )
 
     async def cancel_session_runtime(
         self,
@@ -173,19 +197,31 @@ async def test_team_interrupt_pause_like_intents_use_team_manager(
 
     response = await claw.process_interrupt_for_test(_build_team_interrupt_request(intent))
 
-    assert response.payload == {
-        "event_type": "chat.interrupt_result",
-        "intent": intent,
-        "success": True,
-        "message": expected_message,
-    }
-    assert cancelled == [("team-session-1", f"interrupt(intent={intent}): ", 5.0)]
     if intent == "pause":
+        assert response.payload == {
+            "event_type": "chat.interrupt_result",
+            "intent": intent,
+            "success": True,
+            "message": expected_message,
+            "work_stopped": True,
+            "resumable": True,
+            "outcome": "parked",
+            "has_active_task": True,
+        }
         assert fake_manager.pause_calls == [("team-session-1", f"interrupt(intent={intent}): ")]
+        # No Runtime fence injection on this legacy path: unfenced pause.
+        assert fake_manager.pause_fences == [(None, None)]
         assert fake_manager.cancel_calls == []
     else:
+        assert response.payload == {
+            "event_type": "chat.interrupt_result",
+            "intent": intent,
+            "success": True,
+            "message": expected_message,
+        }
         assert fake_manager.cancel_calls == [("team-session-1", f"interrupt(intent={intent}): ")]
         assert fake_manager.pause_calls == []
+    assert cancelled == [("team-session-1", f"interrupt(intent={intent}): ", 5.0)]
 
 
 @pytest.mark.asyncio
@@ -273,6 +309,82 @@ async def test_team_pause_failure_does_not_broadcast_terminal(
 
 
 @pytest.mark.asyncio
+async def test_team_pause_fence_refusal_skips_session_task_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fence-refused pause must not cancel the session's newer-round tasks.
+
+    The fence exists precisely because a round admitted after the snapshot
+    may already own the session; a session-keyed task cancel would kill its
+    work, so the refusal path leaves cleanup to the newer round.
+    """
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(pause_result=False)
+    cancelled: list[tuple[str, str, float | None]] = []
+
+    async def _fake_cancel_session_task(
+        session_id: str,
+        reason: str = "",
+        wait_timeout: float | None = None,
+    ) -> None:
+        cancelled.append((session_id, reason, wait_timeout))
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(claw.session_manager_for_test, "cancel_session_task", _fake_cancel_session_task)
+
+    request = _build_team_interrupt_request("pause")
+    request.params[TEAM_PAUSE_FENCE_GENERATION_PARAM] = 2
+    request.params[TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM] = ["req-round-16"]
+
+    response = await claw.process_interrupt_for_test(request)
+
+    assert response.payload["success"] is False
+    assert fake_manager.pause_fences == [(2, frozenset({"req-round-16"}))]
+    assert cancelled == []
+
+
+@pytest.mark.asyncio
+async def test_team_pause_empty_fence_keeps_round_check_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty fence list still arms the round check with an empty set.
+
+    Empty means nothing was live when the Runtime snapshotted, so any active
+    round is newer and must be refused — the fence must not degrade to an
+    unfenced pause that skips the check entirely.
+    """
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(pause_result=False)
+    cancelled: list[tuple[str, str, float | None]] = []
+
+    async def _fake_cancel_session_task(
+        session_id: str,
+        reason: str = "",
+        wait_timeout: float | None = None,
+    ) -> None:
+        cancelled.append((session_id, reason, wait_timeout))
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(claw.session_manager_for_test, "cancel_session_task", _fake_cancel_session_task)
+
+    request = _build_team_interrupt_request("pause")
+    request.params[TEAM_PAUSE_FENCE_GENERATION_PARAM] = 7
+    request.params[TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM] = []
+
+    response = await claw.process_interrupt_for_test(request)
+
+    assert response.payload["success"] is False
+    assert fake_manager.pause_fences == [(7, frozenset())]
+    assert cancelled == []
+
+
+@pytest.mark.asyncio
 async def test_team_cancel_does_not_broadcast_pause_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -329,6 +441,10 @@ async def test_code_team_interrupt_uses_team_manager_without_team_flag(
         "intent": "pause",
         "success": True,
         "message": "团队已暂停",
+        "work_stopped": True,
+        "resumable": True,
+        "outcome": "parked",
+        "has_active_task": True,
     }
     assert cancelled == [("team-session-1", "interrupt(intent=pause): ", 5.0)]
     assert fake_manager.pause_calls == [("team-session-1", "interrupt(intent=pause): ")]
@@ -587,11 +703,11 @@ async def test_deliver_control_input_binds_expert_packages_for_resume(
     """企业版续聊不走 process_message，仍要看到当次请求带上的专家包名单。"""
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setattr(
-        "jiuwenswarm.enterprise.capabilities.experts.allowlist._is_user_owned",
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages._is_user_owned",
         lambda kind, package_id: False,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.enterprise.capabilities.experts.allowlist._candidate_ids",
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages._candidate_ids",
         lambda kind, package_id: {package_id},
     )
     claw = _InterruptHarness()
@@ -599,7 +715,7 @@ async def test_deliver_control_input_binds_expert_packages_for_resume(
     seen: list[bool] = []
 
     async def _fake_stream_impl(_self, _request, _inputs):
-        from jiuwenswarm.enterprise.capabilities.experts.allowlist import allows
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import allows
 
         seen.append(allows("agent_template", "granted-expert"))
         yield AgentResponseChunk(

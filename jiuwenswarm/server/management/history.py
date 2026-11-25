@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
+
 import logging
 from typing import Any
 import datetime as _dt
@@ -16,8 +18,8 @@ import math
 
 from agent_gateway.common.mode_matrix import is_team_mode
 
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from e2a.wire_codec import encode_agent_chunk_for_wire
+from e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.server.runtime.session.session_history import list_session_subagent_ids
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -118,11 +120,20 @@ class HistoryManagement:
         session_id = params.get("session_id")
         page_idx = params.get("page_idx")
         subagent_id = params.get("subagent_id")
-        data = host.get_conversation_history(
-            session_id=session_id,
-            page_idx=page_idx,
-            subagent_id=subagent_id if isinstance(subagent_id, str) else None,
-        )
+        try:
+            data = await asyncio.to_thread(
+                host.get_conversation_history, session_id=session_id, page_idx=page_idx,
+                subagent_id=subagent_id if isinstance(subagent_id, str) else None,
+            )
+        except HistoryReplayError as exc:
+            resp = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id, ok=False,
+                payload={"error": str(exc), "code": exc.code},
+            )
+            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+            return
         if data is None:
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -184,8 +195,10 @@ class HistoryManagement:
         if timestamp <= 0:
             timestamp = _dt.datetime.now().timestamp()
         try:
-            await run_history_io(
-                append_history_record,
+            from jiuwenswarm.server.runtime.session.history_events import try_append_platform_history
+            from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError
+
+            record_kwargs = dict(
                 session_id=session_id,
                 request_id=request_id,
                 channel_id=channel_id,
@@ -197,6 +210,20 @@ class HistoryManagement:
                 extra={"cron_failure_record": True, "error": str(content)}
                 if params.get("cron_failure_record") is True else None,
             )
+            handled, append_result = await try_append_platform_history(
+                record_kwargs, source="history.append_record",
+                idempotency_key=f"history.append_record:{request_id}:{role}",
+            )
+            if handled:
+                if append_result is None:
+                    raise SessionHistoryError("INVALID_MESSAGE")
+                if append_result.status == "rejected":
+                    raise SessionHistoryError("APPEND_REJECTED")
+            else:
+                await run_history_io(append_history_record, wait_for_write=True, **record_kwargs)
+            # Cron 失败补写可能落到尚未有标题的会话（会话分配失败的 run 写
+            # 占位会话）。assistant 记录不触发 auto_title，这里按调用方传入
+            # 的 title 回填空标题；已有标题（正常 run 的 auto_title）不覆盖。
             title = str(params.get("title") or "").strip()
             if title:
                 try:
@@ -372,11 +399,13 @@ class HistoryManagement:
                     page_idx=page_idx,
                     subagent_id=subagent_id if isinstance(subagent_id, str) else None,
                 )
-        except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
+        except (InvalidHistoryCursor, HistorySnapshotChanged, HistoryReplayError) as exc:
             error_code = (
-                "HISTORY_SNAPSHOT_CHANGED"
-                if isinstance(exc, HistorySnapshotChanged)
-                else "INVALID_HISTORY_CURSOR"
+                exc.code if isinstance(exc, HistoryReplayError) else (
+                    "HISTORY_SNAPSHOT_CHANGED"
+                    if isinstance(exc, HistorySnapshotChanged)
+                    else "INVALID_HISTORY_CURSOR"
+                )
             )
             error_chunk = AgentResponseChunk(
                 request_id=request.request_id,
@@ -562,67 +591,14 @@ class HistoryManagement:
 
     @staticmethod
     def get_conversation_history(
-        session_id: str, page_idx: int, *, subagent_id: str | None = None
+        session_id: str,
+        page_idx: int,
+        *,
+        subagent_id: str | None = None,
     ) -> dict[str, Any] | None:
-        if not isinstance(session_id, str) or not session_id.strip():
-            return None
-        if not isinstance(page_idx, int) or page_idx <= 0:
-            return None
-        normalized_session_id = session_id.strip()
-        normalized_subagent_id = (
-            subagent_id.strip()
-            if isinstance(subagent_id, str) and subagent_id.strip()
-            else None
-        )
-        if normalized_subagent_id:
-            if not history_exists(
-                normalized_session_id, subagent_id=normalized_subagent_id
-            ):
-                return {
-                    "messages": [],
-                    "total_pages": 1,
-                    "page_idx": page_idx,
-                    "subagent_id": normalized_subagent_id,
-                }
-        elif not history_exists(normalized_session_id):
-            return None
-        try:
-            raw = load_history_records(
-                normalized_session_id, subagent_id=normalized_subagent_id
-            )
-        except Exception:
-            return None
-        if not isinstance(raw, list):
-            return None
-        page_size = _HISTORY_PAGE_SIZE
-        restorable = [item for item in raw if _is_restorable_history_record(item)]
-        total = len(restorable)
-        total_pages = max(1, math.ceil(total / page_size))
-        if page_idx > total_pages:
-            return None
-        ordered = list(reversed(restorable))
-        start = (page_idx - 1) * page_size
-        end = start + page_size
-        page_messages = list(ordered[start:end])
-        logger.debug(
-            '[history.get] session_id=%s subagent_id=%s page_idx=%s raw_total=%s restorable_total=%s '
-            'total_pages=%s returned=%s',
-            normalized_session_id,
-            normalized_subagent_id or "",
-            page_idx,
-            len(raw),
-            total,
-            total_pages,
-            len(page_messages),
-        )
-        result = {
-            "messages": page_messages,
-            "total_pages": total_pages,
-            "page_idx": page_idx,
-        }
-        if normalized_subagent_id:
-            result["subagent_id"] = normalized_subagent_id
-        return result
+        from jiuwenswarm.server.control.history_service import load_history_page
+
+        return load_history_page(session_id, page_idx, subagent_id=subagent_id)
 
     @staticmethod
     def get_conversation_history_cursor(

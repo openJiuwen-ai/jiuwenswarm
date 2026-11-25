@@ -225,8 +225,11 @@ def test_goal_delivery_is_runtime_control_work(
 @pytest.mark.parametrize(
     ("mode", "expected_work_kind"),
     [
-        ("agent.work.plan", None),
+        ("agent.work.plan", SessionWorkKind.CHAT_UNARY),
+        ("agent.code.plan", SessionWorkKind.CHAT_UNARY),
         ("team.work.normal", SessionWorkKind.TEAM_REQUEST),
+        ("team.work.plan", SessionWorkKind.TEAM_REQUEST),
+        ("team.code.plan", SessionWorkKind.TEAM_REQUEST),
     ],
 )
 async def test_runtime_only_tracks_adapted_execution_modes(
@@ -382,9 +385,15 @@ async def test_single_agent_runtime_owns_every_user_channel(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "runtime_owned"),
-    [("agent.work.plan", False), ("team.work.normal", True)],
+    [
+        ("agent.work.plan", True),
+        ("agent.code.plan", True),
+        ("team.work.normal", True),
+        ("team.work.plan", True),
+        ("team.code.plan", True),
+    ],
 )
-async def test_team_work_moves_to_runtime_while_plan_keeps_existing_owner(
+async def test_single_agent_and_team_plan_use_runtime_ownership(
     mode: str,
     runtime_owned: bool,
 ) -> None:

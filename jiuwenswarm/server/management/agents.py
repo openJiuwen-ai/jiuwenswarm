@@ -12,7 +12,7 @@ import logging
 from typing import Any
 import asyncio
 
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse
@@ -659,25 +659,6 @@ class AgentsManagement:
                     logger.warning(
                         "[AgentWebSocketServer] failed to stop paused team runtimes after agent.reload_config: %s",
                         exc,
-                    )
-            should_reload_proactive = not reload_scopes or bool(
-                reload_scopes & {"model", "proactive", "agent_runtime"}
-            )
-            if host._proactive_engine is not None and should_reload_proactive:
-                cfg = get_config()
-                proactive_cfg = cfg.get("proactive_recommendation", {})
-                host._proactive_engine.reload_config(proactive_cfg)
-                try:
-                    from jiuwenswarm.server.runtime.proactive_adapter import (
-                        build_proactive_agent,
-                    )
-    
-                    host._proactive_engine.rebuild_proactive_agent(
-                        build_proactive_agent
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[AgentWebSocketServer] proactive agent rebuild failed: %s", exc
                     )
             prewarmer = getattr(host, "_profile_prewarmer", None)
             if prewarmer is not None:

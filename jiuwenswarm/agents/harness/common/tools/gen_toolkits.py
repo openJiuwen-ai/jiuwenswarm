@@ -15,12 +15,14 @@ backend name returned by ``detect_backend``:
 - ``submit_video(backend, ...)``    (submit, then poll for a while)
 - ``check_video(backend, ...)``     (poll a submitted job, download when ready)
 
-MiniMax (https://platform.minimax.io/docs/api-reference/image-generation-t2i and
-.../video-generation-v2-create):
+MiniMax (https://platform.minimax.cn/docs/api-reference/image-generation-h3-generations,
+.../image-generation-h3-edits, and .../video-generation-v2-create):
 
-- image-01: ``POST {root}/v1/image_generation`` returning ``data.image_base64``
-  plus a ``base_resp`` status.
-- MiniMax-H3: ``POST {root}/v2/video_generation`` with a ``content`` array
+- MiniMax-H3-Image: ``POST {root}/v1/images/generations`` (text-to-image) or
+  ``POST {root}/v1/images/edits`` (1-16 reference images), returning
+  ``data[].b64_json`` / ``data[].url``. image-01 is retired; there is no
+  forward-compatible payload for it.
+- MiniMax-H3 video: ``POST {root}/v2/video_generation`` with a ``content`` array
   (returns a ``task_id``), then ``GET {root}/v2/query/video_generation/{id}``
   until ``task.status`` is ``succeeded`` (``task.content.url``) or ``failed``.
 - The configured "API URL" is the OpenAI-style base (``https://api.minimax.io/v1``
@@ -62,8 +64,18 @@ vLLM-Omni (self-deployed, see vllm_omni_gen): ``POST {base}/videos`` then
 ``/images/generations`` or ``/images/edits``. The API key and model name are
 optional (the served model is discovered via ``GET {base}/models``).
 
+OpenRouter (``OPENROUTER``, never returned by ``detect_backend``: the chat tools keep
+their own OpenRouter path, and Design opts in via ``media_generation``):
+
+- Images: ``POST {base}/chat/completions`` with ``modalities: ["image", "text"]``, the
+  reference stills as ``image_url`` parts ahead of the text, and
+  ``image_config.aspect_ratio``; images come back in ``message.images[].image_url.url``.
+- Video: ``POST {base}/videos`` with ``frame_images`` (first frame) and
+  ``input_references`` (reference stills), then ``GET {base}/videos/{id}`` until
+  ``status`` is ``completed`` and ``GET {base}/videos/{id}/content`` (bearer auth).
+
 Video references (``VideoRequest.reference_image_uris``, reference mode) are
-supported by every backend here; the OpenRouter path has first-frame only.
+supported by every backend here; the chat tool's own OpenRouter path has first-frame only.
 
 Return strings follow the same conventions as the OpenRouter path
 ("[ERROR]: ...", "Saved to: ...", "Video job {id} submitted and still ...")
@@ -77,6 +89,7 @@ import logging
 import os
 import re
 import secrets
+import ssl
 import threading
 import time
 from dataclasses import dataclass
@@ -89,6 +102,7 @@ import requests
 from agent_gateway.common.volcengine_endpoints import normalize_ark_api_base
 from jiuwenswarm.agents.harness.common.tools import vllm_omni_gen
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
+from jiuwenswarm.common.minimax_video_models import minimax_h3_variant
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
 
@@ -99,6 +113,8 @@ MODELARK = "modelark"
 DASHSCOPE = "dashscope"
 VLLM_OMNI = "vllm-omni"
 NATIVE_BACKENDS = (MINIMAX, MODELARK, DASHSCOPE, VLLM_OMNI)
+# OpenRouter-style API (any non-native endpoint); Design drives it through this module.
+OPENROUTER = "openrouter"
 # Backends that also serve self-deployed endpoints: no API key or model name required.
 KEYLESS_BACKENDS = (VLLM_OMNI,)
 
@@ -110,11 +126,12 @@ _TRANSIENT_HTTP_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.Remo
 _TRANSIENT_REQUESTS_ERRORS = (requests.ConnectionError, requests.Timeout)
 
 _MINIMAX_IMAGE_ASPECT_RATIOS = {"1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"}
-_MINIMAX_IMAGE_MIN_SIDE = 512
-_MINIMAX_IMAGE_MAX_SIDE = 2048
+_MINIMAX_H3_IMAGE_MIN_PIXELS = 655_360
+_MINIMAX_H3_IMAGE_MAX_PIXELS = 20_000_000
+_MINIMAX_H3_IMAGE_AREAS = ("1K", "2K", "4K")
+_MINIMAX_H3_IMAGE_TIMEOUT = 600
 _MINIMAX_VIDEO_RATIOS = {"16:9", "21:9", "4:3", "1:1", "3:4", "9:16"}
 _MINIMAX_MAX_POLL_SECONDS = 120
-_MINIMAX_IMAGE_PROMPT_LIMIT = 1500
 _MINIMAX_VIDEO_PROMPT_LIMIT = 7000
 _MINIMAX_HOST = re.compile(r"(^|\.)minimax(i)?\.(io|com)$", re.IGNORECASE)
 
@@ -157,6 +174,19 @@ _IMAGE_SIZES = {
 _DASHSCOPE_SDK_LOCK = threading.Lock()
 
 _VLLM_OMNI_MAX_POLL_SECONDS = 300
+
+_OPENROUTER_MAX_POLL_SECONDS = 300
+_OPENROUTER_FAILED_STATUSES = ("failed", "cancelled", "expired")
+# A POST that fails while connecting or sending (incl. a TLS record error such as
+# SSLV3_ALERT_BAD_RECORD_MAC, which anyio raises as a bare ssl.SSLError) never reached
+# the provider as a request, so no job was created and it is safe to send again.
+_OPENROUTER_SEND_ERRORS = (httpx.ConnectError, httpx.WriteError, httpx.ConnectTimeout, ssl.SSLError)
+_OPENROUTER_POST_ATTEMPTS = 3
+# e.g. "The request failed because the output audio may be related to copyright restrictions."
+_OPENROUTER_AUDIO_REJECTION = re.compile(r"output audio|audio\b.*\bcopyright|copyright\b.*\baudio", re.IGNORECASE)
+_OPENROUTER_RETRY_DELAY_SECONDS = 2
+# Ratios Gemini image models accept in image_config.aspect_ratio.
+_OPENROUTER_IMAGE_RATIOS = ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
 
 # Account-side failures: nothing the agent can change by retrying, switching
 # models or searching config files for another key - it should tell the user.
@@ -234,16 +264,15 @@ def _host_of(api_base: str) -> str:
     return re.sub(r"^https?://", "", api_base.strip(), flags=re.IGNORECASE).split("/", 1)[0].split(":", 1)[0]
 
 
-def detect_backend(protocol_env: str, api_base: str) -> str | None:
-    """Return the vendor-native backend for the configured slot, or None.
+def backend_from_protocol(protocol: str, api_base: str) -> str | None:
+    """Return the vendor-native backend for a saved protocol and API URL, or None.
 
-    None means the OpenRouter-style path. The backend is named by the saved 协议
-    (read from ``protocol_env``), or implied by the API URL being one of the
-    vendor's hosts.
+    None means the OpenRouter-style path. A known protocol wins; otherwise the
+    API host can still identify MiniMax, ModelArk or DashScope.
     """
-    protocol = os.environ.get(protocol_env, "").strip().lower()
-    if protocol in NATIVE_BACKENDS:
-        return protocol
+    saved = (protocol or "").strip().lower()
+    if saved in NATIVE_BACKENDS:
+        return saved
     host = _host_of(api_base)
     if _MINIMAX_HOST.search(host):
         return MINIMAX
@@ -252,6 +281,16 @@ def detect_backend(protocol_env: str, api_base: str) -> str | None:
     if _DASHSCOPE_HOST.match(host):
         return DASHSCOPE
     return None
+
+
+def detect_backend(protocol_env: str, api_base: str) -> str | None:
+    """Return the vendor-native backend for the configured slot, or None.
+
+    None means the OpenRouter-style path. The backend is named by the saved 协议
+    (read from ``protocol_env``), or implied by the API URL being one of the
+    vendor's hosts.
+    """
+    return backend_from_protocol(os.environ.get(protocol_env, ""), api_base)
 
 
 async def generate_image(
@@ -263,9 +302,6 @@ async def generate_image(
 ) -> str:
     opts = options or ImageOptions()
     if target.backend == MINIMAX:
-        if opts.reference_image_uris:
-            logger.warning("[generate_visual] MiniMax image-01 ignores %d reference image(s)",
-                           len(opts.reference_image_uris))
         return await _minimax_generate_image(target, prompt, aspect_ratio, save_dir, opts)
     if target.backend == MODELARK:
         return await _modelark_generate_image(target, prompt, aspect_ratio, save_dir, opts)
@@ -273,6 +309,8 @@ async def generate_image(
         return await _dashscope_generate_image(target, prompt, aspect_ratio, save_dir, opts)
     if target.backend == VLLM_OMNI:
         return await _vllm_omni_generate_image(target, prompt, aspect_ratio, save_dir, opts)
+    if target.backend == OPENROUTER:
+        return await _openrouter_generate_image(target, prompt, aspect_ratio, save_dir, opts)
     return f"[ERROR]: unknown generation backend: {target.backend!r}"
 
 
@@ -287,6 +325,8 @@ async def submit_video(target: GenerationTarget, request: VideoRequest, save_dir
         return await _dashscope_submit_video(target, request, save_dir)
     if target.backend == VLLM_OMNI:
         return await _vllm_omni_submit_video(target, request, save_dir)
+    if target.backend == OPENROUTER:
+        return await _openrouter_submit_video(target, request, save_dir)
     return f"[ERROR]: unknown generation backend: {target.backend!r}"
 
 
@@ -299,6 +339,8 @@ async def check_video(target: GenerationTarget, task_id: str, save_dir: str | No
         return await _dashscope_check_video(target, task_id, save_dir)
     if target.backend == VLLM_OMNI:
         return await _vllm_omni_check_video(target, task_id, save_dir)
+    if target.backend == OPENROUTER:
+        return await _openrouter_check_video(target, task_id, save_dir)
     return f"[ERROR]: unknown generation backend: {target.backend!r}"
 
 
@@ -463,33 +505,142 @@ def _minimax_base_error(payload: Any) -> str | None:
     return None
 
 
+def _minimax_image_aspect_ratio(aspect_ratio: str) -> str:
+    return aspect_ratio if aspect_ratio in _MINIMAX_IMAGE_ASPECT_RATIOS else "1:1"
+
+
+def _minimax_h3_image_area_tier(size: str | None) -> str:
+    token = str(size or "").strip().upper()
+    if token in _MINIMAX_H3_IMAGE_AREAS:
+        return token
+    parsed = parse_size(size)
+    if parsed is None:
+        return "1K"
+    pixels = parsed[0] * parsed[1]
+    # Map the requested pixel area onto the closest official H3-Image area tier.
+    targets = {"1K": 1024 * 1024, "2K": 2048 * 2048, "4K": 4096 * 4096}
+    tier, _ = min(targets.items(), key=lambda item: abs(item[1] - pixels))
+    return tier
+
+
+def _minimax_h3_image_size_fields(options: ImageOptions, aspect_ratio: str) -> dict[str, str]:
+    """H3-Image size payload: explicit ``宽x高``, or ``auto`` + aspect_ratio + area."""
+    aspect = _minimax_image_aspect_ratio(aspect_ratio)
+    parsed = parse_size(options.size)
+    if parsed:
+        width, height = parsed
+        pixels = width * height
+        ratio = width / height
+        if (
+            _MINIMAX_H3_IMAGE_MIN_PIXELS <= pixels <= _MINIMAX_H3_IMAGE_MAX_PIXELS
+            and 1 / 3 <= ratio <= 3
+        ):
+            return {"size": f"{width}x{height}"}
+    return {"size": "auto", "aspect_ratio": aspect, "area": _minimax_h3_image_area_tier(options.size)}
+
+
+def _minimax_image_url(value: str) -> str | None:
+    """A public URL, data URI, or a local file encoded as a data URI."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.startswith(("http://", "https://", "data:", "mm_file://")):
+        return raw
+    path = Path(raw)
+    if not path.is_file():
+        return None
+    suffix = path.suffix.lower().lstrip(".")
+    if suffix == "jpg":
+        suffix = "jpeg"
+    if suffix not in {"jpeg", "png", "webp", "heic", "heif"}:
+        suffix = "jpeg"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:image/{suffix};base64,{encoded}"
+
+
+def _minimax_reference_images(uris: tuple[str, ...] | list[str]) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for item in uris:
+        url = _minimax_image_url(item)
+        if url:
+            refs.append({"image_url": url})
+        if len(refs) >= 16:
+            break
+    return refs
+
+
+async def _minimax_save_image_items(payload: Any, save_dir: str | None) -> str:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    items = data if isinstance(data, list) else []
+    saved: list[str] = []
+    errors: list[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        err = item.get("error")
+        if isinstance(err, dict):
+            errors.append(f"{err.get('code', '')} {err.get('message', '')}".strip())
+            continue
+        encoded = str(item.get("b64_json") or "").strip()
+        raw: bytes | None = None
+        if encoded:
+            try:
+                raw = base64.b64decode(encoded)
+            except ValueError as exc:
+                return f"[ERROR]: failed to save MiniMax image: {exc!r}"
+        else:
+            url = str(item.get("url") or "").strip()
+            if url:
+                try:
+                    async with httpx.AsyncClient(timeout=120, verify=get_requests_verify()) as client:
+                        download = await client.get(url, follow_redirects=True)
+                    if download.status_code != 200:
+                        errors.append(f"download failed: {download.status_code}")
+                        continue
+                    raw = download.content
+                except httpx.HTTPError as exc:
+                    return f"[ERROR]: failed to save MiniMax image: {exc!r}"
+        if not raw:
+            continue
+        try:
+            dest = _save_path(save_dir, "generated_images", _image_filename(index, raw))
+            dest.write_bytes(raw)
+        except OSError as exc:
+            return f"[ERROR]: failed to save MiniMax image: {exc!r}"
+        saved.append(str(dest))
+    if saved:
+        return "Image generated successfully!\nSaved to: " + ", ".join(saved)
+    detail = "; ".join(errors) if errors else str(payload)[:300]
+    return f"[ERROR]: MiniMax returned no images. Response: {detail}"
+
+
 async def _minimax_generate_image(
     target: GenerationTarget, prompt: str, aspect_ratio: str, save_dir: str | None, options: ImageOptions
 ) -> str:
     api_key, api_base, model = target.api_key, target.api_base, target.model
-    aspect = aspect_ratio if aspect_ratio in _MINIMAX_IMAGE_ASPECT_RATIOS else "1:1"
     body: dict[str, Any] = {
         "model": model,
-        "prompt": prompt[:_MINIMAX_IMAGE_PROMPT_LIMIT],
-        "response_format": "base64",
+        "prompt": prompt,
         "n": 1,
+        "response_format": "b64_json",
+        "output_format": "jpeg",
+        **_minimax_h3_image_size_fields(options, aspect_ratio),
     }
-    parsed = parse_size(options.size)
-    if parsed:
-        # image-01 takes width/height in place of aspect_ratio: 512-2048 px, multiples of 8.
-        body["width"], body["height"] = (
-            min(_MINIMAX_IMAGE_MAX_SIDE, max(_MINIMAX_IMAGE_MIN_SIDE, side // 8 * 8)) for side in parsed
-        )
-    else:
-        body["aspect_ratio"] = aspect
+    references = _minimax_reference_images(options.reference_image_uris)
+    path = "/v1/images/edits" if references else "/v1/images/generations"
+    if references:
+        body["images"] = references
     roots = _minimax_candidate_roots(api_base)
     payload: Any = None
     try:
-        async with httpx.AsyncClient(timeout=120, verify=get_requests_verify()) as client:
+        async with httpx.AsyncClient(timeout=_MINIMAX_H3_IMAGE_TIMEOUT, verify=get_requests_verify()) as client:
             for index, root in enumerate(roots):
-                logger.info("[generate_visual] MiniMax model: %s (root: %s, aspect_ratio: %s)", model, root, aspect)
+                logger.info(
+                    "[generate_visual] MiniMax model: %s (root: %s, path: %s, size: %s)",
+                    model, root, path, body.get("size") or body.get("aspect_ratio"),
+                )
                 resp = await client.post(
-                    f"{root}/v1/image_generation", headers={"Authorization": f"Bearer {api_key}"}, json=body
+                    f"{root}{path}", headers={"Authorization": f"Bearer {api_key}"}, json=body
                 )
                 try:
                     payload = resp.json()
@@ -510,29 +661,38 @@ async def _minimax_generate_image(
         return f"[ERROR]: MiniMax image generation request failed: {exc!r}"
     if resp.status_code != 200 or _minimax_base_error(payload):
         return f"[ERROR]: MiniMax image generation failed: {_minimax_base_error(payload) or resp.status_code}"
-
-    images = ((payload.get("data") or {}).get("image_base64")) or []
-    if not images:
-        return f"[ERROR]: MiniMax returned no images. Response: {str(payload)[:300]}"
-    saved: list[str] = []
-    for index, encoded in enumerate(images):
-        try:
-            data = base64.b64decode(encoded)
-            dest = _save_path(save_dir, "generated_images", _image_filename(index, data))
-            dest.write_bytes(data)
-        except (OSError, ValueError) as exc:
-            return f"[ERROR]: failed to save MiniMax image: {exc!r}"
-        saved.append(str(dest))
-    return "Image generated successfully!\nSaved to: " + ", ".join(saved)
+    return await _minimax_save_image_items(payload, save_dir)
 
 
-def _minimax_video_resolution(resolution: str) -> str:
-    """Map the tool's resolution ("480p"/"720p"/"1080p") to H3's "768P" / "2K"."""
-    text = (resolution or "").strip().upper()
+# Official V2 video resolutions (video-generation-v2-create):
+# MiniMax-H3: 768P / 2K; MiniMax-H3-Highspeed / Lite / Max: 480P / 768P (no 2K).
+_MINIMAX_H3_VIDEO_RESOLUTIONS = ("768P", "2K")
+_MINIMAX_H3_VARIANT_VIDEO_RESOLUTIONS = ("480P", "768P")
+
+
+def _minimax_h3_video_resolutions(model: str) -> tuple[str, ...]:
+    if minimax_h3_variant(model) is not None:
+        return _MINIMAX_H3_VARIANT_VIDEO_RESOLUTIONS
+    return _MINIMAX_H3_VIDEO_RESOLUTIONS
+
+
+def _minimax_video_resolution(resolution: str, model: str = "") -> str:
+    """Map a requested resolution onto a tier this MiniMax video model accepts."""
+    allowed = {item.upper(): item for item in _minimax_h3_video_resolutions(model)}
+    text = (resolution or "").strip().upper().replace(" ", "")
+    if text in allowed:
+        return allowed[text]
     if text == "2K":
-        return "2K"
+        return allowed.get("2K") or "768P"
     digits = re.sub(r"\D", "", text)
-    return "768P" if not digits or int(digits) <= 768 else "2K"
+    if not digits:
+        return "768P"
+    pixels = int(digits)
+    if "480P" in allowed and pixels <= 480:
+        return "480P"
+    if "768P" in allowed and pixels <= 768:
+        return "768P"
+    return allowed.get("2K") or "768P"
 
 
 async def _minimax_submit_video(target: GenerationTarget, request: VideoRequest, save_dir: str | None) -> str:
@@ -544,7 +704,7 @@ async def _minimax_submit_video(target: GenerationTarget, request: VideoRequest,
     body = {
         "model": model,
         "content": content,
-        "resolution": _minimax_video_resolution(resolution),
+        "resolution": _minimax_video_resolution(resolution, model),
         "duration": int(duration_seconds),
         "ratio": aspect_ratio if aspect_ratio in _MINIMAX_VIDEO_RATIOS else "16:9",
     }
@@ -1346,3 +1506,237 @@ async def _vllm_omni_check_video(target: GenerationTarget, task_id: str, save_di
             "(do not use shell sleep)."
         )
     return result
+
+
+# --------------------------------------------------------------------------- #
+# OpenRouter
+# --------------------------------------------------------------------------- #
+
+def _openrouter_error_detail(resp: httpx.Response) -> str:
+    try:
+        payload = resp.json()
+    except ValueError:
+        return f"{resp.status_code} {resp.text[:300]}"
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        return f"{resp.status_code} {error.get('message') or error}"
+    return f"{resp.status_code} {str(error or payload)[:300]}"
+
+
+async def _openrouter_post(
+    client: httpx.AsyncClient, url: str, headers: dict[str, str], body: dict[str, Any]
+) -> httpx.Response:
+    """POST, resending when the request failed before it reached OpenRouter."""
+    for attempt in range(1, _OPENROUTER_POST_ATTEMPTS + 1):
+        try:
+            return await client.post(url, headers=headers, json=body)
+        except _OPENROUTER_SEND_ERRORS as exc:
+            if attempt == _OPENROUTER_POST_ATTEMPTS:
+                raise
+            logger.warning("OpenRouter POST %s failed while sending (attempt %d/%d): %r; retrying",
+                           url, attempt, _OPENROUTER_POST_ATTEMPTS, exc)
+            await asyncio.sleep(_OPENROUTER_RETRY_DELAY_SECONDS)
+    raise AssertionError("unreachable")
+
+
+async def _openrouter_image_bytes(client: httpx.AsyncClient, url: str) -> bytes:
+    if url.startswith("data:"):
+        return base64.b64decode(url.partition(",")[2])
+    download = await client.get(url, follow_redirects=True, timeout=120)
+    download.raise_for_status()
+    return download.content
+
+
+async def _openrouter_generate_image(
+    target: GenerationTarget, prompt: str, aspect_ratio: str, save_dir: str | None, options: ImageOptions
+) -> str:
+    ratio = aspect_ratio_for_size(options.size, _OPENROUTER_IMAGE_RATIOS, aspect_ratio)
+    if ratio not in _OPENROUTER_IMAGE_RATIOS:
+        ratio = "1:1"
+    content: list[dict[str, Any]] = [
+        {"type": "image_url", "image_url": {"url": uri}} for uri in options.reference_image_uris
+    ]
+    # The ratio is also stated in the prompt for models that ignore image_config.
+    content.append({"type": "text", "text": f"{prompt}\n\n(Aspect ratio: {ratio})"})
+    body = {
+        "model": target.model,
+        "modalities": ["image", "text"],
+        "messages": [{"role": "user", "content": content}],
+        "image_config": {"aspect_ratio": ratio},
+    }
+    headers = {"Authorization": f"Bearer {target.api_key}"}
+    base = target.api_base.strip().rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=180, verify=get_requests_verify()) as client:
+            resp = await _openrouter_post(client, f"{base}/chat/completions", headers, body)
+            if resp.status_code != 200:
+                return f"[ERROR]: OpenRouter image generation failed: {_openrouter_error_detail(resp)}"
+            try:
+                message = resp.json()["choices"][0]["message"]
+            except (ValueError, KeyError, IndexError, TypeError):
+                return f"[ERROR]: unexpected OpenRouter image response: {resp.text[:300]}"
+            images = message.get("images") or []
+            if not images:
+                return f"[ERROR]: OpenRouter returned no images. Model response: {message.get('content') or ''}"
+            saved: list[str] = []
+            for index, image in enumerate(images):
+                url = ((image.get("image_url") or {}).get("url")) or image.get("url") or ""
+                if not url:
+                    continue
+                data = await _openrouter_image_bytes(client, url)
+                dest = _save_path(save_dir, "generated_images", _image_filename(index, data))
+                dest.write_bytes(data)
+                saved.append(str(dest))
+    except (httpx.HTTPError, ssl.SSLError) as exc:
+        return f"[ERROR]: OpenRouter image generation request failed: {exc!r}"
+    except (OSError, ValueError) as exc:
+        return f"[ERROR]: failed to save OpenRouter image: {exc!r}"
+    if not saved:
+        return "[ERROR]: OpenRouter returned no readable images."
+    return "Image generated successfully!\nSaved to: " + ", ".join(saved)
+
+
+def _openrouter_video_body(model: str, request: VideoRequest) -> dict[str, Any]:
+    frame, refs = _video_references(request)
+    body: dict[str, Any] = {
+        "model": model,
+        "prompt": request.prompt,
+        "aspect_ratio": request.aspect_ratio,
+        "duration": int(request.duration_seconds),
+        "generate_audio": bool(request.generate_audio),
+    }
+    resolution = (request.resolution or "").strip().lower()
+    if resolution:
+        body["resolution"] = resolution
+    if frame:
+        body["frame_images"] = [{"type": "image_url", "image_url": {"url": frame}, "frame_type": "first_frame"}]
+    if refs:
+        body["input_references"] = [{"type": "image_url", "image_url": {"url": url}} for url in refs]
+    return body
+
+
+async def _openrouter_query(
+    client: httpx.AsyncClient, base: str, headers: dict[str, str], job_id: str
+) -> tuple[str, dict[str, Any], str | None]:
+    resp = await client.get(f"{base}/videos/{job_id}", headers=headers)
+    if resp.status_code != 200:
+        return "", {}, f"[ERROR]: polling OpenRouter video job {job_id} failed: {_openrouter_error_detail(resp)}"
+    try:
+        job = resp.json()
+    except ValueError:
+        return "", {}, f"[ERROR]: polling OpenRouter video job {job_id} returned a non-JSON response."
+    return str(job.get("status") or "pending").lower(), job, None
+
+
+@dataclass(frozen=True)
+class _OpenRouterJob:
+    """Client, endpoint and auth for one OpenRouter video job."""
+
+    client: httpx.AsyncClient
+    base: str
+    headers: dict[str, str]
+    job_id: str
+
+
+async def _openrouter_finish(job_ctx: _OpenRouterJob, job: dict[str, Any], save_dir: str | None) -> str:
+    job_id = job_ctx.job_id
+    status = str(job.get("status") or "").lower()
+    if status != "completed":
+        return (
+            f"[ERROR]: video job {job_id} ended with status {status}: "
+            f"{job.get('error') or 'no error detail provided'}"
+        )
+    try:
+        # Unlike the vendors' pre-signed URLs, OpenRouter's content URL needs the API key.
+        content = await job_ctx.client.get(
+            f"{job_ctx.base}/videos/{job_id}/content", params={"index": 0}, headers=job_ctx.headers,
+            follow_redirects=True, timeout=300,
+        )
+    except httpx.HTTPError as exc:
+        return f"[ERROR]: downloading video job {job_id} failed: {exc!r}"
+    if content.status_code != 200 or not content.content:
+        return f"[ERROR]: video job {job_id} completed but downloading content failed: {content.status_code}"
+    try:
+        dest = _save_path(save_dir, "generated_videos", f"video_{job_id}.mp4")
+        dest.write_bytes(content.content)
+    except OSError as exc:
+        return f"[ERROR]: failed to save video for job {job_id}: {exc!r}"
+    return (
+        "Video generated successfully!\n"
+        f"Saved to: {dest}\n"
+        f"(job {job_id} - the remote source URL expires 24h after completion, so this local file is the "
+        "durable copy.)"
+    )
+
+
+def _openrouter_pending(status: str) -> bool:
+    return status != "completed" and status not in _OPENROUTER_FAILED_STATUSES
+
+
+async def _openrouter_run_video(
+    client: httpx.AsyncClient, base: str, headers: dict[str, str], body: dict[str, Any], save_dir: str | None
+) -> str:
+    """Submit one /videos job and poll it to its end (or the poll budget)."""
+    resp = await _openrouter_post(client, f"{base}/videos", headers, body)
+    if resp.status_code not in (200, 201, 202):
+        return f"[ERROR]: OpenRouter video generation submit failed: {_openrouter_error_detail(resp)}"
+    try:
+        job = resp.json()
+    except ValueError:
+        return "[ERROR]: OpenRouter video submit returned a non-JSON response."
+    job_id = str(job.get("id") or "")
+    if not job_id:
+        return f"[ERROR]: OpenRouter video submit returned no job id: {str(job)[:300]}"
+    status, elapsed = str(job.get("status") or "pending").lower(), 0
+    while _openrouter_pending(status) and elapsed < _OPENROUTER_MAX_POLL_SECONDS:
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+        elapsed += _POLL_INTERVAL_SECONDS
+        status, job, error = await _openrouter_query(client, base, headers, job_id)
+        if error:
+            return error
+    if _openrouter_pending(status):
+        return _pending_submit_message(
+            job_id, status, elapsed, " (call the tool again to wait; do not use shell sleep)"
+        )
+    return await _openrouter_finish(_OpenRouterJob(client, base, headers, job_id), job, save_dir)
+
+
+def _openrouter_audio_rejected(result: str) -> bool:
+    """A finished job the provider failed over its own generated audio (e.g. copyright)."""
+    return result.startswith("[ERROR]: video job ") and bool(_OPENROUTER_AUDIO_REJECTION.search(result))
+
+
+async def _openrouter_submit_video(target: GenerationTarget, request: VideoRequest, save_dir: str | None) -> str:
+    base = target.api_base.strip().rstrip("/")
+    headers = {"Authorization": f"Bearer {target.api_key}"}
+    body = _openrouter_video_body(target.model, request)
+    try:
+        async with httpx.AsyncClient(timeout=60, verify=get_requests_verify()) as client:
+            result = await _openrouter_run_video(client, base, headers, body, save_dir)
+            if body.get("generate_audio") and _openrouter_audio_rejected(result):
+                # The clip itself is fine; only the soundtrack was refused. A silent
+                # clip keeps the film whole instead of failing the node outright.
+                logger.warning("[generate_video] provider rejected the clip audio; retrying without audio: %s",
+                               result[:300])
+                result = await _openrouter_run_video(client, base, headers, {**body, "generate_audio": False}, save_dir)
+            return result
+    except (httpx.HTTPError, ssl.SSLError) as exc:
+        return f"[ERROR]: OpenRouter video generation request failed: {exc!r}"
+
+
+async def _openrouter_check_video(target: GenerationTarget, task_id: str, save_dir: str | None) -> str:
+    base = target.api_base.strip().rstrip("/")
+    headers = {"Authorization": f"Bearer {target.api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=60, verify=get_requests_verify()) as client:
+            status, job, error = await _openrouter_query(client, base, headers, task_id)
+            if error:
+                return error
+            if _openrouter_pending(status):
+                return (
+                    f"Video job {task_id} is still {status}. Call check_video_status again to keep waiting "
+                    "(do not use shell sleep)."
+                )
+            return await _openrouter_finish(_OpenRouterJob(client, base, headers, task_id), job, save_dir)
+    except (httpx.HTTPError, ssl.SSLError) as exc:
+        return f"[ERROR]: checking OpenRouter video job {task_id} failed: {exc!r}"

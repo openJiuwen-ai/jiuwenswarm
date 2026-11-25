@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
+import { isEnterprise } from '../../edition';
 import { useChatStore, useSessionStore } from '../../stores';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
+import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { localizedText } from '../../types/pluginPackage';
 import type { ConnectorConnectResponse } from '../../types/connector';
 import { getSkillAvatar } from '../../utils/skillAvatar';
@@ -16,8 +18,8 @@ import { CliAuthModal } from '../ConnectorMarket/CliAuthModal';
 import { requestManageView } from '../ConnectorMarket';
 import { usePendingConnectorFlow, PendingConnectorModals } from '../ConnectorMarket/usePendingConnectorFlow';
 import { Switch } from '../Switch';
-import { Tabs } from '../ui';
-import { resolvePluginPickerIdentifiers } from '../../features/equipmentMarketplace';
+import { Tabs, toast } from '../ui';
+import { isPluginBlockedInWorkMode, resolvePluginPickerIdentifiers } from '../../features/equipmentMarketplace';
 import { pruneEnabledExtensions } from '../../utils/enabledExtensions';
 import PlusIcon from '../../assets/agent-management/agent-plus.svg?react';
 import { PickerSearchInput } from './PickerSearchInput';
@@ -41,14 +43,17 @@ interface ExtensionPickerPanelProps {
  * "+"菜单"扩展"项的二级面板：插件/MCP 两个 tab + 搜索 + 列表，已连接/已安装显示会话内开关
  * （切换 sessionStore.enabledPlugins/enabledMcps，不随 chat.send 清空，见该 store 头部注释），
  * 未连接/未安装显示连接icon（点击走 mcp.connect 三态流程或 plugin_packages.install）。
+ * 企业版隐藏插件页签，只保留连接器（与连接器广场对齐）。
  * 渲染在"+"菜单内部，与智能体/技能面板同款定位（见 ChatPanel.css .chat-agent-picker 规则）。
  */
 export function ExtensionPickerPanel({ onClose, panelRef, direction }: ExtensionPickerPanelProps) {
   const { t, i18n } = useTranslation();
+  const enterprise = isEnterprise();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const workMode = useWorkspaceStore((s) => s.workMode);
   const enabledPlugins = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enabledPlugins ?? []);
   const enabledMcps = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enabledMcps ?? []);
-  const [tab, setTab] = useState<'plugin' | 'mcp'>('plugin');
+  const [tab, setTab] = useState<'plugin' | 'mcp'>(enterprise ? 'mcp' : 'plugin');
   const [searchQuery, setSearchQuery] = useState('');
 
   const packages = usePluginPackageStore((s) => s.localPackages);
@@ -84,7 +89,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
       const id = connectingPluginIdRef.current;
       connectingPluginIdRef.current = null;
       if (id) {
-        clearInstallPending(id);
+        clearInstallPending(id, true);
         void installPlugin(id);
       }
     },
@@ -125,7 +130,9 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   // 才用非静默调用走正常的 loading 态，避免用户盯着一片空白却看不出到底是"真没数据"还是"正在
   // 加载中"。
   useEffect(() => {
-    void loadPluginList('mine', { silent: packages.length > 0 });
+    if (!enterprise) {
+      void loadPluginList('mine', { silent: packages.length > 0 });
+    }
     void loadConnectorList('local', { silent: myConnectors.length > 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -138,7 +145,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   useEffect(() => {
     if (!activeSessionId) return;
     pruneEnabledExtensions(activeSessionId);
-  }, [activeSessionId, installedMap, pluginConnectionStateMap, myConnectors]);
+  }, [activeSessionId, installedMap, pluginConnectionStateMap, myConnectors, workMode, enabledPlugins]);
 
   useEffect(() => {
     // 授权/连接弹窗（ConnectTokenModal/CliAuthModal，含 pluginInstallFlow/pluginReconnectFlow
@@ -180,6 +187,23 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
     const store = useSessionStore.getState();
+    if (isPluginBlockedInWorkMode(id, useWorkspaceStore.getState().workMode)) {
+      store.removeEnabledPlugin(sid, id);
+      toast.open({
+        id: 'ttse-work-mode-notice',
+        content: (
+          <Trans
+            i18nKey="chat.ttseWorkModeNotice"
+            components={{ strong: <strong data-testid="chat-panel-ttse-work-mode-setting" /> }}
+          />
+        ),
+        variant: 'info',
+        duration: 6,
+        closable: true,
+        testId: 'chat-panel-ttse-work-mode-notice',
+      });
+      return;
+    }
     if (enabledPlugins.includes(id)) store.removeEnabledPlugin(sid, id);
     else store.addEnabledPlugin(sid, id);
   }
@@ -243,19 +267,32 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
         rowHeight={LIST_ROW_HEIGHT}
         itemCount={Math.max(filteredPlugins.length, filteredMcps.length)}
         tabs={
-          <Tabs
-            role="tablist"
-            wrapperTestId="chat-panel-extension-picker-tabs"
-            itemTestId="chat-panel-extension-picker-tab"
-            bordered
-            className="mb-4 text-sm"
-            value={tab}
-            onChange={setTab}
-            items={[
-              { value: 'plugin', label: t('connectorMarket.tabs.plugin') },
-              { value: 'mcp', label: t('connectorMarket.tabs.mcp') },
-            ]}
-          />
+          enterprise ? (
+            <Tabs
+              role="tablist"
+              wrapperTestId="chat-panel-extension-picker-tabs"
+              itemTestId="chat-panel-extension-picker-tab"
+              bordered
+              className="mb-4 text-sm"
+              value="mcp"
+              onChange={() => setTab('mcp')}
+              items={[{ value: 'mcp', label: t('connectorMarket.tabs.mcp') }]}
+            />
+          ) : (
+            <Tabs
+              role="tablist"
+              wrapperTestId="chat-panel-extension-picker-tabs"
+              itemTestId="chat-panel-extension-picker-tab"
+              bordered
+              className="mb-4 text-sm"
+              value={tab}
+              onChange={setTab}
+              items={[
+                { value: 'plugin', label: t('connectorMarket.tabs.plugin') },
+                { value: 'mcp', label: t('connectorMarket.tabs.mcp') },
+              ]}
+            />
+          )
         }
         search={
           <PickerSearchInput
@@ -295,7 +332,8 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
             const avatar = getSkillAvatar(label);
             const installed = installedMap[marketplaceId];
             const linked = (pluginConnectionStateMap[marketplaceId] ?? 'disconnected') === 'connected';
-            const isEnabled = enabledPlugins.includes(sessionPluginName);
+            const isEnabled = !isPluginBlockedInWorkMode(sessionPluginName, workMode)
+              && enabledPlugins.includes(sessionPluginName);
             const isConnectingThis =
               connectingPluginIdRef.current === marketplaceId &&
               (pluginInstallFlow.active || pluginReconnectFlow.active);

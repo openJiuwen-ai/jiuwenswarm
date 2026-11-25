@@ -12,6 +12,8 @@ import logging
 import copy
 from typing import Any, Callable, MutableMapping
 
+from jiuwenswarm.common.opencode_go import SCOPE_AUX, inject_session_header, inject_session_into_selection
+
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,7 @@ class ModelFactory:
         resolved = resolver.resolve(
             selection, ModelExecutionContext(can_access=can_access)
         )
+        resolved = inject_session_into_selection(resolved, owner._opencode_go_scope())
         identity = getattr(owner, "_kernel_identity", None)
         if identity is None:
             identity = owner._kernel_identity = KernelIdentity.for_agent(
@@ -184,7 +187,13 @@ class ModelFactory:
         idx = name_counter.get(model_name, 0)
         name_counter[model_name] = idx + 1
         cache_key = f"{model_name}#{idx}"
-        owner._model_recipes[cache_key] = copy.deepcopy(entry)
+        recipe = copy.deepcopy(entry)
+        recipe_mcc = recipe.get("model_client_config")
+        if isinstance(recipe_mcc, dict):
+            recipe["model_client_config"] = inject_session_header(
+                recipe_mcc, owner._opencode_go_scope()
+            )
+        owner._model_recipes[cache_key] = recipe
         if model_name not in owner._model_name_to_keys:
             owner._model_name_to_keys[model_name] = []
         owner._model_name_to_keys[model_name].append(cache_key)
@@ -241,6 +250,7 @@ class ModelFactory:
         model_name = mcc.get("model_name") or react_config.get("model_name") or "gpt-4"
         if "model_name" not in mcc:
             mcc["model_name"] = model_name
+        mcc = inject_session_header(mcc, owner._opencode_go_scope())
 
         mco = (
             default_model_config.get("model_config_obj")
@@ -429,6 +439,9 @@ def build_model_from_entry(mcc: dict, mco: dict) -> Any:
         )
         if _inferred_profile:
             mcc_fields["endpoint_profile"] = _inferred_profile
+    # Shared model builders outside the session recipe path (scheduler, aux
+    # clients, warmup) have no conversation identity: use the fixed aux scope.
+    mcc_fields = inject_session_header(mcc_fields, SCOPE_AUX)
 
     # ``context_window``（模型支持的上下文总长度）可配在任意模型条目的 mco 里
     # （defaults / agentos / video / audio / vision / image_gen 均可），经

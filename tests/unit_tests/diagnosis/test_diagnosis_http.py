@@ -16,11 +16,12 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
+from e2a.message import ReqMethod
 from agent_gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes, error_status
 from agent_gateway.channel_manager.web.trajectory_http import TRAJECTORY_API_PREFIX
 
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import ReqMethod as HostReqMethod
 from tests.unit_tests.diagnosis.stub_engine import StubDiagnosisEngine
 from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import ERROR_STATUS_BY_CODE, ModelInfo
@@ -79,7 +80,7 @@ def _fetch_via(host: DiagnosisHost) -> Any:
             request_id="r-1",
             channel_id="web",
             session_id=session_id,
-            req_method=method,
+            req_method=HostReqMethod(method.value),
             params={"session_id": session_id, **params},
         )
         response = await host.handle(request)

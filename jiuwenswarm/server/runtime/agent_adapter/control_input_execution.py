@@ -63,7 +63,7 @@ class ControlInputExecutionService:
             self.session_id = facade._session_manager.get_session_id(request.session_id)
             params = request.params if isinstance(request.params, dict) else {}
             ports.restore_equipment(self.session_id, params)
-            inputs, _memory_mode, _user_turn = facade._build_inputs(request)
+            inputs, _memory_mode, _user_turn = await facade._build_inputs_async(request)
             await facade.reconcile_session_mcp(
                 request.session_id, ports.compute_mcp_needed(params),
                 model_name=params.get("model_name"), history_before_request_id=request.request_id,
@@ -125,12 +125,14 @@ class ControlInputExecutionService:
         async with self._close_lock:
             if self.closed:
                 return
+            if self._stream is not None:
+                # SDK generators bind ContextVar tokens in their consuming task.
+                # Close them here before moving durable writes to a shielded task.
+                await self._stream.aclose()
+                self._stream = None
             await HistoryCommitter._drain_accepted(self._finish())
 
     async def _finish(self):
-        if self._stream is not None:
-            await self._stream.aclose()
-            self._stream = None
         if self.history is not None:
             await self.history.retry_pending_writes()
             if self._exhausted or self.history.saw_goal_stream_output:

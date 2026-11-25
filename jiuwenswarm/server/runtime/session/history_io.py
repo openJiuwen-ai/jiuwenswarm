@@ -11,7 +11,25 @@ async def run_history_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> A
     Cancelling a to_thread await cannot stop the running function. Waiting for
     it preserves the ordering between the record and subsequent cleanup writes.
     """
-    task = asyncio.create_task(asyncio.to_thread(fn, *args, **kwargs))
+    from jiuwenswarm.server.runtime.session.session_history import append_history_record
+
+    async def operation():
+        if fn is append_history_record and not args:
+            from jiuwenswarm.server.runtime.session.history_events import try_append_platform_history
+            from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError
+
+            # Queue ownership is a persistence option, not part of the event's
+            # canonical record. The platform event already confirms its commit.
+            record = dict(kwargs)
+            record.pop("wait_for_write", None)
+            handled, receipt = await try_append_platform_history(record)
+            if handled:
+                if receipt is not None and receipt.status == "rejected":
+                    raise SessionHistoryError("APPEND_REJECTED")
+                return None
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    task = asyncio.create_task(operation())
     cancelled = None
     while True:
         try:

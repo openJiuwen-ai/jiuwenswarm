@@ -3,6 +3,7 @@
 """Single-Agent startup does not borrow Team initialization side effects."""
 
 import os
+from types import SimpleNamespace
 from pathlib import Path
 import shutil
 import subprocess
@@ -170,7 +171,10 @@ def test_team_assembly_prepares_storage_before_provider_consumers(legacy_team_st
 
     monkeypatch.setattr(assembly, "register_swarm_providers", inspect_first_consumer)
     with pytest.raises(LookupError, match="consumer reached after migration"):
-        assembly.enrich_team_spec_for_swarm(object(), session_id="session", mode="team")
+        assembly.enrich_team_spec_for_swarm(
+            SimpleNamespace(dispatch_mode="immediate", spawn_mode="inprocess"),
+            session_id="session", mode="team",
+        )
     expert_install.assert_called_once_with()
     summary_install.assert_called_once_with()
 

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 async def dispatch_group_request(server, ws, request, send_lock) -> bool:
-    from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+    from e2a.wire_codec import encode_agent_response_for_wire
     from jiuwenswarm.server.ws_send import send_wire_payload
 
     method = request.req_method.value if request.req_method else ""

@@ -12,6 +12,8 @@ Worker IPC 使用 v3，Supervisor 验证 HELLO 中的协议、构建身份和数
 
 `runtime_prewarm` 默认有界开启，只准备一个配置中的 profile，不创建 Session 或发送模型请求。默认空闲延迟为 1 秒，最多尝试两次，预算为 10 秒墙钟、5 秒进程 CPU 和 256 MB RSS 增量。前台活动会阻止后续后台步骤；同步导入不能强制抢占，CPU/RSS 预算用于观测并停止后续工作。显式设置 `runtime_prewarm.enabled: false` 可以关闭预热；真冷启动测量应关闭预热并与默认配置结果分别报告。
 
+Rail 扩展的启用和关闭会更新当前 Worker 中由会话适配器登记的 SDK 实例，包括不同通道、项目及会话子实例；各实例使用独立的 Rail 对象。RPC 等待这些实例更新完成后才返回成功。尚无实例时只保存配置，后续实例按当前配置加载，不为配置操作构造 Agent 或 Session。某个实例更新失败时返回错误，重复操作可重试；已经完成的注册保持幂等。
+
 ## 停止、升级与恢复
 
 | 操作 | 行为 |
@@ -38,9 +40,18 @@ IPC 端点按安装位置、Python 环境、数据目录和运行配置隔离。
 
 `jiuwenswarm-stop` 管理 `jiuwenswarm-start debug` 的后台状态。关闭失败保留状态，可重试；没有 debug 状态时仍按既有约定返回无操作。
 
+debug 停止默认分别给 Front 15 秒、Worker 35 秒；Worker 的预算覆盖其内部 30 秒清理期限，并留出 IPC 和确认进程退出的余量。两个阶段按顺序执行，预算不是整个停止命令的总时限。
+显式 `--timeout N` 仍为两个阶段各设置 N 秒；`--worker-timeout N` 只覆盖 Worker 阶段，可与 `--timeout` 同用。超时必须是正的有限数值。
+`make stop`、`make restart-debug` 和 `make restart-debug-fast` 通过 `STOP_ARGS` 将这些参数传给停止命令；停止失败时不会继续启动服务。例如，只调整 Worker 的预算：
+
+```bash
+make restart-debug-fast STOP_ARGS="--worker-timeout 45"
+```
+
 WHL 的 `jiuwenswarm-start all/app/dev`、命名实例及独立 `jiuwenswarm-app` 在最终退出时先停止 Front，再关闭 Worker；`--stop <name>` 和完整实例 `--restart <name>` 也执行最终清理。命名实例在启动锁内按目标 workspace 的 bootstrap 和运行配置定位 Worker，确认退出后才删除 PID 记录，失败保留记录以便重试。Windows 服务进程树清理保留 Worker 分支，由后续 IPC 操作完成持久化和退出。仅运行 web 的启动器不接管外部后端。
 
 Python 桌面的正式退出即使发生在首个子服务注册之前，也会清理已有 Worker 和可验证的历史端点。最终关闭发现尚未建立 IPC 的 Worker 启动进程时，会在同一截止时间内等待 HELLO，再验证归属；进程命令行只能用于等待，不能代替部署归属校验。
+后台线程正在清理时，桌面主线程等待到 30 秒关闭期限，另留 5 秒回收进程和写入升级回执。等待超时会记录关闭未完成，安装器仍要求成功回执。
 
 直接管理 `jiuwenswarm-agentserver` 的服务管理器仍需区分 Front 重启与应用最终停止；最终停止应先关闭 Front，再从相同安装环境执行：
 
@@ -58,9 +69,23 @@ Windows 同一控制台中的 Ctrl+C 也可能直接送达 Worker。Worker 会�
 历史 Python Worker 没有部署身份时，不能仅凭共同解释器和数据目录推断安装来源。新部署会隔离这个旧端点并继续启动，日志给出旧 PID。操作者核对该 PID 的解释器、完整启动参数、安装来源及数据目录后，可显式关闭：
 
 ```bash
-jiuwenswarm-stop --legacy-worker-pid 12345 --timeout 30
+jiuwenswarm-stop --legacy-worker-pid 12345
+# 核实旧 Worker 的安装来源后，也可在重启时显式选择它：
+make restart-debug STOP_ARGS="--legacy-worker-pid 12345"
 ```
 
 显式选择仍检查用户、解释器、Worker 模块、IPC 参数和进程创建时间；不允许关闭声明属于其他部署的进程。超时或进程已更换时返回失败。该参数只关闭所选历史 Worker；仍在运行的其他 Front 可能重新启动它，应先停止对应 Front。
 
 Worker 启动或 IPC 连接的重试额度耗尽后，服务先发布 `FAILED`，随后在 30 秒冷却后自动尝试恢复。连续失败时冷却递增至 60、120、240、300 秒，上限 300 秒；成功后结束本轮冷却。停止服务会取消后台恢复。配置、协议、身份或 Runtime 加载的明确永久性错误仍需修正后显式 reload，不对它们无限快速重试。自动恢复不补发已失败的用户请求，也不保证操作系统内存压力的根因已消除。
+
+resident Worker 的 IPC 暂时断开时，Front 保留已提交流式请求的等待者和已投递事件游标，最多等待 90 秒完成连接恢复及回放确认。重连必须验证相同 Worker 实例、PID 和进程创建时间，再按原 dispatch 与调用方范围回放未投递输出；不重新发送任务输入或重做工具操作。Worker 保留断连期间的流式完成通知，回放完成后才恢复该 dispatch 的实时投递。Front 按已投递游标过滤重复回放。
+
+90 秒仅限制传输恢复，不限制正常执行时长。原 Worker 已退出、被替换或被判不健康，重试额度耗尽，原 dispatch 不再保留，未投递输出已超过有界回放窗口，或服务停止时，原等待请求仍明确失败；不把缺失输出当成成功。普通非流式 RPC 保留原有投递确认和失败语义，`front_loopback` 仍按其 Worker 生命周期处理断连。
+
+IPC 发送和关闭同时失败时，Front 仍保留原恢复等待；恢复订阅失败后退役该连接，再续接所有保留的请求。服务停止时，即使 IPC 关闭抛错，等待者和后台任务也会清理。
+
+## Worker 输出日志
+
+resident 与 `front_loopback` 均沿用原始输出路由：stdout 继承启动进程的输出，stderr 直接追加写入 `worker-logs/runtime-worker-*.stderr.log`。Supervisor 启动日志和运行诊断提供 stderr 文件路径，异常退出的堆栈保留在该文件中。
+
+Supervisor 不再逐行读取并重标 Worker 输出，也不创建独立的 stdout 日志文件。stderr 可以包含正常 INFO 日志，不能据此判定 Worker 发生错误；排障时结合文件中的原始日志级别、异常堆栈与进程退出码。

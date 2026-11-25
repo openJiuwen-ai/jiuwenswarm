@@ -36,6 +36,8 @@ export interface ScheduledReviewerTask {
   assignee?: string;
   rounds: ScheduledReviewerRound[];
   runCount: number;
+  /** Review records from the control model; independent of lane presence. */
+  reviewRecordCount: number;
 }
 
 export interface ScheduledTeamLaneSections {
@@ -102,6 +104,28 @@ export function scheduledMemberDisplayName(
   const normalized = assignee.trim();
   if (normalized === '') return assignee;
   return memberForAssignee(normalized, members)?.label ?? assignee;
+}
+
+/**
+ * i18n key for a task that has no reviewer lanes, stated as the task's own
+ * review status instead of an empty-data apology. "Completed without review"
+ * requires the control model to hold no review records either, so the claim
+ * never contradicts the task detail panel. Live phases cannot tell "not yet
+ * submitted" from "no verifier configured", so they stay with the neutral
+ * no-records line.
+ */
+export function noReviewMessageKey(
+  phase: string | undefined,
+  reviewRecordCount: number,
+): string {
+  // The direct-completed claim requires the control model to hold no review
+  // records either: reviewer lanes can be missing while records survive
+  // (lane id parse failure, pruned spans), and the claim must not contradict
+  // the task detail panel, which renders those records.
+  if (phase === 'completed' && reviewRecordCount === 0) {
+    return 'trajectory.team.schedule.directCompleted';
+  }
+  return 'trajectory.team.schedule.noReviews';
 }
 
 interface ReviewerIdentity {
@@ -296,6 +320,7 @@ export function buildScheduledTeamLaneSections(
       ...(task?.assignee === undefined ? {} : { assignee: task.assignee }),
       rounds,
       runCount: taskLanes.length,
+      reviewRecordCount: task?.reviews.length ?? 0,
     };
   });
 

@@ -26,6 +26,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from agent_gateway.common.mode_matrix import is_team_mode
+
 # ---------------------------------------------------------------------------
 # Wire byte budgets
 # ---------------------------------------------------------------------------
@@ -81,6 +83,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.file",
         "chat.ask_user_question",
         "chat.ask_user_answer",
+        "chat.ask_user_closed",
         "chat.error",
         "team.message",
         "context.usage",
@@ -125,6 +128,7 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "is_goal_objective_message",
     "is_goal_completed_message",
     "evidence",
+    "payload_refs",
     "agent_template_name",
 }
 
@@ -272,11 +276,42 @@ def _restore_mcp_app_block(original: dict[str, Any], sanitized: dict[str, Any]) 
         sanitized_raw["mcp_app"] = block
 
 
+def is_restorable_history_record(record: Any) -> bool:
+    """Return whether a stored record belongs in the public main transcript."""
+    if not isinstance(record, dict):
+        return False
+    role = record.get("role")
+    content = record.get("content")
+    has_content = isinstance(content, str) and bool(content.strip())
+    has_media = (
+        isinstance(record.get("media_items"), list) and bool(record["media_items"])
+    ) or (
+        isinstance(record.get("mediaItems"), list) and bool(record["mediaItems"])
+    )
+    files = record.get("files")
+    if isinstance(files, dict):
+        has_media = has_media or (
+            isinstance(files.get("uploaded_images"), list)
+            and bool(files["uploaded_images"])
+        )
+    if role == "user":
+        mode = record.get("mode", "")
+        if is_team_mode(mode):
+            channel_id = record.get("channel_id", "")
+            if channel_id not in ("web", "tui"):
+                return False
+        return has_content or has_media
+    event_type = record.get("event_type")
+    if not event_type:
+        return has_content
+    return history_assistant_event_is_restorable(record)
+
+
 def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
     """Sanitize one history record, collapsing if it exceeds the per-record budget."""
     if not isinstance(record, dict):
         return {"content": _sanitize_history_wire_value(record), "truncated": True}
-    sanitized = _sanitize_history_wire_value(record)
+    sanitized = _sanitize_history_wire_value({key: value for key, value in record.items() if key != "_session_append"})
     if not isinstance(sanitized, dict):
         return {"content": str(sanitized), "truncated": True}
     _restore_mcp_app_block(record, sanitized)
@@ -324,7 +359,7 @@ def split_history_record_for_stream(
     metadata = {
         key: _sanitize_history_wire_value(value)
         for key, value in record.items()
-        if key != "content"
+        if key not in ("content", "_session_append")
     }
     full = {**metadata, "content": content}
 
@@ -785,6 +820,7 @@ __all__ = [
     "_SPLITTABLE_AGENT_FIELDS",
     "_HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES",
     "history_assistant_event_is_restorable",
+    "is_restorable_history_record",
     "_json_wire_size",
     "_coerce_int",
     "_truncate_string_by_bytes",

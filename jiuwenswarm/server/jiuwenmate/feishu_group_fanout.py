@@ -298,115 +298,12 @@ def create_default_persistent_group_fanout(
         budgets,
         delivery_service=delivery_service,
         thinking_notice_sender=thinking_notice_sender,
+        schedules_enabled=False,
         approval_channels=frozenset({"feishu", "dingtalk", "welink"}),
     )
-    if verify_membership is not None:
-        async def verify(access, group):
-            if getattr(group, "platform", "") == "dingtalk":
-                from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
+    from jiuwenswarm.server.jiuwenmate.group_access import configure_group_access
 
-                bindings = configured_dingtalk_bindings()
-                if access.status == "active" and any(
-                    (item.namespace_id, item.agent_id, item.app_id)
-                    == (access.namespace_id, access.agent_id, access.app_id)
-                    for item in bindings
-                ):
-                    # A group callback itself is DingTalk's available proof that this bound Bot
-                    # currently receives messages in the group; there is no membership-read API here.
-                    return "active"
-                return "unknown"
-            if getattr(group, "platform", "") == "welink":
-                from jiuwenswarm.server.jiuwenmate.welink_inbound import welink_group_membership_status
-
-                return welink_group_membership_status(access)
-            bindings = resolve_configured_feishu_bindings("feishu", access.app_id)
-            if len(bindings) != 1 or (bindings[0].namespace_id, bindings[0].agent_id) != (
-                    access.namespace_id, access.agent_id):
-                return "unknown"
-            facts = await verify_membership(access.app_id, group.platform_chat_id)
-            status = facts.get("status", "unknown")
-            if status == "left":
-                await asyncio.to_thread(groups.update_membership, access.namespace_id, access.agent_id,
-                                       access.group_id, access.app_id, status="left",
-                                       observed_at=datetime.now(timezone.utc), source_ref="membership:live")
-                return "left"
-            if status == "active" and facts.get("group_name"):
-                await asyncio.to_thread(groups.set_name, access.namespace_id, access.group_id, facts["group_name"])
-            if status == "active":
-                return "active"
-            # Feishu sometimes does not answer during a reconnect. That is not proof the Bot left.
-            if access.status == "active":
-                logger.warning(
-                    "[JiuwenMate] group membership check inconclusive, keeping the active binding: app_id=%s",
-                    access.app_id,
-                )
-                return "active"
-            return "unknown"
-        manager.verify_group_membership = verify
-
-        async def refresh(access, group, messages):
-            from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-
-            if getattr(group, "platform", "") == "welink":
-                return tuple(messages)
-            facts = await verify_membership(access.app_id, group.platform_chat_id,
-                                           tuple(item.message_id for item in messages))
-            if facts.get("status") == "unknown":
-                # A slow or dropped Feishu read is not proof the archived text changed.
-                logger.warning(
-                    "[JiuwenMate] group message refresh got no Feishu answer, keeping the archived text: agent_id=%s",
-                    access.agent_id,
-                )
-                return tuple(messages)
-            if facts.get("status") != "ok" or not isinstance(facts.get("messages"), dict):
-                raise ValueError("current group message state unavailable")
-            updated = []
-            for message in messages:
-                item = facts["messages"].get(message.message_id, {})
-                status = item.get("status")
-                if status == "recalled":
-                    await asyncio.to_thread(
-                        manager.group_archive.recall,
-                        access.namespace_id,
-                        access.group_id,
-                        message.message_id,
-                        source_ref=f"refresh:{message.message_id}",
-                        changed_at=datetime.now(timezone.utc),
-                    )
-                    updated.append(
-                        message.model_copy(update={"status": "recalled", "text": None, "attachment_refs": ()})
-                    )
-                elif status in {"normal", "edited"}:
-                    changed_at = datetime.fromisoformat(item["changed_at"])
-                    fresh = type(message).model_validate({**message.model_dump(), "status": status,
-                        "text": item.get("text"), "attachment_refs": item.get("attachment_refs", ())})
-                    try:
-                        await asyncio.to_thread(
-                            manager.group_archive.append, access.namespace_id, access.group_id, fresh,
-                            source_ref=f"refresh:{message.message_id}", changed_at=changed_at,
-                            allow_resolved_mentions=True,
-                        )
-                    except PersistentAgentError as exc:
-                        if exc.code != "CONFLICT":
-                            raise
-                        # One unchanged revision must not fail the whole history read.
-                        logger.warning(
-                            "[JiuwenMate] group refresh kept the archived text: message_id=%s",
-                            message.message_id,
-                        )
-                        updated.append(message)
-                    else:
-                        updated.append(fresh)
-                elif status == "unknown":
-                    # Feishu did not answer. The archived inbound text remains the trigger.
-                    updated.append(message)
-                else:
-                    updated.append(
-                        message.model_copy(update={"status": "unavailable", "text": None, "attachment_refs": ()})
-                    )
-            return tuple(updated)
-
-        manager.refresh_group_messages = refresh
+    configure_group_access(manager, verify_membership)
     from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import DingTalkInboundHandler
 
     fanout = PersistentGroupFanout(
@@ -531,15 +428,20 @@ class PersistentGroupFanout:
             # that this is the receiving Bot echoing its own message.
             sender_app_id = event.sender_app_id.strip() if _present(event.sender_app_id) else None
             request_input = self._request_input(event, sender_kind)
-            if await self._agent_manager.handle_im_permission_reply(
-                request_input.text,
-                namespace_id=binding.namespace_id,
-                agent_id=binding.agent_id,
-                access=access,
-                channel="feishu",
-                target_id=event.chat_id,
-                app_id=event.receiving_app_id,
-                source_message_id=event.message_id,
+            if (
+                sender_kind == "human"
+                and event.chat_type != "group"
+                and await self._agent_manager.handle_im_permission_reply(
+                    request_input.text,
+                    namespace_id=binding.namespace_id,
+                    agent_id=binding.agent_id,
+                    access=access,
+                    channel="feishu",
+                    target_id=event.chat_id,
+                    app_id=event.receiving_app_id,
+                    source_message_id=event.message_id,
+                    receiver_bot_mentioned=event.receiver_bot_mentioned,
+                )
             ):
                 return InboundDisposition.HANDLED
             received_at = event.received_at.astimezone(timezone.utc)
@@ -570,7 +472,27 @@ class PersistentGroupFanout:
                 await asyncio.to_thread(
                     self._groups.observe_access, binding.namespace_id, binding.agent_id, group.group_chat_id,
                     binding.app_id, observed_at=received_at, source_ref=f"feishu:message:{event.message_id}",
+                    message_time=received_at,
                 )
+                if binding.app_id not in await asyncio.to_thread(
+                    self._groups.active_apps, binding.namespace_id, binding.agent_id, group.group_chat_id,
+                ):
+                    return InboundDisposition.HANDLED
+                membership = await asyncio.to_thread(
+                    self._groups.access_for, binding.namespace_id, binding.agent_id, group.group_chat_id,
+                )
+                if received_at < membership.visible_from:
+                    logger.info("[JiuwenMate] stale Feishu group trigger ignored: agent_id=%s message_id=%s",
+                                binding.agent_id, event.message_id)
+                    return InboundDisposition.HANDLED
+                if sender_kind == "human" and await self._agent_manager.handle_im_permission_reply(
+                    request_input.text, namespace_id=binding.namespace_id, agent_id=binding.agent_id,
+                    access=access, channel="feishu", target_id=event.chat_id, app_id=event.receiving_app_id,
+                    source_message_id=event.message_id, is_direct_message=False,
+                    receiver_bot_mentioned=event.receiver_bot_mentioned,
+                    mentions_other=bool(event.mention_ids) and not event.receiver_bot_mentioned,
+                ):
+                    return InboundDisposition.HANDLED
                 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 
                 presented_text = request_input.text
@@ -734,15 +656,22 @@ class PersistentGroupFanout:
     async def _handle_group_change(self, binding: FeishuBinding, event: FeishuInboundEvent) -> InboundDisposition:
         """Lifecycle and recall facts change host records, never create business Requests."""
         invalid_group_event = (
-            event.event_kind not in {"recalled", "joined", "left", "group_updated"}
+            event.event_kind not in {"recalled", "joined", "left", "group_updated", "dissolved"}
             or event.chat_type != "group"
             or not _present(event.chat_id)
         )
         if invalid_group_event or not _present(event.event_id) or not _valid_received_at(event.changed_at):
             return InboundDisposition.REJECTED
         try:
-            group = await asyncio.to_thread(self._groups.resolve, binding.namespace_id, "feishu", event.chat_id,
-                                             now=self._clock())
+            if event.event_kind == "joined":
+                return InboundDisposition.HANDLED
+            if event.event_kind == "group_updated":
+                group = await asyncio.to_thread(self._groups.find, binding.namespace_id, "feishu", event.chat_id)
+                if group is None:
+                    return InboundDisposition.HANDLED
+            else:
+                group = await asyncio.to_thread(self._groups.resolve, binding.namespace_id, "feishu", event.chat_id,
+                                                 now=self._clock())
             source = f"feishu:event:{event.event_id}"
             if event.event_kind == "recalled":
                 if not _present(event.message_id):
@@ -750,15 +679,17 @@ class PersistentGroupFanout:
                 await asyncio.to_thread(self._agent_manager.group_archive.recall, binding.namespace_id,
                                          group.group_chat_id, event.message_id, source_ref=source,
                                          changed_at=event.changed_at)
-            elif event.event_kind in {"joined", "left"}:
+            elif event.event_kind == "dissolved":
+                await asyncio.to_thread(self._groups.mark_dissolved, binding.namespace_id, group.group_chat_id,
+                                        observed_at=event.changed_at, source_ref=source)
+            elif event.event_kind == "left":
                 await asyncio.to_thread(self._groups.update_membership, binding.namespace_id, binding.agent_id,
                                          group.group_chat_id, binding.app_id,
-                                         status="active" if event.event_kind == "joined" else "left",
+                                         status="left",
                                          observed_at=event.changed_at, source_ref=source)
             if event.group_name:
-                await asyncio.to_thread(
-                    self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name
-                )
+                await asyncio.to_thread(self._groups.set_name, binding.namespace_id, group.group_chat_id,
+                                        event.group_name, observed_at=event.changed_at)
         except Exception:
             return InboundDisposition.REJECTED
         return InboundDisposition.HANDLED
@@ -954,7 +885,7 @@ def feishu_member_names(platform_chat_id: str, app_ids: Sequence[str]) -> dict[s
         return cached[1]
     names: dict[str, str] = {}
     try:
-        names = _query_feishu_members(platform_chat_id, requested_apps)
+        names = _query_feishu_members(platform_chat_id, requested_apps) or {}
     except Exception:
         logger.warning("[JiuwenMate] Feishu member name lookup failed")
     if names:
@@ -964,12 +895,21 @@ def feishu_member_names(platform_chat_id: str, app_ids: Sequence[str]) -> dict[s
     return names
 
 
-def _query_feishu_members(platform_chat_id: str, app_ids: Sequence[str]) -> dict[str, str]:
+def feishu_group_roster(platform_chat_id: str, app_id: str) -> dict[str, str] | None:
+    """Read one authorized app's complete roster. None means the API could not supply it."""
+    if not platform_chat_id.startswith("oc_") or not app_id:
+        return None
+    return _query_feishu_members(platform_chat_id, (app_id,), require_complete=True)
+
+
+def _query_feishu_members(
+    platform_chat_id: str, app_ids: Sequence[str], *, require_complete: bool = False,
+) -> dict[str, str] | None:
     try:
         import lark_oapi as lark
         from lark_oapi.api.im.v1 import GetChatMembersRequest
     except ImportError:
-        return {}
+        return None if require_complete else {}
     from jiuwenswarm.common.config import get_config
 
     config = get_config()
@@ -988,13 +928,16 @@ def _query_feishu_members(platform_chat_id: str, app_ids: Sequence[str]) -> dict
     for app_id in app_ids:
         secret = secrets.get(app_id)
         if secret is None:
+            if require_complete:
+                return None
             continue
         client = _MEMBER_CLIENTS.get(app_id)
         if client is None:
             client = lark.Client.builder().app_id(app_id).app_secret(secret).build()
             _MEMBER_CLIENTS[app_id] = client
         page_token = ""
-        while True:
+        seen_tokens: set[str] = set()
+        for _ in range(100):
             builder = (
                 GetChatMembersRequest.builder()
                 .chat_id(platform_chat_id)
@@ -1004,16 +947,26 @@ def _query_feishu_members(platform_chat_id: str, app_ids: Sequence[str]) -> dict
             if page_token:
                 builder = builder.page_token(page_token)
             response = client.im.v1.chat_members.get(builder.build())
-            if not response.success():
+            if not response.success() or response.data is None:
+                if require_complete:
+                    return None
                 break
             for item in getattr(response.data, "items", None) or ():
                 member_id = str(getattr(item, "member_id", "") or "").strip()
                 member_name = str(getattr(item, "name", "") or "").strip()
                 if member_id and member_name:
                     names.setdefault(member_id, member_name)
+                elif require_complete:
+                    return None
             if not getattr(response.data, "has_more", False):
                 break
             page_token = str(getattr(response.data, "page_token", "") or "")
-            if not page_token:
+            if not page_token or page_token in seen_tokens:
+                if require_complete:
+                    return None
                 break
+            seen_tokens.add(page_token)
+        else:
+            if require_complete:
+                return None
     return names

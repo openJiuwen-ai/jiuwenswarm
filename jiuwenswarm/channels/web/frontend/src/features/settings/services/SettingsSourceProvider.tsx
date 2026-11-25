@@ -2,12 +2,20 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useTranslation } from 'react-i18next';
 import { Loading } from '../../../components/ui';
 import type { SettingValue, SettingsSource } from '../registry/types';
+import { useMultimodalSettings } from './useMultimodalSettings';
+import { MULTIMODAL_CAPABILITIES, multimodalModelOptions, type MultimodalCapability } from './multimodalSettings';
 import { useSettingsServices } from './SettingsServicesProvider';
 import { serializeConfigSettingValue } from './settingsSourceContract';
 import { useSettingsConfig } from './useSettingsConfig';
 import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../desktopBrowserDisplay';
+import { usePersonalContextStore } from '../../../stores/personalContextStore';
+import { parseContextCapacity } from '../modules/personalContext/capacitySetting';
+
+export type SettingsSourceOption = { value: SettingValue; label: string; title?: string };
 
 export type SettingsSourceController = {
+  optionsFor?: (key: string) => readonly SettingsSourceOption[];
+  requiresConfiguration?: (key: string) => boolean;
   values: Readonly<Record<string, unknown>>;
   savingKeys: ReadonlySet<string>;
   save: (
@@ -19,12 +27,6 @@ export type SettingsSourceController = {
 };
 
 const SettingsSourceContext = createContext<SettingsSourceController | null>(null);
-
-export function SettingsSourceVisibility({ when, children }: { when?: string; children: ReactNode }) {
-  const source = useContext(SettingsSourceContext);
-  if (when !== undefined && source?.values[when] !== true && source?.values[when] !== 'true') return null;
-  return children;
-}
 
 export function useSettingsSource(): SettingsSourceController {
   const value = useContext(SettingsSourceContext);
@@ -275,9 +277,69 @@ function LocaleSourceProvider({ children }: { children: ReactNode }) {
   return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
 }
 
+function MultimodalSourceProvider({ children }: { children: ReactNode }) {
+  const { snapshot, store } = useMultimodalSettings();
+  const [savingKeys, setSavingKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const values = useMemo(() => Object.fromEntries(MULTIMODAL_CAPABILITIES.flatMap((tool) => [
+    [`${tool}_enabled`, snapshot?.tools[tool].enabled ?? false],
+    [`${tool}_model_id`, snapshot?.tools[tool].model_id ?? ''],
+  ])), [snapshot]);
+  const save = useCallback(async (updates: Record<string, SettingValue>) => {
+    // A row writes one tool. Binding and enabled are submitted together when
+    // present; the server owns automatic selection, confirmation and projection.
+    const tool = MULTIMODAL_CAPABILITIES.find((id) => `${id}_enabled` in updates || `${id}_model_id` in updates);
+    if (!tool) throw new Error('Unknown multimodal setting');
+    const params: Record<string, unknown> = { tool_id: tool };
+    if (`${tool}_enabled` in updates) params.enabled = updates[`${tool}_enabled`];
+    if (`${tool}_model_id` in updates) params.model_id = updates[`${tool}_model_id`];
+    const keys = [`${tool}_enabled`, `${tool}_model_id`];
+    setSavingKeys((current) => addSavingKeys(current, keys));
+    try {
+      return await store.write('tools.update', params);
+    } finally {
+      setSavingKeys((current) => removeSavingKeys(current, keys));
+    }
+  }, [store]);
+  const controller = useMemo<SettingsSourceController>(() => ({
+    values,
+    savingKeys: snapshot ? savingKeys : new Set(Object.keys(values)),
+    save,
+    patchLocal: () => undefined,
+    requiresConfiguration: (key) => !snapshot?.tools[key.replace(/_enabled$/, '') as MultimodalCapability]?.model_id,
+    optionsFor: (key) => {
+      const tool = key.replace(/_model_id$/, '') as MultimodalCapability;
+      return multimodalModelOptions(snapshot?.models ?? [], tool);
+    },
+  }), [save, savingKeys, snapshot, values]);
+  return <SettingsSourceContext.Provider value={controller}>{children}</SettingsSourceContext.Provider>;
+}
+
+function PersonalContextSourceProvider({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
+  const config = usePersonalContextStore((state) => state.config);
+  const pending = usePersonalContextStore((state) => state.pendingWrites);
+  const setMaxContextSize = usePersonalContextStore((state) => state.setMaxContextSize);
+  const save = useCallback(async (updates: Record<string, SettingValue>) => {
+    const size = parseContextCapacity(updates.max_context_size_mb);
+    if (Object.keys(updates).length !== 1 || size === null) {
+      throw new Error(t('settingsPanel.fields.max_context_size_mb.invalid'));
+    }
+    await setMaxContextSize(size);
+  }, [setMaxContextSize, t]);
+  const value = useMemo<SettingsSourceController>(() => ({
+    values: { max_context_size_mb: config.max_context_size_mb ?? 50 },
+    savingKeys: new Set(Object.keys(pending).filter((key) => pending[key])),
+    save,
+    patchLocal: () => undefined,
+  }), [config.max_context_size_mb, pending, save]);
+  return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
+}
+
 export function SettingsSourceProvider({ source, children }: { source?: SettingsSource; children: ReactNode }) {
   if (source === 'config') return <ConfigSourceProvider>{children}</ConfigSourceProvider>;
   if (source === 'browser') return <BrowserSourceProvider>{children}</BrowserSourceProvider>;
   if (source === 'locale') return <LocaleSourceProvider>{children}</LocaleSourceProvider>;
+  if (source === 'multimodal') return <MultimodalSourceProvider>{children}</MultimodalSourceProvider>;
+  if (source === 'personalContext') return <PersonalContextSourceProvider>{children}</PersonalContextSourceProvider>;
   return children;
 }

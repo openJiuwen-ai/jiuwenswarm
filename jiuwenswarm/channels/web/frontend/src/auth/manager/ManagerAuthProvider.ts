@@ -1,13 +1,15 @@
 import type { EnterpriseAgentContext, EnterpriseUser } from '../../services/enterpriseContext';
 import { EnterpriseAuthError, type EnterpriseAuthProvider } from '../types';
 import {
+  clearActiveUserCluster,
   clearManagerTokens,
   getManagerAccessToken,
   getManagerRefreshToken,
   managerAuthenticatedFetch,
   redirectToManagerLogin,
 } from './authSession';
-import { resolveApiUrl } from '../../utils/env';
+import { userWebPaths } from './userWebPaths';
+import i18n from '../../i18n';
 
 interface ManagerResponse<T> {
   code: number;
@@ -29,7 +31,9 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
   try {
     response = await managerAuthenticatedFetch(path, init);
   } catch (error) {
-    throw new EnterpriseAuthError(0, `网络请求失败：${error instanceof Error ? error.message : String(error)}`);
+    throw new EnterpriseAuthError(0, i18n.t('auth.manager.networkFailed', {
+      message: error instanceof Error ? error.message : String(error),
+    }));
   }
   let body: unknown = null;
   try {
@@ -43,50 +47,25 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
 
 export const managerAuthProvider: EnterpriseAuthProvider = {
   id: 'manager',
-  startupMessage: '【正式身份认证模式，依赖manager ID认证服务】',
+  startupMessage: i18n.t('auth.startup.manager'),
   isAuthenticated: () => Boolean(getManagerAccessToken()),
   redirectToLogin() {
     return redirectToManagerLogin();
   },
-  // 所有 /idp、/manager-api 请求统一经 resolveApiUrl 拼接门户接口前缀后再发起（VITE_API_PREFIX 为空时原样返回）。
+  // Authentication and user-console endpoints share the dedicated user origin.
   async getCurrentUser() {
-    const user = await requestJson<EnterpriseUser>(resolveApiUrl('/idp/v1/auth/me'));
-    // Runtime owns the OIDC client; User Web only hosts its optional lifecycle page.
-    if (
-      localStorage.getItem('openjiuwen_oidc_renew') === 'true' &&
-      localStorage.getItem('openjiuwen_oidc_connection') &&
-      !document.querySelector('[data-testid="auth-federation-session"]')
-    ) {
-      const frame = document.createElement('iframe');
-      frame.hidden = true;
-      frame.setAttribute('aria-hidden', 'true');
-      frame.dataset.testid = 'auth-federation-session';
-      frame.src = resolveApiUrl('/auth/federation/session');
-      document.body.append(frame);
-    }
-    return user;
+    return requestJson<EnterpriseUser>('/idp/v1/auth/me');
   },
   async listAgentContexts() {
     const result = await requestJson<ManagerResponse<{ contexts: EnterpriseAgentContext[] }>>(
-      resolveApiUrl('/manager-api/v1/user-console/agent-contexts'),
+      '/manager-api/v1/user-console/agent-contexts',
     );
-    if (result.code !== 200) throw new EnterpriseAuthError(result.code, result.message || '加载 Agent 上下文失败');
+    if (result.code !== 200) throw new EnterpriseAuthError(result.code, result.message || i18n.t('auth.manager.contextFailed'));
     return result.data?.contexts ?? [];
-  },
-  async getManagerAccess() {
-    try {
-      const result = await requestJson<ManagerResponse<{ manager_access?: boolean; is_platform_admin?: boolean }>>(
-        resolveApiUrl('/manager-api/v1/authz/me'),
-      );
-      if (result.code !== 200) return false;
-      return Boolean(result.data?.manager_access || result.data?.is_platform_admin);
-    } catch {
-      return false;
-    }
   },
   async setActiveCluster(jiuwenclawId: string) {
     const result = await requestJson<ManagerResponse<{ jiuwenclaw_id: string }>>(
-      resolveApiUrl('/manager-api/v1/user-console/active-cluster'),
+      '/manager-api/v1/user-console/active-cluster',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -94,18 +73,18 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
       },
     );
     if (result.code !== 200) {
-      throw new EnterpriseAuthError(result.code, result.message || '切换集群失败');
+      throw new EnterpriseAuthError(result.code, result.message || i18n.t('auth.manager.switchClusterFailed'));
     }
   },
   async logout() {
     if (localStorage.getItem('openjiuwen_oidc_connection')) {
-      window.location.assign(resolveApiUrl('/auth/federation/logout'));
+      window.location.assign(`${userWebPaths().login}/federation/logout`);
       return;
     }
     const refreshToken = getManagerRefreshToken();
     if (refreshToken) {
       try {
-        await fetch(resolveApiUrl('/idp/v1/auth/logout'), {
+        await fetch('/idp/v1/auth/logout', {
           method: 'POST',
           credentials: 'include',
           headers: {
@@ -118,6 +97,7 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
         // Local logout must still complete when the identity service is unavailable.
       }
     }
+    await clearActiveUserCluster();
     clearManagerTokens();
     this.redirectToLogin();
   },

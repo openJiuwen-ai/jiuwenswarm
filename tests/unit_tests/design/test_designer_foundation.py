@@ -64,6 +64,45 @@ def test_graph_store_roundtrip(designer_store: DesignerGraphStore) -> None:
     assert loaded["project_id"] == "proj_test01"
 
 
+def test_layout_only_save_keeps_stored_prompts_and_output_refs(
+    designer_store: DesignerGraphStore,
+) -> None:
+    graph = make_pipeline_graph(project_id="proj_layout01", prompt="fallback room")
+    saved = designer_store.save_graph(graph)
+    nodes = {str(node["id"]): node for node in saved["nodes"]}
+    scene = nodes["n_scene"]
+    scene["config"] = {
+        **(scene.get("config") or {}),
+        "prompt": "real prompt",
+        "last_wan_prompt": "real prompt",
+        "generate": {"prompt": "real prompt", "aspect_ratio": "16:9"},
+    }
+    scene["output_ref"] = {"kind": "image", "uri": "file:///tmp/scene.png"}
+    saved = designer_store.save_graph(saved)
+
+    stale = deepcopy(saved)
+    stale_nodes = {str(node["id"]): node for node in stale["nodes"]}
+    stale_scene = stale_nodes["n_scene"]
+    stale_scene["config"] = {
+        **(stale_scene.get("config") or {}),
+        "prompt": "fallback room",
+        "last_wan_prompt": "fallback room",
+        "generate": {"prompt": "fallback room"},
+    }
+    stale_scene.pop("output_ref", None)
+    stale_scene["layout"] = {"x": 900, "y": 320, "width": 280, "height": 160}
+
+    merged = designer_store.save_graph(stale, layout_only=True)
+    merged_scene = next(node for node in merged["nodes"] if node["id"] == "n_scene")
+    assert merged_scene["layout"]["x"] == 900
+    assert merged_scene["layout"]["y"] == 320
+    assert merged_scene["config"]["prompt"] == "real prompt"
+    assert merged_scene["config"]["last_wan_prompt"] == "real prompt"
+    assert merged_scene["config"]["generate"]["prompt"] == "real prompt"
+    assert merged_scene["config"]["generate"]["aspect_ratio"] == "16:9"
+    assert merged_scene["output_ref"]["uri"] == "file:///tmp/scene.png"
+
+
 def test_graph_and_run_ids_cannot_escape_their_directories(
     designer_store: DesignerGraphStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -20,16 +20,11 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+from e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.request_identity import apply_routing_metadata
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
-
-
-@pytest.fixture(autouse=True)
-def _register_team_control_methods():
-    ensure_team_control_req_methods()
 from jiuwenswarm.enterprise.team import handlers
 from jiuwenswarm.server.runtime.team_binding_store import (
     TeamBindingStore,
@@ -113,8 +108,13 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     real_reserve = quota.reserve_team_create
 
-    def _reserve(identity, session_id):
-        lease = real_reserve(identity, session_id)
+    def _reserve(identity, session_id, *, pending_non_leaders=None, on_existing="ignore"):
+        lease = real_reserve(
+            identity,
+            session_id,
+            pending_non_leaders=pending_non_leaders,
+            on_existing=on_existing,
+        )
         seen["used_after_reserve"] = quota.snapshot_user(identity)["teams"]["used"]
         return lease
 

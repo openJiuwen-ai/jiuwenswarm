@@ -29,6 +29,10 @@ if [[ ! -d node_modules ]]; then
     npm install
 fi
 npm run build
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+cd "$PROJECT_ROOT/packages/jiuwenswarm-office-addin"
+npm ci --no-audit --no-fund
+npm run build:desktop
 cd "$PROJECT_ROOT"
 
 DIST_DIR="$WEB_DIR/dist"
@@ -59,7 +63,7 @@ trap cleanup EXIT
 
 # 2. 构建 wheel
 echo "[build] 正在构建 wheel 包..."
-pip install -q --upgrade build wheel
+python -m pip install -q --upgrade build 'wheel>=0.46.3' 'setuptools>=70.1.0' 'packaging>=23.0'
 python -m build --wheel --no-isolation
 
 # 确保 dist 目录存在

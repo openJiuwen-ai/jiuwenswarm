@@ -123,7 +123,6 @@ class SDKExecutionDriver:
             if previous is not None and previous.owner is owner._instance:
                 if (
                     owner._is_interrupt_resume_dispatch(request.params)
-                    and answer is None
                     and not owner._goal_record_is_active()
                 ):
                     await previous.wait()

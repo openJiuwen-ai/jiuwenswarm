@@ -333,9 +333,17 @@ async def test_response_prompt_rail_keeps_tui_runtime_channel_disabled(monkeypat
     assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
 
 
-def test_browser_task_prompt_rail_accepts_runtime_channel_updates():
+@pytest.mark.parametrize("enable_subagent_runtime", [False, True])
+def test_browser_task_prompt_rail_accepts_runtime_channel_updates(enable_subagent_runtime):
     """The browser task rail must accept the same runtime channel sync used by other prompt rails."""
-    rail = BrowserTaskPromptRail()
+    rail = BrowserTaskPromptRail(
+        enable_subagent_runtime=enable_subagent_runtime,
+        cua_agent_enabled=True,
+    )
+    assert rail._channel is None
+    assert rail._deep_agent is None
+    assert rail._cua_agent_enabled is True
+    assert {"browser_agent", "cua_agent"} <= rail.synchronous_subagent_types
 
     rail.set_channel("web")
     assert rail._channel == "web"

@@ -16,9 +16,11 @@ _CUA_TASK_PROMPT = {
         "- Desktop Agent 是同步的专用桌面能力，不是可选的并行委派。即使用户没有明确说"
         "“子代理”，即使主流程必须等待桌面结果，也应遵循本节规则；本节覆盖通用子代理"
         "规则中“未明确要求委派时不要调用”和“关键路径不要等待子代理”的限制。\n"
-        "- `task_description` 必须保留用户的完整动作目标，不得把“在记事本里输入并保存”"
-        "缩减为步骤说明。发送消息、删除文件、提交表单、支付等不可逆操作，仍须在桌面任务"
-        "执行前取得用户最终确认。\n"
+        "- 在 `task_description` 中忠实传达用户的指令，保留完整动作目标和用户明确给出的参数及约束。"
+        "未指定的参数保持未指定，只补充执行所需的已知上下文。不要把推测或额外步骤写成任务要求。"
+        "发送消息、删除文件、提交表单、支付等不可逆操作，仍须在桌面任务执行前取得用户最终确认。\n"
+        "- 收到 `cua_agent` 报告用户已停止桌面任务（例如按 Esc）时，结束当前任务并告知用户已停止及已确认的进度，"
+        "只有用户明确要求恢复后才能重试、重启、重新委派，或使用任何工具继续或核验该任务。\n"
         "- 不要通过 Bash、PowerShell、代码执行、子进程、AppleScript、AutoHotkey、pyautogui "
         "等方式驱动应用窗口；桌面自动化只走 cua_agent。无需图形界面的普通文件/命令行工作"
         "仍由你自己的工具完成。\n"
@@ -36,10 +38,15 @@ _CUA_TASK_PROMPT = {
         "Apply this rule even when the user did not explicitly request a subagent and even when "
         "the main path must wait for the result. This section overrides generic subagent rules "
         "that prohibit unrequested delegation or waiting on critical-path subagents.\n"
-        "- Preserve the user's complete action objective in `task_description`; do not narrow "
-        '"type this into Notepad and save it" into a description of the steps. Irreversible '
-        "actions (sending messages, deleting files, submitting forms, payments) still require the "
-        "user's final confirmation before the desktop task performs them.\n"
+        "- In `task_description`, faithfully relay the user's instructions. Preserve the full "
+        "objective and the parameters and constraints the user specified. Leave unspecified parameters "
+        "unspecified. Include only known context needed to carry out the task. Do not turn assumptions "
+        "or extra steps into task requirements. Irreversible actions (sending messages, deleting files, "
+        "submitting forms, payments) still require the user's final confirmation before the desktop "
+        "task performs them.\n"
+        "- When `cua_agent` reports that the user stopped the desktop task (for example, by pressing Esc), "
+        "end the task, tell the user it stopped and report any confirmed progress, and wait for an explicit "
+        "request to resume before retrying, restarting, delegating again, or using any tool to continue or verify it.\n"
         "- Do not use Bash, PowerShell, code execution, subprocesses, AppleScript, AutoHotkey, "
         "pyautogui, or similar to drive application windows; desktop automation goes through "
         "cua_agent only. Plain file and shell work that needs no GUI stays with your own tools.\n"
@@ -89,10 +96,68 @@ _CUA_UNAVAILABLE_PROMPT = {
 }
 
 
-def build_cua_unavailable_prompt(language: str = "cn") -> str:
-    """Return localized guidance for when cua_agent was skipped for lack of vision."""
+_CUA_BACKEND_UNAVAILABLE_PROMPT = {
+    "cn": (
+        "## 桌面能力不可用\n\n"
+        "当前环境没有可用的电脑操控后端。用户要求操作本机应用或桌面时，请说明这一点，"
+        "不要通过命令行或脚本操作图形界面。"
+    ),
+    "en": (
+        "## Desktop Capability Unavailable\n\n"
+        "No computer control backend is available on this host. If the user asks to operate a "
+        "local app or the desktop, explain this and do not drive the GUI through shell commands or scripts."
+    ),
+}
 
-    return _CUA_UNAVAILABLE_PROMPT.get(language, _CUA_UNAVAILABLE_PROMPT["cn"])
+
+_CUA_APP_LAUNCH_PROMPT = {
+    "cn": (
+        "永远不要使用 `subprocess`、`os.system`、`os.startfile`、Shell 命令或类似方式直接启动程序。"
+        "需要打开应用时，只使用当前可用的桌面操控工具。"
+    ),
+    "en": (
+        "Never use `subprocess`, `os.system`, `os.startfile`, shell commands, or similar methods to launch "
+        "programs directly. Open applications only through the available desktop tools."
+    ),
+}
+
+
+def build_cua_app_launch_prompt(language: str) -> str:
+    """Return the desktop subagent's application launch guidance."""
+    return _CUA_APP_LAUNCH_PROMPT.get(language, _CUA_APP_LAUNCH_PROMPT["cn"])
+
+
+def build_cua_unavailable_prompt(language: str = "cn", *, backend_available: bool = True) -> str:
+    """Return guidance for the host or model capability that prevented desktop access."""
+
+    prompts = _CUA_UNAVAILABLE_PROMPT if backend_available else _CUA_BACKEND_UNAVAILABLE_PROMPT
+    return prompts.get(language, prompts["cn"])
+
+
+def build_cua_repl_prompt(language: str) -> str:
+    """Return host-specific guidance for the desktop subagent's REPL."""
+    if language == "en":
+        intro = (
+            "Operate the host desktop through cua_repl. Only act on apps needed for the user's task. "
+            "Leave web page automation to the browser agent. Verify the outcome by observing it."
+        )
+        instructions = (
+            "Call SDK methods synchronously in cua_repl. Python variables persist within this delegation. "
+            "The host closes the session afterwards. Code runs with the host user's permissions. "
+            'Use `app.read(view="both")` when you need the tree and screenshot together. '
+            "The tool displays the result automatically. There is no need to print or slice the text."
+        )
+    else:
+        intro = (
+            "使用 cua_repl 操作本机桌面，仅操作用户任务所需的应用。"
+            "网页自动化交给浏览器子代理。操作后观察结果以确认是否完成。"
+        )
+        instructions = (
+            "在 cua_repl 中直接调用同步 SDK 方法。Python 变量在本次委派期间保留，委派结束后由宿主关闭会话。"
+            "代码以宿主用户的权限运行。"
+            '需要同时查看界面树和截图时用 `app.read(view="both")`。工具自动显示读取结果，无需打印或截取文本。'
+        )
+    return f"{intro}\n{instructions}"
 
 
 def build_cua_task_prompt(
@@ -112,4 +177,9 @@ def build_cua_task_prompt(
     return text
 
 
-__all__ = ["build_cua_task_prompt", "build_cua_unavailable_prompt"]
+__all__ = [
+    "build_cua_app_launch_prompt",
+    "build_cua_repl_prompt",
+    "build_cua_task_prompt",
+    "build_cua_unavailable_prompt",
+]

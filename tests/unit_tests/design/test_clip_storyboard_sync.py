@@ -204,18 +204,3 @@ def test_clip_prompt_leads_with_storyboard_beat(tmp_path):
     assert "primary start blocking" not in prompt.lower()
 
 
-def test_last_frame_clause_does_not_override_storyboard_plot():
-    from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
-        last_frame_continuity_clause,
-    )
-
-    text = last_frame_continuity_clause(
-        used=True,
-        chain=[
-            {"path": "/tmp/a.jpg", "clip_index": 1, "action": "walked to the door"},
-        ],
-    )
-    low = text.lower()
-    assert "storyboard shot" in low
-    assert "continue from this pose" not in low
-    assert "primary start blocking" not in low

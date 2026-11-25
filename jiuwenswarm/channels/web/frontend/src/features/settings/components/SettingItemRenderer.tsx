@@ -1,18 +1,38 @@
-import { useCallback, useContext, useEffect, useId, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useId, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Select, Switch } from '../../../components/ui';
+import { Button, FieldError, Input, Select, Switch, toast, type SelectOption } from '../../../components/ui';
+import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import type { SettingItemDefinition } from '../registry/types';
 import { parseConfigBoolean } from '../services/settingsContract';
 import { useSettingsServices } from '../services/SettingsServicesProvider';
 import { formatSettingsSaveError, InlineSaveFeedbackContext } from '../services/settingsSaveFeedback';
-import { SettingsSourceProvider, useSettingsSource } from '../services/SettingsSourceProvider';
+import { SettingsSourceProvider, useSettingsSource, type SettingsSourceOption } from '../services/SettingsSourceProvider';
 import { useUnsavedChanges } from '../services/useUnsavedChanges';
 import { SettingRow } from './SettingRow';
 
 type EditingChange = (id: string, editing: boolean) => void;
 
-function settingFieldKey(key: string, suffix: 'title' | 'description' | 'placeholder'): string {
+function settingFieldKey(key: string, suffix: 'title' | 'description' | 'placeholder' | 'unavailableDescription'): string {
   return `settingsPanel.fields.${key}.${suffix}`;
+}
+
+function UnavailableSwitch({ reason, children }: { reason: string; children: ReactNode }) {
+  const { tooltip, handlers } = useAdaptiveTooltip();
+  return (
+    <>
+      <span
+        className="setting-row__unavailable-switch"
+        data-testid="settings-unavailable-switch"
+        data-tooltip={reason}
+        aria-label={reason}
+        tabIndex={0}
+        {...handlers}
+      >
+        {children}
+      </span>
+      {tooltip}
+    </>
+  );
 }
 
 function InlineSettingInput({
@@ -30,6 +50,7 @@ function InlineSettingInput({
   const saving = source.savingKeys.has(item.key);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
+  const [error, setError] = useState('');
   const hasChanges = editing && draft.trim() !== value;
   useUnsavedChanges(`settings-input:${item.id}`, hasChanges);
 
@@ -43,23 +64,28 @@ function InlineSettingInput({
 
   const cancel = () => {
     setDraft(value);
+    setError('');
     setEditing(false);
   };
   const save = async () => {
+    setError('');
     await source.save({ [item.key]: draft.trim() }, item.id);
     setEditing(false);
   };
 
   return (
-    <div className="settings-inline-input" data-testid="settings-inline-input" data-variant={item.id}>
+    <div className={`settings-inline-input${error ? ' settings-inline-input--error' : ''}`} data-testid="settings-inline-input" data-variant={item.id}>
       <Input
         type={item.inputType ?? 'text'}
+        inputMode={item.inputMode}
+        invalid={Boolean(error)}
+        aria-describedby={error ? `settings-input-error-${item.id}` : undefined}
         aria-label={t(settingFieldKey(item.key, 'title'))}
         value={editing ? draft : value}
         placeholder={t(settingFieldKey(item.key, 'placeholder'))}
         readOnly={!editing}
         disabled={disabled || saving}
-        onChange={setDraft}
+        onChange={(next) => { setDraft(next); setError(''); }}
         data-testid="settings-inline-input-field"
         data-variant={item.id}
       />
@@ -72,7 +98,9 @@ function InlineSettingInput({
             size="sm"
             variant="primary"
             disabled={disabled || saving || !hasChanges}
-            onClick={() => void save().catch(() => undefined)}
+            onClick={() => void save().catch((cause) => {
+              if (item.errorDisplay === 'inline') setError(cause instanceof Error ? cause.message : t('common.error'));
+            })}
             data-testid="settings-inline-input-save-btn"
             data-variant={item.id}
           >
@@ -83,6 +111,11 @@ function InlineSettingInput({
         <Button size="sm" disabled={disabled || saving} onClick={() => setEditing(true)} data-testid="settings-inline-input-modify-btn" data-variant={item.id}>
           {t('common.modify')}
         </Button>
+      )}
+      {error && (
+        <div id={`settings-input-error-${item.id}`} className="settings-inline-input__error" role="alert">
+          <FieldError testId="settings-inline-input-error">{error}</FieldError>
+        </div>
       )}
     </div>
   );
@@ -128,7 +161,10 @@ function SimpleSettingItem({
 
   if (item.component === 'switch') {
     const Configuration = item.configure;
+    const unavailable = item.availableWhen !== undefined && !parseConfigBoolean(source.values[item.availableWhen]);
     const checked = parseConfigBoolean(source.values[item.key]);
+    const unavailableDescription = settingFieldKey(item.key, 'unavailableDescription');
+    const switchDescription = unavailable ? t(unavailableDescription) : description;
     const buildSwitchUpdates = (next: boolean): Record<string, boolean> => {
       const updates: Record<string, boolean> = { [item.key]: next };
       if (!next && item.subItems?.uncheckWithParent) {
@@ -143,23 +179,34 @@ function SimpleSettingItem({
         aria-label={title}
         aria-describedby={error?.id}
         checked={checked}
-        disabled={controlDisabled || configuring || editingSubItems.size > 0}
+        disabled={controlDisabled || configuring || editingSubItems.size > 0 || unavailable}
         onChange={(next) => {
-          if (next && Configuration) setConfiguring(true);
-          else void source.save(buildSwitchUpdates(next), item.id).catch(() => undefined);
+          if (next && Configuration && (source.requiresConfiguration?.(item.key) ?? true)) setConfiguring(true);
+          else void source.save(
+            buildSwitchUpdates(next), item.id,
+            item.optimistic === undefined ? undefined : { optimistic: item.optimistic },
+          ).catch(() => undefined);
         }}
         data-testid="settings-switch"
         data-variant={item.id}
       />
     );
-    const showSubItems = item.subItems?.show === 'always' || checked;
-    const subItemsDisabled = disabled || (item.subItems?.disabled === 'when-parent-unchecked' && !checked);
+    if (unavailable) {
+      const reason = item.unavailableReasonKey ? source.values[item.unavailableReasonKey] : undefined;
+      const tooltipText = typeof reason === 'string' && reason
+        ? t(`settingsPanel.fields.${item.key}.unavailableReasons.${reason}`, { defaultValue: switchDescription })
+        : switchDescription;
+      control = <UnavailableSwitch reason={tooltipText}>{control}</UnavailableSwitch>;
+    }
+    const enabled = checked && !unavailable;
+    const showSubItems = item.subItems?.show === 'always' || enabled;
+    const subItemsDisabled = disabled || (item.subItems?.disabled === 'when-parent-unchecked' && !enabled);
     return (
       <>
         <SettingRow
           className={item.rowClassName}
           title={title}
-          description={<>{description}{error && <span className="setting-row__error" id={error.id} role="alert" data-testid="settings-item-error" data-variant={item.id}>{error.message}</span>}</>}
+          description={<>{switchDescription}{error && <span className="setting-row__error" id={error.id} role="alert" data-testid="settings-item-error" data-variant={item.id}>{error.message}</span>}</>}
           subSettings={
             item.subItems && showSubItems
               ? item.subItems.items.map((subItem) => (
@@ -188,16 +235,34 @@ function SimpleSettingItem({
   }
 
   if (item.component === 'select') {
-    const selectedIndex = item.options.findIndex((option) => Object.is(option.value, source.values[item.key]));
-    const options = item.options.map((option, index) => ({ value: String(index), label: t(option.labelKey) }));
+    if (item.optionsFromSource && !source.optionsFor) throw new Error(`Settings source has no options for ${item.key}`);
+    const entries: readonly SettingsSourceOption[] = item.optionsFromSource ? source.optionsFor!(item.key)
+      : item.options.map((option) => ({ ...option, label: t(option.labelKey) }));
+    const selectedIndex = entries.findIndex((option) => Object.is(option.value, source.values[item.key]));
+    const options: SelectOption[] = entries.map((option, index) => ({
+      value: String(index),
+      title: option.title ?? option.label,
+      label: (
+        <span className="settings-select__label" data-testid="settings-select-label">
+          {option.label}
+        </span>
+      ),
+    }));
+    if (item.configure) options.push({ value: 'configure', label: t('settingsPanel.models.addModel') });
     control = (
       <Select
+        className="settings-select"
         aria-label={title}
+        title={entries[selectedIndex]?.label}
         value={String(selectedIndex)}
         disabled={controlDisabled}
         options={options}
         onChange={(index) => {
-          const option = item.options[Number(index)];
+          if (index === 'configure') {
+            setConfiguring(true);
+            return;
+          }
+          const option = entries[Number(index)];
           if (option) void source.save({ [item.key]: option.value }, item.id).catch(() => undefined);
         }}
         data-testid="settings-select"
@@ -209,13 +274,22 @@ function SimpleSettingItem({
   }
 
   return (
-    <SettingRow title={title} description={description}>
-      {control}
-    </SettingRow>
+    <>
+      <SettingRow
+        title={title}
+        description={description}
+        className={item.component === 'select' ? 'setting-row--select' : undefined}
+      >
+        {control}
+      </SettingRow>
+      {item.component === 'select' && configuring && item.configure ? (
+        <item.configure onClose={() => setConfiguring(false)} />
+      ) : null}
+    </>
   );
 }
 
-function InlineFeedbackSettingItem({
+function FeedbackSettingItem({
   item,
   disabled,
   onEditingChange,
@@ -231,9 +305,18 @@ function InlineFeedbackSettingItem({
   const subscribe = useCallback((listener: () => void) => saveQueue.subscribe(listener), [saveQueue]);
   const saveStatus = useSyncExternalStore(subscribe, saveQueue.getSnapshot, saveQueue.getSnapshot);
   useEffect(() => registerInlineFeedback(item.id), [item.id, registerInlineFeedback]);
-  const error = saveStatus.status === 'error' && saveStatus.operation === item.id
-    ? { id: errorId, message: formatSettingsSaveError(saveStatus.error, t) }
+  const message = saveStatus.status === 'error' && saveStatus.operation === item.id
+    ? formatSettingsSaveError(saveStatus.error, t)
     : undefined;
+  useEffect(() => {
+    if (item.errorDisplay !== 'toast' || !message) return undefined;
+    const key = toast.open({
+      id: `settings-save-error:${item.id}`, content: message, variant: 'error',
+      testId: 'settings-item-error-toast', dataVariant: item.id,
+    });
+    return () => toast.close(key);
+  }, [item.errorDisplay, item.id, message]);
+  const error = item.errorDisplay === 'inline' && message ? { id: errorId, message } : undefined;
   return <SimpleSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} error={error} />;
 }
 
@@ -267,8 +350,8 @@ export function SettingItemRenderer({
     const CustomItem = item.render;
     return <CustomItem disabled={disabled} onEditingChange={reportCustomEditing} />;
   }
-  if (item.component === 'switch' && item.errorDisplay === 'inline') {
-    return <InlineFeedbackSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
+  if (item.component === 'switch' && item.errorDisplay !== undefined) {
+    return <FeedbackSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
   }
   return <SimpleSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
 }

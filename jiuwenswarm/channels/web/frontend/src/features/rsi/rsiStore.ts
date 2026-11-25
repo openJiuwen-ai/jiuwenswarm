@@ -87,6 +87,7 @@ function emptyDetail(): RsiDetailState {
 
 // Polling and push-triggered refreshes share one in-flight request per task.
 const detailRequests = new Map<string, Promise<void>>();
+const statusUpdates = new Map<string, { status: RsiTaskStatus; failureReason?: string | null }>();
 
 export const useRsiStore = create<RsiState>((set, get) => ({
   list: [],
@@ -119,6 +120,7 @@ export const useRsiStore = create<RsiState>((set, get) => ({
   refreshDetail: (taskId) => {
     const pending = detailRequests.get(taskId);
     if (pending) return pending;
+    const statusAtStart = statusUpdates.get(taskId);
     const request = Promise.resolve()
       .then(async () => {
         set({ detailLoading: true });
@@ -135,20 +137,42 @@ export const useRsiStore = create<RsiState>((set, get) => ({
           const report = reportResult.status === 'fulfilled' ? reportResult.value : null;
           const usage = usageResult.status === 'fulfilled' ? usageResult.value : null;
           const tree = treeResult.status === 'fulfilled' ? treeResult.value : null;
-          set((state) => ({
-            detail: {
-              ...state.detail,
-              [taskId]: {
-                ...(state.detail[taskId] ?? emptyDetail()),
-                task,
-                report,
-                usage,
-                tree: tree ? mergeTree(tree, state.detail[taskId]?.pendingTreeNodes ?? []) : null,
-                pendingTreeNodes: tree ? [] : (state.detail[taskId]?.pendingTreeNodes ?? []),
+          set((state) => {
+            const previous = state.detail[taskId];
+            // Status changes after request start win over its older snapshot.
+            const currentTask = previous?.task;
+            const latestStatus = statusUpdates.get(taskId);
+            const newerStatus = latestStatus !== statusAtStart ? latestStatus : null;
+            let resolvedTask = newerStatus
+              ? {
+                  ...task,
+                  status: newerStatus.status,
+                  failure_reason: newerStatus.failureReason ?? task.failure_reason,
+                }
+              : task;
+            if (!newerStatus && currentTask && ['COMPLETED', 'FAILED', 'TERMINATED', 'PAUSED'].includes(currentTask.status) &&
+              !['COMPLETED', 'FAILED', 'TERMINATED', 'PAUSED'].includes(task.status)) {
+              resolvedTask = currentTask;
+            }
+            return {
+              list: state.list.map((item) => item.task_id === taskId
+                ? { ...item, status: resolvedTask.status, running: resolvedTask.status === 'RUNNING' }
+                : item),
+              detail: {
+                ...state.detail,
+                [taskId]: {
+                  ...(previous ?? emptyDetail()),
+                  task: resolvedTask,
+                  liveProgress: resolvedTask.status === 'RUNNING' ? previous?.liveProgress ?? null : null,
+                  report,
+                  usage,
+                  tree: tree ? mergeTree(tree, previous?.pendingTreeNodes ?? []) : null,
+                  pendingTreeNodes: tree ? [] : (previous?.pendingTreeNodes ?? []),
+                },
               },
-            },
-            detailLoading: false,
-          }));
+              detailLoading: false,
+            };
+          });
         } catch (e) {
           set({ detailLoading: false });
           console.error('[rsi] refreshDetail failed', e);
@@ -156,6 +180,7 @@ export const useRsiStore = create<RsiState>((set, get) => ({
       })
       .finally(() => {
         detailRequests.delete(taskId);
+        statusUpdates.delete(taskId);
       });
     detailRequests.set(taskId, request);
     return request;
@@ -194,6 +219,7 @@ export const useRsiStore = create<RsiState>((set, get) => ({
   },
 
   patchTaskStatus: (taskId, status, failureReason) => {
+    if (detailRequests.has(taskId)) statusUpdates.set(taskId, { status, failureReason });
     set((state) => {
       const list = state.list.map((t) => (t.task_id === taskId ? { ...t, status, running: status === 'RUNNING' } : t));
       const cur = state.detail[taskId];
@@ -202,6 +228,7 @@ export const useRsiStore = create<RsiState>((set, get) => ({
             ...state.detail,
             [taskId]: {
               ...cur,
+              liveProgress: status === 'RUNNING' ? cur.liveProgress : null,
               task: cur.task
                 ? {
                     ...cur.task,
@@ -222,7 +249,10 @@ export const useRsiStore = create<RsiState>((set, get) => ({
       get().selectedTaskId === payload.task_id &&
       (payload.status === 'COMPLETED' || payload.status === 'FAILED' || payload.status === 'TERMINATED')
     ) {
-      void get().refreshDetail(payload.task_id);
+      // An existing poll may have read the report before terminalization.
+      const pending = detailRequests.get(payload.task_id);
+      if (pending) void pending.then(() => get().refreshDetail(payload.task_id));
+      else void get().refreshDetail(payload.task_id);
     }
   },
 
@@ -236,6 +266,8 @@ export const useRsiStore = create<RsiState>((set, get) => ({
     const tid = payload.task_id;
     set((state) => {
       const cur = state.detail[tid] ?? emptyDetail();
+      const status = cur.task?.status ?? state.list.find((task) => task.task_id === tid)?.status;
+      if (status && ['COMPLETED', 'FAILED', 'TERMINATED', 'PAUSED'].includes(status)) return state;
       const list = state.list.map((t) =>
         t.task_id === tid
           ? {

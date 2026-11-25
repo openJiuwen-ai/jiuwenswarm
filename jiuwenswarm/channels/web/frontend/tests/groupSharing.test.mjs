@@ -363,17 +363,52 @@ test('sharing UI has matching Chinese and English resources and renders translat
   } finally { await view.close(); await i18n.changeLanguage('en'); }
 });
 
-test('a backend-created private conversation opens approval cards even with zero ordinary Requests', async () => {
+test('an approval-only directory defaults to a private chat and opens approvals only when selected', async () => {
   const view = await renderWorkspace(snapshot(), [{
     conversation_id: 'sharing-approvals', title: 'Approvals', updated_at: '2026-10-27T00:00:00Z',
     last_message: 'Confidential budget summary',
   }]);
   try {
-    assert.ok(view.find('card'));
+    assert.ok(!view.find('card'));
+    assert.ok(view.dom.window.document.querySelector('[data-testid="jiuwenmate-composer-input"]'));
     const record = view.dom.window.document.querySelector('[data-testid="jiuwenmate-conversation-record"]');
     assert.doesNotMatch(record.textContent, /Confidential/);
+    assert.ok(!view.calls.some((call) => call.params.mark_read === true));
+    await act(async () => record.querySelector('button').click());
+    await flush();
+    assert.ok(view.find('card'));
     assert.ok(!view.calls.some((call) => call.method === 'jiuwenmate.chat.history' && call.params.conversation_id === 'sharing-approvals'));
     assert.equal(view.dom.window.document.querySelector('[data-testid="jiuwenmate-composer-input"]'), null);
+  } finally { await view.close(); }
+});
+
+test('the ordinary private chat opens even when the approval conversation is newer', async () => {
+  const view = await renderWorkspace(snapshot(), [{
+    conversation_id: 'sharing-approvals', title: 'Approvals', updated_at: '2026-11-09T02:00:00Z',
+  }, {
+    conversation_id: 'normal', title: 'Normal chat', updated_at: '2026-11-09T01:00:00Z',
+  }]);
+  try {
+    assert.ok(!view.find('card'));
+    assert.ok(view.dom.window.document.querySelector('[data-testid="jiuwenmate-composer-input"]'));
+    assert.ok(view.calls.some((call) => call.method === 'jiuwenmate.chat.history' && call.params.conversation_id === 'normal'));
+    assert.ok(!view.calls.some((call) => call.params.mark_read === true));
+  } finally { await view.close(); }
+});
+
+test('approval updates remain listed without replacing the current private chat during polling', async () => {
+  const normal = { conversation_id: 'normal', title: 'Normal chat', updated_at: '2026-11-09T01:00:00Z' };
+  const view = await renderWorkspace(snapshot(), [normal]);
+  try {
+    view.state.conversations = [{
+      conversation_id: 'sharing-approvals', title: 'Approvals', unread: true,
+      updated_at: '2026-11-09T02:00:00Z',
+    }, normal];
+    await view.poll();
+    assert.ok(!view.find('card'));
+    assert.ok(view.dom.window.document.querySelector('[data-testid="jiuwenmate-composer-input"]'));
+    assert.ok(view.dom.window.document.querySelector('[data-testid="jiuwenmate-sharing-unread"]'));
+    assert.ok(!view.calls.some((call) => call.params.mark_read === true));
   } finally { await view.close(); }
 });
 

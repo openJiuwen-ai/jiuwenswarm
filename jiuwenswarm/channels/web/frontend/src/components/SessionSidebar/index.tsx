@@ -4,7 +4,7 @@
  * Redesigned sidebar with logo and navigation.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
 import PlusIcon from '../../assets/sidebar/plus.svg?react';
@@ -15,6 +15,7 @@ import WorkIcon from '../../assets/工作.svg?react';
 import SkillDesignIcon from '../../assets/agent-management/agent-skill.svg?react';
 import AgentDesignIcon from '../../assets/智能体.svg?react';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
+import ReaNavIcon from '../../assets/sidebar/rea.svg';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
 import type {
   ApplicationPluginContribution,
@@ -22,10 +23,24 @@ import type {
 } from '../../applicationPlugins/types';
 import { EnterpriseContextSwitcher } from './EnterpriseContextSwitcher';
 import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
+import { WebUIHost, WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
 
-type MainNavKey = SidebarNavKey | 'connectorMarket' | ApplicationPluginNavKey;
+const pluginNavigationStyles: WebUIStyleOverrides = {
+  Button: {
+    unstyled: true,
+    className: 'icon-rail-nav-item disabled:cursor-not-allowed disabled:opacity-50',
+    activeClassName: 'icon-rail-nav-item--active',
+    icon: <PluginIcon aria-hidden />,
+    iconClassName: 'icon-rail-nav-item__icon',
+    labelClassName: 'icon-rail-nav-item__label',
+  },
+  Box: { unstyled: true, className: 'flex min-w-0 w-full flex-col items-center' },
+};
+
+type MainNavKey = SidebarNavKey | 'connectorMarket' | 'webui' | ApplicationPluginNavKey;
 
 interface SessionSidebarProps {
+  webUIReady?: boolean;
   activeNav: MainNavKey;
   onNavigate: (nav: MainNavKey) => void;
   onNewSession?: () => void;
@@ -66,6 +81,16 @@ const teamNavIcon = (
   </svg>
 );
 
+// "应用市场"导航图标——店面/雨棚隐喻，和"扩展"的网格图标、plugin.svg 区分开。
+const appMarketNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5V19a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-8.5" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5h18v1.75a2.25 2.25 0 0 1-4.5 0 2.25 2.25 0 0 1-4.5 0 2.25 2.25 0 0 1-4.5 0 2.25 2.25 0 0 1-4.5 0Z" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 20.5v-4a1.5 1.5 0 0 1 1.5-1.5h1.5a1.5 1.5 0 0 1 1.5 1.5v4" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M5 7.5 6.7 4.9a2 2 0 0 1 1.68-.9h7.24a2 2 0 0 1 1.68.9L19 7.5" />
+  </svg>
+);
+
 const experimentsNavIcon = (
   <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" width="16.000000" height="16.000000" fill="none">
     <rect id="rsi" width="16.000000" height="16.000000" x="0.000000" y="0.000000" />
@@ -99,12 +124,37 @@ const personalContextNavIcon = (
   </svg>
 );
 
+
+const workspaceNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"
+    />
+  </svg>
+);
+
+/** 7519：「我的申请」文档图标，挂在侧栏底部 spacer 下方，不与工作空间共用文件夹。 */
+const approvalsNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+    />
+  </svg>
+);
+
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
+  { key: 'workspace', labelKey: 'nav.workspace', icon: workspaceNavIcon },
   { key: 'teams', labelKey: 'nav.teams', icon: teamNavIcon },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
+  { key: 'rea', labelKey: 'nav.rea', icon: <img src={ReaNavIcon} alt="" width={16} height={16} /> },
   { key: 'connectorMarket', labelKey: 'nav.connectorMarket', icon: connectorMarketNavIcon },
+  { key: 'appMarket', labelKey: 'nav.appMarket', icon: appMarketNavIcon },
   { key: 'experiments', labelKey: 'nav.experiments', icon: experimentsNavIcon },
   { key: 'personalContext', labelKey: 'nav.personalContext', icon: personalContextNavIcon },
   { key: 'settings', labelKey: 'nav.settings', icon: <SettingsIcon aria-hidden /> },
@@ -112,6 +162,7 @@ const mainNavItems: NavItem[] = [
 ];
 
 export function SessionSidebar({
+  webUIReady = true,
   activeNav,
   onNavigate,
   onNewSession,
@@ -123,6 +174,7 @@ export function SessionSidebar({
   onToggleJiuwenMate,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
+  const footerMountOptions = useMemo(() => ({ notifyReady: webUIReady }), [webUIReady]);
 
   const handleNewSession = useCallback(() => {
     onNavigate('chat');
@@ -191,7 +243,34 @@ export function SessionSidebar({
         </button>
       ))}
 
+      <WebUINavigationHost
+        slotId="application.menu"
+        className="min-w-0 w-full items-center"
+        style={{ gap: 0 }}
+        instanceClassName="flex min-w-0 w-full flex-col items-center"
+        styles={pluginNavigationStyles}
+      />
       <div className="icon-rail-spacer" />
+
+      {/* 与 7519 一致：申请入口在底部，文档图标，与上方主导航/工作空间分离 */}
+      {!hiddenNavItems.includes('approvals') && (
+        <button
+          type="button"
+          className={`icon-rail-nav-item${activeNav === 'approvals' ? ' icon-rail-nav-item--active' : ''}`}
+          onClick={() => handleNavClick('approvals')}
+          onPointerDownCapture={() => onNavItemPointerDownCapture?.('approvals')}
+          onMouseEnter={() => onNavItemHover?.('approvals')}
+          onMouseLeave={() => onNavItemHover?.(null)}
+          aria-label={t('nav.approvals')}
+          title={t('nav.approvals')}
+          data-testid="session-sidebar-nav-item"
+          data-variant="approvals"
+        >
+          <span className="icon-rail-nav-item__icon">{approvalsNavIcon}</span>
+          <span className="icon-rail-nav-item__label">{t('nav.approvals')}</span>
+        </button>
+      )}
+
       {onToggleJiuwenMate ? (
         <JiuwenMateModeSwitch
           active={false}
@@ -200,6 +279,10 @@ export function SessionSidebar({
         />
       ) : null}
       <EnterpriseContextSwitcher />
+      <WebUIHost slotId="application.sidebar.footer" sessionId=""
+        mountOptions={footerMountOptions}
+        className="w-full shrink-0 items-center pb-3" instanceClassName="flex justify-center"
+      />
     </aside>
   );
 }

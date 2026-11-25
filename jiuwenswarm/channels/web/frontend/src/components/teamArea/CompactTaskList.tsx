@@ -24,13 +24,14 @@ import { useTranslation } from 'react-i18next';
 import { ApplicationTaskControls } from '../../applicationPlugins/ApplicationTaskControls';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
+import { Pause } from 'lucide-react';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import StatusSuccessIcon from '../../assets/work-mode/status-success.svg?react';
 import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
 import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, isKnownTaskAssignee, type TeamMember } from './shared';
-import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
+import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseForTask, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
 import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
 
 export interface CompactTaskListProps {
@@ -90,8 +91,18 @@ export function CompactTaskList({
         const columnKey = getTaskColumnKey(task);
         // 镜像的 workflow phase 任务无 assignee：按 run 的 phase agents 渲染色块头像栈。
         const workers = task.workflow_run_id ? workflowPhaseWorkers(task, workflowRuns ?? []) : [];
+        const phase = workflowPhaseForTask(task, workflowRuns ?? [])?.phase;
         const statusIcon = renderStatusIcon ? (
           renderStatusIcon(task)
+        ) : columnKey === 'running' && task.progress_frozen ? (
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
+            data-testid="team-area-task-planning-task-status-icon"
+            data-variant="paused"
+            title={t('team.taskEvents.paused')}
+          >
+            <Pause className="h-4 w-4 shrink-0 text-violet-500" aria-hidden="true" />
+          </span>
         ) : columnKey === 'running' ? (
           <span
             className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
@@ -161,6 +172,16 @@ export function CompactTaskList({
                 {title}
               </span>
             </ApplicationTaskControls>
+            {phase && typeof phase.agent_count === 'number' && typeof phase.completed_agent_count === 'number' && (
+              <span
+                className="shrink-0 text-xs text-text-muted"
+                data-testid="team-area-task-agent-progress"
+                title={t('team.planning.phaseAgentProgress', { ended: phase.completed_agent_count, total: phase.agent_count })}
+                aria-label={t('team.planning.phaseAgentProgress', { ended: phase.completed_agent_count, total: phase.agent_count })}
+              >
+                {phase.completed_agent_count}/{phase.agent_count}
+              </span>
+            )}
             {statusIconAtEnd && statusIcon}
           </div>
         );

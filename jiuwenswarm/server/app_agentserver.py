@@ -140,19 +140,19 @@ def _configure_openjiuwen_logging() -> None:
         )
 
 
-def _start_team_mysql_before_traffic() -> None:
+def _start_team_store_before_traffic() -> None:
     """Create team tables before this process accepts chat.
 
-    Personal edition does not use Gateway MySQL, so this returns immediately.
+    Personal edition does not use the shared team store, so this returns immediately.
     """
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import (
-        get_team_mysql_actor,
-        use_team_mysql,
+    from jiuwenswarm.infrastructure.db.team_store_actor import (
+        get_team_store_actor,
+        use_shared_team_store,
     )
 
-    if not use_team_mysql():
+    if not use_shared_team_store():
         return
-    get_team_mysql_actor()
+    get_team_store_actor()
 
 
 async def _run(host: str, port: int) -> None:
@@ -161,9 +161,60 @@ async def _run(host: str, port: int) -> None:
     from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 
     _configure_openjiuwen_logging()
+    from jiuwenswarm.server.runtime.mcp.cli_env_patch import install_shell_patch
+
+    install_shell_patch()
 
     startup_t0 = time.monotonic()
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
+
+    # 企业版：冷加载 Manager 下发的日志级别（Pod 拉起/重建时 DB 行生效）。
+    # 放在其余冷加载之前，后续启动日志即按新级别输出。
+    try:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.enterprise.capabilities.logging import (
+                reload_logging_levels_from_gateway_db,
+            )
+
+            await reload_logging_levels_from_gateway_db()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] logging_config cold load skipped",
+            exc_info=True,
+        )
+
+    # 企业版：冷加载配额策略 + 启动用量后台校准（离开对话热路径）。
+    try:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.enterprise.capabilities.workspace.policy_reload import (
+                reload_quota_policies_from_gateway_db,
+            )
+
+            await reload_quota_policies_from_gateway_db(force=True)
+            logger.info(
+                "[AgentServer] workspace_quota_policy loaded from Gateway DB (if any)"
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] workspace_quota_policy cold load skipped",
+            exc_info=True,
+        )
+    try:
+        from jiuwenswarm.enterprise.capabilities.workspace.usage_reconciler import (
+            start_usage_reconciler,
+        )
+
+        start_usage_reconciler()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] workspace usage reconciler start skipped",
+            exc_info=True,
+        )
+
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
         logger.info(
             "[AgentServer] startup import stage=%s process_elapsed=%.2fs",
@@ -177,7 +228,7 @@ async def _run(host: str, port: int) -> None:
         time.monotonic() - startup_t0,
     )
 
-    await asyncio.to_thread(_start_team_mysql_before_traffic)
+    await asyncio.to_thread(_start_team_store_before_traffic)
     from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
 
     websocket_enabled = resolve_websocket_enabled(config_section=ws_server_config())
@@ -248,6 +299,11 @@ async def _run(host: str, port: int) -> None:
     except (NotImplementedError, OSError):
         pass
 
+    # 周期内存回收(gc.collect + malloc_trim):
+    # JIUWENSWARM_GC_RECLAIM_INTERVAL 秒门控,默认关闭。
+    from jiuwenswarm.server.runtime import mem_reclaimer
+    mem_reclaimer.setup()
+
     try:
         await stop_event.wait()
     except (asyncio.CancelledError, KeyboardInterrupt):
@@ -255,6 +311,16 @@ async def _run(host: str, port: int) -> None:
     finally:
         logger.info("[AgentServer] stopping…")
         stop_event.set()
+        try:
+            from jiuwenswarm.enterprise.capabilities.workspace.usage_reconciler import (
+                stop_usage_reconciler,
+            )
+
+            await stop_usage_reconciler()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] workspace usage reconciler stop failed: %s", exc
+            )
         begin_drain = getattr(front, "begin_drain", None)
         if callable(begin_drain):
             begin_drain()

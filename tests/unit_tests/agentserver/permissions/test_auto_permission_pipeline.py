@@ -6,7 +6,7 @@ import asyncio
 import json
 from copy import deepcopy
 from types import MethodType, SimpleNamespace, new_class
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool as before_tool_module
 import jiuwenswarm.agents.harness.common.rails.permissions.tool_binding as tool_binding_module
@@ -250,7 +250,11 @@ async def test_real_core_nested_permission_resume(tmp_path, case, target_name):
         ))
         assert executed == ([0] if case == "allow" else [])
         markers = prepared["run"]["context"]["extra"][ROOT_PERMISSION_WRAPPERS_KEY]
-        assert all(marker.consumed for marker in markers)
+        # Core only replays the answered wrapper. The other call stays paused.
+        assert {marker.tool_call.id: marker.consumed for marker in markers} == {
+            "outer-0": True, "outer-1": False,
+        }
+        assert ("resume", "outer-1") not in callbacks
         if case in {"allow", "reject"}:
             remaining = queue.reconcile(resumed, root_session_id="session-a").cards
             assert len(remaining) == 1 and remaining[0].key == cards[1].key
@@ -847,7 +851,9 @@ def test_readonly_binding_rejects_unverified_dependencies(tmp_path, monkeypatch,
     elif defect == "card":
         monkeypatch.setattr(tool, "_card", deepcopy(card))
     elif defect == "lookup":
-        monkeypatch.setattr(tool_binding_module.Runner.resource_mgr, "get_tool", lambda *a, **k: 1 / 0)
+        monkeypatch.setattr(
+            tool_binding_module.Runner.resource_mgr, "get_tool", Mock(side_effect=RuntimeError("lookup failed")),
+        )
     elif defect == "code":
         monkeypatch.setattr(tool, "_func", lambda **kwargs: None)
     elif defect == "invoke_proxy":
@@ -1150,3 +1156,48 @@ async def test_ineligible_auto_manual_never_reaches_core_session_remember(
     assert result is None
     assert len(policy.calls) == 1
     assert len(reviewer.requests) == 1
+
+
+@pytest.mark.parametrize("targets,recipient", [
+    (None, "current_session_user"),
+    (["web", "feishu"], "explicit_targets"),
+])
+async def test_trusted_web_delivery_request_reaches_reviewer(tmp_path, targets, recipient):
+    from jiuwenswarm.agents.harness.common.rails.permissions.generated_artifact_delivery import (
+        clear_send_file_execution_grant,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.send_file_path_guard import SendFilePathGuardResult
+    from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+        TOOL_PERMISSION_CHANNEL_ID,
+        TOOL_PERMISSION_REQUEST_ID,
+    )
+
+    path = tmp_path / "report.md"
+    path.write_text("report", encoding="utf-8")
+    rail, policy, reviewer, _ = _rail(tmp_path, PolicyEvaluation(
+        level="ask",
+        reason="policy_ask",
+        path_result=SendFilePathGuardResult(
+            status="evaluated", level="allow", reason="workspace", canonical_paths=(str(path),),
+        ),
+    ))
+    args = {
+        "abs_file_path_list": str(path),
+        "target_channels": targets,
+        "file_delivery_request": {"source_channel": "forged"},
+    }
+    ctx = _runtime_ctx(_Session(), tool_name="send_file_to_user", tool_args=args)
+    channel = TOOL_PERMISSION_CHANNEL_ID.set("web")
+    request = TOOL_PERMISSION_REQUEST_ID.set("request-a")
+    try:
+        await rail.before_tool_call(ctx)
+        assert len(policy.calls) == len(reviewer.requests) == 1
+        evidence = reviewer.requests[0].to_json_dict()["review_evidence"]
+        assert evidence["file_delivery_request"] == {
+            "source_channel": "web", "intended_recipient": recipient,
+        }
+        assert evidence["reviewable_payload"]["target_channels"] == sorted(targets or [])
+    finally:
+        clear_send_file_execution_grant()
+        TOOL_PERMISSION_REQUEST_ID.reset(request)
+        TOOL_PERMISSION_CHANNEL_ID.reset(channel)

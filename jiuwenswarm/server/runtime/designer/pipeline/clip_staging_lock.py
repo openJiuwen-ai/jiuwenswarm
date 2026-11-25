@@ -125,7 +125,7 @@ def build_action_lock(
         or ""
     ).strip()
     # Strip contaminated lock dumps from beat for a short action summary.
-    for marker in ("CLOTHING LOCK", "POSITION:", "WARDROBE/FACE:", "PRIOR CLIP", "YOUR ASSIGNMENT"):
+    for marker in ("CLOTHING LOCK", "POSITION:", "CLOTHING/FACE:", "WARDROBE/FACE:", "PRIOR CLIP", "YOUR ASSIGNMENT"):
         if marker in beat.upper():
             beat = beat.split(marker, 1)[0].strip()
     if beat and not any(beat[:40] in b for b in bits):
