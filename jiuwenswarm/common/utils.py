@@ -28,6 +28,7 @@ Runtime layout:
 """
 
 import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -221,6 +222,89 @@ class TrackCopyDiff:
             set(self.diff.overwritten_files) | set(overwritten_files)
         )
         return False  # 不抑制异常
+
+
+_COPYSTAT_TOLERATED_ERRNOS: frozenset[int] = frozenset(
+    {
+        errno.EPERM,
+        errno.EACCES,
+        getattr(errno, "ENOTSUP", errno.EPERM),
+        getattr(errno, "EOPNOTSUPP", errno.EPERM),
+    }
+)
+
+
+def _is_tolerated_copystat_error(exc: OSError) -> bool:
+    """Return whether a ``shutil.copystat`` error is a non-fatal permission/fs restriction."""
+    return isinstance(exc, PermissionError) or exc.errno in _COPYSTAT_TOLERATED_ERRNOS
+
+
+def _copystat_best_effort(src: Path, dst: Path) -> None:
+    """Sync filesystem metadata while tolerating shared-volume ownership restrictions.
+
+    On shared PVC/NFS mounts (for example OpenShift pods whose running UID
+    differs from the existing directory owner), ``chmod`` / ``utime`` inside
+    ``shutil.copystat`` fail with EPERM/EACCES/ENOTSUP even when the process
+    has group write access. Downgrade those metadata-only failures to a warning
+    so workspace seeding still succeeds while keeping file writes strict.
+    """
+    try:
+        shutil.copystat(src, dst)
+    except OSError as exc:
+        if _is_tolerated_copystat_error(exc):
+            logger.warning(
+                "Skipping metadata sync from %s to %s due to permission/fs restriction: %s",
+                src,
+                dst,
+                exc,
+            )
+            return
+        raise
+
+
+def _copy_file_resilient(src: Path, dst: Path) -> Path:
+    """Copy file bytes strictly and synchronize metadata on a best-effort basis."""
+    shutil.copyfile(src, dst)
+    _copystat_best_effort(src, dst)
+    return dst
+
+
+def _copy_dir_tree_resilient(
+    src_dir: Path,
+    dst_dir: Path,
+    *,
+    ignore_patterns: tuple[str, ...] | None = None,
+    skip_existing_files: bool = False,
+) -> None:
+    """Recursively copy a directory tree without failing on non-fatal copystat errors.
+
+    Directory creation and file content writes remain strict so real I/O or
+    write-permission failures still surface. Only metadata sync via
+    ``shutil.copystat`` is downgraded to a warning on EPERM/EACCES/ENOTSUP.
+    """
+    ignore = shutil.ignore_patterns(*ignore_patterns) if ignore_patterns else None
+
+    def _walk(cur_src: Path, cur_dst: Path) -> None:
+        cur_dst.mkdir(parents=True, exist_ok=True)
+        entries = list(cur_src.iterdir())
+        ignored_names = (
+            ignore(str(cur_src), [entry.name for entry in entries])
+            if ignore is not None
+            else set()
+        )
+        for entry in entries:
+            if entry.name in ignored_names:
+                continue
+            target = cur_dst / entry.name
+            if entry.is_dir():
+                _walk(entry, target)
+                continue
+            if skip_existing_files and target.exists():
+                continue
+            _copy_file_resilient(entry, target)
+        _copystat_best_effort(cur_src, cur_dst)
+
+    _walk(src_dir, dst_dir)
 
 
 @dataclass
@@ -666,7 +750,7 @@ def _install_default_builtin_skills(
                     installed = True
                 elif overwrite:
                     # Preserve migration archives and preferences outside seed files.
-                    shutil.copytree(source, target, dirs_exist_ok=True)
+                    _copy_dir_tree_resilient(source, target)
                     installed = True
             if installed:
                 _update_skills_state_for_builtin(user_skills_dir, [BUILTIN_CATALOG_NAME])
@@ -1340,7 +1424,7 @@ def prepare_workspace(
             cumulative=cumulative_diff,
             overwrite=overwrite,
         ):
-            shutil.copy2(config_yaml_src, config_yaml_dest)
+            _copy_file_resilient(config_yaml_src, config_yaml_dest)
         if pre_restore_state is not None:
             _restore_previous_external_cli_state(config_yaml_dest, pre_restore_state)
 
@@ -1371,7 +1455,7 @@ def prepare_workspace(
             cumulative=cumulative_diff,
             overwrite=overwrite,
         ):
-            shutil.copy2(env_template_src, env_dest)
+            _copy_file_resilient(env_template_src, env_dest)
 
     # ----- Gateway config: separate file, never reuse AS config -----
     _install_gateway_config(
@@ -1460,7 +1544,7 @@ def prepare_workspace(
                 cumulative=cumulative_diff,
                 overwrite=overwrite,
             ):
-                shutil.copy2(src_path, dst_path)
+                _copy_file_resilient(src_path, dst_path)
 
     # skills state: shipped under resources/
     skills_state_src = template_root / "skills_state.json"
@@ -1474,7 +1558,7 @@ def prepare_workspace(
                 cumulative=cumulative_diff,
                 overwrite=overwrite,
             ):
-                shutil.copy2(skills_state_src, dest_skill_state)
+                _copy_file_resilient(skills_state_src, dest_skill_state)
 
     # sessions is runtime-only (template may not include it)
     agent_sessions.mkdir(parents=True, exist_ok=True)
