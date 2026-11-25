@@ -233,7 +233,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261123-2128-feishu-group-media](active/D-20261123-2128-feishu-group-media/design.md) | 飞书群聊 AI 同事图片理解与问答首发方案 | in-development | huanghongyun | messaging | 2026-11-24 |
+| [D-20261123-2128-feishu-group-media](active/D-20261123-2128-feishu-group-media/design.md) | 飞书群聊 AI 同事图片理解与问答首发方案 | in-development | huanghongyun | messaging | 2026-11-25 |
 
 <a id="module-jiuwenswarm-server-runtime"></a>
 

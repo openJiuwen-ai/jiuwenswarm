@@ -171,6 +171,7 @@ class FeishuInboundImages:
 
     async def resolve(self, reference: str) -> str:
         """Recheck the live message before releasing this invocation's image file."""
+        reference = reference.replace("media:image:", "feishu-image:", 1)
         if self._closed or reference not in self._paths:
             raise MediaUnavailable("只能读取本次消息提供的图片编号。")
         if self.source_guard is not None:
@@ -220,13 +221,15 @@ async def prepare_feishu_images(record, session_workspace: Path) -> FeishuInboun
     config = get_config()
     matches = [b for b in configured_feishu_bindings(config) if
                (b.app_id, b.namespace_id, b.agent_id) == (route.app_id, record.namespace_id, record.agent_id)]
-    client = httpx.AsyncClient(timeout=15, follow_redirects=False)
+    vision_available = vision_config_from_env() is not None
     identity = json.dumps([record.namespace_id, record.agent_id, record.session_id, record.request_id, route.app_id])
-    manifest = session_workspace / "incoming" / "feishu-sources" / (hashlib.sha256(identity.encode()).hexdigest() + ".json")
+    private_root = session_workspace.parents[3].parent / "media-cache"
+    manifest = private_root / "feishu-sources" / (hashlib.sha256(identity.encode()).hexdigest() + ".json")
+    client = httpx.AsyncClient(timeout=15, follow_redirects=False)
     scope = FeishuInboundImages(client, inputs.trigger_message_id, route.target_id,
-                               inputs.attachment_refs, session_workspace / "incoming", owns_client=True,
+                               inputs.attachment_refs, private_root / "executions", owns_client=True,
                                manifest_path=manifest)
-    if vision_config_from_env() is None:
+    if not vision_available:
         scope.notice = "视觉模型尚未配置，当前无法理解图片；请联系服务管理员配置视觉模型。"
         return scope
     if len(matches) != 1:

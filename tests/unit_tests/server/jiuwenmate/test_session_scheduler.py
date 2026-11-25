@@ -963,3 +963,82 @@ async def test_a_genuinely_orphaned_dispatch_is_still_reported_not_running(host)
     view = await host.manager.request_view(NS, accepted.record.request_id)
     assert view.state.status == "dispatched"
     assert view.running is False
+
+
+@pytest.mark.parametrize('reason, expected', [('cancel', ('ended', 'cancelled')), ('stop', ('ended', 'stopped'))])
+async def test_scheduler_stop_during_image_download_cleans_cache_and_never_enters_core(host, monkeypatch, tmp_path, reason, expected):
+    import json
+    import httpx
+    from jiuwenswarm.server.jiuwenmate import feishu_inbound_media as media
+
+    started, cleaned = asyncio.Event(), asyncio.Event()
+    cache = tmp_path / 'private-media'
+    refs = ('feishu:attachment:group-image:img_one',)
+    message = {'message_id': 'group-image', 'chat_id': 'oc_group', 'msg_type': 'image',
+               'body': {'content': json.dumps({'image_key': 'img_one'})}}
+
+    async def serve(request):
+        if '/resources/' in request.url.path:
+            try:
+                started.set()
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+        return httpx.Response(200, json={'code': 0, 'data': {'items': [message]}})
+
+    async def prepare(record, workspace):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(serve))
+        scope = media.FeishuInboundImages(client, 'group-image', 'oc_group', refs, cache, owns_client=True)
+        await scope.prepare()
+        return scope
+
+    monkeypatch.setattr(media, 'prepare_feishu_images', prepare)
+    group = host.manager.group_chats.resolve(NS, 'feishu', 'oc_group', now=NOW)
+    trigger = core.GroupMessage(message_id='group-image', sender_id='user-1', sender_name='用户',
+                                sender_kind='human', received_at=NOW, text='看图片', attachment_refs=refs)
+    host.manager.group_chats.observe_access(NS, 'mate_dev', group.group_chat_id, 'app-mate-dev',
+                                           observed_at=NOW, source_ref='joined:group')
+    host.manager.group_archive.append(NS, group.group_chat_id, trigger, source_ref='image-event')
+    async def active(access, current_group):
+        return 'active'
+    host.manager.verify_group_membership = active
+    session = host.sessions.resolve_session(NS, 'mate_dev', ConversationRef.group(group.group_chat_id), now=NOW)
+    state, _ = await host.scheduler.accept(
+        session, snapshot=host.service.snapshot(NS, 'mate_dev', 'v1'), source_ref='feishu:group-image',
+        access=ACCESS, request_input=core.RequestInput(kind='group_message', text='看图片', source=trigger,
+                                                      attachment_refs=refs, reply_target='oc_group'), received_at=NOW)
+    await asyncio.wait_for(started.wait(), 2)
+    await asyncio.wait_for(host.scheduler.abort(NS, state.record.request_id, reason), 2)
+    await host.scheduler.drain()
+    assert cleaned.is_set()
+    assert not list(cache.glob('feishu-media-*'))
+    assert host.core.started == []
+    assert host.status(state) == expected
+
+
+async def test_welink_execution_keeps_only_its_received_message_media(host):
+    from jiuwenswarm.server.jiuwenmate.execution_models import RequestRouteSnapshot
+    from jiuwenswarm.server.jiuwenmate.media_runtime import SCOPE_KEY
+    from jiuwenswarm.server.jiuwenmate.welink_inbound import welink_media_directory
+
+    session = host.session(conversation='welink-media')
+    await host.scheduler.accept(
+        session, snapshot=host.service.snapshot(NS, 'mate_dev', 'v1'), source_ref='welink:msg:1',
+        access=ACCESS, request_input=core.RequestInput(kind='scheduled', text='WeLink 图片', reply_target='chat'),
+        route_snapshot=RequestRouteSnapshot(channel='welink', app_id='test-bot', target_id='chat', source_message_id='msg:1'),
+        received_at=NOW)
+    await settle(lambda: 'WeLink 图片' in host.core.started)
+    office = host.service.workspaces.path(NS, 'mate_dev')
+    directory = welink_media_directory(office, 'msg:1')
+    directory.mkdir(parents=True)
+    image = directory / 'photo.png'
+    image.write_bytes(b'image')
+    scope = host.core.contexts['WeLink 图片'].extras[SCOPE_KEY]
+    assert await scope.resolve(image.relative_to(office).as_posix()) == str(image)
+    other = welink_media_directory(office, 'other')
+    other.mkdir()
+    (other / 'photo.png').write_bytes(b'image')
+    with pytest.raises(ValueError):
+        await scope.resolve(str(other / 'photo.png'))
+    host.core.release('WeLink 图片')
+    await host.scheduler.drain()

@@ -124,10 +124,16 @@ class ExecutionHandle:
         self._abort = abort
         self._context: core.PersistentBuildContext | None = None
         self.reason: AbortReason | None = None
+        self.media_tasks: set[asyncio.Task] = set()
 
     async def abort(self, reason: AbortReason) -> None:
         if self.reason is None:
             self.reason = reason
+        media_tasks = tuple(self.media_tasks)
+        for task in media_tasks:
+            task.cancel()
+        if media_tasks:
+            await asyncio.gather(*media_tasks, return_exceptions=True)
         if self._context is not None:
             await self._abort(self._context, reason=reason)
 
@@ -251,6 +257,7 @@ class ExecutionDriver:
         record = state.record
         context = None
         inbound_images = None
+        execution_media = None
         try:
             window_generation = ''
             if self._group_sharing is not None:
@@ -262,6 +269,13 @@ class ExecutionDriver:
                 record.namespace_id, record.agent_id, record.session_id
             )
             office = self._workspaces.path(record.namespace_id, record.agent_id)
+            from jiuwenswarm.server.jiuwenmate.media_runtime import ExecutionMediaScope
+            inbound_directory = None
+            route = record.route_snapshot
+            if route is not None and route.channel == "welink" and route.source_message_id:
+                from jiuwenswarm.server.jiuwenmate.welink_inbound import welink_media_directory
+                inbound_directory = welink_media_directory(office, route.source_message_id)
+            execution_media = ExecutionMediaScope(session_workspace, inbound_directory=inbound_directory)
             output_dir = session_workspace / "output"
             snapshot = await asyncio.to_thread(
                 self._snapshots, record.namespace_id, record.agent_id, record.config_version
@@ -378,6 +392,8 @@ class ExecutionDriver:
                 ports=ports,
                 system_prompt_addendum="\n\n".join(addenda),
             )
+            from jiuwenswarm.server.jiuwenmate.media_runtime import SCOPE_KEY as MEDIA_SCOPE_KEY
+            context.extras[MEDIA_SCOPE_KEY] = execution_media
             spec = await self._prepare_runtime_spec(spec, context, record)
             if self._sessions is not None:
                 await asyncio.to_thread(
@@ -414,13 +430,22 @@ class ExecutionDriver:
                 from dataclasses import replace
                 from jiuwenswarm.server.jiuwenmate.feishu_inbound_media import prepare_feishu_images, SCOPE_KEY
 
-                inbound_images = await prepare_feishu_images(replace(record, request_input=inputs), session_workspace)
+                from jiuwenswarm.server.jiuwenmate.media_runtime import run_media_stage
+                try:
+                    inbound_images = await run_media_stage(
+                        prepare_feishu_images(replace(record, request_input=inputs), session_workspace), handle)
+                except asyncio.CancelledError:
+                    if handle.reason is not None:
+                        return "cancelled" if handle.reason == "cancel" else "stopped"
+                    raise
+                async def check_image_source():
+                    current = await ports.group_chat.current_trigger(context.execution, inputs.trigger_message_id)
+                    if current is None or current.status in {"recalled", "unavailable"}:
+                        raise PersistentAgentError("图片原消息已不可读，请重新发送。", code="TRIGGER_UNAVAILABLE")
+                execution_media.source_guard = check_image_source
                 if inbound_images is not None:
                     context.extras[SCOPE_KEY] = inbound_images
-                    async def check_image_source():
-                        current = await ports.group_chat.current_trigger(context.execution, inputs.trigger_message_id)
-                        if current is None or current.status in {"recalled", "unavailable"}:
-                            raise PersistentAgentError("图片原消息已不可读，请重新发送。", code="TRIGGER_UNAVAILABLE")
+                    execution_media.inbound = inbound_images
                     inbound_images.source_guard = check_image_source
                     inputs = inputs.model_copy(update={"text": inputs.text + "\n\n" + inbound_images.guidance()})
             terminal = None
@@ -431,7 +456,7 @@ class ExecutionDriver:
                 if self._permission_approvals is not None
                 else None
             )
-            if approval is not None and handle.reason is not None:
+            if handle.reason is not None:
                 return "cancelled" if handle.reason == "cancel" else "stopped"
             if approval is not None and approval.execution_id != execution.recovery_ref:
                 raise PersistentAgentError("permission pause is not the continuation predecessor", code="CONFLICT")
@@ -472,8 +497,8 @@ class ExecutionDriver:
                 try:
                     await close_bash_runtime(context)
                 finally:
-                    if inbound_images is not None:
-                        await inbound_images.aclose()
+                    if execution_media is not None:
+                        await execution_media.aclose()
             finally:
                 self._queue.forget(record.namespace_id, execution.execution_id)
                 try:

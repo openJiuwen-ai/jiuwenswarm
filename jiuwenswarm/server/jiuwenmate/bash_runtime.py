@@ -453,7 +453,7 @@ def build_bash_tool(params: dict[str, Any], context):
     from jiuwenswarm.server.jiuwenmate.vision_runtime import office_vision_tools
 
     office = session_workspace.parent.parent
-    from jiuwenswarm.server.jiuwenmate.feishu_inbound_media import SCOPE_KEY
+    from jiuwenswarm.server.jiuwenmate.media_runtime import SCOPE_KEY
 
     for child in office_vision_tools(office, language=getattr(context, "language", "cn"), agent_id=execution.agent_id,
                                     image_scope=context.extras.get(SCOPE_KEY)):

@@ -1,8 +1,7 @@
 """Vision tools for a persistent colleague.
 
 The published colleague does not carry DeepAgent's vision tools. They are
-attached to the same Invocation that builds Bash, and they only read image
-files inside the office or a WeLink incoming cache.
+attached to the same Invocation that builds Bash, and they read only the host-authorized inbound media and current session output images.
 """
 
 from __future__ import annotations
@@ -25,7 +24,30 @@ _TRUE = {"1", "true", "yes", "on"}
 
 
 def vision_config_from_env() -> VisionModelConfig | None:
-    """Read the dedicated vision slot. A chat API key is not reused."""
+    """Resolve the unified saved vision slot; support env-only legacy workspaces."""
+    from jiuwenswarm.common.config import config_write_lock
+    from jiuwenswarm.common.multimodal_store import MultimodalStore
+    from jiuwenswarm.common.multimodal_models import MultimodalError
+    from jiuwenswarm.common.utils import get_config_file
+
+    path = get_config_file()
+    try:
+        with config_write_lock(config_path=path):
+            _, state = MultimodalStore.load_catalogue_locked(path)
+    except MultimodalError as exc:
+        if exc.code != "MM_NOT_CONFIGURED":
+            raise
+    else:
+        binding = state['tools']['vision']
+        if not binding['enabled']:
+            return None
+        selected = next((m for m in state['models'] if m['model_id'] == binding['model_id']), None)
+        if selected is None:
+            return None
+        connection = selected['connection']
+        config = VisionModelConfig(api_key=connection.get('api_key', ''), base_url=connection.get('api_base', ''),
+                                   model=connection.get('model_name', ''), max_retries=1)
+        return config if is_vision_model_config_complete(config) else None
     if os.getenv("VISION_ENABLED", "").strip().lower() not in _TRUE:
         return None
     api_key = os.getenv("VISION_API_KEY", "").strip()
@@ -120,10 +142,10 @@ class _OfficeImageTool(Tool):
         self._image_scope = image_scope
         if image_scope is not None:
             self.card.description = (
-                "使用视觉模型理解本次飞书消息的图片。image_path_or_url 必须使用消息给出的 "
-                "feishu-image:N 编号；禁止其他路径或 URL。question 填用户的问题。"
+                "理解当前执行已授权的图片。image_path_or_url 使用消息给出的 media:image:N（或 feishu-image:N）编号，"
+                "或当前会话 output/ 中生成的截图路径。禁止其他会话文件或任意 URL。question 填用户的问题。"
                 if card.name == "visual_question_answering" else
-                "提取本次飞书图片文字，image_path_or_url 使用消息给出的 feishu-image:N 编号。"
+                "提取当前执行图片文字，使用 media:image:N 编号或当前会话 output/ 截图路径。"
             )
 
     async def invoke(self, inputs: dict[str, Any] | None, **kwargs: Any):

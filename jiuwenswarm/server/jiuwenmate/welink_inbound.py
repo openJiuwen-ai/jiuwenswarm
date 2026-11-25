@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import shutil
@@ -476,6 +477,12 @@ def _text_with_workspace_media(context: WelinkInboundContext, binding: WelinkBin
     return placed
 
 
+def welink_media_directory(office: Path, message_id: str) -> Path:
+    """Return the host-owned directory for one WeLink message's copied media."""
+    identity = hashlib.sha256(message_id.encode()).hexdigest()
+    return office.resolve() / "incoming" / identity
+
+
 def place_welink_media(
     office: Path,
     message_id: str,
@@ -487,8 +494,7 @@ def place_welink_media(
     """Copy WeLink incoming files into ``office/incoming`` and rewrite their paths in ``text``."""
     root = (media_root or (Path.home() / ".jiuwenswarm" / "welink")).resolve()
     office_root = office.resolve()
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", message_id)[:80] or "message"
-    dest_dir = (office_root / "incoming" / safe).resolve()
+    dest_dir = welink_media_directory(office_root, message_id).resolve()
     if not _within(dest_dir, office_root / "incoming"):
         return text
     updated = text
@@ -506,7 +512,7 @@ def place_welink_media(
             continue
         dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(resolved, dest)
-        relative = f"incoming/{safe}/{name}"
+        relative = dest.relative_to(office_root).as_posix()
         updated = updated.replace(raw, relative).replace(str(resolved), relative)
     return updated
 

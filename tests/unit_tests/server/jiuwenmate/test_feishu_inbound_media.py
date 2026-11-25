@@ -57,6 +57,7 @@ async def test_download_deduplicates_files_rechecks_source_and_cleans_up(tmp_pat
         assert scope.references == ("feishu-image:1", "feishu-image:2")
         path = await scope.resolve("feishu-image:1")
         assert Path(path).read_bytes() == png()
+        assert await scope.resolve("media:image:1") == path
         with pytest.raises(media.MediaUnavailable):
             await scope.resolve("https://example.com/secret.png")
         current["deleted"] = True

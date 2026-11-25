@@ -1,6 +1,7 @@
 """WeLink images land in the office, and the colleague can point a vision tool at them."""
 
 from pathlib import Path
+import hashlib
 
 import pytest
 
@@ -18,9 +19,10 @@ def test_downloaded_image_is_rewritten_to_a_workspace_relative_path(tmp_path: Pa
 
     placed = place_welink_media(office, "mid", (str(source),), text, media_root=tmp_path / "welink")
 
-    assert "incoming/mid/shore.jpg" in placed
+    directory = hashlib.sha256(b"mid").hexdigest()
+    assert f"incoming/{directory}/shore.jpg" in placed
     assert str(source) not in placed
-    assert (office / "incoming" / "mid" / "shore.jpg").read_bytes() == b"\xff\xd8\xff"
+    assert (office / "incoming" / directory / "shore.jpg").read_bytes() == b"\xff\xd8\xff"
 
 
 def test_file_outside_the_welink_cache_is_left_alone(tmp_path: Path):
@@ -104,3 +106,27 @@ def test_vision_tools_stay_off_without_the_vision_slot(tmp_path: Path, monkeypat
 
     assert office_vision_tools(tmp_path) == []
     assert vision_guidance() == ""
+
+
+@pytest.mark.parametrize('first, second', [('msg:1', 'msg_1'), ('a' * 80 + 'x', 'a' * 80 + 'y')])
+async def test_colliding_display_ids_cannot_read_another_messages_image(tmp_path, first, second):
+    from jiuwenswarm.server.jiuwenmate.media_runtime import ExecutionMediaScope
+    from jiuwenswarm.server.jiuwenmate.welink_inbound import place_welink_media, welink_media_directory
+
+    cache = tmp_path / 'welink' / 'incoming'
+    cache.mkdir(parents=True)
+    source = cache / 'photo.png'
+    source.write_bytes(b'first message')
+    office = tmp_path / 'office'
+    office.mkdir()
+    first_text = place_welink_media(office, first, (str(source),), str(source), media_root=cache.parent)
+    source.write_bytes(b'second message')
+    second_text = place_welink_media(office, second, (str(source),), str(source), media_root=cache.parent)
+    session = office / 'sessions' / 'current'
+    session.mkdir(parents=True)
+    scope = ExecutionMediaScope(session, inbound_directory=welink_media_directory(office, second))
+    assert (office / first_text).read_bytes() == b'first message'
+    assert (office / second_text).read_bytes() == b'second message'
+    with pytest.raises(ValueError):
+        await scope.resolve(first_text)
+    assert await scope.resolve(second_text) == str(office / second_text)

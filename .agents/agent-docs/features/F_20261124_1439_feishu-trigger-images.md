@@ -5,7 +5,7 @@ type: F
 author: huanghongyun
 author_email: huanghongyun1@huawei.com
 modules: [jiuwenswarm/server/jiuwenmate]
-files: [jiuwenswarm/server/jiuwenmate/feishu_inbound_media.py, jiuwenswarm/server/jiuwenmate/vision_runtime.py, jiuwenswarm/server/jiuwenmate/execution_driver.py, jiuwenswarm/server/jiuwenmate/bash_runtime.py, tests/unit_tests/server/jiuwenmate/test_feishu_inbound_media.py]
+files: [jiuwenswarm/server/jiuwenmate/media_runtime.py, jiuwenswarm/server/jiuwenmate/welink_inbound.py, jiuwenswarm/server/jiuwenmate/feishu_inbound_media.py, jiuwenswarm/server/jiuwenmate/vision_runtime.py, jiuwenswarm/server/jiuwenmate/execution_driver.py, jiuwenswarm/server/jiuwenmate/bash_runtime.py, tests/unit_tests/server/jiuwenmate/test_feishu_inbound_media.py]
 designs: [D-20261123-2128-feishu-group-media]
 ---
 
@@ -70,3 +70,42 @@ designs: [D-20261123-2128-feishu-group-media]
 定向回归命令沿用上列五个文件，改为本工作区 `.venv/bin/python -m pytest ... --no-cov -q`，不设置试点 Core 的 PYTHONPATH：119 passed。完整 AI 同事模块执行 `.venv/bin/python -m pytest tests/unit_tests/server/jiuwenmate --no-cov -q`：2030 passed、1 skipped，耗时 85.82 秒。此前旧环境无法收集的 test_model_refresh.py 和 test_web_adapter.py 在本次锁定依赖环境正常执行。定向结果见 `/tmp/feishu-develop-focused.log`，完整结果见 `/tmp/feishu-develop-module-regression.log`；日志只留本机，不提交。
 
 本次迁移没有重新部署试点、发送群消息或重跑真实模型验收；旧真实群结果不能解释为 develop 新候选已完成真实群复验。本次迁移完成后提交独立 PR，提交与目标分支以 PR 信息为准。
+
+## 2026-11-25 通用媒体范围、统一配置与取消补齐
+
+本节是当前候选状态；前述环境变量配置和会话内缓存路径作为历史实现记录保留，当前契约以 S_01 与产品说明为准。用户明确授权按评审建议开发，并允许用 Playwright 替代连续超时的 CUA 进行真实页面验收。
+
+新增 `media_runtime.py`，将渠道的入站引用解析、当前 Session 输出范围及媒体子任务取消放在通用执行层。飞书适配器拥有下载与消息版本检查，物理图片和来源元数据移到 `jiuwenmate/media-cache/`，不重复保存群聊正文。通用层委托适配器解释 `media:` 引用，兼容已使用的飞书编号；不依赖 Issue 修复命令、工单或专家提示词。
+
+不为截图增加文件授权数据库，也不以执行开始时的文件修改时间判断授权：权限确认或重启会创建后续执行，时间基线会误拒绝同一会话已有的合法截图。采用既有 Session 归属，只允许当前 Session 的 output 图片；办公空间相对路径和会话相对路径均可用。WeLink 保留当前已接收消息的 incoming 目录，通过宿主 route 指定，不能由用户正文指定其他目录。其他会话、私有缓存裸路径、任意 URL 及符号链接越界均拒绝。
+
+ExecutionHandle 记录准备阶段子任务；现有 scheduler.abort 在 stop/cancel 时取消并等待清理，下载尚未结束时不进入 Core。页面继续使用原有输入框停止按钮，不增加 IM 停止指令。远端已接受的视觉请求仍不能保证追撤。
+
+视觉工具读取现有 MultimodalStore 的已解密统一模型目录。页面关闭的图片开关优先于遗留 VISION 环境变量；只有目录尚未配置才兼容旧变量，损坏目录不会退回旧配置。不借用聊天密钥，不新增模型页面或另一份密钥配置。
+
+### 本轮候选与证据
+
+隔离候选使用本分支和 develop 锁定依赖，页面地址 `http://127.0.0.1:6273`；后端端口 19880、19881、20800。候选未绑定试点机器人、所有渠道及 GitCode 修复入口均关闭，旧试点服务未修改。多模态模型由真实页面添加自定义 OpenAI 协议的 qwen4-max，并在智能体图片处理开关选择；候选不设置 VISION 环境变量。API Key 仅保存在本机候选配置，不提交。
+
+| 验证层次 | 实际结果 |
+| --- | --- |
+| 完整 AI 同事回归 | 2040 passed、1 skipped，96.67 秒；后续只针对渠道目录防逃逸、通用引用委托和连接创建顺序做定向复验 |
+| 最终定向回归 | 83 passed，涵盖通用范围、统一目录优先级、飞书下载、两种调度器停止、来源检查、WeLink 当前消息兼容 |
+| WeLink 补充回归 | 四个接入、授权提示和配置模块 32 passed，2.12 秒 |
+| 前端生产构建 | npm run build 成功；本次不改前端代码 |
+| 页面保存及重启保留 | 多模态页面保存成功，无 METHOD_NOT_FOUND；重启后模型及图片开关保留 |
+| 真实会话生成截图并识图 | Pillow 运行时生成随机码，VQA 与 OCR 实际调用 qwen4-max 返回 OD58S9DA、蓝圆在红框右下方；随机码未输出到生成命令日志 |
+| 重启后的同会话图片 | 实际使用办公空间相对路径调用 VQA 成功，无须重新生成 |
+| 跨会话读取 | 真实视觉调用尝试读取另一会话图片被拒绝，最终回答明确未读取，不猜测图中文字 |
+| 页面停止 | 观察到真实 VQA tool.intent 后点击停止，约 0.15 秒显示已停止，数据库记录 execution.paused/stopped |
+| 页面关闭及恢复 | 关闭后新执行无视觉工具，不冒充本次识图；重新开启后实际 OCR 再次返回 OD58S9DA |
+| 下载阶段停止 | 真实调度器与 HTTP 传输替身组合：stop/cancel 均取消等待、删除下载目录，Core 没有启动；不是人工飞书端到端截图证据 |
+| 真实飞书资源回放 | 以原机器人只读获取此前人工测试消息的原图，SHA-256 与历史原图一致；新版通用范围和页面配置模型返回 VISION-K7Q9 及蓝圆位置，确认文件在办公空间外且关闭后已删除 |
+
+截图、真实工具结果、停止耗时及 pytest HTML 报告留在本机 `.issue-repair-runtime-backups/media-e2e-20261125/`，截图来自候选实际页面，不提交账号配置或运行凭据。完整回归日志为 `/tmp/media-hardening-module-regression.log`，最终定向为 `/tmp/media-hardening-final-focused.log`。
+
+### 验收限制
+
+本轮真实浏览器覆盖页面→AI 同事→视觉工具→真实模型→页面回答；飞书只读资源回放不等于重新发送人工群消息的完整入口/回帖验收。本轮未切换旧试点机器人到候选，未在飞书重新发送消息；没有将旧版已通过的真实群回帖当作当前候选的复验结果。其他渠道的新下载、音视频、跨平台发布 wheel、多模态调用的独立预算计量仍未实现。
+
+最终检视发现 WeLink 旧目录把标点替换并截断消息 ID，会使不同消息共用目录。已将复制和执行范围查询统一改为完整消息 ID 的 SHA-256 目录，并用标点碰撞、共同长前缀两例先复现覆盖旧文件、再验证隔离。既有旧格式 WeLink 附件路径不自动授权到新范围；部署前仍在执行或等待权限确认的旧媒体任务需要重新发送消息。普通新消息的下载、路径改写与视觉读取保持贯通。
