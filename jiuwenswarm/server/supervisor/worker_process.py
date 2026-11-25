@@ -56,15 +56,14 @@ def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
     if override:
         return override
-    # 函数级导入：单测按数据根重定向需 patch paths.get_user_workspace_dir 本名
-    from jiuwenswarm.common.paths import get_run_dir
+    from jiuwenswarm.common.utils import get_infra_data_dir
     from jiuwenswarm.server.supervisor.identity import deployment_scope
 
     suffix = "pipe" if os.name == "nt" else "sock"
     scope = deployment_scope()[:16]
     instance = _runtime_instance_token()
     sock_name = f"runtime-{scope}-{instance}.{suffix}" if instance else f"runtime-{scope}.{suffix}"
-    path = get_run_dir() / sock_name
+    path = get_infra_data_dir() / "run" / sock_name
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
 
@@ -84,12 +83,12 @@ def legacy_socket_paths() -> list[str]:
     """Historical endpoints in this data scope; explicit overrides are isolated."""
     if os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip():
         return []
-    from jiuwenswarm.common.paths import get_run_dir
+    from jiuwenswarm.common.utils import get_user_workspace_dir
 
     suffix = "pipe" if os.name == "nt" else "sock"
     from jiuwenswarm.server.supervisor.identity import data_scope
 
-    root = get_run_dir()
+    root = get_user_workspace_dir() / "run"
     instance = _runtime_instance_token()
     scoped = f"runtime-{data_scope()[:16]}-{instance}.{suffix}" if instance else f"runtime-{data_scope()[:16]}.{suffix}"
     paths = [
@@ -184,10 +183,13 @@ class WorkerProcess:
         self._ipc_listener = ipc_listener
         self._proc: subprocess.Popen[bytes] | None = None
         self.launch_identity: str | None = None
-        from jiuwenswarm.common.paths import get_worker_logs_dir
         from jiuwenswarm.server.worker.output_logs import worker_stderr_name
 
-        self._stderr_path = get_worker_logs_dir() / worker_stderr_name(uuid.uuid4().hex)
+        self._stderr_path = (
+            Path(socket_path).parent
+            / "worker-logs"
+            / worker_stderr_name(uuid.uuid4().hex)
+        )
 
     @property
     def stderr_path(self) -> Path:

@@ -162,7 +162,7 @@ def test_explicit_auto_builder_degrades_when_audit_root_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    # 分区后审计根兜底 get_user_workspace_dir() 恒可用；显式注入 None 复现降级分支
+    # 分区后审计根兜底 get_infra_data_dir() 恒可用；显式注入 None 复现降级分支
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit.resolve_persistent_audit_root",
         lambda config: None,

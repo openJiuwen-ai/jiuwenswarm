@@ -22,23 +22,20 @@ from jiuwenswarm.server.worker import output_logs
 
 @pytest.fixture(autouse=True)
 def _isolated_worker_data(tmp_path, monkeypatch):
-    from jiuwenswarm.common import paths
+    from jiuwenswarm.common import utils
 
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "isolated-data"))
-    monkeypatch.setattr(paths, "_workspace_base_dir", None)
+    monkeypatch.setattr(utils, "_workspace_base_dir", None)
 
 
-def test_worker_stderr_uses_central_log_directory_with_overridden_socket(tmp_path, monkeypatch):
-    from jiuwenswarm.common.paths import get_worker_logs_dir
-
+def test_worker_stderr_follows_overridden_socket_directory(tmp_path, monkeypatch):
     owner = "a" * 32
     monkeypatch.setattr(output_logs, "_local_log_owner", lambda: owner)
     socket = tmp_path / "custom-ipc" / "worker.pipe"
 
     process = process_module.WorkerProcess(str(socket), host="127.0.0.1", port=18092)
 
-    assert process.stderr_path.parent == get_worker_logs_dir() == tmp_path / "isolated-data" / "logs" / "worker-logs"
-    assert process.stderr_path.parent != socket.parent / "worker-logs"
+    assert process.stderr_path.parent == socket.parent / "worker-logs"
     assert output_logs._LOG_NAME.fullmatch(process.stderr_path.name).group("owner") == owner
 
 

@@ -83,20 +83,7 @@ def _default_profile_paths() -> list[Path]:
     if env_state:
         paths.append(Path(env_state) / ".browser" / "profiles.json")
     paths.append(Path.home() / ".jiuwenswarm" / ".browser" / "profiles.json")
-    workspace = None
-    for parent in Path(__file__).resolve().parents:
-        if parent.name == "skills":
-            agent_root = parent.parent.parent
-            if "resources" not in agent_root.parts:
-                workspace = agent_root / "workspace"
-            break
-    if workspace is None:
-        agent_root_env = (os.getenv("JIUWENSWARM_AGENT_ROOT") or "").strip()
-        workspace = (
-            Path(agent_root_env).expanduser()
-            if agent_root_env
-            else Path.home() / ".jiuwenswarm" / "profile" / "agent" / "workspace"
-        )
+    workspace = Path.home() / ".jiuwenswarm" / "agent" / "workspace"
     paths.append(workspace / "browser-move" / ".browser" / "profiles.json")
     # 去重保序
     seen: set[str] = set()

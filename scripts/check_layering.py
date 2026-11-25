@@ -72,15 +72,9 @@ KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {
     },
     "jiuwenswarm.common.projectless_workspace": {"jiuwenswarm.enterprise"},
     "jiuwenswarm.common.schema.message": {"jiuwenswarm.enterprise.edition"},
-    # profile 布局重构（数据目录收敛）把租户感知的路径解析从 utils 迁入
-    # paths：enterprise 引用随代码迁移，utils 的 tenant_context 引用消除。
-    "jiuwenswarm.common.paths": {
-        "jiuwenswarm.enterprise.edition",
-        "jiuwenswarm.enterprise.tenant.tenant_context",
-        "jiuwenswarm.enterprise.tenant.tenant_paths",
-    },
     "jiuwenswarm.common.utils": {
         "jiuwenswarm.enterprise",
+        "jiuwenswarm.enterprise.tenant.tenant_context",
         "jiuwenswarm.enterprise.tenant.tenant_paths",
     },
 }

@@ -8,7 +8,6 @@ from dataclasses import replace
 
 import pytest
 
-from jiuwenswarm.common import paths
 from jiuwenswarm.runtime.kernel import KernelIdentity, ResourceKernel, ResourceKey, identity_reference
 
 
@@ -604,12 +603,12 @@ async def test_close_cancels_async_factory_on_its_own_event_loop():
 
 
 def test_enterprise_kernel_resources_are_scoped_to_trusted_tenant_root(monkeypatch, tmp_path):
-    from jiuwenswarm.common import paths, utils
+    from jiuwenswarm.common import utils
     from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
     from jiuwenswarm.enterprise.tenant.tenant_paths import build_tenant_key
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
     inputs = dict(project_dir="", work_mode="agent", definition=None,
                   capabilities={}, configuration={})
     with TenantContext.scoped(build_tenant_key("group", "bot", "alice")):
@@ -628,7 +627,7 @@ def test_personal_kernel_identity_keeps_process_root(monkeypatch, tmp_path):
     from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
-    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
     inputs = dict(project_dir="", work_mode="agent", definition=None,
                   capabilities={}, configuration={})
     with TenantContext.scoped("first"):

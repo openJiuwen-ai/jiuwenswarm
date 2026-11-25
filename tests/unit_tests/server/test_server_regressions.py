@@ -11,7 +11,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server
 import time
-from jiuwenswarm.common import paths, utils
+from jiuwenswarm.common import utils
 from jiuwenswarm.server.runtime.session import session_history as history
 from jiuwenswarm.server.runtime.session import session_metadata as metadata
 from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
@@ -49,10 +49,9 @@ class _FakeWebSocket:
 
 def _redirect_agent_root(monkeypatch, tmp_path):
     # lifecycle（…/agent/lifecycle/resources）与 project_store（…/agent/projects.json）
-    # 的路径最终都解析到 agent 根（profile 布局下 <root>/profile/agent/）之下，
-    # 一处补丁整体重定向
+    # 的路径最终都解析到 utils.get_user_workspace_dir() 之下，一处补丁整体重定向
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path
+        "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path
     )
 
 def _write_projects(agent_root, records):
@@ -86,7 +85,7 @@ async def _lifecycle_payload(server, project_id):
 @pytest.mark.asyncio
 async def test_project_lifecycle_single_project_contract(tmp_path, monkeypatch):
     _redirect_agent_root(monkeypatch, tmp_path)
-    agent_root = tmp_path / "profile" / "agent"
+    agent_root = tmp_path / "agent"
     _write_projects(
         agent_root,
         [
@@ -213,7 +212,7 @@ def test_background_writers_and_caches_keep_same_session_id_isolated(
     assert history.flush_pending_writes()
     assert metadata.flush_pending_writes()
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
     sid = "shared-session-id"
     for user in ("u", "v"):
         with TenantContext.scoped(f"g::b::{user}"):
@@ -257,7 +256,7 @@ def test_background_writers_and_caches_keep_same_session_id_isolated(
 @pytest.mark.parametrize("edition", ["enterprise", "personal"])
 async def test_http_handler_scope_is_bound_and_restored(monkeypatch, tmp_path, invoke, edition):
     monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
-    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
     request = AgentRequest(
         request_id="r", channel_id="web", user_id="u", session_id="s",
         metadata={"routing": {"group_id": "g", "bot_id": "b", "user_id": "u"}},
@@ -282,7 +281,7 @@ async def test_http_handler_scope_is_bound_and_restored(monkeypatch, tmp_path, i
 @pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
 async def test_http_scope_restores_after_error_or_cancellation(monkeypatch, tmp_path, invoke, error):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
     request = AgentRequest(
         request_id="r", channel_id="web", session_id="s", user_id="u",
         metadata={"routing": {"group_id": "g", "bot_id": "b"}},

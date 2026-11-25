@@ -365,7 +365,7 @@ class TestPrepareWorkspaceAndMarketplace:
         workspace_root = tmp_path / ".jiuwenswarm"
         (workspace_root / "config").mkdir(parents=True)
         (workspace_root / "config" / "config.yaml").write_text("{}", encoding="utf-8")
-        monkeypatch.setattr("jiuwenswarm.common.paths._workspace_base_dir", workspace_root)
+        monkeypatch.setattr(utils, "_workspace_base_dir", workspace_root)
 
         def _fail() -> None:
             raise AssertionError("AgentServer startup must not initialize equipment workspace")

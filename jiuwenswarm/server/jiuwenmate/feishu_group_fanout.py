@@ -267,12 +267,11 @@ def create_default_persistent_group_fanout(
     from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
     from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
     from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
-    from jiuwenswarm.common.paths import get_jiuwenmate_dir
-    from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
+    from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService, default_data_dir
     from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
     from jiuwenswarm.server.jiuwenmate.conversation_resources import ConversationResources
 
-    root = data_dir if data_dir is not None else get_jiuwenmate_dir()
+    root = data_dir if data_dir is not None else default_data_dir()
     db_path = root / "agents.sqlite3"
     service = PersistentAgentService.create_default(root)
     sessions = ExecutionRepository(db_path)

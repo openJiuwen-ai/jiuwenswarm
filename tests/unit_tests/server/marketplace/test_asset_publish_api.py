@@ -68,8 +68,8 @@ def params(**kwargs):
 @pytest.mark.parametrize("declares_roles", [False, True])
 async def test_local_app_publishes_wrapped_snapshot_with_owner_and_version_checks(tmp_path, monkeypatch, declares_roles):
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.marketplace.asset_publish_api.get_app_market_dir",
-        lambda: tmp_path / "app_market",
+        "jiuwenswarm.server.runtime.marketplace.asset_publish_api.get_user_workspace_dir",
+        lambda: tmp_path,
     )
     app_dir = tmp_path / "demo"
     app_dir.mkdir()
@@ -394,7 +394,7 @@ def test_real_equipment_resolver_accepts_installed_package(
     )
 
     monkeypatch.setattr(packages, "get_agent_workspace_dir", lambda: tmp_path)
-    monkeypatch.setattr(packages, "get_workspace_root_dir", lambda: tmp_path)
+    monkeypatch.setattr(packages, "get_user_workspace_dir", lambda: tmp_path)
     root = (
         tmp_path / ".agent_teams" / directory / "local" / "demo"
         if kind == "agent_group"
@@ -423,7 +423,7 @@ def test_agent_group_publish_resolves_installed_hub_asset_id(tmp_path, monkeypat
         HubInstallStateStore,
     )
 
-    monkeypatch.setattr(packages, "get_workspace_root_dir", lambda: tmp_path)
+    monkeypatch.setattr(packages, "get_user_workspace_dir", lambda: tmp_path)
     root = tmp_path / ".agent_teams" / "agent_groups" / "local" / "business-planning"
     root.mkdir(parents=True)
     (root / "manifest.json").write_text(

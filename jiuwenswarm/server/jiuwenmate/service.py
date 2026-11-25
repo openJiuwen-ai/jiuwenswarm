@@ -268,6 +268,12 @@ def show_agent_template(template_id: str) -> Mapping[str, Any] | None:
     return show(template_id)
 
 
+def default_data_dir() -> Path:
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    return get_user_workspace_dir() / "jiuwenmate"
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -322,9 +328,7 @@ class PersistentAgentService:
 
     @classmethod
     def create_default(cls, data_dir: Path | None = None) -> PersistentAgentService:
-        from jiuwenswarm.common.paths import get_jiuwenmate_dir
-
-        root = Path(data_dir) if data_dir is not None else get_jiuwenmate_dir()
+        root = Path(data_dir) if data_dir is not None else default_data_dir()
         return cls(
             PersistentAgentRepository(root / "agents.sqlite3"),
             TemplateStore(root / "templates"),

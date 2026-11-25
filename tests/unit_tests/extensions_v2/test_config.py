@@ -18,7 +18,7 @@ def test_relative_config_path_is_anchored_at_workspace(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths.get_user_workspace_dir",
+        "jiuwenswarm.common.utils.get_user_workspace_dir",
         lambda: tmp_path,
     )
 
@@ -40,7 +40,7 @@ def test_environment_is_used_when_config_has_no_value(
 def test_default_directory_is_under_workspace(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("EXTENSION_INSTALL_DIR", raising=False)
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths.get_user_workspace_dir",
+        "jiuwenswarm.common.utils.get_user_workspace_dir",
         lambda: tmp_path,
     )
 
@@ -48,7 +48,7 @@ def test_default_directory_is_under_workspace(monkeypatch, tmp_path: Path) -> No
 
 
 def test_store_directory_reads_extensions_config(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
 
     assert resolve_store_dir({"extensions": {"store_dir": "data/store"}}) == tmp_path / "data" / "store"
     assert resolve_store_dir({"extensions": {"store_dir": str(tmp_path / "abs-store")}}) == tmp_path / "abs-store"
@@ -56,14 +56,14 @@ def test_store_directory_reads_extensions_config(monkeypatch, tmp_path: Path) ->
 
 def test_store_directory_falls_back_to_default(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("EXTENSION_STORE_DIR", raising=False)
-    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
 
     assert resolve_store_dir({}) == tmp_path / "extension" / "store"
     assert not (tmp_path / "extension").exists()
 
 
 def test_state_directory_reads_extensions_config(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
 
     assert resolve_state_dir({"extensions": {"state_dir": "data/state"}}) == tmp_path / "data" / "state"
     assert resolve_state_dir({"extensions": {"state_dir": str(tmp_path / "abs-state")}}) == tmp_path / "abs-state"
@@ -71,7 +71,7 @@ def test_state_directory_reads_extensions_config(monkeypatch, tmp_path: Path) ->
 
 def test_state_directory_falls_back_to_default(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("EXTENSION_STATE_DIR", raising=False)
-    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
 
     assert resolve_state_dir({}) == tmp_path / "extension" / "state"
     assert not (tmp_path / "extension").exists()

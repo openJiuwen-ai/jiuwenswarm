@@ -71,7 +71,7 @@ If both IPC send and close fail, Front retains the original recovery waiters. A 
 
 ## Worker output logs
 
-Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `logs/worker-logs/runtime-worker-*.stderr.log`. Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
+Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `<socket-directory>/worker-logs/runtime-worker-*.stderr.log` (by default, `<data-root>/run/worker-logs/`). Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
 
 The Supervisor does not read and relabel individual Worker output lines or create a separate stdout log file. Stderr can contain ordinary INFO records. Diagnose failures using the original log levels, exception tracebacks, and process exit code.
 

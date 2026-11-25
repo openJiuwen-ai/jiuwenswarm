@@ -1002,17 +1002,7 @@ def _execution_process_environment() -> dict[str, str]:
         execution_environment_overlay,
     )
 
-    env = apply_environment_overlay(os.environ, execution_environment_overlay())
-    # Skill scripts resolve their own paths: expose the session's tenant-aware
-    # agent root (unbound = default tenant root) so standalone resolution never
-    # targets a wrong tenant or a stale layout.
-    try:
-        from jiuwenswarm.common.paths import get_agent_root_dir
-
-        env["JIUWENSWARM_AGENT_ROOT"] = str(get_agent_root_dir())
-    except Exception:  # noqa: BLE001 - path hint is best-effort only
-        pass
-    return env
+    return apply_environment_overlay(os.environ, execution_environment_overlay())
 
 
 def _run_command_sync(
