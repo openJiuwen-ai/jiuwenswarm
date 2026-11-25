@@ -27,6 +27,7 @@ import {
 import type { ProjectInfo, Session } from '../../types';
 import { toDisplaySessionTitle } from '../../utils/documentMessage';
 import { forgetCreatedConversation } from '../state/newConversationLifecycle';
+import { deleteSessionViewport } from '../../features/chatTimeline/sessionViewportCache';
 import { DeleteDialog } from '../dialogs/Dialogs';
 import { ProjectArchiveDialog, resolveProjectArchiveSessionCount } from './ProjectArchiveDialog';
 import type { SidebarMenuItem } from './SidebarMenu.types';
@@ -327,6 +328,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     // 侧边栏删除漏掉它会让已删会话的 plan 状态永久残留；App.tsx 的
     // handleTeamSessionsDeleted 删除路径已包含这条，这里对齐补齐。
     usePlanStore.getState().removeRuntime(sessionId);
+    deleteSessionViewport(sessionId);
   }
 
   async function archiveSessionAction(session: Session) {

@@ -1,14 +1,10 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import type { TimelineDisplayItem } from '../../features/chatTimeline/projectTimelineItems';
+import type { TimelineViewportState } from '../../features/chatTimeline/sessionViewportCache';
 
 const ROW_GAP = 8;
 const ESTIMATED_ROW_HEIGHT = 120;
-
-export interface TimelineViewportState {
-  measurements: VirtualItem[];
-  offset: number;
-}
 
 interface VirtualTimelineProps {
   items: TimelineDisplayItem[];
