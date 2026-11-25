@@ -183,9 +183,11 @@ class WorkerProcess:
         self._ipc_listener = ipc_listener
         self._proc: subprocess.Popen[bytes] | None = None
         self.launch_identity: str | None = None
+        from jiuwenswarm.server.worker.output_logs import worker_stderr_name
+
         configured_log_dir = os.environ.get("JIUWEN_WORKER_LOG_DIR")
         log_dir = Path(configured_log_dir) if configured_log_dir else Path(socket_path).parent / "worker-logs"
-        self._stderr_path = log_dir / f"runtime-worker-{uuid.uuid4().hex}.stderr.log"
+        self._stderr_path = log_dir / worker_stderr_name(uuid.uuid4().hex)
         self._diagnostic_path = log_dir / "latest-worker-error.log"
 
     @property
@@ -210,6 +212,7 @@ class WorkerProcess:
 
     async def spawn(self) -> None:
         from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, launch_identity_payload
+        from jiuwenswarm.server.worker.output_logs import STDERR_LOG_ENV, open_worker_stderr
 
         # Verify source once before the spawn, then hand that exact observation
         # to the child. Reattached resident Workers still require fresh checks.
@@ -239,7 +242,8 @@ class WorkerProcess:
                 logger.warning("[Supervisor] previous Worker diagnostic could not be cleared: %s", exc)
             worker_env = os.environ.copy()
             worker_env["JIUWEN_WORKER_DIAGNOSTIC_PATH"] = str(self._diagnostic_path)
-            with self._stderr_path.open("ab") as stderr:
+            worker_env[STDERR_LOG_ENV] = str(self._stderr_path.resolve())
+            with open_worker_stderr(self._stderr_path) as stderr:
                 self._proc = subprocess.Popen(
                     command,
                     env=worker_env,
