@@ -19,7 +19,7 @@ import pytest
 from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
     VerifiedDownloadAssetOwner,
 )
-from jiuwenswarm.common import paths, utils, verified_download_assets
+from jiuwenswarm.common import utils, verified_download_assets
 
 
 def _owner(root: Path, now: list[float]) -> VerifiedDownloadAssetOwner:
@@ -39,7 +39,7 @@ def test_windows_default_root_is_stable_and_follows_user_data(
     monkeypatch.setattr(verified_download_assets, "os", simulated_os)
     first_data = tmp_path / "first-data"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(first_data))
-    monkeypatch.setattr(paths, "_workspace_base_dir", None)
+    monkeypatch.setattr(utils, "_workspace_base_dir", None)
     first_root = verified_download_assets._default_asset_root()
     assert first_root == first_data / "download-assets"
     simulated_os.getpid = lambda: 456
@@ -47,7 +47,7 @@ def test_windows_default_root_is_stable_and_follows_user_data(
 
     second_data = tmp_path / "second-data"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(second_data))
-    monkeypatch.setattr(paths, "_workspace_base_dir", None)
+    monkeypatch.setattr(utils, "_workspace_base_dir", None)
     second_root = verified_download_assets._default_asset_root()
     assert second_root == second_data / "download-assets"
     assert second_root != first_root

@@ -60,40 +60,6 @@ from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_exception import format_log_exception
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
 from jiuwenswarm.enterprise import is_enterprise
-from jiuwenswarm.common.paths import (
-    logger,
-    migrate_profile_data_root_layout,
-    _find_config_template_path,
-    _find_package_root,
-    get_agent_home_dir,
-    get_agent_root_dir,
-    get_agent_sessions_dir,
-    get_agent_skills_dir,
-    get_agent_teams_dir,
-    get_agent_workspace_dir,
-    get_builtin_skills_dir,
-    get_checkpoint_dir,
-    get_config_dir,
-    get_config_file,
-    get_cron_jobs_path,
-    get_deepagent_todo_dir,
-    get_deepagent_user_md_path,
-    get_default_project_session_workspace_dir,
-    get_default_project_workspace_dir,
-    get_env_file,
-    get_gateway_config_file,
-    get_gateway_config_template,
-    get_heartbeat_jobs_path,
-    get_logs_dir,
-    get_package_avatar_cache_dir,
-    get_project_skills_dirs,
-    get_root_dir,
-    get_runtime_state_path,
-    get_user_home,
-    get_user_workspace_dir,
-    get_workspace_dir,
-    reset_path_caches,
-)
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
 _LOG_FILE_BACKUP_COUNT = 20
@@ -435,8 +401,27 @@ def _resolve_logging_levels(
     return LoggingLevels(logger_level, console, gateway, channel, agent_server, full)
 
 
+_user_home: Path | None = None
+_workspace_base_dir: Path | None = None
 
 
+def get_user_home() -> Path:
+    """Get the current user home directory.
+
+    Priority:
+    1. Cached value (if already set via set_user_home or previous call)
+    2. JIUWENSWARM_HOME environment variable
+    3. System default Path.home()
+    """
+    global _user_home
+    if _user_home is not None:
+        return _user_home
+    env_home = os.getenv("JIUWENSWARM_HOME")
+    if env_home:
+        _user_home = Path(env_home)
+        return _user_home
+    _user_home = Path.home()
+    return _user_home
 
 
 def set_user_home(path: Path, initialized: bool = False) -> None:
@@ -448,12 +433,42 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
         path: The new user home directory path.
         initialized: If True, skip cache reset (use when paths are already initialized elsewhere).
     """
-    # 路径解析真身在 paths（门面再导出）；此处委托，避免双份缓存各改各的。
-    from jiuwenswarm.common.paths import set_user_home as _paths_set_user_home
+    global _user_home, _initialized, _config_dir, _workspace_dir, _root_dir
+    global _workspace_base_dir
+    _user_home = Path(path)
+    if initialized:
+        return
+    _initialized = False
+    _config_dir = None
+    _workspace_dir = None
+    _root_dir = None
+    # _workspace_base_dir caches ``<home>/.jiuwenswarm`` and is filled on the first path
+    # lookup -- which happens at import time, from the *real* home, via setup_logger().
+    # Leaving it set made the promise above false: get_user_workspace_dir() returns the
+    # cached value before it ever consults get_user_home(), so a test that redirected the
+    # home still resolved to the developer's own workspace, and a force init deleted the
+    # real ~/.jiuwenswarm/config subdirectories.
+    _workspace_base_dir = None
 
-    _paths_set_user_home(path, initialized=initialized)
 
+def get_user_workspace_dir() -> Path:
+    """Get the user workspace directory path (~/.jiuwenswarm or custom path).
 
+    Priority:
+    1. Cached value (if already set via set_user_workspace_dir or previous call)
+    2. JIUWENSWARM_DATA_DIR environment variable (for multi-instance isolation)
+    3. get_user_home() / ".jiuwenswarm" (default instance)
+    """
+    global _workspace_base_dir
+    if _workspace_base_dir is not None:
+        return _workspace_base_dir
+    env_workspace = os.getenv("JIUWENSWARM_DATA_DIR")
+    if env_workspace:
+        _workspace_base_dir = Path(env_workspace)
+        return _workspace_base_dir
+
+    _workspace_base_dir = get_user_home() / ".jiuwenswarm"
+    return _workspace_base_dir
 
 
 def get_infra_data_dir() -> Path:
@@ -468,7 +483,11 @@ def get_infra_data_dir() -> Path:
 
 
 # Cache for resolved paths
+_config_dir: Path | None = None
+_workspace_dir: Path | None = None
+_root_dir: Path | None = None
 _is_package: bool | None = None
+_initialized: bool = False
 
 
 def _detect_installation_mode() -> bool:
@@ -496,10 +515,51 @@ def _detect_installation_mode() -> bool:
     return False
 
 
+def _find_source_root() -> Path:
+    """Find the repository root in development mode (contains jiuwenswarm/ package)."""
+    current = Path(__file__).resolve().parent.parent
+    jw_pkg = current / "jiuwenswarm"
+    if (jw_pkg / "resources" / "agent").exists():
+        return current
+    parent = current.parent
+    jw_pkg2 = parent / "jiuwenswarm"
+    if (jw_pkg2 / "resources" / "agent").exists():
+        return parent
+    return current
 
 
+def _find_package_root() -> Path | None:
+    """Best-effort detection of the jiuwenswarm package root.
+
+    In package mode (whl), __file__ is at site-packages/jiuwenswarm/common/utils.py,
+    so parent.parent is site-packages/jiuwenswarm/.
+    In editable / source mode, __file__ is at <project>/jiuwenswarm/common/utils.py,
+    so parent.parent is <project>/jiuwenswarm/.
+    """
+    current = Path(__file__).resolve().parent.parent
+    jw_pkg = current / "jiuwenswarm"
+    if (jw_pkg / "resources").exists():
+        return current
+    return current
 
 
+def _find_config_template_path() -> Path:
+    """Locate the shipped ``config.yaml`` template inside the package."""
+    package_root = _find_package_root()
+    if not package_root:
+        raise RuntimeError("package root not found")
+
+    candidates = [
+        package_root / "resources" / "config.yaml",
+        package_root / "config" / "config.yaml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise RuntimeError(
+        "config.yaml template not found; tried: "
+        + ", ".join(str(p) for p in candidates)
+    )
 
 
 def _resolve_preferred_language(
@@ -1114,7 +1174,9 @@ def _install_gateway_config(
     if is_agentos_runtime():
         return
 
-    gateway_dest = get_gateway_config_file(workspace_dir)
+    gateway_dir = get_gateway_config_dir(workspace_dir)
+    gateway_dir.mkdir(parents=True, exist_ok=True)
+    gateway_dest = gateway_dir / "config.yaml"
     template_path = get_gateway_config_template()
     if gateway_dest.exists() and not overwrite:
         _merge_existing_gateway_config(gateway_dest, template_path)
@@ -1126,9 +1188,6 @@ def _install_gateway_config(
     _merge_gateway_hooks(generated, legacy)
     _copy_gateway_owned_config(generated, legacy)
 
-    # 共享 config/ 目录可能尚未落位（prepare_workspace 先行创建是常规路径，
-    # 但部署工具/迁移链路可能直呼本函数）
-    gateway_dest.parent.mkdir(parents=True, exist_ok=True)
     with TrackCopyDiff(
         dest=gateway_dest,
         is_file=True,
@@ -1146,7 +1205,7 @@ def ensure_gateway_config(workspace_dir: Path | None = None) -> bool:
         return False
 
     workspace = Path(workspace_dir) if workspace_dir is not None else get_user_workspace_dir()
-    gateway_dest = get_gateway_config_file(workspace_dir)
+    gateway_dest = get_gateway_config_dir(workspace) / "config.yaml"
     try:
         template_path = get_gateway_config_template()
         if gateway_dest.exists():
@@ -1180,16 +1239,6 @@ def prepare_workspace(
         workspace_dir = get_user_workspace_dir()
     else:
         workspace_dir = Path(workspace_dir)
-
-    # agent 子树落点：初始化数据根（缺省或显式传入数据根）时走租户感知 agent 根
-    # （个人= profile/agent，企业未绑定= 默认租户根），与运行期读取同源，config/.env
-    # 等系统态仍落数据根；显式独立工作区（CLI init 指定目录）沿用该目录下的 agent 根。
-    if workspace_dir.resolve() == get_user_workspace_dir().resolve():
-        agent_root = get_agent_root_dir()
-        agent_group_root = get_agent_teams_dir() / "agent_groups"
-    else:
-        agent_root = workspace_dir / "agent"
-        agent_group_root = workspace_dir / ".agent_teams" / "agent_groups"
 
     # 初始化累积结果（用于追踪所有复制操作）
     cumulative_diff = CopyDiffResult([], [], [])
@@ -1272,7 +1321,8 @@ def prepare_workspace(
         cumulative_diff=cumulative_diff,
     )
 
-    # ----- copy runtime dirs -----
+    # ----- copy runtime dirs (new layout) -----
+    agent_root = workspace_dir / "agent"
     agent_sessions = agent_root / "sessions"
     (agent_root / ".checkpoint").mkdir(parents=True, exist_ok=True)
     (agent_root / ".logs").mkdir(parents=True, exist_ok=True)
@@ -1394,6 +1444,7 @@ def prepare_workspace(
         kind_root = deepagent_workspace / "plugins" / kind
         (kind_root / "built_in").mkdir(parents=True, exist_ok=True)
         (kind_root / "local").mkdir(parents=True, exist_ok=True)
+    agent_group_root = workspace_dir / ".agent_teams" / "agent_groups"
     (agent_group_root / "built_in").mkdir(parents=True, exist_ok=True)
     (agent_group_root / "local").mkdir(parents=True, exist_ok=True)
 
@@ -1465,7 +1516,7 @@ def _read_mcp_builtins_seed_version(zip_path: Path) -> str | None:
         return None
 
 
-def mcp_builtins_seed_update_needed(agent_workspace: Path | None = None) -> bool:
+def mcp_builtins_seed_update_needed(workspace_dir: Path | None = None) -> bool:
     """Return whether the bundled MCP seed must be installed or upgraded."""
     package_root = _find_package_root()
     if package_root is None:
@@ -1480,9 +1531,8 @@ def mcp_builtins_seed_update_needed(agent_workspace: Path | None = None) -> bool
     if seed_version is None:
         return False
 
-    if agent_workspace is None:
-        agent_workspace = get_agent_workspace_dir()
-    installed_dir = agent_workspace / "mcp" / "mcp_builtins"
+    runtime_root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
+    installed_dir = runtime_root / "agent" / "workspace" / "mcp" / "mcp_builtins"
     try:
         installed_version = (
             installed_dir / ".mcp_builtins_version"
@@ -1704,19 +1754,16 @@ def prepare_runtime_workspace(
     if cleanup_stale_descs:
         cleanup_stale_openjiuwen_descs()
 
-    # 分区布局迁移先于任何路径读取（幂等）
-    migrate_profile_data_root_layout()
-
     workspace_dir = get_user_workspace_dir()
     config_file = workspace_dir / "config" / "config.yaml"
-    agent_workspace = get_agent_workspace_dir()
-    mcp_builtins_dir = agent_workspace / "mcp" / "mcp_builtins"
+    new_workspace = workspace_dir / "agent" / "workspace"
+    mcp_builtins_dir = new_workspace / "mcp" / "mcp_builtins"
 
     cleanup_team_files(workspace_dir)
 
     config_missing = not config_file.exists()
     mcp_builtins_missing = not mcp_builtins_dir.is_dir()
-    mcp_builtins_update_needed = mcp_builtins_seed_update_needed(agent_workspace)
+    mcp_builtins_update_needed = mcp_builtins_seed_update_needed(workspace_dir)
     workspace_preparation_needed = any(
         (
             config_missing,
@@ -1727,7 +1774,7 @@ def prepare_runtime_workspace(
     if workspace_preparation_needed:
         prepare_workspace(overwrite=False, workspace_dir=workspace_dir, migrate_config=False)
         if config_missing and config_file.is_file():
-            reset_path_caches()
+            reset_config_path_cache()
 
     if migrate_config:
         ensure_config_migrated_from_template(workspace_dir)
@@ -1866,6 +1913,271 @@ def init_user_workspace(
     return workspace_dir
 
 
+def reset_config_path_cache() -> None:
+    """Drop cached config paths so the next lookup sees a newly created workspace."""
+    global _initialized, _config_dir, _workspace_dir, _root_dir
+    _initialized = False
+    _config_dir = None
+    _workspace_dir = None
+    _root_dir = None
+
+
+def _resolve_paths() -> None:
+    """Resolve and cache all paths."""
+    global _initialized, _config_dir, _workspace_dir, _root_dir
+
+    if _initialized:
+        return
+
+    workspace_dir = get_user_workspace_dir()
+
+    # 优先使用已初始化的用户工作区 (~/.jiuwenswarm)，
+    # 保证源码运行与安装包运行后的读写路径完全一致。
+    user_config_dir = workspace_dir / "config"
+    user_workspace_dir = workspace_dir / "agent" / "workspace"
+    if user_config_dir.exists():
+        _root_dir = workspace_dir
+        _config_dir = user_config_dir
+        _workspace_dir = user_workspace_dir
+    else:
+        # 尚未初始化 ~/.jiuwenswarm：从包内 resources 直读配置，工作区指向包内 agent/workspace
+        package_root = _find_package_root()
+        if package_root and (package_root / "resources" / "config.yaml").exists():
+            res = package_root / "resources"
+            _root_dir = package_root.parent
+            _config_dir = res
+            _workspace_dir = res / "agent" / "workspace"
+            _workspace_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            source_root = _find_source_root()
+            pkg = source_root / "jiuwenswarm"
+            res = pkg / "resources"
+            _root_dir = source_root
+            _config_dir = res if (res / "config.yaml").exists() else source_root / "config"
+            _workspace_dir = res / "agent" / "workspace"
+            _workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    _initialized = True
+
+
+def get_config_dir() -> Path:
+    """Get the config directory path."""
+    _resolve_paths()
+    return _config_dir
+
+
+def get_gateway_config_dir(workspace_dir: Path | None = None) -> Path:
+    """Get the Gateway-only config directory, honoring the env override."""
+    base = Path(workspace_dir) if workspace_dir is not None else get_user_workspace_dir()
+    override = (os.getenv("JIUWENSWARM_GATEWAY_CONFIG_DIR") or "").strip()
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            path = base / "infra" / "config" / path
+        return path
+    return base / "infra" / "config"
+
+
+def get_gateway_config_file() -> Path:
+    """Get the Gateway-only config.yaml path."""
+    return get_gateway_config_dir() / "config.yaml"
+
+
+def get_gateway_config_template() -> Path:
+    """Return the installed agent-gateway config template."""
+    try:
+        import agent_gateway
+    except ImportError as exc:
+        raise RuntimeError(
+            "agent-gateway is not installed; cannot initialize the Gateway config"
+        ) from exc
+    template = Path(agent_gateway.__file__).resolve().parent / "resources" / "config.yaml"
+    if not template.is_file():
+        raise RuntimeError(f"agent-gateway config template not found: {template}")
+    return template
+
+
+def get_runtime_state_path(session_id: str | None = None) -> Path:
+    """Per-session runtime_state.yaml path under config dir.
+
+    每个 session 独占一份文件，避免心跳/定时/并发 session 共用单文件互相覆盖
+    channel/mode/model/git 等字段。session_id 为空时回退到 ``default``。
+    """
+    sid = re.sub(r"[^A-Za-z0-9_.-]", "_", (session_id or "").strip())[:128] or "default"
+    return get_config_dir() / "runtime_state" / f"{sid}.yaml"
+
+
+def get_workspace_dir() -> Path:
+    """Get the workspace directory path."""
+    _resolve_paths()
+    return _workspace_dir
+
+
+def get_root_dir() -> Path:
+    """Get the root directory path."""
+    _resolve_paths()
+    return _root_dir
+
+
+def get_agent_workspace_dir(tenant_key: str | None = None) -> Path:
+    """Get the agent workspace directory path.
+
+    This is the DeepAgent standard workspace directory under the agent root.
+    It contains standard nodes like skills, memory, todo, messages, etc.
+
+    - 个人版: ``~/.jiuwenswarm/agent/workspace``
+    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/workspace``
+
+    ``tenant_key`` 可选：显式传入时按该租户解析；未传时优先读
+    ``TenantContext`` 绑定路径，再兜底 ``get_agent_root_dir() / "workspace"``。
+    """
+    if tenant_key is None:
+        try:
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+            bound = TenantContext.current_agent_workspace_root()
+            if bound is not None:
+                return bound
+        except ImportError:
+            logger.debug(
+                "tenant_context unavailable for workspace bind", exc_info=True
+            )
+    return get_agent_root_dir(tenant_key) / "workspace"
+
+
+def get_default_project_workspace_dir() -> Path:
+    """Get the fallback task workspace used when no project is bound.
+
+    Agent-owned data such as memory, skills, todo, and sessions stays directly
+    under ``get_agent_workspace_dir()``. This directory is only the default cwd
+    / workspace boundary for user task artifacts when no project is selected.
+    """
+    return get_agent_workspace_dir() / "projects"
+
+
+def get_default_project_session_workspace_dir(session_id: str | None = None) -> Path:
+    """Get the no-project task workspace for a single conversation session.
+
+    Layout:
+        <agent-workspace>/projects/<session_id>
+
+    ``session_id`` is used when available so the same conversation keeps a stable
+    workspace. If it is missing during early adapter initialization, the shared
+    projects root is returned so no throwaway session directory is created.
+    """
+    base = get_default_project_workspace_dir()
+    raw_session = str(session_id or "").strip()
+    if not raw_session:
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    safe_session = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_session).strip("._-")
+    if not safe_session:
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    workspace = base / safe_session
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
+def get_domain_data_dir() -> Path:
+    """Get the root directory that hosts user-owned business data.
+
+    Sessions, agent workspaces, tenant data and runtime-state snapshots are
+    derived from this root, so it is the parent of :func:`get_agent_root_dir`.
+    Personal edition resolves to the user workspace, enterprise edition to the
+    tenant workspace currently bound in ``TenantContext``.
+    """
+    return get_agent_root_dir().parent
+
+
+def get_agent_root_dir(tenant_key: str | None = None) -> Path:
+    """Get the agent root directory path.
+
+    - 个人版: ``~/.jiuwenswarm/agent/``
+    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/``
+
+    ``tenant_key`` 可选：显式传入时按该租户解析；未传时优先读
+    ``TenantContext`` 绑定路径，再兜底 ``get_multi_tenant_user_workspace_dir()``
+    （个人版即 ``get_user_workspace_dir()``，企业版未绑定则为 default 三元组）。
+    """
+    if tenant_key is None:
+        try:
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+            bound = TenantContext.current_agent_root()
+            if bound is not None:
+                return bound
+        except ImportError:
+            logger.debug(
+                "tenant_context unavailable for agent root bind", exc_info=True
+            )
+    return get_multi_tenant_user_workspace_dir(tenant_key) / "agent"
+
+
+def get_package_avatar_cache_dir() -> Path:
+    """Return the tenant-scoped cache for HTTP-served package avatars."""
+    return get_agent_workspace_dir() / ".cache" / "package-avatars"
+
+
+def get_agent_home_dir() -> Path:
+    return get_agent_root_dir() / "home"
+
+
+def get_agent_memory_dir() -> Path:
+    """Get the agent memory directory path.
+
+    Uses DeepAgent standard workspace location for unified workspace.
+
+    Returns:
+        Path to memory directory: ~/.jiuwenswarm/agent/workspace/memory
+    """
+    return get_agent_workspace_dir() / "memory"
+
+
+def get_agent_skills_dir() -> Path:
+    """Get the agent skills directory path.
+
+    Uses DeepAgent standard workspace location for unified workspace.
+
+    Returns:
+        Path to skills directory: ~/.jiuwenswarm/agent/workspace/skills
+    """
+    return get_agent_workspace_dir() / "skills"
+
+
+# Project-level Skill roots, relative to the project directory, in precedence
+# order. ``.agents/skills`` is the tool-neutral location, ``.claude/skills`` the
+# Claude Code one; both are scanned so a project set up for either tool works.
+PROJECT_SKILL_DIR_NAMES: tuple[tuple[str, str], ...] = (
+    (".agents", "skills"),
+    (".claude", "skills"),
+)
+
+
+def get_project_skills_dirs(project_dir: str | os.PathLike[str] | None) -> list[str]:
+    """Return the project-level Skill roots under *project_dir*.
+
+    The roots are returned whether or not they exist yet: the Skill rail skips
+    a missing root on every scan, so a directory created mid-session is picked
+    up by the next refresh without rebuilding the rail.
+
+    Args:
+        project_dir: The project directory selected from the frontend, or None.
+
+    Returns:
+        ``<project>/.agents/skills`` and ``<project>/.claude/skills`` as
+        absolute path strings, or an empty list when no project is set.
+    """
+    raw = str(project_dir or "").strip()
+    if not raw:
+        return []
+    root = Path(raw).expanduser().resolve(strict=False)
+    return [str(root.joinpath(*parts)) for parts in PROJECT_SKILL_DIR_NAMES]
+
+
+# Last directory handed to openJiuWen's ``configure_global_skills_dir``. Kept so
+# the override is applied once instead of on every call, while a changed user
+# home (tests, named instances) still re-pins the library.
 _openjiuwen_skill_library: Path | None = None
 
 
@@ -2281,10 +2593,30 @@ def get_interactions_dir() -> Path:
     return get_agent_workspace_dir() / "interactions"
 
 
+def get_cron_jobs_path() -> Path:
+    """Canonical path for cron_jobs.json, pinned to ``agent/home``.
+
+    Gateway、Agent 工具与存储层统一经本函数取路径，禁止在业务代码中
+    硬编码该路径。历史版本遗留的 ``gateway/cron_jobs.json`` 不再读取。
+    """
+    return get_agent_home_dir() / "cron_jobs.json"
 
 
+def get_heartbeat_jobs_path() -> Path:
+    """Canonical path for heartbeat_jobs.json (new thread-automation heartbeat jobs).
+
+    与 ``get_cron_jobs_path`` 同目录(``agent/home``),禁止在业务代码中硬编码该路径。
+    """
+    return get_agent_home_dir() / "heartbeat_jobs.json"
 
 
+def get_deepagent_todo_dir() -> Path:
+    """Get the DeepAgent todo directory path.
+
+    Returns:
+        Path to todo directory: ~/.jiuwenswarm/agent/workspace/todo
+    """
+    return get_agent_workspace_dir() / "todo"
 
 
 def get_deepagent_messages_dir() -> Path:
@@ -2332,10 +2664,29 @@ def get_deepagent_identity_md_path() -> Path:
     return get_agent_workspace_dir() / "IDENTITY.md"
 
 
+def get_deepagent_user_md_path() -> Path:
+    """Get the DeepAgent USER.md file path.
+
+    Returns:
+        Path to USER.md: ~/.jiuwenswarm/agent/workspace/USER.md
+    """
+    return get_agent_workspace_dir() / "USER.md"
 
 
+def get_builtin_skills_dir() -> Path:
+    """Get the built-in skills directory from package resources."""
+    package_root = _find_package_root()
+    # 优先检查 workspace/skills 目录（标准布局）
+    primary_path = package_root / "resources" / "agent" / "workspace" / "skills"
+    if primary_path.exists() and primary_path.is_dir():
+        return primary_path
+    # 回退到 skills 目录
+    fallback_path = package_root / "resources" / "agent" / "skills"
+    return fallback_path
 
 
+def get_agent_sessions_dir() -> Path:
+    return get_agent_root_dir() / "sessions"
 
 
 # 当前 git 分支解析（带短 TTL 缓存），用于 /resume 按分支过滤会话。
@@ -2379,12 +2730,35 @@ def resolve_git_branch(project_dir: str | None) -> str:
     return branch
 
 
+_legacy_migration_done: bool = False
 
 
+def _migrate_legacy_checkpoint_and_logs() -> None:
+    """One-time migration: move ~/.jiuwenswarm/.checkpoint and .logs to ~/.jiuwenswarm/agent/."""
+    global _legacy_migration_done
+    if _legacy_migration_done:
+        return
+    _legacy_migration_done = True
+
+    workspace = get_user_workspace_dir()
+    agent_root = workspace / "agent"
+
+    for name in (".checkpoint", ".logs"):
+        legacy = workspace / name
+        new_path = agent_root / name
+        if legacy.exists() and not new_path.exists():
+            agent_root.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(legacy), str(new_path))
 
 
+def get_checkpoint_dir() -> Path:
+    _migrate_legacy_checkpoint_and_logs()
+    return get_agent_root_dir() / ".checkpoint"
 
 
+def get_logs_dir() -> Path:
+    _migrate_legacy_checkpoint_and_logs()
+    return get_agent_root_dir() / ".logs"
 
 
 def append_jsonl_log(
@@ -2506,6 +2880,8 @@ def get_xy_tmp_dir() -> Path:
     return xy_tmp_dir
 
 
+def get_env_file() -> Path:
+    return get_config_dir() / ".env"
 
 
 def env_url(name: str, default: str) -> str:
@@ -2537,6 +2913,9 @@ def apply_free_search_runtime_defaults() -> None:
     os.environ.setdefault("FREE_SEARCH_BING_ENABLED", "false")
 
 
+def get_config_file() -> Path:
+    """Get the config.yaml file path."""
+    return get_config_dir() / "config.yaml"
 
 
 def is_package_installation() -> bool:
@@ -3331,7 +3710,5 @@ from jiuwenswarm.enterprise.tenant.tenant_paths import (  # noqa: E402
     seed_tenant_agent_workspace,
 )
 
-# 分区迁移先于 setup_logger 等目录创建行为执行：
-# 旧平铺数据优先整体搬迁，而非退化为逐文件吸收
-migrate_profile_data_root_layout()
+logger = logging.getLogger(__name__)
 setup_logger()

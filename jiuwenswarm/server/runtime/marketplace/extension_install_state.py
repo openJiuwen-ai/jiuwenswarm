@@ -248,15 +248,8 @@ class ExtensionInstallState:
 
     @classmethod
     def for_install_dir(cls, install_dir: Path) -> "ExtensionInstallState":
-        # 状态文件挂 extension_v2 数据根同名目录（与 install_dir 同根的 extension/ 下）；
-        # 目录名经 get_extension_data_dir 派生，避免散落字面量
-        from jiuwenswarm.common.paths import get_extension_data_dir
-
-        return cls(
-            Path(install_dir).expanduser().resolve().parent
-            / get_extension_data_dir().name
-            / "system_plugin_install_state.json"
-        )
+        root = Path(install_dir).expanduser().resolve()
+        return cls(root.parent / "extension" / "system_plugin_install_state.json")
 
     # ── file access ───────────────────────────────────────────────────────
 

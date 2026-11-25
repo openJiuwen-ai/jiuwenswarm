@@ -69,26 +69,17 @@ PACKAGE_ROOT = SKILL_DIR.parent.parent.parent.parent
 REPO_ROOT = PACKAGE_ROOT.parent
 
 # Agent 根目录：优先使用 jiuwenswarm.utils，其次环境变量，最后硬编码
-_agent_root_from_skills_tree = None
-for _parent in Path(__file__).resolve().parents:
-    if _parent.name == "skills":
-        _located = _parent.parent.parent
-        if "resources" not in _located.parts:
-            _agent_root_from_skills_tree = _located
-        break
-
-if _agent_root_from_skills_tree is not None:
-    AGENT_ROOT = _agent_root_from_skills_tree
+if _has_jiuwenswarm:
+    AGENT_ROOT = get_agent_root_dir()
 else:
-    agent_root_env = os.getenv("JIUWENSWARM_AGENT_ROOT", "").strip()
-    if agent_root_env:
-        AGENT_ROOT = Path(agent_root_env).expanduser()
-    elif _has_jiuwenswarm:
-        AGENT_ROOT = get_agent_root_dir()
+    env_workspace = os.getenv("JIUWENSWARM_DATA_DIR")
+    if env_workspace:
+        AGENT_ROOT = Path(env_workspace) / "agent"
     else:
-        env_workspace = os.getenv("JIUWENSWARM_DATA_DIR")
-        base = Path(env_workspace).expanduser() if env_workspace else Path.home() / ".jiuwenswarm"
-        AGENT_ROOT = base / "profile" / "agent"
+        AGENT_ROOT = Path(os.environ.get(
+            "JIUWENSWARM_AGENT_ROOT",
+            str(Path.home() / ".jiuwenswarm" / "domain" / "agent"),
+        ))
 
 # 配置环境文件路径
 if _has_jiuwenswarm:

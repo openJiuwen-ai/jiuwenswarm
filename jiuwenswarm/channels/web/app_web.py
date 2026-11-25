@@ -123,9 +123,7 @@ def _splash_candidates() -> bool:
 
 
 def _get_agent_root_dir() -> Path:
-    # profile 契约：agent 子树挂 profile/agent（个人版 Web 进程无租户上下文，
-    # 企业版用户面经 user-backend 代理，不走本进程的这条链）。
-    return _get_user_workspace_dir() / "profile" / "agent"
+    return _get_user_workspace_dir() / "agent"
 
 
 def _get_agent_sessions_dir() -> Path:
@@ -351,13 +349,12 @@ def _text_content_type(
 def _get_agent_teams_root(project_root: Path) -> Path:
     """Return the team state root without importing the agent runtime.
 
-    profile 契约：.agent_teams 挂工作空间根（``<root>/profile/.agent_teams``），
-    与 AgentServer 侧 ``configure_agent_teams_home(get_workspace_root_dir())``
-    解析一致。The static server only performs bounded file operations
+    ``configure_agent_teams_home(project_root)`` in AgentServer resolves this
+    exact directory.  The static server only performs bounded file operations
     under it, so importing OpenJiuwen solely to calculate the same path adds
     startup work without providing any Web-side behaviour.
     """
-    return (project_root / "profile" / ".agent_teams").resolve()
+    return (project_root / ".agent_teams").resolve()
 
 
 def _get_package_dir() -> Path:
@@ -403,7 +400,7 @@ def _normalize_lang_suffix(name: str) -> str:
 
 def _generate_agent_data(project_root: Path) -> None:
     """Generate agent/workspace/agent-data.json from agent tree."""
-    agent_root = (project_root / "profile" / "agent").resolve()
+    agent_root = (project_root / "agent").resolve()
     workspace_root = (agent_root / "workspace").resolve()
     output_path = (workspace_root / "agent-data.json").resolve()
     root_folder_key = "__root__"
@@ -3188,10 +3185,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
         if is_enterprise():
             return None
-        # file-api 端点自行管理安全响应头（_apply_raw_file_security_headers 按声
-        # 明类型决定沙箱 CSP；JSON 端点无需文档沙箱），宿主 blanket 策略不叠加。
-        if self._is_file_api_route():
-            return None
         # Bundled pages and the trusted login callback run top-level with their
         # original origin. All other documents on this origin stay sandboxed,
         # including proxied content and files opened outside an iframe.
@@ -3497,7 +3490,7 @@ def main() -> None:
         raise SystemExit(str(exc)) from exc
 
     project_root = _get_user_workspace_dir()
-    workspace_root = (project_root / "profile" / "agent").resolve()
+    workspace_root = (project_root / "agent").resolve()
     agent_teams_root = _get_agent_teams_root(project_root)
     logs_root = _get_logs_dir().resolve()
     # Start with the process logger.  The file handler and diagnostic hook are
@@ -3592,9 +3585,7 @@ def main() -> None:
         )
         logger.info("[jiuwenswarm-web] /file-api roots -> %s, %s, %s", workspace_root, agent_teams_root, logs_root)
 
-        from jiuwenswarm.common.paths import get_updates_dir
-
-        _web_info_path = get_updates_dir().resolve()
+        _web_info_path = (_get_user_workspace_dir() / ".updates").resolve()
         _web_info_path.mkdir(parents=True, exist_ok=True)
         _web_info_file = _web_info_path / "web_process.json"
         try:
