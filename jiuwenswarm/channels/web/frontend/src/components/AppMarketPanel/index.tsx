@@ -294,9 +294,11 @@ function MarketAppDetailPage({ item, detailState, onBack }: {
 export function AppMarketPanel({
   onEdit,
   onDetailChange,
+  onApplicationOpenChange,
 }: {
   onEdit?: AppMarketEditHandler;
   onDetailChange?: (open: boolean) => void;
+  onApplicationOpenChange?: (open: boolean) => void;
 } = {}) {
   const { t } = useTranslation();
   const isElectron = !!window.jiuwenDesktop?.isElectron;
@@ -701,6 +703,10 @@ export function AppMarketPanel({
   }, [detailOpen, onDetailChange]);
 
   useEffect(() => {
+    onApplicationOpenChange?.(Boolean(activeApp));
+  }, [activeApp, onApplicationOpenChange]);
+
+  useEffect(() => {
     if (activeTab === 'market') void fetchMarket();
   }, [activeTab, fetchMarket]);
 
@@ -1062,7 +1068,9 @@ export function AppMarketPanel({
           ]}
           value={activeTab}
           onChange={(value) => {
-            if (value === activeTab) return;
+            // Re-selecting the current tab still acts as "go home": it collapses
+            // the running application pane instead of doing nothing.
+            if (value === activeTab && !activeApp && !paneExpanded && !detailTarget) return;
             hideApplication();
             setPaneExpanded(false);
             setDetailTarget(null);

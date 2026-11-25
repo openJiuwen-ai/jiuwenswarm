@@ -348,14 +348,53 @@ test('installed app details load AI role cards and show the session policy', asy
     ]);
     const section = find('app-market-ai-roles');
     assert.match(section.textContent, /AI Roles.*Team session.*New team for each game\./s);
+    const group = section.querySelector('[data-testid="app-market-ai-role-group"]');
+    assert.equal(group.getAttribute('data-mode'), 'team');
+    assert.equal(
+      section.querySelector('.app-market-ai-role-grid').style.getPropertyValue('--app-market-ai-role-columns'),
+      '2',
+    );
     const cards = section.querySelectorAll('[data-testid="app-market-ai-role-card"]');
     assert.equal(cards.length, 2);
-    assert.match(cards[0].textContent, /Mayor.*Leader.*Leads the council/s);
+    assert.match(cards[0].textContent, /Mayor.*Leader.*Team.*Leads the council/s);
     assert.ok(cards[0].querySelector('img[src^="data:image/gif"]'));
-    assert.match(cards[1].textContent, /Doctor.*Advises the council/s);
+    assert.match(cards[1].textContent, /Doctor.*Team.*Advises the council/s);
     assert.equal(cards[1].querySelector('img'), null);
     await click(find('app-market-detail-back'));
     assert.equal(find('app-market-ai-roles'), null);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('AI role groups size their columns from the role count and mark only team roles', async () => {
+  const teamRoles = ['mayor', 'doctor', 'fisherman', 'pilot', 'judge', 'nurse'].map((id, index) => ({
+    id, name: `Role ${id}`, description: `Duty ${index}`,
+  }));
+  const ctx = await mount(method => {
+    if (method !== 'app_market.ai_roles') return response(method);
+    return { session_groups: [
+      { id: 'council', mode: 'team', leader: 'mayor', session_description: 'Shared team.', roles: teamRoles },
+      { id: 'assistant', mode: 'agent', session_description: 'Single role.', roles: [
+        { id: 'helper', name: 'Helper', description: 'Answers questions' },
+      ] },
+    ] };
+  });
+  try {
+    await click(card('gomoku'));
+    const groups = document.querySelectorAll('[data-testid="app-market-ai-role-group"]');
+    assert.equal(groups.length, 2);
+    assert.equal(groups[0].getAttribute('data-mode'), 'team');
+    assert.equal(groups[1].getAttribute('data-mode'), 'agent');
+    const grids = document.querySelectorAll('.app-market-ai-role-grid');
+    assert.equal(grids[0].style.getPropertyValue('--app-market-ai-role-columns'), '4');
+    assert.equal(grids[1].style.getPropertyValue('--app-market-ai-role-columns'), '1');
+    const teamCards = groups[0].querySelectorAll('[data-testid="app-market-ai-role-card"]');
+    assert.equal(teamCards.length, 6);
+    for (const item of teamCards) assert.match(item.textContent, /Team/);
+    assert.match(teamCards[0].textContent, /Leader/);
+    const agentCard = groups[1].querySelector('[data-testid="app-market-ai-role-card"]');
+    assert.doesNotMatch(agentCard.textContent, /Team|Leader/);
   } finally {
     await ctx.close();
   }
@@ -449,9 +488,9 @@ test('updating from installed app details shows progress and allows cancelling',
   }
 });
 
-// 应用市场已是侧边栏一级入口（AppMarketPage）：页头 + 市场面板的独立页面，
-// 不再经由扩展页 tab 承载（MarketplacePage 的 'app' tab 已移除）。
-test('app market page renders a standalone page header above the market panel', async () => {
+// 应用市场已是侧边栏一级入口（AppMarketPage）：列表页保留「应用」页头与副标题，
+// 进入详情或运行中的应用页面时收起页头，避免与内容自带标题重复。
+test('app market page renders the title and subtitle above the panel', async () => {
   const previous = webClient.request;
   const previousInterval = globalThis.setInterval;
   globalThis.setInterval = () => 987654;
@@ -462,6 +501,7 @@ test('app market page renders a standalone page header above the market panel', 
     const title = find('app-market-page-title');
     assert.ok(title, 'page title is rendered');
     assert.equal(title.textContent, i18next.t('appMarket.title'));
+    assert.equal(find('app-market-page-subtitle').textContent, i18next.t('appMarket.subtitle'));
     assert.ok(find('app-market-panel'), 'market panel is embedded below the header');
     await tick();
     assert.ok(card('gomoku'), 'app cards render inside the standalone page');
@@ -482,9 +522,11 @@ test('opening app details hides page chrome and keeps run and more actions', asy
     await act(async () => root.render(React.createElement(AppMarketPage)));
     await tick();
     assert.ok(find('app-market-page-title'));
+    assert.ok(find('categoryTabs'));
     await click(card('gomoku'));
     await tick();
     assert.equal(find('app-market-page-title'), null);
+    assert.equal(find('app-market-page-subtitle'), null);
     assert.equal(find('categoryTabs'), null);
     assert.equal(find('app-market-resource-actions'), null);
     assert.ok(find('app-market-detail-page'));
@@ -492,6 +534,35 @@ test('opening app details hides page chrome and keeps run and more actions', asy
     assert.ok(find('app-market-more'));
     await click(find('app-market-detail-back'));
     await tick();
+    assert.ok(find('app-market-page-title'));
+    assert.ok(find('categoryTabs'));
+  } finally {
+    await act(async () => root.unmount());
+    webClient.request = previous;
+    globalThis.setInterval = previousInterval;
+  }
+});
+
+test('opening the running app page hides the page title until My Apps is selected', async () => {
+  delete window.jiuwenDesktop;
+  const previous = webClient.request;
+  const previousInterval = globalThis.setInterval;
+  globalThis.setInterval = () => 987654;
+  webClient.request = async (method) => response(method, [running]);
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(AppMarketPage)));
+    await tick();
+    await tick();
+    assert.ok(find('app-market-page-title'));
+    await click(card('gomoku'));
+    await tick();
+    assert.ok(find('app-market-browser-pane'));
+    assert.equal(find('app-market-page-title'), null);
+    assert.equal(find('app-market-page-subtitle'), null);
+    await click(find('app-market-tab-my-apps'));
+    await tick();
+    assert.equal(find('app-market-browser-pane'), null);
     assert.ok(find('app-market-page-title'));
   } finally {
     await act(async () => root.unmount());
@@ -1898,7 +1969,8 @@ test('system CPU and memory colors update independently at boundaries without tr
   }
 });
 
-test('switching to the market tab collapses the running app pane without stopping it', async () => {
+test('My Apps and the market tab collapse the running app pane without stopping it', async () => {
+  delete window.jiuwenDesktop;
   const ctx = await mount(method => {
     if (method === 'app_market.market_list') return { page: 1, page_size: 50, total: 0, items: [] };
     return response(method, [running]);
@@ -1906,9 +1978,18 @@ test('switching to the market tab collapses the running app pane without stoppin
   try {
     await menuClick('app-market-open');
     assert.ok(find('app-market-browser-pane'));
-    await click(document.querySelector('[data-variant="all"]'));
+    const frame = find('app-market-web-view');
+    // Re-selecting the active tab goes home and hides the page; it is not stopped.
+    await click(find('app-market-tab-my-apps'));
+    await tick();
+    assert.equal(find('app-market-browser-pane'), null);
+    assert.equal(frame.isConnected, true);
+    assert.equal(frame.style.visibility, 'hidden');
+    assert.ok(card('gomoku'));
+
+    await menuClick('app-market-open');
     assert.ok(find('app-market-browser-pane'));
-    await click(document.querySelector('[data-variant="market"]'));
+    await click(find('app-market-tab-plaza'));
     assert.equal(find('app-market-browser-pane'), null);
     assert.equal(ctx.calls.some(call => call.method === 'app_market.stop'), false);
   } finally {
