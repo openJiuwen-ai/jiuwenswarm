@@ -192,6 +192,28 @@ begin
   if CliHelperRunning or (CliStage = 1) then begin Cancel := False; Confirm := False; end;
 end;
 
+procedure InitializeHiddenCliStartup(var Startup: TCliStartupInfo);
+begin
+  Startup.Size := SizeOf(Startup);
+  Startup.Reserved := 0;
+  Startup.Desktop := 0;
+  Startup.Title := 0;
+  Startup.X := 0;
+  Startup.Y := 0;
+  Startup.XSize := 0;
+  Startup.YSize := 0;
+  Startup.XChars := 0;
+  Startup.YChars := 0;
+  Startup.Fill := 0;
+  Startup.Flags := 1; // STARTF_USESHOWWINDOW
+  Startup.ShowWindow := SW_HIDE;
+  Startup.ReservedSize := 0;
+  Startup.ReservedData := 0;
+  Startup.Input := 0;
+  Startup.Output := 0;
+  Startup.Error := 0;
+end;
+
 function RunCliProcess(const Filename, Parameters, ProgressPath: String;
   const StartProgress, EndProgress: Integer; var ResultCode: Integer): Boolean;
 var
@@ -221,24 +243,7 @@ begin
     CliProgressContainer.BringToFront;
     SetCliProgress(StartProgress);
     PumpCliMessages;
-    Startup.Size := SizeOf(Startup);
-    Startup.Reserved := 0;
-    Startup.Desktop := 0;
-    Startup.Title := 0;
-    Startup.X := 0;
-    Startup.Y := 0;
-    Startup.XSize := 0;
-    Startup.YSize := 0;
-    Startup.XChars := 0;
-    Startup.YChars := 0;
-    Startup.Fill := 0;
-    Startup.Flags := 1; // STARTF_USESHOWWINDOW
-    Startup.ShowWindow := SW_HIDE;
-    Startup.ReservedSize := 0;
-    Startup.ReservedData := 0;
-    Startup.Input := 0;
-    Startup.Output := 0;
-    Startup.Error := 0;
+    InitializeHiddenCliStartup(Startup);
     if not CliCreateProcess(Filename, '"' + Filename + '" ' + Parameters,
       0, 0, False, $08000000, 0, 0, Startup, Child) then Exit;
     CliCloseHandle(Child.Thread);

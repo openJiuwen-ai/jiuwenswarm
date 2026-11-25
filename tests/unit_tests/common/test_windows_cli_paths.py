@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -959,12 +960,17 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
         "/DBuildVersion=0.0.0", "/DBuildExecutableNameWindows=workswarm.exe",
         "/DBuildDistDirName=workswarm", "/DBuildSetupBaseName=issue5338-test"]
     if name == "installer-electron.iss":
-        missing = subprocess.run(
-            [*command, str(scripts / name)], cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
-        )
-        assert missing.returncode != 0
-        assert "MaxPayloadRelativePath is required" in missing.stdout + missing.stderr
-        command.append(f"/DMaxPayloadRelativePath={len('fixture.txt')}")
+        version = subprocess.run([str(compiler), "--version"], capture_output=True, text=True, errors="replace", timeout=15)
+        banner = version.stdout + "\n" + version.stderr
+        major = re.search(r"^\s*(\d+)\.|Inno Setup\s+(\d+)\b", banner, re.MULTILINE)
+        assert major, banner
+        if int(major.group(1) or major.group(2)) < 7:
+            missing = subprocess.run(
+                [*command, str(scripts / name)], cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
+            )
+            assert missing.returncode != 0
+            assert "MaxPayloadRelativePath is required for Inno Setup 6" in missing.stdout + missing.stderr
+            command.append(f"/DMaxPayloadRelativePath={len('fixture.txt')}")
     result = subprocess.run(
         [*command, str(scripts / name)],
         cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
