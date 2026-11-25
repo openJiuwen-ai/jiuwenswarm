@@ -1,9 +1,13 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """空闲回收"忙判定"行为测试。
 
 覆盖：执行中的命令不被回收、后台任务运行中不被回收、后台任务状态无法
 确认（守护进程不可达）时按到期回收、状态查询异常时跳过本轮、真闲置照
 收、执行中计数在成功/异常/取消/请求构造失败时都能解除、轮询后台任务
 刷新活跃时间、守护进程错误匹配不受用户输出干扰。
+
+场景布置与断言通过 ``*_of`` 辅助函数按名取管理器内部状态（与既有测试
+``monkeypatch.setattr`` 的字符串风格一致），不直接属性访问。
 """
 
 import asyncio
@@ -19,6 +23,26 @@ from jiuwenbox.server.sandbox_manager import (
     SandboxManager,
     _is_daemon_ipc_exec_failure,
 )
+
+
+def sandboxes_of(manager: SandboxManager) -> dict:
+    """测试辅助：按名取沙箱注册表，供用例布置与断言场景。"""
+    return getattr(manager, "_sandboxes")
+
+
+def inflight_of(manager: SandboxManager) -> dict:
+    """测试辅助：按名取执行中命令计数表。"""
+    return getattr(manager, "_inflight_execs")
+
+
+def lock_of(manager: SandboxManager) -> asyncio.Lock:
+    """测试辅助：按名取状态锁。"""
+    return getattr(manager, "_lock")
+
+
+def delete_if_idle_of(manager: SandboxManager):
+    """测试辅助：按名取回收专用删除方法。"""
+    return getattr(manager, "_delete_if_idle")
 
 
 def _ready_ref(sid: str, *, age_hours: float = 1.0) -> SandboxRef:
@@ -57,7 +81,7 @@ def _make_manager(tmp_path, *, jobs_state=False, jobs_error=None):
 async def _run_reaper(manager, seconds: float, *, idle_timeout: float = 0.05) -> None:
     stop = asyncio.Event()
     task = asyncio.create_task(
-        manager._idle_reaper_loop(
+        getattr(manager, "_idle_reaper_loop")(
             idle_timeout=idle_timeout,
             check_interval=0.05,
             stop_event=stop,
@@ -86,19 +110,19 @@ def _exec_request():
 @pytest.mark.asyncio
 async def test_reaper_deletes_idle_sandbox(tmp_path):
     manager, runtime = _make_manager(tmp_path, jobs_state=False)
-    manager._sandboxes["sb"] = _ready_ref("sb")
+    sandboxes_of(manager)["sb"] = _ready_ref("sb")
     await _run_reaper(manager, 0.4)
-    assert "sb" not in manager._sandboxes
+    assert "sb" not in sandboxes_of(manager)
     runtime.cleanup.assert_awaited()
 
 
 @pytest.mark.asyncio
 async def test_reaper_skips_inflight_exec(tmp_path):
     manager, runtime = _make_manager(tmp_path, jobs_state=False)
-    manager._sandboxes["sb"] = _ready_ref("sb")
-    manager._inflight_execs["sb"] = 1
+    sandboxes_of(manager)["sb"] = _ready_ref("sb")
+    inflight_of(manager)["sb"] = 1
     await _run_reaper(manager, 0.4)
-    assert "sb" in manager._sandboxes
+    assert "sb" in sandboxes_of(manager)
     runtime.cleanup.assert_not_awaited()
     runtime.has_running_background_jobs.assert_not_awaited()
 
@@ -106,9 +130,9 @@ async def test_reaper_skips_inflight_exec(tmp_path):
 @pytest.mark.asyncio
 async def test_reaper_skips_running_background_job(tmp_path):
     manager, runtime = _make_manager(tmp_path, jobs_state=True)
-    manager._sandboxes["sb"] = _ready_ref("sb")
+    sandboxes_of(manager)["sb"] = _ready_ref("sb")
     await _run_reaper(manager, 0.4)
-    assert "sb" in manager._sandboxes
+    assert "sb" in sandboxes_of(manager)
     runtime.cleanup.assert_not_awaited()
 
 
@@ -117,9 +141,9 @@ async def test_reaper_deletes_when_daemon_unreachable(tmp_path):
     # 后台任务状态无法确认（守护进程不可达）：沙箱对外已不可用，
     # 按到期回收，不能被陈旧记录挡成"永不回收"。
     manager, runtime = _make_manager(tmp_path, jobs_state=None)
-    manager._sandboxes["sb"] = _ready_ref("sb")
+    sandboxes_of(manager)["sb"] = _ready_ref("sb")
     await _run_reaper(manager, 0.4)
-    assert "sb" not in manager._sandboxes
+    assert "sb" not in sandboxes_of(manager)
     runtime.cleanup.assert_awaited()
 
 
@@ -128,19 +152,19 @@ async def test_reaper_skips_when_jobs_check_raises(tmp_path):
     manager, runtime = _make_manager(
         tmp_path, jobs_error=RuntimeError("boom"),
     )
-    manager._sandboxes["sb"] = _ready_ref("sb")
+    sandboxes_of(manager)["sb"] = _ready_ref("sb")
     await _run_reaper(manager, 0.4)
-    assert "sb" in manager._sandboxes
+    assert "sb" in sandboxes_of(manager)
     runtime.cleanup.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_reaper_keeps_recently_active_sandbox(tmp_path):
     manager, runtime = _make_manager(tmp_path, jobs_state=False)
-    manager._sandboxes["sb"] = _ready_ref("sb", age_hours=0.0)
+    sandboxes_of(manager)["sb"] = _ready_ref("sb", age_hours=0.0)
     # TTL 0.5s，观察 0.25s：刚活跃的沙箱不应被回收。
     await _run_reaper(manager, 0.25, idle_timeout=0.5)
-    assert "sb" in manager._sandboxes
+    assert "sb" in sandboxes_of(manager)
 
 
 # ---- 执行中计数 ----
@@ -149,10 +173,10 @@ async def test_reaper_keeps_recently_active_sandbox(tmp_path):
 @pytest.mark.asyncio
 async def test_exec_counter_released_on_success(tmp_path):
     manager, runtime = _make_manager(tmp_path)
-    manager._sandboxes["sb"] = _ready_ref("sb")
+    sandboxes_of(manager)["sb"] = _ready_ref("sb")
     result = await manager.exec_in_sandbox("sb", _exec_request())
     assert result.exit_code == 0
-    assert "sb" not in manager._inflight_execs
+    assert "sb" not in inflight_of(manager)
 
 
 @pytest.mark.asyncio
@@ -160,10 +184,10 @@ async def test_exec_counter_released_on_runtime_error(tmp_path):
     manager, runtime = _make_manager(tmp_path)
     runtime.exec = AsyncMock(side_effect=RuntimeError("boom"))
     ref = _ready_ref("sb")
-    manager._sandboxes["sb"] = ref
+    sandboxes_of(manager)["sb"] = ref
     with pytest.raises(RuntimeError):
         await manager.exec_in_sandbox("sb", _exec_request())
-    assert "sb" not in manager._inflight_execs
+    assert "sb" not in inflight_of(manager)
     assert ref.last_active_at > ref.started_at
 
 
@@ -171,17 +195,17 @@ async def test_exec_counter_released_on_runtime_error(tmp_path):
 async def test_exec_counter_released_on_cancel(tmp_path):
     manager, runtime = _make_manager(tmp_path)
     runtime.exec = AsyncMock(side_effect=asyncio.CancelledError)
-    manager._sandboxes["sb"] = _ready_ref("sb")
+    sandboxes_of(manager)["sb"] = _ready_ref("sb")
     with pytest.raises(asyncio.CancelledError):
         await manager.exec_in_sandbox("sb", _exec_request())
-    assert "sb" not in manager._inflight_execs
+    assert "sb" not in inflight_of(manager)
 
 
 @pytest.mark.asyncio
 async def test_exec_counter_released_when_request_build_fails(tmp_path, monkeypatch):
     # 计数加一之后、真正执行之前就失败：计数同样要解除。
     manager, runtime = _make_manager(tmp_path)
-    manager._sandboxes["sb"] = _ready_ref("sb")
+    sandboxes_of(manager)["sb"] = _ready_ref("sb")
 
     def boom(*args, **kwargs):
         raise ValueError("bad request")
@@ -189,17 +213,17 @@ async def test_exec_counter_released_when_request_build_fails(tmp_path, monkeypa
     monkeypatch.setattr(sm, "RuntimeExecRequest", boom)
     with pytest.raises(ValueError):
         await manager.exec_in_sandbox("sb", _exec_request())
-    assert "sb" not in manager._inflight_execs
+    assert "sb" not in inflight_of(manager)
 
 
 @pytest.mark.asyncio
 async def test_delete_clears_inflight_counter(tmp_path):
     manager, runtime = _make_manager(tmp_path)
-    manager._sandboxes["sb"] = _ready_ref("sb")
-    manager._inflight_execs["sb"] = 2
+    sandboxes_of(manager)["sb"] = _ready_ref("sb")
+    inflight_of(manager)["sb"] = 2
     await manager.delete_sandbox("sb")
-    assert "sb" not in manager._sandboxes
-    assert "sb" not in manager._inflight_execs
+    assert "sb" not in sandboxes_of(manager)
+    assert "sb" not in inflight_of(manager)
 
 
 # ---- 轮询即活跃 ----
@@ -209,7 +233,7 @@ async def test_delete_clears_inflight_counter(tmp_path):
 async def test_background_job_polling_marks_active(tmp_path):
     manager, runtime = _make_manager(tmp_path)
     ref = _ready_ref("sb")
-    manager._sandboxes["sb"] = ref
+    sandboxes_of(manager)["sb"] = ref
     runtime.get_background_job = AsyncMock(return_value=SimpleNamespace())
     before = ref.last_active_at
     await asyncio.sleep(0.01)
@@ -226,17 +250,18 @@ async def test_reaper_survives_exec_started_during_jobs_check(tmp_path):
     # 标记活跃 + 计数）不得被随后的删除动作误杀。
     manager, runtime = _make_manager(tmp_path, jobs_state=False)
     ref = _ready_ref("sb")
-    manager._sandboxes["sb"] = ref
+    sandboxes_of(manager)["sb"] = ref
 
     async def jobs_check(sid):
-        async with manager._lock:
-            manager._inflight_execs[sid] = manager._inflight_execs.get(sid, 0) + 1
+        async with lock_of(manager):
+            inflight = inflight_of(manager)
+            inflight[sid] = inflight.get(sid, 0) + 1
             ref.last_active_at = datetime.now(timezone.utc)
         return False
 
     runtime.has_running_background_jobs = AsyncMock(side_effect=jobs_check)
     await _run_reaper(manager, 0.4)
-    assert "sb" in manager._sandboxes
+    assert "sb" in sandboxes_of(manager)
     runtime.cleanup.assert_not_awaited()
 
 
@@ -244,25 +269,26 @@ async def test_reaper_survives_exec_started_during_jobs_check(tmp_path):
 async def test_delete_if_idle_guards(tmp_path):
     manager, runtime = _make_manager(tmp_path)
     ref = _ready_ref("sb")
-    manager._sandboxes["sb"] = ref
+    sandboxes_of(manager)["sb"] = ref
+    delete_if_idle = delete_if_idle_of(manager)
     cutoff = ref.last_active_at.timestamp() + 1
 
     # 命令执行中：不删。
-    manager._inflight_execs["sb"] = 1
-    assert await manager._delete_if_idle("sb", cutoff) is False
-    assert "sb" in manager._sandboxes
+    inflight_of(manager)["sb"] = 1
+    assert await delete_if_idle("sb", cutoff) is False
+    assert "sb" in sandboxes_of(manager)
 
     # 刚被使用：不删。
-    manager._inflight_execs.pop("sb")
+    inflight_of(manager).pop("sb")
     ref.last_active_at = datetime.now(timezone.utc)
-    assert await manager._delete_if_idle("sb", cutoff) is False
-    assert "sb" in manager._sandboxes
+    assert await delete_if_idle("sb", cutoff) is False
+    assert "sb" in sandboxes_of(manager)
 
     # 闲置且无任务：删除并清账。
     ref.last_active_at = ref.started_at
-    assert await manager._delete_if_idle("sb", cutoff) is True
-    assert "sb" not in manager._sandboxes
-    assert "sb" not in manager._inflight_execs
+    assert await delete_if_idle("sb", cutoff) is True
+    assert "sb" not in sandboxes_of(manager)
+    assert "sb" not in inflight_of(manager)
     runtime.cleanup.assert_awaited()
 
 

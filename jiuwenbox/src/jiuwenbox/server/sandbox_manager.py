@@ -548,69 +548,83 @@ class SandboxManager:
                 expired_ids,
             )
             for sid in expired_ids:
-                try:
-                    # 回收前先确认沙箱里没有正在执行的任务：执行中的命令或
-                    # 运行中的后台任务都算"忙"，本轮跳过，等下一轮扫描再判断。
-                    async with self._lock:
-                        ref = self._sandboxes.get(sid)
-                        if ref is None or ref.phase != SandboxPhase.READY:
-                            # 已被并发操作删除/换状态，无需回收。
-                            continue
-                        # 扫描之后可能刚被使用过：重新对照闲置时间。
-                        if self._idle_reference_ts(ref) >= cutoff:
-                            continue
-                        if self._inflight_execs.get(sid, 0) > 0:
-                            logger.info(
-                                "idle reaper: skip sandbox %s (exec in progress), "
-                                "recheck next cycle",
-                                sid,
-                            )
-                            continue
-                    try:
-                        jobs_running = await self.runtime.has_running_background_jobs(sid)
-                    except Exception:  # noqa: BLE001
-                        # 后台任务状态查询本身出错（非"守护进程不可达"）：
-                        # 状态未知，本轮跳过，等下一轮再试。
-                        logger.exception(
-                            "idle reaper: cannot check background jobs for %s, "
-                            "recheck next cycle",
-                            sid,
-                        )
-                        continue
-                    if jobs_running is True:
-                        logger.info(
-                            "idle reaper: skip sandbox %s (background job(s) "
-                            "running), recheck next cycle",
-                            sid,
-                        )
-                        continue
-                    if jobs_running is None:
-                        # 后台任务状态无法确认 = 守护进程不可达。此时沙箱对
-                        # 外已不可用（任何命令都会失败），且不再有请求进来
-                        # 触发自动重启，留着只会白占内存——按到期回收。
-                        logger.info(
-                            "idle reaper: background jobs of %s unconfirmed "
-                            "(daemon unreachable), deleting",
-                            sid,
-                        )
-                    # 后台任务核实发生在锁外（阻塞 IPC），核实期间可能有新
-                    # 命令开始。删除前的复核与置 DELETING 同锁原子完成：
-                    # 核实窗口里开始的命令在此被拦下，本轮作废等下一轮。
-                    if not await self._delete_if_idle(sid, cutoff):
-                        continue
-                    self.audit.log(
-                        AuditEventType.SANDBOX_DELETED,
-                        sid,
-                        reason="idle_timeout",
-                        idle_timeout_seconds=idle_timeout,
+                await self._reap_one_idle(sid, cutoff=cutoff, idle_timeout=idle_timeout)
+
+    async def _reap_one_idle(
+        self,
+        sandbox_id: str,
+        *,
+        cutoff: float,
+        idle_timeout: float,
+    ) -> None:
+        """回收一个到期候选：忙则本轮跳过，闲则原子删除。
+
+        忙判定由快到慢：执行中命令计数（纯内存）→ 运行时后台任务核实
+        （阻塞 IPC）。任何一步判忙即返回，等下一轮扫描再看。
+        """
+        try:
+            async with self._lock:
+                ref = self._sandboxes.get(sandbox_id)
+                if ref is None or ref.phase != SandboxPhase.READY:
+                    # 已被并发操作删除/换状态，无需回收。
+                    return
+                # 扫描之后可能刚被使用过：重新对照闲置时间。
+                if self._idle_reference_ts(ref) >= cutoff:
+                    return
+                if self._inflight_execs.get(sandbox_id, 0) > 0:
+                    logger.info(
+                        "idle reaper: skip sandbox %s (exec in progress), "
+                        "recheck next cycle",
+                        sandbox_id,
                     )
-                except SandboxNotFoundError:
-                    # Raced with an external delete; treat as a clean teardown.
-                    continue
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "idle reaper: delete_sandbox(%s) failed", sid,
-                    )
+                    return
+            try:
+                jobs_running = await self.runtime.has_running_background_jobs(
+                    sandbox_id,
+                )
+            except Exception:  # noqa: BLE001
+                # 后台任务状态查询本身出错（非"守护进程不可达"）：
+                # 状态未知，本轮跳过，等下一轮再试。
+                logger.exception(
+                    "idle reaper: cannot check background jobs for %s, "
+                    "recheck next cycle",
+                    sandbox_id,
+                )
+                return
+            if jobs_running is True:
+                logger.info(
+                    "idle reaper: skip sandbox %s (background job(s) "
+                    "running), recheck next cycle",
+                    sandbox_id,
+                )
+                return
+            if jobs_running is None:
+                # 后台任务状态无法确认 = 守护进程不可达。此时沙箱对
+                # 外已不可用（任何命令都会失败），且不再有请求进来
+                # 触发自动重启，留着只会白占内存——按到期回收。
+                logger.info(
+                    "idle reaper: background jobs of %s unconfirmed "
+                    "(daemon unreachable), deleting",
+                    sandbox_id,
+                )
+            # 后台任务核实发生在锁外（阻塞 IPC），核实期间可能有新
+            # 命令开始。删除前的复核与置 DELETING 同锁原子完成：
+            # 核实窗口里开始的命令在此被拦下，本轮作废等下一轮。
+            if not await self._delete_if_idle(sandbox_id, cutoff):
+                return
+            self.audit.log(
+                AuditEventType.SANDBOX_DELETED,
+                sandbox_id,
+                reason="idle_timeout",
+                idle_timeout_seconds=idle_timeout,
+            )
+        except SandboxNotFoundError:
+            # Raced with an external delete; treat as a clean teardown.
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "idle reaper: delete_sandbox(%s) failed", sandbox_id,
+            )
 
     def register_zombie_reaper(
         self,
