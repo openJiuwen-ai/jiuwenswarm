@@ -67,12 +67,11 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
             assembly = _build_assembly(server)
 
             async def cleanup_package_views(package_id: str, generation: int, reason: str) -> None:
-                del generation
                 # Shutdown clears views in webui.shutdown(); do not fail package
                 # release because a single clear could not be delivered.
                 if reason == "shutdown":
                     return
-                await assembly.webui.drop_package(package_id)
+                await assembly.webui.drop_package(package_id, generation=generation)
                 if reason == "reload":
                     await assembly.webui.notify_packages_changed([package_id])
 

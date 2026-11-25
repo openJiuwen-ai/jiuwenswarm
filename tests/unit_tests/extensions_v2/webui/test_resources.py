@@ -450,6 +450,30 @@ async def test_revoked_activation_cannot_publish_and_a_new_activation_can(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_retiring_an_older_generation_keeps_the_current_activation_usable(tmp_path):
+    service, ops, record, records = _service(tmp_path)
+    try:
+        # A hot reload publishes the successor before the previous generation is retired,
+        # and the successor may already have published files of its own.
+        records[0] = SimpleNamespace(package_id="pkg.demo", root=tmp_path, version="1.0.0", generation=2)
+        published = await _publish(service, ops, {"page.html": "new"})
+        resource_id, path, route = _parts(published.url("page.html"))
+
+        await service.drop(package_id="pkg.demo", generation=1)
+        data, _ = await service.read(resource_id, path, route=route)
+        assert data == b"new"
+        assert (await _publish(service, ops, {"page.html": "again"})).resource_id
+
+        await service.drop(package_id="pkg.demo", generation=2)
+        with pytest.raises(FileNotFoundError):
+            await service.read(resource_id, path, route=route)
+        with pytest.raises(PermissionError):
+            await _publish(service, ops, {"page.html": "late"})
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("identity", ["missing", "package", "root", "version", "scope"])
 async def test_publication_requires_the_actual_active_caller(tmp_path, identity):
     service, ops, record, records = _service(tmp_path)
