@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import contextvars
 import logging
 import os
 import threading
@@ -88,43 +87,15 @@ class WorkspaceQuotaExceeded(Exception):
         self.decision = decision
 
 
-_QUOTA_USER_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "workspace_quota_user_id", default=""
-)
-_QUOTA_GROUP_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "workspace_quota_group_id", default=""
-)
-_QUOTA_BOT_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "workspace_quota_bot_id", default=""
-)
-
-
-def bind_quota_identity(
-    *,
-    user_id: str | None = None,
-    group_id: str | None = None,
-    bot_id: str | None = None,
-) -> tuple[contextvars.Token, contextvars.Token, contextvars.Token]:
-    return (
-        _QUOTA_USER_CV.set(str(user_id or "").strip()),
-        _QUOTA_GROUP_CV.set(str(group_id or "").strip()),
-        _QUOTA_BOT_CV.set(str(bot_id or "").strip()),
-    )
-
-
-def reset_quota_identity(
-    tokens: tuple[contextvars.Token, contextvars.Token, contextvars.Token],
-) -> None:
-    _QUOTA_USER_CV.reset(tokens[0])
-    _QUOTA_GROUP_CV.reset(tokens[1])
-    _QUOTA_BOT_CV.reset(tokens[2])
-
-
 def _get_quota_identity() -> dict[str, str]:
+    """Read plaintext triple from the multi-tenant request envelope."""
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    group_id, bot_id, user_id = TenantContext.current_triple()
     return {
-        "user_id": _QUOTA_USER_CV.get() or "",
-        "group_id": _QUOTA_GROUP_CV.get() or "",
-        "bot_id": _QUOTA_BOT_CV.get() or "",
+        "user_id": user_id,
+        "group_id": group_id,
+        "bot_id": bot_id,
     }
 
 
@@ -767,7 +738,6 @@ __all__ = [
     "UsageCacheEntry",
     "WORKSPACE_QUOTA_EXCEEDED",
     "WorkspaceQuotaExceeded",
-    "bind_quota_identity",
     "check_path_write",
     "check_workspace_write",
     "clear_used_bytes_cache",
@@ -784,7 +754,6 @@ __all__ = [
     "mark_usage_active",
     "measure_and_cache",
     "reconcile_interval_seconds",
-    "reset_quota_identity",
     "resolve_effective_quota",
     "resolve_tenant_root",
     "set_cached_used",

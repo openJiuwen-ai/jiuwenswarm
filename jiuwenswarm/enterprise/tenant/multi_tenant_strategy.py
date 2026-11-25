@@ -60,8 +60,13 @@ class MultiTenantStrategy:
     async def bind_request(
         self, request: AgentRequest, manager: AgentManager
     ) -> AsyncIterator[None]:
+        from jiuwenswarm.enterprise.tenant.tenant_identity import extract_triple
+
         tenant_key = self.extract_tenant_key(request)
-        ctx = TenantContext.bind(tenant_key)
+        group_id, bot_id, user_id = extract_triple(request)
+        ctx = TenantContext.bind(
+            tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
+        )
         try:
             try:
                 yield

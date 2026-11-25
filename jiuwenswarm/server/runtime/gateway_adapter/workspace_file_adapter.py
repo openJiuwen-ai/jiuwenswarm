@@ -229,17 +229,6 @@ class WorkspaceFileAdapter(GatewayAdapter):
     )
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
-        from jiuwenswarm.enterprise.capabilities.workspace.quota import bind_quota_identity, reset_quota_identity
-        from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
-
-        group_id, bot_id, user_id = TenantAgentPool.extract_triple(request)
-        tokens = bind_quota_identity(group_id=group_id, bot_id=bot_id, user_id=user_id)
-        try:
-            return await self._handle(request)
-        finally:
-            reset_quota_identity(tokens)
-
-    async def _handle(self, request: AgentRequest) -> AgentResponse:
         method = request.req_method
         if method is not None and method.value.startswith("workspace."):
             return await self._handle_workspace(request)
