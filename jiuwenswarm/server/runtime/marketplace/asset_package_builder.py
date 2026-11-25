@@ -119,6 +119,9 @@ def build_asset_package(
             entries[f"{name}/plugin.yaml"] = yaml.safe_dump(
                 wrapper, sort_keys=True, allow_unicode=True
             ).encode()
+        icon_png = details.get("icon_png")
+        if isinstance(icon_png, (bytes, bytearray)) and icon_png:
+            entries[f"{name}/icon.png"] = bytes(icon_png)
         if identity.kind == "skill" and (snapshot / "README.md").is_file():
             entries[f"{name}/README.md"] = snapshot / "README.md"
         artifact_path = stage / "artifact.zip"

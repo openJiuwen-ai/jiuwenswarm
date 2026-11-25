@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { AppWindow, ArrowLeft, Circle, CircleCheck, Download, Ellipsis, HardDrive, Loader2, LogOut, Pencil, Pin, PinOff, Play, RefreshCw, Square, Trash2, ExternalLink, Upload } from 'lucide-react';
+import { AppWindow, ArrowLeft, Circle, CircleCheck, Download, Ellipsis, HardDrive, Info, Loader2, LogOut, Pencil, Pin, PinOff, Play, RefreshCw, Square, Trash2, ExternalLink, Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import ReactMarkdown from 'react-markdown';
 import { webRequest } from '../../services/webClient';
 import { openAssetPublish } from '../../features/assetPublishEvents';
 import { Pagination } from '../common/Pagination';
@@ -8,6 +9,7 @@ import { CategoryTabs } from '../ui/CategoryTabs/CategoryTabs';
 import { EntityHeader } from '../ui/EntityHeader/EntityHeader';
 import { PageCard } from '../ui/PageCard/PageCard';
 import { Button } from '../ui/Button/Button';
+import { toast, type ToastVariant } from '../ui/Toast/toastStore';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -21,10 +23,23 @@ import {
 } from './appMarketViews';
 import { webAppViews } from './webAppViews';
 import { AppMarketResources } from './AppMarketResources';
+import { AppMarketAiRoles } from './AppMarketAiRoles';
 import { marketResources } from './marketResources';
 import './AppMarketPanel.css';
 
 const PANE_HINT_DISMISSED = 'app-market-pane-hint-dismissed';
+
+function showNotice(content: string, variant: ToastVariant = 'success') {
+  toast.open({
+    id: 'app-market-action',
+    position: 'right',
+    variant,
+    content,
+    duration: variant === 'error' || variant === 'warning' ? 8 : 3,
+    testId: 'app-market-action-notice',
+    dataVariant: variant,
+  });
+}
 
 interface AppInfo {
   app_id: string;
@@ -40,7 +55,6 @@ interface AppInfo {
   source?: string;
   hub_asset_id?: string;
   artifact_sha256?: string;
-  requires_project?: boolean;
   project_id?: string;
   project_dir?: string;
   work_dir_missing?: boolean;
@@ -65,7 +79,6 @@ interface MarketAppDetail extends MarketAppInfo {
   detail_desc: string;
   file_size?: number | null;
   source_size?: number | null;
-  requires_project?: boolean | null;
   permissions?: string[];
   has_server_script?: boolean | null;
   checksum_sha256?: string;
@@ -89,6 +102,8 @@ export interface AppMarketEditTarget {
   instanceId: string;
   entryPath: string;
   sourceSession: string;
+  version?: string;
+  description?: string;
 }
 
 export type AppMarketEditHandler = (target: AppMarketEditTarget, isCurrent: () => boolean) => void | Promise<void>;
@@ -158,6 +173,11 @@ function appDirectory(app: AppInfo): string {
   return separator > 0 ? entry.slice(0, separator) : '';
 }
 
+function appDescriptionParts(description: string) {
+  const [summary, ...details] = description.trim().split(/\r?\n[ \t]*\r?\n/);
+  return { summary, introduction: details.join('\n\n') };
+}
+
 function DetailPageShell({ backLabel, onBack, children }: {
   backLabel: string;
   onBack: () => void;
@@ -189,8 +209,9 @@ function InstalledAppDetailPage({ app, state, onBack, actions, memoryLabel }: {
   memoryLabel?: string;
 }) {
   const { t } = useTranslation();
+  const { summary, introduction } = appDescriptionParts(app.description || '');
   return (
-    <DetailPageShell backLabel={t('appMarket.backToAll')} onBack={onBack}>
+    <DetailPageShell backLabel={t('appMarket.backToMyApps')} onBack={onBack}>
       <EntityHeader
         variant="card"
         avatar={{ name: app.name, iconUrl: app.icon_url }}
@@ -199,12 +220,31 @@ function InstalledAppDetailPage({ app, state, onBack, actions, memoryLabel }: {
         titleEnd={state !== 'stopped' ? <StateIcon state={state} label={t(`appMarket.states.${state}`)} /> : undefined}
         actions={actions}
       />
-      {app.description ? <p className="app-market-detail__description">{app.description}</p> : null}
+      {summary && <p className="app-market-detail__description">{summary}</p>}
+      {introduction && (
+        <div className="app-market-detail__introduction" data-testid="app-market-detail-introduction">
+          <ReactMarkdown
+            allowedElements={['p', 'blockquote', 'a']}
+            unwrapDisallowed
+            skipHtml
+            components={{
+              a: ({ href, children }) => href?.startsWith('https://') ? (
+                <a href={href} className="text-text-link underline" target="_blank" rel="noopener noreferrer">
+                  {children}
+                </a>
+              ) : <>{children}</>,
+            }}
+          >
+            {introduction}
+          </ReactMarkdown>
+        </div>
+      )}
       <dl className="app-market-detail__grid">
         <DetailRow label={t('appMarket.detail.source')} value={t(app.source === 'hub' ? 'appMarket.sourceHub' : 'appMarket.sourceLocal')} />
         <DetailRow label={t('appMarket.detail.status')} value={t(`appMarket.states.${state}`)} />
         <DetailRow label={t('appMarket.detail.directory')} value={appDirectory(app)} mono />
       </dl>
+      <AppMarketAiRoles key={`${app.app_id}/${app.version}`} appId={app.app_id} />
     </DetailPageShell>
   );
 }
@@ -236,10 +276,6 @@ function MarketAppDetailPage({ item, detailState, onBack }: {
             <DetailRow label={t('appMarket.detail.version')} value={`v${detailState.detail.version || item.public_latest_version}`} />
             <DetailRow label={t('appMarket.detail.packageSize')} value={formatBytes(detailState.detail.file_size)} />
             <DetailRow label={t('appMarket.detail.sourceSize')} value={formatBytes(detailState.detail.source_size)} />
-            <DetailRow
-              label={t('appMarket.detail.requiresProject')}
-              value={t(detailState.detail.requires_project ? 'appMarket.yes' : 'appMarket.no')}
-            />
             <DetailRow
               label={t('appMarket.detail.permissions')}
               value={detailState.detail.permissions?.length ? detailState.detail.permissions.join(', ') : '—'}
@@ -280,7 +316,6 @@ export function AppMarketPanel({
   const [instances, setInstances] = useState<InstanceInfo[]>([]);
   const [listState, setListState] = useState<LoadState>('loading');
   const [pending, setPending] = useState<Record<string, PendingAction>>({});
-  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [marketPage, setMarketPage] = useState(1);
   const [marketPageSize, setMarketPageSize] = useState(50);
   const [marketTotal, setMarketTotal] = useState(0);
@@ -303,9 +338,17 @@ export function AppMarketPanel({
   // a page the user opened or dismissed after clicking start.
   const viewIntent = useRef(0);
 
-  const resourceSnapshot = useSyncExternalStore(marketResources.subscribe, marketResources.getSnapshot);
+  const installedDetail = detailTarget?.kind === 'installed'
+    ? apps.find((app) => app.app_id === detailTarget.id)
+    : undefined;
+  const marketDetail = detailTarget?.kind === 'market'
+    ? marketApps.find((app) => app.asset_id === detailTarget.id)
+    : undefined;
+  const detailOpen = Boolean(installedDetail || marketDetail);
+
+  const resourceSnapshot = useSyncExternalStore(marketResources.subscribeCards, marketResources.getSnapshot);
   const appMemoryLabel = useCallback((appId: string) => {
-    const memory = resourceSnapshot?.apps.find(item => item.appId === appId)?.memoryBytes;
+    const memory = resourceSnapshot?.serviceApps.find(item => item.appId === appId)?.memoryBytes;
     return memory == null ? '' : t('appMarket.cardMemory', { size: `${Math.round(memory / 1048576)} MiB` });
   }, [resourceSnapshot, t]);
 
@@ -342,12 +385,17 @@ export function AppMarketPanel({
 
   const showError = useCallback(
     (key: string, error: unknown) => {
-      if ((error as { code?: string } | null)?.code === 'app_run_disabled') {
-        setMessage({ text: t('appMarket.runDisabled'), error: true });
+      const code = (error as { code?: string } | null)?.code;
+      if (code === 'app_run_disabled') {
+        showNotice(t('appMarket.runDisabled'), 'error');
+        return;
+      }
+      if (code === 'app_project_unavailable') {
+        showNotice(t('appMarket.projectUnavailable'), 'error');
         return;
       }
       const detail = errorDetail(error);
-      setMessage({ text: detail ? `${t(key)}: ${detail}` : t(key), error: true });
+      showNotice(detail ? `${t(key)}: ${detail}` : t(key), 'error');
     },
     [t],
   );
@@ -433,7 +481,7 @@ export function AppMarketPanel({
     const text = typeof backup === 'string'
       ? t('appMarket.updateBackupSuccess', { name: detail.display_name, path: backup })
       : t('appMarket.installSuccess', { name: detail.display_name });
-    setMessage({ text, error: false });
+    showNotice(text);
     await Promise.all([fetchApps(), fetchMarket()]);
     setActiveTab('all');
     window.dispatchEvent(new Event('app-market-apps-changed'));
@@ -452,7 +500,7 @@ export function AppMarketPanel({
       });
       if (!staleRegistration && item.installed && item.installed_version === detail.version
         && detail.checksum_sha256 && detail.installed_checksum_sha256 === detail.checksum_sha256) {
-        setMessage({ text: t('appMarket.alreadyInstalled'), error: false });
+        showNotice(t('appMarket.alreadyInstalled'), 'info');
         return;
       }
       const size = detail.source_size ? `${(detail.source_size / 1024 / 1024).toFixed(1)} MB` : '';
@@ -461,7 +509,7 @@ export function AppMarketPanel({
         detail.permissions?.length
           ? t('appMarket.installPermissions', { list: detail.permissions.join(', ') })
           : '',
-        detail.requires_project ? t('appMarket.installProjectNote') : '',
+        t('appMarket.installProjectNote'),
       ].filter(Boolean).join('\n');
       const prompt = `${t(isUpdate ? 'appMarket.updateConfirm' : 'appMarket.installConfirm', {
         name: detail.display_name,
@@ -499,7 +547,7 @@ export function AppMarketPanel({
     const { item, detail, value } = installDirDialog;
     const installDir = value.trim();
     if (!installDir) {
-      setMessage({ text: t('appMarket.installDirRequired'), error: true });
+      showNotice(t('appMarket.installDirRequired'), 'error');
       return;
     }
     setInstallDirDialog(null);
@@ -523,7 +571,7 @@ export function AppMarketPanel({
     if (!installJob) return;
     try {
       await webRequest('app_market.install_cancel', { job_id: installJob.jobId });
-      setMessage({ text: t('appMarket.installCancelling'), error: false });
+      showNotice(t('appMarket.installCancelling'), 'info');
     } catch (error) {
       showError('appMarket.installFailed', error);
     }
@@ -537,7 +585,7 @@ export function AppMarketPanel({
         asset_id: app.hub_asset_id,
       });
       if (detail.version === app.version && detail.checksum_sha256 && detail.checksum_sha256 === app.artifact_sha256) {
-        setMessage({ text: t('appMarket.alreadyLatest'), error: false });
+        showNotice(t('appMarket.alreadyLatest'), 'info');
         return;
       }
       if (!window.confirm(t('appMarket.updateConfirm', {
@@ -555,7 +603,7 @@ export function AppMarketPanel({
       const text = typeof backup === 'string'
         ? t('appMarket.updateBackupSuccess', { name: app.name, path: backup })
         : t('appMarket.updateSuccess', { name: app.name });
-      setMessage({ text, error: false });
+      showNotice(text);
       await Promise.all([fetchApps(), fetchInstances()]);
     } catch (error) {
       showError('appMarket.updateFailed', error);
@@ -566,11 +614,11 @@ export function AppMarketPanel({
   };
 
   const openApplication = async (app: AppInfo, instance: InstanceInfo, edit = false) => {
-    if (!instance.url) return;
+    if (!instance.url) return false;
     const revision = ++openRevision.current;
     if (!edit && useEmbeddedPane && activeApp?.app_id === app.app_id
       && activeApp.instanceId === instance.instance_id && hasAppMarketView(app.app_id, instance.instance_id)) {
-      return;
+      return true;
     }
     const intent = viewIntent.current;
     const isCurrent = () => revision === openRevision.current && intent === viewIntent.current;
@@ -581,14 +629,17 @@ export function AppMarketPanel({
         if (edit && !desktop.setMarketAppViewport) throw new Error(t('appMarket.desktopUpdateRequired'));
       }
       if (!await openAppMarketView(instance, app.name, edit || useEmbeddedPane)) throw new Error(t('appMarket.openFailed'));
-      if (!edit && isCurrent()) setActiveApp({ ...app, instanceId: instance.instance_id });
-      if (edit && isCurrent() && onEdit && app.entry_path) {
+      if (!isCurrent()) return false;
+      if (!edit) setActiveApp({ ...app, instanceId: instance.instance_id });
+      if (edit && onEdit && app.entry_path) {
         await onEdit({ appId: app.app_id, name: app.name, instanceId: instance.instance_id,
-          entryPath: app.entry_path, sourceSession: app.source_session || '' }, isCurrent);
+          entryPath: app.entry_path, sourceSession: app.source_session || '',
+          version: app.version, description: app.description }, isCurrent);
       }
+      return true;
     } catch (error) {
-      if (!isCurrent()) return;
-      showError('appMarket.openFailed', error);
+      if (isCurrent()) showError('appMarket.openFailed', error);
+      return false;
     }
   };
 
@@ -596,6 +647,13 @@ export function AppMarketPanel({
     ++viewIntent.current;
     ++openRevision.current;
     setActiveApp(null);
+  };
+
+  const showApplication = async (app: AppInfo, instance: InstanceInfo) => {
+    ++viewIntent.current;
+    if (await openApplication(app, instance)) {
+      setDetailTarget(current => current === detailTarget ? null : current);
+    }
   };
 
   const closeApplication = async (app: AppInfo, instanceId?: string, errorKey = 'appMarket.panelCloseFailed') => {
@@ -633,8 +691,14 @@ export function AppMarketPanel({
   useEffect(() => watchAppMarketInstances(fetchInstances), [fetchInstances]);
 
   useEffect(() => {
-    onDetailChange?.(detailTarget !== null);
-  }, [detailTarget, onDetailChange]);
+    if (detailTarget && !detailOpen) {
+      setDetailTarget((current) => current === detailTarget ? null : current);
+    }
+  }, [detailTarget, detailOpen]);
+
+  useEffect(() => {
+    onDetailChange?.(detailOpen);
+  }, [detailOpen, onDetailChange]);
 
   useEffect(() => {
     if (activeTab === 'market') void fetchMarket();
@@ -645,7 +709,6 @@ export function AppMarketPanel({
     actionLocks.current.add(appId);
     instanceRevision.current += 1;
     setPending((current) => ({ ...current, [appId]: action }));
-    setMessage(null);
     return true;
   };
 
@@ -687,7 +750,7 @@ export function AppMarketPanel({
       if (instance.state !== 'running') throw new Error(instance.detail || t('appMarket.startFailed'));
       instanceRevision.current += 1;
       setInstances((current) => [...current.filter((item) => item.app_id !== app.app_id), instance]);
-      setMessage({ text: t('appMarket.startSuccess'), error: false });
+      showNotice(t('appMarket.startSuccess'));
       // Page loading must not keep the running application's operation lock.
       // Do not steal the pane if the user opened or dismissed another page
       // while this start was in flight.
@@ -711,7 +774,7 @@ export function AppMarketPanel({
       setInstances((current) =>
         current.map((item) => (item.instance_id === instance.instance_id ? { ...item, state: 'stopped' } : item)),
       );
-      setMessage({ text: t('appMarket.stopSuccess'), error: false });
+      showNotice(t('appMarket.stopSuccess'));
       await closeApplication(app, instance.instance_id, 'appMarket.closeWindowFailed');
       await fetchInstances();
     } catch (error) {
@@ -721,29 +784,30 @@ export function AppMarketPanel({
     }
   };
 
-  const handleDelete = async (app: AppInfo) => {
-    if (actionLocks.current.has(app.app_id) || !window.confirm(t('appMarket.deleteConfirm'))) return;
+  const removeInstalledApp = (appId: string) => {
+    instanceRevision.current += 1;
+    setApps((current) => current.filter((item) => item.app_id !== appId));
+    setInstances((current) => current.filter((item) => item.app_id !== appId));
+    setDetailTarget((current) => current?.kind === 'installed' && current.id === appId ? null : current);
+  };
+
+  const handleRemove = async (app: AppInfo, removeFiles: boolean) => {
+    if (actionLocks.current.has(app.app_id)) return;
+    if (removeFiles && !window.confirm(t('appMarket.deleteCleanConfirm', { name: app.name }))) return;
     if (!beginAction(app.app_id, 'deleting')) return;
     try {
-      let messageKey = 'appMarket.deleteSuccess';
+      let messageKey = removeFiles ? 'appMarket.deleteCleanSuccess' : 'appMarket.removeKeepSuccess';
       let directory = '';
-      if (app.source === 'hub') {
-        const removeFiles = window.confirm(t('appMarket.uninstallRemoveFiles'));
-        const result = await webRequest<{ cleanup_warning?: string; work_dir?: string }>('app_market.uninstall', {
-          app_id: app.app_id,
-          remove_files: removeFiles,
-        });
-        if (result?.cleanup_warning) {
-          messageKey = 'appMarket.uninstallCleanupWarning';
-          directory = result.work_dir || '';
-        }
-      } else {
-        await webRequest('app_market.delete', { app_id: app.app_id });
+      const result = await webRequest<{ cleanup_warning?: string; work_dir?: string }>(
+        app.source === 'hub' ? 'app_market.uninstall' : 'app_market.delete',
+        { app_id: app.app_id, remove_files: removeFiles },
+      );
+      if (result?.cleanup_warning) {
+        messageKey = 'appMarket.uninstallCleanupWarning';
+        directory = result.work_dir || '';
       }
-      instanceRevision.current += 1;
-      setApps((current) => current.filter((item) => item.app_id !== app.app_id));
-      setInstances((current) => current.filter((item) => item.app_id !== app.app_id));
-      setMessage({ text: t(messageKey, { directory }), error: false });
+      removeInstalledApp(app.app_id);
+      showNotice(t(messageKey, { directory }), messageKey === 'appMarket.uninstallCleanupWarning' ? 'warning' : 'success');
       await closeApplication(app);
       window.dispatchEvent(new Event('app-market-apps-changed'));
     } catch (error) {
@@ -759,7 +823,7 @@ export function AppMarketPanel({
     try {
       await webRequest('app_market.convert_to_local', { app_id: app.app_id });
       await fetchApps();
-      setMessage({ text: t('appMarket.convertSuccess', { name: app.name }), error: false });
+      showNotice(t('appMarket.convertSuccess', { name: app.name }));
     } catch (error) {
       showError('appMarket.convertFailed', error);
     } finally {
@@ -772,10 +836,7 @@ export function AppMarketPanel({
     try {
       await webRequest('app_market.pin', { app_id: app.app_id, pinned: !app.pinned });
       await fetchApps();
-      setMessage({
-        text: t(app.pinned ? 'appMarket.unpinSuccess' : 'appMarket.pinSuccess', { name: app.name }),
-        error: false,
-      });
+      showNotice(t(app.pinned ? 'appMarket.unpinSuccess' : 'appMarket.pinSuccess', { name: app.name }));
     } catch (error) {
       showError('appMarket.pinFailed', error);
     } finally {
@@ -788,11 +849,10 @@ export function AppMarketPanel({
     if (!beginAction(app.app_id, 'deleting')) return;
     try {
       await webRequest('app_market.delete', { app_id: app.app_id });
-      setApps((current) => current.filter((item) => item.app_id !== app.app_id));
-      setInstances((current) => current.filter((item) => item.app_id !== app.app_id));
+      removeInstalledApp(app.app_id);
       await fetchMarket();
       setActiveTab('market');
-      setMessage({ text: t('appMarket.reinstallHint'), error: false });
+      showNotice(t('appMarket.reinstallHint'), 'info');
     } catch (error) {
       showError('appMarket.deleteFailed', error);
     } finally {
@@ -863,16 +923,24 @@ export function AppMarketPanel({
               {t(app.pinned ? 'appMarket.unpin' : 'appMarket.pin')}
             </DropdownMenuItem>
             {!missing && state === 'running' && instance?.url ? (
-              <DropdownMenuItem
-                icon={isElectron ? <AppWindow size={16} aria-hidden="true" /> : <ExternalLink size={16} aria-hidden="true" />}
-                testId="app-market-open"
-                onSelect={() => {
-                  ++viewIntent.current;
-                  if (instance) void openApplication(app, instance);
-                }}
-              >
-                {t('appMarket.openRestore')}
-              </DropdownMenuItem>
+              <>
+                <DropdownMenuItem
+                  icon={isElectron ? <AppWindow size={16} aria-hidden="true" /> : <ExternalLink size={16} aria-hidden="true" />}
+                  testId="app-market-open"
+                  onSelect={() => void showApplication(app, instance)}
+                >
+                  {t('appMarket.openRestore')}
+                </DropdownMenuItem>
+                {detailTarget?.id !== app.app_id && (
+                  <DropdownMenuItem
+                    icon={<Info size={16} aria-hidden="true" />}
+                    testId="app-market-view-details"
+                    onSelect={() => setDetailTarget({ kind: 'installed', id: app.app_id })}
+                  >
+                    {t('appMarket.viewDetails')}
+                  </DropdownMenuItem>
+                )}
+              </>
             ) : null}
             {!missing && app.source !== 'hub' && onEdit && app.entry_path ? (
               <DropdownMenuItem
@@ -932,13 +1000,21 @@ export function AppMarketPanel({
               </DropdownMenuItem>
             ) : null}
             <DropdownMenuItem
+              icon={<HardDrive size={16} aria-hidden="true" />}
+              testId="app-market-remove"
+              disabled={busy}
+              onSelect={() => void handleRemove(app, false)}
+            >
+              {t('appMarket.removeKeepFiles')}
+            </DropdownMenuItem>
+            <DropdownMenuItem
               danger
               icon={<Trash2 size={16} aria-hidden="true" />}
               testId="app-market-delete"
               disabled={busy}
-              onSelect={() => void handleDelete(app)}
+              onSelect={() => void handleRemove(app, true)}
             >
-              {t('appMarket.delete')}
+              {t('appMarket.deleteCleanFiles')}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -946,21 +1022,49 @@ export function AppMarketPanel({
     );
   };
 
-  const displayApps = apps;
+  // Running apps are the ones users act on; put them first and order them by
+  // start time (newest first). Everything else keeps the server order.
+  const displayApps = useMemo(() => {
+    const rank: Record<AppState, number> = { running: 0, starting: 1, stopping: 2, stopped: 3 };
+    const stateOf = (appId: string): AppState => {
+      const action = pending[appId];
+      if (action === 'starting' || action === 'stopping') return action;
+      return appState(instanceMap.get(appId)?.state);
+    };
+    return apps
+      .map((app, index) => ({ app, index, state: stateOf(app.app_id) }))
+      .sort((left, right) => {
+        const rankDelta = rank[left.state] - rank[right.state];
+        if (rankDelta !== 0) return rankDelta;
+        if (left.state === 'running') {
+          const leftInstance = instanceMap.get(left.app.app_id);
+          const rightInstance = instanceMap.get(right.app.app_id);
+          const leftTime = leftInstance?.started_at || leftInstance?.created_at || '';
+          const rightTime = rightInstance?.started_at || rightInstance?.created_at || '';
+          const timeDelta = rightTime.localeCompare(leftTime);
+          if (timeDelta !== 0) return timeDelta;
+        }
+        return left.index - right.index;
+      })
+      .map(({ app }) => app);
+  }, [apps, instanceMap, pending]);
 
   return (
     <div className={`app-market-layout${useEmbeddedPane && activeApp && paneExpanded ? ' app-market-layout-expanded' : ''}`} data-testid="app-market-panel">
       <div className="app-market-list flex min-h-0 flex-1 flex-col gap-5" data-testid="app-market-list">
-      {!detailTarget && (
+      {!detailOpen && (
         <>
       <div className="app-market-toolbar page-shell flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
         <CategoryTabs<Tab>
           items={[
-            { value: 'all', label: t('appMarket.allApps') },
-            { value: 'market', label: t('appMarket.market') },
+            { value: 'market', label: t('appMarket.market'), testId: 'app-market-tab-plaza' },
+            { value: 'all', label: t('appMarket.myApps'), testId: 'app-market-tab-my-apps' },
           ]}
           value={activeTab}
           onChange={(value) => {
+            if (value === activeTab) return;
+            hideApplication();
+            setPaneExpanded(false);
             setDetailTarget(null);
             setActiveTab(value);
           }}
@@ -974,7 +1078,6 @@ export function AppMarketPanel({
           aria-label={t('common.refresh')}
           disabled={listState === 'loading'}
           onClick={() => {
-            setMessage(null);
             if (activeTab === 'market') void fetchMarket();
             else void refresh();
           }}
@@ -1003,32 +1106,26 @@ export function AppMarketPanel({
           </Button>
         </div>
       )}
-      {message && (
-        <div
-          role={message.error ? 'alert' : 'status'}
-          className={`page-shell rounded-md bg-secondary px-3 py-2 text-sm ${message.error ? 'text-danger' : 'text-text'}`}
-        >
-          {message.text}
-        </div>
+        </>
       )}
       {installJob && (
         <div
-          className="page-shell flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
+          className="page-shell flex shrink-0 items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
           data-testid="app-market-install-progress"
         >
-          <span>
+          <span role="status">
             {t('appMarket.installPhase', {
               phase: t(`appMarket.installPhases.${installJob.phase}`),
             })}
           </span>
-          <Button variant="quiet" size="sm" onClick={() => void cancelInstallJob()}>
+          <Button variant="quiet" size="sm" data-testid="app-market-install-cancel" onClick={() => void cancelInstallJob()}>
             {t('appMarket.cancel')}
           </Button>
         </div>
       )}
       {installDirDialog && (
         <div
-          className="page-shell rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
+          className="page-shell shrink-0 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
           data-testid="app-market-install-dir"
         >
           <label className="mb-1 block text-sm text-text-muted" htmlFor="app-market-install-dir-input">
@@ -1058,38 +1155,29 @@ export function AppMarketPanel({
           <p className="mt-1 text-xs text-text-muted">{t('appMarket.installDirHint')}</p>
         </div>
       )}
-        </>
-      )}
       <div className="page-scroll min-h-0 flex-1 overflow-y-auto">
-        {detailTarget ? (
-          detailTarget.kind === 'installed' ? (() => {
-            const app = apps.find((item) => item.app_id === detailTarget.id);
-            if (!app) return <p className="text-sm text-text-muted">{t('appMarket.noApps')}</p>;
-            const state = getState(app.app_id);
-            const instance = instanceMap.get(app.app_id);
-            const missing = Boolean(app.work_dir_missing);
-            const busy = !!pending[app.app_id] || state === 'starting' || state === 'stopping';
-            const memoryLabel = state === 'running' ? appMemoryLabel(app.app_id) : '';
-            return (
-              <InstalledAppDetailPage
-                app={app}
-                state={state}
-                onBack={() => setDetailTarget(null)}
-                actions={renderAppActions(app, state, instance, missing, busy)}
-                memoryLabel={memoryLabel}
-              />
-            );
-          })() : (() => {
-            const item = marketApps.find((entry) => entry.asset_id === detailTarget.id);
-            if (!item) return <p className="text-sm text-text-muted">{t('appMarket.noMarketApps')}</p>;
-            return (
-              <MarketAppDetailPage
-                item={item}
-                detailState={marketDetails[item.asset_id]}
-                onBack={() => setDetailTarget(null)}
-              />
-            );
-          })()
+        {installedDetail ? (() => {
+          const app = installedDetail;
+          const state = getState(app.app_id);
+          const instance = instanceMap.get(app.app_id);
+          const missing = Boolean(app.work_dir_missing);
+          const busy = !!pending[app.app_id] || state === 'starting' || state === 'stopping';
+          const memoryLabel = state === 'running' ? appMemoryLabel(app.app_id) : '';
+          return (
+            <InstalledAppDetailPage
+              app={app}
+              state={state}
+              onBack={() => setDetailTarget(null)}
+              actions={renderAppActions(app, state, instance, missing, busy)}
+              memoryLabel={memoryLabel}
+            />
+          );
+        })() : marketDetail ? (
+          <MarketAppDetailPage
+            item={marketDetail}
+            detailState={marketDetails[marketDetail.asset_id]}
+            onBack={() => setDetailTarget(null)}
+          />
         ) : (
           <>
         {activeTab === 'market' && marketState === 'loading' && (
@@ -1168,9 +1256,12 @@ export function AppMarketPanel({
                     ...(memoryLabel ? [memoryLabel] : []),
                     ...(missing ? [t('appMarket.workDirMissing')] : []),
                   ]}
-                  description={app.description}
+                  description={appDescriptionParts(app.description || '').summary}
                   titleEnd={state !== 'stopped' ? <StateIcon state={state} label={t(`appMarket.states.${state}`)} /> : undefined}
-                  onClick={() => setDetailTarget({ kind: 'installed', id: app.app_id })}
+                  onClick={() => {
+                    if (!missing && state === 'running' && instance?.url) void showApplication(app, instance);
+                    else setDetailTarget({ kind: 'installed', id: app.app_id });
+                  }}
                   actionSlot={renderAppActions(app, state, instance, missing, busy)}
                 />
               );

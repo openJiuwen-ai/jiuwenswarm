@@ -16,16 +16,16 @@ from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 
 @pytest.mark.asyncio
 async def test_real_unverified_peer_survives_refused_cleanup_then_verified_recovery_replaces_it(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, ipc_dir,
 ):
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths, utils
     from jiuwenswarm.server.ipc.client import connect_with_retry
 
     data = tmp_path / "data"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(data))
-    monkeypatch.setattr(utils, "_workspace_base_dir", data)
+    monkeypatch.setattr(paths, "_workspace_base_dir", data)
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
-    path = str(tmp_path / "worker.pipe")
+    path = str(ipc_dir / "worker.pipe")
     owner = worker_process.WorkerProcess(path, host="127.0.0.1", port=18092, stub=True)
     readiness = Readiness()
     front = RuntimeSupervisor(readiness, socket_path=path, stub=True)

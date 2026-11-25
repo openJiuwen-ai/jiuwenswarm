@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { equipmentListFilter } from '../../features/equipmentMarketplace';
 import { useConnectorStore } from '../../stores/connectorStore';
 import type { ConnectorConnectResponse, ConnectorSummary } from '../../types/connector';
 import { ConnectTokenModal } from './ConnectTokenModal';
@@ -52,7 +53,12 @@ async function ensurePendingConnector(name: string): Promise<ConnectorConnectRes
   const store = useConnectorStore.getState();
   let connector = findStoredConnector(name);
   if (!connector) {
-    await store.loadList('builtin', { silent: true });
+    // Enterprise catalogue (filter=hub) requires source_id; align with ConnectorMarket
+    // index / MarketplacePage. Personal catalogSourceId stays null → undefined.
+    await store.loadList(equipmentListFilter('mcp', 'catalog'), {
+      silent: true,
+      sourceId: store.catalogSourceId || undefined,
+    });
     connector = findStoredConnector(name);
   }
   const assetId =

@@ -4,29 +4,37 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openjiuwen.agent_teams.runtime import TeamRuntimeManager
 
 _ADAPTERS_FLAG = "_jiuwen_expert_org_adapters_ready"
 _RUNNER_TEAM_RUNTIME_ATTR = "_team_runtime_manager"
 
 
-def register_expert_adapter_installer() -> None:
+def register_expert_adapter_installer() -> TeamRuntimeManager:
     """Register the lazy adapter installer on ``GLOBAL_RUNNER`` org runtime.
 
     Call once at process/team bootstrap. The launcher is constructed on first
     ``create_and_invite_expert_team``; browsing uses the shared ExpertCatalog.
+    Return the prepared runtime so callers do not need Runner internals.
     """
     from openjiuwen.agent_teams.runtime import TeamRuntimeManager
     from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+    from jiuwenswarm.agents.harness.team.expert_org.organization_runtime import install_expert_invitation_policy
 
     manager = vars(GLOBAL_RUNNER).get(_RUNNER_TEAM_RUNTIME_ATTR)
     if manager is None:
         manager = TeamRuntimeManager()
         setattr(GLOBAL_RUNNER, _RUNNER_TEAM_RUNTIME_ATTR, manager)
     org_runtime = getattr(manager, "organization_runtime_manager", None)
+    install_expert_invitation_policy(org_runtime, manager)
     set_installer = getattr(org_runtime, "set_expert_adapter_installer", None)
     if callable(set_installer):
         set_installer(install_expert_org_adapters)
+    return manager
 
 
 def install_expert_org_adapters(org_runtime: Any) -> None:

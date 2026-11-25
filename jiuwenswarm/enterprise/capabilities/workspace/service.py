@@ -25,7 +25,9 @@ logger = logging.getLogger(__name__)
 # 目录删除安全上限（设计：限深限量；未给精确数字时取保守值）。
 _DEFAULT_MAX_DELETE_DEPTH = 32
 _DEFAULT_MAX_DELETE_ENTRIES = 5000
-_DEFAULT_PREVIEW_MAX_BYTES = 65536
+# 与 Gateway / Agent 适配层契约一致：缺省 512KiB，硬顶 1MiB。
+_DEFAULT_PREVIEW_MAX_BYTES = 512 * 1024
+_PREVIEW_HARD_MAX_BYTES = 1024 * 1024
 _DEFAULT_DOWNLOAD_MAX_BYTES = 100 * 1024 * 1024
 
 
@@ -72,10 +74,9 @@ class WorkspaceService:
             raise WorkspaceError("BAD_REQUEST", "invalid relative_path") from exc
         target = self.resolve(rel)
         if not target.exists():
-            # 根目录尚未物化：返回空列表，避免前端整页失败；子路径仍 404。
-            if not rel:
-                return {"relative_path": rel, "entries": []}
-            raise WorkspaceError("NOT_FOUND", "path not found")
+            # 目录尚未物化（如 todo / uploads zone 根）：返回空列表，避免
+            # 「仅可删除」预拉可选路径时整页 404；预览/下载仍走各自 NOT_FOUND。
+            return {"relative_path": rel, "entries": []}
         if not target.is_dir():
             raise WorkspaceError("BAD_REQUEST", "relative_path is not a directory")
 
@@ -276,6 +277,7 @@ class WorkspaceService:
         limit = int(max_bytes) if max_bytes is not None else _DEFAULT_PREVIEW_MAX_BYTES
         if limit <= 0:
             limit = _DEFAULT_PREVIEW_MAX_BYTES
+        limit = min(limit, _PREVIEW_HARD_MAX_BYTES)
         try:
             # 只读前 limit(+1) 字节，避免超大文件整文件进内存导致 OOM。
             with open(target, "rb") as handle:

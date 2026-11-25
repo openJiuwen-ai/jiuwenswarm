@@ -3,12 +3,12 @@ import type { WebUISlotRule } from './types.ts';
 export const webUISlots: readonly WebUISlotRule[] = [
   { id: 'conversation.input.above', display: 'list', maxVisible: 3 },
   { id: 'conversation.input.below', display: 'list', maxVisible: 2 },
-  { id: 'conversation.panel.right', display: 'list', rootComponents: ['Panel', 'Iframe'], strictRoot: true },
+  { id: 'conversation.panel.right', display: 'list', rootComponents: ['Panel', 'Iframe'], strictRoot: true, rerender: 'keep-mounted' },
   // Menu hosts require a real session_id; task navigation belongs to the application.
   { id: 'application.menu', display: 'list' },
-  { id: 'application.menu.main', display: 'single', rootComponents: ['Iframe'] },
+  { id: 'application.menu.main', display: 'single', rootComponents: ['Iframe'], rerender: 'keep-mounted' },
   { id: 'task.function', display: 'list', scope: 'application' },
-  { id: 'task.function.main', display: 'single', scope: 'application', rootComponents: ['Iframe'] },
+  { id: 'task.function.main', display: 'single', scope: 'application', rootComponents: ['Iframe'], rerender: 'keep-mounted' },
   { id: 'application.settings', display: 'list', additionalScopes: ['application'] },
   { id: 'application.entry', display: 'single', scope: 'application' },
   { id: 'application.sidebar.footer', display: 'list', scope: 'application' },

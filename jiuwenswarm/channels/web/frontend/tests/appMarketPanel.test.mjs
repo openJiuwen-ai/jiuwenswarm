@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import React, { act } from 'react';
 import { JSDOM } from 'jsdom';
 import i18next from 'i18next';
@@ -30,13 +31,17 @@ await i18next
 const { AppMarketPanel } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/index.mjs');
 const { AppMarketPage } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/AppMarketPage.mjs');
 const { webClient } = await import('../node_modules/.cache/app-market-panel/services/webClient.mjs');
+const { WebHttpClient } = await import('../node_modules/.cache/app-market-panel/services/webHttpClient.mjs');
 const { AppMarketSessionPreview, AppMarketPreviewReload } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/AppMarketSessionPreview.mjs');
 const { useSessionStore } = await import('../node_modules/.cache/app-market-panel/stores/sessionStore.mjs');
 const { webAppViews } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/webAppViews.mjs');
 const { closeAppMarketView, trackAppMarketView, hasAppMarketView } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/appMarketViews.mjs');
+const { ToastStack } = await import('../node_modules/.cache/app-market-panel/components/ui/Toast/Toast.mjs');
+const { toast } = await import('../node_modules/.cache/app-market-panel/components/ui/Toast/toastStore.mjs');
 test.afterEach(async () => {
   await closeAppMarketView('gomoku');
   await closeAppMarketView('second');
+  await act(async () => toast.closeAll());
 });
 const app = {
   app_id: 'gomoku',
@@ -60,6 +65,7 @@ const secondInstance = { ...running, app_id: 'second', instance_id: 'second-acti
   url: 'http://127.0.0.1:8081/index.html', web_url: 'http://workswarm-app-second.localhost:8081/index.html' };
 const card = id => document.querySelector(`[data-testid="app-market-card"][data-variant="${id}"]`);
 const find = (id) => document.querySelector(`[data-testid="${id}"]`);
+const actionNotice = () => document.querySelector('[data-testid="app-market-action-notice"]:not(.ui-toast--closing)');
 const click = async (element) => act(async () => element.click());
 const tick = async () =>
   act(async () => {
@@ -125,7 +131,9 @@ async function mount(handler, props = {}) {
   };
   window.confirm = () => true;
   const root = createRoot(document.getElementById('root'));
-  await act(async () => root.render(React.createElement(AppMarketPanel, props)));
+  await act(async () => root.render(
+    React.createElement(React.Fragment, null, React.createElement(AppMarketPanel, props), React.createElement(ToastStack))
+  ));
   let mounted = true;
   const unmount = async () => {
     if (mounted) await act(async () => root.unmount());
@@ -163,7 +171,7 @@ for (const desktop of [false, true]) {
     });
     try {
       await click(document.querySelector('button[data-variant="market"]'));
-      await click(find('common-pagination-next'));
+      await click(document.querySelector(`button[aria-label="${i18next.t('common.pagination.next')}"]`));
       await click(find('app-market-install'));
       assert.equal(find('app-market-install-dir-input').value, '/workspace/apps');
       await click(find('app-market-install-dir').querySelector('button:last-child'));
@@ -267,9 +275,93 @@ test('market cards open a detail page and return to the plaza', async () => {
   }
 });
 
+test('market detail returns to the plaza when a pending refresh removes its app', async () => {
+  const refreshed = deferred();
+  const item = { asset_id: 'listed', display_name: 'Listed', public_latest_version: '1.0.0', tags: [] };
+  let marketRequests = 0;
+  const ctx = await mount(method => {
+    if (method === 'app_market.market_list') {
+      return marketRequests++ === 0 ? { total: 1, items: [item] } : refreshed.promise;
+    }
+    if (method === 'app_market.market_detail') return { version: item.public_latest_version };
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await act(async () => {
+      find('app-market-resource-actions').querySelector('button[aria-label="Refresh"]').click();
+      find('app-market-market-card').click();
+    });
+    assert.ok(find('app-market-detail-page'));
+    await act(async () => refreshed.resolve({ total: 0, items: [] }));
+    assert.equal(find('app-market-detail-page'), null);
+    assert.ok(find('categoryTabs'));
+    assert.ok(find('app-market-list').textContent.includes(i18next.t('appMarket.noMarketApps')));
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('install directory prompt remains usable after opening a market detail', async () => {
+  const directory = deferred();
+  const ctx = await mount(method => {
+    if (method === 'app_market.market_list') {
+      return { total: 1, items: [{ asset_id: 'listed', display_name: 'Listed', public_latest_version: '1', tags: [] }] };
+    }
+    if (method === 'app_market.market_detail') return { version: '1', display_name: 'Listed' };
+    if (method === 'app_market.install_dir_default') return directory.promise;
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await click(find('app-market-install'));
+    await click(find('app-market-market-card'));
+    await act(async () => directory.resolve({ path: '/workspace/apps' }));
+    assert.ok(find('app-market-detail-page'));
+    assert.equal(find('app-market-install-dir-input').value, '/workspace/apps');
+    await click(find('app-market-install-dir').querySelector('button'));
+    assert.equal(find('app-market-install-dir'), null);
+    assert.ok(find('app-market-detail-back'));
+  } finally {
+    await ctx.close();
+  }
+});
+
 const response = (method, instances = []) => (method === 'app_market.list' ? { apps: [app] } : { instances });
 
-test('uninstall removes the Hub app card and reports incomplete local cleanup', async () => {
+test('installed app details load AI role cards and show the session policy', async () => {
+  const ctx = await mount((method) => {
+    if (method !== 'app_market.ai_roles') return response(method);
+    return { session_groups: [{
+      id: 'council', mode: 'team', leader: 'mayor', session_description: 'New team for each game.',
+      roles: [
+        { id: 'mayor', name: 'Mayor', description: 'Leads the council', avatar_url: 'data:image/gif;base64,R0lGODlh' },
+        { id: 'doctor', name: 'Doctor', description: 'Advises the council' },
+      ],
+    }] };
+  });
+  try {
+    assert.equal(ctx.calls.some(({ method }) => method === 'app_market.ai_roles'), false);
+    await click(card('gomoku'));
+    assert.deepEqual(ctx.calls.filter(({ method }) => method === 'app_market.ai_roles'), [
+      { method: 'app_market.ai_roles', params: { app_id: 'gomoku' } },
+    ]);
+    const section = find('app-market-ai-roles');
+    assert.match(section.textContent, /AI Roles.*Team session.*New team for each game\./s);
+    const cards = section.querySelectorAll('[data-testid="app-market-ai-role-card"]');
+    assert.equal(cards.length, 2);
+    assert.match(cards[0].textContent, /Mayor.*Leader.*Leads the council/s);
+    assert.ok(cards[0].querySelector('img[src^="data:image/gif"]'));
+    assert.match(cards[1].textContent, /Doctor.*Advises the council/s);
+    assert.equal(cards[1].querySelector('img'), null);
+    await click(find('app-market-detail-back'));
+    assert.equal(find('app-market-ai-roles'), null);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('uninstall leaves app details and reports incomplete local cleanup', async () => {
   const directory = '/workspace/apps/gomoku';
   const ctx = await mount(method => {
     if (method === 'app_market.list') return { apps: [{ ...app, source: 'hub' }] };
@@ -279,16 +371,80 @@ test('uninstall removes the Hub app card and reports incomplete local cleanup', 
     return response(method);
   });
   try {
-    await menuClick('app-market-delete', 'gomoku');
+    await click(card('gomoku'));
+    await click(find('app-market-more'));
+    await click(find('app-market-delete'));
+    assert.equal(find('app-market-detail-page'), null);
+    assert.ok(find('categoryTabs'));
     assert.equal(card('gomoku'), null);
     assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.uninstall')?.params, {
       app_id: 'gomoku', remove_files: true,
     });
     assert.equal(
-      document.querySelector('[role="status"]').textContent,
+      actionNotice().textContent,
       i18next.t('appMarket.uninstallCleanupWarning', { directory }),
     );
+    assert.equal(actionNotice().dataset.variant, 'warning');
   } finally {
+    await ctx.close();
+  }
+});
+
+test('reinstall from installed app details returns to the plaza', async () => {
+  const hubApp = { ...app, source: 'hub', work_dir_missing: true };
+  const ctx = await mount(method => {
+    if (method === 'app_market.list') return { apps: [hubApp] };
+    if (method === 'app_market.delete') return { deleted: true };
+    if (method === 'app_market.market_list') {
+      return { total: 1, items: [{ asset_id: 'available', display_name: app.name, public_latest_version: '1', tags: [] }] };
+    }
+    return response(method);
+  });
+  try {
+    await click(card('gomoku'));
+    await click(find('app-market-more'));
+    await click(find('app-market-reinstall'));
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.delete')?.params, { app_id: 'gomoku' });
+    assert.equal(find('app-market-detail-page'), null);
+    assert.ok(find('categoryTabs'));
+    assert.ok(find('app-market-market-card'));
+    assert.equal(actionNotice().textContent, i18next.t('appMarket.reinstallHint'));
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('updating from installed app details shows progress and allows cancelling', async () => {
+  const statusPolled = deferred();
+  const terminal = deferred();
+  let statusRequests = 0;
+  const ctx = await mount(method => {
+    if (method === 'app_market.list') return { apps: [{ ...app, source: 'hub', hub_asset_id: 'listed' }] };
+    if (method === 'app_market.market_detail') return { version: '2.0.0' };
+    if (method === 'app_market.update') return { job_id: 'update-job' };
+    if (method === 'app_market.install_status') {
+      if (statusRequests++ === 0) return { state: 'running', phase: 'downloading' };
+      statusPolled.resolve();
+      return terminal.promise;
+    }
+    if (method === 'app_market.install_cancel') terminal.resolve({ state: 'cancelled', phase: 'downloading' });
+    return response(method);
+  });
+  try {
+    await click(card('gomoku'));
+    await click(find('app-market-more'));
+    await click(find('app-market-update'));
+    assert.ok(find('app-market-detail-page'));
+    assert.equal(find('categoryTabs'), null);
+    assert.match(find('app-market-install-progress').textContent, /Downloading/);
+    await click(find('app-market-install-cancel'));
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.install_cancel')?.params, { job_id: 'update-job' });
+    await act(async () => statusPolled.promise);
+    assert.equal(find('app-market-install-progress'), null);
+    assert.ok(find('app-market-detail-back'));
+  } finally {
+    terminal.resolve({ state: 'cancelled', phase: 'downloading' });
+    if (statusRequests) await act(async () => statusPolled.promise);
     await ctx.close();
   }
 });
@@ -344,6 +500,77 @@ test('opening app details hides page chrome and keeps run and more actions', asy
   }
 });
 
+test('installed app cards show the summary and details show the product introduction and HTTPS source', async () => {
+  const description = 'Local integration.\n\n> Product introduction.\n\n[Official source](https://example.com/product)';
+  const ctx = await mount(method => method === 'app_market.list'
+    ? { apps: [{ ...app, description }] } : response(method));
+  try {
+    assert.match(card('gomoku').textContent, /Local integration/);
+    assert.doesNotMatch(card('gomoku').textContent, /Product introduction|Official source/);
+
+    await click(card('gomoku'));
+    const introduction = find('app-market-detail-introduction');
+    assert.equal(introduction.querySelector('blockquote').textContent.trim(), 'Product introduction.');
+    assert.equal(introduction.querySelector('a').href, 'https://example.com/product');
+    assert.equal(introduction.querySelector('a').target, '_blank');
+  } finally { await ctx.close(); }
+});
+
+test('running cards switch the pane and leave app details in the menu', async () => {
+  delete window.jiuwenDesktop;
+  const ctx = await mount(method => method === 'app_market.list'
+    ? { apps: [app, secondApp] } : response(method, [running, secondInstance]));
+  try {
+    await click(card('gomoku'));
+    const page = find('app-market-web-view');
+    assert.equal(find('app-market-browser-pane').dataset.variant, 'gomoku');
+    assert.equal(find('app-market-detail-page'), null);
+
+    await click(card('second'));
+    assert.equal(find('app-market-browser-pane').dataset.variant, 'second');
+    assert.equal(find('app-market-detail-page'), null);
+    await click(card('gomoku'));
+    assert.equal(find('app-market-browser-pane').dataset.variant, 'gomoku');
+    assert.strictEqual(document.querySelector('[data-testid="app-market-web-view"][data-variant="gomoku"]'), page);
+
+    await menuClick('app-market-view-details', 'gomoku');
+    assert.ok(find('app-market-detail-page'));
+    assert.equal(ctx.calls.some(({ method }) => ['app_market.start', 'app_market.stop'].includes(method)), false);
+  } finally { await ctx.close(); }
+});
+
+test('a failed desktop open keeps the app details available for retry', async () => {
+  const firstOpen = deferred();
+  let opens = 0;
+  window.jiuwenDesktop = {
+    isElectron: true,
+    openMarketApp: async () => {
+      opens++;
+      return opens === 1 ? firstOpen.promise : true;
+    },
+    closeMarketApp: async () => true,
+  };
+  const ctx = await mount(method => response(method, [running]));
+  try {
+    await menuClick('app-market-view-details');
+    const details = find('app-market-detail-page');
+    assert.ok(details);
+    await click(find('app-market-more'));
+    await click(find('app-market-open'));
+    assert.strictEqual(find('app-market-detail-page'), details);
+
+    await act(async () => firstOpen.resolve(false));
+    assert.match(actionNotice().textContent, /Failed to open/i);
+    assert.strictEqual(find('app-market-detail-page'), details);
+
+    await click(find('app-market-more'));
+    await click(find('app-market-open'));
+    assert.equal(opens, 2);
+    assert.equal(find('app-market-detail-page'), null);
+    assert.ok(card('gomoku'));
+  } finally { await ctx.close(); delete window.jiuwenDesktop; }
+});
+
 test('pin action persists through the app market RPC and refreshes the list', async () => {
   let pinned = false;
   const ctx = await mount((method, params) => {
@@ -363,7 +590,7 @@ test('pin action persists through the app market RPC and refreshes the list', as
       { app_id: 'gomoku', pinned: true },
     );
     assert.equal(
-      document.querySelector('[role="status"]').textContent,
+      actionNotice().textContent,
       i18next.t('appMarket.pinSuccess', { name: 'Gomoku' }),
     );
     assert.equal(ctx.calls.filter(({ method }) => method === 'app_market.list').length, 2);
@@ -409,7 +636,7 @@ for (const action of ['stop', 'delete']) {
       const requests = ctx.calls.filter(({ method }) => ['app_market.stop', 'app_market.delete'].includes(method));
       assert.deepEqual(requests, [{
         method: `app_market.${action}`,
-        params: action === 'stop' ? { instance_id: 'second-active' } : { app_id: 'second' },
+        params: action === 'stop' ? { instance_id: 'second-active' } : { app_id: 'second', remove_files: true },
       }]);
       assert.equal(instances.some(item => item.instance_id === running.instance_id), true);
     } finally {
@@ -430,7 +657,7 @@ test('application cards reuse market layout and display metadata with an accessi
     assert.match(document.body.textContent, /Play five in a row/);
     assert.equal(find('app-market-card-avatar').getAttribute('src'), '/gomoku.png');
     assert.equal(find('app-market-status'), null);
-    assert.equal(await menuText('app-market-delete'), 'Delete');
+    assert.equal(await menuText('app-market-delete'), 'Delete and clean files');
     assert.equal(find('app-market-status-text'), null);
     assert.ok(find('app-market-pane-hint'));
   } finally {
@@ -438,13 +665,14 @@ test('application cards reuse market layout and display metadata with an accessi
   }
 });
 
-test('only All Apps and App Plaza tabs remain', async () => {
+test('App Plaza appears before My Apps, which opens by default', async () => {
   const ctx = await mount((method) => response(method));
   try {
-    const tabs = [...document.querySelectorAll('.categoryTabs button[data-variant]')]
-      .map((button) => button.textContent.trim());
-    assert.deepEqual(tabs, ['All Apps', 'App Plaza']);
-    assert.equal(document.querySelector('button[data-variant="running"]'), null);
+    const tabs = [...document.querySelectorAll('button[data-testid^="app-market-tab-"]')]
+      .map(button => [button.dataset.testid, button.textContent.trim()]);
+    assert.deepEqual(tabs, [['app-market-tab-plaza', 'App Plaza'], ['app-market-tab-my-apps', 'My Apps']]);
+    assert.ok(card('gomoku'));
+    assert.equal(ctx.calls.some(({ method }) => method === 'app_market.market_list'), false);
   } finally {
     await ctx.close();
   }
@@ -466,7 +694,7 @@ test('app cards keep only run and more visible until the menu opens', async () =
   }
 });
 
-test('app cards open a detail page with the app directory and return to all apps', async () => {
+test('app cards open a detail page with the app directory and return to My Apps', async () => {
   const ctx = await mount((method) => {
     if (method === 'app_market.list') {
       return { apps: [{ ...app, entry_path: 'C:\\workspace\\gomoku\\index.html' }] };
@@ -482,7 +710,7 @@ test('app cards open a detail page with the app directory and return to all apps
     assert.match(page.textContent, /C:\\workspace\\gomoku/);
     assert.doesNotMatch(page.textContent, /App ID|Entry|artifact digest|Package digest/i);
     assert.equal(card('gomoku'), null);
-    assert.equal(find('app-market-detail-back').textContent.trim(), 'Back to All Apps');
+    assert.equal(find('app-market-detail-back').textContent.trim(), 'Back to My Apps');
     await click(find('app-market-detail-back'));
     assert.ok(card('gomoku'));
   } finally {
@@ -575,14 +803,17 @@ test('stop shows stopping immediately and returns to stopped when the operation 
   }
 });
 
-test('start failure displays the server detail and restores stopped without opening a tab', async () => {
+test('start failure on the detail page displays the server error as a toast', async () => {
   const ctx = await mount((method) => {
     if (method === 'app_market.start') throw new Error('Port 8080 is occupied');
     return response(method);
   });
   try {
+    await click(card('gomoku'));
     await click(find('app-market-toggle'));
-    assert.match(document.querySelector('[role="alert"]').textContent, /Port 8080 is occupied/);
+    assert.match(actionNotice().textContent, /Port 8080 is occupied/);
+    assert.equal(actionNotice().parentElement, find('ui-toast-stack-right'));
+    assert.ok(find('app-market-detail-back'));
     assert.equal(find('app-market-status'), null);
     assert.equal(ctx.opened.length, 0);
   } finally {
@@ -596,7 +827,7 @@ test('initial load failures are visible instead of appearing as an empty success
     return response(method);
   });
   try {
-    assert.match(document.querySelector('[role="alert"]').textContent, /Connection lost/);
+    assert.match(actionNotice().textContent, /Connection lost/);
   } finally {
     await ctx.close();
   }
@@ -830,7 +1061,7 @@ test('desktop without its open API reports an update error instead of using Web 
     assert.equal(ctx.opened.length, 0);
     assert.equal(find('app-market-browser-pane'), null);
     assert.equal(find('app-market-web-view'), null);
-    assert.match(document.querySelector('[role="alert"]').textContent, /Restart with the updated desktop app/);
+    assert.match(actionNotice().textContent, /Restart with the updated desktop app/);
   } finally { await ctx.close(); delete window.jiuwenDesktop; }
 });
 
@@ -859,7 +1090,7 @@ for (const succeeds of [true, false]) {
         await tick();
         assert.deepEqual(closed, []);
         assert.equal(find('app-market-status-text').textContent, 'Running');
-        assert.match(document.querySelector('[role="alert"]').textContent, /Stop rejected/);
+        assert.match(actionNotice().textContent, /Stop rejected/);
       }
     } finally {
       delete window.jiuwenDesktop;
@@ -881,8 +1112,8 @@ test('desktop window cleanup failure does not undo a successful service stop', a
   try {
     await click(find('app-market-toggle'));
     assert.equal(find('app-market-status-text'), null);
-    assert.match(document.querySelector('[role="alert"]').textContent, /app stopped.*window could not close/i);
-    assert.doesNotMatch(document.querySelector('[role="alert"]').textContent, /Failed to stop/);
+    assert.match(actionNotice().textContent, /app stopped.*window could not close/i);
+    assert.doesNotMatch(actionNotice().textContent, /Failed to stop/);
   } finally {
     delete window.jiuwenDesktop;
     await ctx.close();
@@ -912,7 +1143,7 @@ test('a pending desktop page load does not hold the application startup lock', a
     await closeMore();
     assert.ok(await menuActionExists('app-market-open'));
     await act(async () => pageLoad.reject(new Error('Page load failed')));
-    assert.match(document.querySelector('[role="alert"]').textContent, /Page load failed/);
+    assert.match(actionNotice().textContent, /Page load failed/);
     assert.equal(find('app-market-status').getAttribute('aria-label'), 'Running');
     assert.equal(ctx.opened.length, 0);
     instances = [{ ...running, state: 'stopped' }];
@@ -934,7 +1165,7 @@ test('desktop open failures remain visible without falling back to the system br
   const ctx = await mount((method) => response(method, [running]));
   try {
     await menuClick('app-market-open');
-    assert.match(document.querySelector('[role="alert"]').textContent, /Entry unavailable/);
+    assert.match(actionNotice().textContent, /Entry unavailable/);
     assert.equal(ctx.opened.length, 0);
     assert.equal(find('app-market-status').getAttribute('aria-label'), 'Running');
   } finally {
@@ -943,17 +1174,60 @@ test('desktop open failures remain visible without falling back to the system br
   }
 });
 
-test('delete retains confirmation and cancellation does not remove the app', async () => {
+test('delete keeps app details on cancellation and returns to the list on success', async () => {
   const ctx = await mount((method) => response(method));
   try {
+    await click(card('gomoku'));
     window.confirm = () => false;
-    await menuClick('app-market-delete');
+    await click(find('app-market-more'));
+    await click(find('app-market-delete'));
     assert.equal(ctx.calls.filter(({ method }) => method === 'app_market.delete').length, 0);
-    assert.ok(find('app-market-card'));
+    assert.ok(find('app-market-detail-page'));
     window.confirm = () => true;
-    await menuClick('app-market-delete');
+    await click(find('app-market-more'));
+    await click(find('app-market-delete'));
     assert.equal(ctx.calls.filter(({ method }) => method === 'app_market.delete').length, 1);
+    assert.equal(find('app-market-detail-page'), null);
+    assert.ok(find('categoryTabs'));
     assert.equal(find('app-market-card'), null);
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.delete')?.params, {
+      app_id: 'gomoku', remove_files: true,
+    });
+    const notice = actionNotice();
+    assert.equal(notice.textContent, i18next.t('appMarket.deleteCleanSuccess'));
+    assert.equal(notice.parentElement, find('ui-toast-stack-right'));
+    assert.equal(find('app-market-list').contains(notice), false);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('remove keeps app files and unregisters without cleanup', async () => {
+  const ctx = await mount((method) => response(method));
+  try {
+    await menuClick('app-market-remove');
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.delete')?.params, {
+      app_id: 'gomoku', remove_files: false,
+    });
+    assert.equal(find('app-market-card'), null);
+    assert.equal(actionNotice().textContent, i18next.t('appMarket.removeKeepSuccess'));
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('remove for a Hub app uninstalls but keeps files', async () => {
+  const ctx = await mount((method) => {
+    if (method === 'app_market.list') return { apps: [{ ...app, source: 'hub' }] };
+    return response(method);
+  });
+  try {
+    await menuClick('app-market-remove');
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.uninstall')?.params, {
+      app_id: 'gomoku', remove_files: false,
+    });
+    assert.equal(find('app-market-card'), null);
+    assert.equal(actionNotice().textContent, i18next.t('appMarket.removeKeepSuccess'));
   } finally {
     await ctx.close();
   }
@@ -967,7 +1241,7 @@ test('a non-running start response is shown as a failure and never opens the app
   );
   try {
     await click(find('app-market-toggle'));
-    assert.match(document.querySelector('[role="alert"]').textContent, /Entry exited before startup completed/);
+    assert.match(actionNotice().textContent, /Entry exited before startup completed/);
     assert.equal(find('app-market-status'), null);
     assert.equal(ctx.opened.length, 0);
   } finally {
@@ -996,7 +1270,8 @@ for (const desktop of [false, true]) {
         await menuClick('app-market-edit');
         await tick();
         assert.deepEqual(targets, [{ appId: app.app_id, name: app.name, instanceId: running.instance_id,
-          entryPath: editable.entry_path, sourceSession: editable.source_session }]);
+          entryPath: editable.entry_path, sourceSession: editable.source_session,
+          version: app.version, description: app.description }]);
         assert.equal(ctx.calls.filter(call => call.method === 'app_market.start').length, started ? 0 : 1);
         assert.equal(find('app-market-browser-pane'), null);
         if (desktop) assert.deepEqual(opens, [[app.app_id, running.url, app.name, true]]);
@@ -1016,7 +1291,7 @@ test('failed edit startup leaves the user in the market with an error', async ()
   try {
     await menuClick('app-market-edit');
     assert.deepEqual(targets, []);
-    assert.match(document.querySelector('[role="alert"]').textContent, /Startup failed/);
+    assert.match(actionNotice().textContent, /Startup failed/);
     assert.equal(find('app-market-web-view'), null);
   } finally { await ctx.close(); }
 });
@@ -1213,6 +1488,7 @@ const editEnd = appSource.indexOf('\n    },\n    [', editStart);
 const editCode = appSource.slice(editStart, editEnd) + '}';
 const compiledEdit = (await transform(`export default ${editCode}`, { loader: 'tsx', format: 'cjs' })).code;
 function editHandler(dependencies) {
+  dependencies = { appEditTokensRef: { current: new Map() }, generateUuidV4: randomUUID, ...dependencies };
   return new Function(...Object.keys(dependencies), `const module = { exports: {} }; ${compiledEdit}; return module.exports.default;`)(...Object.values(dependencies));
 }
 
@@ -1270,8 +1546,11 @@ for (const desktop of [false, true]) {
         isElectron: true, getMarketAppResources: async () => metrics, openMarketApp: async () => { opens++; return true; },
         closeMarketApp: async () => true, setMarketAppViewport: async () => true,
       };
-      const ctx = await mount(method => {
-        if (method === 'app_market.list') return { apps: [{ ...app, editor_session_id: 'editor' }] };
+      const ctx = await mount((method, params) => {
+        if (method === 'app_market.editor_app') {
+          assert.equal(params.editor_session_id, 'editor');
+          return { app };
+        }
         if (method === 'app_market.start') { live = true; starts++; return running; }
         if (method === 'app_market.resources') return metrics;
         return { instances: live ? [running] : [] };
@@ -1309,8 +1588,12 @@ for (const desktop of [false, true]) {
 
 test('unbound conversation has no app header action and canceled restore cannot open its page', async () => {
   const pending = deferred();
-  const ctx = await mount(method => method === 'app_market.list'
-    ? { apps: [{ ...app, editor_session_id: 'editor' }] } : pending.promise);
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.editor_app') {
+      return { app: params.editor_session_id === 'editor' ? app : null };
+    }
+    return method === 'app_market.list' ? { apps: [app] } : pending.promise;
+  });
   await ctx.unmount();
   let root = createRoot(document.getElementById('root'));
   let opens = 0;
@@ -1417,8 +1700,11 @@ for (const value of ['user draft', '']) {
 test('a failed coalesced edit releases its request so retry can succeed', async () => {
   useChatStore.getState().removeRuntime(editSession.session_id);
   const failure = deferred();
-  let calls = 0;
-  const h = firstEditHarness(() => ++calls === 1 ? failure.promise : Promise.resolve({ session: editSession, created: true }));
+  const tokens = [];
+  const h = firstEditHarness((_, params) => {
+    tokens.push(params.edit_token);
+    return tokens.length === 1 ? failure.promise : Promise.resolve({ session: editSession, created: true });
+  });
   const first = h.handler(editTarget, () => false);
   const second = h.handler(editTarget, () => true);
   failure.reject(new Error('offline'));
@@ -1426,8 +1712,12 @@ test('a failed coalesced edit releases its request so retry can succeed', async 
   assert.deepEqual(results.map(result => result.status), ['rejected', 'rejected']);
   assert.equal(h.requests.current.size, 0);
   await h.handler(editTarget, () => true);
-  assert.equal(calls, 2);
+  assert.equal(tokens.length, 2);
+  assert.ok(tokens[0]);
+  assert.equal(tokens[1], tokens[0]);
   assert.deepEqual(h.restores, [editSession.session_id]);
+  await h.handler(editTarget, () => true);
+  assert.notEqual(tokens[2], tokens[0]);
   useChatStore.getState().removeRuntime(editSession.session_id);
 });
 
@@ -1440,7 +1730,8 @@ test('Web market shows machine totals and running cards show only app memory', a
   } : response(method, [running]));
   try {
     assert.match(find('app-market-resources').textContent, /This computer \(total\) CPU 65.0% \u00b7 RAM 70.0%/);
-    assert.match(card('gomoku').textContent, /RAM 10 MiB/);
+    const tags = card('gomoku').querySelectorAll('[data-testid="entity-header-tag"]');
+    assert.deepEqual([...tags].map(tag => tag.textContent), ['v1.2.3', 'RAM 10 MiB']);
     await menuClick('app-market-open');
     const metrics = document.querySelectorAll('[data-testid="app-market-resources"]');
     assert.equal(metrics.length, 1);
@@ -1449,18 +1740,23 @@ test('Web market shows machine totals and running cards show only app memory', a
   } finally { await ctx.close(); }
 });
 
-test('desktop market reads only native machine totals', async () => {
+test('desktop cards show service memory before a renderer exists and totals stay native', async () => {
   let reads = 0;
   window.jiuwenDesktop = { isElectron: true, getMarketAppResources: async () => {
     reads++;
     return { apps: [], system: { cpuPercent: 40, memoryPercent: 50, sampledAt: Date.now() }, sampledAt: Date.now() };
   } };
-  const ctx = await mount(method => response(method));
+  const ctx = await mount(method => method === 'app_market.resources' ? {
+    apps: [{ appId: app.app_id, cpuPercent: null, memoryBytes: 25165824 }],
+    system: { cpuPercent: 65, memoryPercent: 70, sampledAt: Date.now() }, sampledAt: Date.now(),
+  } : response(method, [running]));
   try {
     assert.match(find('app-market-resources').textContent, /This computer \(total\) CPU 40.0% \u00b7 RAM 50.0%/);
+    const tags = card('gomoku').querySelectorAll('[data-testid="entity-header-tag"]');
+    assert.deepEqual([...tags].map(tag => tag.textContent), ['v1.2.3', 'RAM 24 MiB']);
     assert.equal(find('app-market-resources-note'), null);
     assert.equal(reads, 1);
-    assert.equal(ctx.calls.filter(call => call.method === 'app_market.resources').length, 0);
+    assert.equal(ctx.calls.filter(call => call.method === 'app_market.resources').length, 1);
   } finally { await ctx.close(); delete window.jiuwenDesktop; }
 });
 
@@ -1507,8 +1803,9 @@ test('resource host labels never identify remote or unknown endpoints as the loc
 });
 
 
-test('market shows a persistent high-usage reminder and clears it after recovery', async () => {
+test('desktop native totals and warnings keep updating while service memory is pending', async () => {
   const originalTimeout = globalThis.setTimeout;
+  const service = deferred();
   let poll;
   let count = 0;
   let usage = 90;
@@ -1519,7 +1816,9 @@ test('market shows a persistent high-usage reminder and clears it after recovery
   }) };
   let ctx;
   try {
-    ctx = await mount(method => response(method));
+    ctx = await mount(method => method === 'app_market.resources' ? service.promise : response(method, [running]));
+    assert.equal(find('app-market-system-cpu-percent').textContent, '90.0%');
+    assert.doesNotMatch(card('gomoku').textContent, /RAM/);
     assert.equal(find('app-market-resources-warning'), null);
     await act(async () => poll());
     assert.equal(find('app-market-resources-warning'), null);
@@ -1528,8 +1827,16 @@ test('market shows a persistent high-usage reminder and clears it after recovery
     usage = 70;
     await act(async () => poll());
     assert.equal(find('app-market-resources-warning'), null);
+    assert.equal(ctx.calls.filter(call => call.method === 'app_market.resources').length, 1);
+
+    await act(async () => service.resolve({
+      apps: [{ appId: app.app_id, cpuPercent: null, memoryBytes: 25165824 }], sampledAt: Date.now(),
+    }));
+    assert.match(card('gomoku').textContent, /RAM 24 MiB/);
+    assert.equal(find('app-market-system-cpu-percent').textContent, '70.0%');
   } finally {
     if (ctx) await ctx.close();
+    service.resolve(null);
     globalThis.setTimeout = originalTimeout;
     delete window.jiuwenDesktop;
   }
@@ -1563,12 +1870,10 @@ test('system CPU and memory colors update independently at boundaries without tr
   let poll;
   let system = { cpuPercent: 0, memoryPercent: 49.9, sampledAt: 3000 };
   globalThis.setTimeout = (fn, delay, ...args) => delay === 3000 ? (poll = fn, 0) : originalTimeout(fn, delay, ...args);
-  window.jiuwenDesktop = { isElectron: true, getMarketAppResources: async () => ({
-    apps: [], system,
-  }) };
   let ctx;
   try {
-    ctx = await mount(method => response(method));
+    ctx = await mount(method => method === 'app_market.resources'
+      ? { apps: [], system, sampledAt: system.sampledAt } : response(method));
     const cpu = find('app-market-system-cpu-percent');
     const memory = find('app-market-system-memory-percent');
     assert.equal(cpu.className, 'app-market-usage-low');
@@ -1590,6 +1895,149 @@ test('system CPU and memory colors update independently at boundaries without tr
   } finally {
     if (ctx) await ctx.close();
     globalThis.setTimeout = originalTimeout;
-    delete window.jiuwenDesktop;
+  }
+});
+
+test('switching to the market tab collapses the running app pane without stopping it', async () => {
+  const ctx = await mount(method => {
+    if (method === 'app_market.market_list') return { page: 1, page_size: 50, total: 0, items: [] };
+    return response(method, [running]);
+  });
+  try {
+    await menuClick('app-market-open');
+    assert.ok(find('app-market-browser-pane'));
+    await click(document.querySelector('[data-variant="all"]'));
+    assert.ok(find('app-market-browser-pane'));
+    await click(document.querySelector('[data-variant="market"]'));
+    assert.equal(find('app-market-browser-pane'), null);
+    assert.equal(ctx.calls.some(call => call.method === 'app_market.stop'), false);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('switching tabs while an app is starting prevents the late preview', async () => {
+  const pending = deferred();
+  const ctx = await mount(method => {
+    if (method === 'app_market.market_list') return { page: 1, page_size: 50, total: 0, items: [] };
+    if (method === 'app_market.start') return pending.promise;
+    return response(method, []);
+  });
+  try {
+    await menuClick('app-market-toggle');
+    await click(document.querySelector('[data-variant="market"]'));
+    await act(async () => pending.resolve(running));
+    assert.equal(find('app-market-browser-pane'), null);
+    assert.equal(ctx.calls.some(call => call.method === 'app_market.stop'), false);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('running app cards sort first by start time', async () => {
+  const firstRunning = { ...running, started_at: '2026-10-23T10:00:00Z' };
+  const secondRunning = { ...secondInstance, state: 'running', started_at: '2026-10-23T11:00:00Z' };
+  const ctx = await mount(method => {
+    if (method === 'app_market.list') return { apps: [app, secondApp] };
+    return { instances: [firstRunning, secondRunning] };
+  });
+  try {
+    await tick();
+    const variants = [...document.querySelectorAll('[data-testid="app-market-card"]')]
+      .map(element => element.getAttribute('data-variant'));
+    assert.deepEqual(variants, ['second', 'gomoku']);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('stop reports through a right-side toast outside the card list and dismisses automatically', async () => {
+  let instances = [running];
+  const ctx = await mount(method => {
+    if (method === 'app_market.stop') {
+      instances = [{ ...running, state: 'stopped' }];
+      return { stopped: true };
+    }
+    return response(method, instances);
+  });
+  try {
+    await menuClick('app-market-toggle');
+    const notice = actionNotice();
+    assert.match(notice.textContent, /App stopped/);
+    assert.equal(notice.parentElement, find('ui-toast-stack-right'));
+    assert.equal(find('app-market-list').contains(notice), false);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 3300)); });
+    assert.equal(find('app-market-action-notice'), null);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('Swarm chat marks player input over both transports and leaves Team observation unmarked', async () => {
+  const originalSocket = globalThis.WebSocket;
+  const originalFetch = globalThis.fetch;
+  const socketRequests = [];
+  const firstSend = deferred();
+  let socket;
+  class TestSocket {
+    static OPEN = 1;
+
+    constructor() {
+      socket = this;
+      queueMicrotask(() => {
+        this.readyState = TestSocket.OPEN;
+        this.onopen?.();
+      });
+    }
+
+    addEventListener(event, callback) {
+      if (event === 'close') this.onClose = callback;
+    }
+
+    send(raw) {
+      const request = JSON.parse(raw);
+      socketRequests.push(request);
+      firstSend.resolve(request);
+    }
+
+    close() {
+      this.readyState = 3;
+      const event = { code: 1000, reason: '', wasClean: true };
+      this.onclose?.(event);
+      this.onClose?.(event);
+    }
+  }
+  globalThis.WebSocket = TestSocket;
+  const http = new WebHttpClient();
+  try {
+    await webClient.connect();
+    const reply = webClient.request('chat.send', { session_id: 'npc', query: 'hello' });
+    const request = await firstSend.promise;
+    socket.onmessage({ data: JSON.stringify({ type: 'res', id: request.id, ok: true, payload: {} }) });
+    await reply;
+    assert.equal(request.params.chat_surface, 'swarm');
+    await webClient.sendFireAndForget('chat.send', {
+      session_id: 'npc',
+      query: '',
+      attach_only: true,
+    }, { isStream: true });
+    assert.equal(socketRequests.at(-1).params.chat_surface, undefined);
+
+    let httpBody;
+    globalThis.fetch = async (_url, options) => {
+      if (options.method === 'POST') {
+        httpBody = JSON.parse(options.body);
+        return new Response('\n', { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return Response.json({ ok: true, payload: {} });
+    };
+    await http.connect();
+    await http.request('chat.send', { session_id: 'npc', query: 'hello' });
+    assert.equal(httpBody.chat_surface, 'swarm');
+  } finally {
+    await http.disconnect();
+    await webClient.disconnect();
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalSocket;
   }
 });

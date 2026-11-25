@@ -232,7 +232,7 @@ export function ClawHubSearchModal({
         success: boolean;
         detail?: string;
         detail_key?: string;
-        skill?: { name: string };
+        skill?: { name: string; display_name?: string };
       }>(
         "skills.clawhub.download",
         withSession({
@@ -267,7 +267,9 @@ export function ClawHubSearchModal({
       // 更新本地已安装状态（含 owner，避免同 slug 误标）
       const installedKey = item.owner_handle ? `${item.owner_handle}/${slug}` : slug;
       setInstalledSlugs(prev => new Set([...prev, installedKey]));
-      showMessage("success", t("skills.clawhub.messages.installed", { name: slug }));
+      showMessage("success", t("skills.clawhub.messages.installed", {
+        name: item.display_name || data.skill?.display_name || slug,
+      }));
       // 通知父组件刷新技能列�?
       await onInstalled?.(skillName);
     } catch (err) {
@@ -292,18 +294,18 @@ export function ClawHubSearchModal({
       <div data-testid="claw-hub-search-modal-embedded-root" className="flex flex-col h-full">
         <div data-testid="claw-hub-search-modal-embedded-scroll" className="overflow-auto flex-1 min-h-0">
           {message && message.type === "success" && (
-            <div data-testid="claw-hub-search-modal-toast-embedded" data-variant="success" className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", width: "564px", height: "40px" }}>
+            <div data-testid="claw-hub-search-modal-toast-embedded" data-variant="success" className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", maxWidth: "564px", height: "40px" }}>
               <span className="w-4 h-4 rounded-full bg-[var(--color-feedback-success-indicator)] flex items-center justify-center flex-shrink-0">
                 <svg className="w-3 h-3 text-text-inverse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              {message.text.replace("√", "")}
+              <span className="truncate">{message.text.replace("√", "")}</span>
               <button
                 type="button"
                 onClick={() => showMessage("success", "")}
                 data-testid="claw-hub-search-modal-toast-close-embedded"
-                className="ml-auto w-6 h-6 flex items-center justify-center hover:bg-card/30 rounded-full "
+                className="ml-auto w-6 h-6 flex-shrink-0 flex items-center justify-center hover:bg-card/30 rounded-full "
               >
                 <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -457,18 +459,18 @@ export function ClawHubSearchModal({
           aria-label={t("common.close")}
         />
         {message && message.type === "success" && (
-          <div data-testid="claw-hub-search-modal-toast-token-config" data-variant="success" className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", width: "564px", height: "40px" }}>
+          <div data-testid="claw-hub-search-modal-toast-token-config" data-variant="success" className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", maxWidth: "564px", height: "40px" }}>
             <span className="w-4 h-4 rounded-full bg-[var(--color-feedback-success-indicator)] flex items-center justify-center flex-shrink-0">
               <svg className="w-3 h-3 text-text-inverse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
               </svg>
             </span>
-            {message.text.replace("√", "")}
+            <span className="truncate">{message.text.replace("√", "")}</span>
             <button
               type="button"
               onClick={() => showMessage("success", "")}
               data-testid="claw-hub-search-modal-toast-close-token-config"
-              className="ml-auto w-6 h-6 flex items-center justify-center hover:bg-card/30 rounded-full "
+              className="ml-auto w-6 h-6 flex-shrink-0 flex items-center justify-center hover:bg-card/30 rounded-full "
             >
               <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -608,18 +610,18 @@ export function ClawHubSearchModal({
 
         <div data-testid="claw-hub-search-modal-body" className="p-5 overflow-auto flex-1 min-h-0">
           {message && message.type === "success" && (
-            <div data-testid="claw-hub-search-modal-toast-modal" data-variant="success" className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", width: "564px", height: "40px" }}>
+            <div data-testid="claw-hub-search-modal-toast-modal" data-variant="success" className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", maxWidth: "564px", height: "40px" }}>
               <span className="w-4 h-4 rounded-full bg-[var(--color-feedback-success-indicator)] flex items-center justify-center flex-shrink-0">
                 <svg className="w-3 h-3 text-text-inverse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              {message.text.replace("√", "")}
+              <span className="truncate">{message.text.replace("√", "")}</span>
               <button
                 type="button"
                 onClick={() => showMessage("success", "")}
                 data-testid="claw-hub-search-modal-toast-close-modal"
-                className="ml-auto w-6 h-6 flex items-center justify-center hover:bg-card/30 rounded-full "
+                className="ml-auto w-6 h-6 flex-shrink-0 flex items-center justify-center hover:bg-card/30 rounded-full "
               >
                 <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

@@ -1,5 +1,6 @@
 """Regression tests for publishing generated applications from a conversation."""
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -168,3 +169,66 @@ def test_publish_rejects_invalid_version_meta(tmp_path):
         asyncio.run(manager.publish_app(str(page), "session"))
 
     assert manager.list_apps() == {"apps": []}
+
+
+def test_republish_preserves_pinned_flag_and_created_at(tmp_path):
+    page = tmp_path / "app.html"
+    page.write_text("<html>app</html>")
+    manager = AppMarketManager(str(tmp_path / "market"))
+    first = asyncio.run(manager.publish_app(str(page), "session"))
+    app_id = first["app_id"]
+    original = manager.storage.load_manifest(app_id)
+    original_created_at = original.created_at
+    assert original.pinned is False
+
+    manager.set_app_pinned(app_id, "", True)
+    assert manager.storage.load_manifest(app_id).pinned is True
+
+    page.write_text("<html>app v2</html>")
+    asyncio.run(manager.publish_app(str(page), "session", version="2.0.0"))
+
+    republished = manager.storage.load_manifest(app_id)
+    assert republished.pinned is True, "republishing must not silently drop the user pin"
+    assert republished.version == "2.0.0"
+    assert republished.created_at == original_created_at, (
+        "created_at is the registration time and must survive republishing"
+    )
+    listed = manager.list_apps()["apps"]
+    assert listed[0]["pinned"] is True
+
+
+def test_republish_after_unpin_keeps_pinned_false(tmp_path):
+    page = tmp_path / "app.html"
+    page.write_text("<html>app</html>")
+    manager = AppMarketManager(str(tmp_path / "market"))
+    app_id = asyncio.run(manager.publish_app(str(page), "session"))["app_id"]
+
+    manager.set_app_pinned(app_id, "", True)
+    manager.set_app_pinned(app_id, "", False)
+    page.write_text("<html>app v2</html>")
+    asyncio.run(manager.publish_app(str(page), "session", version="2.0.0"))
+
+    assert manager.storage.load_manifest(app_id).pinned is False
+
+
+def test_invalid_role_declaration_does_not_modify_existing_registration(tmp_path):
+    page = tmp_path / "index.html"
+    page.write_text("<html>WorkSwarmApp</html>", encoding="utf-8")
+    manager = AppMarketManager(str(tmp_path / "market"))
+    first = asyncio.run(manager.publish_app(str(page), "session"))
+    assert manager.storage.load_manifest(first["app_id"]).permissions == ["ai"]
+    declaration = {
+        "schema_version": 1,
+        "session_groups": [{
+            "id": "guide",
+            "mode": "agent",
+            "session_description": "One session per game.",
+            "roles": [{"id": "guide", "name": "Guide", "description": "Helps", "avatar": "../avatar.png"}],
+        }],
+    }
+    (tmp_path / "app-ai-roles.json").write_text(json.dumps(declaration), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"app-ai-roles\.json.*avatar.*relative"):
+        asyncio.run(manager.publish_app(str(page), "session", version="2.0.0"))
+
+    assert manager.list_apps()["apps"][0]["version"] == "1.0.0"

@@ -5,6 +5,7 @@ import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
   ExternalCliCustomAgentsItem,
+  REASetting,
   RSISetting,
   TrajectoryDiagnosisSetting,
 } from './ExperimentalSettings';
@@ -27,6 +28,11 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'rsi',
       titleKey: 'settingsPanel.experimental.rsi',
       items: [{ id: 'rsi-enabled', component: 'custom', render: RSISetting }],
+    },
+    {
+      id: 'rea',
+      titleKey: 'settingsPanel.experimental.rea',
+      items: [{ id: 'rea-enabled', component: 'custom', render: REASetting }],
     },
     {
       id: 'a2ui',

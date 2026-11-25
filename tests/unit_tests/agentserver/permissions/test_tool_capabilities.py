@@ -169,6 +169,15 @@ def test_search_and_fetch_tools_remain_network(tool_name: str) -> None:
     assert classify_tool(tool_name).category == "network"
 
 
+def test_diff_files_is_a_static_read_path_tool() -> None:
+    info = classify_tool("diff_files")
+
+    assert info.category == "path"
+    assert info.operation_family == "workspace_read"
+    assert info.static_side_effects == frozenset()
+    assert info.facts_source == "host_static"
+
+
 def test_playwright_browser_mcp_wrapper_uses_browser_policy_domain() -> None:
     info = classify_tool("mcp_playwright-official_browser_navigate")
     assert info.category == "browser"

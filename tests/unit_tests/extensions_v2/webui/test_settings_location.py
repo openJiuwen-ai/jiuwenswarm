@@ -100,5 +100,5 @@ async def test_gateway_registers_both_catalog_and_existing_dispatch(monkeypatch)
     webui_handlers.register_webui_handlers(channel, lambda: object())
     assert {ReqMethod.WEBUI_DISPATCH.value, ReqMethod.WEBUI_SETTINGS_CATALOG.value} <= routes.keys()
     await routes[ReqMethod.WEBUI_SETTINGS_CATALOG.value](SimpleNamespace(_jiuwen_ws_id="tab-1"), "q1", {}, None)
-    assert proxy.call_args.kwargs["req_method"] == ReqMethod.WEBUI_SETTINGS_CATALOG
+    assert proxy.call_args.kwargs["req_method"].value == ReqMethod.WEBUI_SETTINGS_CATALOG.value
     assert proxy.call_args.kwargs["metadata"] == {"ws_id": "tab-1"}

@@ -49,6 +49,7 @@ import type { CodeReviewTarget } from '../../features/code-mode/types';
 import { useCodeGitDiffWatch } from '../../features/code-mode/useCodeGitDiffWatch';
 import { type SingleAgentToolTab } from '../../features/singleAgentPanelState';
 import { useBrowserAgentActivity } from '../../features/browserAgentActivity';
+import { resolveSubagentDisplayName } from '../../features/subagent/subagentNormalizer';
 import { useDesktopBrowserHeadless } from '../../features/desktopBrowserDisplay';
 import { closeDesktopBrowserTab, openFileInDesktopBrowser, useDesktopBrowserTabFlags } from '../../features/desktopBrowserFile';
 import { SubagentExpandedPanel } from '../subagent/SubagentExpandedPanel';
@@ -162,7 +163,7 @@ export function ToolPanel({
   shouldFullscreen = false,
   onCloseFloating,
 }: ToolPanelProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const organizationUiEnabled = useTeamOrganizationUiEnabled();
   const isConnected = useSessionStore((state) => state.isConnected);
   const activeSessionId = useChatStore(s => s.activeSessionId);
@@ -199,13 +200,13 @@ export function ToolPanel({
     () =>
       subagentList.map(subagent => ({
         task_id: subagent.subagent_id,
-        title: subagent.display_name,
+        title: resolveSubagentDisplayName(subagent, i18n.language),
         content: subagent.role || subagent.task_description || undefined,
         status: (subagent.status === 'running' ? 'in_progress' : 'completed') as TeamTaskStatus,
         assignee: subagent.subagent_id,
         timestamp: subagent.updated_at,
       })),
-    [subagentList],
+    [subagentList, i18n.language],
   );
   const [subagentsExpanded, setSubagentsExpanded] = useState(false);
   const sessionArtifacts = useSessionArtifacts();
@@ -460,6 +461,13 @@ export function ToolPanel({
           const mergedTasks = mergeById(historyState.tasks, liveTasksForMerge, task => task.task_id);
           setTeamTasks(sessionId, mergedTasks);
         }
+        // History may restore in_progress without progress_frozen; re-apply
+        // session pause freeze after the board is rebuilt (enterprise HTTP refresh).
+        // develop 无 mergeTeamTaskProgressBaseline，只接 freeze。
+        if (useChatStore.getState().getRuntime(sessionId)?.isPaused) {
+          useSessionStore.getState().freezeRunningTeamTasks(sessionId);
+        }
+
 
         // 同一次调用在两条路径下的 id 不同（实时 stableEventId vs 历史恢复
         // hist-*），按 id 合并会留下两张卡片；调用/结果改按 (member, kind,
@@ -524,6 +532,7 @@ export function ToolPanel({
     slotId: 'conversation.panel.right',
     sessionId: resolvedSessionId && resolvedSessionId !== 'new' ? resolvedSessionId : null,
     panels: webUIPanels.panels,
+    hiddenPanels: webUIPanels.hiddenPanels,
     renderPanel: webUIPanels.renderPanel,
     openRequest: webUIPanels.openRequest,
     consumeOpenRequest: webUIPanels.consumeOpenRequest,
@@ -843,6 +852,7 @@ export function ToolPanel({
             renderTaskIcon={task => (
               <TeamMemberAvatar
                 member={task.assignee ?? ''}
+                avatarUrl={subagentRuntime?.subagentsById[task.task_id]?.avatar}
                 alt={task.title ?? ''}
                 className="h-4 w-4 rounded-full shrink-0"
                 imageClassName="rounded-full"

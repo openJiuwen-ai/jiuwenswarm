@@ -59,7 +59,8 @@ HELLO、stub、常驻/attached 校验、退出回收和 pending Worker 观察成
 本次按 develop 现有的后台日志与原始输出路由补齐实现。
 旧 HELLO 按主干既有兼容行为处理；新 Worker 两种身份都不可读时明确失败，不能发送无身份 HELLO。
 
-`JIUWEN_WORKER_LOG_DIR` 指定 Worker 日志目录，未设置或为空时保留 socket 父目录下的 `worker-logs`。
+初版由 `JIUWEN_WORKER_LOG_DIR` 指定 Worker 日志目录，未设置或为空时使用 socket 父目录下的 `worker-logs`；
+后续主干路径迁移后的默认位置见下文“同步 develop 路径契约”。
 每次启动的 stderr 使用 UUID 文件名；Supervisor 清理固定诊断文件并注入 `JIUWEN_WORKER_DIAGNOSTIC_PATH`。
 Worker 在日志初始化之前的顶层异常、强制退出、ERROR 日志及 HELLO 失败均保留 PID 和 traceback；
 ERROR handler 在现有后台日志启用前装配，继续由后台写入。诊断写入失败不替换原异常。
@@ -163,6 +164,28 @@ CR-10796-03 的一次性 HELLO 读取优化本轮未实施。首次身份可能�
 本轮未执行全仓 UT、远端 CodeCheck 或 HarmonyOS 真机验证；此前验证继续限定于各自版本。
 原始报告保存在 `D:/work_space/.codex-temp/harmony-process-identity-review-20261125/` 的
 `dedup-before.xml`、`review-regression.xml` 和 `process-regression.xml`，不提交运行产物。
+
+## 2026-11-25 同步 develop 路径契约
+
+将 develop `fba1df034` 合入候选 `9d87a7c6d`，唯一冲突位于 `server/supervisor/worker_process.py` 的日志目录初始化。
+develop 将默认 Worker 日志迁到数据根的 `logs/worker-logs`，统一经 `common.paths.get_worker_logs_dir()` 获取；
+本 PR 的显式 `JIUWEN_WORKER_LOG_DIR` 和固定诊断文件继续保留，两种日志始终使用同一目录。
+未设置或空配置走主干默认入口，非空配置仍优先；路径属于系统态日志，未迁入 `profile/`。
+同步中英文生命周期说明，路径用例隔离数据根，避免收集阶段已经初始化的路径缓存干扰断言。
+
+合并工作区在 Windows / Python 3.11.15 上验证 **135 passed**，包括默认/空值/显式日志目录、
+诊断去重、HELLO、身份规约、Worker 入口、旧 owner 兼容、后台日志、Front 导入隔离、真实异常退出和 Web 文件响应。
+此前附件 CI 的两个 CSP 失败在 develop `fba1df034` 中已修复，本轮对应原用例均通过，未额外修改 Web 实现或测试。
+
+原生 Windows 实进程覆盖默认 resident（未设置日志目录）和 front_loopback（空日志目录）两种情况，
+确认实际日志使用数据根 `logs/worker-logs`；resident 的 Front 断开保留 Worker，新 Front 复用同一 PID 并完成请求。
+两组最终进程正常退出，IPC、端口及 owner/startup 锁完成清理。
+另重跑 resident/loopback 的创建时间拒绝回退及双来源拒绝三组受控实验，启动/拒绝语义、诊断和清理均通过。
+受控实验仍使用 Windows 注入权限错误与模拟 start counter，不代表鸿蒙真机验收。
+
+本轮未执行全仓 UT 或本地静态检查。原始报告和独立进程记录保存在
+`D:/work_space/.codex-temp/harmony-process-identity-conflicts-20261125/` 的
+`merge-verified.xml`、`native-verified.json` 和 `harmony-controlled/verified.json`。
 
 ## 遗留与重验条件
 

@@ -13,8 +13,16 @@ from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 _PROVIDERS = frozenset({"gitcode", "github"})
 _ATTEMPT_TTL = 10 * 60
+_TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 _lock = threading.Lock()
 _attempts: dict[str, dict] = {}
+
+
+def _allow_insecure_http() -> bool:
+    return (
+        os.getenv("TEAM_SKILLS_HUB_ALLOW_INSECURE_HTTP", "").strip().lower()
+        in _TRUE_VALUES
+    )
 
 
 def _hub_base() -> str:
@@ -26,9 +34,13 @@ def _hub_base() -> str:
     parsed = urlsplit(base)
     if parsed.scheme == "https" and parsed.netloc and not parsed.path:
         return base
-    # A loopback mock is useful for local integration tests only.
-    if parsed.scheme == "http" and not parsed.path:
+    if parsed.scheme == "http" and parsed.netloc and not parsed.path:
+        # A loopback mock is useful for local integration tests only.
         if parsed.hostname == "127.0.0.1" and parsed.port:
+            return base
+        # Explicitly configured HTTP test deployments follow the same switch as
+        # the Hub API and download client.
+        if _allow_insecure_http():
             return base
     # The published SkillHub test deployment uses HTTP; keep this exception exact.
     if base == "http://119.8.233.112:8080":

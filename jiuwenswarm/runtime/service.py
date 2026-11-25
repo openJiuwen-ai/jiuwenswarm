@@ -40,6 +40,9 @@ from jiuwenswarm.runtime.session import (
 from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
     TEAM_EXECUTION_CONTEXT_METADATA_KEY,
+    TEAM_PAUSE_FENCE_GENERATION_PARAM,
+    TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM,
+    CancelExecutionResult,
     ExecutionCancelCause,
     ExecutionLifecycleContext,
     NoControlTargetError,
@@ -144,6 +147,12 @@ _PROCESS_RUNTIME_EXTENSION_REGISTRY: Any = None
 
 class RuntimeStateError(RuntimeError):
     """Raised when an operation violates the runtime lifecycle."""
+
+
+class NpcSessionReadOnlyError(RuntimeStateError):
+    """Raised when the Swarm conversation page sends a message to an NPC."""
+
+    code = "NPC_SESSION_READ_ONLY"
 
 
 async def _initialize_runtime_dependencies() -> None:
@@ -1396,13 +1405,13 @@ class AgentRuntime:
         stopped_at = self._ask_user_stop_timestamp(request, intent, is_team_request)
         team_stopped = False
         team_paused = False
+        lifecycle_pause_result = None
         target_request_id = str(params.get("target_request_id") or "").strip()
         # Only the web cron path fences a specific execution. Other transports
         # (for example process-cli request-scoped cancels) must keep the
         # adapter's semantic-interrupt path before the coordinator cancel.
         if target_request_id and request.channel_id == "web":
             from jiuwenswarm.common.schema.agent import AgentResponse
-            from jiuwenswarm.runtime.session.model import CancelExecutionResult
 
             expected_id = str(params.get("expected_execution_id") or "").strip()
             executions = snapshot.executions if snapshot is not None else ()
@@ -1485,103 +1494,237 @@ class AgentRuntime:
                     "target_request_id": target_request_id,
                 },
             )
+        pause_fence_ids: frozenset[str] = frozenset()
+        pause_drain_execution_ids: tuple[str, ...] = ()
+        team_pause_hold = False
         if is_team_request and snapshot is not None:
             context = SessionLifecycleContext(
                 session_id=snapshot.session_id,
                 generation=snapshot.generation,
             )
             if intent == "pause":
-                team_paused = await self._team_lifecycle().pause_session(
-                    context,
-                    reason=ExecutionCancelCause.USER_PAUSE.value,
-                    channel_id=request.channel_id,
+                from jiuwenswarm.agents.harness.team.team_manager import (
+                    PauseSessionResult,
                 )
+
+                # Capture the live Team business executions from the pre-pause
+                # snapshot. They fence the pause (consecutive rounds share one
+                # session generation, so a round admitted while this request
+                # is in flight belongs to a newer message and must not be
+                # paused) and bound the cleanup drain below. An empty capture
+                # means nothing was live: any active round is newer and the
+                # fence refuses rather than skipping the check.
+                pause_business_executions = tuple(
+                    item
+                    for item in snapshot.executions
+                    if item.team is not None and not item.team.observation_only
+                )
+                pause_fence_ids = frozenset(
+                    item.request_id for item in pause_business_executions
+                )
+                pause_drain_execution_ids = tuple(
+                    item.execution_id for item in pause_business_executions
+                )
+                # Hold new team input for the whole pause request: the old
+                # leader stops before its streams finish draining, so a
+                # follow-up delivered mid-teardown can only hit a dead leader.
+                self._team_lifecycle().begin_request_stop(snapshot.session_id)
+                team_pause_hold = True
+                try:
+                    lifecycle_pause_result = await self._team_lifecycle().pause_session(
+                        context,
+                        reason=ExecutionCancelCause.USER_PAUSE.value,
+                        channel_id=request.channel_id,
+                        expected_request_ids=pause_fence_ids,
+                    )
+                    if not isinstance(lifecycle_pause_result, PauseSessionResult):
+                        lifecycle_pause_result = (
+                            PauseSessionResult(
+                                work_stopped=True,
+                                resumable=True,
+                                outcome="parked",
+                            )
+                            if lifecycle_pause_result
+                            else PauseSessionResult(
+                                work_stopped=False,
+                                resumable=False,
+                                outcome="failed",
+                            )
+                        )
+                except BaseException:
+                    self._team_lifecycle().end_request_stop(snapshot.session_id)
+                    team_pause_hold = False
+                    raise
+                team_paused = lifecycle_pause_result.work_stopped
             elif intent in {"cancel", "stop"}:
                 team_stopped = await self._team_lifecycle().stop_session(
                     context,
                     reason=ExecutionCancelCause.USER_CANCEL.value,
                 )
+        try:
+            if intent == "pause" and team_paused:
+                # The generation-aware lifecycle already parked the runtime.
+                # Forwarding the same request would make the adapter pause a
+                # second time by session id alone and could stop a round that
+                # started after this request, so answer directly and keep the
+                # cleanup ownership here.
+                from jiuwenswarm.common.schema.agent import AgentResponse
 
-        from jiuwenswarm.runtime.request import cancel_request
+                pause_message = (
+                    "团队已暂停"
+                    if lifecycle_pause_result.resumable
+                    else "当前没有可暂停的团队任务"
+                )
+                response = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={
+                        "event_type": "chat.interrupt_result",
+                        "intent": intent,
+                        "success": lifecycle_pause_result.success,
+                        "message": pause_message,
+                        "work_stopped": lifecycle_pause_result.work_stopped,
+                        "resumable": lifecycle_pause_result.resumable,
+                        "outcome": lifecycle_pause_result.outcome,
+                        "has_active_task": lifecycle_pause_result.resumable,
+                    },
+                    metadata=request.metadata,
+                )
+            else:
+                if is_team_request and intent == "pause" and snapshot is not None:
+                    # Compat fallback (the lifecycle found nothing to pause):
+                    # keep the adapter pause fenced to the snapshotted
+                    # generation and rounds instead of the session id alone.
+                    fenced_params = dict(params)
+                    fenced_params[TEAM_PAUSE_FENCE_GENERATION_PARAM] = snapshot.generation
+                    fenced_params[TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM] = sorted(pause_fence_ids)
+                    request = replace(request, params=fenced_params)
+                from jiuwenswarm.runtime.request import cancel_request
 
-        manager = await self.resolve_manager(request)
-        response = await cancel_request(
-            manager,
-            request,
-            allow_create=allow_create,
-        )
-        if is_team_request and intent == "pause" and not team_paused:
-            # The adapter may pause successfully even when the generation-aware
-            # lifecycle did not find a matching Team runtime.
-            team_paused = (
+                manager = await self.resolve_manager(request)
+                response = await cancel_request(
+                    manager,
+                    request,
+                    allow_create=allow_create,
+                )
+                if is_team_request and intent == "pause":
+                    from jiuwenswarm.agents.harness.team.team_manager import (
+                        PauseSessionResult,
+                        merge_pause_session_results,
+                    )
+
+                    adapter_pause_result = None
+                    if response.ok and isinstance(response.payload, dict):
+                        payload = response.payload
+                        if "outcome" in payload or "work_stopped" in payload:
+                            adapter_pause_result = PauseSessionResult(
+                                work_stopped=bool(payload.get("work_stopped")),
+                                resumable=bool(payload.get("resumable")),
+                                outcome=str(payload.get("outcome") or "failed"),
+                            )
+                        elif payload.get("success") is True:
+                            adapter_pause_result = PauseSessionResult(
+                                work_stopped=True,
+                                resumable=True,
+                                outcome="parked",
+                            )
+                        elif payload.get("success") is False:
+                            adapter_pause_result = PauseSessionResult(
+                                work_stopped=False,
+                                resumable=False,
+                                outcome="failed",
+                            )
+                    merged_pause = merge_pause_session_results(
+                        lifecycle_pause_result,
+                        adapter_pause_result,
+                    )
+                    team_paused = merged_pause.work_stopped
+                    if isinstance(response.payload, dict):
+                        if merged_pause.resumable:
+                            merged_message = "团队已暂停"
+                        elif merged_pause.outcome == "already_idle":
+                            merged_message = "当前没有可暂停的团队任务"
+                        else:
+                            merged_message = str(
+                                response.payload.get("message")
+                                or "当前没有可暂停的团队任务"
+                            )
+                        response.payload["work_stopped"] = merged_pause.work_stopped
+                        response.payload["resumable"] = merged_pause.resumable
+                        response.payload["outcome"] = merged_pause.outcome
+                        response.payload["success"] = merged_pause.success
+                        response.payload["has_active_task"] = merged_pause.resumable
+                        response.payload["message"] = merged_message
+            cancellation_drained = True
+            executions_cancelled = False
+            # 单 Agent 的 pause 只挂起 ReAct 循环：StreamEventRail 在下一个
+            # checkpoint 阻塞，resume 后同一条流继续产出。协调器取消会直接杀掉
+            # producer 且不产终止帧，前端/Gateway 永远等不到 chat.processing_status。
+            # 团队 pause 仍需取消前台业务流，并由 lifecycle 发布 pause 终态。
+            skip_coordinator_cancel = intent == "pause" and not is_team_request
+            if (
+                request.session_id
+                and self._owns_session(request.session_id)
+                and not skip_coordinator_cancel
+            ):
+                target_request_id = str(params.get("target_request_id") or "").strip()
+                if is_team_request and intent == "pause":
+                    # The pause cleanup is bound to the executions this
+                    # request captured above: a blanket session+generation
+                    # cancel would also kill a round admitted while the
+                    # pause was in flight.
+                    cancellation = await self._drain_team_pause_executions(
+                        request.session_id,
+                        execution_ids=pause_drain_execution_ids,
+                        generation=snapshot.generation if snapshot is not None else None,
+                    )
+                else:
+                    cancellation = await self._session_coordinator.cancel_execution(
+                        request.session_id,
+                        request_id=target_request_id or None,
+                        generation=snapshot.generation if snapshot is not None else None,
+                    )
+                cancellation_drained = not cancellation.timed_out
+                executions_cancelled = cancellation.cancelled > 0
+                if team_paused and not cancellation_drained:
+                    logger.warning(
+                        "[Runtime] Team pause completion skipped after cancellation timeout: session_id=%s "
+                        "generation=%s timed_out_execution_ids=%s",
+                        request.session_id,
+                        snapshot.generation if snapshot is not None else None,
+                        cancellation.timed_out,
+                    )
+            # Clear once the executions stop, since a cancelled answer restores its questions as it unwinds.
+            if (
                 response.ok
-                and isinstance(response.payload, dict)
-                and response.payload.get("success") is True
-            )
-        cancellation_drained = True
-        executions_cancelled = False
-        # 单 Agent 的 pause 只挂起 ReAct 循环：StreamEventRail 在下一个
-        # checkpoint 阻塞，resume 后同一条流继续产出。协调器取消会直接杀掉
-        # producer 且不产终止帧，前端/Gateway 永远等不到 chat.processing_status。
-        # 团队 pause 仍需取消前台业务流，并由 lifecycle 发布 pause 终态。
-        skip_coordinator_cancel = intent == "pause" and not is_team_request
-        if (
-            request.session_id
-            and self._owns_session(request.session_id)
-            and not skip_coordinator_cancel
-        ):
-            target_request_id = str(params.get("target_request_id") or "").strip()
-            excluded_execution_ids: tuple[str, ...] = ()
-            if is_team_request and intent == "pause":
-                current = self._session_coordinator.snapshot_session(request.session_id)
-                excluded_execution_ids = tuple(
-                    item.execution_id
-                    for item in current.executions
-                    if item.team is not None and item.team.observation_only
+                and intent in {"cancel", "supplement"}
+                and not (
+                    isinstance(response.payload, dict)
+                    and response.payload.get("success") is False
                 )
-            cancellation = await self._session_coordinator.cancel_execution(
-                request.session_id,
-                request_id=target_request_id or None,
-                generation=snapshot.generation if snapshot is not None else None,
-                excluded_execution_ids=excluded_execution_ids,
-            )
-            cancellation_drained = not cancellation.timed_out
-            executions_cancelled = cancellation.cancelled > 0
-            if team_paused and not cancellation_drained:
-                logger.warning(
-                    "[Runtime] Team pause completion skipped after cancellation timeout: session_id=%s "
-                    "generation=%s timed_out_execution_ids=%s",
-                    request.session_id,
-                    snapshot.generation if snapshot is not None else None,
-                    cancellation.timed_out,
+            ):
+                await self._clear_pending_interaction(request.session_id or "default")
+            if team_paused and cancellation_drained:
+                await self._publish_team_pause_completed(
+                    request,
+                    generation=snapshot.generation if snapshot is not None else None,
                 )
-        # Clear once the executions stop, since a cancelled answer restores its questions as it unwinds.
-        if (
-            response.ok
-            and intent in {"cancel", "supplement"}
-            and not (
-                isinstance(response.payload, dict)
-                and response.payload.get("success") is False
+            stop_confirmed = team_stopped or team_paused or executions_cancelled or (
+                response.ok and isinstance(response.payload, dict) and response.payload.get("success") is True
             )
-        ):
-            await self._clear_pending_interaction(request.session_id or "default")
-        if team_paused and cancellation_drained:
-            await self._publish_team_pause_completed(
-                request,
-                generation=snapshot.generation if snapshot is not None else None,
-            )
-        stop_confirmed = team_stopped or team_paused or executions_cancelled or (
-            response.ok and isinstance(response.payload, dict) and response.payload.get("success") is True
-        )
-        if stopped_at is not None and cancellation_drained and stop_confirmed:
-            question_ids = None
-            if target_request_id:
-                question_ids = set()
-                executions = snapshot.executions if snapshot is not None else ()
-                for execution in executions:
-                    if target_request_id in (execution.request_id, execution.root_request_id):
-                        question_ids.update(execution.waiting_control_ids)
-            await self._record_ask_user_stop(request, stopped_at, question_ids)
+            if stopped_at is not None and cancellation_drained and stop_confirmed:
+                question_ids = None
+                if target_request_id:
+                    question_ids = set()
+                    executions = snapshot.executions if snapshot is not None else ()
+                    for execution in executions:
+                        if target_request_id in (execution.request_id, execution.root_request_id):
+                            question_ids.update(execution.waiting_control_ids)
+                await self._record_ask_user_stop(request, stopped_at, question_ids)
+        finally:
+            if team_pause_hold:
+                self._team_lifecycle().end_request_stop(snapshot.session_id)
         return response
 
     async def _publish_team_pause_completed(
@@ -1606,8 +1749,8 @@ class AgentRuntime:
             )
             return
 
-        # Business waiters have exited. The retained observation subscription
-        # owns delivery, with the Team manager's existing waiter-less fallback.
+        # Business waiters have exited, and the Gateway may close observers
+        # independently. The lifecycle adapter publishes outside those streams.
         try:
             await self._team_lifecycle().publish_pause_completed(
                 request.session_id,
@@ -1620,6 +1763,34 @@ class AgentRuntime:
                 request.session_id,
                 exc,
             )
+
+    async def _drain_team_pause_executions(
+        self,
+        session_id: str,
+        *,
+        execution_ids: tuple[str, ...],
+        generation: int | None,
+    ) -> CancelExecutionResult:
+        """Cancel only the executions a Team pause request captured.
+
+        A blanket session+generation cancel would also hit a round admitted
+        while the pause was in flight; the request's own snapshot is the
+        boundary, and executions it did not see stay untouched.
+        """
+        results: list[CancelExecutionResult] = []
+        for execution_id in execution_ids:
+            results.append(
+                await self._session_coordinator.cancel_execution(
+                    session_id,
+                    execution_id=execution_id,
+                    generation=generation,
+                ),
+            )
+        return CancelExecutionResult(
+            matched=sum(item.matched for item in results),
+            cancelled=sum(item.cancelled for item in results),
+            timed_out=tuple(eid for item in results for eid in item.timed_out),
+        )
 
     async def cancel_all_inflight_work(
         self,
@@ -1801,12 +1972,6 @@ class AgentRuntime:
     ) -> list[RuntimeEvent]:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
-        request = self.normalize_request(request)
-        attachment_completion = self._non_team_attachment_completion(request)
-        if attachment_completion is not None:
-            return [attachment_completion]
-        self._validate_permission_answer(request)
-        self._validate_answer_source(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
                 request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -1819,6 +1984,15 @@ class AgentRuntime:
         )
 
         async with self._tenant.scoped_manager(request) as manager:
+            request, metadata = self._normalize_request_with_metadata(request)
+            refusal = self._swarm_npc_chat_refusal(request, metadata)
+            if refusal is not None:
+                return [refusal]
+            attachment_completion = self._non_team_attachment_completion(request)
+            if attachment_completion is not None:
+                return [attachment_completion]
+            self._validate_permission_answer(request)
+            self._validate_answer_source(request)
             token = set_runtime_context(self, manager)
             try:
                 work_kind = self.session_work_kind(request)
@@ -2345,7 +2519,11 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        request = self.normalize_request(request)
+        request, metadata = self._normalize_request_with_metadata(request)
+        refusal = self._swarm_npc_chat_refusal(request, metadata)
+        if refusal is not None:
+            yield refusal
+            return
         attachment_completion = self._non_team_attachment_completion(request)
         if attachment_completion is not None:
             yield attachment_completion
@@ -4087,13 +4265,39 @@ class AgentRuntime:
         return is_team_mode(canonical)
 
     @staticmethod
-    def normalize_request(request: AgentRequest) -> AgentRequest:
+    def _swarm_npc_chat_refusal(request: AgentRequest, metadata: dict[str, Any]) -> RuntimeEvent | None:
+        """Keep the Swarm composer from changing app-owned conversation history."""
+        params = request.params or {}
+        if request.req_method != ReqMethod.CHAT_SEND or params.get("chat_surface") != "swarm":
+            return None
+        if params.get(TEAM_ATTACH_ONLY_PARAM) is True and not any(
+            params.get(field) for field in ("query", "content", "files", "media_items")
+        ):
+            return None
+        from jiuwenswarm.runtime.app_role import is_npc_session
+        from jiuwenswarm.runtime.events import RuntimeEvent
+
+        if not is_npc_session(metadata):
+            return None
+        return RuntimeEvent.error(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            error=NpcSessionReadOnlyError("Continue the NPC conversation inside its application."),
+        )
+
+    @classmethod
+    def normalize_request(cls, request: AgentRequest) -> AgentRequest:
         """Resolve the effective mode before Runtime classification and dispatch."""
+        return cls._normalize_request_with_metadata(request)[0]
+
+    @staticmethod
+    def _normalize_request_with_metadata(request: AgentRequest) -> tuple[AgentRequest, dict[str, Any]]:
         params = request.params if isinstance(request.params, dict) else {}
         raw_mode = params.get("mode")
         session_id = str(request.session_id or "").strip()
         if not session_id:
-            return request
+            return request, {}
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,
         )
@@ -4110,23 +4314,23 @@ class AgentRuntime:
                 session_id,
                 exc,
             )
-            return request
+            return request, {}
         if not isinstance(metadata, dict):
-            return request
+            return request, {}
         resolved_mode = metadata.get("mode")
         if not isinstance(resolved_mode, str) or not resolved_mode.strip():
-            return request
+            return request, metadata
         if isinstance(raw_mode, str) and raw_mode.strip():
             from jiuwenswarm.runtime.request import resolve_request_runtime_mode
 
             if not (is_single_agent_mode(deprecate_mode(resolved_mode)) or is_team_mode(resolved_mode)):
-                return request
+                return request, metadata
             work_mode = metadata.get("work_mode")
             if not isinstance(work_mode, str) or work_mode.strip().lower() not in {"code", "work"}:
                 work_mode = "code" if is_code_profile_mode(resolved_mode) else "work"
             requested_mode = resolve_request_runtime_mode(request, work_mode=work_mode)
             if requested_mode.is_team == is_team_mode(resolved_mode):
-                return request
+                return request, metadata
             logger.warning(
                 "Runtime corrected cross-type mode: session=%s request=%s channel=%s "
                 "requested=%r effective=%r",
@@ -4136,7 +4340,7 @@ class AgentRuntime:
         normalized_params["mode"] = resolved_mode
         if not normalized_params.get("work_mode") and metadata.get("work_mode"):
             normalized_params["work_mode"] = metadata["work_mode"]
-        return replace(request, params=normalized_params)
+        return replace(request, params=normalized_params), metadata
 
     @classmethod
     def uses_session_runtime(

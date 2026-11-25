@@ -7,9 +7,9 @@
 | 类型 | feature |
 | 编号 / slug | `F_06 / render-service` |
 | 关联计划 | EXTV2-06 渲染服务与下行帧 |
-| 所属模块 | `jiuwenswarm/extensions_v2/webui/{models,schema,constants,registry,transport}.py`、`webui/core_handlers/render_core.py` |
+| 所属模块 | `jiuwenswarm/extensions_v2/{assembly,management/registry}.py`、`webui/{models,schema,constants,registry,transport,runtime}.py`、`webui/core_handlers/render_core.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-10-31 |
+| 最近一次修订日期 | 2026-11-24 |
 | 方案状态 | 已实现；重连重发未实现 |
 
 ## 1. 问题与目标
@@ -27,6 +27,7 @@
 - 维护活跃实例：实例定位、revision、同实例串行、按会话或 Web 连接分别限制容量，以及按包和会话清理。
 - 通过 `RenderTransport` 下发 `webui.render`、`webui.render.clear` 和 `webui.render.error`。
 - 槽位允许依赖聊天会话，也允许只依赖 Web 连接；两类目标的字段、实例标识和下行路由规则在本文维护。
+- 记录已送达渲染目标读取的 Core 状态地址；`ops.state.set` 改变相关地址后，异步重建对应目标。
 
 ### 2.2 非目标
 
@@ -206,6 +207,21 @@ stateDiagram-v2
 
 `webui.render.error` 携带 `target`、`revision`、`code`、`message`；`webui.render.clear` 携带 `target`、`revision` 和可选 `reason`。
 
+### 4.4 状态依赖与自动重建
+
+宿主创建 Core `Registry` 时注入一份共享 `StateDependencies`。每次执行 `ui.render` 事件链时，
+`WebUIRuntime` 以归一化后的渲染目标为收集键；插件在这次调用中执行的 `ops.state.get` 会自动登记状态地址。
+只有 `replace` 帧成功交给传输层后才提交该次依赖，校验失败或下发失败不会改变上一版绑定。
+
+`ops.state.set` 提交新版本后，Core `JsonState.changes` 回调查询受影响目标并把刷新调度回 WebUI 事件循环。
+每个目标最多保留一个刷新任务；连续更新会合并，但任务会在退出前再次读取待处理标记，保证最后一次状态可见。
+刷新复用上一次成功送达的不可变请求，以及宿主保存的会话和连接路由，再次触发完整 `ui.render` 事件链，
+不会伪造或重放 `ui.ready`。首次渲染期间发生并发写入时，送达后的 `changed_since` 检查会补调度一次刷新。
+
+`clear`、容量淘汰、连接/会话清理、包卸载都会删除目标依赖并取消其刷新任务。宿主关闭时先停止状态订阅和刷新任务，
+再卸载扩展处理器，避免刷新与包关闭并发。该机制是 AgentServer 进程内通知；跨进程状态变更仍需宿主轮询或外部通知，
+不属于当前实现范围。
+
 ## 5. 异常与边界
 
 | 情况 | 结果 |
@@ -218,6 +234,7 @@ stateDiagram-v2
 | 包卸载 | 清理该包全部实例并逐个下发清除帧 |
 | 调用 `drop_session` | 只清理该会话的会话级实例，不影响应用级实例；会话删除入口尚未接入 |
 | Web 连接关闭 | Gateway 通知 AgentServer 清理该连接的全局实例；其他连接和聊天会话不受影响 |
+| 已登记的状态地址变化 | 合并调度依赖该地址的目标，重新执行完整 `ui.render` 事件链 |
 
 实例清理是进程内操作；多 AgentServer 进程不共享登记表。
 
@@ -228,6 +245,8 @@ stateDiagram-v2
 - **发送失败回滚**：本地状态与前端可见状态保持一致，重试可以复用同一 revision。
 - **淘汰后置**：先保证新帧送达，再清理旧实例，避免容量边界上的内容丢失。
 - **独立的 clear 帧**：不复用 `replace` 加空树，前端可以明确区分“清空”和“渲染空容器”。
+- **送达后绑定状态依赖**：只让前端已见到的帧接收状态驱动刷新，失败帧不污染依赖关系。
+- **重建而非重放 ready**：状态变化只刷新精确目标，避免重新触发同一客户端的全部界面贡献。
 
 ## 7. 实施影响
 
@@ -259,6 +278,8 @@ stateDiagram-v2
 - WebClient 透传帧时保留完整 payload。
 - 组件属性、事件声明、Tabs 隐藏内容预算及只读树快照。
 - 测试临时登记应用槽位，覆盖连接绑定、不同连接的实例隔离、按连接限制容量、缺少连接和非 Web 渠道的拒绝。
+- 已安装插件在 `ui.render` 中执行 `ops.state.get` 后，其他事件只调用 `ops.state.set` 即可自动下发下一 revision。
+- `clear` 后状态变化不再刷新已删除目标。
 
 当前执行结果：上述用例通过。重连重发未实现，EXTV2-06-V-04 未验证。
 
@@ -283,5 +304,6 @@ python -m pytest -q -o addopts= tests/unit_tests/extensions_v2/webui/ tests/unit
 - 会话删除入口未接入 `drop_session`，已结束会话的实例可能保留到进程退出或容量淘汰。
 - 帧大小按完整 JSON 计算，压缩后的传输量不在校验范围内。
 - 传输层默认使用 `WebSocketGatewayPushTransport`；单元测试注入替身，跨进程链路仍需联调。
+- 状态依赖和变更回调由当前 AgentServer 进程维护；其他进程直接写入同一状态目录不会触发本进程刷新。
 - 断连通知依赖 Gateway 与 AgentServer 的通信。通知失败会记录清理失败，不能据此确认实例已经释放；
   包卸载和运行时退出仍会清理相关实例。

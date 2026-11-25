@@ -35,7 +35,7 @@ async function setup(initial = {}) {
     return h('div', null, `Plugin ${name}`);
   }
   function Harness({ names = ['a', 'b'], title = '', activeTab = 'planning', showMiddleTab = true, openRequest,
-    sessionId = 'session', discoveredPanels }) {
+    sessionId = 'session', discoveredPanels, hiddenPanels }) {
     const slotId = useId();
     const [selection, setSelection] = useState(activeTab);
     const [closedBrowserSessions, setClosedBrowserSessions] = useState([]);
@@ -44,6 +44,7 @@ async function setup(initial = {}) {
       slotId,
       sessionId,
       panels: discoveredPanels ?? [],
+      hiddenPanels: hiddenPanels ?? [],
       renderPanel: (key) => h(Body, { key, name: key }),
     });
     useEffect(() => setSelection(activeTab), [activeTab]);
@@ -222,6 +223,65 @@ test('clearing a plugin in the next session preserves tabs whose panels have not
     assert.equal(app.tab(filesTabKey), null);
     assert.equal(app.active(), usageTabKey);
     assert.equal(app.content(), 'Plugin b-usage');
+  } finally {
+    await app.dispose();
+  }
+});
+
+test('a visibility preference round-trip restores the plugin tab without re-selecting it', async () => {
+  const app = await setup({ sessionId: 'a', discoveredPanels: [usagePanel('a')] });
+  try {
+    await app.addPlugin(usagePanelId);
+    assert.ok(app.tab(usageTabKey));
+    assert.equal(app.active(), usageTabKey);
+    // The instance-visibility preference turns off: the panel leaves the visible discovery
+    // result but is still mounted in the scope, so the tab is parked, not pruned.
+    await app.render({ sessionId: 'a', discoveredPanels: [], hiddenPanels: [usagePanel('a')] });
+    assert.equal(app.tab(usageTabKey), null, 'a preference-hidden tab does not render');
+    assert.equal(app.active(), 'planning', 'hiding the active tab falls back to the native page');
+    // The preference turns back on: the tab returns in its original position and stays unselected.
+    await app.render({ sessionId: 'a', discoveredPanels: [usagePanel('a')] });
+    assert.ok(app.tab(usageTabKey), 're-enabling the preference restores the parked tab');
+    assert.equal(app.active(), 'planning', 'the restored tab is not auto-selected');
+    assert.equal(app.content(), 'Native tasks');
+    await app.click(app.tab(usageTabKey));
+    assert.equal(app.active(), usageTabKey);
+    assert.equal(app.content(), 'Plugin a-usage');
+  } finally {
+    await app.dispose();
+  }
+});
+
+test('pruning still removes tabs whose contribution left while its preference was off', async () => {
+  const app = await setup({ sessionId: 'a', discoveredPanels: [usagePanel('a')] });
+  try {
+    await app.addPlugin(usagePanelId);
+    await app.render({ sessionId: 'a', discoveredPanels: [], hiddenPanels: [usagePanel('a')] });
+    assert.equal(app.tab(usageTabKey), null);
+    // The contribution is cleared while hidden: it is in neither discovery list, so the tab is
+    // permanently pruned and a later re-registration only comes back through a fresh choice.
+    await app.render({ sessionId: 'a', discoveredPanels: [], hiddenPanels: [] });
+    await app.render({ sessionId: 'a', discoveredPanels: [usagePanel('a')] });
+    assert.equal(app.tab(usageTabKey), null, 'a cleared contribution does not resurrect its tab');
+  } finally {
+    await app.dispose();
+  }
+});
+
+test('a parked tab stays unselected when the conversation switches with the preference already off', async () => {
+  const app = await setup({ sessionId: 'a', discoveredPanels: [usagePanel('a')] });
+  try {
+    await app.addPlugin(usagePanelId);
+    assert.equal(app.active(), usageTabKey);
+    // The conversation switch rebuilds the discovery baseline, so the hidden panel is only known
+    // from the new result: it must still hand the content area back to the native page.
+    await app.render({ sessionId: 'b', discoveredPanels: [], hiddenPanels: [usagePanel('b')] });
+    assert.equal(app.tab(usageTabKey), null, 'a preference-hidden tab does not render');
+    assert.equal(app.active(), 'planning', 'a pre-hidden active tab falls back to the native page');
+    // Re-enabling the preference restores the parked tab without taking the selection back.
+    await app.render({ sessionId: 'b', discoveredPanels: [usagePanel('b')] });
+    assert.ok(app.tab(usageTabKey), 're-enabling the preference restores the parked tab');
+    assert.equal(app.active(), 'planning', 'the restored tab is not auto-selected');
   } finally {
     await app.dispose();
   }

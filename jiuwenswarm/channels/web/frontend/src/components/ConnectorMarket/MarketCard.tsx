@@ -18,7 +18,7 @@ interface MarketCardProps {
   canOpenDetail: boolean;
   onOpenDetail: () => void;
   onQuickAdd: () => void;
-  quickAction?: 'install' | 'connect';
+  quickAction?: 'install' | 'connect' | 'update';
   actionMode?: 'auto' | 'use';
   actionDisabled?: boolean;
   onUse?: () => void;
@@ -110,8 +110,10 @@ export function MarketCard({
       </span>
     );
   } else if ((state === 'connected' || actionMode === 'use') && (onConnectedAction ?? onUse)) {
+    // Keep use/session entry; when hasUpdate, show Update beside it (do not replace).
     const action = onConnectedAction ?? onUse;
-    actionSlot = hideConnectedAction ? null : (
+    const showUpdate = quickAction === 'update';
+    const useButton = hideConnectedAction ? null : (
       <button
         type="button"
         className="connector-market-card-install"
@@ -120,6 +122,43 @@ export function MarketCard({
         onClick={event => { event.stopPropagation(); action?.(); }}
       >
         {connectedLabel ?? t('connectorMarket.card.use')}
+      </button>
+    );
+    const updateButton = showUpdate ? (
+      <button
+        type="button"
+        className="connector-market-card-install"
+        disabled={actionDisabled}
+        data-testid="connector-market-card-update"
+        onClick={(event) => {
+          event.stopPropagation();
+          onQuickAdd();
+        }}
+      >
+        {t('connectorMarket.card.update')}
+      </button>
+    ) : null;
+    actionSlot =
+      useButton || updateButton ? (
+        <span className="flex items-center gap-2">
+          {useButton}
+          {updateButton}
+        </span>
+      ) : null;
+  } else if (quickAction === 'update' && (state === 'idle' || state === 'error')) {
+    // Installed but not in a use/session slot — Update only (mcp.update still placeholder).
+    actionSlot = (
+      <button
+        type="button"
+        className="connector-market-card-install"
+        disabled={actionDisabled}
+        data-testid="connector-market-card-update"
+        onClick={(event) => {
+          event.stopPropagation();
+          onQuickAdd();
+        }}
+      >
+        {t('connectorMarket.card.update')}
       </button>
     );
   } else if (state === 'idle' || state === 'error') {

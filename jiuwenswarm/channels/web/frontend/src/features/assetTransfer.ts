@@ -8,7 +8,6 @@
 // 不做业务分支；各 kind 的差异全部留在服务端适配器层。
 import { gatewayFetch } from '../services/gatewayFetch';
 import { webRequest } from '../services/webClient';
-import { resolveApiUrl } from '../utils/env';
 import { saveBlobWithResult, type BlobSaveResult } from '../utils/desktopSave';
 
 export type AssetKind = 'skill' | 'skillpack' | 'agent_template' | 'agent_group' | 'plugin';
@@ -117,9 +116,8 @@ export async function exportAssetToLocalFile(
   const doFetch = deps.fetchImpl ?? gatewayFetch;
   let response: Response;
   try {
-    // download_url 为服务端签发的相对路径：经 resolveApiUrl 拼部署前缀
-    // （前缀为空时原样返回），与 artifactDownloadUrl 同规。
-    response = await doFetch(resolveApiUrl(info.download_url));
+    // Use the server-issued download URL without adding a deployment prefix.
+    response = await doFetch(info.download_url);
   } catch (error) {
     throw new AssetTransferError(
       'ASSET_DOWNLOAD_FAILED',
@@ -141,7 +139,7 @@ export async function uploadAssetPackage(file: File, deps: AssetTransferDeps = {
   form.append('file', file);
   let response: Response;
   try {
-    response = await doFetch(resolveApiUrl(ASSET_UPLOAD_ENDPOINT), { method: 'POST', body: form });
+    response = await doFetch(ASSET_UPLOAD_ENDPOINT, { method: 'POST', body: form });
   } catch (error) {
     throw new AssetTransferError(
       'ASSET_UPLOAD_FAILED',

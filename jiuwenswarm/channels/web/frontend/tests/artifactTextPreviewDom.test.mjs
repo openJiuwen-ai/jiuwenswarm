@@ -117,3 +117,58 @@ test('gbk artifact renders readable text in the preview pane', async () => {
     dom.window.close();
   }
 });
+
+for (const kind of ['text', 'image']) {
+  test(`external signed ${kind} URL reaches the actual artifact preview unchanged`, async () => {
+    const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'https://example.test/' });
+    const restoreGlobals = installGlobals({
+      Event: dom.window.Event,
+      HTMLElement: dom.window.HTMLElement,
+      IS_REACT_ACT_ENVIRONMENT: true,
+      Node: dom.window.Node,
+      document: dom.window.document,
+      navigator: dom.window.navigator,
+      window: dom.window,
+    });
+    const originalFetch = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async input => {
+      calls.push(String(input));
+      return new Response('signed artifact content', { headers: { 'Content-Type': 'text/plain' } });
+    };
+    const downloadUrl = `https://obs.test/report.${kind === 'image' ? 'png' : 'txt'}?signature=a%2Fb&name=file%20one`;
+    const container = dom.window.document.querySelector('#root');
+    let root;
+    try {
+      await act(async () => {
+        root = createRoot(container);
+        root.render(createElement(
+          I18nextProvider,
+          { i18n: createI18n() },
+          createElement(FilePreview, {
+            artifact: {
+              id: `signed-${kind}`,
+              name: kind === 'image' ? 'report.png' : 'report.txt',
+              mimeType: kind === 'image' ? 'image/png' : 'text/plain',
+              downloadUrl,
+            },
+          }),
+        ));
+      });
+      await settle();
+      if (kind === 'image') {
+        const image = container.querySelector('[data-testid="artifact-image-preview"]');
+        assert.ok(image, container.textContent ?? '');
+        assert.equal(image.getAttribute('src'), downloadUrl);
+      } else {
+        assert.deepEqual(calls, [downloadUrl]);
+        assert.equal(container.querySelector('[data-testid="artifact-text-preview"]')?.textContent, 'signed artifact content');
+      }
+    } finally {
+      if (root) await act(async () => root.unmount());
+      globalThis.fetch = originalFetch;
+      restoreGlobals();
+      dom.window.close();
+    }
+  });
+}

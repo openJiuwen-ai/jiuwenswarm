@@ -696,6 +696,74 @@ def test_enterprise_startup_installs_whitelist_builtins(
     assert by_name[creator_name]["source_type"] == "prebuilt"
 
 
+def test_enterprise_startup_installs_whitelist_from_catalog_capabilities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真实包布局：内置技能在 workswarm-builtin/references/capabilities/ 下。"""
+    from jiuwenswarm.server.runtime.skill import skill_manager as sm
+    from jiuwenswarm.server.runtime.skill.skill_manager import (
+        SkillManager,
+        _BUILTIN_CATALOG_CAPABILITIES,
+        _BUILTIN_CATALOG_NAME,
+        _ENTERPRISE_CREATOR_BUILTIN_SKILLS,
+        _ENTERPRISE_KNOWLEDGE_BUILTIN_SKILLS,
+        _ENTERPRISE_OFFICE_BUILTIN_SKILLS,
+    )
+
+    # 固定抽样，避免 frozenset 迭代顺序导致断言名不稳定。
+    creator_name = "skill-creator"
+    office_name = "docx-pro"
+    knowledge_name = "llm-wiki"
+    assert creator_name in _ENTERPRISE_CREATOR_BUILTIN_SKILLS
+    assert office_name in _ENTERPRISE_OFFICE_BUILTIN_SKILLS
+    assert knowledge_name in _ENTERPRISE_KNOWLEDGE_BUILTIN_SKILLS
+    caps_root = (
+        tmp_path / "builtin_repo" / _BUILTIN_CATALOG_NAME
+    ).joinpath(*_BUILTIN_CATALOG_CAPABILITIES)
+    # 写入完整自动安装名单，覆盖 sync 循环；另加非白名单对照。
+    from jiuwenswarm.server.runtime.skill.skill_manager import (
+        _ENTERPRISE_BUILTIN_AUTO_INSTALL,
+    )
+    for name in sorted(_ENTERPRISE_BUILTIN_AUTO_INSTALL | {"not-whitelisted"}):
+        skill_dir = caps_root / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: catalog capability\n---\n# {name}\n",
+            encoding="utf-8",
+        )
+    # 目录 Skill 本体也要有 SKILL.md，模拟真实 catalog。
+    catalog = tmp_path / "builtin_repo" / _BUILTIN_CATALOG_NAME
+    (catalog / "SKILL.md").write_text(
+        "---\nname: workswarm-builtin\ndescription: catalog\n---\n# catalog\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sm, "get_builtin_skills_dir", lambda: tmp_path / "builtin_repo")
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+
+    workspace = tmp_path / "tenant_ws"
+    manager = SkillManager(workspace_dir=str(workspace))
+
+    records = {
+        row["name"]: row["source_type"]
+        for row in manager.list_skill_installations()
+    }
+    assert records[creator_name] == "builtin"
+    assert records[office_name] == "builtin"
+    assert records[knowledge_name] == "builtin"
+    assert "not-whitelisted" not in records
+    assert _BUILTIN_CATALOG_NAME not in records
+    assert (workspace / "skills" / office_name / "SKILL.md").is_file()
+    assert "catalog capability" in (
+        workspace / "skills" / office_name / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    payload = asyncio.run(manager.handle_skills_list({}))
+    by_name = {item["name"]: item for item in payload["skills"]}
+    assert by_name[office_name]["source_type"] == "builtin"
+    assert by_name[creator_name]["source_type"] == "builtin"
+
+
 def test_workspace_state_cleanup_removes_only_prebuilt(tmp_path: Path) -> None:
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
     from jiuwenswarm.server.runtime.skill.skill_prebuilt import (

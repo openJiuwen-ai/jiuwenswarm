@@ -1,5 +1,5 @@
 import type { Plugin } from 'vite'
-import { defineConfig, loadEnv, searchForWorkspaceRoot } from 'vite'
+import { defineConfig, searchForWorkspaceRoot } from 'vite'
 import react from '@vitejs/plugin-react'
 import svgr from 'vite-plugin-svgr'
 import { spawn, spawnSync, type ChildProcess } from 'child_process'
@@ -181,11 +181,11 @@ function resolveProjectRootDir(): string {
   return repoRoot
 }
 
-/** 前端 file-api 契约沿用平铺相对路径（agent/...）；分区后 agent 树落 domain/agent 下 */
+/** 前端 file-api 契约：agent/... → profile/agent（profile 契约，其余相对数据根） */
 function resolveFileApiPath(projectRootDir: string, relPath: string): string {
   const normalized = relPath.replace(/\\/g, '/')
   if (normalized === 'agent' || normalized.startsWith('agent/')) {
-    return path.resolve(projectRootDir, 'domain', normalized)
+    return path.resolve(projectRootDir, 'profile', normalized)
   }
   return path.resolve(projectRootDir, normalized)
 }
@@ -334,7 +334,7 @@ function resolveFileDownloadSecret(): string | null {
   if (envSecret && envSecret.length >= 32) return envSecret
 
   const workspace = process.env.JIUWENSWARM_WORKSPACE || path.join(process.env.HOME || process.env.USERPROFILE || '', '.jiuwenswarm')
-  const secretPath = path.join(workspace, 'infra', 'config', '.file_download_secret')
+  const secretPath = path.join(workspace, 'config', '.file_download_secret')
   try {
     const secret = fs.readFileSync(secretPath, 'utf8').trim()
     return secret.length >= 32 ? secret : null
@@ -367,10 +367,10 @@ function validateFileDownloadToken(token: string): { path: string } | null {
       const relativePath = String(payload.relative_path || '').trim()
       if (!name || !relativePath) return null
       const rootDir = resolveProjectRootDir()
-      const skillDir = path.resolve(rootDir, 'domain', 'agent', 'workspace', 'skills', name)
+      const skillDir = path.resolve(rootDir, 'profile', 'agent', 'workspace', 'skills', name)
       const fullPath = path.resolve(skillDir, relativePath)
       // 安全检查：确保路径在 skills 目录下
-      const skillsRoot = path.resolve(rootDir, 'domain', 'agent', 'workspace', 'skills')
+      const skillsRoot = path.resolve(rootDir, 'profile', 'agent', 'workspace', 'skills')
       const rel = path.relative(skillsRoot, fullPath)
       if (rel.startsWith('..') || path.isAbsolute(rel)) return null
       return { path: fullPath }
@@ -415,7 +415,7 @@ function devWsTrafficLogger(): Plugin {
     name: 'dev-ws-traffic-logger',
     configureServer(server) {
       const projectRootDir = resolveProjectRootDir()
-      const logDir = path.resolve(projectRootDir, 'infra', 'logs', 'agent')
+      const logDir = path.resolve(projectRootDir, 'profile', 'agent', '.logs')
       const logFile = path.resolve(logDir, 'ws-dev.log')
       fs.mkdirSync(logDir, { recursive: true })
       // 每次前端 dev 服务启动时清空日志，避免历史数据干扰排查。
@@ -555,15 +555,15 @@ function parseMultipartFiles(contentType: string, body: Buffer): MultipartFilePa
 function devFileContentApi(): Plugin {
   const projectRootDir = resolveProjectRootDir()
   const sourceRepoRootDir = path.resolve(__dirname, '../../../..')
-  const workspaceRootDir = path.resolve(projectRootDir, 'domain', 'agent')
+  const workspaceRootDir = path.resolve(projectRootDir, 'profile', 'agent')
   const sessionsRootDir = path.resolve(workspaceRootDir, 'sessions')
-  const agentTeamsRootDir = path.resolve(projectRootDir, 'domain', '.agent_teams')
+  const agentTeamsRootDir = path.resolve(projectRootDir, 'profile', '.agent_teams')
   // Team-organization summaries live here, outside .agent_teams. A group
   // attachment points at this tree; rejecting it makes the chat card call an
   // existing file expired.
-  const organizationsRootDir = path.resolve(projectRootDir, 'domain', '.organizations')
-  const webLogsRootDir = path.resolve(projectRootDir, 'infra', 'logs', 'agent')
-  const autoHarnessDir = path.resolve(projectRootDir, 'infra', 'auto-harness')
+  const organizationsRootDir = path.resolve(projectRootDir, '.organizations')
+  const webLogsRootDir = path.resolve(projectRootDir, 'logs', 'agent')
+  const autoHarnessDir = path.resolve(projectRootDir, 'auto-harness')
   // Projectless tasks (no bound project_dir) write generated media under
   // <Documents>/JiuwenSwarm/<date>/chat-<n>/outputs/ (see
   // jiuwenswarm/common/projectless_workspace.py::get_projectless_tasks_dir) --
@@ -1967,9 +1967,9 @@ const webTarget = `http://127.0.0.1:${webPort}`
 // a second in-memory handoff implementation.
 const hubOAuthBroker = process.env.JIUWENSWARM_HUB_OAUTH_BROKER_URL
 
-export default defineConfig(({ mode }) => ({
-  // Standalone Web uses root URLs; container builds may specify a Manager/portal base.
-  base: process.env.ELECTRON === 'true' ? './' : loadEnv(mode, process.cwd(), '').VITE_BASE_PATH?.trim() || '/',
+export default defineConfig({
+  // Both Web editions use root URLs; Electron loads relative local assets.
+  base: process.env.ELECTRON === 'true' ? './' : '/',
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
   build: {
     rollupOptions: {
@@ -2041,4 +2041,4 @@ export default defineConfig(({ mode }) => ({
       },
     },
   },
-}))
+})

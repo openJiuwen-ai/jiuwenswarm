@@ -57,13 +57,14 @@ def clean_environment(temp_home: Path, monkeypatch: pytest.MonkeyPatch, interact
     monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
 
     # Reset module-level caches in utils.py
-    import jiuwenswarm.common.utils as utils_module
-    monkeypatch.setattr(utils_module, "_user_home", temp_home)
-    monkeypatch.setattr(utils_module, "_workspace_base_dir", None)
-    monkeypatch.setattr(utils_module, "_initialized", False)
-    monkeypatch.setattr(utils_module, "_config_dir", None)
-    monkeypatch.setattr(utils_module, "_workspace_dir", None)
-    monkeypatch.setattr(utils_module, "_root_dir", None)
+    import jiuwenswarm.common.paths as _paths_unused_marker
+import jiuwenswarm.common.utils as utils_module
+    monkeypatch.setattr(paths_module, "_user_home", temp_home)
+    monkeypatch.setattr(paths_module, "_workspace_base_dir", None)
+    monkeypatch.setattr(paths_module, "_initialized", False)
+    monkeypatch.setattr(paths_module, "_config_dir", None)
+    monkeypatch.setattr(paths_module, "_workspace_dir", None)
+    monkeypatch.setattr(paths_module, "_root_dir", None)
 
 
 class TestResolvePreferredLanguage:

@@ -3,16 +3,20 @@
 待办事项采集器
 
 功能：
-- 读取 todo.md 文件
+- 读取会话待办数据（优先 ``workspace/todo/{session_id}/todo.json``）
 - 解析任务状态
 - 统计完成情况
 """
 
+import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,6 +69,18 @@ class TodoStats:
         }
 
 
+# todo.json 使用 pending/in_progress，统一归一到统计使用的 waiting/running。
+_JSON_STATUS = {
+    "pending": "waiting",
+    "waiting": "waiting",
+    "in_progress": "running",
+    "running": "running",
+    "completed": "completed",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+}
+
+
 class TodoCollector:
     """待办事项采集器"""
 
@@ -73,7 +89,7 @@ class TodoCollector:
         初始化待办采集器
 
         Args:
-            workspace_dir: Agent 根目录（如 ~/.jiuwenswarm/agent）
+            workspace_dir: Agent 根目录（如 ~/.jiuwenswarm/profile/agent）
         """
         self.workspace_dir = Path(workspace_dir)
         self.session_dir = self.workspace_dir / "sessions"
@@ -89,7 +105,7 @@ class TodoCollector:
             return ""
 
     def _find_latest_todo_file(self) -> Optional[Path]:
-        """查找最新的 todo.md 文件"""
+        """查找最新的 todo.md 文件（旧版兼容）"""
         if not self.session_dir.exists():
             return None
 
@@ -101,6 +117,49 @@ class TodoCollector:
         # 按修改时间排序，返回最新的
         todo_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
         return todo_files[0]
+
+    def _todo_json_files(self) -> list[Path]:
+        """返回 workspace/todo/{session_id}/todo.json 列表。"""
+        paths: list[Path] = []
+        # 兼容传入 agent 根目录或 agent/workspace 目录两种调用方式。
+        for base in (self.workspace_dir / "workspace", self.workspace_dir):
+            todo_dir = base / "todo"
+            if not todo_dir.is_dir():
+                continue
+            paths.extend(sorted(todo_dir.glob("*/todo.json")))
+        return paths
+
+    @staticmethod
+    def _collect_json_file(path: Path, stats: TodoStats) -> None:
+        """解析单个 todo.json 并累加到统计。"""
+        raw = None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("Failed to read todo json %s: %s", path, exc)
+        if not isinstance(raw, list):
+            return
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            status = _JSON_STATUS.get(str(item.get("status") or "pending").lower())
+            if status is None:
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            stats.tasks.append(
+                TodoTask(id=str(item.get("id") or ""), content=content, status=status)
+            )
+            stats.total += 1
+            if status == "completed":
+                stats.completed += 1
+            elif status == "running":
+                stats.running += 1
+            elif status == "waiting":
+                stats.waiting += 1
+            elif status == "cancelled":
+                stats.cancelled += 1
 
     @staticmethod
     def _parse_status(line: str) -> tuple[str, str]:
@@ -171,11 +230,19 @@ class TodoCollector:
         """
         采集待办数据
 
+        优先读取当前 DeepAgent 的 todo.json；不存在时回退旧版 todo.md。
+
         Returns:
             TodoStats: 待办统计数据
         """
         stats = TodoStats()
 
+        for todo_json in self._todo_json_files():
+            self._collect_json_file(todo_json, stats)
+        if stats.total:
+            return stats
+
+        # 旧版兼容：sessions/**/todo.md
         todo_file = self._find_latest_todo_file()
         if not todo_file:
             return stats
@@ -196,9 +263,9 @@ class TodoCollector:
                 task_counter += 1
 
                 # 提取任务内容（去除状态标记）
-                content_clean = re.sub(r"\[status:\w+\]\s*", "", line)
+                content_clean = re.sub(r"^\s*-\s*\[[xX ]\]\s*", "", line)
+                content_clean = re.sub(r"\[status:\w+\]\s*", "", content_clean)
                 content_clean = re.sub(r"\[[xX✅🔄⏳❌]\]\s*", "", content_clean)
-                content_clean = re.sub(r"^\s*-\s*\[[xX ]\]\s*", "", content_clean)
                 content_clean = re.sub(r"^\s*\d+\.\s*", "", content_clean)
                 content_clean = content_clean.strip()
 

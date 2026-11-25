@@ -200,7 +200,7 @@ def test_build_agent_identity_prompt_contains_stable_identity_and_task_strategy(
     assert "# JiuwenSwarm 内部数据" not in prompt
     assert "## 输出文件放置规范" not in prompt
     assert "## 文件发送" not in prompt
-    assert "## Skill Orchestration Contract" not in prompt
+    assert "## Capability Orchestration Contract" not in prompt
     assert "`symphony_compose_graph`" not in prompt
     assert "# 消息说明" not in prompt
 
@@ -284,7 +284,8 @@ async def test_response_prompt_rail_fails_closed_without_config(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_symphony_orchestration_rail_respects_config_snapshot():
+async def test_symphony_orchestration_rail_respects_config_snapshot(monkeypatch):
+    monkeypatch.setenv("SYMPHONY_EXPERT_DOMAIN_HINTS", "financial forecasting")
     enabled_builder = SystemPromptBuilder(language="cn")
     enabled_agent = _FakeAgent(enabled_builder)
     enabled_ctx = AgentCallbackContext(
@@ -319,10 +320,38 @@ async def test_symphony_orchestration_rail_respects_config_snapshot():
 
     enabled_prompt = enabled_builder.build()
     disabled_prompt = disabled_builder.build()
-    assert "## Skill Orchestration Contract" in enabled_prompt
+    assert "## Capability Orchestration Contract" in enabled_prompt
     assert "`symphony_compose_graph`" in enabled_prompt
-    assert "## Skill Orchestration Contract" not in disabled_prompt
+    assert "Examples of specialist domains include financial forecasting." in enabled_prompt
+    assert "## Capability Orchestration Contract" not in disabled_prompt
     assert "`symphony_compose_graph`" not in disabled_prompt
+    assert "financial forecasting" not in disabled_prompt
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (None, ""),
+        ("   ", ""),
+        ("财务预测， 论文解读、software architecture", "财务预测, 论文解读, software architecture"),
+        ("研" * 156 + ", 架构, extra", "研" * 156 + ", 架构"),
+        ("研" * 157 + ", 架构", "研" * 157),
+        ("研" * 161, ""),
+    ],
+    ids=["unset", "blank", "domain-separators", "exact-limit", "omit-last-domain", "oversized-first-domain"],
+)
+def test_symphony_prompt_limits_complete_domain_examples(monkeypatch, configured, expected):
+    if configured is None:
+        monkeypatch.delenv("SYMPHONY_EXPERT_DOMAIN_HINTS", raising=False)
+    else:
+        monkeypatch.setenv("SYMPHONY_EXPERT_DOMAIN_HINTS", configured)
+
+    prompt = SymphonyOrchestrationRail._build_orchestration_guidance()
+    prefix = "Examples of specialist domains include "
+    examples = [line.strip() for line in prompt.splitlines() if line.strip().startswith(prefix)]
+    assert examples == ([f"{prefix}{expected}."] if expected else [])
+    assert "Omit `type` for automatic planning." in prompt
+    assert "On success without a `planned_graph`" in prompt
 
 
 @pytest.mark.asyncio
@@ -350,11 +379,12 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
 
     prompt = builder.build()
     normalized_prompt = " ".join(prompt.split())
-    assert "## Skill Orchestration Contract" in prompt
+    assert "## Capability Orchestration Contract" in prompt
     assert "`symphony_compose_graph`" in prompt
     assert "multiple selected Skills" in normalized_prompt
     assert "an ordered or dependent workflow" in normalized_prompt
-    assert "selected exact Skill IDs are sufficient evidence" in normalized_prompt
+    assert "selected exact Skill IDs as `candidate_ids`" in normalized_prompt
+    assert "only these candidates can be selected" in normalized_prompt
     assert (
         "Capability discovery alone does not trigger composition."
         in normalized_prompt
@@ -364,8 +394,14 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     assert "skill_branch_explore" not in prompt
     assert "do not call `skill_tool`" in prompt
     assert "SKILL.md" in prompt
-    assert "`planned_graph` status, nodes, and edges" in prompt
-    assert "do not present it" in prompt
+    assert "read its status, nodes, and edges" in prompt
+    assert "continue without requesting plan confirmation" in normalized_prompt
+    assert (
+        "call `symphony_compose_graph` with the original user task and omit `type`"
+        in normalized_prompt
+    )
+    assert "Omit `mode` to use the session configuration for planning." in normalized_prompt
+    assert "handle the uncovered work through the normal task flow" in normalized_prompt
     assert "search_skill" not in prompt
     assert "install_skill" not in prompt
     assert "returned\n`content` directly" not in prompt
@@ -380,7 +416,7 @@ def test_symphony_orchestration_guidance_has_precise_compose_boundaries():
         "explicitly requests combining or orchestrating multiple Skills",
         "task needs multiple selected Skills",
         "ordered or dependent workflow",
-        "Two or more selected exact Skill IDs are sufficient evidence",
+        "Omit `type` for automatic planning",
     ):
         assert positive in normalized_prompt
 
@@ -393,7 +429,7 @@ def test_symphony_orchestration_guidance_has_precise_compose_boundaries():
 
     assert "Capability discovery alone does not trigger composition." in normalized_prompt
     assert "skill_branch_explore" not in prompt
-    assert "only the selected exact Skill IDs" in prompt
+    assert "only the selected exact capability IDs" in prompt
     assert "do not call `skill_tool`" in prompt
     assert "read any SKILL.md" in prompt
 
@@ -648,7 +684,7 @@ async def test_symphony_timeout_removes_graph_tools_and_orchestration_prompt():
     await rail.before_model_call(ctx)
 
     assert [rail._model_tool_name(tool) for tool in ctx.inputs.tools] == ["other_tool"]
-    assert "## Skill Orchestration Contract" not in builder.build()
+    assert "## Capability Orchestration Contract" not in builder.build()
 
     next_invoke_ctx = AgentCallbackContext(
         agent=agent,
@@ -667,7 +703,7 @@ async def test_symphony_timeout_removes_graph_tools_and_orchestration_prompt():
         "symphony_compose_graph",
         "symphony_refresh_graph",
     ]
-    assert "## Skill Orchestration Contract" in builder.build()
+    assert "## Capability Orchestration Contract" in builder.build()
 
 
 @pytest.mark.asyncio
@@ -705,14 +741,14 @@ async def test_symphony_orchestration_rail_backfills_viewed_skills():
 
     compose_ctx = _tool_call_ctx(
         "symphony_compose_graph",
-        {"query": "build a financial model"},
+        {"query": "build a financial model", "type": "skill"},
         extra=invocation_extra,
     )
     await rail.before_tool_call(compose_ctx)
 
     expected = ["creating-financial-models", "xlsx"]
-    assert compose_ctx.inputs.tool_args["candidate_skill_ids"] == expected
-    assert compose_ctx.inputs.tool_call.arguments["candidate_skill_ids"] == expected
+    assert compose_ctx.inputs.tool_args["candidate_ids"] == expected
+    assert compose_ctx.inputs.tool_call.arguments["candidate_ids"] == expected
 
 
 @pytest.mark.asyncio
@@ -728,7 +764,7 @@ async def test_symphony_orchestration_rail_preserves_explicit_candidates():
     )
     compose_ctx = _tool_call_ctx(
         "symphony_compose_graph",
-        {"query": "task", "candidate_skill_ids": ["explicit-skill"]},
+        {"query": "task", "type": "skill", "candidate_skill_ids": ["explicit-skill"]},
         extra=invocation_extra,
     )
 
@@ -751,13 +787,13 @@ async def test_symphony_orchestration_rail_does_not_reuse_other_invocation():
     )
     compose_ctx = _tool_call_ctx(
         "symphony_compose_graph",
-        {"query": "new task"},
+        {"query": "new task", "type": "skill"},
         extra={},
     )
 
     await rail.before_tool_call(compose_ctx)
 
-    assert "candidate_skill_ids" not in compose_ctx.inputs.tool_args
+    assert "candidate_ids" not in compose_ctx.inputs.tool_args
 
 
 @pytest.mark.asyncio
@@ -781,13 +817,13 @@ async def test_symphony_orchestration_rail_ignores_disclosure_and_failed_views()
     )
     compose_ctx = _tool_call_ctx(
         "symphony_compose_graph",
-        {"query": "task"},
+        {"query": "task", "type": "skill"},
         extra=invocation_extra,
     )
 
     await rail.before_tool_call(compose_ctx)
 
-    assert "candidate_skill_ids" not in compose_ctx.inputs.tool_args
+    assert "candidate_ids" not in compose_ctx.inputs.tool_args
 
 
 @pytest.mark.asyncio
@@ -844,7 +880,7 @@ async def test_symphony_orchestration_rail_clears_when_disabled(
     rail.init(agent)
     await rail.before_model_call(ctx)
 
-    assert "## Skill Orchestration Contract" not in builder.build()
+    assert "## Capability Orchestration Contract" not in builder.build()
 
 
 def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
@@ -858,14 +894,8 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     adapter._symphony_tools_registered = False
     seen_configs: list[dict] = []
 
-    tools = [
-        SimpleNamespace(card=SimpleNamespace(id=name, name=name))
-        for name in (
-            "symphony_read_graph",
-            "symphony_refresh_graph",
-            "symphony_compose_graph",
-        )
-    ]
+    tool_names = ("symphony_read_graph", "symphony_refresh_graph", "symphony_compose_graph")
+    tools = [SimpleNamespace(card=SimpleNamespace(id=name, name=name)) for name in tool_names]
 
     class FakeSymphonyToolkit:
         def get_tools(self, config_base=None):
@@ -1710,8 +1740,13 @@ async def test_runtime_attachment_tracks_live_code_agent_mode(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_runtime_git_status_is_stable_system_context_for_one_invoke(tmp_path, monkeypatch):
-    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
+    # runtime_state 已收敛到工作空间根（paths.get_runtime_state_path），
+    # rail 经模块内导入的 get_runtime_state_path 取值，patch 点随之更新
     runtime_state = tmp_path / "runtime_state" / "default.yaml"
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_runtime_state_path",
+        lambda _sid=None: runtime_state,
+    )
     runtime_state.parent.mkdir(parents=True, exist_ok=True)
     runtime_state.write_text(
         "git_branch: feature/test\n"
@@ -1775,8 +1810,8 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
-        lambda: tmp_path / "jiuwenswarm-data",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_teams_dir",
+        lambda: tmp_path / "jiuwenswarm-data" / ".agent_teams",
     )
 
     runtime_rail = RuntimePromptRail(language="en", channel=channel)
@@ -1837,8 +1872,8 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
-        lambda: tmp_path / "jiuwenswarm-data",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_teams_dir",
+        lambda: tmp_path / "jiuwenswarm-data" / ".agent_teams",
     )
 
     runtime_rail = RuntimePromptRail(language="cn", channel=channel)
@@ -1901,8 +1936,8 @@ async def test_runtime_prompt_lists_installed_extensions_from_global_workspace(
         lambda: installed_workspace,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
-        lambda: tmp_path / "jiuwenswarm-data",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_teams_dir",
+        lambda: tmp_path / "jiuwenswarm-data" / ".agent_teams",
     )
 
     runtime_rail = RuntimePromptRail(language=language, channel="web")
@@ -1965,8 +2000,8 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
-        lambda: tmp_path / "jiuwenswarm-data",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_teams_dir",
+        lambda: tmp_path / "jiuwenswarm-data" / ".agent_teams",
     )
 
     runtime_rail = RuntimePromptRail(language="en", channel=channel)
@@ -2003,8 +2038,8 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
-        lambda: tmp_path / "jiuwenswarm-data",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_teams_dir",
+        lambda: tmp_path / "jiuwenswarm-data" / ".agent_teams",
     )
 
     runtime_rail = RuntimePromptRail(language="en", channel=channel)
@@ -2039,8 +2074,8 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
         lambda: agent_data_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
-        lambda: tmp_path / "jiuwenswarm-data",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_teams_dir",
+        lambda: tmp_path / "jiuwenswarm-data" / ".agent_teams",
     )
 
     runtime_rail = RuntimePromptRail(language="cn", channel=channel)
@@ -2079,7 +2114,7 @@ async def test_process_cli_directory_prompt_refreshes_across_requests(
     for directory in (internal, first, second, current):
         directory.mkdir()
     monkeypatch.setattr(runtime_module, "get_agent_workspace_dir", lambda: internal)
-    monkeypatch.setattr(runtime_module, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime_module, "get_agent_teams_dir", lambda: tmp_path / ".agent_teams")
     monkeypatch.setattr(runtime_module, "get_runtime_state_path", lambda _: tmp_path / "absent.yaml")
     monkeypatch.setattr(RuntimePromptRail, "_configured_model_names", staticmethod(lambda: []))
     rail = RuntimePromptRail(language=language, channel="process_cli")

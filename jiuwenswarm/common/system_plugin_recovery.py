@@ -31,8 +31,6 @@ _RESTART_DELAY_SECONDS = 1.0
 _INSTALL_DIR_ENV = "EXTENSION_INSTALL_DIR"
 _DATA_DIR_ENV = "EXTENSION_DATA_DIR"
 _RESTART_SIGNAL_PATH_ENV = "JIUWENSWARM_RECOVERY_RESTART_SIGNAL_PATH"
-_INSTALL_DIR_DEFAULT = "extension_pkgs"
-_DATA_DIR_DEFAULT = "extension"
 
 
 def is_local_recovery_request(headers: Message, server_port: int) -> bool:
@@ -61,15 +59,17 @@ class SystemPluginRecovery:
     """Record package states and restore a retained state without loading code."""
 
     def __init__(self, install_dir: Path | None = None, data_dir: Path | None = None) -> None:
+        from jiuwenswarm.common.paths import get_extension_data_dir, get_extension_pkgs_dir
+
         resolved_install_dir = install_dir or _resolve_directory(
             "install_dir",
             _INSTALL_DIR_ENV,
-            _INSTALL_DIR_DEFAULT,
+            get_extension_pkgs_dir(),
         )
         resolved_data_dir = data_dir or _resolve_directory(
             "data_dir",
             _DATA_DIR_ENV,
-            _DATA_DIR_DEFAULT,
+            get_extension_data_dir(),
         )
         self.install_dir = resolved_install_dir
         self.data_dir = resolved_data_dir
@@ -439,15 +439,17 @@ def _valid_session_id(value: object) -> bool:
     return isinstance(value, str) and len(value) <= 128 and bool(value.strip())
 
 
-def _resolve_directory(key: str, env_name: str, default: str) -> Path:
+def _resolve_directory(key: str, env_name: str, default: Path) -> Path:
     """Resolve an extension directory without importing an extension runtime."""
     value = _extension_config_value(key)
     if not value:
-        value = os.getenv(env_name, "").strip() or default
+        value = os.getenv(env_name, "").strip()
+    if not value:
+        return default
     path = Path(value).expanduser()
     if path.is_absolute():
         return path
-    from jiuwenswarm.common.utils import get_user_workspace_dir
+    from jiuwenswarm.common.paths import get_user_workspace_dir
 
     return get_user_workspace_dir() / path
 

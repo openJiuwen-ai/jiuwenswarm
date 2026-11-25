@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 
 from openjiuwen.core.events import Event, EventHandler, EventHandlerOps, EventNext
@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 def build_render_core_handler(
     transport: RenderTransport,
     registry: ActiveRenderRegistry,
+    *,
+    on_delivered: Callable[[UiRenderInput, EventHandlerOps | None], Awaitable[None]] | None = None,
+    on_dropped: Callable[[RenderTarget], None] | None = None,
 ) -> EventHandler:
     """Build the single CORE handler for ui.render."""
 
@@ -110,17 +113,33 @@ def build_render_core_handler(
 
             if request.mode is RenderMode.CLEAR:
                 registry.drop_instance(request.target)
+                _notify_dropped(on_dropped, request.target)
+            elif on_delivered is not None:
+                try:
+                    await on_delivered(request, ops)
+                except Exception:  # noqa: BLE001 - bookkeeping must not turn a delivered frame into failure
+                    logger.exception("[WebUI] could not commit state dependencies: %s", request.target.key)
 
             for evicted in claim.evicted:
                 async with registry.evict(evicted) as current:
                     evicted_frame = clear_frame(evicted, reason="evicted")
                     if current and await transport.send_clear(evicted_frame):
                         registry.drop_instance(evicted.target, retired_revision=evicted_frame.revision)
+                        _notify_dropped(on_dropped, evicted.target)
                         log_eviction(evicted)
 
         return UiRenderOutput(status=RenderStatus.DELIVERED, revision=frame.revision)
 
     return ui_render_core
+
+
+def _notify_dropped(callback: Callable[[RenderTarget], None] | None, target: RenderTarget) -> None:
+    if callback is None:
+        return
+    try:
+        callback(target)
+    except Exception:  # noqa: BLE001 - cleanup bookkeeping must not fail a delivered clear
+        logger.exception("[WebUI] could not drop state dependencies: %s", target.key)
 
 
 def _error_target(target: RenderTarget, trusted_connection_id: str) -> RenderTarget:

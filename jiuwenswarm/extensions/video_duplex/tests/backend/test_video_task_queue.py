@@ -1129,7 +1129,7 @@ async def test_duplex_login_auth_is_bound_to_caller_and_sent_on_each_model_reque
     monkeypatch, tmp_path, model_name, login, model_field,
 ):
     from agent_gateway.auth import apig, login_credentials, model_catalog, passthrough, service
-    from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+    from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
     from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import RecordingChannel

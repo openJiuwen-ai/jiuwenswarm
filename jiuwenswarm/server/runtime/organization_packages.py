@@ -55,6 +55,12 @@ async def uninstall_organization_agent_group(params: dict[str, Any]) -> None:
     group = packages.resolve_equipment_runtime_id("agent_groups", identifier)
     # No runtime is stopped if filesystem/catalog removal fails.
     packages.uninstall_agent_group(params)
+    from jiuwenswarm.agents.harness.common.memory.team_memory_members import revoke_expert_group_memory
+
+    try:
+        await revoke_expert_group_memory(group)
+    except Exception:
+        logger.exception("Could not revoke memory membership for uninstalled package %s", group)
     runtime = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
     if runtime is None:
         return

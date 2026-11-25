@@ -907,7 +907,9 @@ function normalizeAgentMode(rawMode: unknown): AgentMode {
   return 'agent';
 }
 
-function unsupportedEvolutionModeMessage(content: string, mode: AgentMode): string | null {
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+function unsupportedEvolutionModeMessage(content: string, mode: AgentMode, t: Translate): string | null {
   const trimmed = content.trim();
   const isEvolutionCommand =
     trimmed === '/evolve' ||
@@ -917,7 +919,7 @@ function unsupportedEvolutionModeMessage(content: string, mode: AgentMode): stri
   if (!isEvolutionCommand || mode === 'agent' || mode === 'team') {
     return null;
   }
-  return `${mode} 模式下演进功能不可用。`;
+  return t('chat.evolutionUnavailableInMode', { mode });
 }
 
 const EVENT_DEDUP_WINDOW_MS = 1500;
@@ -2138,6 +2140,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         assistance_origin: 'none',
       },
     ): Promise<boolean> => {
+      const sessionState = useSessionStore.getState();
+      const sessionMetadata = sessionState.currentSession?.session_id === sessionId
+        ? sessionState.currentSession
+        : sessionState.sessions.find((session) => session.session_id === sessionId);
+      if (sessionMetadata?.npc_session) {
+        onErrorRef.current?.(t('chat.npcSessionReadOnly'));
+        return false;
+      }
       if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
         if (!content.trim() && !mediaItems.length) return false;
         try {
@@ -2167,10 +2177,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return false;
         }
       }
-      const sessionState = useSessionStore.getState();
-      const sessionMetadata = sessionState.currentSession?.session_id === sessionId
-        ? sessionState.currentSession
-        : sessionState.sessions.find((session) => session.session_id === sessionId);
       if (!useChatStore.getState().getRuntime(sessionId)?.isProcessing && isConversationModelGroupBlocked({
         mode: sessionState.getRuntime(sessionId)?.mode,
         cronId: sessionMetadata?.cron_id,
@@ -2224,7 +2230,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (!stripUploadDocumentBlocks(content).trim() && !hasMedia) return false;
 
       const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
-      const unsupportedEvolutionMode = unsupportedEvolutionModeMessage(content, currentMode ?? 'agent');
+      const unsupportedEvolutionMode = unsupportedEvolutionModeMessage(content, currentMode ?? 'agent', t);
       if (unsupportedEvolutionMode) {
         useChatStore.getState().addMessage(sessionId, {
           id: prefixedMessageId('error-'),
@@ -2337,6 +2343,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       if (currentMode === 'team') {
         useChatStore.getState().setPaused(sessionId, false);
+        useSessionStore.getState().thawRunningTeamTasks(sessionId);
         // 执行中追问：先收尾上一轮仍在 streaming 的 leader，避免新一轮气泡/头像挂错簇
         closeActiveTeamLeaderMessages(sessionId);
         useChatStore.getState().closeReasoning(sessionId);
@@ -2603,6 +2610,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       if (currentMode === 'team') {
         useChatStore.getState().setPaused(sessionId, false);
+        useSessionStore.getState().thawRunningTeamTasks(sessionId);
       }
       try {
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
@@ -4068,6 +4076,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               // （见问题3：目标完成后队列消息没有紧接着发出去）。已经排空过则是空操作，不会重复发送。
               drainTaskQueueIfIdle(sessionId);
               useChatStore.getState().setThinking(sessionId, false);
+              // 终态兜底收口思考段（已闭合为幂等空操作）：processing_status(false)
+              // 丢帧时这里是唯一的收尾信号，漏收口思考块会一直转圈。
+              useChatStore.getState().closeReasoning(sessionId, {
+                atMs: eventTimestampMs(payload),
+              });
             }
           } else {
             useChatStore.getState().setThinking(sessionId, false);
@@ -5283,6 +5296,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
         useChatStore.getState().clearMoaStatus(sessionId);
         useChatStore.getState().setThinking(sessionId, false);
+        // 错误是本轮终态，思考段必须在此封口：MessageList 以 !closed 判定
+        // 「思考中…」，GATEWAY_FORWARD_FAILED 等转发错误可能永远等不到
+        // processing_status(false)，漏收口会让思考块一直转圈到下次发消息。
+        // 已闭合时为幂等空操作（与 processing_status 兜底分支同一口径）。
+        useChatStore.getState().closeReasoning(sessionId, {
+          atMs: eventTimestampMs(payload),
+        });
         // 任何 chat.error 都应解除历史加载态：faas 侧 history.get 流超时
         // （旧 session runtime 过 TTL 被回收、init 超时）只回发 chat.error
         // 而非结束帧，若不清 isLoadingHistory 会永久吞掉后续
@@ -5363,6 +5383,26 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         ) {
           return;
         }
+        // 错误是本轮终态：processing_status(false) 丢帧时这里是输入区唯一复位点，
+        // 不复位会停在「停止」态（错误气泡已出现但发送按钮仍是停止/执行态）。
+        // 口径对齐 chat.final 兜底分支：团队模式后端在团队仍运行时抑制 final，
+        // 这里同样不关 isProcessing（交给 team.completed 的 processing_status）；
+        // Goal 仍活跃时同理（可能只是普通问答子轮失败，Goal 还要继续跑）。
+        // 气泡级流式收尾不受影响，GATEWAY_FORWARD_FAILED 特例分支上面已复位过
+        // （此处幂等空操作）。
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+        if (useSessionStore.getState().getRuntime(sessionId)?.mode !== 'team') {
+          const goalStillActive =
+            useGoalStore.getState().runtimes[sessionId]?.goal?.status === 'active';
+          if (!goalStillActive) {
+            useChatStore.getState().setProcessing(sessionId, false);
+            drainTaskQueueIfIdle(sessionId);
+            localSendPendingRef.current.delete(sessionId);
+            updateSession(sessionId, { is_processing: false });
+            useWorkspaceStore.getState().patchSession(sessionId, { is_processing: false });
+          }
+        }
         useChatStore.getState().setExecutionError(sessionId, errorMsg);
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().setSessionError(sessionId, errorMsg);
@@ -5414,7 +5454,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const alertMsg =
           typeof payload.message === 'string'
             ? payload.message
-            : '安全警告';
+            : t('app.securityAlertTitle');
 
         window.dispatchEvent(new CustomEvent('security-alert', {
           detail: {
@@ -5433,7 +5473,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const retractMsg =
           typeof event.payload.message === 'string'
             ? event.payload.message
-            : '内容已因安全原因撤回';
+            : t('security.contentRetracted');
 
         const runtime = useChatStore.getState().getRuntime(sessionId);
         const currentStreamId = runtime?.currentStreamId;
@@ -5492,10 +5532,25 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // has_active_task 为 false 表示没有活跃任务（任务已完成）
         const hasActiveTask = resultPayload.has_active_task !== false;
 
+        // Team pause C1: work_stopped clears chrome; resumable opens 续跑 UI.
+        // Missing fields keep prior pause fallback (always clear+freeze).
+        const pauseWorkStopped =
+          resultPayload.intent === 'pause'
+            ? resultPayload.work_stopped !== false
+            : false;
+        const pauseResumable =
+          resultPayload.intent === 'pause'
+            ? resultPayload.resumable === true ||
+              (resultPayload.resumable === undefined && resultPayload.success === true)
+            : false;
+
         // 压缩提示兜底：后端已确认暂停/取消，若压缩行仍处于 running（SDK 的
         // cancelled/paused 终态事件未到或丢失），先收掉运行行，避免界面停在
         // "压缩中"；随后到达的终态事件会以中性文案重新呈现。
-        if (resultPayload.success && (resultPayload.intent === 'pause' || resultPayload.intent === 'cancel')) {
+        const settleInterrupt =
+          (resultPayload.intent === 'pause' && pauseWorkStopped) ||
+          (resultPayload.success && resultPayload.intent === 'cancel');
+        if (settleInterrupt && (resultPayload.intent === 'pause' || resultPayload.intent === 'cancel')) {
           const compressionRuntime =
             useChatStore.getState().getRuntime(sessionId)?.contextCompressionRuntime;
           if (compressionRuntime?.status === 'running') {
@@ -5511,25 +5566,32 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
 
         if (resultPayload.intent === 'pause') {
-          if (resultPayload.success) {
+          // work_stopped → 收 processing / 冻板；resumable → 可续跑 UI。
+          // 缺字段时 work_stopped 默认 true，兼容旧后端；resumable 回退 success。
+          if (pauseResumable) {
             useChatStore.getState().setPaused(
               sessionId,
               hasActiveTask,
               hasActiveTask ? resultPayload.paused_task : undefined,
             );
+          }
+          if (pauseWorkStopped) {
             useChatStore.getState().setProcessing(sessionId, false);
             useChatStore.getState().setThinking(sessionId, false);
             // 暂停时生成已被掐断，思考段收不到后续 delta/final 兜底：这里显式收尾，
             // 让「思考中」冻结为已完成；恢复后新到的 reasoning 会另起一段。
             useChatStore.getState().closeReasoning(sessionId);
+            // pause 不改任务 status（便于续跑），但立刻冻结进度条/停转圈，
+            // 否则右侧 in_progress 会一直转，看起来像中断失败（issue #90 / #70）。
+            useSessionStore.getState().freezeRunningTeamTasks(sessionId);
             const sessionPatch: Partial<Session> = {
               is_processing: false,
               updated_at: new Date().toISOString(),
             };
             updateSession(sessionId, sessionPatch);
             useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
-            // 个人版团队停止走 pause。team-leader 的 isStreaming 不经过 currentStreamId，
-            // 这里显式收尾，避免光标一直闪。企业版团队走下面的 cancel 分支。
+            // 个人版与企业版临时团队停止都走 pause。team-leader 的 isStreaming
+            // 不经过 currentStreamId，这里显式收尾，避免光标一直闪。
             closeActiveTeamLeaderMessages(sessionId);
           }
         } else if (resultPayload.intent === 'resume') {
@@ -5540,10 +5602,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               useChatStore.getState().setPaused(sessionId, false);
               useChatStore.getState().setProcessing(sessionId, true, { newTurn: true });
               useChatStore.getState().setThinking(sessionId, true);
+              useSessionStore.getState().thawRunningTeamTasks(sessionId);
             } else {
               useChatStore.getState().setPaused(sessionId, false);
               useChatStore.getState().setProcessing(sessionId, false);
               useChatStore.getState().setThinking(sessionId, false);
+              useSessionStore.getState().thawRunningTeamTasks(sessionId);
               // 任务已完成时，检查并触发队列中的下一个任务
               const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
               const runtime = useChatStore.getState().getRuntime(sessionId);
@@ -5555,6 +5619,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           }
         } else if (resultPayload.intent === 'cancel') {
+          // The SSE may already be closed; use the authoritative cancel snapshot.
+          if (resultPayload.success && Array.isArray(payload.todos)) {
+            useTodoStore.getState().setTodos(
+              sessionId,
+              payload.todos as Parameters<ReturnType<typeof useTodoStore.getState>['setTodos']>[1]
+            );
+          }
           if (shouldClearPermissionQuestionsForLifecycleEvent('cancel', resultPayload.success)) {
             useChatStore.getState().clearPermissionQuestions(sessionId);
           }
@@ -5569,6 +5640,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // 用户主动点了停止/删除就该让当前气泡收尾，不再等一个可能被误判、永远不会来的
           // 真正 chat.final。
           useChatStore.getState().stopStreaming(sessionId);
+          // cancel 路径原先只清 processing，未冻任务板；终态 team.task 丢帧时
+          // 右侧 in_progress 会继续转（#70）。与 pause 对齐立刻 freeze。
+          useSessionStore.getState().freezeRunningTeamTasks(sessionId);
           // 集群模式下 team-leader 消息的 isStreaming 不经过 currentStreamId 收尾，
           // stopStreaming 对它无效；取消后本该到来的 chat.final 也不会再来兜底，
           // 这里显式收尾，避免 team-leader 气泡的光标永久闪烁（bug001）。
@@ -6208,6 +6282,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setExecutionError(sessionId, null);
         useChatStore.getState().setProcessing(sessionId, false);
         useChatStore.getState().setThinking(sessionId, false);
+        // 会话终态兜底收口思考段（已闭合为幂等空操作）：错误路径可能没有
+        // 后续 processing_status(false)，漏收口思考块会一直转圈。
+        useChatStore.getState().closeReasoning(sessionId, {
+          atMs: eventTimestampMs(payload),
+        });
         useHarnessStore.getState().setHarnessRunning(sessionId, false);
       }),
     ];

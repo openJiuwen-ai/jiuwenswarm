@@ -14,6 +14,7 @@ const LIFECYCLE_ERROR_KEYS: Record<string, string> = {
   SESSION_INPUT_IMAGE_UNAVAILABLE: 'chat.steerImageUnavailable',
   SESSION_INPUT_DELIVERY_FAILED: 'chat.steerDeliveryFailed',
   SWARMFLOW_SESSION_BUDGET_EXHAUSTED: 'swarmflow.budgetExhaustedSession',
+  WORKSPACE_QUOTA_EXCEEDED: 'agent.quota.chatBlockBody',
 };
 
 // "ambiguous legacy model name"（ModelSelectionError 固定文案）：模型目录存在
@@ -45,7 +46,7 @@ function withQuotaExhaustedHint(message: string, t: Translate): string | null {
 }
 
 export function describeChatError(
-  payload: { code?: unknown; upstream?: unknown },
+  payload: { code?: unknown; upstream?: unknown; error?: unknown; detail?: unknown },
   rawErrorMsg: string,
   t: Translate,
 ): string {
@@ -53,6 +54,11 @@ export function describeChatError(
   if (code === 'model_not_configured') return t('chat.modelNotConfigured');
   const lifecycleKey = LIFECYCLE_ERROR_KEYS[code];
   if (lifecycleKey) return t(lifecycleKey);
+  // 部分路径只在 error/detail 字符串里带 WORKSPACE_QUOTA_EXCEEDED。
+  const blob = `${rawErrorMsg} ${String(payload.error ?? '')} ${String(payload.detail ?? '')}`;
+  if (blob.includes('WORKSPACE_QUOTA_EXCEEDED')) {
+    return t('agent.quota.chatBlockBody');
+  }
   const hintKey = UPSTREAM_HINT_KEYS[code];
   if (!hintKey) return withModelNameAmbiguousHint(rawErrorMsg, t);
   if (code === 'free_model_unavailable' && payload.upstream === true) {

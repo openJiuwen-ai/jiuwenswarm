@@ -20,16 +20,21 @@ from jiuwenswarm.agents.harness.common.tools.cua_runtime import ReplRuntime
 
 LOGGER = logging.getLogger(__name__)
 PROBE = """
+import asyncio
 import json
 from computer_use.native.connection import Connection
 from computer_use.paths import native_driver
-connection = Connection(lambda *args: None)
-try:
-    hello = await connection.connect()
-    print(json.dumps({'platform': hello['platform'], 'driver': native_driver()['command']}))
-finally:
-    connection.close()
-    await connection.wait_closed()
+
+async def probe_driver():
+    connection = Connection(lambda *args: None)
+    try:
+        hello = await connection.connect()
+        print(json.dumps({'platform': hello['platform'], 'driver': native_driver()['command']}))
+    finally:
+        connection.close()
+        await connection.wait_closed()
+
+asyncio.run(probe_driver())
 packaged_value = 41
 """
 
@@ -43,38 +48,41 @@ async def verify_computer_use_bundle() -> None:
     spec = build_cua_agent_config(None, card=build_cua_agent_card())
     if spec is None or not any(isinstance(rail, CuaExtensionRail) for rail in spec.rails or []):
         raise RuntimeError("The desktop installer did not enable its bundled CUA extension")
-    executable = Path(native_driver()["command"])
-    if not executable.is_file():
-        raise RuntimeError("The installed Computer Use driver is missing")
     with tempfile.TemporaryDirectory(prefix="jiuwenswarm-cua-verify-") as temporary:
         env = dict(os.environ, PATH=temporary, PYTHONPATH="", JIUWENSWARM_DATA_DIR=temporary,
                    COMPUTER_USE_LOG_DIR=str(Path(temporary) / "logs"))
+        if sys.platform == "win32":
+            # An elevated self-test must create its SDK cache under this temporary profile.
+            env["USERPROFILE"] = temporary
         env.pop("PYTHONHOME", None)
         previous_env = dict(os.environ)
         os.environ.clear()
         os.environ.update(env)
-        runtime = ReplRuntime()
         try:
-            result = await runtime.execute(PROBE)
-            if result.isError:
-                raise RuntimeError("Packaged Computer Use handshake failed: " + _text(result))
-            observed = json.loads(_text(result).strip())
-            if Path(observed["driver"]).resolve() != executable.resolve():
-                raise RuntimeError("The frozen SDK selected a driver outside its installed bundle")
-            expected_platform = "macos" if sys.platform == "darwin" else "windows"
-            if observed["platform"] != expected_platform:
-                raise RuntimeError("The installed Computer Use driver has the wrong platform")
-            result = await runtime.execute("print(packaged_value + 1)")
-            if result.isError or _text(result).strip() != "42":
-                raise RuntimeError("The installed Computer Use REPL did not retain Python variables")
-        finally:
+            executable = Path(native_driver()["command"])
+            if not executable.is_file():
+                raise RuntimeError("The installed Computer Use driver is missing")
+            runtime = ReplRuntime()
             try:
-                await runtime.close()
+                result = await runtime.execute(PROBE)
+                if result.isError:
+                    raise RuntimeError("Packaged Computer Use handshake failed: " + _text(result))
+                observed = json.loads(_text(result).strip())
+                if Path(observed["driver"]).resolve() != executable.resolve():
+                    raise RuntimeError("The frozen SDK launched a different driver than the verifier resolved")
+                expected_platform = "macos" if sys.platform == "darwin" else "windows"
+                if observed["platform"] != expected_platform:
+                    raise RuntimeError("The installed Computer Use driver has the wrong platform")
+                result = await runtime.execute("print(packaged_value + 1)")
+                if result.isError or _text(result).strip() != "42":
+                    raise RuntimeError("The installed Computer Use REPL did not retain Python variables")
             finally:
-                os.environ.clear()
-                os.environ.update(previous_env)
-        if runtime.cleanup_error:
-            raise RuntimeError("Computer Use cleanup failed: " + runtime.cleanup_error)
+                await runtime.close()
+            if runtime.cleanup_error:
+                raise RuntimeError("Computer Use cleanup failed: " + runtime.cleanup_error)
+        finally:
+            os.environ.clear()
+            os.environ.update(previous_env)
 
 
 def _text(result) -> str:

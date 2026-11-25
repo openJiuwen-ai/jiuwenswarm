@@ -124,6 +124,15 @@ async def try_append_platform_history(
         return True, None
     if not math.isfinite(prepared.metadata["timestamp"]) or prepared.metadata["timestamp"] <= 0:
         raise SessionHistoryError("INVALID_MESSAGE")
+    # 企业版主会话写入走 EventBus，不再进入 append_history_record；须在此对齐
+    # 同步路径的配额预检，否则满额后旧会话 chat.send 仍能继续对话。
+    from jiuwenswarm.server.runtime.session.session_history import (
+        _precheck_workspace_quota_for_history_append,
+    )
+
+    await asyncio.to_thread(
+        _precheck_workspace_quota_for_history_append, prepared.record
+    )
     append_key = "platform:" + hashlib.sha256((idempotency_key or uuid.uuid4().hex).encode("utf-8")).hexdigest()
     context = await platform_history_context(prepared.session_id)
     result = await dispatch_session_append(

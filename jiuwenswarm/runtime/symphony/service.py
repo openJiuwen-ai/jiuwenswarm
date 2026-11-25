@@ -41,10 +41,11 @@ from jiuwenswarm.runtime.symphony.skillpack_candidates import (
     trusted_session_user,
 )
 from jiuwenswarm.runtime.symphony.adapter import (
-    candidate_ids_from_skill_ids,
     llm_config_signature,
     model_from_config,
+    normalize_candidate_ids,
 )
+from jiuwenswarm.runtime.symphony.capabilities import expert_candidates
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, probe_model_connection
 from jiuwenswarm.common.symphony_config import (
     SymphonyConfig,
@@ -201,6 +202,14 @@ def _save_install_receipt(flow_root: Path, receipt: dict[str, Any]) -> None:
 def _build_log_path(graph_dir: Path) -> Path:
     # Job logs precede Core artifact binding and live outside the versioned runtime layout.
     return graph_dir.parent.parent / "runtime_jobs" / "graph" / "build_log.jsonl"
+
+
+class _PlanningPreparationError(RuntimeError):
+    """Carry a host graph preparation failure through the Core callback."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__(payload["detail"])
+        self.payload = payload
 
 
 class SwarmSymphonyService:
@@ -396,13 +405,21 @@ class SwarmSymphonyService:
         mode: str | None = None,
         candidate_skill_ids: list[str] | None = None,
         *,
+        capability_type: str = "auto",
+        candidate_ids: list[str] | None = None,
+        inputs: list[dict[str, str]] | None = None,
         progress: ProgressCallback | None = None,
         llm_config: LLMConfig | None = None,
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         query = str(query or "").strip()
         if not query:
             return {"success": False, "detail": "query is required"}
-        candidate_ids = candidate_ids_from_skill_ids(candidate_skill_ids)
+        if capability_type not in {"auto", "skill", "expert"}:
+            return {"success": False, "detail": "type must be auto, skill or expert"}
+        if candidate_skill_ids is not None and (capability_type != "skill" or candidate_ids is not None):
+            return {"success": False, "detail": "candidate_skill_ids is a Skill-only alias for candidate_ids"}
+        candidate_ids = normalize_candidate_ids(candidate_ids if candidate_ids is not None else candidate_skill_ids)
         language = _resolve_orchestration_language(
             get_config().get("preferred_language", "zh")
         )
@@ -418,87 +435,80 @@ class SwarmSymphonyService:
                 "detail": str(exc),
             }
 
-        status = await self.graph_status()
-        if not status.get("success"):
-            return {
-                "success": False,
-                "detail": "Skill Score status check failed before planning",
-                "graph_status": status,
-            }
-        if _graph_needs_build(status):
-            refresh_kwargs: dict[str, Any] = {"progress": progress}
-            graph_build = await self.refresh_graph(**refresh_kwargs)
+        graph_build = None
+        status = {"success": True}
+
+        async def prepare_skill_graph():
+            nonlocal graph_build, status
+            status = await self.graph_status()
+            if not status.get("success"):
+                raise _PlanningPreparationError({"success": False, "detail": "Skill graph status check failed",
+                                                 "graph_status": status})
+            if not _graph_needs_build(status):
+                return
+            graph_build = await self.refresh_graph(progress=progress)
             if not graph_build.get("success"):
-                failure = {
-                    "success": False,
-                    "detail": "Skill Score build failed before planning",
-                    "graph_status": status,
-                    "graph_build": graph_build,
-                }
+                failure = {"success": False, "detail": "Skill graph build failed before planning",
+                           "graph_status": status, "graph_build": graph_build}
                 if graph_build.get("reason") == "graph_preparing":
-                    failure.update(
-                        {
-                            "reason": "graph_preparing",
-                            "retryable": False,
-                            "build_status": "running",
-                            "operation": "plan",
-                            "detail": graph_build.get("detail") or failure["detail"],
-                        }
-                    )
-                return failure
+                    failure.update(reason="graph_preparing", retryable=False, build_status="running",
+                                   operation="plan", detail=graph_build.get("detail") or failure["detail"])
+                raise _PlanningPreparationError(failure)
             graph_build["rebuilt"] = True
-        else:
-            graph_build = None
+
         transient_runtime = llm_config is not None
         runtime = None
         try:
-            runtime = (
-                self._runtime_for(config, llm_config=llm_config)
-                if llm_config is not None
-                else self._runtime_for(config)
-            )
-            skills_root = require_graph_skill_root(config)
+            if capability_type == "skill":
+                await prepare_skill_graph()
+            runtime = (self._runtime_for(config, llm_config=llm_config)
+                       if llm_config is not None else self._runtime_for(config))
+            plan_options: dict[str, Any] = {}
+            if capability_type in {"auto", "expert"}:
+                has_experts = any(source.type == "expert" for source in config.capability.sources)
+                installed = await expert_candidates(config) if has_experts else ()
+                plan_options["expert_manifest_paths"] = [
+                    item.manifest_path for item in installed
+                    if item.descriptor.available and item.manifest_path is not None
+                ]
+            if capability_type in {"auto", "skill"}:
+                disabled = set()
+                for root in configured_skill_roots(config):
+                    disabled.update(load_execution_disabled_skills(skills_dir=root))
+                plan_options["disabled_capability_ids"] = disabled
+            if capability_type == "auto":
+                plan_options.update(context=context, prepare_skill_graph=prepare_skill_graph)
+            if inputs:
+                plan_options["inputs"] = inputs
             public_payload = await runtime.orchestration.plan(
-                query,
-                candidate_ids=candidate_ids,
-                language=language,
-                progress=progress,
-                disabled_capability_ids=load_execution_disabled_skills(skills_dir=skills_root),
-                mode=requested_mode,
+                query, type=capability_type, candidate_ids=candidate_ids, language=language,
+                progress=progress, mode=requested_mode, **plan_options,
             )
             payload = public_payload.to_dict()
+        except _PlanningPreparationError as exc:
+            return exc.payload
         except Exception as exc:  # noqa: BLE001
             logger.exception("Symphony planning failed")
-            payload = {"success": False, "detail": str(exc)}
+            return {"success": False, "detail": str(exc)}
         finally:
             if transient_runtime and runtime is not None:
                 await self._close_transient_runtime(runtime)
         if not isinstance(payload, dict):
-            return {
-                "success": False,
-                "detail": "Symphony orchestration returned an invalid payload",
-                "graph_status": status,
-                **({"graph_build": graph_build} if graph_build else {}),
-            }
+            return {"success": False, "detail": "Symphony orchestration returned an invalid payload"}
         if payload.get("success") is False:
-            return {
-                "success": False,
-                "graph_status": status,
-                **({"graph_build": graph_build} if graph_build else {}),
-                **payload,
-            }
+            return payload
+        route = payload.get("execution_route")
         planned_graph = payload.get("planned_graph")
-        if not isinstance(planned_graph, dict):
-            return {
-                "success": False,
-                "detail": "Symphony orchestration returned no planned_graph",
-                "graph_status": status,
-                **({"graph_build": graph_build} if graph_build else {}),
-            }
-        result = {
-            "success": True,
-            "planned_graph": planned_graph,
-        }
+        if not isinstance(planned_graph, dict) and not (
+            isinstance(route, dict) and route.get("requires_planning") is False
+        ):
+            return {"success": False, "detail": "Symphony orchestration returned no planned_graph"}
+        result = {"success": True}
+        if isinstance(route, dict):
+            result["execution_route"] = route
+            result["_planning_inputs"] = payload.get("planning_inputs", inputs or [])
+        if isinstance(planned_graph, dict):
+            result["planned_graph"] = planned_graph
         if graph_build is not None:
             result["graph_build"] = graph_build
         return result
@@ -1526,7 +1536,13 @@ def _web_graph_payload(
 ) -> dict[str, Any]:
     """Adapt the public capability graph for the existing Skill Graph panel."""
 
+    mixed = str(artifact.get("schema_version", "")).split(".", 1)[0] == "2"
+
+    def artifact_ref(value: Any) -> str:
+        return str(value or "") if mixed else _capability_id(value)
+
     skills = []
+    web_skill_refs: dict[str, str] = {}
     web_node_refs: dict[str, str] = {}
     web_node_types: dict[str, str] = {}
     disabled_refs = {
@@ -1539,9 +1555,7 @@ def _web_graph_payload(
         if not isinstance(raw_capability, dict):
             continue
         capability = dict(raw_capability)
-        capability_id = _capability_id(
-            capability.get("capability_id") or capability.get("id")
-        )
+        capability_id = artifact_ref(capability.get("capability_id") or capability.get("id"))
         if not capability_id:
             continue
         capability["id"] = capability_id
@@ -1549,25 +1563,27 @@ def _web_graph_payload(
             capability.get("capability_type") or capability.get("type") or "skill"
         )
         capability["type"] = capability_type
-        if (
+        layer = "expert" if capability_type == "expert" else "skill"
+        artifact_id = f"{layer}:{capability_id}" if mixed else capability_id
+        if capability_type != "expert" and (
             _normalize_capability_ref(capability_id) in disabled_refs
             or _normalize_capability_ref(capability.get("name")) in disabled_refs
         ):
-            disabled_ids.add(capability_id)
+            disabled_ids.add(artifact_id)
             continue
-        skills.append(capability)
-        web_node_refs[capability_id] = (
-            f"skill:{capability_id}"
-            if capability_type == "skill"
-            else f"capability:{capability_id}"
-        )
-        web_node_types[capability_id] = capability_type
+        web_type = capability_type if capability_type in {"skill", "expert"} else "capability"
+        web_ref = f"{web_type}:{capability_id}"
+        web_node_refs[artifact_id] = web_ref
+        web_node_types[artifact_id] = capability_type
+        if capability_type != "expert":
+            skills.append(capability)
+            web_skill_refs[capability_id] = web_ref
 
     nodes: list[dict[str, Any]] = []
     for node in artifact.get("nodes") or []:
         if not isinstance(node, dict):
             continue
-        capability_id = _capability_id(node.get("id"))
+        capability_id = artifact_ref(node.get("id"))
         if capability_id in disabled_ids:
             continue
         web_node = dict(node)
@@ -1580,8 +1596,8 @@ def _web_graph_payload(
     for edge in artifact.get("edges") or []:
         if not isinstance(edge, dict):
             continue
-        source_id = _capability_id(edge.get("source"))
-        target_id = _capability_id(edge.get("target"))
+        source_id = artifact_ref(edge.get("source"))
+        target_id = artifact_ref(edge.get("target"))
         if source_id in disabled_ids:
             continue
         if target_id in disabled_ids:
@@ -1632,7 +1648,7 @@ def _web_graph_payload(
             })
             # Create contains edges from pack to each member
             for member_id in member_ids:
-                member_ref = web_node_refs.get(member_id)
+                member_ref = web_skill_refs.get(member_id)
                 if not member_ref:
                     # Member skill not in main graph, create a node for it
                     member_ref = f"skill:{member_id}"
@@ -2057,12 +2073,12 @@ def _graph_resolve_percent(
 ) -> int:
     """Advance relation progress only after a matcher batch has completed."""
 
-    candidate_progress = [
-        counts
-        for candidate in entries
-        if candidate.get("stage") == "graph.resolve.progress"
-        if (counts := _graph_resolve_candidate_counts(candidate)) is not None
-    ]
+    candidate_progress = []
+    for candidate in entries:
+        if candidate.get("stage") == "graph.resolve.progress":
+            counts = _graph_resolve_candidate_counts(candidate)
+            if counts is not None:
+                candidate_progress.append(counts)
     if candidate_progress:
         current, total = max(candidate_progress, key=lambda item: item[0] / item[1])
         return _progress_between(

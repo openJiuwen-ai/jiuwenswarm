@@ -7,14 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
-from jiuwenswarm.common.e2a.gateway_normalize import (
+from e2a.gateway_normalize import (
     e2a_response_from_agent_chunk,
     e2a_response_to_agent_chunk,
 )
+from agent_gateway.channel_manager.web.web_connect import WebChannel
+
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import Message
-from agent_gateway.channel_manager.web.web_connect import WebChannel
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
 

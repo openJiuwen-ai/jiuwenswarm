@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-07 界面项声明、挂载与上行交互 |
 | 所属模块 | `jiuwenswarm/extensions_v2/webui/{contributions,adapter}.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[F_06 渲染服务](F_06_render-service.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-23 |
 | 方案状态 | 已实现 |
 
 ## 1. 问题与目标
@@ -108,6 +108,8 @@ flowchart LR
 `application.sidebar.footer` 同为应用范围的 list 槽位，由 `WebUIHost` 在左侧图标栏底部挂载，不要求聊天会话；多个实例纵向排列，没有实例时不渲染容器。
 `task.function` 与 `task.function.main` 同为应用范围，复用当前 Web 连接的实例身份，不要求聊天会话；
 入口与页面共享包和实例标识。切换会话不重新挂载入口，也不因 session 变化关闭任务页面。
+`application.menu.main`、`task.function.main` 与 `conversation.panel.right` 采用 `keep-mounted`：
+实例存活期内保留整树挂载键，React 按节点协调新帧。需要由服务端决定跨帧值时，使用受控属性并处理对应事件。
 离开任务页面查看聊天时，宿主保留已打开的应用范围页面及其 iframe，仅隐藏页面容器；
 返回同一任务入口复用原页面。会话范围菜单页面仍随导航卸载，选择其他插件页面时释放原页面。
 `application.menu`、`application.menu.main` 仍为会话范围，新建空对话中不挂载；设置范围见 [S_18](../specs/S_18_settings-location.md)。

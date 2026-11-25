@@ -7,6 +7,7 @@ import { gatewayFetch } from './gatewayFetch';
  */
 
 import { getGatewayHttpBase } from '../utils/env';
+import i18n from '../i18n';
 
 /**
  * 没有 cookie 的环境回落到请求头带会话 id。
@@ -128,10 +129,10 @@ export async function authorize(): Promise<AuthorizeResponse> {
     credentials: 'include',
     headers: stateChangingHeaders(),
   });
-  if (!response.ok) throw await readError(response, '获取授权地址失败');
+  if (!response.ok) throw await readError(response, i18n.t('auth.errors.authorizeFailed'));
   const data = (await response.json()) as AuthorizeResponse;
   if (!data?.authorizeUrl || !data?.state || !data?.claimToken) {
-    throw new AuthApiError('授权地址返回不完整', 'authorize_malformed', 500);
+    throw new AuthApiError(i18n.t('auth.errors.authorizeMalformed'), 'authorize_malformed', 500);
   }
   return data;
 }
@@ -150,7 +151,7 @@ export async function claim(state: string, claimToken: string): Promise<ClaimOut
     body: JSON.stringify({ state, claimToken }),
   });
   if (response.status === 202) return { kind: 'pending' };
-  if (!response.ok) throw await readError(response, '登录失败，请重试');
+  if (!response.ok) throw await readError(response, i18n.t('auth.errors.loginFailed'));
   const headerSession = response.headers.get(SESSION_HEADER);
   const data = (await response.json()) as AuthStatus;
   writeStoredSessionId(headerSession || data.sessionId || '');
@@ -195,7 +196,7 @@ export async function status(): Promise<AuthStatus> {
     credentials: 'include',
     headers: authHeaders({ Accept: 'application/json' }),
   });
-  if (!response.ok) throw await readError(response, '获取登录状态失败');
+  if (!response.ok) throw await readError(response, i18n.t('auth.errors.statusFailed'));
   const data = (await response.json()) as AuthStatus;
   // 会话确实过期了才丢掉本地句柄：它的优先级高于 cookie，留着会把还能用的 cookie 挡住。
   // 未登录状态不算，活动下线时也是未登录，那时清掉，活动恢复后还需要重登一次
@@ -216,7 +217,7 @@ export async function listLoginModels(): Promise<LoginModelInfo[]> {
     credentials: 'include',
     headers: authHeaders({ Accept: 'application/json' }),
   });
-  if (!response.ok) throw await readError(response, '获取模型列表失败');
+  if (!response.ok) throw await readError(response, i18n.t('auth.errors.modelsFailed'));
   const data = (await response.json()) as { models?: LoginModelInfo[] };
   return data.models ?? [];
 }
@@ -251,7 +252,7 @@ export async function fetchQuota(): Promise<QuotaResult> {
     credentials: 'include',
     headers: authHeaders({ Accept: 'application/json' }),
   });
-  if (!response.ok) throw await readError(response, '获取额度失败');
+  if (!response.ok) throw await readError(response, i18n.t('auth.errors.quotaFailed'));
   const data = (await response.json()) as QuotaResult;
   return { available: Boolean(data?.available), quota: data?.quota ?? null };
 }

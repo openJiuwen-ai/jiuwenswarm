@@ -77,13 +77,16 @@ def diagnostic_log(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("setting", [None, "", "configured"])
 def test_log_directory_routing(monkeypatch, tmp_path, setting):
+    from jiuwenswarm.common import paths
+
+    monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path / "data")
     if setting is None:
         monkeypatch.delenv("JIUWEN_WORKER_LOG_DIR", raising=False)
     else:
         value = str(tmp_path / "configured") if setting else ""
         monkeypatch.setenv("JIUWEN_WORKER_LOG_DIR", value)
     process = worker_process.WorkerProcess(str(tmp_path / "worker"), host="127.0.0.1", port=0)
-    expected = tmp_path / ("configured" if setting else "worker-logs")
+    expected = tmp_path / ("configured" if setting else "data/logs/worker-logs")
     assert process.stderr_path.parent == expected
     assert process.diagnostic_path == expected / "latest-worker-error.log"
     assert process.stderr_path.name.startswith("runtime-worker-")

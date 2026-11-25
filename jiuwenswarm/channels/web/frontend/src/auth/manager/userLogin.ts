@@ -1,4 +1,3 @@
-import { resolveApiUrl } from '../../utils/env';
 import { managerAuthenticatedFetch, setManagerTokens } from './authSession';
 
 export interface FederationConnection {
@@ -25,7 +24,7 @@ interface TokenBundle {
 const AUTH = '/idp/v1/auth';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(resolveApiUrl(AUTH + path), { credentials: 'same-origin', ...init });
+  const response = await fetch(AUTH + path, { credentials: 'same-origin', ...init });
   if (!response.ok) throw new Error(`Authentication request failed (${response.status})`);
   return response.json() as Promise<T>;
 }
@@ -64,7 +63,7 @@ export const AuthApi = {
     return request(`/federation/${encodeURIComponent(connectionId)}/configuration?surface=user`);
   },
   beginFederatedLogin(connectionId: string): void {
-    window.location.assign(resolveApiUrl(`${AUTH}/federation/${encodeURIComponent(connectionId)}/login?surface=user`));
+    window.location.assign(`${AUTH}/federation/${encodeURIComponent(connectionId)}/login?surface=user`);
   },
   async confirmFederationToken(connectionId: string, token: string): Promise<void> {
     saveSession(await request<TokenBundle>(
@@ -79,9 +78,10 @@ export const AuthApi = {
   },
   async refreshFederationHandoff(connectionId: string, token: string): Promise<TokenBundle['federation']> {
     const init = json({});
-    const response = await managerAuthenticatedFetch(resolveApiUrl(
+    const response = await managerAuthenticatedFetch(
       `${AUTH}/federation/${encodeURIComponent(connectionId)}/token-handoff`,
-    ), { ...init, headers: { ...init.headers, 'X-User-Token': `Bearer ${token}` } });
+      { ...init, headers: { ...init.headers, 'X-User-Token': `Bearer ${token}` } },
+    );
     if (!response.ok) throw new Error('Could not renew the external session');
     return response.json();
   },

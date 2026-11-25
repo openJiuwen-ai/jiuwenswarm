@@ -59,7 +59,7 @@ type InstallResponse = {
   status?: string;
   detail?: string;
   detail_key?: string;
-  skill?: { name?: string };
+  skill?: { name?: string; display_name?: string };
 };
 
 interface OnlineSkillSearchPanelProps {
@@ -243,6 +243,8 @@ export function OnlineSkillSearchPanel({
       try {
         let force = false;
         let skillName = item.name || item.identifier;
+        // 提示条展示名：市场卡片名优先，安装结果缺省时回退到实际安装名
+        let skillDisplayName = item.display_name || item.name || item.identifier;
         while (true) {
           if (item.source === 'skillnet') {
             const data = await installSkillNet(item, force, abortController.signal);
@@ -257,6 +259,7 @@ export function OnlineSkillSearchPanel({
               throw new Error(data.detail_key ? t(data.detail_key) : data.detail || t('skills.onlineSearch.installFailed'));
             }
             skillName = data.skill?.name || skillName;
+            skillDisplayName = item.display_name || data.skill?.display_name || skillDisplayName;
           } else if (item.source === 'teamskillshub') {
             const data = await installSkillWithPlan<InstallResponse>(
               'skills.teamskillshub.install',
@@ -276,6 +279,7 @@ export function OnlineSkillSearchPanel({
               throw new Error(data.detail_key ? t(data.detail_key) : data.detail || t('skills.onlineSearch.installFailed'));
             }
             skillName = data.skill?.name || skillName;
+            skillDisplayName = item.display_name || data.skill?.display_name || skillDisplayName;
           } else {
             const data = await webRequest<InstallResponse>(
               'skills.clawhub.download',
@@ -304,7 +308,7 @@ export function OnlineSkillSearchPanel({
 
         throwIfAborted(abortController.signal);
         setInstalledKeys(current => new Set([...current, key]));
-        setMessage({ type: 'success', text: t('skills.onlineSearch.installed', { name: skillName }) });
+        setMessage({ type: 'success', text: t('skills.onlineSearch.installed', { name: skillDisplayName }) });
         await onInstalled?.(skillName);
       } catch (error) {
         if (abortController.signal.aborted) return;
@@ -344,7 +348,7 @@ export function OnlineSkillSearchPanel({
       {message?.type === 'success' ? (
         <div
           data-testid='online-skill-search-panel-message' data-variant='success'
-          className='fixed right-4 top-4 z-[9999] flex h-[40px] w-[564px] items-center gap-3 rounded-[4px] px-4 text-sm text-text shadow-lg'
+          className='fixed right-4 top-4 z-[9999] flex h-[40px] max-w-[564px] items-center gap-3 rounded-[4px] px-4 text-sm text-text shadow-lg'
           style={{ backgroundColor: 'var(--color-feedback-success-toast)' }}
         >
           <span className='flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full bg-[var(--color-feedback-success-indicator)]'>
@@ -352,7 +356,7 @@ export function OnlineSkillSearchPanel({
               <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={3} d='M5 13l4 4L19 7' />
             </svg>
           </span>
-          {message.text}
+          <span className='truncate'>{message.text}</span>
         </div>
       ) : null}
       {message?.type === 'error' ? (

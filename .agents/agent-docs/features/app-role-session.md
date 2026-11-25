@@ -78,3 +78,9 @@ python -m pytest tests/unit_tests/agentserver/test_app_role_adapter.py tests/uni
 - 仍需真实 Gateway/UI 和供应商验证；当前模型边界证据来自可控模型，不将其说成线上真实请求。
 - 角色没有工具，也不支持暂停/继续或在线变更人格。普通 code/work 会话保持原入口。
 - 未提交、推送或创建 PR；等待后续检视和交付确认，设计保留 active。
+
+## 2026-11-23 NPC 会话独立标识与 Swarm 只读
+
+- 会话创建时固定 `npc_session`，与角色执行配置独立。宿主从历史 `app_role` 元数据识别旧角色，默认执行配置可以显式声明角色用途。分叉保留标识，普通会话保持原有列表与创建响应。
+- Swarm 会话列表显示 NPC 标签，历史视图隐藏输入区。WebSocket 和 HTTP 传输标记 Swarm 聊天请求，Runtime 在会话调度前拒绝 NPC 的页面发消息请求。应用玩家输入与 Team 只读订阅保持既有接口。当前约定见 [NPC 会话规约](../specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md#npc-会话标识)。
+- Windows 项目 `.venv` 定向后端验证 20 项通过。应用市场前端组件 75 项通过。以模拟 WebSocket 和 Fetch 验证了真实客户端的请求体和 Team 订阅，未启动真实 Gateway 或 Electron 做端到端验证。WebSocket 回执旧用例提前读取请求 ID 的时序问题已在变更前版本复现。

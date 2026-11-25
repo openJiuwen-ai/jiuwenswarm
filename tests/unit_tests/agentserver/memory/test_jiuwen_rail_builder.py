@@ -86,6 +86,7 @@ class _FakeAgentMemoryProvider:
             "space": space,
             "identity_org": identity_org,
             "identity_user": identity_user,
+            **_kwargs,
         }
 
     @staticmethod
@@ -119,6 +120,8 @@ def _stubs(monkeypatch):
         "JIUWEN_MEMORY_VIDEO_ROOTS",
         "VIDEO_ENABLED",
         "AUDIO_ENABLED",
+        "VIDEO_MODEL_NAME",
+        "ASR_MODEL_NAME",
     ):
         monkeypatch.delenv(env, raising=False)
     yield
@@ -175,7 +178,8 @@ def test_sdk_bare_uses_provider_builtin_default():
     rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "sdk"}))
     assert isinstance(rail, _FakeJiuwenRail)
     init = _FakeAgentMemoryProvider.last_init_kwargs
-    assert init["config_dict"] is None  # provider 端走内置默认
+    root = init["config_dict"]["markdown_store"]["default"]["params"]["root"]
+    assert root.replace("\\", "/").endswith("/agent/workspace")
     assert init["config_path"] is None
     assert not init["base_url"]
     assert init["security_provider"] is not None  # mem2.0 进程内身份 fail-closed
@@ -199,11 +203,17 @@ def test_sdk_inline_config_dict_passthrough():
     assert "config_path" not in passed
 
 
-def test_sdk_agent_name_overrides_agent_id():
-    """运行 agent name 优先作为 scope.agent 轴。"""
-    rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "sdk", "agent_id": "cfg-agent"}), agent_name="run-agent")
+@pytest.mark.parametrize("mode", ["sdk", "http"])
+@pytest.mark.parametrize("agent_id,expected", [("cfg-agent", "cfg-agent"), (None, "main_agent")])
+def test_configured_memory_identity_overrides_runtime_name(mode, agent_id, expected):
+    cfg = _cfg({"mode": mode, "agent_id": agent_id})
+    rail = jrb.build_jiuwen_memory_rail(cfg, agent_name="run-agent")
     assert isinstance(rail, _FakeJiuwenRail)
-    assert _FakeJiuwenRail.last_args["agent_id"] == "run-agent"
+    assert _FakeJiuwenRail.last_args["agent_id"] == expected
+    assert _FakeAgentMemoryProvider.last_init_kwargs["agent_id"] == expected
+    assert jrb.jiuwen_builtin_config_fingerprint(cfg, agent_name="run-agent") == (
+        jrb.jiuwen_builtin_config_fingerprint(cfg, agent_name="another-agent")
+    )
 
 
 def test_sdk_portal_video_globals_passthrough(tmp_path):
@@ -247,7 +257,7 @@ def test_web_settings_assemble_sdk_video_with_exact_scope(tmp_path):
     from jiuwen_memory.common.errors import PermissionDeniedError
 
     config = _cfg({
-        "mode": "sdk", "scope_id": "org", "space": "space", "user_id": "user", "session_id": "session",
+        "mode": "sdk", "scope_id": "org", "space": "space", "user_id": "user", "session_id": "session", "agent_id": "memory-agent",
     })
     project = tmp_path / "project"
     project.mkdir()
@@ -268,7 +278,7 @@ def test_web_settings_assemble_sdk_video_with_exact_scope(tmp_path):
     assert video["llm_model"] == "video-test-model"
     normalizer = assembled["normalizer"]["default"]["params"]["routes"]["video"]["params"]
     imports = local_media.LocalMediaImports(normalizer["local_media_roots"])
-    scope = Scope(org="org", space="space", user="user", agent="run-agent", session="session")
+    scope = Scope(org="org", space="space", user="user", agent="memory-agent", session="session")
     inside = project / "inside.mp4"
     outside = tmp_path / "outside.mp4"
     inside.touch()
@@ -309,11 +319,15 @@ def test_video_upload_root_preserves_effective_import_roots(tmp_path, monkeypatc
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    uploads = tmp_path / "web_session" / "uploads"
+    from jiuwenswarm.common import utils
+
+    sessions = tmp_path / "sessions"
+    uploads = sessions / "web_session" / "uploads"
     uploads.mkdir(parents=True)
-    scope = {"org": "org", "space": "space", "user": "user", "agent": "run-agent", "session": "memory-session"}
+    monkeypatch.setattr(utils, "get_agent_sessions_dir", lambda: sessions)
+    scope = {"org": "org", "space": "space", "user": "user", "agent": "memory-agent", "session": "memory-session"}
     roots = [{"scope": scope, "root": str(workspace)}]
-    jiuwen = {"mode": "sdk", "scope_id": "org", "space": "space", "user_id": "user", "session_id": "memory-session"}
+    jiuwen = {"mode": "sdk", "scope_id": "org", "space": "space", "user_id": "user", "session_id": "memory-session", "agent_id": "memory-agent"}
     if deployment_source == "inline":
         jiuwen["sdk"] = {"globals": {"local_media_roots": roots}}
     elif deployment_source == "env":
@@ -322,7 +336,7 @@ def test_video_upload_root_preserves_effective_import_roots(tmp_path, monkeypatc
         _cfg(jiuwen), _web_tool_config(), workspace=str(workspace), agent_name="run-agent",
         session_upload_root=uploads,
     )
-    assert media["local_media_roots"] == [*roots, {"scope": scope, "root": str(uploads)}]
+    assert media["local_media_roots"] == [*roots, {"scope": scope, "root": str(sessions)}]
     imports = local_media.LocalMediaImports(media["local_media_roots"])
     uploaded = uploads / "demo.mp4"
     uploaded.touch()
@@ -361,7 +375,10 @@ def test_web_model_settings_can_use_deployment_fallback(tmp_path, disabled_kind,
 @pytest.mark.asyncio
 async def test_memory_rail_rebuilds_for_web_media_settings_and_permission_changes(tmp_path, monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep
+    from jiuwenswarm.common import utils
 
+    sessions = tmp_path / "sessions"
+    monkeypatch.setattr(utils, "get_agent_sessions_dir", lambda: sessions)
     config = _cfg({"mode": "sdk", "sdk": {"globals": {"llm_model": "text-model"}}})
     monkeypatch.setattr(deep, "get_config", lambda: config)
     monkeypatch.setattr(deep, "get_memory_mode", lambda _: "local")
@@ -400,7 +417,7 @@ async def test_memory_rail_rebuilds_for_web_media_settings_and_permission_change
     adapter._memory_media_workspace = str(other_project)
     await adapter._handle_memory_rail_by_config("agent")
     bindings = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]["local_media_roots"]
-    assert [binding["root"] for binding in bindings] == [str(other_project.resolve())]
+    assert [binding["root"] for binding in bindings] == [str(other_project.resolve()), str(sessions)]
 
     adapter._config_base_cache["permissions"]["enabled"] = True
     await adapter._handle_memory_rail_by_config("agent")
@@ -431,16 +448,17 @@ async def test_memory_rail_rebuilds_for_web_media_settings_and_permission_change
         assert media["asr_api_key"] == "rotated"
     adapter._instance_overrides.clear()
 
-    uploads = tmp_path / "uploads"
-    uploads.mkdir()
-    adapter._memory_media_upload_root = uploads
     adapter._enable_auto_permission = False
     adapter._config_base_cache["permissions"]["enabled"] = True
     assert "local_media_roots" not in adapter._jiuwen_memory_media_globals(config)
     adapter._config_base_cache["permissions"]["enabled"] = False
     media = adapter._jiuwen_memory_media_globals(config)
-    assert media["local_media_roots"][-1]["root"] == str(uploads)
-    adapter._memory_media_upload_root = None
+    assert media["local_media_roots"][-1]["root"] == str(sessions)
+    await adapter._handle_memory_rail_by_config("agent")
+    before_upload = adapter._memory_rail
+    (sessions / "future-session" / "uploads").mkdir(parents=True)
+    await adapter._handle_memory_rail_by_config("agent")
+    assert adapter._memory_rail is before_upload
 
     adapter._config_base_cache["models"]["video"]["enabled"] = False
     adapter._config_base_cache["models"]["audio"]["enabled"] = False
@@ -473,6 +491,15 @@ def test_provider_unavailable_returns_none():
 def test_fingerprint_stable_for_equal_config():
     cfg = _cfg({"mode": "sdk"})
     assert jrb.jiuwen_builtin_config_fingerprint(cfg) == jrb.jiuwen_builtin_config_fingerprint(cfg)
+
+
+@pytest.mark.parametrize("mode", ["http", "sdk"])
+@pytest.mark.parametrize("key", ["scope_id", "space", "user_id", "agent_id", "session_id"])
+def test_fingerprint_tracks_each_configured_identity_dimension(mode, key):
+    cfg = _cfg({"mode": mode})
+    before = jrb.jiuwen_builtin_config_fingerprint(cfg, agent_name="same-runtime")
+    cfg["memory"]["builtin"]["jiuwen"][key] = "different"
+    assert jrb.jiuwen_builtin_config_fingerprint(cfg, agent_name="same-runtime") != before
 
 
 def test_fingerprint_sensitive_to_mode():
@@ -511,7 +538,7 @@ def test_fingerprint_sensitive_to_http_endpoint():
 @pytest.mark.parametrize("mode", ["sdk", "http"])
 @pytest.mark.asyncio
 async def test_jiuwen_provider_uses_default_project_across_operations(monkeypatch, mode):
-    prefetch = AsyncMock()
+    prefetch = AsyncMock(return_value="")
     sync_turn = AsyncMock()
     tool = AsyncMock(return_value='{"result": "ok"}')
     monkeypatch.setattr(_FakeAgentMemoryProvider, "prefetch", prefetch, raising=False)
@@ -525,6 +552,8 @@ async def test_jiuwen_provider_uses_default_project_across_operations(monkeypatc
     await provider.prefetch("query", project="testMemory")
     await provider.sync_turn("user", "assistant", project="testMemory")
     assert prefetch.call_args.kwargs["project"] == sync_turn.call_args.kwargs["project"] == "testMemory"
+
+    assert _FakeAgentMemoryProvider.last_init_kwargs["collective_coordinates"] == {"project": "default"}
 
     for tool_name in (
         "agent_memory_conclude", "agent_memory_search", "agent_memory_video_submit",
@@ -744,3 +773,70 @@ async def test_jiuwen_rail_routes_same_named_projects_by_absolute_path(monkeypat
 
     await tool._func(conclusion="Explicit group", project="testMemory")
     assert tool_handler.call_args.args[1]["project"] == "testMemory"
+
+
+@pytest.mark.parametrize("scene", ["agent", "code", "team"])
+def test_shared_video_root_admits_future_sessions_from_first_assembly(tmp_path, monkeypatch, scene):
+    from jiuwen_memory.api import Scope
+    from jiuwen_memory.common.errors import PermissionDeniedError
+    from jiuwen_memory.common.security.protection.local_media import LocalMediaImports
+    from jiuwenswarm.common import utils
+
+    sessions = tmp_path / "tenant" / "agent" / "sessions"
+    monkeypatch.setattr(utils, "get_agent_sessions_dir", lambda: sessions)
+    monkeypatch.setitem(jrb.SCENE_FACTORIES, scene, lambda *_: jrb.MemoryRailSpec(_FakeJiuwenRail))
+    config = {**_web_tool_config(), **_cfg({"mode": "sdk"})}
+    assert not sessions.exists()
+    assert jrb.build_jiuwen_memory_rail(config, scene=scene)
+    forwarded = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]
+    scope = jrb.get_jiuwen_memory_scope(config)
+    assert forwarded["globals"]["local_media_roots"] == [{"scope": scope, "root": str(sessions)}]
+    assembled = adapter_mod._merge_config_over_default(forwarded)
+    route = assembled["normalizer"]["default"]["params"]["routes"]["video"]["params"]
+    imports = LocalMediaImports(route["local_media_roots"])
+    for name in ("session-a", "session-b"):
+        uploads = sessions / name / "uploads"
+        uploads.mkdir(parents=True)
+        video = uploads / "clip.mp4"
+        video.write_bytes(name.encode())
+        assert imports.preflight_video(video.as_uri(), Scope(**scope)) == video.as_uri()
+        with pytest.raises(PermissionDeniedError):
+            imports.preflight_video(video.as_uri(), Scope(**{**scope, "user": "other"}))
+    outside = tmp_path / "outside.mp4"
+    outside.write_bytes(b"outside")
+    with pytest.raises(PermissionDeniedError):
+        imports.preflight_video(outside.as_uri(), Scope(**scope))
+    assert "sdk" not in config["memory"]["builtin"]["jiuwen"]
+
+
+@pytest.mark.parametrize("permissions", [None, {"enabled": True}, {"enabled": False, "mode": "auto"}])
+def test_shared_video_root_preserves_permission_gate(tmp_path, monkeypatch, permissions):
+    from jiuwenswarm.common import utils
+
+    sessions = tmp_path / "sessions"
+    monkeypatch.setattr(utils, "get_agent_sessions_dir", lambda: sessions)
+    config = {**_web_tool_config(), **_cfg({"mode": "sdk"}), "permissions": permissions}
+    assert jrb.build_jiuwen_memory_rail(config)
+    globals_config = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]
+    assert "local_media_roots" not in globals_config
+    assert not sessions.exists()
+
+
+@pytest.mark.parametrize("variant", ["http", "sandbox", "no-models", "invalid-roots"])
+def test_shared_video_root_does_not_override_explicit_gates(tmp_path, monkeypatch, variant):
+    from jiuwenswarm.common import utils
+
+    sessions = tmp_path / "sessions"
+    monkeypatch.setattr(utils, "get_agent_sessions_dir", lambda: sessions)
+    config = {**_web_tool_config(), **_cfg({"mode": "sdk"})}
+    kwargs = {}
+    if variant == "http":
+        config["memory"]["builtin"]["jiuwen"].update(mode="http", base_url="http://localhost:1")
+    elif variant == "sandbox":
+        kwargs["sdk_media_globals"] = {}
+    elif variant == "no-models":
+        config["models"] = {}
+    else:
+        monkeypatch.setenv("JIUWEN_MEMORY_VIDEO_ROOTS", "invalid-json")
+    assert jrb.build_jiuwen_memory_rail(config, **kwargs)
+    assert not sessions.exists()

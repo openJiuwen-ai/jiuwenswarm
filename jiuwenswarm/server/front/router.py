@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 CONTROL_METHODS = ALL_CONTROL_METHODS
 
+
 _HANDLE_SESSION = None
 _HANDLE_PROJECT = None
 _HANDLE_CONFIG = None
@@ -232,7 +233,10 @@ class MethodRouter:
         send_lock: Any,
     ) -> None:
         from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
-        from jiuwenswarm.enterprise.tenant.tenant_identity import extract_tenant_key
+        from jiuwenswarm.enterprise.tenant.tenant_identity import (
+            extract_tenant_key,
+            extract_triple,
+        )
 
         _load_history_service()
         params = request.params if isinstance(request.params, dict) else {}
@@ -243,9 +247,12 @@ class MethodRouter:
         subagent_id = params.get("subagent_id")
         # Re-bind inside worker threads: control plane never hits Runtime bind.
         tenant_key = extract_tenant_key(request)
+        group_id, bot_id, user_id = extract_triple(request)
 
         def _load_history_page():
-            with TenantContext.scoped(tenant_key):
+            with TenantContext.scoped(
+                tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
+            ):
                 return _LOAD_HISTORY_QUERY(params)
 
         try:
@@ -343,7 +350,9 @@ class MethodRouter:
             sid = session_id.strip()
 
             def _load_todos():
-                with TenantContext.scoped(tenant_key):
+                with TenantContext.scoped(
+                    tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
+                ):
                     return _LOAD_HISTORY_TODO_SNAPSHOT(sid)
 
             try:

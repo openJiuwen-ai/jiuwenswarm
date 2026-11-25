@@ -7,6 +7,7 @@ import { createCatalog } from '../catalog/index.ts';
 export const DEMO_COMPONENT = 'demo';
 export const DEMO_SLOT = 'conversation.input.above';
 export const DEMO_SLOT_SINGLE = 'conversation.input.below';
+export const DEMO_SLOT_KEEP_MOUNTED = 'test.keep-mounted';
 
 export const demoCatalog = createCatalog({
   components: [
@@ -26,5 +27,6 @@ export const demoCatalog = createCatalog({
   slots: [
     { id: DEMO_SLOT, display: 'list' },
     { id: DEMO_SLOT_SINGLE, display: 'single' },
+    { id: DEMO_SLOT_KEEP_MOUNTED, display: 'single', rerender: 'keep-mounted' },
   ],
 });

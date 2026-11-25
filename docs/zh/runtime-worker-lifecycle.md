@@ -28,6 +28,14 @@ HarmonyOS 沙箱拒绝读取全局 `/proc/stat` 时，Worker 和 Supervisor 可�
 
 `jiuwenswarm-stop` 管理 `jiuwenswarm-start debug` 的后台状态。关闭失败保留状态，可重试；没有 debug 状态时仍按既有约定返回无操作。
 
+debug 停止默认分别给 Front 15 秒、Worker 35 秒；Worker 的预算覆盖其内部 30 秒清理期限，并留出 IPC 和确认进程退出的余量。两个阶段按顺序执行，预算不是整个停止命令的总时限。
+显式 `--timeout N` 仍为两个阶段各设置 N 秒；`--worker-timeout N` 只覆盖 Worker 阶段，可与 `--timeout` 同用。超时必须是正的有限数值。
+`make stop`、`make restart-debug` 和 `make restart-debug-fast` 通过 `STOP_ARGS` 将这些参数传给停止命令；停止失败时不会继续启动服务。例如，只调整 Worker 的预算：
+
+```bash
+make restart-debug-fast STOP_ARGS="--worker-timeout 45"
+```
+
 WHL 的 `jiuwenswarm-start all/app/dev`、命名实例及独立 `jiuwenswarm-app` 在最终退出时先停止 Front，再关闭 Worker；`--stop <name>` 和完整实例 `--restart <name>` 也执行最终清理。命名实例在启动锁内按目标 workspace 的 bootstrap 和运行配置定位 Worker，确认退出后才删除 PID 记录，失败保留记录以便重试。Windows 服务进程树清理保留 Worker 分支，由后续 IPC 操作完成持久化和退出。仅运行 web 的启动器不接管外部后端。
 
 Python 桌面的正式退出即使发生在首个子服务注册之前，也会清理已有 Worker 和可验证的历史端点。最终关闭发现尚未建立 IPC 的 Worker 启动进程时，会在同一截止时间内等待 HELLO，再验证归属；进程命令行只能用于等待，不能代替部署归属校验。
@@ -49,7 +57,9 @@ Windows 同一控制台中的 Ctrl+C 也可能直接送达 Worker。Worker 会�
 历史 Python Worker 没有部署身份时，不能仅凭共同解释器和数据目录推断安装来源。新部署会隔离这个旧端点并继续启动，日志给出旧 PID。操作者核对该 PID 的解释器、完整启动参数、安装来源及数据目录后，可显式关闭：
 
 ```bash
-jiuwenswarm-stop --legacy-worker-pid 12345 --timeout 30
+jiuwenswarm-stop --legacy-worker-pid 12345
+# 核实旧 Worker 的安装来源后，也可在重启时显式选择它：
+make restart-debug STOP_ARGS="--legacy-worker-pid 12345"
 ```
 
 显式选择仍检查用户、解释器、Worker 模块、IPC 参数和进程创建时间；不允许关闭声明属于其他部署的进程。超时或进程已更换时返回失败。该参数只关闭所选历史 Worker；仍在运行的其他 Front 可能重新启动它，应先停止对应 Front。
@@ -64,7 +74,7 @@ IPC 发送和关闭同时失败时，Front 仍保留原恢复等待；恢复订�
 
 ## Worker 输出日志
 
-resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<uuid>.stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，目录为 Worker socket 路径父目录下的 `worker-logs`。该设置不改变 IPC 端点位置。
+resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<uuid>.stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，通过 `common.paths.get_worker_logs_dir()` 使用数据根下的 `logs/worker-logs`。该设置不改变 IPC 端点位置。
 
 建议为 `JIUWEN_WORKER_LOG_DIR` 使用绝对路径；相对路径按 Supervisor 当前工作目录解析。
 

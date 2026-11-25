@@ -243,7 +243,10 @@ def main() -> None:
     parser.add_argument("--shutdown-receipt", help="Require this desktop update attempt's successful shutdown")
     args = parser.parse_args()
     if args.workspace is not None:
-        workspace = args.workspace.expanduser().resolve()
+        # Keep the caller's spelling: the Worker endpoint and its --socket argv
+        # derive from JIUWENSWARM_DATA_DIR as written, so resolving symlinks
+        # (macOS /var -> /private/var) would look for the Worker elsewhere.
+        workspace = Path(os.path.abspath(args.workspace.expanduser()))
         os.environ["JIUWENSWARM_DATA_DIR"] = str(workspace)
         from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
