@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createWebUIRuntime } from '../node_modules/.cache/webui-runtime/runtime/index.js';
 import { createMockTransport } from '../node_modules/.cache/webui-runtime/transport/index.js';
-import { DEMO_SLOT, DEMO_SLOT_SINGLE, demoCatalog } from '../node_modules/.cache/webui-runtime/testing/demoCatalog.js';
+import { DEMO_COMPONENT, DEMO_SLOT, DEMO_SLOT_SINGLE, demoCatalog } from '../node_modules/.cache/webui-runtime/testing/demoCatalog.js';
 import {
   demoClearFrame,
   demoErrorFrame,
@@ -101,6 +101,26 @@ test('reconnect resends ready per consumer', async () => {
   transport.setConnectionState('connected');
   await flush();
   assert.equal(transport.dispatches.filter((request) => request.event === 'ui.ready').length, 2);
+  handle.release();
+});
+
+test('a host restart applies renders whose revisions restarted from 1', async () => {
+  const { transport, runtime } = setup();
+  const handle = runtime.mountSlot('sess-1', DEMO_SLOT);
+  await handle.notifyReady();
+  transport.injectRenderFrame(demoRenderFrame({ revision: 7 }));
+
+  transport.setConnectionState('disconnected');
+  transport.setConnectionState('connected');
+  await flush();
+  transport.injectRenderFrame(demoRenderFrame({
+    revision: 1,
+    root: { component: DEMO_COMPONENT, props: { title: 'restarted' } },
+  }));
+
+  const instance = runtime.getInstance(INSTANCE_KEY);
+  assert.equal(instance.revision, 1, 'the new host process starts its revisions at 1');
+  assert.equal(instance.frame.tree.props.title, 'restarted');
   handle.release();
 });
 
@@ -419,6 +439,41 @@ test('appearance frames apply in revision order and ignore malformed payloads', 
   transport.injectAppearanceFrame(appearanceFrame(4, null, 'pkg.other'));
   assert.equal(runtime.getAppearance(), null);
   assert.equal(notifications, 3);
+});
+
+test('the host appearance snapshot applies its colors part', () => {
+  const { transport, runtime } = setup();
+  const colors = (accent) => ({ package_id: 'pkg.theme', value: { accent } });
+  transport.injectAppearanceFrame({ revision: 1, parts: { colors: colors('#2f6fae') } });
+  assert.deepEqual(runtime.getAppearance(), {
+    packageId: 'pkg.theme',
+    revision: 1,
+    appearance: { accent: '#2f6fae' },
+  });
+
+  // A part this client does not render yet must not hide the colors sent with it.
+  transport.injectAppearanceFrame({
+    revision: 2,
+    parts: { border: { package_id: 'pkg.brand', value: {} }, colors: colors('#b45309') },
+  });
+  assert.deepEqual(runtime.getAppearance(), {
+    packageId: 'pkg.theme',
+    revision: 2,
+    appearance: { accent: '#b45309' },
+  });
+
+  // Malformed color values are ignored as a whole and keep the accepted frame.
+  for (const payload of [
+    { revision: 3, parts: { colors: { package_id: 'pkg.theme', value: { accent: 'red' } } } },
+    { revision: 3, parts: { colors: { package_id: '', value: { accent: '#2f6fae' } } } },
+    { revision: 3, parts: 'nope' },
+  ]) transport.injectAppearanceFrame(payload);
+  assert.equal(runtime.getAppearance().revision, 2);
+
+  // A snapshot without colors means the host defaults apply.
+  transport.injectAppearanceFrame({ revision: 3, parts: {} });
+  assert.equal(runtime.getAppearance(), null);
+  runtime.dispose();
 });
 
 test('appearance survives a reconnect only when a provider re-applies it', async () => {
