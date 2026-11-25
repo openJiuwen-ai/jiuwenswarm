@@ -1356,6 +1356,41 @@ test('TreeSelect sends the whole checked selection for change in treeCheckable m
   } finally { await app.close(); }
 });
 
+test('keep-mounted TreeSelect preserves local multi-selection until the default changes', async () => {
+  const slot = { ...target, slot_id: 'conversation.panel.right' };
+  const tree = (defaults) => ({
+    component: 'Panel', props: { title: 'Controls' },
+    children: [treeSelectTree({ multiple: true, defaultValue: defaults })],
+  });
+  const app = await setup(tree(['alpha']), slot);
+  try {
+    await changeInput(app.container.querySelector('input'), 'Beta');
+    await click(document.querySelector('.ant-select-tree-node-content-wrapper'));
+    assert.match(app.container.textContent, /Alpha/);
+    assert.match(app.container.textContent, /Beta/);
+    await app.replace(tree(['alpha']));
+    assert.match(app.container.textContent, /Beta/, 'equivalent defaults must preserve the local selection');
+    await app.replace(tree(['beta']), 3);
+    assert.doesNotMatch(app.container.textContent, /Alpha/);
+    assert.match(app.container.textContent, /Beta/);
+  } finally { await app.close(); }
+});
+
+test('keep-mounted TreeSelect removes unavailable selections before dispatching changes', async () => {
+  const slot = { ...target, slot_id: 'conversation.panel.right' };
+  const tree = (options, defaults) => ({ component: 'Panel', props: { title: 'Controls' }, children: [
+    treeSelectTree({ multiple: true, treeData: options, ...(defaults ? { defaultValue: defaults } : {}) }),
+  ] });
+  const options = [{ value: 'alpha', title: 'Alpha' }, { value: 'beta', title: 'Beta' }];
+  const app = await setup(tree(options, ['alpha']), slot);
+  try {
+    await app.replace(tree([options[1]]));
+    await changeInput(app.container.querySelector('input'), 'Beta');
+    await click(document.querySelector('.ant-select-tree-node-content-wrapper'));
+    assert.deepEqual(app.business().find((request) => request.event === 'ui.change').payload.data, { value: ['beta'] });
+  } finally { await app.close(); }
+});
+
 const sliderTree = (props = {}, bindings = { 'ui.change': { id: 'slide', args: { field: 'level' } } }) => ({
   component: 'Slider', props, events: bindings,
 });
@@ -2644,6 +2679,25 @@ const formTree = (rules = [{ required: true, message: '请输入账号' }, { min
     { component: 'Button', props: { value: '确认', form: 'credentials' }, events },
     { component: 'Button', props: { value: '普通按钮' }, events },
   ],
+});
+
+test('keep-mounted panel resets form fields to the new frame before submission', async () => {
+  const tree = (initial) => ({ component: 'Panel', props: { title: 'Form' }, children: [
+    { component: 'Form', props: { name: 'profile' }, children: [
+      { component: 'Form.Item', props: { name: 'account' }, children: [
+        { component: 'Input', props: { defaultValue: initial } },
+      ] },
+    ] },
+    { component: 'Button', props: { value: 'Submit', form: 'profile' }, events },
+  ] });
+  const app = await setup(tree('first'), { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    await changeInput(app.container.querySelector('input'), 'draft');
+    await app.replace(tree('second'));
+    assert.equal(app.container.querySelector('input').value, 'second');
+    await click(app.container.querySelector('[data-testid="webui-button"]'));
+    assert.deepEqual(app.business()[0].payload.data, { account: 'second' });
+  } finally { await app.close(); }
 });
 
 test('Form validates on blur and click locally, then sends exactly its current fields', async () => {

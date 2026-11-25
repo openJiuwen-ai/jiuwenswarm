@@ -324,6 +324,31 @@ test('keep-mounted slots update props without remounting node local state', asyn
   }
 });
 
+test('keep-mounted slots recover from an adapter crash on a new frame', async () => {
+  const restoreDom = installDom();
+  const { transport, runtime } = setup();
+  const probe = createProbeAdapter();
+  const registry = createRendererRegistry({ demo: probe.Adapter });
+  const root = createRoot(document.getElementById('root'));
+  const target = { slot_id: DEMO_SLOT_KEEP_MOUNTED };
+  try {
+    await act(async () => renderHost(root, runtime, registry, { slotId: DEMO_SLOT_KEEP_MOUNTED }));
+    await act(async () => transport.injectRenderFrame(demoRenderFrame({
+      revision: 1, target, root: { component: 'demo', props: { title: 'crash' } },
+    })));
+    assert.ok(document.querySelector('[data-testid="webui-instance-error"]'));
+    await act(async () => transport.injectRenderFrame(demoRenderFrame({
+      revision: 2, target, root: { component: 'demo', props: { title: 'recovered' } },
+    })));
+    assert.equal(document.querySelector('[data-testid="webui-instance-error"]'), null);
+    assert.equal(document.querySelector('[data-testid="probe-title"]').textContent, 'recovered');
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    restoreDom();
+  }
+});
+
 test('a missing adapter fails the whole instance tree instead of showing partial content', async () => {
   const restoreDom = installDom();
   const { transport, runtime } = setup();
