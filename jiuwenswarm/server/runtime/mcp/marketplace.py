@@ -372,9 +372,18 @@ async def _all_remote(port: HubAssetPort, query: str = "") -> list[Any]:
     items: list[Any] = []
     seen_asset_ids: set[str] = set()
     for page in range(1, 101):
-        result = await port.search_assets(
-            HubSearchRequest(kind="mcp", query=query, page=page, page_size=100)
-        )
+        try:
+            result = await port.search_assets(
+                HubSearchRequest(kind="mcp", query=query, page=page, page_size=100)
+            )
+        except Exception:
+            # Pagination-defence ValueErrors below are data-source signals;
+            # transport/auth failures come from search_assets. Either way the
+            # caller decides how to surface them — log here only for diagnosis.
+            logger.warning(
+                "[mcp-market] hub catalogue page %s fetch failed", page, exc_info=True
+            )
+            raise
         new_items: list[Any] = []
         for item in result.items:
             if item.kind != "mcp" or item.asset_id in seen_asset_ids:
@@ -382,10 +391,14 @@ async def _all_remote(port: HubAssetPort, query: str = "") -> list[Any]:
             seen_asset_ids.add(item.asset_id)
             new_items.append(item)
         if result.items and not new_items:
+            logger.warning(
+                "[mcp-market] hub MCP pagination page %s made no progress", page
+            )
             raise ValueError(f"Hub MCP pagination page {page} made no progress")
         items.extend(new_items)
         if len(items) >= result.total or not result.items:
             return items
+    logger.warning("[mcp-market] hub MCP pagination exceeded 100 pages")
     raise ValueError("Hub MCP pagination exceeded 100 pages")
 
 
@@ -643,7 +656,13 @@ async def list_mcps_with_hub(
         try:
             remote_items = await _all_remote(port, normalized_query)
         except Exception:
-            return list(cards.values())
+            # Do not mask catalogue failures as an empty success — mcp.list
+            # handlers surface raised errors as ok=False for the client
+            # (aligned with list_mcps_from_enterprise above).
+            logger.exception(
+                "[mcp-market] hub catalogue fetch failed: query=%r", normalized_query
+            )
+            raise
     if normalized_query:
         remote_items = [
             item
