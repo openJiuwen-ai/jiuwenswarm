@@ -9,6 +9,7 @@ proactive compaction hook added for flash mode.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -306,3 +307,124 @@ async def test_proactive_compact_prefers_routed_model_name():
     await rail.before_model_call(ctx)
 
     assert processor.force_compact is True
+
+
+# ---------------------------------------------------------------------------
+# PR-B: warmup seed + unchanged-payload circuit break
+# ---------------------------------------------------------------------------
+
+_WARMUP_SEED_ATTR = "_jiuwenswarm_warmup_prompt_tokens"
+
+
+def _make_overflow_ctx(
+    *,
+    messages,
+    processor: _FakeFullCompactProcessor | None = None,
+    seed: int | None = None,
+    window: int = 512000,
+    session=None,
+):
+    context = SimpleNamespace(_processors=[processor] if processor else [])
+    context._context_window_tokens = window
+    if seed is not None:
+        setattr(context, _WARMUP_SEED_ATTR, seed)
+    return SimpleNamespace(
+        extra={},
+        inputs=SimpleNamespace(messages=list(messages)),
+        context=context,
+        agent=SimpleNamespace(_config=SimpleNamespace(model_name="deepseek-v4.1-flash-1017")),
+        exception=None,
+        request_retry=Mock(),
+        session=session,
+    )
+
+
+def _overflow_error(limit: int = 512000) -> Exception:
+    exc = Exception(f"OpenAI API error: input token limit is {limit}")
+    exc.status_code = 400
+    return exc
+
+
+@pytest.mark.asyncio
+async def test_proactive_compact_uses_warmup_seed_without_usage():
+    rail = ContextOverflowRecoveryRail(max_recovery_attempts=3)
+    processor = _FakeFullCompactProcessor()
+    ctx = _make_overflow_ctx(
+        messages=[SimpleNamespace(content="restored history")],
+        processor=processor,
+        seed=703_840,
+    )
+
+    await rail.before_model_call(ctx)
+
+    assert processor.force_compact is True
+    assert processor.overflow_threshold_override == int(512000 * RECOVERY_THRESHOLD_RATIO)
+
+
+def test_last_prompt_tokens_prefers_usage_over_seed():
+    ctx = _make_overflow_ctx(
+        messages=[SimpleNamespace(usage_metadata={"input_tokens": 100_000})],
+        seed=703_840,
+    )
+
+    assert ContextOverflowRecoveryRail.last_prompt_tokens(ctx) == 100_000
+
+
+@pytest.mark.asyncio
+async def test_after_model_call_clears_seed_and_payload_fingerprint():
+    rail = ContextOverflowRecoveryRail(max_recovery_attempts=3)
+    ctx = _make_overflow_ctx(
+        messages=[SimpleNamespace(content="history")],
+        seed=703_840,
+    )
+    ctx.extra["_overflow_payload_fp"] = (1, (("user", 7),), 0)
+
+    await rail.after_model_call(ctx)
+
+    assert not hasattr(ctx.context, _WARMUP_SEED_ATTR)
+    assert "_overflow_payload_fp" not in ctx.extra
+
+
+@pytest.mark.asyncio
+async def test_repeated_payload_overflow_circuit_breaks_after_first_retry():
+    rail = ContextOverflowRecoveryRail(max_recovery_attempts=3)
+    messages = [SimpleNamespace(role="user", content="same payload")]
+    written: list = []
+
+    async def _write_stream(output) -> None:
+        written.append(output)
+
+    ctx = _make_overflow_ctx(
+        messages=messages, session=SimpleNamespace(write_stream=_write_stream)
+    )
+    ctx.exception = _overflow_error()
+
+    await rail.on_model_exception(ctx)
+    assert ctx.request_retry.call_count == 1
+
+    await rail.on_model_exception(ctx)
+    # 第二次同一 payload：压缩没产生替换 → 熔断，不再重试
+    assert ctx.request_retry.call_count == 1
+    assert len(written) == 1
+    assert written[0].payload["error_type"] == "context_overflow_circuit_break"
+
+
+@pytest.mark.asyncio
+async def test_changed_payload_after_compact_retries_again():
+    rail = ContextOverflowRecoveryRail(max_recovery_attempts=3)
+    messages = [SimpleNamespace(role="user", content="same payload")]
+    ctx = _make_overflow_ctx(messages=messages)
+    ctx.exception = _overflow_error()
+
+    await rail.on_model_exception(ctx)
+    ctx.inputs.messages.append(SimpleNamespace(role="user", content="summary injected"))
+    await rail.on_model_exception(ctx)
+
+    assert ctx.request_retry.call_count == 2
+
+
+def test_resolve_model_context_limit_uses_512k_model_window():
+    ctx = _make_overflow_ctx(messages=[], window=0)
+    ctx.context._model_context_window_tokens = {"deepseek-v4.1-flash-1017": 512000}
+
+    assert ContextOverflowRecoveryRail._resolve_model_context_limit(ctx) == 512000

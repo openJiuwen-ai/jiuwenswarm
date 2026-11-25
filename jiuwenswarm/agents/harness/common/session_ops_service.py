@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -14,6 +15,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     get_read_history_path,
     history_exists,
     load_history_records,
+    resolve_session_dir,
     write_history_records,
     _write_records_to_path,
     flush_session_history,
@@ -29,6 +31,16 @@ logger = logging.getLogger(__name__)
 # the context window can ever consume.  Keep warmup bounded and start from a
 # user-message boundary so we never seed the context with an orphan tool result.
 _WARMUP_HISTORY_MAX_RECORDS = 10_000
+
+# 会话恢复（warmup/rewind 回灌历史）不走压缩器的 add 路径，上下文对象的占用
+# 计数仍是 0。把恢复时称一次的重量写在该属性上，供溢出恢复 rail 在消息没有
+# usage_metadata（冷启动）时读取；成功调用后由 rail 删除，回到 usage 主路径。
+WARMUP_PROMPT_TOKENS_ATTR = "_jiuwenswarm_warmup_prompt_tokens"
+
+# 与 jiuwenswarm.perf.writer 同址：request_summaries.jsonl 落在 session 目录下。
+_REQUEST_SUMMARIES_FILENAME = "request_summaries.jsonl"
+# 只看最近的请求摘要：prior 是"最近一次有值请求"的单次 input_tokens。
+_SUMMARY_TAIL_LINES = 20
 
 
 def _derive_first_prompt(history: list[dict[str, Any]]) -> str:
@@ -990,6 +1002,127 @@ def _limit_warmup_history_records(
     return [], len(history_records)
 
 
+def _last_nonzero_input_tokens(session_id: str) -> int:
+    """最近一次有值请求的单次 ``input_tokens``（含 system / tools 的真实水位）。
+
+    数据源是 ``request_summaries.jsonl`` 的 ``bottleneck.llm[].input_tokens``：那是
+    单次 LLM 调用的计数。不能取 ``summary.tokens.input``——同一轮里的多次工具
+    循环会在那里累加，成倍放大会让首次压缩点过早。读不到摘要或解析失败按 0 处理，
+    由本次回灌计数兜底。
+    """
+    try:
+        session_dir, _error = resolve_session_dir(session_id, create=False)
+    except Exception:
+        logger.debug(
+            "warmup_session_context: resolve session dir failed for %s", session_id, exc_info=True
+        )
+        return 0
+    if session_dir is None:
+        return 0
+    path = session_dir / _REQUEST_SUMMARIES_FILENAME
+    if not path.exists():
+        return 0
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            tail = deque(fh, maxlen=_SUMMARY_TAIL_LINES)
+    except OSError:
+        logger.debug(
+            "warmup_session_context: read summary tail failed for %s", session_id, exc_info=True
+        )
+        return 0
+
+    for line in reversed(tail):
+        record = _parse_summary_line(line)
+        if not isinstance(record, dict):
+            continue
+        tokens = _max_llm_input_tokens(record)
+        if tokens > 0:
+            return tokens
+    return 0
+
+
+def _parse_summary_line(line: str) -> dict[str, Any] | None:
+    text = line.strip()
+    if not text:
+        return None
+    try:
+        record = json.loads(text)
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _max_llm_input_tokens(record: dict[str, Any]) -> int:
+    bottleneck = record.get("bottleneck")
+    entries = bottleneck.get("llm") if isinstance(bottleneck, dict) else None
+    if not isinstance(entries, list):
+        return 0
+    best = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            value = int(entry.get("input_tokens") or 0)
+        except (TypeError, ValueError):
+            continue
+        best = max(best, value)
+    return best
+
+
+def _count_restore_prompt_tokens(messages: list[Any]) -> int:
+    """把本次回灌的消息计数一次（restore 路径专用，不在热路径重复全量 tokenize）。"""
+    if not messages:
+        return 0
+    try:
+        from jiuwenswarm.telemetry.enrichment.tokens import count_context_tokens
+
+        return max(0, int(count_context_tokens(messages, []).message_total))
+    except Exception:
+        logger.debug(
+            "warmup_session_context: token count failed; fallback to char estimate",
+            exc_info=True,
+        )
+    total = 0
+    for message in messages:
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            total += len(content) // 4
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, str):
+                    total += len(part) // 4
+                elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                    total += len(part["text"]) // 4
+    return total
+
+
+def _seed_warmup_prompt_tokens(context: Any, session_id: str, messages: list[Any]) -> None:
+    """恢复会话时播种一次上下文水位（取历史 usage 与本次回灌计数的较大值）。
+
+    两条来源互补：``prior`` 含 system / tools 但可能来自更早、更小的上下文；
+    ``counted`` 是当前历史的真实大小但不含 system / tools。取 max 防低估。
+    """
+    prior = _last_nonzero_input_tokens(session_id)
+    counted = _count_restore_prompt_tokens(messages)
+    seed = max(prior, counted)
+    if seed <= 0:
+        return
+    try:
+        setattr(context, WARMUP_PROMPT_TOKENS_ATTR, seed)
+    except Exception:
+        logger.debug(
+            "warmup_session_context: seed prompt tokens failed for %s", session_id, exc_info=True
+        )
+        return
+    logger.info(
+        "warmup_session_context: session=%s seeded prompt tokens=%d (prior=%d counted=%d)",
+        session_id,
+        seed,
+        prior,
+        counted,
+    )
+
+
 async def warmup_session_context(
     *,
     deep_agent: "DeepAgent",
@@ -1072,7 +1205,7 @@ async def warmup_session_context(
             return False
 
     try:
-        await context_engine.create_context(
+        context = await context_engine.create_context(
             session=session,
             history_messages=context_messages,
         )
@@ -1089,6 +1222,8 @@ async def warmup_session_context(
                     session_id,
                     exc,
                 )
+
+    _seed_warmup_prompt_tokens(context, session_id, context_messages)
 
     logger.info(
         "warmup_session_context: session=%s restored context from disk history with %d messages "

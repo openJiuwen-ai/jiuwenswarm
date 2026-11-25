@@ -19,6 +19,9 @@
 - S3 success 别名由归一点统一产出，覆盖工具自带的"说谎 success"。
 - S4 多模态/图片载荷必须平铺保留在顶层（openjiuwen react_agent 提取依赖）。
 - S5 兼容键 error 与 error_message 双写同值；ok/error_code 等既有键原样保留。
+- 多模态像素不进 LLM 文本视图：渲染文本把 base64 data URL 换成占位符，
+  结构化 ``data.multimodal`` 保持完整——像素由 image 块通道送达，文本副本是
+  纯冗余（否则同一张图按文字计价会成倍膨胀 prompt）。
 
 注意：``has_failure_signal`` / ``error_text_from_payload`` 是全仓失败信号判定
 的**唯一实现**——消费方（``server/runtime/skill_turbo/runtime/tool_utils.py``
@@ -32,6 +35,8 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+
+from openjiuwen.core.context_engine.content_sanitize import sanitize_value_for_text
 
 STATUS_SUCCESS = "success"
 STATUS_ERROR = "error"
@@ -418,6 +423,27 @@ def normalize_tool_result(result: Any) -> dict[str, Any]:
     return _normalize_text(str(result))
 
 
+def _carries_image_payload(normalized: dict[str, Any]) -> bool:
+    """归一结果是否携带结构化多模态载荷（图片像素另有 image 块通道）。
+
+    只看 ``data.multimodal`` / ``data.files[].multimodal`` / 平铺到顶层的
+    ``multimodal``：这些是 react_agent 提升 image 块的来源。bash/HTML 文本里的
+    data URI 不属于多模态载荷，渲染必须原样保留。
+    """
+    data = normalized.get("data")
+    if isinstance(data, dict):
+        multimodal = data.get("multimodal")
+        if isinstance(multimodal, list) and multimodal:
+            return True
+        files = data.get("files")
+        if isinstance(files, list):
+            for item in files:
+                if isinstance(item, dict) and item.get("multimodal"):
+                    return True
+    multimodal = normalized.get("multimodal")  # _flatten_data 会平铺一份到顶层
+    return isinstance(multimodal, list) and bool(multimodal)
+
+
 def render_tool_result_for_llm(normalized: dict[str, Any]) -> str:
     """LLM 视图渲染（S6）：失败给错误文本，成功给 display / content / JSON。
 
@@ -426,6 +452,9 @@ def render_tool_result_for_llm(normalized: dict[str, Any]) -> str:
     write_file 的 original_file 等大载荷在 LLM 上下文中出现两份。这里保持
     框架 ``_build_tool_message_content`` 的 content 提取语义（data["content"]
     优先），其余情况只 dump data 或（无 data 的 dict 输入）normalized。
+
+    带多模态载荷时，dump 出的文本里 base64 data URL 替换为占位符（像素仍由
+    结构化 ``data.multimodal`` 经 image 块通道送达）。
     """
     display = normalized.get("display")
     if isinstance(display, str) and display.strip():
@@ -447,7 +476,13 @@ def render_tool_result_for_llm(normalized: dict[str, Any]) -> str:
             if key in _RENDER_SCHEMA_KEYS or key in merged:
                 continue
             merged[key] = value
-        return _json_text(merged)
+        text = _json_text(merged)
+        if _carries_image_payload(normalized):
+            # 只清洗序列化后的字符串；merged 是浅拷贝，嵌套 data_url 原样保留，
+            # 否则 react_agent 提取 image 块会拿不到像素。
+            sanitized = sanitize_value_for_text(text)
+            return sanitized if isinstance(sanitized, str) else text
+        return text
     if data is not None:
         return _json_text(data)
     return _json_text(normalized)
