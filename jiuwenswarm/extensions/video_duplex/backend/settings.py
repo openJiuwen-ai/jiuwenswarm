@@ -176,7 +176,7 @@ def tool_language() -> str:
 
         raw = resolve_preferred_language()
     except Exception:
-        raw = "en"
+        raw = "zh"
     return "en" if raw == "en" else "zh-CN"
 
 

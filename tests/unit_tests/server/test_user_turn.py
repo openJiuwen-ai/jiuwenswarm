@@ -406,13 +406,13 @@ def test_prefer_mcp_directive_follows_ui_language_en():
     assert "本次任务" not in envelope["prefer_mcp"]
 
 
-def test_prefer_mcp_directive_defaults_to_en_when_language_missing():
+def test_prefer_mcp_directive_defaults_to_zh_when_language_missing():
     envelope = _envelope(
         _turn(
             language=None,
-            metadata={"prefer_mcp": {"display_name": "Weather", "id": "weather"}},
+            metadata={"prefer_mcp": {"display_name": "天气", "id": "weather"}},
         ).render()
     )
 
-    assert 'MCP "Weather"' in envelope["prefer_mcp"]
-    assert "本次任务" not in envelope["prefer_mcp"]
+    assert "MCP「天气」" in envelope["prefer_mcp"]
+    assert 'MCP "Weather"' not in envelope["prefer_mcp"]
