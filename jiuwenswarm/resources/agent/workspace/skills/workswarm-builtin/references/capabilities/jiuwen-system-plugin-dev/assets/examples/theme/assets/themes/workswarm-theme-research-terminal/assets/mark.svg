@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="研究终端标志">
+  <path d="M60 7 L105.9 33.5 L105.9 86.5 L60 113 L14.1 86.5 L14.1 33.5 Z" fill="none" stroke="#121614" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M60 20 L94.6 40 L94.6 80 L60 100 L25.4 80 L25.4 40 Z" fill="none" stroke="#121614" stroke-opacity=".18" stroke-width="1.5" stroke-dasharray="3 4"/>
+  <g stroke="#121614" stroke-width="4" stroke-linecap="round">
+    <path d="M60 60 L60 33"/>
+    <path d="M60 60 L36.6 73.5"/>
+    <path d="M60 60 L83.4 73.5"/>
+  </g>
+  <circle cx="60" cy="33" r="6.5" fill="#f2f4f3" stroke="#121614" stroke-width="4"/>
+  <circle cx="36.6" cy="73.5" r="6.5" fill="#f2f4f3" stroke="#121614" stroke-width="4"/>
+  <circle cx="83.4" cy="73.5" r="6.5" fill="#121614"/>
+  <circle cx="60" cy="60" r="9.5" fill="#17b893"/>
+  <circle cx="60" cy="60" r="3.5" fill="#f2f4f3"/>
+  <path d="M100 18 L112 18 L112 30" fill="none" stroke="#17b893" stroke-width="3" stroke-linecap="square"/>
+  <path d="M20 102 L8 102 L8 90" fill="none" stroke="#17b893" stroke-width="3" stroke-linecap="square"/>
+</svg>

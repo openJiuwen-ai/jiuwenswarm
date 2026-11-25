@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "id": "workswarm-theme",
+    "version": "2.0.1",
+    "domain": "gateway"
+  },
+  "display": {
+    "name": {
+      "zh": "主题背景",
+      "en": "Theme Background"
+    },
+    "description": {
+      "zh": "为 WorkSwarm 提供动态背景、界面配色与启动开场动画，内置 4 套主题，可导入主题接口 v1 的主题包。",
+      "en": "Animated backgrounds, interface colors and startup animations for WorkSwarm, with 4 built-in themes and support for theme API v1 packs."
+    },
+    "tags": [
+      {
+        "zh": "主题",
+        "en": "Themes"
+      },
+      {
+        "zh": "背景",
+        "en": "Background"
+      },
+      {
+        "zh": "开场动画",
+        "en": "Startup animation"
+      },
+      {
+        "zh": "外观",
+        "en": "Appearance"
+      }
+    ],
+    "avatar": "assets/avatar.png",
+    "details": {
+      "zh": "## 使用\n\n1. 安装后打开“设置 → 主题背景”。在“主题”中点击主题卡片上的“使用”切换主题，“预览开场”可立即试看，“恢复原版界面”关闭主题效果。\n2. 在“开场”中设置开场动画、播放时机（每次启动、每天首次、仅手动预览）、开场音乐与开场音量。开场播放时长按空格跳过。\n3. 在“背景与面板”中调整背景暗化、背景模糊、面板不透明度与动态效果。\n4. 在“主题管理”中导入主题包（ZIP）或主题文件夹，导出备份或从备份恢复。\n\n## 注意\n\n- 需要 WorkSwarm 0.2.9.beta3 及以后的版本（提供应用背景、启动开场与受控外观）。\n- 导入的主题与偏好保存在插件数据中，卸载插件时一并删除，卸载前请先导出备份。\n- 多个扩展都提供开场时，播放顺序与停用在“设置 → 扩展 → 启动开场”中调整。",
+      "en": "## Usage\n\n1. After installation, open Settings → 主题背景 (Theme Background). Under 主题 (Themes), click 使用 (Use) on a theme card to switch themes; 预览开场 (Preview startup) plays its animation now, and 恢复原版界面 (Restore original look) turns the theme off.\n2. Under 开场 (Startup), set the startup animation, when it plays (every start, first start of the day, manual preview only), and the music and its volume. Hold Space to skip a playing animation.\n3. Under 背景与面板 (Background and panels), adjust dimming, blur, panel opacity and motion.\n4. Under 主题管理 (Theme management), import a theme pack (ZIP) or folder, export a backup or restore from one.\n\n## Notes\n\n- The settings page is shown in Chinese; the names above give each entry's English meaning.\n- Requires WorkSwarm 0.2.9.beta3 or later (application background, startup animation and controlled appearance).\n- Imported themes and preferences live in the plugin data and are deleted with the plugin; export a backup before uninstalling.\n- When several extensions provide startup animations, set their order and turn them off under Settings → 扩展 (Extensions) → 启动开场 (Startup animation)."
+    },
+    "events": [
+      {
+        "name": "ui.ready",
+        "description": {
+          "zh": "背景、开场与设置页挂载时渲染内容并应用配色",
+          "en": "Render the background, startup animation and settings page when they mount, and apply the colors"
+        }
+      },
+      {
+        "name": "ui.click",
+        "description": {
+          "zh": "处理设置页的按钮",
+          "en": "Handle settings page buttons"
+        }
+      },
+      {
+        "name": "ui.change",
+        "description": {
+          "zh": "处理设置页的开关、选择与滑块",
+          "en": "Handle settings switches, selects and sliders"
+        }
+      },
+      {
+        "name": "ui.closed",
+        "description": {
+          "zh": "开场结束时记录播放，用于“每天首次”",
+          "en": "Record a finished startup animation for the first-start-of-the-day timing"
+        }
+      },
+      {
+        "name": "gateway.disconnect",
+        "description": {
+          "zh": "浏览器连接断开时清理界面状态",
+          "en": "Drop a closed browser connection's view state"
+        }
+      }
+    ]
+  },
+  "extensions": [
+    {
+      "id": "workswarm-theme",
+      "runtime": "backend",
+      "module": "workswarm_theme/extension.py"
+    }
+  ],
+  "ui": {
+    "apiVersion": 1,
+    "items": [
+      {
+        "type": "web.slot.contribution",
+        "id": "workswarm-theme.background",
+        "slot": "application.background",
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "workswarm-theme.splash",
+        "slot": "application.splash",
+        "renderer": {
+          "kind": "webui-tree"
+        },
+        "splash": {
+          "skippable": true,
+          "maxDurationMs": 60000
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "slot": "application.settings",
+        "id": "menu",
+        "kind": "menu",
+        "location": {
+          "after": "extensions"
+        },
+        "title": {
+          "zh": "主题背景",
+          "en": "Theme Background"
+        },
+        "icon": "image"
+      },
+      {
+        "type": "web.slot.contribution",
+        "slot": "application.settings",
+        "id": "section",
+        "kind": "section",
+        "location": {
+          "menu": "workswarm-theme::menu"
+        },
+        "title": {
+          "zh": "主题与开场",
+          "en": "Themes and startup"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "slot": "application.settings",
+        "id": "main",
+        "kind": "item",
+        "location": {
+          "menu": "workswarm-theme::menu",
+          "section": "workswarm-theme::section"
+        },
+        "renderer": {
+          "kind": "webui-tree"
+        },
+        "scope": "application",
+        "instanceKey": "main"
+      }
+    ]
+  }
+}

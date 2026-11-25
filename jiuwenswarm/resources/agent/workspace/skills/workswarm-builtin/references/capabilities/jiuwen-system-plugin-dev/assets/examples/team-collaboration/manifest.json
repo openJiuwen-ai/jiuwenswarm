@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "package": {
+    "id": "webui.team-collab-viz",
+    "version": "1.0.1",
+    "domain": "agentserver"
+  },
+  "extensions": [
+    {
+      "id": "team-collab-viz",
+      "runtime": "backend",
+      "module": "team_collab_viz/extension.py"
+    }
+  ],
+  "ui": {
+    "apiVersion": 1,
+    "items": [
+      {
+        "type": "web.slot.contribution",
+        "id": "tcv.team-info",
+        "slot": "conversation.panel.right",
+        "order": 10,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      },
+      {
+        "type": "web.slot.contribution",
+        "id": "tcv.task-graph",
+        "slot": "conversation.panel.right",
+        "order": 11,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      }
+    ]
+  },
+  "package_type": "extension",
+  "enable": true,
+  "display": {
+    "name": {
+      "zh": "团队协作可视化",
+      "en": "Team Collaboration"
+    },
+    "description": {
+      "zh": "在会话侧边栏查看队长与成员状态、任务进度和依赖关系，展开成员或点击任务查看详情。",
+      "en": "Inspect the leader, members, task progress and dependencies in the session side panel. Expand members or select tasks for details."
+    },
+    "avatar": "assets/avatar.png",
+    "tags": [
+      {
+        "zh": "团队协作",
+        "en": "Teams"
+      },
+      {
+        "zh": "成员状态",
+        "en": "Members"
+      },
+      {
+        "zh": "任务关系",
+        "en": "Dependencies"
+      }
+    ],
+    "details": {
+      "zh": "## 使用\n\n启用插件后，进入已有团队的会话，在右侧打开「团队信息」或「任务关系」。如果当前页面尚未出现页签，在扩展详情中点击「重新加载」。\n\n团队信息支持搜索和展开成员；任务关系支持点击任务、筛选状态、聚焦依赖链、平移缩放和显示全图。\n\n## 数据范围\n\n通过公开团队 Ops 读取数据，由团队事件和页面就绪触发刷新。默认队名的历史会话可以恢复，自定义队名需要插件已经记录其会话绑定。预览图使用演示数据。",
+      "en": "## Usage\n\nEnable the extension, open a session with an existing team, and select Team Info or Task Graph in the right panel. If the tabs are missing, click Reload in the extension details.\n\nSearch and expand members in Team Info. Select tasks, filter statuses, focus dependency chains, pan, zoom or fit the graph in Task Graph.\n\n## Data scope\n\nPublic team Ops provide the data. Team events and UI readiness trigger refreshes. Historical sessions with default team names can be restored; custom team names require a previously recorded session binding. The preview uses demo data."
+    },
+    "events": [
+      {
+        "name": "ui.ready",
+        "description": {
+          "zh": "打开会话或重新挂载页面时读取团队数据，生成两个侧边页签。",
+          "en": "Read team data and render both side-panel tabs when a view becomes ready."
+        }
+      },
+      {
+        "name": "team.monitor_event",
+        "description": {
+          "zh": "收到团队、成员或任务事件后重读数据，并更新已打开的页面。",
+          "en": "Refresh data and open views after team, member or task events."
+        }
+      }
+    ]
+  },
+  "expose": true
+}

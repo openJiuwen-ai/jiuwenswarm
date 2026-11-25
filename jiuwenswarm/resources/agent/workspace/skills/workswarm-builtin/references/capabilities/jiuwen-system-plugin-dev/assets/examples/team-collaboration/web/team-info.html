@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="system">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>团队信息</title>
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body class="page page-team-info">
+
+  <header class="topbar">
+    <div class="tb-main">
+      <div class="tb-title">
+        <h1 id="team-name" title="团队信息">团队信息</h1>
+        <span class="badge" id="team-status-badge" hidden></span>
+        <span class="badge badge-hint" id="status-src-badge" hidden></span>
+      </div>
+      <div class="tb-sub" id="team-meta"></div>
+    </div>
+    <div class="tb-actions">
+      <button id="theme-btn" type="button" title="切换主题">系统</button>
+    </div>
+  </header>
+
+  <div class="statusbar" id="statusbar" hidden></div>
+
+  <section class="teamcard" id="teamcard" aria-live="polite"></section>
+
+  <div class="toolbar">
+    <input id="search-input" class="search" type="search" placeholder="搜索成员 / 简介 / 当前任务" autocomplete="off" spellcheck="false">
+    <span class="tb-note" id="search-note"></span>
+  </div>
+
+  <main id="lists" class="lists"></main>
+
+  <footer class="pager" id="pager" hidden></footer>
+
+  <script src="./assets/app.js"></script>
+  <script src="./assets/team-info.js"></script>
+</body>
+</html>

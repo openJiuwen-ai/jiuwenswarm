@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Transition sound</title>
+  <style>
+    :root { color-scheme: light dark; font: 15px system-ui,sans-serif; }
+    body { max-width: 420px; margin: 64px auto; padding: 24px; }
+    h1 { font-size: 22px; } p { opacity: .7; line-height: 1.6; }
+    button { font: inherit; padding: 12px 18px; margin: 8px 8px 8px 0; border-radius: 10px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1 id="title"></h1>
+  <p id="volume"></p>
+  <button id="compact" type="button" data-testid="application-forms-sound-preview-compact"></button>
+  <button id="workspace" type="button" data-testid="application-forms-sound-preview-workspace"></button>
+  <p id="error" role="alert" hidden></p>
+  <script src="transition-sound.js"></script>
+  <script src="sound-preview.js"></script>
+</body>
+</html>

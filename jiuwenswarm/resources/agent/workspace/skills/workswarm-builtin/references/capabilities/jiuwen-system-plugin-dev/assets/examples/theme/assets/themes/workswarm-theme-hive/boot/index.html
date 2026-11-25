@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>蜂巢协同 · 开场</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0910; color: #f6efe2;
+      font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    .copy { position: fixed; left: 0; right: 0; bottom: 8vh; z-index: 1; display: flex; flex-direction: column; align-items: center;
+      gap: 1.4vh; pointer-events: none; text-align: center; }
+    .copy::before { content: ""; position: absolute; left: 50%; top: 50%; width: min(980px, 92vw); height: 260px;
+      transform: translate(-50%, -50%); background: radial-gradient(closest-side, rgba(8, 6, 11, .78), rgba(8, 6, 11, 0));
+      z-index: -1; opacity: 0; transition: opacity .6s ease; }
+    .show-word .copy::before { opacity: 1; }
+    .kicker { font-size: 11px; letter-spacing: .55em; text-indent: .55em; color: rgba(255, 214, 150, .72);
+      opacity: 0; transform: translateY(6px); transition: opacity .6s ease, transform .6s ease; }
+    .word { font: 700 clamp(40px, 6.2vw, 84px)/1 "SF Pro Display", "Helvetica Neue", "PingFang SC", Arial, sans-serif;
+      letter-spacing: .01em; filter: drop-shadow(0 0 22px rgba(255, 170, 60, .35)); }
+    .word span { display: inline-block; opacity: 0; transform: translateY(14px) scale(.96); filter: blur(8px);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+      transition: opacity .55s ease, transform .7s cubic-bezier(.16, 1, .3, 1), filter .6s ease; }
+    .word span.work { background-image: linear-gradient(180deg, #e2ceff 0%, #b48cff 55%, #8a5cf0 100%); }
+    .word span.swarm { background-image: linear-gradient(180deg, #fff0b8 0%, #ffcf55 50%, #ff9f12 100%); }
+    .greet { font-size: 15px; letter-spacing: .2em; color: rgba(246, 239, 226, .86); opacity: 0;
+      transform: translateY(6px); transition: opacity .6s ease, transform .6s ease; }
+    .count { position: fixed; left: 50%; bottom: 4.5vh; transform: translateX(-50%); font: 500 10px/1 "SF Mono", Menlo, monospace;
+      letter-spacing: .32em; color: rgba(255, 205, 130, .55); opacity: 0; transition: opacity .5s ease; white-space: pre; }
+    .show-kicker .kicker, .show-greet .greet { opacity: 1; transform: none; }
+    .show-word .word span { opacity: 1; transform: none; filter: blur(0); }
+    .show-count .count { opacity: 1; }
+    .no-webgl body { background: radial-gradient(ellipse at 50% 45%, #2a1a0c 0%, #0b0910 70%); }
+    .no-webgl canvas { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-hidden="true"></canvas>
+  <div class="copy">
+    <div class="kicker" id="kicker">OPENJIUWEN · 协同工程</div>
+    <!-- 字标由 scene.js 逐字生成（初始透明）；这里留空，避免脚本加载前的首帧露出文字。 -->
+    <div class="word" id="word" aria-label="WorkSwarm"></div>
+    <div class="greet" id="greet"></div>
+  </div>
+  <div class="count" id="count"></div>
+  <script src="../_workswarm/theme-sdk.js"></script>
+  <script src="../lib/hive3d.js"></script>
+  <script src="scene.js"></script>
+</body>
+</html>

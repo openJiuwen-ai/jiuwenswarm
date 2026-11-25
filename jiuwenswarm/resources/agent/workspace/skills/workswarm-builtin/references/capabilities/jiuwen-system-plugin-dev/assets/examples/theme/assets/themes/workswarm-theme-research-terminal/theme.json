@@ -1,0 +1,41 @@
+{
+  "$schema": "../workswarm-theme/schema/theme.schema.json",
+  "theme_api": 1,
+  "id": "workswarm-theme-research-terminal",
+  "name": "科研终端",
+  "version": "1.2.0",
+  "description": "洁净实验室风格的科研终端主题：系统自检、档案访问、研究员身份确认式开场动画，配合缓慢漂移的分子晶格动态背景。",
+  "tags": ["开场动画", "动态背景", "科研终端"],
+  "preview": "preview.svg",
+  "appearance": {
+    "accent": "#0d8f72",
+    "surface_opacity": 0.84,
+    "tokens": {
+      "--color-scrollbar-thumb": "rgba(13, 143, 114, .32)",
+      "--color-sidebar-nav-active": "rgba(13, 143, 114, .12)",
+      "--color-sidebar-nav-active-hover": "rgba(13, 143, 114, .18)",
+      "--color-conversation-active-surface": "rgba(13, 143, 114, .12)"
+    },
+    "stylesheet": "skin.css"
+  },
+  "background": {
+    "type": "html",
+    "src": "background/index.html",
+    "poster": "background/still.svg",
+    "reduced_motion_src": "background/still.svg",
+    "color": "#eef1f0"
+  },
+  "boot": {
+    "type": "sequence",
+    "sequence": "boot/sequence.json",
+    "background": "#f2f4f3",
+    "policy": "session",
+    "skippable": true,
+    "skip_after_ms": 600,
+    "max_duration_ms": 14000,
+    "wait_for_host": true,
+    "reduced_motion": "shorten",
+    "exit": "wipe",
+    "audio": { "type": "synth", "preset": "lab-terminal", "volume": 0.6 }
+  }
+}

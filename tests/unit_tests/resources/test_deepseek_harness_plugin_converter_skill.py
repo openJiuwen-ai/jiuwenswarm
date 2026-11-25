@@ -29,38 +29,26 @@ def test_converter_uses_latest_official_sources_and_scoped_source_fetching():
     assert "sparse-checkout" in content
 
 
-def test_converter_is_self_contained_and_stops_on_required_capability_gaps():
+def test_converter_reuses_the_builtin_development_skill_and_preserves_gap_handling():
     pages = [
         (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8"),
         *(path.read_text(encoding="utf-8") for path in (SKILL_ROOT / "references").glob("*.md")),
     ]
     content = "\n".join(pages)
 
-    assert "jiuwen-system-plugin-dev" not in content
+    assert "../jiuwen-system-plugin-dev/SKILL.md" in content
     assert "缺少必要能力" in content
     assert "立即停止开发" in content
-    assert "package.id" in content
-    assert "create_extension()" in content
-    assert "jiuwenswarm extension install" in content
+    assert "CAPABILITY_CHOICES.md" in content
+    assert "两个域都需要时" in content
 
 
-def test_converter_can_build_and_validate_a_system_plugin_without_another_skill():
-    content = "\n".join(
-        [
-            (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8"),
-            (SKILL_ROOT / "references/conversion-workflow.md").read_text(encoding="utf-8"),
-            (SKILL_ROOT / "references/system-plugin-development.md").read_text(encoding="utf-8"),
-        ]
-    )
-
-    assert "releases/0.2.9.beta3" not in content
-    assert "release/v0.1.20.post3" not in content
-    assert "https://gitcode.com/openJiuwen/jiuwenswarm/tree/develop" in content
-    assert "https://gitcode.com/openJiuwen/agent-core/tree/develop" in content
-    assert "https://gitcode.com/openJiuwen/agent-gateway/tree/develop" in content
-    assert "jiuwen-system-plugin-dev" not in content
-    assert (SKILL_ROOT / "scripts/build_package.py").is_file()
-    assert (SKILL_ROOT / "scripts/run_tests.py").is_file()
-    assert (SKILL_ROOT / "scripts/finalize_package.py").is_file()
-    assert (SKILL_ROOT / "assets/package_example/manifest.json").is_file()
-    assert (SKILL_ROOT / "assets/package_example/example_plugin/extension.py").is_file()
+def test_converter_shared_development_resources_are_bundled_together():
+    shared = SKILL_ROOT.parent / "jiuwen-system-plugin-dev"
+    assert (shared / "SKILL.md").is_file()
+    for script in ("build_package.py", "run_tests.py", "finalize_package.py"):
+        assert (shared / "scripts" / script).is_file()
+    for page in ("example.md", "frontend-development.md", "bundle-development.md"):
+        assert (shared / "references" / page).is_file()
+    assert (shared / "assets/examples/harness-workbench/manifest.json").is_file()
+    assert not (SKILL_ROOT / "scripts").exists()

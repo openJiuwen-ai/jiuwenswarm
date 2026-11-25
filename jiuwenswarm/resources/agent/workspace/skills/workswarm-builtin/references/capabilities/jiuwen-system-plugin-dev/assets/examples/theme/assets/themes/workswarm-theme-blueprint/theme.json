@@ -1,0 +1,21 @@
+{
+  "$schema": "../workswarm-theme/schema/theme.schema.json",
+  "theme_api": 1,
+  "id": "workswarm-theme-blueprint",
+  "name": "晨雾蓝图",
+  "version": "1.0.1",
+  "description": "静态背景示例：淡蓝灰渐变上的工程蓝图线稿，不含开场动画，适合长时间工作。",
+  "tags": ["静态背景", "示例"],
+  "preview": "background.svg",
+  "appearance": {
+    "accent": "#2f6fae",
+    "surface_opacity": 0.82
+  },
+  "background": {
+    "type": "image",
+    "src": "background.svg",
+    "color": "#e9eef3",
+    "fit": "cover",
+    "position": "center"
+  }
+}

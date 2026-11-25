@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>WorkSwarm 启动动画</title>
+  <style>html,body{margin:0;height:100%;overflow:hidden;background:#000}video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}</style>
+</head>
+<body>
+  <video id="boot" src="{{VIDEO}}" poster="{{POSTER}}" playsinline muted preload="auto"></video>
+  <script src="lab-synth.js"></script>
+  <script src="theme-sdk.js"></script>
+  <script>
+    (function () {
+      var video = document.getElementById('boot');
+      var sdk = window.WorkSwarmThemeSDK;
+      video.addEventListener('ended', function () { sdk.complete(); });
+      video.addEventListener('error', function () { sdk.error('VIDEO_FAILED', 'video cannot play'); });
+      sdk.onStart(function () {
+        var promise = video.play();
+        if (promise && promise.catch) promise.catch(function () { sdk.error('VIDEO_FAILED', 'video cannot play'); });
+      });
+    })();
+  </script>
+</body>
+</html>

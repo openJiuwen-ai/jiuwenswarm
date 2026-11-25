@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f1f4f8"/>
+      <stop offset=".6" stop-color="#e3eaf2"/>
+      <stop offset="1" stop-color="#d9e3ee"/>
+    </linearGradient>
+    <radialGradient id="haze" cx=".72" cy=".2" r=".6">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".8"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="minor" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" fill="none" stroke="#2f6fae" stroke-opacity=".05"/>
+    </pattern>
+    <pattern id="major" width="120" height="120" patternUnits="userSpaceOnUse">
+      <path d="M120 0H0V120" fill="none" stroke="#2f6fae" stroke-opacity=".09"/>
+    </pattern>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#sky)"/>
+  <rect width="1600" height="1000" fill="url(#minor)"/>
+  <rect width="1600" height="1000" fill="url(#major)"/>
+  <rect width="1600" height="1000" fill="url(#haze)"/>
+  <g fill="none" stroke="#2f6fae" stroke-opacity=".22" stroke-width="1.2">
+    <circle cx="1210" cy="640" r="250"/>
+    <circle cx="1210" cy="640" r="190" stroke-dasharray="6 8"/>
+    <circle cx="1210" cy="640" r="120"/>
+    <circle cx="1210" cy="640" r="44"/>
+    <path d="M900 640 H1520 M1210 330 V950"/>
+    <path d="M1033 463 L1387 817 M1387 463 L1033 817" stroke-opacity=".12"/>
+    <path d="M1210 390 A250 250 0 0 1 1460 640" stroke="#2f6fae" stroke-opacity=".45" stroke-width="2"/>
+  </g>
+  <g fill="none" stroke="#2f6fae" stroke-opacity=".18">
+    <rect x="180" y="610" width="420" height="230"/>
+    <path d="M180 870 H600 M180 862 V878 M600 862 V878"/>
+    <path d="M150 610 V840 M142 610 H158 M142 840 H158"/>
+    <path d="M250 610 V560 H520 V610" stroke-dasharray="4 6"/>
+    <circle cx="390" cy="725" r="60"/>
+  </g>
+  <g fill="#2f6fae" fill-opacity=".35" font-family="Menlo, Consolas, monospace" font-size="13" letter-spacing="2">
+    <text x="360" y="894">420.00</text>
+    <text x="100" y="730" transform="rotate(-90 100 730)">230.00</text>
+    <text x="1290" y="372">R 250</text>
+    <text x="1500" y="980" text-anchor="end">BLUEPRINT · SHEET 01</text>
+  </g>
+</svg>

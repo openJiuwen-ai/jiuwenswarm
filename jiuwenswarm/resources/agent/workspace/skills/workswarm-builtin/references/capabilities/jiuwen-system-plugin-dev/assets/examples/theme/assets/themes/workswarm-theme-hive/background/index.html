@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>蜂巢协同 · 动态背景</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #f6efe2; }
+    canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    .no-webgl body { background: #f6efe2 url(../poster.png) center / cover no-repeat; }
+    .no-webgl canvas { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-hidden="true"></canvas>
+  <script src="../_workswarm/theme-sdk.js"></script>
+  <script src="../lib/hive3d.js"></script>
+  <script src="scene.js"></script>
+</body>
+</html>

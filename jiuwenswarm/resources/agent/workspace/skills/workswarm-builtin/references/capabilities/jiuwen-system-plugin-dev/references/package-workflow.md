@@ -21,9 +21,9 @@
 
 | 仓库 | 固定分支 | GitCode | GitHub |
 | --- | --- | --- | --- |
-| Swarm | `develop` | [openJiuwen/jiuwenswarm](https://gitcode.com/openJiuwen/jiuwenswarm/tree/develop) | [openJiuwen-ai/jiuwenswarm](https://github.com/openJiuwen-ai/jiuwenswarm/tree/develop) |
-| Core | `develop` | [openJiuwen/agent-core](https://gitcode.com/openJiuwen/agent-core/tree/develop) | [openJiuwen-ai/agent-core](https://github.com/openJiuwen-ai/agent-core/tree/develop) |
-| Gateway | `develop` | [openJiuwen/agent-gateway](https://gitcode.com/openJiuwen/agent-gateway/tree/develop) | — |
+| Swarm | `releases/0.2.10` | [openJiuwen/jiuwenswarm](https://gitcode.com/openJiuwen/jiuwenswarm/tree/releases/0.2.10) | [openJiuwen-ai/jiuwenswarm](https://github.com/openJiuwen-ai/jiuwenswarm/tree/releases/0.2.10) |
+| Core | `release/v0.1.22` | [openJiuwen/agent-core](https://gitcode.com/openJiuwen/agent-core/tree/release/v0.1.22) | [openJiuwen-ai/agent-core](https://github.com/openJiuwen-ai/agent-core/tree/release/v0.1.22) |
+| Gateway | `release/0.1.1` | [openJiuwen/agent-gateway](https://gitcode.com/openJiuwen/agent-gateway/tree/release/0.1.1) | — |
 
 获取时注意：
 
@@ -119,6 +119,8 @@ Bash 调用时去掉开头的 `&`，其余路径仍保留引号；EXE、DMG 的�
 - **平台缺口：** 没有合适的扩展能力时先报告，不通过修改平台或新增触发点补齐。
 
 ## 3. 声明与实现独立的系统插件
+
+本节描述单域结构。需求同时需要两个运行域时，改用 [组合包开发](bundle-development.md) 的根声明和成员结构，不把两个域写进同一个单域 manifest。
 
 当前示例采用以下布局，实际字段仍以目标 Core 解析器为准：
 
