@@ -224,8 +224,10 @@ class WorkerLogRotation:
         interval: float = 5.0, retention_interval: float = 60.0,
     ) -> None:
         self.path = path
-        if max_bytes < 4 or backup_count <= 0 or interval <= 0 or retention_interval <= 0:
-            raise ValueError("Worker log size must fit a UTF-8 character and other limits must be positive")
+        if max_bytes < 4:
+            raise ValueError("Worker log size must fit a UTF-8 character")
+        if backup_count <= 0 or interval <= 0 or retention_interval <= 0:
+            raise ValueError("Worker log rotation limits and intervals must be positive")
         self.max_bytes = max_bytes
         self.backup_count = backup_count
         self._interval = interval
