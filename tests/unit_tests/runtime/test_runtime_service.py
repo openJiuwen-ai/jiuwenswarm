@@ -1687,13 +1687,29 @@ async def test_team_pause_publishes_once_after_business_consumers_exit(
         pushes.append({"session_id": session_id, "generation": generation, "channel_id": channel_id})
         order.append("push")
 
+    stop_holds: list[str] = []
+
+    def begin_request_stop(session_id: str) -> None:
+        stop_holds.append(f"begin:{session_id}")
+
+    def end_request_stop(session_id: str) -> None:
+        stop_holds.append(f"end:{session_id}")
+
     coordinator = SimpleNamespace(
         snapshot_session=lambda session_id: (
             SimpleNamespace(
                 session_id=session_id,
                 generation=2,
                 state=RuntimeSessionState.READY,
-                executions=(),
+                executions=(
+                    # One live business execution: the pause fence binds to it
+                    # and the drain below must cancel exactly this one.
+                    SimpleNamespace(
+                        execution_id="exec-round-2",
+                        request_id="req-round-2",
+                        team=SimpleNamespace(observation_only=False),
+                    ),
+                ),
             )
             if registered else None
         ),
@@ -1702,6 +1718,8 @@ async def test_team_pause_publishes_once_after_business_consumers_exit(
     lifecycle = SimpleNamespace(
         pause_session=AsyncMock(side_effect=pause_session),
         publish_pause_completed=AsyncMock(side_effect=publish),
+        begin_request_stop=begin_request_stop,
+        end_request_stop=end_request_stop,
     )
     runtime = AgentRuntime(
         agent_manager=FakeAgentManager(),
@@ -1730,7 +1748,13 @@ async def test_team_pause_publishes_once_after_business_consumers_exit(
         assert "session_id=session-a generation=2" in caplog.text
         assert "observer" in caplog.text
     if registered:
-        assert order[:3] == ["pause", "adapter", "drained"]
+        # A successful lifecycle pause is the single pause entry: the adapter
+        # forward only runs as the compat fallback when the lifecycle refused.
+        expected_order = ["pause"] + ([] if paused else ["adapter"]) + ["drained"]
+        assert order[: len(expected_order)] == expected_order
+        assert stop_holds == ["begin:session-a", "end:session-a"]
+    else:
+        assert stop_holds == []
     if expect_push:
         assert pushes[0] == {
             "channel_id": "web",
@@ -1773,6 +1797,8 @@ async def test_team_pause_does_not_push_completion_to_replaced_session(
         session_runtime_lifecycle=SimpleNamespace(
             pause_session=AsyncMock(return_value=False),
             publish_pause_completed=publish,
+            begin_request_stop=lambda session_id: None,
+            end_request_stop=lambda session_id: None,
         ),
     )
     monkeypatch.setattr("jiuwenswarm.runtime.request.cancel_request", cancel_agent)
@@ -1792,6 +1818,90 @@ async def test_team_pause_does_not_push_completion_to_replaced_session(
     assert "Skipped stale Team pause completion" in caplog.text
     assert "generation=2 current_generation=3" in caplog.text
     test_logger.info("Suppressed pause completion after Session replacement: state=%s", new_state)
+
+
+@pytest.mark.asyncio
+async def test_team_pause_fallback_is_fenced_to_snapshot_rounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compat adapter pause must carry the snapshotted generation and rounds.
+
+    The lifecycle refused to pause (nothing matched its generation), so the
+    request falls back to the adapter; without the injected fence that path
+    pauses by session id alone and can stop a newer round or generation.
+    """
+    from jiuwenswarm.runtime.session.model import (
+        TEAM_PAUSE_FENCE_GENERATION_PARAM,
+        TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM,
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def cancel_agent(agent: object, request: AgentRequest, *, allow_create: bool = False):
+        captured["params"] = dict(request.params)
+        return AgentResponse(request_id="pause", channel_id="web", payload={"success": True})
+
+    snapshot = SimpleNamespace(
+        session_id="session-a",
+        generation=2,
+        state=RuntimeSessionState.READY,
+        executions=(
+            SimpleNamespace(
+                execution_id="exec-round-16",
+                request_id="req-round-16",
+                team=SimpleNamespace(observation_only=False),
+            ),
+            SimpleNamespace(
+                execution_id="exec-attach",
+                request_id="req-attach",
+                team=SimpleNamespace(observation_only=True),
+            ),
+        ),
+    )
+    coordinator = SimpleNamespace(
+        snapshot_session=lambda session_id: snapshot,
+        cancel_execution=AsyncMock(
+            return_value=CancelExecutionResult(matched=1, cancelled=1, timed_out=()),
+        ),
+    )
+    publish = AsyncMock()
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+        session_runtime_lifecycle=SimpleNamespace(
+            pause_session=AsyncMock(return_value=False),
+            publish_pause_completed=publish,
+            begin_request_stop=lambda session_id: None,
+            end_request_stop=lambda session_id: None,
+        ),
+    )
+    monkeypatch.setattr("jiuwenswarm.runtime.request.cancel_request", cancel_agent)
+
+    response = await runtime.cancel_request(
+        AgentRequest(
+            request_id="pause",
+            channel_id="web",
+            session_id="session-a",
+            req_method=ReqMethod.CHAT_CANCEL,
+            params={"mode": "team", "intent": "pause"},
+        )
+    )
+
+    assert response.ok is True
+    assert captured["params"][TEAM_PAUSE_FENCE_GENERATION_PARAM] == 2
+    # Observation-only executions never owned the round, so only the
+    # business request fences the fallback pause.
+    assert captured["params"][TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM] == ["req-round-16"]
+    # The drain is bound to the snapshotted business execution: the newer
+    # rounds the fence protects are never cancelled here.
+    coordinator.cancel_execution.assert_awaited_once_with(
+        "session-a",
+        execution_id="exec-round-16",
+        generation=2,
+    )
+    publish.assert_awaited_once()
+    test_logger.info("Fallback pause carried fence: %s", captured["params"])
 
 
 @pytest.mark.asyncio

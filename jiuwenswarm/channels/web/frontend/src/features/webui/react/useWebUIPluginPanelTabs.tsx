@@ -8,6 +8,11 @@
  * tab. Closing the active tab activates its visible neighbour or falls back to the native page.
  * Closing an inactive tab keeps the current page. Closed plugin tabs stay
  * discovered, so a blank tab can add them again at any time.
+ *
+ * A contribution hidden only by the instance-visibility client preference keeps its tab parked:
+ * the tab bar renders tabs backed by the visible discovery result, and re-enabling the
+ * preference restores the parked tab without re-selecting it. Only a contribution that left both
+ * the visible and the hidden discovery result is pruned.
  */
 
 import { useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
@@ -17,6 +22,7 @@ import type { PanelOpenRequest } from '../client/panelNavigation.ts';
 import {
   chooseWebUIPluginPanel,
   closeWebUIPluginPanelTab,
+  hideWebUIPluginPanels,
   isWebUIPluginPanelDraftTab,
   openWebUIPluginPanelDraft,
   removeWebUIPluginPanels,
@@ -30,6 +36,8 @@ import { getWebUIPluginPanelTabsStore } from './pluginPanelTabsStore.ts';
 import type { WebUIPanelEntry } from './useWebUIPanels.tsx';
 import { WebUIPluginPanelHome } from './WebUIPluginPanelHome.tsx';
 import { webUIPluginPanelIcon } from './webuiPanelIcon.tsx';
+
+const noHiddenPanels: readonly WebUIPanelEntry[] = Object.freeze([]);
 
 export interface WebUIPluginPanelTab {
   /** Tab key for the shared tab bar; never collides with a native tab key. */
@@ -63,6 +71,11 @@ export interface UseWebUIPluginPanelTabsOptions {
   sessionId: string | null;
   /** Discovery result owned by the host; the panel region never mounts the slot itself. */
   panels: readonly WebUIPanelEntry[];
+  /**
+   * Panels still mounted in the scope but hidden by the instance-visibility client preference.
+   * Their tabs are parked, not pruned, so re-enabling the preference restores them.
+   */
+  hiddenPanels?: readonly WebUIPanelEntry[];
   /** Render one discovered panel body; the host keeps the mount lease and style overrides. */
   renderPanel: (key: string) => ReactNode;
   /** Explicit open request raised by a plugin through `Button.openPanel`. */
@@ -76,6 +89,7 @@ export function useWebUIPluginPanelTabs({
   slotId,
   sessionId,
   panels,
+  hiddenPanels = noHiddenPanels,
   renderPanel,
   openRequest = null,
   consumeOpenRequest,
@@ -85,26 +99,38 @@ export function useWebUIPluginPanelTabs({
   const store = useMemo(() => getWebUIPluginPanelTabsStore(slotId), [slotId]);
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   const availablePanelIds = useMemo(() => panels.map((panel) => panel.panelId), [panels]);
+  const hiddenPanelIds = useMemo(() => hiddenPanels.map((panel) => panel.panelId), [hiddenPanels]);
   const sessionKey = sessionId ?? '';
   const sessionRef = useRef(sessionKey);
-  const lastAvailablePanelIdsRef = useRef<readonly string[]>([]);
+  const lastKnownPanelIdsRef = useRef<readonly string[]>([]);
 
   useEffect(() => {
     if (sessionRef.current !== sessionKey) {
       // A conversation switch remounts the slot; contributions that have not rendered yet are
       // not removals, so the next discovery result becomes the new comparison baseline.
       sessionRef.current = sessionKey;
-      lastAvailablePanelIdsRef.current = availablePanelIds;
+      lastKnownPanelIdsRef.current = [...availablePanelIds, ...hiddenPanelIds];
       return;
     }
-    const previousPanelIds = lastAvailablePanelIdsRef.current;
-    lastAvailablePanelIdsRef.current = availablePanelIds;
-    const available = new Set(availablePanelIds);
-    const removedPanelIds = previousPanelIds.filter((panelId) => !available.has(panelId));
+    const previousPanelIds = lastKnownPanelIdsRef.current;
+    lastKnownPanelIdsRef.current = [...availablePanelIds, ...hiddenPanelIds];
+    const known = new Set(availablePanelIds);
+    for (const panelId of hiddenPanelIds) known.add(panelId);
+    // Only a contribution that left both the visible and the hidden discovery result is truly
+    // gone (cleared or unmounted); a preference-hidden panel keeps its tab parked.
+    const removedPanelIds = previousPanelIds.filter((panelId) => !known.has(panelId));
     if (removedPanelIds.length > 0) {
       store.update((current) => removeWebUIPluginPanels(current, removedPanelIds));
     }
-  }, [availablePanelIds, sessionKey, store]);
+  }, [availablePanelIds, hiddenPanelIds, sessionKey, store]);
+
+  useEffect(() => {
+    // A parked tab must not own the content area while its panel is hidden, even when this hook
+    // mounts or the conversation switches with the preference already off. The discovery history
+    // only guards pruning against contributions that have not rendered yet; hiding is idempotent.
+    if (hiddenPanelIds.length === 0) return;
+    store.update((current) => hideWebUIPluginPanels(current, hiddenPanelIds));
+  }, [hiddenPanelIds, store]);
 
   useEffect(() => {
     if (!enabled || !openRequest || !sessionId || openRequest.sessionId !== sessionId) return;
