@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import builtins
+import importlib.util
 import os
 from pathlib import Path
 import runpy
@@ -84,10 +84,8 @@ def test_uninstall_email_mcp_cleanup(exe_entry, monkeypatch, tmp_path, outcome):
     monkeypatch.setattr(psutil, "process_iter", lambda attrs: [unrelated, target, other_install])
     monkeypatch.setattr(psutil, "wait_procs", wait_procs)
     monkeypatch.setattr(exe_entry, "os", SimpleNamespace(name="nt", path=os.path))
-    monkeypatch.setattr(exe_entry, "_ensure_stdio", lambda: None)
     monkeypatch.setattr(exe_entry.sys, "frozen", True, raising=False)
     monkeypatch.setattr(exe_entry.sys, "executable", str(backend / "workswarm.exe"))
-    monkeypatch.setattr(exe_entry.sys, "argv", ["workswarm.exe", "--desktop-stop-bundled-email-mcp"])
 
     assert exe_entry._stop_bundled_email_mcp() == (0 if outcome == "exited" else 1)
     if outcome == "access_denied":
@@ -105,7 +103,7 @@ def test_cleanup_dispatch_runs_before_workspace_initialization(monkeypatch):
     original_import = builtins.__import__
 
     def reject_application_import(name, *args, **kwargs):
-        if name.startswith("jiuwenswarm"):
+        if name.startswith("jiuwenswarm") and name != "jiuwenswarm.common._build_config":
             pytest.fail(f"Cleanup imported application initialization: {name}")
         return original_import(name, *args, **kwargs)
 

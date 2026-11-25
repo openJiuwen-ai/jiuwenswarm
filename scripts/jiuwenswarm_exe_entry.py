@@ -10,6 +10,8 @@ import subprocess
 import traceback
 from pathlib import Path
 
+from jiuwenswarm.common._build_config import DISPLAY_NAME, ERROR_LOG_NAME
+
 _DESKTOP_STOP_BUNDLED_EMAIL_MCP = "--desktop-stop-bundled-email-mcp"
 
 
@@ -47,21 +49,23 @@ def _stop_bundled_email_mcp() -> int:
     return int(failed or bool(alive))
 
 
-# Installer cleanup needs only the bundled Node path. Dispatch before any
-# user workspace access, including imports that initialize logging.
-if __name__ == "__main__" and getattr(sys, "frozen", False) and os.name == "nt":
-    if sys.argv[1:2] == [_DESKTOP_STOP_BUNDLED_EMAIL_MCP]:
-        if len(sys.argv) != 2:
-            raise SystemExit(2)
-        try:
-            cleanup_exit = _stop_bundled_email_mcp()
-        except Exception:
-            # Report failure without a windowed PyInstaller exception dialog.
-            cleanup_exit = 2
-        raise SystemExit(cleanup_exit)
+# Installer cleanup needs only the bundled Node path and must skip workspace setup.
+_IS_EMAIL_MCP_CLEANUP = (
+    __name__ == "__main__"
+    and getattr(sys, "frozen", False)
+    and os.name == "nt"
+    and sys.argv[1:2] == [_DESKTOP_STOP_BUNDLED_EMAIL_MCP]
+)
 
 
-from jiuwenswarm.common._build_config import DISPLAY_NAME, ERROR_LOG_NAME
+def _email_mcp_cleanup_exit_code() -> int:
+    if len(sys.argv) != 2:
+        return 2
+    try:
+        return _stop_bundled_email_mcp()
+    except Exception:  # noqa: BLE001 - installer logs the exit code
+        return 2
+
 
 _ENTRY_ARGV = tuple(sys.argv)
 
@@ -69,7 +73,7 @@ _ENTRY_ARGV = tuple(sys.argv)
 # 导致 openjiuwen 的默认日志路径 "./logs/" 解析为 "/logs/"（只读）。
 # 在任何业务 import 之前，将 cwd 切换到用户数据目录 ~/.jiuwenswarm，
 # 让 openjiuwen 的相对日志路径落到 <data>/logs/，与项目其它运行时数据同根。
-if getattr(sys, "frozen", False):
+if getattr(sys, "frozen", False) and not _IS_EMAIL_MCP_CLEANUP:
     # Skills may need to run bundled Python scripts on machines without an
     # external Python installation.  The frozen executable already supports
     # `jiuwenswarm.exe script.py ...` via the runpy branch below.
@@ -462,6 +466,9 @@ def _pop_flag(flag: str) -> bool:
 
 
 def main() -> None:
+    if _IS_EMAIL_MCP_CLEANUP:
+        raise SystemExit(_email_mcp_cleanup_exit_code())
+
     _acquire_windows_app_mutexes()
     try:
         code = _dispatch()
