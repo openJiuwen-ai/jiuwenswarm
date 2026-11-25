@@ -242,7 +242,7 @@ Windows resident 与 front_loopback 两组实进程启动、resident 同 Worker 
 
 ## 2026-11-25 同步 release 路径回退与旧 Worker 回收
 
-本轮以候选 `f21e0db16` 合并目标 `releases/0.2.10` 的 `682b1ad7f`。
+本轮以候选 `f21e0db16` 合并目标 `releases/0.2.10` 的 `682b1ad7f`，随后同步到 `58c17ce40`。
 目标回退了 `fba1df034` 的路径迁移，并引入 `0565dc011` 的旧常驻 Worker 身份漂移回收；
 冲突位于 `worker_process.py` 的日志目录和 `resident_lifecycle.py` 的身份检查。
 日志默认恢复目标分支的 socket 父目录 `worker-logs`，继续支持 `JIUWEN_WORKER_LOG_DIR`，诊断与 stderr 同目录；
@@ -253,16 +253,19 @@ Windows resident 与 front_loopback 两组实进程启动、resident 同 Worker 
 两个协议回归分别验证旧时间戳漂移仍可回收并接入新 Worker，以及 ticks 改变时拒绝强制回收。
 机械合并后的原回收条件为 **1 passed、1 failed**，补齐限制后两个分支均通过。
 
-Windows / Python 3.11.15 相关回归为 **244 passed、1 skipped**，包含目标新加入的 4 项旧 Worker 回收测试、
+首轮 Windows / Python 3.11.15 相关回归为 **244 passed、1 skipped**，包含目标新加入的 4 项旧 Worker 回收测试、
 身份规约、owner、服务树、诊断、入口、后台日志、认证和 socket 同步；跳过项为 macOS 专用时钟验证。
 原生 resident/front_loopback 两组完成请求并确认进程、端点、端口和锁清理；resident Front 重连复用同一 Worker。
 创建时间拒绝回退及双来源拒绝的三组受控实验均通过，仍属于 Windows 故障注入，未代表鸿蒙真机验收。
+`58c17ce40` 又更新了内置 skill 目录投影；同步后连同这两份目录测试重跑，最终为 **266 passed、1 skipped**。
 
 目标此次回退也撤销了 Web 文件接口绕开宿主全局 CSP 的调整。此前两个 CSP UT 在未修改的 `682b1ad7f`
-和当前候选上均复现相同断言失败；这两项单列为目标基线问题，未计为通过。Web 实现和该测试文件保持与目标一致。
+和当前候选上均复现相同断言失败；这两项单列为目标基线问题，未计为通过。
+`58c17ce40` 的对应 Web 实现和测试文件与该控制基线一致，本 PR 保持这两个文件与目标一致。
 本轮没有执行全仓 CI 或静态检查，远端结果按新提交核对。
 原始证据位于 `D:/work_space/.codex-temp/harmony-process-identity-0210-conflicts-20261125/` 的
-`ticks-before.xml`、`related.xml`、`csp-baseline.xml`、`csp-candidate.xml`、`native-verified.json` 和 `harmony-controlled/verified.json`。
+`ticks-before.xml`、`related.xml`、`latest-related.xml`、`csp-baseline.xml`、`csp-candidate.xml`、
+`native-verified.json` 和 `harmony-controlled/verified.json`。
 
 ## 遗留与重验条件
 
