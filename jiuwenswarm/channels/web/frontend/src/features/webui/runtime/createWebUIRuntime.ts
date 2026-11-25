@@ -384,6 +384,13 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       refreshConnectedFlag();
       notifyAll();
       if (state === 'connected') {
+        // The host may have restarted while this page stayed open: target revisions then
+        // restart at 1, so comparing them with records from the previous process would
+        // drop every new frame until a page reload. Accept the replayed frames again;
+        // the kept snapshots stay visible until the host replaces them.
+        for (const record of records.values()) {
+          record.lastRenderRevision = -1;
+        }
         clearedRevisions.clear();
         void reportReadyAfterReconnect().then(() => {
           if (!disposed && appearanceStale && connectionState === 'connected') {
