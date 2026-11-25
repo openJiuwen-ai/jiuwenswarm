@@ -2692,6 +2692,10 @@ class JiuWenSwarmDeepAdapter:
         self._selected_model_context_window_tokens: int | None = None
         # (base model, ACP thinking level, turn-local model) of the last ACP override.
         self._acp_thinking_model: tuple[Model, str, Model] | None = None
+        # Every live turn-local model maps back to its base, not just the last
+        # one: a resolved-but-unapplied override replaces the slot above while
+        # an older override can still be the remembered model.
+        self._acp_thinking_bases: weakref.WeakKeyDictionary[Model, Model] = weakref.WeakKeyDictionary()
         self._model_config_source: str = "config.yaml"
         self._enterprise_config: Any = None
         self._enterprise_config_resource_id: str | None = None
@@ -10040,18 +10044,18 @@ class JiuWenSwarmDeepAdapter:
         params = request.params or {}
         if ACP_THINKING_PARAM not in params:
             return model
-        previous = self._acp_thinking_model
-        if previous is not None and model is previous[2]:
-            model = previous[0]
+        model = self._acp_thinking_bases.get(model, model)
         level = params[ACP_THINKING_PARAM]
         if level is None:
             return model
+        previous = self._acp_thinking_model
         if previous is not None and model is previous[0] and level == previous[1]:
             return previous[2]
 
         from jiuwenswarm.server.runtime.acp_thinking import apply_thinking_level
 
         adjusted = apply_thinking_level(model, level)
+        self._acp_thinking_bases[adjusted] = model
         self._acp_thinking_model = (model, level, adjusted)
         return adjusted
 
@@ -12544,6 +12548,12 @@ class JiuWenSwarmDeepAdapter:
             if hasattr(agent, "__dict__"):
                 setattr(agent, "_jiuwenswarm_memory_project_dir", project_dir)
 
+    def _jiuwen_memory_project_key(self) -> str:
+        from jiuwenswarm.common.coding_memory_paths import resolve_coding_memory_project_name
+
+        project_dir = getattr(getattr(self, "_instance", None), "_jiuwenswarm_memory_project_dir", None)
+        return resolve_coding_memory_project_name(project_dir)
+
     def _jiuwen_memory_media_globals(self, config: dict[str, Any]) -> dict[str, Any]:
         workspace = getattr(self, "_memory_media_workspace", None)
         if getattr(self._sys_operation_card, "mode", None) != OperationMode.LOCAL:
@@ -12578,6 +12588,7 @@ class JiuWenSwarmDeepAdapter:
                     agent_name=getattr(self, "_agent_name", None),
                     sdk_media_globals=sdk_media_globals,
                     shared_document_root=True,
+                    project=self._jiuwen_memory_project_key(),
                 )
                 if rail is not None:
                     logger.info(
@@ -24667,9 +24678,10 @@ class JiuWenSwarmDeepAdapter:
                 sdk_media_globals = None
                 if is_jiuwen_builtin_memory(config):
                     sdk_media_globals = self._jiuwen_memory_media_globals(config)
-                    new_embed_fp = jiuwen_builtin_config_fingerprint(
+                    jiuwen_config_fp = jiuwen_builtin_config_fingerprint(
                         config, agent_name=self._agent_name, sdk_media_globals=sdk_media_globals,
                     )
+                    new_embed_fp = f"{jiuwen_config_fp}|project={self._jiuwen_memory_project_key()}"
                 previous_embed_fp = self._memory_embedding_fingerprint
                 if self._memory_rail is not None:
                     cur_memory_type = is_proactive_memory(mode, config)
@@ -24697,6 +24709,14 @@ class JiuWenSwarmDeepAdapter:
                     # 重建（或首次注册）后记录新指纹，作为下次比对的基线
                     self._memory_embedding_fingerprint = new_embed_fp
                     try:
+                        if is_jiuwen_builtin_memory(config):
+                            from jiuwenswarm.agents.harness.common.memory.team_memory_members import (
+                                prepare_project_memory,
+                            )
+
+                            await prepare_project_memory(
+                                config, self._jiuwen_memory_project_key(), sdk_media_globals=sdk_media_globals,
+                            )
                         await self._instance.register_rail(self._memory_rail)
                     except Exception as e:
                         # register_rail 失败：回滚指纹与 rail，避免留下"指纹已是新值、

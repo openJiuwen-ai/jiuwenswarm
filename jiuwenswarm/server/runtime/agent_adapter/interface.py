@@ -982,6 +982,15 @@ def _cross_session_marker_from_params(params: Any) -> Any:
     return params.get(SESSION_MESSAGE_INTERNAL_KEY)
 
 
+async def _revoke_template_memory(template: str) -> None:
+    from jiuwenswarm.agents.harness.common.memory.team_memory_members import revoke_expert_template_memory
+
+    try:
+        await revoke_expert_template_memory(template)
+    except Exception:
+        logger.exception("Could not revoke collective memory membership for expert template %s", template)
+
+
 def _web_agent_template_name(params: Any, channel_id: Any) -> str | None:
     """Return the explicitly selected Agent id for a Web single-Agent turn."""
     if str(channel_id or "").strip().lower() != "web":
@@ -3484,15 +3493,14 @@ class JiuWenSwarm:
                         metadata=request.metadata,
                     )
             elif method == ReqMethod.AGENT_TEMPLATES_UNINSTALL:
+                runtime_name = package_manager.resolve_equipment_runtime_id("agent_templates", name)
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    runtime_name = package_manager.resolve_equipment_runtime_id(
-                        "agent_templates", name
-                    )
                     await unload_live("agent_templates", runtime_name)
                 payload = package_manager.uninstall_equipment_with_notice(
                     "agent_templates", params
                 )
+                await _revoke_template_memory(runtime_name)
             elif method == ReqMethod.PLUGIN_PACKAGES_UNINSTALL:
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
@@ -3518,14 +3526,13 @@ class JiuWenSwarm:
                 getattr(package_manager, _PACKAGE_ROUTES[method])(params)
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_DELETE:
+                runtime_name = package_manager.resolve_equipment_runtime_id("agent_templates", name)
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    runtime_name = package_manager.resolve_equipment_runtime_id(
-                        "agent_templates", name
-                    )
                     await unload_live("agent_templates", runtime_name)
                 package_manager.delete_agent_template(params)
                 payload = {}
+                await _revoke_template_memory(runtime_name)
             elif method == ReqMethod.PLUGIN_PACKAGES_IMPORT_LOCAL:
                 payload = package_manager.import_plugin_package(params)
             else:

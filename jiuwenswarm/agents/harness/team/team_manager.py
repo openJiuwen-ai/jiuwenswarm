@@ -2389,6 +2389,11 @@ class TeamManager:
                 f"(effective dispatch_mode={spec.dispatch_mode!r}); "
                 "turn on scheduled dispatch for this session or drop the bootstrap mode"
             )
+        from jiuwenswarm.agents.harness.common.memory.team_memory_members import prepare_team_memory
+
+        await prepare_team_memory(
+            getattr(spec, "build_context", None), seed=getattr(spec, "build_context_seed", None),
+        )
         return spec
 
     @staticmethod
@@ -2760,6 +2765,11 @@ class TeamManager:
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
 
+        from jiuwenswarm.agents.harness.common.memory.team_memory_members import prepare_team_memory
+
+        await prepare_team_memory(
+            getattr(spec, "build_context", None), seed=getattr(spec, "build_context_seed", None),
+        )
         token = set_session_id(session_id)
         try:
             logger.info("[TeamManager] creating TeamAgent from spec")

@@ -262,6 +262,27 @@ class ExtensionManager:
             self._accepted_roots.update(roots)
             return reports
 
+    def register_managed_root(self, package_id: str, version: str, root: Path) -> Path:
+        """Let Core load one package root that lives inside a bundle copy."""
+
+        self._require_ready()
+        return self._registry.package_manager.register_managed_root(package_id, version, root)
+
+    def unregister_managed_root(
+        self, package_id: str, version: str, *, root: Path | None = None,
+    ) -> None:
+        self._require_ready()
+        manager = self._registry.package_manager
+        candidate = (
+            Path(root).expanduser().resolve()
+            if root is not None
+            else manager.version_dir(package_id, version)
+        )
+        managed = manager.is_managed_root(candidate)
+        manager.unregister_managed_root(package_id, version, root=root)
+        if managed:
+            self._accepted_roots.discard(candidate)
+
     async def uninstall(self, package_id: str, version: str = "") -> ActivationReport:
         """Remove one stored version, or every version when ``version`` is empty."""
 
@@ -360,6 +381,7 @@ class ExtensionManager:
         version: str,
         *,
         source: Path | None = None,
+        skip_dependencies: bool = False,
     ) -> ActivationReport:
         """Load one version and keep every other installed version on disk, unloaded.
 
@@ -373,7 +395,11 @@ class ExtensionManager:
         active = self._registry.runtime.get_active(package_id)
         stored = store.version_dir(package_id, version)
         accepted_root = stored.resolve()
-        if source is None and accepted_root not in self._accepted_roots:
+        if (
+            source is None
+            and accepted_root not in self._accepted_roots
+            and not store.is_managed_root(stored)
+        ):
             return _not_installed(package_id, version, operation="enable")
         if active is not None and active.version == version and source is None:
             return ActivationReport(
@@ -401,6 +427,7 @@ class ExtensionManager:
                 self._bus,
                 load_manifest(stored, require_domain=False),
                 stored,
+                skip_dependencies=skip_dependencies,
             )
         else:
             if source is None:
@@ -422,7 +449,9 @@ class ExtensionManager:
                     )
         if report is None or report.status != "SUCCESS":
             if previous:
-                await self._restore_version(package_id, previous)
+                await self._restore_version(
+                    package_id, previous, skip_dependencies=skip_dependencies,
+                )
             return report or ActivationReport(
                 plan_id="",
                 package_id=package_id,
@@ -440,7 +469,9 @@ class ExtensionManager:
             self._accepted_roots.add(accepted_root)
         return report
 
-    async def _restore_version(self, package_id: str, version: str) -> None:
+    async def _restore_version(
+        self, package_id: str, version: str, *, skip_dependencies: bool = False,
+    ) -> None:
         """Best-effort return to the version that was active before a failed switch."""
 
         root = self._registry.package_manager.version_dir(package_id, version)
@@ -452,9 +483,48 @@ class ExtensionManager:
                 self._bus,
                 load_manifest(root, require_domain=False),
                 root,
+                skip_dependencies=skip_dependencies,
             )
         except Exception:  # noqa: BLE001 - keep the original switch failure
             logger.warning("[ExtensionsV2] failed to restore %s@%s", package_id, version, exc_info=True)
+
+    async def disable_version(self, package_id: str, version: str) -> ActivationReport:
+        """Unload one stored version while keeping its files and manifest."""
+
+        self._require_ready()
+        manager = self._registry.package_manager
+        root = manager.version_dir(package_id, version)
+        if not root.is_dir() or not has_manifest(root):
+            return ActivationReport(
+                plan_id="",
+                package_id=package_id,
+                operation="disable",
+                status="SUCCESS",
+                previous_generation=None,
+                current_generation=None,
+            )
+        manifest = load_manifest(root, require_domain=False)
+        active = self._registry.runtime.get_active(package_id)
+        if active is not None and active.version != version:
+            # Another version is loaded; never unpublish it from this version's request.
+            return ActivationReport(
+                plan_id="",
+                package_id=package_id,
+                operation="disable",
+                status="SUCCESS",
+                previous_generation=active.generation,
+                current_generation=active.generation,
+            )
+        report = await _disable_installed_package(context_for(self._bus), self._bus, manifest)
+        if report.status == "SUCCESS":
+            await self._notify_inactive(package_id)
+            _record_recovery_change(
+                self.install_dir,
+                self.report_path.parent,
+                "disable",
+                (report,),
+            )
+        return report
 
     async def set_enabled(self, package_id: str, enabled: bool) -> ActivationReport:
         """Keep an installed package while changing whether its handlers are active."""
@@ -491,22 +561,48 @@ class ExtensionManager:
         return replace(result, installed=installed)
 
     def _accept_version(self, package_id: str, version: str) -> None:
-        root = self._registry.package_manager.version_dir(package_id, version)
+        # Standalone copies always live at <store>/<id>/<version>; version_dir()
+        # may resolve to a registered bundle member of the same id/version.
+        root = self.install_dir / package_id / version
         if root.is_dir() and has_manifest(root):
             self._accepted_roots.add(root.resolve())
 
     def _accepted_versions(self, package_id: str) -> tuple[Path, ...]:
-        return tuple(
-            root for root in self._accepted_roots
-            if root.parent.name == package_id and root.is_dir() and has_manifest(root)
-        )
+        accepted: list[Path] = []
+        for root in self._accepted_roots:
+            if not self._accepted_root_matches(root, package_id):
+                continue
+            if not root.is_dir():
+                continue
+            if not has_manifest(root):
+                continue
+            accepted.append(root)
+        return tuple(accepted)
 
     def accepted_roots(self, package_id: str | None = None) -> tuple[Path, ...]:
         """Return startup or explicitly installed roots without rescanning the store."""
         roots = self._accepted_roots
         if package_id is not None:
-            roots = {root for root in roots if root.parent.name == package_id}
+            roots = {root for root in roots if self._accepted_root_matches(root, package_id)}
         return tuple(sorted(roots))
+
+    def _accepted_root_matches(self, root: Path, package_id: str) -> bool:
+        """Match standard roots by directory and managed roots by manifest identity."""
+
+        if root.parent.name == package_id:
+            return True
+        manager = self._registry.package_manager
+        if not manager.is_managed_root(root):
+            return False
+        try:
+            return load_manifest(root, require_domain=False).package_id == package_id
+        except ExtensionFailure:
+            return False
+
+    def accept_version(self, package_id: str, version: str) -> None:
+        """Accept a host-materialized copy so later enable/uninstall may use it."""
+
+        self._accept_version(package_id, version)
 
     def active_packages(self) -> tuple[ActivePackageRecord, ...]:
         """Return active package facts for consumers such as the UI catalog."""

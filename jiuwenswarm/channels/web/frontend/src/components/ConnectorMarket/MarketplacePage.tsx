@@ -127,17 +127,26 @@ export function MarketplacePage({
       : pkg.source === 'local'
         ? t('connectorMarket.systemPlugin.sourceLocal')
         : '';
-    const status = t(
-      pkg.active
-        ? 'connectorMarket.systemPlugin.statusActive'
-        : pkg.installed
-          ? pkg.enabled
-            ? 'connectorMarket.systemPlugin.statusInstalled'
-            : 'connectorMarket.systemPlugin.statusDisabled'
-          : 'connectorMarket.systemPlugin.statusAvailable',
-    );
+    const isBundle = pkg.kind === 'bundle';
+    const status = isBundle
+      ? t(`connectorMarket.systemPlugin.overall.${pkg.overallStatus ?? 'not-installed'}`)
+      : t(
+        pkg.active
+          ? 'connectorMarket.systemPlugin.statusActive'
+          : pkg.installed
+            ? pkg.enabled
+              ? 'connectorMarket.systemPlugin.statusInstalled'
+              : 'connectorMarket.systemPlugin.statusDisabled'
+            : 'connectorMarket.systemPlugin.statusAvailable',
+      );
     return Array.from(new Set([
       t('connectorMarket.systemPlugin.badge'),
+      ...(isBundle
+        ? [
+          t('connectorMarket.systemPlugin.bundleBadge'),
+          t('connectorMarket.systemPlugin.bundleMembers', { count: pkg.membersCount ?? 0 }),
+        ]
+        : []),
       source,
       status,
       ...pkg.tags.map((tag) => localizedText(tag, i18n.language)),
