@@ -42,6 +42,24 @@ def verify_gateway_extensions() -> None:
             raise RuntimeError(f"Missing Gateway extension registration entry: {root}")
 
 
+def verify_swarm_resources() -> None:
+    """Check resources whose absence silently disables user-facing features."""
+    tools = import_module("jiuwenswarm.agents.harness.common.tools")
+    registry = import_module("jiuwenswarm.agents.harness.common.tools.builtin_tool_registry")
+    discovered = {spec.name for spec in registry.discover_builtin_tool_specs()}
+    if "diff_files" not in discovered or "diff_files" not in tools.__all__:
+        raise RuntimeError("Frozen built-in tool discovery is missing diff_files")
+
+    translate = import_module("jiuwenswarm.common.i18n.translate")
+    catalog = Path(translate.__file__).resolve().parent / "catalog"
+    for language in ("en", "zh"):
+        if not (catalog / f"{language}.yaml").is_file():
+            raise RuntimeError(f"Missing frozen i18n catalog: {language}")
+        message_id = "tools.send_file.sent"
+        if translate.t(message_id, language=language, count=2) == message_id:
+            raise RuntimeError(f"Frozen i18n translation failed: {language}")
+
+
 def verify_gateway_adapter_bundle() -> None:
     """Fail if a lazy adapter implementation or its imports was not frozen."""
     if not getattr(sys, "frozen", False):
@@ -62,6 +80,7 @@ def verify_gateway_adapter_bundle() -> None:
     ):
         import_module(module_name)
     verify_gateway_extensions()
+    verify_swarm_resources()
 
 
 def run_isolated(executable: Path) -> int:
