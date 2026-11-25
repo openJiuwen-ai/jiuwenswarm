@@ -36,6 +36,20 @@ def exe_entry():
     return module
 
 
+@pytest.mark.parametrize(("arguments", "module", "entrypoint"), [
+    (["init", "--force", "--desktop-restore-upgrade-config"], "jiuwenswarm.init_workspace", "main"),
+    (["--desktop-restore-upgrade-config", "--desktop-install-external-cli", "claude"],
+     "jiuwenswarm.common.external_cli_runtime", "install_external_cli_runtime_from_artifacts"),
+])
+def test_mixed_restore_arguments_cannot_dispatch_other_commands(exe_entry, monkeypatch, arguments, module, entrypoint):
+    handler = Mock()
+    monkeypatch.setitem(sys.modules, module, SimpleNamespace(**{entrypoint: handler}))
+    monkeypatch.setattr(sys, "argv", ["workswarm.exe", *arguments])
+    with pytest.raises(ValueError, match="restore does not accept arguments"):
+        exe_entry._dispatch()
+    handler.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "arguments, expected_on_windows",
     [
