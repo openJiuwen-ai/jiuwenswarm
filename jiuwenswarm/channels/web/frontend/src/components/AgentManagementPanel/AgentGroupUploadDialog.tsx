@@ -12,7 +12,7 @@ import {
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
 import { isAgentGroupUploadFilename, isAgentUploadFilename } from '../../features/agentManagement';
-import { assetIssueKey, uploadAssetPackage } from '../../features/assetTransfer';
+import { assetIssueKey, stageLocalAssetPackage, uploadAssetPackage } from '../../features/assetTransfer';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
 import { useDialogFocusTrap } from '../ui';
 
@@ -20,7 +20,7 @@ type AgentGroupUploadDialogProps = {
   initialKind?: 'agent' | 'group';
   error?: string | null;
   onCancel: () => void;
-  onConfirm: (path: string, kind: 'agent' | 'group', source: 'staged' | 'local') => void | Promise<void>;
+  onConfirm: (path: string, kind: 'agent' | 'group') => void | Promise<void>;
 };
 
 const DROP_ACCEPT_WINDOW_MS = 1200;
@@ -87,9 +87,9 @@ export function DefinitionUploadDialog({
     [kind, t],
   );
 
-  // 浏览器 File 通道只收 .zip：统一 upload-temp 契约限定（服务端 upload_http.py），
-  // 与桌面通道的 .zip/.tar(.gz) 校验相互独立。filePick.path 置空作浏览器态哨兵，
-  // 展示与确认按钮复用 filePick，实际路径在确认时上传换取。
+  // 两通道统一只收 .zip：统一资产包契约限定（服务端 upload_http.py /
+  // assets.stage_local / assets.import 同一判定）。filePick.path 置空作浏览器
+  // 态哨兵，展示与确认按钮复用 filePick，实际暂存路径在确认时换取。
   const acceptBrowserFile = (file: File) => {
     if (!file.name.toLowerCase().endsWith('.zip')) {
       setFilePick(null);
@@ -201,14 +201,13 @@ export function DefinitionUploadDialog({
     if (!filePick || submitting) return;
     setSubmitting(true);
     try {
-      if (browserFile) {
-        // 纯浏览器环境：HTTP multipart 上传到受控暂存目录换取服务端路径，
-        // 再交给父组件既有的 import + install + 回滚链（与桌面路径同一入口）。
-        const stagedPath = await uploadAssetPackage(browserFile);
-        await onConfirm(stagedPath, kind, 'staged');
-      } else {
-        await onConfirm(filePick.path, kind, 'local');
-      }
+      // 两通道统一先换受控暂存路径，再交给父组件既有的 import + install +
+      // 回滚链：浏览器 File 走 HTTP multipart 上传（upload-temp），桌面本机
+      // 路径由服务端复制进同一暂存根（assets.stage_local），防护一致。
+      const stagedPath = browserFile
+        ? await uploadAssetPackage(browserFile)
+        : await stageLocalAssetPackage(filePick.path);
+      await onConfirm(stagedPath, kind);
     } catch (error) {
       // 上传阶段失败就地展示（服务端契约码 → i18n）；导入阶段失败仍由父组件经 error 属性回传。
       setPickerError(t(assetIssueKey(error)));
@@ -317,7 +316,7 @@ export function DefinitionUploadDialog({
             const file = event.dataTransfer.files[0] as (File & { path?: string }) | undefined;
             if (!file) return;
             if (desktopReady) {
-              // 桌面壳：File.path 可用，沿用本地绝对路径通道（.zip/.tar/.tar.gz）。
+              // 桌面壳：File.path 可用，本机路径经 assets.stage_local 复制入暂存。
               acceptPick(pickFromDroppedFile(file));
               return;
             }

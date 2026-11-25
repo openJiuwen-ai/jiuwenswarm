@@ -8,6 +8,7 @@ import {
   importAssetFromFile,
   importAssetFromPath,
   requestAssetExport,
+  stageLocalAssetPackage,
   uploadAssetPackage,
 } from '../node_modules/.cache/asset-transfer/assetTransfer.mjs';
 
@@ -218,6 +219,25 @@ test('importAssetFromPath calls assets.import directly with no upload fetch', as
   // kind 缺省时不带 kind 字段，由服务端按适配器注册顺序嗅探。
   await importAssetFromPath('/data/uploads/assets/z.zip', undefined, { request, fetchImpl });
   assert.deepEqual(calls[1], ['assets.import', { path: '/data/uploads/assets/z.zip' }]);
+});
+
+test('stageLocalAssetPackage swaps a desktop local path into the staged root', async () => {
+  const calls = [];
+  const request = async (method, params) => {
+    calls.push([method, params]);
+    return { path: '/data/uploads/assets/local.zip' };
+  };
+  const fetchImpl = async () => {
+    throw new Error('HTTP upload must not be triggered for a local path');
+  };
+  const staged = await stageLocalAssetPackage('/home/user/pack.zip', { request, fetchImpl });
+  assert.equal(staged, '/data/uploads/assets/local.zip');
+  assert.deepEqual(calls, [['assets.stage_local', { path: '/home/user/pack.zip' }]]);
+  // 响应缺 path → 本地兜底码（与 upload 非 JSON 响应同一兜底）
+  await assert.rejects(
+    stageLocalAssetPackage('/home/user/pack.zip', { request: async () => ({}) }),
+    (err) => err instanceof AssetTransferError && err.code === 'ASSET_UPLOAD_FAILED',
+  );
 });
 
 test('eight contract codes map to i18n keys; unknown codes fall back to requestFailed', () => {

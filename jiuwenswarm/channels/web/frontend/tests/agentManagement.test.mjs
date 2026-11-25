@@ -470,9 +470,9 @@ test('Agent Group selection owns the Team skill slot across selection states', (
   );
 });
 
-test('Agent upload accepts only zip and tar archives', () => {
+test('Agent upload accepts only zip archives', () => {
   assert.equal(isAgentUploadFilename('agent.ZIP'), true);
-  assert.equal(isAgentUploadFilename('agent.tar'), true);
+  assert.equal(isAgentUploadFilename('agent.tar'), false);
   assert.equal(isAgentUploadFilename('agent.tar.gz'), false);
   assert.equal(isAgentUploadFilename('agent.rar'), false);
 });

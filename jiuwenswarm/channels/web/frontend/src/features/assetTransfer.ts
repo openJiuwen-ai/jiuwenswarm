@@ -184,8 +184,21 @@ export async function uploadAssetPackage(file: File, deps: AssetTransferDeps = {
   return data.path;
 }
 
+/** 桌面通道暂存单步：服务端把本机绝对路径复制进受控上传根（assets.stage_local），
+ *  换回与 upload-temp 同构的暂存路径（防护一致：仅 .zip、体积上限、TTL 回收），
+ *  调用方随后统一走 assets.import。 */
+export async function stageLocalAssetPackage(path: string, deps: AssetTransferDeps = {}): Promise<string> {
+  const request = deps.request ?? webRequest;
+  const result = await request<{ path?: string }>('assets.stage_local', { path });
+  if (typeof result?.path !== 'string' || !result.path) {
+    throw new AssetTransferError('ASSET_UPLOAD_FAILED', 'assets.stage_local response missing path');
+  }
+  return result.path;
+}
+
 /** 导入单步：对已有服务端包路径直接调 assets.import；kind 缺省时由服务端嗅探。
- *  Web 两步导入的第二步（upload-temp 换 path 后调用），桌面端本地路径可直接调用。 */
+ *  两步导入的第二步：浏览器 File 经 uploadAssetPackage、桌面本机路径经
+ *  stageLocalAssetPackage 换取暂存路径后调用。 */
 export async function importAssetFromPath(
   path: string,
   kind?: AssetKind,

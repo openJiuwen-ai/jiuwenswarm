@@ -1248,7 +1248,7 @@ export function AgentManagementPanel({
     setGroupUploadDialogOpen(true);
   };
 
-  const handleUpload = async (path: string, kind: 'agent' | 'group', source: 'staged' | 'local' = 'staged') => {
+  const handleUpload = async (path: string, kind: 'agent' | 'group') => {
     if (actionNoticeTimerRef.current !== null) {
       window.clearTimeout(actionNoticeTimerRef.current);
       actionNoticeTimerRef.current = null;
@@ -1257,18 +1257,13 @@ export function AgentManagementPanel({
     setUploadError(null);
     setGroupUploadError(null);
     try {
-      // Browser-channel files arrive as upload-temp staged paths and go
-      // through the unified assets.import entry (design contract: two-step
-      // import; explicit kind skips server-side sniffing). Desktop-channel
-      // picks pass native local absolute paths, which the unified entry
-      // rejects (staging-root only); desktop keeps the legacy per-kind
-      // import until the shell-side staging bridge lands, after which both
-      // channels converge on the same staged-path flow.
-      const result = source === 'local'
-        ? kind === 'group'
-          ? await groupClient.importGroup(path)
-          : await client.importAgentTemplate(path)
-        : await importAssetFromPath(path, kind === 'group' ? 'agent_group' : 'agent_template');
+      // Unified import entry (design contract: two-step import = staged path,
+      // then assets.import). Both dialog channels hand over a staged path:
+      // browser files via upload-temp, desktop local picks via
+      // assets.stage_local. An explicit kind skips server-side sniffing; the
+      // unified adapters delegate to the same package-manager functions the
+      // legacy per-kind methods used.
+      const result = await importAssetFromPath(path, kind === 'group' ? 'agent_group' : 'agent_template');
       let installFailed = false;
       let installOutcomeUnknown = false;
       let installErrorMessage = '';

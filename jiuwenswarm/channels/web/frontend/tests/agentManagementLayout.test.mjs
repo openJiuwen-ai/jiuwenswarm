@@ -674,14 +674,10 @@ test('group card actions keep uninstall in the detail page and install created g
     panelSource,
     /groupClient\.createGroup\([\s\S]*groupClient\.installGroup\(result\.id\)[\s\S]*loadGroups\('mine'\)/,
   );
-  // Staged (browser) uploads go through the unified assets.import entry with
-  // an explicit kind; desktop native picks pass local absolute paths that the
-  // unified entry rejects (staging-root only), so they keep the legacy
-  // per-kind import until the shell-side staging bridge lands. Install and
-  // rollback are shared by both channels and unchanged.
-  assert.match(panelSource, /source: 'staged' \| 'local' = 'staged'/);
-  assert.match(panelSource, /const result = source === 'local'/);
-  assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*client\.importAgentTemplate\(path\)/);
+  // Upload import goes through the unified assets.import entry (explicit
+  // kind) for both channels — the dialog hands over a staged path either way
+  // (browser: upload-temp; desktop: assets.stage_local). Install/rollback
+  // unchanged; legacy per-kind imports are gone.
   assert.match(
     panelSource,
     /importAssetFromPath\(path, kind === 'group' \? 'agent_group' : 'agent_template'\)[\s\S]*groupClient\.installGroup\(result\.id\)/,
@@ -691,9 +687,8 @@ test('group card actions keep uninstall in the detail page and install created g
     panelSource,
     /importAssetFromPath\(path, kind === 'group'[\s\S]*handleInstall\(result\.id, \{\s*suppressInlineError: true,/,
   );
-  // The dialog tags each channel: staged upload-temp path vs desktop local path.
-  assert.match(groupUploadSource, /onConfirm\(stagedPath, kind, 'staged'\)/);
-  assert.match(groupUploadSource, /onConfirm\(filePick\.path, kind, 'local'\)/);
+  assert.doesNotMatch(panelSource, /groupClient\.importGroup\(path\)|client\.importAgentTemplate\(path\)/);
+  assert.doesNotMatch(panelSource, /source: 'staged' \| 'local'/);
   // Contract-coded import failures show precise guidance copy; uncoded errors
   // keep the generic uploadError fallback with details.
   assert.match(
@@ -1043,9 +1038,10 @@ test('Expert Team upload dialog puts Expert first and removes the reference link
   assert.doesNotMatch(groupUploadSource, /uploadHintReference|hint-reference/);
 });
 
-test('Expert Team upload dialog wires the browser file channel through unified upload-temp', () => {
-  // 纯浏览器环境：隐藏 .zip 文件输入 + 拖拽收下 File 对象，确认时先经统一
-  // uploadAssetPackage 换暂存路径再走既有 onConfirm 链；桌面 path 通道保持不变。
+test('Expert Team upload dialog wires both channels through unified staging', () => {
+  // 纯浏览器环境：隐藏 .zip 文件输入 + 拖拽收下 File 对象，确认时经统一
+  // uploadAssetPackage 换暂存路径；桌面本机路径经 stageLocalAssetPackage
+  // （assets.stage_local）复制入同一暂存根。两通道随后共用 onConfirm 链。
   assert.match(
     groupUploadSource,
     /<input\s*\n?\s*ref=\{browserInputRef\}\s*\n?\s*type="file"\s*\n?\s*accept="\.zip"\s*\n?\s*hidden/,
@@ -1053,7 +1049,7 @@ test('Expert Team upload dialog wires the browser file channel through unified u
   assert.match(groupUploadSource, /data-testid="agent-management-group-upload-browser-file-input"/);
   assert.match(
     groupUploadSource,
-    /const stagedPath = await uploadAssetPackage\(browserFile\);\s*\n\s*await onConfirm\(stagedPath, kind, 'staged'\);/,
+    /const stagedPath = browserFile[\s\S]*?uploadAssetPackage\(browserFile\)[\s\S]*?stageLocalAssetPackage\(filePick\.path\);[\s\S]*?await onConfirm\(stagedPath, kind\);/,
   );
   assert.match(groupUploadSource, /if \(desktopReady\) \{[\s\S]*?acceptPick\(pickFromDroppedFile\(file\)\);[\s\S]*?acceptBrowserFile\(file\);/);
   assert.match(groupUploadSource, /setPickerError\(t\(assetIssueKey\(error\)\)\);/);
