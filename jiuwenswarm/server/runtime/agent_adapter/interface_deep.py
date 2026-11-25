@@ -13408,8 +13408,18 @@ class JiuWenSwarmDeepAdapter:
         return rails
 
     def _skip_cron_permission_rail(self, config_base: dict[str, Any] | None) -> bool:
-        """Cron uses ordinary permission rules only while A4P is enabled."""
+        """Whether cron should omit PermissionInterruptRail.
+
+        - Enterprise: never skip. Guardrails and A4P are independent; cron mounts
+          the rail whenever permissions are enabled.
+        - Personal: keep the unattended default (skip) unless A4P preauthorization
+          is active, matching the previous personal-edition experiment gate.
+        """
         if not getattr(self, "_is_cron_execution", False):
+            return False
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
             return False
         from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_preauthorization_active
 
@@ -13418,7 +13428,7 @@ class JiuWenSwarmDeepAdapter:
     def _permission_interrupt_rail_infos(
         self, config_base: dict[str, Any],
     ) -> list[_RailBuildInfo]:
-        """Non-Smart/Code recipe, including cron when A4P is enabled."""
+        """Non-Smart/Code recipe; enterprise cron mounts the same rail as chat."""
         if self._skip_cron_permission_rail(config_base):
             logger.info(
                 "[JiuWenSwarmDeepAdapter] skip PermissionInterruptRail for cron session %s",
@@ -14128,8 +14138,9 @@ class JiuWenSwarmDeepAdapter:
         after ``configure()``; this method gives the permission rail the same
         treatment.
 
-        Idempotent: skips cron sessions without A4P, sessions without a built rail, and
-        sessions whose instance has the rail already on the registered chain.
+        Idempotent: skips when ``_skip_cron_permission_rail`` says so (personal cron
+        without A4P), sessions without a built rail, and sessions whose instance
+        has the rail already on the registered chain.
         On ``register_rail()`` failure it logs a warning without clearing
         ``_permission_rail`` so the next reload retries the same registration.
         """

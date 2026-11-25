@@ -326,15 +326,15 @@ def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -
             build_permission_rail,
         )
         from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_preauthorization_active
+        from jiuwenswarm.enterprise import is_enterprise
 
-        # Without A4P, skip cron: the scheduler tags every cron request with
-        # ``request_metadata["cron"]`` (see ``CronScheduler._stream_team_round``
-        # at gateway/cron/scheduler.py). The ``channel_id == "__cron__"``
-        # fallback covers single-agent sessions where the SDK may not propagate
-        # ``request_metadata`` into ``SwarmBuildContext``.
+        # Enterprise cron always mounts the guardrail (independent of A4P).
+        # Personal cron keeps the unattended default: skip unless A4P is on.
+        # ``request_metadata["cron"]`` / ``channel_id == "__cron__"`` mark
+        # unattended runs (see CronScheduler team/single-agent paths).
         request_meta = getattr(ctx, "request_metadata", None) or {}
         is_cron = bool(request_meta.get("cron") or getattr(ctx, "channel_id", None) == "__cron__")
-        if is_cron and not is_a4p_preauthorization_active(ctx.config or {}):
+        if is_cron and not is_enterprise() and not is_a4p_preauthorization_active(ctx.config or {}):
             return None
 
         inp = PermissionInterruptInput.resolve(params, ctx)

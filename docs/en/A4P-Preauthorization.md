@@ -13,7 +13,7 @@ JiuwenSwarm provides this capability on top of the A4P SDK from the openJiuwen A
 
 The switch applies to the application and can be changed from Settings on a blank new conversation page. Approval cards load pending requests for the active conversation after it is created.
 
-Enable it under **Settings → Experimental features → A4P Preauthorization**. It is off by default and only takes effect in the "default permission" mode. Smart Approval and Full Access do not inject A4P authorization guidance, expose the preauthorization tool, or use A4P tokens to approve calls. **once enabled, cron job runs also go through the permission guardrail.** You can also configure it in `config.yaml`:
+Enable it under **Settings → Experimental features → A4P Preauthorization**. It is off by default and only takes effect in the "default permission" mode. Smart Approval and Full Access do not inject A4P authorization guidance, expose the preauthorization tool, or use A4P tokens to approve calls. **In the enterprise edition**, the permission guardrail and A4P are independent: cron jobs enforce permission rules whenever the guardrail is enabled, and A4P only affects whether `ask` can pass via a cron intent token. **In the personal edition**, cron jobs still skip that permission rail by default and only mount it when A4P is enabled. You can also configure it in `config.yaml`:
 
 ```yaml
 a4p:
@@ -163,7 +163,7 @@ sequenceDiagram
 
 The current request’s `metadata.cron` identifies unattended execution, regardless of the Web channel or whether a browser is connected. Cron runs do not create an A4P authorizer route, expose the authorization request tool, or inject ordinary session authorization guidance. They retain the cron scope guidance and token verification. A later ordinary user message in the same session can use interactive authorization again.
 
-When A4P is enabled and the permission guardrail is active, both single-Agent and team cron jobs go through permission rule evaluation: `allow` passes directly, `deny` is rejected directly, and only `ask` calls look up the credential bound to the job ID. Valid and matching calls continue execution; when the job ID is missing, the credential is missing, expired, mismatched, or verification fails, the call is rejected directly — no interactive approval is awaited, and session credentials are not used as a fallback.
+**Enterprise edition:** when the permission guardrail is active, both single-Agent and team cron jobs go through permission rule evaluation: `allow` passes directly, `deny` is rejected directly. If A4P is also enabled, only `ask` calls look up the credential bound to the job ID; valid and matching calls continue, while a missing job ID, missing/expired/mismatched credential, or verification failure rejects the call. Without A4P, `ask` is likewise rejected directly — no interactive approval is awaited, and session credentials are not used as a fallback. **Personal edition:** cron still skips that rail by default and only follows the above rules when A4P is enabled.
 
 ```mermaid
 sequenceDiagram
@@ -232,5 +232,5 @@ If you refresh while authorization is pending, return to the original session to
 
 ## Usage Boundaries
 
-- A4P cooperates with the existing permission guardrail: `allow` passes without verifying an A4P token, `deny` is rejected and cannot be overridden by a token, and only `ask` calls go through A4P verification. When A4P is disabled, cron jobs keep the existing behavior of skipping that permission guardrail; when the permission guardrail is disabled, A4P does not enable it on its own. ACP, TUI, and CLI permission behavior is unchanged.
+- A4P cooperates with the existing permission guardrail: `allow` passes without verifying an A4P token, `deny` is rejected and cannot be overridden by a token, and only `ask` calls go through A4P verification. **Enterprise:** when A4P is disabled, cron still keeps the permission guardrail and rejects `ask` directly. **Personal:** when A4P is disabled, cron restores the default of skipping that rail. When the permission guardrail is disabled, A4P does not enable it on its own. ACP, TUI, and CLI permission behavior is unchanged.
 - In a Web session, if no A4P request was made this turn and no matching credential exists, the regular approval flow still applies; if a request was made but no usable authorization is available, the regular approval flow does not automatically bypass the failure.
