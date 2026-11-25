@@ -116,6 +116,16 @@ def get_jiuwen_builtin_mode(config: Optional[Dict[str, Any]] = None) -> str:
     return "http"
 
 
+def _http_memory_options(settings: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "base_url": str(settings.get("base_url") or os.environ.get("JIUWEN_MEMORY_BASE_URL", "")).strip()
+        or _DEFAULT_BASE_URL,
+        "api_key": str(settings.get("api_key") or os.environ.get("JIUWEN_MEMORY_API_KEY", "")),
+        "identity_org": str(settings.get("identity_org") or "local"),
+        "identity_user": str(settings.get("identity_user") or "developer"),
+    }
+
+
 def _custom_sdk_config_dict(j: Dict[str, Any]) -> Dict[str, Any]:
     """Return the full two-level namespace dict inlined in config.yaml ({} when unset).
 
@@ -153,6 +163,14 @@ def _session_import_binding(config: dict[str, Any]) -> dict[str, Any] | None:
     except (OSError, ValueError, RuntimeError):
         logger.warning("[JiuwenRailBuilder] session directory unavailable for media import")
         return None
+
+
+def get_collective_memory_owner(config: dict[str, Any]) -> tuple[str, str, str]:
+    scope = get_jiuwen_memory_scope(config)
+    if get_jiuwen_builtin_mode(config) == "sdk":
+        return scope["org"], scope["space"], scope["user"]
+    options = _http_memory_options(get_jiuwen_builtin_config(config))
+    return options["identity_org"], scope["space"], options["identity_user"]
 
 
 def get_jiuwen_sdk_media_globals(
@@ -386,7 +404,7 @@ class MemoryRailSpec:
     rail_options: dict[str, Any] = field(default_factory=dict)
 
 
-def _work_memory_spec(settings: Mapping[str, Any], _project: str) -> MemoryRailSpec:
+def _work_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSpec:
     from openjiuwen.harness.rails import JiuwenMemoryRail
 
     class SwarmJiuwenMemoryRail(JiuwenMemoryRail):
@@ -404,6 +422,7 @@ def _work_memory_spec(settings: Mapping[str, Any], _project: str) -> MemoryRailS
 
     return MemoryRailSpec(
         SwarmJiuwenMemoryRail,
+        provider_options={"project": project, "collective_coordinates": {"project": project}},
         rail_options={"session_end_extract": bool(settings.get("session_end_extract", False))},
     )
 
@@ -412,7 +431,8 @@ def _coding_memory_spec(_settings: Mapping[str, Any], project: str) -> MemoryRai
     from openjiuwen.harness.rails import JiuwenMemoryCodingRail
 
     return MemoryRailSpec(
-        JiuwenMemoryCodingRail, provider_options={"scene": "code", "project": project},
+        JiuwenMemoryCodingRail,
+        provider_options={"scene": "code", "project": project, "collective_coordinates": {"project": project}},
     )
 
 
@@ -423,9 +443,17 @@ def _team_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSp
     binding = settings.get("_team_binding") or {}
     if not binding.get("team"):
         raise ValueError("Team scene requires host-bound coordinates")
+    coordinates = {"team": binding["team"]}
+    if project:
+        coordinates["project"] = project
+    if binding.get("group"):
+        coordinates["group"] = binding["group"]
     return MemoryRailSpec(
         JiuwenTeamMemoryRail,
-        provider_options={"scene": "team", "project": project, **binding},
+        provider_options={
+            "scene": "team", "project": project, "collective_coordinates": coordinates,
+            "member": binding.get("member", ""), "sidebar": binding.get("sidebar", ""),
+        },
         rail_options={"content_allowed": lambda text: not contains_forbidden_memory_content(text)},
     )
 
@@ -437,6 +465,39 @@ SCENE_FACTORIES: dict[str, Callable[[Mapping[str, Any], str], MemoryRailSpec]] =
 }
 
 
+def load_memory_config() -> Dict[str, Any]:
+    """Return the active Swarm memory configuration."""
+    return _load_config()
+
+
+def memory_connection_options(config, *, sdk_media_globals=None):
+    settings = get_jiuwen_builtin_config(config)
+    if get_jiuwen_builtin_mode(config) == "http":
+        return _http_memory_options(settings), None
+
+    from .document_runtime_holder import DOCUMENT_RUNTIME_HOLDER
+
+    scope = get_jiuwen_memory_scope(config)
+    inline = _sdk_inline_config(settings, shared_document_root=True)
+    if inline:
+        _inject_sdk_creds_and_root(inline, config)
+    markdown = inline.get("markdown_store")
+    store = markdown.get("default") if isinstance(markdown, dict) else None
+    params = store.get("params") if isinstance(store, dict) else None
+    root = params.get("root") if isinstance(params, dict) else None
+    # An explicit empty mapping preserves the caller's local/sandbox gate.
+    if sdk_media_globals is None:
+        full_config = config if config is not None else _load_config()
+        sdk_media_globals = _initial_sdk_media_globals(full_config or {})
+    if sdk_media_globals:
+        inline.setdefault("globals", {}).update(deepcopy(sdk_media_globals))
+    return {
+        "document_runtime_holder": DOCUMENT_RUNTIME_HOLDER,
+        "config_dict": inline or None,
+        "security_provider": _build_security_provider(scope["org"], scope["user"]),
+    }, str(root) if root else None
+
+
 def build_jiuwen_memory_rail(
     config: Optional[Dict[str, Any]] = None,
     agent_name: Optional[str] = None,
@@ -446,6 +507,7 @@ def build_jiuwen_memory_rail(
     project: str = "default",
     shared_document_root: bool = False,
     team_binding: Mapping[str, str] | None = None,
+    collective_agent: str = "",
 ) -> Optional[Any]:
     """Build a JiuwenMemoryRail + AgentMemoryMemoryProvider from config.
 
@@ -488,6 +550,16 @@ def build_jiuwen_memory_rail(
                 _archive_stock_memory_template(markdown_root)
             await super().initialize(**kwargs)
 
+        def _video_tools_enabled(self) -> bool:
+            if not markdown_root or not self.is_available():
+                return super()._video_tools_enabled()
+            # The shared SDK lease delegates the capability check to its runtime client.
+            try:
+                return self._ensure_client().supports_video_ingest()
+            except Exception as exc:
+                logger.warning("Video tool capability discovery failed: %s", type(exc).__name__)
+                return False
+
         def get_tool_schemas(self) -> list[dict[str, Any]]:
             schemas = deepcopy(super().get_tool_schemas())
             for schema in schemas:
@@ -506,16 +578,14 @@ def build_jiuwen_memory_rail(
         async def sync_turn(self, user_msg: str, assistant_msg: str, **kwargs: Any) -> dict | None:
             if scene == "team":
                 from .forbidden import contains_forbidden_memory_content
-                if contains_forbidden_memory_content(user_msg + "\n" + assistant_msg):
+                sources = kwargs.get("sources") or ()
+                source_text = "\n".join(
+                    item["text"] for item in sources if isinstance(item, dict) and isinstance(item.get("text"), str)
+                )
+                if contains_forbidden_memory_content("\n".join((user_msg, assistant_msg, source_text))):
                     return None
             kwargs["project"] = kwargs.get("project") or _DEFAULT_PROJECT
             return await super().sync_turn(user_msg, assistant_msg, **kwargs)
-
-        async def add_team_memories(self, items: list[dict[str, str]]) -> int:
-            from .forbidden import contains_forbidden_memory_content
-            allowed = [item for item in items
-                       if not contains_forbidden_memory_content(item.get("content", ""))]
-            return await super().add_team_memories(allowed)
 
         async def handle_tool_call(self, tool_name: str, args: dict) -> str:
             if tool_name in {"team_memory_write", "team_memory_edit"}:
@@ -551,57 +621,17 @@ def build_jiuwen_memory_rail(
         scope["user"], scope["org"], scope["agent"], scope["session"]
     )
 
+    if scene == "team":
+        agent_id = collective_agent or "main_agent"
+        session_id = ""
     try:
-        if mode == "sdk":
-            # 进程内装配。内核配置优先级：
-            #   1. config.yaml 内联的 sdk 两层命名空间 dict（凭证注入 + root 默认后直传）
-            #   2. provider 内置 agent 场景默认装配（_agent_default_config()，serve-doc 的代码化副本）
-            # http-only 字段（base_url/api_key/identity_*）忽略。
-            # mem2.0 进程内直连需注入可信身份（fail-closed）：缺 security_provider
-            # 时 provider.is_available() 为 False，rail 静默降级（memory 停用）。
-            # 身份由本装配层产出（composition root），不从业务 user_id/scope_id 自述。
-            security_provider = _build_security_provider(scope_id, user_id)
-            inline = _sdk_inline_config(j, shared_document_root=True)
-            if inline:
-                _inject_sdk_creds_and_root(inline, config)
-            markdown = inline.get("markdown_store")
-            store = markdown.get("default") if isinstance(markdown, dict) else None
-            params = store.get("params") if isinstance(store, dict) else None
-            if isinstance(params, dict) and params.get("root"):
-                markdown_root = str(params["root"])
-            # An explicit empty mapping preserves the caller's local/sandbox gate.
-            if sdk_media_globals is None:
-                full_config = config if config is not None else _load_config()
-                sdk_media_globals = _initial_sdk_media_globals(full_config or {})
-            if sdk_media_globals:
-                inline.setdefault("globals", {}).update(deepcopy(sdk_media_globals))
-            from .document_runtime_holder import DOCUMENT_RUNTIME_HOLDER
-
-            provider = SwarmMemoryProvider(
-                document_runtime_holder=DOCUMENT_RUNTIME_HOLDER,
-                config_dict=inline or None,
-                user_id=user_id,
-                agent_id=agent_id,
-                space=scope["space"],
-                security_provider=security_provider,
-                **spec.provider_options,
-            )
-            config_desc = "merged-config-dict" if inline else "provider-builtin-agent-default"
-        else:
-            base_url = str(j.get("base_url") or os.environ.get("JIUWEN_MEMORY_BASE_URL", "") or "").strip()
-            if not base_url:
-                base_url = _DEFAULT_BASE_URL
-            api_key = str(j.get("api_key") or os.environ.get("JIUWEN_MEMORY_API_KEY", "") or "")
-            provider = SwarmMemoryProvider(
-                base_url=base_url,
-                api_key=api_key,
-                user_id=user_id,
-                agent_id=agent_id,
-                space=str(j.get("space") or ""),
-                identity_org=str(j.get("identity_org") or "local"),
-                identity_user=str(j.get("identity_user") or "developer"),
-                **spec.provider_options,
-            )
+        options, markdown_root = memory_connection_options(config, sdk_media_globals=sdk_media_globals)
+        config_desc = "merged-config-dict" if options.get("config_dict") else "provider-builtin-agent-default"
+        base_url = options.get("base_url", "")
+        provider = SwarmMemoryProvider(
+            **options, user_id=user_id, agent_id=agent_id, space=scope["space"],
+            **spec.provider_options,
+        )
         if not provider.is_available():
             logger.warning(
                 "[JiuwenRailBuilder] AgentMemory provider unavailable (no base_url)"

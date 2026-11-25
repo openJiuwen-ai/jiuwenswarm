@@ -28,7 +28,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
@@ -3589,8 +3589,15 @@ def test_build_context_factory_rebuilds_and_shares_processor() -> None:
     assert other.trajectory_span_processor is ctx.trajectory_span_processor
 
 
-def test_enrich_sets_serializable_build_context_seed() -> None:
-    """Enrichment leaves a serializable seed mirroring the live build context."""
+@pytest.mark.asyncio
+async def test_enrich_sets_serializable_build_context_seed(monkeypatch) -> None:
+    """Enrichment and membership preparation keep the seed aligned with the live context."""
+    from jiuwenswarm.agents.harness.common.memory import team_memory_members
+    from jiuwenswarm.agents.swarm.providers.team_memory import build_team_memory
+
+    config = {"memory": {"builtin": {"provider": "jiuwen"}}}
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.assembly.get_config", lambda: config)
+    monkeypatch.setattr(team_memory_members, "_prepare_members", AsyncMock(return_value=False))
     spec = _make_team_spec()
     enrich_team_spec_for_swarm(
         spec,
@@ -3604,8 +3611,15 @@ def test_enrich_sets_serializable_build_context_seed() -> None:
     assert spec.build_context_seed["project_dir"] == "/tmp/proj"
     assert spec.build_context_seed["disable_teammate_worktree"] is False
     assert spec.build_context_seed["team_id"] == spec.team_name
-    # The seed equals what the live context exports.
+    assert not await team_memory_members.prepare_team_memory(
+        spec.build_context, seed=spec.build_context_seed,
+    )
     assert spec.build_context_seed == spec.build_context.to_seed()
+    restored = SwarmBuildContext.from_seed(
+        spec.build_context_seed, config=config, trajectory_span_processor=None,
+    )
+    assert restored.extras["team.memory_members_ready"] is False
+    assert build_team_memory({}, restored) is None
 
 
 @pytest.mark.parametrize(
@@ -3962,7 +3976,7 @@ def test_team_mode_deep_spec_replaces_shared_browser_agent() -> None:
 
 
 @pytest.mark.parametrize("mode", ["team.work.normal", "team.code.normal"])
-@pytest.mark.parametrize("configured,expected", [("shared", "shared"), (None, "main_agent")])
+@pytest.mark.parametrize("configured,expected", [("shared", "main_agent"), (None, "main_agent")])
 @pytest.mark.parametrize("memory_enabled", [False, True, None])
 def test_jiuwen_team_binds_configured_identity_and_replaces_native_memory(
     monkeypatch, tmp_path, mode, configured, expected, memory_enabled,
@@ -3971,7 +3985,7 @@ def test_jiuwen_team_binds_configured_identity_and_replaces_native_memory(
     from jiuwenswarm.common.team_memory_binding import team_memory_key
 
     config = {"memory": {"builtin": {
-        "provider": "jiuwen", "jiuwen": {"scope_id": "org", "user_id": "user", "agent_id": configured},
+        "provider": "jiuwen", "jiuwen": {"mode": "sdk", "scope_id": "org", "user_id": "user", "agent_id": configured},
     }}}
     if memory_enabled is not None:
         config["modes"] = {
@@ -3989,7 +4003,7 @@ def test_jiuwen_team_binds_configured_identity_and_replaces_native_memory(
         project_dir=str(tmp_path))
     base = spec.build_context
     assert base.memory_agent_name == expected
-    assert base.memory_team == team_memory_key("org", "user", base.memory_project)
+    assert base.memory_team == team_memory_key("org", "", "user")
     assert not spec.memory.enabled
     for role in ("leader", "teammate"):
         names = {rail.type for rail in spec.agents[role].rails}
@@ -4010,10 +4024,11 @@ def test_jiuwen_team_binds_configured_identity_and_replaces_native_memory(
     assert leader is not None and member is not None
     assert leader[-1] is not member[-1]
     assert all("agent_name" not in call for call in calls)
+    assert {call["collective_agent"] for call in calls} == {"main_agent"}
     assert {call["team_binding"]["team"] for call in calls} == {base.memory_team}
     assert calls[0]["team_binding"]["member"] != calls[1]["team_binding"]["member"]
-    assert team_memory_key("org", "user", base.memory_project, "experts") != base.memory_team
-    assert team_memory_key("org", "other", base.memory_project) != base.memory_team
+    assert team_memory_key("org", "", "user", "experts") != base.memory_team
+    assert team_memory_key("org", "", "other") != base.memory_team
 
 
 def test_jiuwen_team_factory_does_not_fall_back_or_enter_design(monkeypatch, caplog):

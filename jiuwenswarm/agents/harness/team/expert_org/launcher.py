@@ -12,8 +12,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
-from jiuwenswarm.agents.harness.common.rails.permissions.root_context import HOST_USER_ORIGIN_INTERNAL
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL, HOST_USER_ORIGIN_INTERNAL,
+)
 from jiuwenswarm.agents.harness.team.expert_org.turn_diagnostics import OrganizationTurnDiagnostics
+from jiuwenswarm.common.team_memory_binding import team_memory_user_context
 from jiuwenswarm.server.runtime.team_organization_identity_store import save_organization_team_identity
 
 if TYPE_CHECKING:
@@ -283,8 +286,13 @@ class JiuwenExpertTeamLauncher:
             files=files,
             origin_kind=origin_kind,
         ).render()
+        context = (
+            {"run_context": team_memory_user_context(None, query)}
+            if origin_kind == HOST_USER_ORIGIN_EXTERNAL and isinstance(query, str)
+            else {}
+        )
         result = await self._get_runtime().interact(
-            message, team_name=team_id, session_id=session_id,
+            message, team_name=team_id, session_id=session_id, **context,
         )
         if not result:
             logger.warning(
@@ -334,6 +342,10 @@ class JiuwenExpertTeamLauncher:
         turn_inputs = dict(inputs) if isinstance(inputs, dict) else inputs
         if isinstance(turn_inputs, dict):
             turn_inputs.pop("_org_relay_source", None)
+            if origin_kind == HOST_USER_ORIGIN_EXTERNAL and isinstance(turn_inputs.get("query"), str):
+                turn_inputs["run_context"] = team_memory_user_context(
+                    turn_inputs.get("run_context"), turn_inputs["query"],
+                )
         if is_root_relay:
             source = relay_source
         if source in {"org_root_background", "org_root_delivery"}:
@@ -1061,6 +1073,11 @@ class JiuwenExpertTeamLauncher:
                     + leader_prompt_suffix
                 }
             )
+        from jiuwenswarm.agents.harness.common.memory.team_memory_members import prepare_team_memory
+
+        await prepare_team_memory(
+            getattr(spec, "build_context", None), seed=getattr(spec, "build_context_seed", None),
+        )
         return spec
 
     async def _materialize_expert_team_in_db(
