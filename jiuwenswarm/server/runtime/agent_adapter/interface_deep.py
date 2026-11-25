@@ -12780,6 +12780,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 if chunk_type == "chat.ask_user_question":
                     return parse_ask_user_question_payload(payload)
 
+                if chunk_type == "chat.permission_decision":
+                    if isinstance(payload, dict):
+                        return {"event_type": "chat.permission_decision", **payload}
+                    return None
+
                 if chunk_type == "chat.symphony_status":
                     if isinstance(payload, dict):
                         return {
