@@ -22,6 +22,14 @@ from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
 from jiuwenswarm.server.supervisor.worker_process import default_socket_path
 
 SOURCE = Path(__file__).resolve().parents[3]
+
+
+def test_legacy_workspace_export_uses_the_current_profile_root(tmp_path, monkeypatch):
+    from jiuwenswarm.server.agent_ws_server import get_domain_data_dir
+
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(paths, "_workspace_base_dir", None)
+    assert get_domain_data_dir() == tmp_path / "profile"
 LEGACY_SHIM = """import sys
 if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []):
     from jiuwenswarm.server.worker import stub

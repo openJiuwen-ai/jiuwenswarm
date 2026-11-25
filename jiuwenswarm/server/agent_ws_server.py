@@ -562,7 +562,7 @@ _COMPAT_EXPORTS = {
         "get_acp_output_manager",
     ),
     "get_user_workspace_dir": ("jiuwenswarm.common.utils", "get_user_workspace_dir"),
-    "get_domain_data_dir": ("jiuwenswarm.common.utils", "get_domain_data_dir"),
+    "get_domain_data_dir": ("jiuwenswarm.common.paths", "get_workspace_root_dir"),
     "get_agent_root_dir": ("jiuwenswarm.common.utils", "get_agent_root_dir"),
     "get_agent_sessions_dir": ("jiuwenswarm.common.utils", "get_agent_sessions_dir"),
     "get_config_file": ("jiuwenswarm.common.utils", "get_config_file"),
