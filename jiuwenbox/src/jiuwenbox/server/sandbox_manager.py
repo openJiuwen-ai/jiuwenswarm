@@ -49,7 +49,11 @@ def _is_daemon_ipc_exec_failure(result: ExecResult) -> bool:
     stderr = result.stderr or ""
     if result.exit_code == 124 and "daemon IPC timeout" in stderr:
         return True
-    return "daemon IPC channel unavailable" in stderr
+    if "daemon IPC channel unavailable" in stderr:
+        return True
+    # 这类失败时 stderr 整条就是运行时拼的固定前缀；用户命令的输出只是
+    # 恰好包含同样文字时不应误判（误判会触发重启并重跑用户命令）。
+    return stderr.startswith("daemon IPC transport failure")
 
 
 def _is_daemon_ipc_file_op_failure(result: RuntimeFileOpResult) -> bool:
@@ -243,6 +247,9 @@ class SandboxManager:
         self._lock = asyncio.Lock()
         self._sandboxes: dict[str, SandboxRef] = {}
         self._policies: dict[str, SecurityPolicy] = {}
+        # 正在执行的同步命令计数（按沙箱）。空闲回收前会检查它，
+        # 有命令在跑的沙箱不算闲置，不能回收。
+        self._inflight_execs: dict[str, int] = {}
         # 空闲沙箱淘汰: 后台 reaper task 句柄 + stop event。``None`` 表示当前没有
         # reaper 在跑 (idle_timeout 未配置 / 已被禁用 / 服务尚未 startup)。
         self._idle_reaper_task: asyncio.Task | None = None
@@ -528,12 +535,7 @@ class SandboxManager:
                     # reap.
                     if ref.phase != SandboxPhase.READY:
                         continue
-                    reference_ts = ref.last_active_at or ref.started_at or ref.created_at
-                    if reference_ts.tzinfo is None:
-                        # SandboxRef.created_at uses datetime.now() (naive) by
-                        # default; coerce to UTC so the comparison is well-defined.
-                        reference_ts = reference_ts.replace(tzinfo=timezone.utc)
-                    if reference_ts.timestamp() < cutoff:
+                    if self._idle_reference_ts(ref) < cutoff:
                         expired_ids.append(sid)
 
             if not expired_ids:
@@ -546,21 +548,83 @@ class SandboxManager:
                 expired_ids,
             )
             for sid in expired_ids:
-                try:
-                    self.audit.log(
-                        AuditEventType.SANDBOX_DELETED,
-                        sid,
-                        reason="idle_timeout",
-                        idle_timeout_seconds=idle_timeout,
+                await self._reap_one_idle(sid, cutoff=cutoff, idle_timeout=idle_timeout)
+
+    async def _reap_one_idle(
+        self,
+        sandbox_id: str,
+        *,
+        cutoff: float,
+        idle_timeout: float,
+    ) -> None:
+        """回收一个到期候选：忙则本轮跳过，闲则原子删除。
+
+        忙判定由快到慢：执行中命令计数（纯内存）→ 运行时后台任务核实
+        （阻塞 IPC）。任何一步判忙即返回，等下一轮扫描再看。
+        """
+        try:
+            async with self._lock:
+                ref = self._sandboxes.get(sandbox_id)
+                if ref is None or ref.phase != SandboxPhase.READY:
+                    # 已被并发操作删除/换状态，无需回收。
+                    return
+                # 扫描之后可能刚被使用过：重新对照闲置时间。
+                if self._idle_reference_ts(ref) >= cutoff:
+                    return
+                if self._inflight_execs.get(sandbox_id, 0) > 0:
+                    logger.info(
+                        "idle reaper: skip sandbox %s (exec in progress), "
+                        "recheck next cycle",
+                        sandbox_id,
                     )
-                    await self.delete_sandbox(sid)
-                except SandboxNotFoundError:
-                    # Raced with an external delete; treat as a clean teardown.
-                    continue
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "idle reaper: delete_sandbox(%s) failed", sid,
-                    )
+                    return
+            try:
+                jobs_running = await self.runtime.has_running_background_jobs(
+                    sandbox_id,
+                )
+            except Exception:  # noqa: BLE001
+                # 后台任务状态查询本身出错（非"守护进程不可达"）：
+                # 状态未知，本轮跳过，等下一轮再试。
+                logger.exception(
+                    "idle reaper: cannot check background jobs for %s, "
+                    "recheck next cycle",
+                    sandbox_id,
+                )
+                return
+            if jobs_running is True:
+                logger.info(
+                    "idle reaper: skip sandbox %s (background job(s) "
+                    "running), recheck next cycle",
+                    sandbox_id,
+                )
+                return
+            if jobs_running is None:
+                # 后台任务状态无法确认 = 守护进程不可达。此时沙箱对
+                # 外已不可用（任何命令都会失败），且不再有请求进来
+                # 触发自动重启，留着只会白占内存——按到期回收。
+                logger.info(
+                    "idle reaper: background jobs of %s unconfirmed "
+                    "(daemon unreachable), deleting",
+                    sandbox_id,
+                )
+            # 后台任务核实发生在锁外（阻塞 IPC），核实期间可能有新
+            # 命令开始。删除前的复核与置 DELETING 同锁原子完成：
+            # 核实窗口里开始的命令在此被拦下，本轮作废等下一轮。
+            if not await self._delete_if_idle(sandbox_id, cutoff):
+                return
+            self.audit.log(
+                AuditEventType.SANDBOX_DELETED,
+                sandbox_id,
+                reason="idle_timeout",
+                idle_timeout_seconds=idle_timeout,
+            )
+        except SandboxNotFoundError:
+            # Raced with an external delete; treat as a clean teardown.
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "idle reaper: delete_sandbox(%s) failed", sandbox_id,
+            )
 
     def register_zombie_reaper(
         self,
@@ -617,6 +681,33 @@ class SandboxManager:
         lock and races with the idle reaper).
         """
         ref.last_active_at = datetime.now(timezone.utc)
+
+    @staticmethod
+    def _idle_reference_ts(ref: SandboxRef) -> float:
+        """闲置判定的时间基准：最近活跃时间，缺省回落启动/创建时间。"""
+        ts = ref.last_active_at or ref.started_at or ref.created_at
+        if ts.tzinfo is None:
+            # SandboxRef.created_at uses datetime.now() (naive) by default;
+            # coerce to UTC so the comparison is well-defined.
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.timestamp()
+
+    def _finish_exec(self, sandbox_id: str) -> None:
+        """命令执行结束后的收尾：解除"执行中"计数，并刷新活跃时间。
+
+        同步函数（无 await）：放在 finally 里也一定能执行完，即使命令
+        是被取消/异常打断的。沙箱在命令执行期间被删除（例如手动删除）
+        时静默忽略——记录已不存在，无需再处理。计数读写只在事件循环
+        单线程里发生，不加锁也不会撕裂。
+        """
+        count = self._inflight_execs.get(sandbox_id, 0)
+        if count <= 1:
+            self._inflight_execs.pop(sandbox_id, None)
+        else:
+            self._inflight_execs[sandbox_id] = count - 1
+        ref = self._sandboxes.get(sandbox_id)
+        if ref is not None and ref.phase == SandboxPhase.READY:
+            ref.last_active_at = datetime.now(timezone.utc)
 
     async def create_sandbox(
         self,
@@ -788,7 +879,35 @@ class SandboxManager:
             ref = self._get_sandbox(sandbox_id)
             ref.phase = SandboxPhase.DELETING
             self._save_state(ref)
+            # 该沙箱的"执行中"计数一并清掉：沙箱都删了，计数没有意义，
+            # 也避免同 id 重建后被陈旧计数挡住回收。
+            self._inflight_execs.pop(sandbox_id, None)
+        await self._teardown_deleted_sandbox(sandbox_id)
 
+    async def _delete_if_idle(self, sandbox_id: str, cutoff: float) -> bool:
+        """回收专用删除：复核"仍是到期闲置候选"与置 DELETING 在同一把锁内完成。
+
+        命令的活跃标记与计数递增都在锁内进行，因此这里锁内复核后立刻置
+        DELETING，两者之间不会再有命令挤进来；反过来，若命令先到，复核
+        会看到计数或新的活跃时间而放弃，等下一轮扫描再判断。
+        复核不通过（命令执行中 / 刚被使用 / 已被并发处理）返回 False，
+        不动沙箱。
+        """
+        async with self._lock:
+            ref = self._sandboxes.get(sandbox_id)
+            if ref is None or ref.phase != SandboxPhase.READY:
+                return False
+            if self._idle_reference_ts(ref) >= cutoff:
+                return False
+            if self._inflight_execs.get(sandbox_id, 0) > 0:
+                return False
+            ref.phase = SandboxPhase.DELETING
+            self._save_state(ref)
+            self._inflight_execs.pop(sandbox_id, None)
+        await self._teardown_deleted_sandbox(sandbox_id)
+        return True
+
+    async def _teardown_deleted_sandbox(self, sandbox_id: str) -> None:
         # Cleanup can wait on processes and namespace teardown. Keep it outside
         # the global state lock so deleting one sandbox does not block unrelated
         # sandbox operations.
@@ -813,40 +932,46 @@ class SandboxManager:
                     f"Cannot exec in sandbox '{sandbox_id}': state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+            # 命令开始执行：记入"执行中"计数，空闲回收看到它就不会回收这个沙箱。
+            self._inflight_execs[sandbox_id] = (
+                self._inflight_execs.get(sandbox_id, 0) + 1
+            )
 
         # One audit row per exec, emitted **after** the runtime returns so
         # the payload covers both intent (command/workdir) and outcome
         # (exit_code, stdout/stderr tail, duration, error). The earlier
         # pre-call ``EXEC_COMMAND`` was dropped: it doubled the JSONL
         # volume without adding any information not already present here.
+        # try 从计数加一之后立刻开始：中间任何一步（env 准备、请求构造、
+        # 执行本身）抛异常/被取消，finally 都会把计数解除。
         start = time.monotonic()
-        # Windows: 给子进程 env 补 PATH, 使裸名 bash/python/cmd 可解析 (docs §4.0)。
-        # python/pip 裸名靠 PATH 前置 venv\Scripts 解析到 venv python (G3 落点,
-        # 见 docs §4.3)。Linux 不动 (R5)。
-        exec_env = request.env
-        if sys.platform == "win32":
-            exec_env = _build_windows_exec_env(
-                request.env,
-                tool_paths=self.policy.windows.filesystem.tool_paths,
-            )
-            # P2-19: 日志不含完整 command (可能含 prompt/API key/敏感路径) 和完整 PATH.
-            # 仅打 command[0] (可执行名) + 参数数量, 便于定位又不泄露. PATH 含工具目录
-            # 路径且极长, 不打. 旧版 INFO 全量打 request.command 且 debug 上调 info, 凭据
-            # 泄露面恶化.
-            _cmd0 = request.command[0] if request.command else "<empty>"
-            _cmd_len = len(request.command)
-            logger.info(
-                "[SandboxWin] exec sandbox=%s cmd0=%s argc=%d workdir=%s",
-                sandbox_id, _cmd0, _cmd_len, request.workdir,
-            )
-        runtime_request = RuntimeExecRequest(
-            command=request.command,
-            workdir=request.workdir,
-            env=exec_env,
-            stdin_data=request.stdin_data,
-            timeout=request.timeout,
-        )
         try:
+            # Windows: 给子进程 env 补 PATH, 使裸名 bash/python/cmd 可解析 (docs §4.0)。
+            # python/pip 裸名靠 PATH 前置 venv\Scripts 解析到 venv python (G3 落点,
+            # 见 docs §4.3)。Linux 不动 (R5)。
+            exec_env = request.env
+            if sys.platform == "win32":
+                exec_env = _build_windows_exec_env(
+                    request.env,
+                    tool_paths=self.policy.windows.filesystem.tool_paths,
+                )
+                # P2-19: 日志不含完整 command (可能含 prompt/API key/敏感路径) 和完整 PATH.
+                # 仅打 command[0] (可执行名) + 参数数量, 便于定位又不泄露. PATH 含工具目录
+                # 路径且极长, 不打. 旧版 INFO 全量打 request.command 且 debug 上调 info, 凭据
+                # 泄露面恶化.
+                _cmd0 = request.command[0] if request.command else "<empty>"
+                _cmd_len = len(request.command)
+                logger.info(
+                    "[SandboxWin] exec sandbox=%s cmd0=%s argc=%d workdir=%s",
+                    sandbox_id, _cmd0, _cmd_len, request.workdir,
+                )
+            runtime_request = RuntimeExecRequest(
+                command=request.command,
+                workdir=request.workdir,
+                env=exec_env,
+                stdin_data=request.stdin_data,
+                timeout=request.timeout,
+            )
             result = await self.runtime.exec(sandbox_id, runtime_request)
             if _is_daemon_ipc_exec_failure(result):
                 logger.warning(
@@ -868,6 +993,11 @@ class SandboxManager:
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
             raise
+        finally:
+            # 命令执行结束（无论成败）：解除"执行中"计数并刷新活跃时间，
+            # 避免长命令刚结束、调用方还没发下一步请求就被空闲回收。
+            # 同步实现，被取消时也能执行完。
+            self._finish_exec(sandbox_id)
         self.audit.log(
             AuditEventType.EXEC_COMMAND,
             sandbox_id,
@@ -952,7 +1082,10 @@ class SandboxManager:
         job_id: str,
     ) -> BackgroundJobStatus:
         async with self._lock:
-            self._get_sandbox(sandbox_id)
+            ref = self._get_sandbox(sandbox_id)
+            # 查询后台任务也是一次使用：刷新活跃时间，
+            # 让"跑着后台任务、定期来看进度"的沙箱不被判成闲置。
+            self._mark_active(ref)
         return await self.runtime.get_background_job(sandbox_id, job_id)
 
     async def list_background_jobs_in_sandbox(
@@ -962,7 +1095,9 @@ class SandboxManager:
         running_only: bool = False,
     ) -> list[BackgroundJobSummary]:
         async with self._lock:
-            self._get_sandbox(sandbox_id)
+            ref = self._get_sandbox(sandbox_id)
+            # 同上：查询即活跃。
+            self._mark_active(ref)
         return await self.runtime.list_background_jobs(
             sandbox_id,
             running_only=running_only,
