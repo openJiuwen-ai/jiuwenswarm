@@ -69,7 +69,7 @@ def run_isolated(executable: Path) -> int:
     script = Path(__file__).resolve()
     with TemporaryDirectory(prefix="gateway-bundle-check-") as directory:
         root = Path(directory).resolve()
-        (root / "infra/config").mkdir(parents=True)
+        (root / "config").mkdir(parents=True)
         env = os.environ.copy()
         env["JIUWENSWARM_DATA_DIR"] = str(root)
         env["JIUWENSWARM_HOME"] = str(root)

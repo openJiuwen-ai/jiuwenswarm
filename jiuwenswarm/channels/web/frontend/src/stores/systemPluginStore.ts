@@ -51,6 +51,15 @@ interface SystemPluginState {
   clearError: () => void;
 }
 
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
 }
@@ -99,7 +108,8 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
         () => { void load(scope, { silent: true }); },
         () => listRequestSeq[scope] === seq,
       );
-      set(scope === 'catalog' ? { catalog: packages } : { mine: packages });
+      const unique = uniqueById(packages);
+      set(scope === 'catalog' ? { catalog: unique } : { mine: unique });
       return true;
     } catch (error) {
       if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return true;

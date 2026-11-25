@@ -156,6 +156,12 @@ async def shutdown_extensions() -> None:
         except Exception:  # noqa: BLE001 - withdrawing the bus must not block teardown
             logger.exception("[ExtensionsV2] failed to withdraw the AgentLoop extension bus")
         try:
+            from jiuwenswarm.extensions_v2.management import containers
+
+            await containers.cancel_retries()
+        except Exception:  # noqa: BLE001 - retry cleanup must not block teardown
+            logger.warning("[ExtensionsV2] failed to cancel package retries", exc_info=True)
+        try:
             await assembly.compact.close()
             await assembly.webui.stop_state_refresh()
             await assembly.manager.shutdown()
@@ -261,9 +267,21 @@ def _build_authorization_service(bus: ExtensionEventBus, manager: ExtensionManag
 
 async def _activate_installed(manager: ExtensionManager) -> None:
     try:
+        from jiuwenswarm.extensions_v2.management import containers
+
+        containers.register_active_managed_roots(manager)
+    except Exception:  # noqa: BLE001 - registration failure must not block standalone packages
+        logger.exception("[ExtensionsV2] failed to register bundle member roots")
+    try:
         await manager.load_installed()
     except Exception:  # noqa: BLE001 - one bad package must not disable the rest
         logger.exception("[ExtensionsV2] failed to activate installed packages")
+    try:
+        from jiuwenswarm.extensions_v2.management import containers
+
+        await containers.recover_containers(manager)
+    except Exception:  # noqa: BLE001 - recovery must not block chat startup
+        logger.exception("[ExtensionsV2] failed to recover package containers")
 
 
 def _push_from(server: Any) -> Any:
