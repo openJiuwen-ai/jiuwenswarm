@@ -797,6 +797,7 @@ generated: true
 | [B_20261031_1048_ttse-core-dependent-ut](bugfix/tests/unit_tests/agentserver/B_20261031_1048_ttse-core-dependent-ut.md) | B | 暂时移除依赖未合入 core 工厂能力的插件 UT | xinyang_bali | 无独立 D：用户明确要求暂时删除依赖 core 的相关 UT，不调整依赖或运行实现，无独立 D。 |
 | [B_20261116_1701_my-plugin-installed-only](bugfix/jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [B_20261117_1050_adapter-ut-fixtures](bugfix/tests/unit_tests/agentserver/B_20261117_1050_adapter-ut-fixtures.md) | B | 图片降级提示与付费搜索 UT 的测试替身和断言漂移 | TwZhang | 无独立 D：根据用户提供的 UT 报告修正测试替身及副作用断言，无独立设计。 |
+| [B_20261125_0908_socket-diagnostics-ut-sync](bugfix/tests/unit_tests/agentserver/B_20261125_0908_socket-diagnostics-ut-sync.md) | B | Socket 写锁诊断 UT 的跨线程就绪同步 | 刘瑜 | 无独立 D：修复既有诊断测试的跨线程前置条件，保持真实传输和行为断言，无独立设计。 |
 
 <a id="module-tests-unit_tests-common"></a>
 
