@@ -631,20 +631,23 @@ def _apply_swarmflow_budget(spec_dict: dict[str, Any], raw_value: Any) -> None:
 def _resolve_team_runtime_language(config_base: dict[str, Any] | None) -> str:
     """Map UI preferred language to team harness ``cn`` / ``en``.
 
-    Prefers ``config_base["preferred_language"]`` (the dict being loaded), then
-    ``resolve_preferred_language()``, then ``en``. Never passes bare ``zh`` into
-    harness ``resolve_language`` (which only accepts ``cn`` / ``en``).
+    Same resolution source as single-agent / framework copy: prefer
+    ``resolve_preferred_language()`` (request memo with ``ui_language``
+    override, else yaml / ``en``), then ``config_base["preferred_language"]``
+    for callers that only pass a dict and never bind the memo, then ``en``.
+    Never passes bare ``zh`` into harness ``resolve_language`` (``cn`` / ``en``
+    only).
     """
     from jiuwenswarm.common.i18n import to_runtime_language
     from jiuwenswarm.enterprise.config.preferred_language import (
         resolve_preferred_language,
     )
 
-    cfg = config_base if isinstance(config_base, dict) else {}
-    mapped = to_runtime_language(cfg.get("preferred_language"))
+    mapped = to_runtime_language(resolve_preferred_language())
     if mapped is not None:
         return mapped
-    mapped = to_runtime_language(resolve_preferred_language())
+    cfg = config_base if isinstance(config_base, dict) else {}
+    mapped = to_runtime_language(cfg.get("preferred_language"))
     return mapped if mapped is not None else "en"
 
 

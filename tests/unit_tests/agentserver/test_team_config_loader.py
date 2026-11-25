@@ -1884,3 +1884,47 @@ def test_goal_enablement_rejects_an_old_core_schema(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(LeaderSpec, "__pydantic_fields__", {})
     with pytest.raises(ValueError, match="updated openjiuwen"):
         load_team_spec_dict(config_base=config)
+
+
+def test_team_runtime_language_memo_en_overrides_yaml_zh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Request memo (UI language) must win over config_base preferred_language zh."""
+    from jiuwenswarm.enterprise.config import preferred_language as pref
+
+    _set_gateway_db(monkeypatch, db_type="mariadb")
+    config = _config_with_team({"leader": {}, "teammate": {}})
+    config["preferred_language"] = "zh"
+    with pref.bind_preferred_language_memo(user_id="alice", language="en"):
+        spec = load_team_spec_dict(config_base=config)
+    assert spec["language"] == "en"
+
+
+def test_team_runtime_language_falls_back_to_yaml_zh_without_memo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No request memo → resolve_preferred_language / yaml zh → harness cn."""
+    from jiuwenswarm.enterprise.config import preferred_language as pref
+
+    _set_gateway_db(monkeypatch, db_type="mariadb")
+    monkeypatch.setattr(pref, "_yaml_or_en", lambda: "zh")
+    config = _config_with_team({"leader": {}, "teammate": {}})
+    config["preferred_language"] = "en"  # config_base alone must not override memo/yaml path
+    assert pref.resolve_preferred_language() == "zh"
+    spec = load_team_spec_dict(config_base=config)
+    assert spec["language"] == "cn"
+
+
+def test_team_runtime_language_follows_ui_language_via_framework_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduce chat.send ui_language=en while AS yaml preferred_language is zh."""
+    from jiuwenswarm.enterprise.config import preferred_language as pref
+
+    _set_gateway_db(monkeypatch, db_type="mariadb")
+    monkeypatch.setattr(pref, "_yaml_or_en", lambda: "zh")
+    config = _config_with_team({"leader": {}, "teammate": {}})
+    config["preferred_language"] = "zh"
+    effective = pref.framework_language_from_params({"ui_language": "en"}, "zh")
+    assert effective == "en"
+    with pref.bind_preferred_language_memo(user_id="alice", language=effective):
+        spec = load_team_spec_dict(config_base=config)
+    assert spec["language"] == "en"
