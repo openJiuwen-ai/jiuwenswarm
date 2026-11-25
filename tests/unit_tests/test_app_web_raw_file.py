@@ -399,8 +399,8 @@ def test_inline_verified_download_sandboxes_documents(
             response.read()
         finally:
             connection.close()
-        # An attachment is downloaded instead of rendered, so it keeps
-        # ``nosniff`` but does not need the sandbox CSP.
+        # Attachments retain the host-wide CSP without the additional
+        # document-specific sandbox policy used for inline HTML.
         connection = HTTPConnection("127.0.0.1", server.server_port)
         connection.request("GET", f"/file-api/download?token={quote(token)}")
         response = connection.getresponse()
@@ -408,7 +408,9 @@ def test_inline_verified_download_sandboxes_documents(
             assert response.status == 200
             assert response.headers["Content-Disposition"].startswith("attachment;")
             assert response.headers["X-Content-Type-Options"] == "nosniff"
-            assert "Content-Security-Policy" not in response.headers
+            assert response.headers.get_all("Content-Security-Policy") == [
+                "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads",
+            ]
             response.read()
         finally:
             connection.close()
@@ -488,7 +490,9 @@ def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path):
         status, headers, _ = request("GET", png_path)
         assert status == 200
         assert headers["X-Content-Type-Options"] == "nosniff"
-        assert "Content-Security-Policy" not in headers
+        assert headers.get_all("Content-Security-Policy") == [
+            "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads",
+        ]
     finally:
         server.shutdown()
         thread.join()
