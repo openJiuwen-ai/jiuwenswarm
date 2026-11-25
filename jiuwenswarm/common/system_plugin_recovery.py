@@ -33,6 +33,7 @@ _DATA_DIR_ENV = "EXTENSION_DATA_DIR"
 _RESTART_SIGNAL_PATH_ENV = "JIUWENSWARM_RECOVERY_RESTART_SIGNAL_PATH"
 _INSTALL_DIR_DEFAULT = "extension_pkgs"
 _DATA_DIR_DEFAULT = "extension"
+RECOVERY_MAX_BODY_BYTES = 16 * 1024
 
 
 def is_local_recovery_request(headers: Message, server_port: int) -> bool:
