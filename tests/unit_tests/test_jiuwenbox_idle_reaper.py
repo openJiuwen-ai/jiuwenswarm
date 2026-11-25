@@ -730,3 +730,58 @@ async def test_file_ops_protect_sandbox_while_inflight_and_handle_nested_fallbac
     assert await manager.list_files_in_sandbox("sb-files", SandboxListRequest(sandbox_path="/tmp")) == []
     assert await manager.search_files_in_sandbox("sb-files", "/tmp", "*.txt") == []
     assert manager._inflight_ops.get("sb-files", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_idle_reaper_isolates_corrupt_sandbox_and_loop_survives_sweep_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, runtime = _build_manager(
+        tmp_path,
+        idle_timeout=0.1,
+        idle_check_interval=0.05,
+    )
+    _register_sandbox(manager, "sb-corrupt", age_seconds=10.0)
+    _register_sandbox(manager, "sb-healthy", age_seconds=10.0)
+
+    original_runtime_for = manager._runtime_for
+
+    def flaky_runtime_for(ref: SandboxRef) -> RuntimeAdapter:
+        if ref.id == "sb-corrupt":
+            raise RuntimeError("corrupt runtime ref")
+        return original_runtime_for(ref)
+
+    monkeypatch.setattr(manager, "_runtime_for", flaky_runtime_for)
+    reaped = await manager._reap_idle_sandboxes_once(idle_timeout=0.1)
+    assert reaped == ["sb-healthy"]
+    assert "sb-healthy" not in manager._sandboxes
+    assert "sb-corrupt" in manager._sandboxes
+
+    # Also verify _idle_reaper_loop stays alive after an unexpected sweep error.
+    monkeypatch.setattr(manager, "_runtime_for", original_runtime_for)
+    manager._sandboxes.pop("sb-corrupt", None)
+    _register_sandbox(manager, "sb-after-err", age_seconds=10.0)
+
+    original_sweep = manager._reap_idle_sandboxes_once
+    attempts = {"count": 0}
+
+    async def flaky_sweep(*, idle_timeout: float) -> list[str]:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("transient sweep crash")
+        return await original_sweep(idle_timeout=idle_timeout)
+
+    monkeypatch.setattr(manager, "_reap_idle_sandboxes_once", flaky_sweep)
+    manager.start_idle_reaper()
+    try:
+        for _ in range(30):
+            if "sb-after-err" not in manager._sandboxes:
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        await manager.stop_idle_reaper()
+
+    assert attempts["count"] >= 2
+    assert "sb-after-err" not in manager._sandboxes
+    assert "sb-after-err" in runtime.cleaned_up

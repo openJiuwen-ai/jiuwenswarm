@@ -564,27 +564,19 @@ class SandboxManager:
             self._policies.pop(sandbox_id, None)
             self._delete_state(sandbox_id)
 
-    async def _reap_idle_sandboxes_once(self, *, idle_timeout: float) -> list[str]:
-        """Run one idle-reaper sweep and return the list of reaped sandbox IDs.
-
-        A sandbox is only considered idle when all three hold:
-        1. No in-flight sandbox manager operations (exec / background / file ops).
-        2. No running background jobs inside the sandbox.
-        3. Last activity (including completion of recent operations or background
-           jobs) is older than ``idle_timeout``.
-        """
-        now = datetime.now(timezone.utc)
-        cutoff = now.timestamp() - idle_timeout
+    def _collect_idle_candidates_unlocked(
+        self,
+        *,
+        cutoff: float,
+    ) -> list[tuple[str, RuntimeAdapter]]:
+        """Collect READY idle candidates while holding ``self._lock``."""
         candidates: list[tuple[str, RuntimeAdapter]] = []
-        async with self._lock:
-            for sid, ref in self._sandboxes.items():
-                # Only consider READY sandboxes: PROVISIONING is still
-                # spinning up its bwrap / daemon (user code hasn't had a
-                # chance to touch it yet, so an idle judgment would be
-                # bogus); DELETING/STOPPED/ERROR have no live daemon to
-                # reap.
-                if ref.phase != SandboxPhase.READY:
-                    continue
+        for sid, ref in self._sandboxes.items():
+            # Only consider READY sandboxes: PROVISIONING is still spinning up
+            # its bwrap / daemon; DELETING/STOPPED/ERROR have no live daemon.
+            if ref.phase != SandboxPhase.READY:
+                continue
+            try:
                 if self._reference_active_ts_utc(ref).timestamp() >= cutoff:
                     continue
                 inflight = self._inflight_ops.get(sid, 0)
@@ -597,6 +589,26 @@ class SandboxManager:
                     )
                     continue
                 candidates.append((sid, self._runtime_for(ref)))
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "idle reaper: failed to inspect sandbox %s",
+                    sid,
+                )
+        return candidates
+
+    async def _reap_idle_sandboxes_once(self, *, idle_timeout: float) -> list[str]:
+        """Run one idle-reaper sweep and return the list of reaped sandbox IDs.
+
+        A sandbox is only considered idle when all three hold:
+        1. No in-flight sandbox manager operations (exec / background / file ops).
+        2. No running background jobs inside the sandbox.
+        3. Last activity (including completion of recent operations or background
+           jobs) is older than ``idle_timeout``.
+        """
+        now = datetime.now(timezone.utc)
+        cutoff = now.timestamp() - idle_timeout
+        async with self._lock:
+            candidates = self._collect_idle_candidates_unlocked(cutoff=cutoff)
 
         if not candidates:
             return []
@@ -616,38 +628,38 @@ class SandboxManager:
                     running_jobs,
                 )
                 continue
-            if latest_finished_at is not None:
-                async with self._lock:
-                    ref = self._sandboxes.get(sid)
-                    if (
-                        ref is not None
-                        and ref.phase == SandboxPhase.READY
-                        and latest_finished_at.timestamp()
-                        > self._reference_active_ts_utc(ref).timestamp()
-                    ):
-                        ref.last_active_at = latest_finished_at.astimezone()
-                if latest_finished_at.timestamp() >= cutoff:
-                    logger.info(
-                        "idle reaper: skipping sandbox %s "
-                        "(reason=recent_background_job_finished, finished_at=%s)",
-                        sid,
-                        latest_finished_at.isoformat(),
-                    )
+            try:
+                if latest_finished_at is not None:
+                    async with self._lock:
+                        ref = self._sandboxes.get(sid)
+                        if (
+                            ref is not None
+                            and ref.phase == SandboxPhase.READY
+                            and latest_finished_at.timestamp()
+                            > self._reference_active_ts_utc(ref).timestamp()
+                        ):
+                            ref.last_active_at = latest_finished_at.astimezone()
+                    if latest_finished_at.timestamp() >= cutoff:
+                        logger.info(
+                            "idle reaper: skipping sandbox %s "
+                            "(reason=recent_background_job_finished, finished_at=%s)",
+                            sid,
+                            latest_finished_at.isoformat(),
+                        )
+                        continue
+
+                claimed_runtime = await self._try_claim_idle_sandbox_for_delete(
+                    sid,
+                    cutoff=cutoff,
+                )
+                if claimed_runtime is None:
                     continue
 
-            claimed_runtime = await self._try_claim_idle_sandbox_for_delete(
-                sid,
-                cutoff=cutoff,
-            )
-            if claimed_runtime is None:
-                continue
-
-            logger.info(
-                "idle reaper: deleting sandbox %s idle > %.1fs",
-                sid,
-                idle_timeout,
-            )
-            try:
+                logger.info(
+                    "idle reaper: deleting sandbox %s idle > %.1fs",
+                    sid,
+                    idle_timeout,
+                )
                 await self._teardown_deleting_sandbox(
                     sid,
                     claimed_runtime,
