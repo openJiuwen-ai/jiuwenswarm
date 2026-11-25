@@ -12,6 +12,15 @@ import { toDisplaySessionTitle } from '../../utils/documentMessage';
 
 export const NEW_CONVERSATION_ID = 'new';
 
+export function moveConversationDraft(sourceId: string, targetId: string): boolean {
+  const store = useChatStore.getState();
+  const source = store.getRuntime(sourceId);
+  if (sourceId === targetId || !source?.inputValue || !store.getRuntime(targetId)) return false;
+  store.setInputValue(targetId, source.inputValue, source.inputSkillPositions);
+  store.setInputValue(sourceId, '');
+  return true;
+}
+
 interface ConversationRuntimeSettings {
   mode: AgentMode;
   selectedModelName: string | null;

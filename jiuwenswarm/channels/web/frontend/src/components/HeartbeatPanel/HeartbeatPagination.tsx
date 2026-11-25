@@ -40,7 +40,7 @@ export default function HeartbeatPagination({
           value={String(pageSize)}
           onChange={(v) => onPageSizeChange(Number(v))}
           options={pageSizeOptions}
-          className="w-16"
+          className="w-[4.75rem]"
           menuPlacement="up"
         />
       </div>

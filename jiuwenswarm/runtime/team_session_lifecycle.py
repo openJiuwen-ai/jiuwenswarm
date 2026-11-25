@@ -45,8 +45,11 @@ class _TeamLifecycleManager(Protocol):
         reason: str = "",
         *,
         generation: int | None = None,
-    ) -> bool:
-        """Pause runtime resources owned by the matching Session generation."""
+    ) -> Any:
+        """Pause runtime resources owned by the matching Session generation.
+
+        Returns ``PauseSessionResult`` (or a legacy bool from stubs).
+        """
         ...
 
     async def stop_session_runtime(
@@ -143,8 +146,8 @@ class TeamSessionLifecycleAdapter:
         *,
         reason: str,
         channel_id: str | None = None,
-    ) -> bool:
-        """Return whether the matching Team generation was paused or drained."""
+    ) -> Any:
+        """Return structured pause result for the matching Team generation."""
         del channel_id
         return await self._team_manager.pause_session_runtime(
             context.session_id,

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.server.handlers.video_conversation import append_video_conversation
 
 from jiuwenswarm.extensions.video_duplex.backend import video_live

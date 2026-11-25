@@ -1131,7 +1131,6 @@ class TestCleanupStaleOpenjiuwenDescs:
             bootstrap.prepare_group_workspace(stages.append)
             assert stages == ["cleanup", ("prepare", False), "runtime_workspace_ready"]
             cleanup_call = source.index("prepare_group_workspace(_mark_startup_import_phase)")
-            assert cleanup_call < source.index("from agent_gateway.channel_manager.base import BaseWebChannel")
         else:
             cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
 

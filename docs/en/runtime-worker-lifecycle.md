@@ -23,6 +23,14 @@ Desktop process-tree cleanup continues for proven service branches when another 
 
 `jiuwenswarm-stop` manages the state created by `jiuwenswarm-start debug`. Failed cleanup preserves that state for retry; no debug state remains a no-op.
 
+Debug shutdown defaults to separate budgets: 15 seconds for the Front and 35 seconds for the Worker. The Worker budget covers its internal 30-second cleanup deadline plus IPC and process-exit observation. These phases run sequentially; their budgets do not impose a single total command timeout.
+An explicit `--timeout N` still assigns N seconds to each phase. `--worker-timeout N` overrides only the Worker phase and can be combined with `--timeout`. Timeout values must be positive and finite.
+`make stop`, `make restart-debug`, and `make restart-debug-fast` forward `STOP_ARGS` to the stop command. A failed stop prevents the restart. For example, adjust only the Worker budget:
+
+```bash
+make restart-debug-fast STOP_ARGS="--worker-timeout 45"
+```
+
 Wheel launchers `jiuwenswarm-start all/app/dev`, named instances, and standalone `jiuwenswarm-app` stop Fronts and then retire their Worker on final exit. `--stop <name>` and a full instance `--restart <name>` also complete final shutdown. Named-instance shutdown loads the selected workspace's bootstrap and runtime environment in a separate lifecycle process. It holds the startup lock through Worker exit confirmation, deleting the PID record only after success and retaining it on failure. Windows service-tree cleanup preserves Worker branches for the final IPC operation. A web-only launcher leaves its external backend running.
 
 Python desktop final exit checks existing Workers and verifiable historical endpoints even before registering its first service. When a Worker process is still booting before IPC exists, final shutdown waits for HELLO within the same deadline and then validates ownership. Command-line observations authorize waiting, never retirement.
@@ -46,7 +54,9 @@ If first-time Runtime preparation exceeds the default 30-second shutdown budget,
 An old Python Worker without deployment identity cannot be attributed to an installation solely from its shared interpreter. Startup isolates that old endpoint and continues, logging the old PID. After checking its interpreter, command line, installation, and data directory, an operator can select it explicitly:
 
 ```bash
-jiuwenswarm-stop --legacy-worker-pid 12345 --timeout 30
+jiuwenswarm-stop --legacy-worker-pid 12345
+# After verifying the old Worker's installation, select it during restart:
+make restart-debug STOP_ARGS="--legacy-worker-pid 12345"
 ```
 
 Selection still verifies the user, interpreter, Worker module, IPC argument, and process creation time; a declared different deployment is refused. Timeout or changed process identity reports failure. Stop its Front first so that another supervisor cannot restart it.

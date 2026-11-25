@@ -113,7 +113,7 @@ async def test_file_history_uses_native_chat_file_record_in_visible_conversation
     records = []
     monkeypatch.setattr(session_history, "_enqueue_history_item", lambda sid, item, **_: records.append((sid, item)))
     monkeypatch.setattr(session_metadata, "update_session_metadata", lambda **_: None)
-    from e2a.agent_compat import e2a_to_agent_request
+    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.server.handlers.video_conversation import append_video_conversation
 
     monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *_args, **_kwargs: {"user_id": ""})

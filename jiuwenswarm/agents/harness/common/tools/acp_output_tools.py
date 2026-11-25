@@ -227,7 +227,6 @@ class AcpOutputManager:
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
-            self._pending.pop(jsonrpc_id, None)
             logger.warning(
                 "[AcpOutput] request timed out: jsonrpc_id=%s method=%s timeout=%.1fs",
                 jsonrpc_id,
@@ -235,6 +234,8 @@ class AcpOutputManager:
                 timeout,
             )
             raise
+        finally:
+            self._pending.pop(jsonrpc_id, None)
 
 
 def get_acp_output_manager() -> AcpOutputManager:
@@ -446,7 +447,9 @@ async def release_terminal(
 # ============================================================================
 
 
-def get_tools(session_id: str = "", request_id: str = "") -> List["Tool"]:
+def get_tools(
+    session_id: str = "", request_id: str = "", *, default_cwd: str | None = None,
+) -> List["Tool"]:
     """返回 ACP 输出工具列表，用于注册到 Agent。"""
     from openjiuwen.core.foundation.tool import ToolCard, LocalFunction
 
@@ -475,7 +478,7 @@ def get_tools(session_id: str = "", request_id: str = "") -> List["Tool"]:
         return await write_text_file(path, content, session_id=session_id)
 
     async def create_terminal_bound(cmd: str, cwd: str | None = None) -> dict:
-        return await create_terminal(cmd, cwd=cwd, session_id=session_id)
+        return await create_terminal(cmd, cwd=cwd or default_cwd, session_id=session_id)
 
     async def read_terminal_output_bound(terminal_id: str) -> dict:
         return await read_terminal_output(terminal_id, session_id=session_id)

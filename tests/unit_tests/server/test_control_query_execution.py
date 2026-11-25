@@ -318,10 +318,14 @@ async def test_parallel_queries_keep_tenant_and_request_context(monkeypatch, met
                 context.reset(token)
 
     responses = await asyncio.gather(query("group::bot::alice"), query("group::bot::bob"))
-    assert [response.payload for response in responses] == [
+    expected = [
         {"tenant": "group::bot::alice", "request": "group::bot::alice-request"},
         {"tenant": "group::bot::bob", "request": "group::bot::bob-request"},
     ]
+    if method == ReqMethod.SESSION_GET_METADATA:
+        # session.get_metadata always injects durable is_paused.
+        expected = [{**item, "is_paused": False} for item in expected]
+    assert [response.payload for response in responses] == expected
     assert TenantContext.current_tenant_key() == previous_tenant
     assert context.get() == "unbound"
 

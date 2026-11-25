@@ -146,6 +146,28 @@ def test_catalog_reader_keeps_connector_packages(
     assert [item["id"] for item in enterprise["items"]] == listed
 
 
+@pytest.mark.parametrize("verify_env, expected_verify", [(None, True), ("false", False)])
+def test_catalog_uses_agentserver_tls_setting(
+    monkeypatch: pytest.MonkeyPatch, verify_env: str | None, expected_verify: bool
+) -> None:
+    if verify_env is None:
+        monkeypatch.delenv("TEAM_SKILLS_HUB_VERIFY_SSL", raising=False)
+    else:
+        monkeypatch.setenv("TEAM_SKILLS_HUB_VERIFY_SSL", verify_env)
+
+    async def read_catalog(port, kind):
+        assert port.transport.verify is expected_verify
+        return [_summary(kind, f"{kind}-id")], {}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.marketplace.hub_catalog_cache.cached_asset_catalog",
+        read_catalog,
+    )
+    payload = asyncio.run(list_hub_equipment_catalog())
+    assert payload["error"] == ""
+    assert {item["kind"] for item in payload["items"]} == {"agent_template", "agent_group"}
+
+
 def test_list_catalog_returns_error_when_hub_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Port:
         async def search_assets(self, request):

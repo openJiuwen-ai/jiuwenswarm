@@ -7,12 +7,14 @@ import { PresentationHostContext, type PresentationDeclaration } from './hostCon
 import { presentationConversations } from './conversations.ts';
 import { selectConversationModel } from '../../../multi-session/state/modelSelectionActions.ts';
 import { createPresentationReplyReader } from './reply.ts';
+import { createPresentationOverlay } from './overlay.ts';
+import { PresentationOverlay } from './PresentationOverlay.tsx';
 import { webClient } from '../../../services/webClient';
 import { useOptionalWebUIAppContext, useWebUIRuntime } from '../react/WebUIProvider.tsx';
 import { createPresentationStartHandler, PRESENTATION_START_EVENT, PRESENTATION_RESULT_METHOD } from './start.ts';
 import {
   createPresentationRequests, parsePresentationRequest, PRESENTATION_SLOT,
-  type PresentationConversation, type PresentationRequest, type PresentationState,
+  type PresentationConversation, type PresentationRequest, type PresentationState, type PresentationNativeApi,
 } from './protocol.ts';
 
 export interface ApplicationPresentationHostProps {
@@ -30,6 +32,21 @@ const THEME_TOKENS = [
 ];
 
 const noSubscription = () => () => {};
+// Survives host remounts on the same browser connection; a page reload creates a new connection.
+let nextPresentationId = 0;
+
+function allocatePresentationId(): number {
+  if (nextPresentationId >= Number.MAX_SAFE_INTEGER) throw new Error('OPEN_FAILED');
+  return ++nextPresentationId;
+}
+
+function samePresentationSource(
+  previous: PresentationDeclaration | undefined,
+  next: PresentationDeclaration,
+): boolean {
+  return previous?.key === next.key && (previous.mode ?? 'desktop') === (next.mode ?? 'desktop')
+    && previous.resourceUrl === next.resourceUrl;
+}
 
 function useActiveStore<State>(enabled: boolean, store: {
   getState: () => State; subscribe: (notify: () => void) => () => void;
@@ -54,16 +71,29 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
   const selected = useRef<string | null>(props.sessionId);
   const active = useRef<PresentationDeclaration | null>(null);
   const generation = useRef<string | null>(null);
+  const presentationId = useRef<number | null>(null);
   const activation = useRef<Promise<{ generation: string }> | null>(null);
+  const closing = useRef<{
+    api: PresentationNativeApi; key: string; pending: Promise<unknown> | null;
+  } | null>(null);
+  const pendingStart = useRef<PresentationDeclaration | null>(null);
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState('');
   const [themeVersion, setThemeVersion] = useState(0);
   const [available, setAvailable] = useState(new Map<string, PresentationDeclaration>());
+  // Rerenders must not restart a form that was already attempted, closed, or failed.
+  const autoStartAttempts = useRef(new Map<string, PresentationDeclaration>());
+  const manualCandidates = useMemo(() => [...available.values()]
+    .filter((item) => !item.autoStart), [available]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [opening, setOpening] = useState(false);
   const starting = useRef(false);
   const runtime = useWebUIRuntime();
-  const api = window.jiuwenDesktop?.presentation;
+  const desktopApi = window.jiuwenDesktop?.presentation;
+  const overlay = useMemo(() => createPresentationOverlay(() => ({
+    x: 0, y: 0, width: window.innerWidth, height: window.innerHeight,
+  })), []);
+  const activeApi = useRef<PresentationNativeApi | null>(null);
   const callbacks = useRef(props);
   callbacks.current = props;
   const words = useRef(t);
@@ -113,40 +143,105 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
   if (snapshot) latest.current = snapshot;
   const fail = useCallback((code: string): never => { throw new Error(code); }, []);
 
+  const clearActive = useCallback(() => {
+    active.current = null;
+    activeApi.current = null;
+    generation.current = null;
+    presentationId.current = null;
+    activation.current = null;
+    pendingStart.current = null;
+    setIsActive(false);
+  }, []);
+  const closePendingSurface = useCallback((): Promise<unknown> => {
+    const surface = closing.current;
+    if (!surface) return Promise.resolve();
+    if (surface.pending) return surface.pending;
+    const pending = Promise.resolve().then(() => surface.api.close(surface.key));
+    surface.pending = pending;
+    void pending.then(() => {
+      if (closing.current === surface) closing.current = null;
+    }, () => {
+      // Keep ownership until a later close confirms the container is gone.
+      surface.pending = null;
+    });
+    return pending;
+  }, []);
+  const closeSurface = useCallback(async (api: PresentationNativeApi, key: string) => {
+    while (closing.current && (closing.current.api !== api || closing.current.key !== key)) {
+      await closePendingSurface();
+    }
+    if (!closing.current) closing.current = { api, key, pending: null };
+    return closePendingSurface();
+  }, [closePendingSurface]);
+  const reportClosed = useCallback((declaration: PresentationDeclaration, id: number | null, reason: string) => {
+    if (declaration.revision === undefined || id === null) return;
+    const reportedReason = reason === 'workspace' ? 'closed' : reason;
+    void runtime.notifyClosed(declaration.key, reportedReason, declaration.revision, id).then((receipt) => {
+      if (!receipt?.accepted) setNotice(words.current('webuiPresentation.updateFailed'));
+    });
+  }, [runtime]);
   const port = useMemo(() => ({
     async activate(declaration: PresentationDeclaration) {
-      if (!api || !callbacks.current.connected) fail('DISCONNECTED');
+      if (!callbacks.current.connected) fail('DISCONNECTED');
+      const api = declaration.mode === 'overlay' ? overlay.api : desktopApi;
+      if (!api) fail('DESKTOP_REQUIRED');
       if (starting.current) fail('BUSY');
-      if (active.current?.key === declaration.key && generation.current) return;
+      if (active.current?.key === declaration.key && active.current.mode === declaration.mode
+        && active.current.src === declaration.src && generation.current) return;
       starting.current = true;
-      active.current = declaration;
-      latest.current = readSnapshotRef.current();
-      setIsActive(true);
-      generation.current = null;
-      setNotice('');
-      const pending = api!.open({ ...declaration,
-        resourceUrl: new URL(declaration.resourceUrl, window.location.href).href, state: latest.current! }).then(async (opened) => {
-        if (activation.current !== pending) fail('STALE_REQUEST');
-        const conversation = latest.current!.conversations.find((item) => item.conversationKey === selected.current);
-        if (conversation) await callbacks.current.onSelect(conversation);
-        if (activation.current !== pending) fail('STALE_REQUEST');
-        return opened;
-      });
-      activation.current = pending;
+      setOpening(true);
+      let pending: Promise<{ generation: string }> | null = null;
+      const attempt = declaration;
       try {
+        const previous = active.current;
+        const previousApi = activeApi.current;
+        clearActive();
+        pendingStart.current = attempt;
+        if (previous && previousApi && previousApi !== api) await closeSurface(previousApi, previous.key);
+        else await closePendingSurface();
+        if (pendingStart.current !== attempt) fail('STALE_REQUEST');
+        active.current = declaration;
+        presentationId.current = allocatePresentationId();
+        activeApi.current = api!;
+        latest.current = readSnapshotRef.current();
+        setIsActive(true);
+        setNotice('');
+        // Register the activation before open can synchronously close a previous in-app surface.
+        pending = Promise.resolve().then(() => {
+          if (pendingStart.current !== attempt) fail('STALE_REQUEST');
+          if (!callbacks.current.connected) fail('DISCONNECTED');
+          return api!.open({ key: declaration.key, mode: declaration.mode, src: declaration.src,
+            title: declaration.title, width: declaration.width, height: declaration.height, config: declaration.config,
+            resourceUrl: new URL(declaration.resourceUrl, window.location.href).href, state: latest.current! });
+        }).then(async (opened) => {
+          if (activation.current !== pending) fail('STALE_REQUEST');
+          const conversation = latest.current!.conversations.find((item) => item.conversationKey === selected.current);
+          if (conversation && conversation.conversationKey !== callbacks.current.sessionId) {
+            await callbacks.current.onSelect(conversation);
+          }
+          if (activation.current !== pending) fail('STALE_REQUEST');
+          return opened;
+        });
+        activation.current = pending;
         const opened = await pending;
         if (activation.current === pending) generation.current = opened.generation;
       } catch (error) {
-        if (activation.current === pending) {
-          active.current = null;
-          setIsActive(false);
-          generation.current = null;
-          activation.current = null;
-          void api!.close(declaration.key);
+        if (pending && activation.current === pending) {
+          const failed = active.current;
+          const failedId = presentationId.current;
+          clearActive();
+          await closeSurface(api!, declaration.key);
+          if (failed) reportClosed(failed, failedId, 'open_failed');
+        }
+        if (error instanceof Error && error.message === 'STALE_REQUEST'
+          && autoStartAttempts.current.get(declaration.key) === declaration) {
+          autoStartAttempts.current.delete(declaration.key);
         }
         throw error;
       } finally {
+        if (pendingStart.current === attempt) pendingStart.current = null;
         starting.current = false;
+        setOpening(false);
       }
     },
     update(declaration: PresentationDeclaration) {
@@ -154,48 +249,95 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
         if (previous.get(declaration.key) === declaration) return previous;
         const next = new Map(previous); next.set(declaration.key, declaration); return next;
       });
+      const pending = pendingStart.current;
+      if (!active.current && pending?.key === declaration.key
+        && (pending.revision !== declaration.revision || pending.mode !== declaration.mode || pending.src !== declaration.src)) {
+        pendingStart.current = null;
+      }
       if (active.current?.key !== declaration.key) return;
+      const api = activeApi.current;
+      if (active.current.mode !== declaration.mode || active.current.src !== declaration.src) {
+        clearActive();
+        if (api) void closeSurface(api, declaration.key).catch(() => setNotice(words.current('webuiPresentation.updateFailed')));
+        return;
+      }
       active.current = declaration;
       void api?.update(declaration.key, { config: declaration.config }).catch(() => setNotice(words.current('webuiPresentation.updateFailed')));
     },
     release(key: string) {
+      autoStartAttempts.current.delete(key);
+      if (pendingStart.current?.key === key) pendingStart.current = null;
       setAvailable((previous) => {
         if (!previous.has(key)) return previous;
         const next = new Map(previous); next.delete(key); return next;
       });
       if (active.current?.key !== key) return;
-      active.current = null;
-      setIsActive(false);
-      generation.current = null;
-      activation.current = null;
-      void api?.close(key);
+      const api = activeApi.current;
+      clearActive();
+      if (api) void closeSurface(api, key).catch(() => setNotice(words.current('webuiPresentation.updateFailed')));
     },
-  }), [api, fail]);
+  }), [desktopApi, overlay, fail, clearActive, closeSurface, closePendingSurface, reportClosed]);
+
+  useEffect(() => {
+    if (!props.connected) return;
+    for (const declaration of available.values()) {
+      if (!declaration.autoStart) {
+        autoStartAttempts.current.delete(declaration.key);
+        continue;
+      }
+      if (samePresentationSource(autoStartAttempts.current.get(declaration.key), declaration)) continue;
+      if (starting.current) break;
+      autoStartAttempts.current.set(declaration.key, declaration);
+      if (active.current && active.current.key !== declaration.key) {
+        setNotice(words.current('webuiPresentation.autoStartBusy'));
+        continue;
+      }
+      if (declaration.mode !== 'overlay' && !desktopApi) {
+        reportClosed(declaration, allocatePresentationId(), 'open_failed');
+        setNotice(words.current('webuiPresentation.desktopRequired'));
+        continue;
+      }
+      void port.activate(declaration).catch(() => {
+        if (autoStartAttempts.current.get(declaration.key) === declaration) {
+          setNotice(words.current('webuiPresentation.openFailed'));
+        }
+      });
+    }
+  }, [available, port, props.connected, opening, desktopApi, reportClosed]);
+
+  useEffect(() => () => {
+    const declaration = active.current;
+    const api = activeApi.current;
+    active.current = null;
+    activeApi.current = null;
+    generation.current = null;
+    activation.current = null;
+    pendingStart.current = null;
+    presentationId.current = null;
+    const shutdown = declaration && api ? closeSurface(api, declaration.key) : closePendingSurface();
+    void shutdown.catch((error) => console.error('Presentation shutdown failed', error));
+    overlay.dispose();
+  }, [overlay, closeSurface, closePendingSurface]);
 
   useEffect(() => {
     const handle = createPresentationStartHandler({
-      runtime, language: () => i18n.resolvedLanguage ?? i18n.language ?? 'zh', desktop: () => !!api,
-      activate: async (declaration) => {
-        setOpening(true);
-        try { await port.activate(declaration); }
-        finally { setOpening(false); }
-      },
+      runtime, language: () => i18n.resolvedLanguage ?? i18n.language ?? 'zh', desktop: () => !!desktopApi,
+      activate: port.activate,
       result: (params) => webClient.request(PRESENTATION_RESULT_METHOD, params),
     });
     return webClient.on(PRESENTATION_START_EVENT, (event) => {
       void handle(event.payload).catch(() => setNotice(words.current('webuiPresentation.openFailed')));
     });
-  }, [api, i18n, port, runtime]);
+  }, [desktopApi, i18n, port, runtime]);
 
   useEffect(() => {
-    if (!api) return;
     let ledgerGeneration: string | null = null;
     let ledger: ReturnType<typeof createPresentationRequests> | null = null;
     const sending = new Set<string>();
     const changing = new Set<string>();
-    const execute = async (request: PresentationRequest, requestGeneration: string) => {
+    const execute = async (request: PresentationRequest, requestGeneration: string, api: PresentationNativeApi) => {
       const declaration = active.current;
-      if (!declaration || !latest.current!.connected) fail('DISCONNECTED');
+      if (!declaration || !latest.current!.connected) return fail('DISCONNECTED');
       if (generation.current !== requestGeneration) fail('STALE_REQUEST');
       const p = request.params;
       const key = p.conversationKey as string | undefined;
@@ -247,8 +389,10 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
           if (!await callbacks.current.onStop(conversation!)) fail('ACTION_FAILED');
           return true;
         case 'workspace':
+          if (declaration.mode === 'overlay' && p.transition) fail('UNSUPPORTED_ACTION');
           await callbacks.current.onWorkspace(conversation ?? null);
           if (generation.current !== requestGeneration) fail('STALE_REQUEST');
+          if (declaration.mode === 'overlay') return true;
           if (p.transition && !latest.current!.reducedMotion) {
             await api.transitionWorkspace(declaration!.key, p.transition as { durationMs: number });
           } else await api.close(declaration!.key);
@@ -258,71 +402,84 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
         case 'hitTest': return api.hitTest(declaration!.key, p.interactive as boolean);
       }
     };
-    const offRequest = api.onRequest(async (envelope) => {
-      if (!active.current || active.current.key !== envelope.key) return;
-      // Wait for native readiness; queued messages never choose their own activation generation.
-      const pending = activation.current;
-      if (!pending) return;
-      try { await pending; } catch { return; }
-      if (activation.current !== pending || !active.current || active.current.key !== envelope.key) return;
-      if (generation.current !== envelope.generation) return;
-      const request = parsePresentationRequest(envelope.request);
-      if (!request) return;
-      if (ledgerGeneration !== envelope.generation) {
-        ledgerGeneration = envelope.generation;
-        ledger = createPresentationRequests((request) => execute(request, envelope.generation), (error) => {
-          const code = error instanceof Error ? error.message : 'ACTION_FAILED';
-          const message = words.current(`webuiPresentation.errors.${code}`, { defaultValue: words.current('webuiPresentation.actionFailed') });
-          return { code, message };
-        });
-      }
-      void ledger!(request).then((result) => api.respond(envelope.generation, result))
-        .catch(() => setNotice(words.current('webuiPresentation.actionFailed')));
-    });
-    const offClosed = api.onClosed(async (event) => {
-      const pending = activation.current;
-      if (generation.current === null && pending) {
+    const sources = desktopApi ? [desktopApi, overlay.api] : [overlay.api];
+    const releases = sources.map((api) => {
+      const offRequest = api.onRequest(async (envelope) => {
+        if (activeApi.current !== api || !active.current || active.current.key !== envelope.key) return;
+        // Wait for surface readiness; queued messages never choose their own activation generation.
+        const pending = activation.current;
+        if (!pending) return;
         try { await pending; } catch { return; }
-      }
-      if (active.current?.key !== event.key || (generation.current && generation.current !== event.generation)) return;
-      active.current = null;
-      setIsActive(false);
-      generation.current = null;
-      activation.current = null;
-      if (!['workspace', 'replaced', 'shutdown'].includes(event.reason)) setNotice(words.current('webuiPresentation.restored'));
+        if (activation.current !== pending || activeApi.current !== api || !active.current || active.current.key !== envelope.key) return;
+        if (generation.current !== envelope.generation) return;
+        const request = parsePresentationRequest(envelope.request);
+        if (!request) return;
+        if (ledgerGeneration !== envelope.generation) {
+          ledgerGeneration = envelope.generation;
+          ledger = createPresentationRequests((request) => execute(request, envelope.generation, api), (error) => {
+            const code = error instanceof Error ? error.message : 'ACTION_FAILED';
+            const message = words.current(`webuiPresentation.errors.${code}`, { defaultValue: words.current('webuiPresentation.actionFailed') });
+            return { code, message };
+          });
+        }
+        void ledger!(request).then((result) => api.respond(envelope.generation, result))
+          .catch(() => setNotice(words.current('webuiPresentation.actionFailed')));
+      });
+      const offClosed = api.onClosed(async (event) => {
+        const pending = activation.current;
+        if (generation.current === null && pending) {
+          try { await pending; } catch { return; }
+        }
+        if (activeApi.current !== api || active.current?.key !== event.key
+          || (generation.current && generation.current !== event.generation)) return;
+        const declaration = active.current;
+        const closedId = presentationId.current;
+        const mode = declaration.mode;
+        clearActive();
+        if (!['replaced', 'shutdown'].includes(event.reason)) reportClosed(declaration, closedId, event.reason);
+        if (mode === 'overlay') {
+          if (['ready_timeout', 'render_failed'].includes(event.reason)) setNotice(words.current('webuiPresentation.openFailed'));
+        } else if (!['workspace', 'replaced', 'shutdown'].includes(event.reason)) setNotice(words.current('webuiPresentation.restored'));
+      });
+      return () => { offRequest(); offClosed(); };
     });
-    return () => { offRequest(); offClosed(); };
-  }, [api, fail]);
+    return () => releases.forEach((release) => release());
+  }, [desktopApi, overlay, fail, clearActive, reportClosed]);
 
   useEffect(() => {
     const declaration = active.current;
+    const api = activeApi.current;
     if (!api || !declaration || !snapshot) return;
     if (!snapshot.connected) {
-      void api.close(declaration.key);
+      clearActive();
+      void closeSurface(api, declaration.key).catch(() => setNotice(t('webuiPresentation.updateFailed')));
       return;
     }
     void api.update(declaration.key, { state: snapshot }).catch(() => setNotice(t('webuiPresentation.updateFailed')));
-  }, [api, snapshot, t]);
+  }, [snapshot, t, clearActive, closeSurface]);
 
   return (
     <PresentationHostContext.Provider value={port}>
       <WebUIHost slotId={PRESENTATION_SLOT} />
-      {available.size ? <div className="webui-presentation-launcher" data-testid="webui-presentation-launcher">
+      <PresentationOverlay controller={overlay} />
+      {manualCandidates.length ? <div className="webui-presentation-launcher" data-testid="webui-presentation-launcher">
         <DropdownMenu open={menuOpen} onOpenChange={(open) => { setMenuOpen(open); if (open) setNotice(''); }}>
           <DropdownMenuTrigger asChild><button type="button" className="webui-presentation-launcher__button"
-            data-testid="webui-presentation-open" disabled={!api || !props.connected || opening}>
+            data-testid="webui-presentation-open" disabled={!props.connected || opening
+              || (!desktopApi && !manualCandidates.some((item) => item.mode === 'overlay'))}>
             {opening ? t('webuiPresentation.opening') : t('webuiPresentation.choose')}
           </button></DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {[...available.values()].map((declaration) => <DropdownMenuItem key={declaration.key}
+            {manualCandidates.map((declaration) => <DropdownMenuItem key={declaration.key}
+              disabled={declaration.mode !== 'overlay' && !desktopApi}
               onSelect={() => {
-                setOpening(true); setNotice('');
-                void port.activate(declaration).catch(() => setNotice(t('webuiPresentation.openFailed')))
-                  .finally(() => setOpening(false));
+                setNotice('');
+                void port.activate(declaration).catch(() => setNotice(t('webuiPresentation.openFailed')));
               }}>{declaration.title}</DropdownMenuItem>)}
           </DropdownMenuContent>
         </DropdownMenu>
-        {!api ? <span>{t('webuiPresentation.desktopRequired')}</span> : null}
+        {!desktopApi && manualCandidates.some((item) => item.mode !== 'overlay')
+          ? <span>{t('webuiPresentation.desktopRequired')}</span> : null}
       </div> : null}
       {notice ? <div role="status" className="webui-presentation-notice" data-testid="webui-presentation-notice">{notice}</div> : null}
     </PresentationHostContext.Provider>

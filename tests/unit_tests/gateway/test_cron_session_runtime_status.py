@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from e2a.gateway_normalize import e2a_from_agent_fields
+from e2a.message import Message, ReqMethod
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
@@ -23,7 +24,6 @@ from agent_gateway.cron.store import CronJobStore
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.schema.message import Message, ReqMethod
 
 
 class _TestWebChannel(WebChannel):

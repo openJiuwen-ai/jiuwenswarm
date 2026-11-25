@@ -219,7 +219,7 @@ async def test_exhausted_receive_failure_closes_transport_and_cancels_watchers(m
 
 
 @pytest.mark.asyncio
-async def test_real_degraded_resident_survives_four_ipc_reconnects(monkeypatch, tmp_path):
+async def test_real_degraded_resident_survives_four_ipc_reconnects(monkeypatch, tmp_path, ipc_dir):
     bootstrap = tmp_path / "bootstrap"
     bootstrap.mkdir()
     # Change only the test Worker's readiness frame; IPC, Supervisor and the
@@ -247,7 +247,7 @@ async def test_real_degraded_resident_survives_four_ipc_reconnects(monkeypatch, 
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     readiness = Readiness()
     supervisor = RuntimeSupervisor(readiness, forwarder=EventForwarder(), stub=True,
-        socket_path=str(tmp_path / "runtime.pipe"), max_restarts=3)
+        socket_path=str(ipc_dir / "runtime.pipe"), max_restarts=3)
 
     class Gateway:
         def __init__(self):

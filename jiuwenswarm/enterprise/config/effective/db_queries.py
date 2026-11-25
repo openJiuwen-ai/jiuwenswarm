@@ -11,10 +11,13 @@ from typing import Any
 from agent_gateway.storage.backends.db import reader as _db_reader
 
 from jiuwenswarm.common.utils import logger
-from .schemas import SLOT_ENTITY_TABLE, TemplateRefSlot
+from .schemas import REACT_ENTITY_TABLE, REACT_SLOT, SLOT_ENTITY_TABLE, TemplateRefSlot
 
 
 def _resolve_slot_storage(slot: str) -> tuple[str, str]:
+    if slot == REACT_SLOT:
+        # e2a 协议包尚未登记 REACT 槽位，仓内字符串接线。
+        return REACT_ENTITY_TABLE, "template_id"
     try:
         slot_key = TemplateRefSlot(slot)
     except ValueError as exc:

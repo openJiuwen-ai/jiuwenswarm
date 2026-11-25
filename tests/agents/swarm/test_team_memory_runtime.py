@@ -36,8 +36,51 @@ class Resource:
         self.closed = True
 
 
+def test_team_memory_user_context_preserves_typed_runtime_fields():
+    from openjiuwen.core.common.run_context import RunContext
+
+    from jiuwenswarm.common.team_memory_binding import team_memory_user_context
+
+    original = RunContext(session_id="session", context_mode="isolated", extra={"trace": "kept"})
+    result = team_memory_user_context(original, "use the confirmed brief")
+    assert result.session_id == original.session_id
+    assert result.context_mode == original.context_mode
+    assert result.extra == {
+        "trace": "kept", "raw_query": "use the confirmed brief", "raw_query_origin": "human",
+    }
+    assert original.extra == {"trace": "kept"}
+
+
 def config(root):
     return {"markdown_store": {"default": {"params": {"root": str(root)}}}}
+
+
+@pytest.fixture
+def collective_extraction(monkeypatch):
+    from jiuwen_memory.common.llm.llm_impl.echo_llm import EchoLLM
+
+    def chat(_llm, messages, **_kwargs):
+        if len(messages) != 2 or "source_segments" not in messages[1].content:
+            return messages[-1].content
+        sources = json.loads(messages[1].content)["source_segments"]
+        rows = []
+        for source in sources:
+            text = source["text"]
+            if source["role"] == "user" and text == "user prefers violet":
+                kind, target = "user_fact", "user_profile"
+            elif text == "ocean project uses sqlite":
+                kind, target = "experience", "project"
+            elif source["role"] == "assistant":
+                kind, target = "experience", "team"
+                if text == "acknowledged":
+                    text = "confirmed ocean plan"
+            else:
+                continue
+            rows.append({"source_id": source["id"], "kind": kind, "destination": target,
+                         "evidence": source["text"], "content": text, "title": "Decision"})
+        return json.dumps(rows)
+
+    monkeypatch.setattr(EchoLLM, "chat", chat)
 
 
 @pytest.mark.asyncio
@@ -205,9 +248,10 @@ async def test_binding_failure_preserves_runtime_ownership(
 
 
 @pytest.mark.asyncio
-async def test_real_sdk_members_share_runtime_and_survive_leader_exit(tmp_path):
+async def test_real_sdk_members_share_runtime_and_survive_leader_exit(tmp_path, collective_extraction):
     adapter = pytest.importorskip("jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider")
     from jiuwen_memory.api import build_dev_authenticator, internal_context
+    from jiuwenswarm.agents.harness.common.memory.team_memory_members import enroll_team_memory
 
     cfg = adapter._agent_default_config()
     cfg["globals"].update(embedder_dim=64, watch_document=True)
@@ -221,16 +265,21 @@ async def test_real_sdk_members_share_runtime_and_survive_leader_exit(tmp_path):
     providers = [adapter.AgentMemoryMemoryProvider(
         config_dict=cfg, document_runtime_holder=holder, portal={"enabled": False},
         security_provider=lambda: internal_context(auth), scene="team", project="repo",
-        team="repo--" + "a" * 24, member=name,
+        collective_coordinates={"project": "repo", "team": "repo--" + "a" * 24}, member=name,
     ) for name in ("leader", "member")]
     try:
         await asyncio.gather(*(p.initialize(scope_id="local", user_id="developer",
                                            agent_id="main_agent", session_id="") for p in providers))
         assert providers[0].runtime is providers[1].runtime
-        await asyncio.gather(*(p.add_team_memories([
-            {"label": "decision", "content": f"ocean plan {index}"},
+        await enroll_team_memory(
+            providers[0]._client, org="local", space="", user="developer",
+            agents=("main_agent",), project_agent="main_agent",
+            coordinates={"project": "repo", "team": "repo--" + "a" * 24},
+        )
+        await asyncio.gather(*(p.sync_turn("", "", sources=[
+            {"id": str(index), "role": "assistant", "text": f"ocean plan {index}"},
         ]) for index, p in enumerate(providers)))
-        document = (tmp_path / "memory/teams" / ("repo--" + "a" * 24) / "MEMORY.md").read_text()
+        document = (tmp_path / "memory/team_memory/teams" / ("repo--" + "a" * 24) / "MEMORY.md").read_text()
         assert all(f"ocean plan {index}" in document for index in range(2))
         await providers[0].shutdown()
         assert "ocean plan" in await providers[1].prefetch("ocean")
@@ -240,6 +289,193 @@ async def test_real_sdk_members_share_runtime_and_survive_leader_exit(tmp_path):
     finally:
         await asyncio.gather(*(p.shutdown() for p in providers))
         await asyncio.to_thread(holder.close)
+
+
+@pytest.mark.asyncio
+async def test_explicit_expert_membership_changes_use_stable_scope(monkeypatch):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.agents.harness.common.memory import team_memory_members
+    from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+
+    client = AsyncMock()
+
+    @asynccontextmanager
+    async def lease(_config, *, create=False):
+        assert create is (client.attach_collective.await_count == 0)
+        yield client, "service-admin", ("org", "", "user")
+
+    monkeypatch.setattr(team_memory_members, "_membership_client", lease)
+    context = SwarmBuildContext(
+        config={}, memory_team="stable-team", memory_project="project-a", memory_group="design",
+    )
+    hook = context.extras["team.on_explicit_member_change"]
+    template = {"name": "poster", "group": None}
+    await hook("instance-1", template, True)
+    assert {call.args[0].kind for call in client.attach_collective.await_args_list} == {
+        "team", "project",
+    }
+    assert all(call.args[1][0].scope.agent == "expert:poster"
+               for call in client.attach_collective.await_args_list)
+    await hook("instance-2", template, False)
+    assert {call.args[0].kind for call in client._remove_collective.await_args_list} == {
+        "team", "project",
+    }
+    assert all(call.args[1][0].agent == "expert:poster"
+               for call in client._remove_collective.await_args_list)
+
+
+def test_expert_team_leader_resolves_to_template_subject_without_group_binding(monkeypatch):
+    from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+    from jiuwenswarm.agents.swarm.providers import team_memory
+
+    calls = []
+
+    def fake_build(*args, **kwargs):
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(team_memory, "build_jiuwen_memory_rail", fake_build)
+    config = {"memory": {"builtin": {"provider": "jiuwen", "jiuwen": {"mode": "sdk"}}}}
+
+    expert_ctx = SwarmBuildContext(
+        config=config, mode="team.work.normal", memory_team="studio-team",
+        memory_project="repo", memory_group="studio", memory_experts=("leader", "brief"),
+        member_name="team_leader", role="leader",
+    )
+    cluster_ctx = SwarmBuildContext(
+        config=config, mode="team.work.normal", memory_team="main-team",
+        memory_project="repo", memory_group="", memory_experts=(),
+        member_name="team_leader", role="leader",
+    )
+
+    assert team_memory.build_team_memory({}, expert_ctx) is not None
+    assert team_memory.build_team_memory({}, cluster_ctx) is not None
+    assert calls[0]["collective_agent"] == "studio:leader"
+    assert "group" not in calls[0]["team_binding"]
+    assert calls[1]["collective_agent"] == "main_agent"
+    assert "group" not in calls[1]["team_binding"]
+
+
+@pytest.mark.asyncio
+async def test_revoke_expert_group_memory_only_revokes_team_dimension(monkeypatch):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from jiuwen_memory.api import Dimension, Scope
+    from jiuwenswarm.agents.harness.common.memory import team_memory_members
+    from jiuwenswarm.common.team_memory_binding import team_memory_key
+
+    client = AsyncMock()
+    expected_team = team_memory_key("org", "", "user", "studio")
+    expected_dimension = Dimension("org", "", "team", expected_team)
+    active_scopes = [Scope(org="org", space="", user="user", agent="studio:leader")]
+    client.active_collective_members.return_value = active_scopes
+
+    @asynccontextmanager
+    async def lease():
+        yield client, "service-admin", ("org", "", "user")
+
+    monkeypatch.setattr(team_memory_members, "_membership_client", lease)
+    await team_memory_members.revoke_expert_group_memory("studio")
+
+    client.active_collective_members.assert_awaited_once_with(expected_dimension, "service-admin")
+    client._remove_collective.assert_awaited_once_with(
+        expected_dimension, active_scopes, "service-admin",
+    )
+
+
+@pytest.mark.asyncio
+async def test_swarm_http_registers_and_revokes_through_separate_principal(tmp_path, collective_extraction):
+    from http.server import ThreadingHTTPServer
+    from threading import Thread
+
+    from jiuwen_memory.api import Scope, register_trusted_principal
+    from jiuwen_memory.api.collective import COLLECTIVE_MANAGER_ID, Dimension
+    from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import _agent_default_config
+    from jiuwen_memory_entry.core.profiles import load_config
+    from jiuwen_memory_entry.http_server.__main__ import HttpServer
+
+    from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+    from jiuwenswarm.agents.swarm.providers.team_memory import build_team_memory
+
+    gateway_key = "test-swarm-gateway"
+    cfg = _agent_default_config()
+    cfg["globals"].update(embedder_dim=64, watch_document=False)
+    cfg["llm"]["default"] = "echo"
+    cfg["embedder"] = {"default": {"target": "hashing", "params": {"tokenizer": "default"}}}
+    cfg["fulltext_store"] = {"default": {"target": "memory"}}
+    cfg["markdown_store"] = {"default": {"target": "local", "params": {"root": str(tmp_path)}}}
+    cfg["security"] = {"default": {"target": "standard", "params": {
+        "authenticator": "gateway", "authorizer": "default",
+    }}}
+    cfg["authenticator"] = {"gateway": {"target": "trusted", "params": {
+        "key_store": "principals", "gateway_key": gateway_key,
+    }}}
+    cfg["key_store"] = {"principals": {"target": "memory"}}
+    cfg["authorizer"] = {"default": {"target": "standard", "params": {
+        "grant_store": "default", "delegation_store": "default",
+    }}}
+    cfg["grant_store"] = {"default": {"target": "memory"}}
+    cfg["delegation_store"] = {"default": {"target": "memory"}}
+
+    service = HttpServer.build(load_config([{"memory_api": cfg}]))
+    register_trusted_principal(service.authenticator, Scope(org="local", user="developer"))
+    register_trusted_principal(
+        service.authenticator, Scope(org="local", user=COLLECTIVE_MANAGER_ID), role="admin",
+    )
+    http = ThreadingHTTPServer(("127.0.0.1", 0), service.handler_cls())
+    worker = Thread(target=http.serve_forever, daemon=True)
+    worker.start()
+    rail = None
+    try:
+        config = {"memory": {"builtin": {"provider": "jiuwen", "jiuwen": {
+            "mode": "http", "base_url": f"http://127.0.0.1:{http.server_port}", "api_key": gateway_key,
+        }}}}
+        context = SwarmBuildContext(
+            config=config, mode="team.work.normal", memory_team="studio-team",
+            memory_project="repo", memory_group="studio", memory_experts=("leader",),
+            member_name="leader",
+        )
+        from jiuwenswarm.agents.harness.common.memory.team_memory_members import prepare_team_memory
+
+        assert await prepare_team_memory(context)
+        rail = build_team_memory({}, context)[-1]
+        await rail._provider.initialize(**rail._identity)
+        client = rail._provider._client
+        dimension = Dimension("local", "", "team", "studio-team")
+        for enrolled in (dimension, Dimension("local", "", "project", "repo")):
+            authors = await client.active_collective_members(enrolled, COLLECTIVE_MANAGER_ID)
+            assert {"main_agent", "studio:leader"} <= {author.agent for author in authors}
+        assert not await client.active_collective_members(
+            Dimension("local", "", "group", "studio"), COLLECTIVE_MANAGER_ID,
+        )
+        assert "group" not in rail._provider._collective_coordinates
+        result = await rail._provider.sync_turn("", "", sources=[
+            {"id": "delivery", "role": "assistant", "text": "ocean architecture"},
+        ])
+        assert result and result["stored"]
+        document = tmp_path / "memory" / "team_memory" / "teams" / "studio-team" / "MEMORY.md"
+        assert "# Decision\nocean architecture" in document.read_text(encoding="utf-8")
+        assert "ocean architecture" in await rail._provider.prefetch("ocean")
+        callback = context.extras["team.on_explicit_member_change"]
+        await callback("leader", {}, False)
+        authors = await client.active_collective_members(dimension, COLLECTIVE_MANAGER_ID)
+        assert [author.agent for author in authors] == ["main_agent"]
+        project = Dimension("local", "", "project", "repo")
+        authors = await client.active_collective_members(project, COLLECTIVE_MANAGER_ID)
+        assert [author.agent for author in authors] == ["main_agent"]
+        assert "ocean architecture" not in await rail._provider.prefetch("ocean")
+        await callback("leader", {}, True)
+        assert "ocean architecture" in await rail._provider.prefetch("ocean")
+    finally:
+        if rail is not None:
+            await rail._provider.shutdown()
+        await asyncio.to_thread(http.shutdown)
+        worker.join(timeout=5)
+        http.server_close()
+        await asyncio.to_thread(service.close, wait=True)
 
 
 @pytest.mark.asyncio
@@ -299,7 +535,9 @@ async def test_real_sdk_portal_survives_one_provider_exit(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["team.work.normal", "team.code.normal"])
-async def test_public_swarm_rail_runs_core_agent_and_persists_team_memory(tmp_path, monkeypatch, mode):
+async def test_public_swarm_rail_runs_core_agent_and_persists_team_memory(
+    tmp_path, monkeypatch, mode, collective_extraction,
+):
     adapter = pytest.importorskip("jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider")
     from openjiuwen.core.foundation.llm import (
         AssistantMessage, Model, ModelClientConfig, ModelRequestConfig, ToolCall,
@@ -330,25 +568,22 @@ async def test_public_swarm_rail_runs_core_agent_and_persists_team_memory(tmp_pa
         "team": {"jiuwen_team": {"memory": {"enabled": False}}},
     }
     team = "repo--" + "a" * 24
-    rails = build_team_memory({}, SwarmBuildContext(config=config, mode=mode,
-        memory_project="repo", memory_team=team, member_name="leader"))
+    from jiuwenswarm.agents.harness.common.memory.team_memory_members import prepare_team_memory
+
+    context = SwarmBuildContext(config=config, mode=mode,
+        memory_project="repo", memory_team=team, memory_group="studio",
+        memory_experts=("leader", "reviewer"), member_name="team_leader")
+    assert await prepare_team_memory(context)
+    rails = build_team_memory({}, context)
     assert rails is not None
     rail = rails[-1]
+    assert "group" not in rail._provider._collective_coordinates
     history, tool_history = [], []
-    collected = False
     async def invoke(_model, messages, **kwargs):
-        nonlocal collected
         history.append(str(messages))
         tool_history.append(str(kwargs.get("tools", [])))
-        if "collect_team_conclusions" in str(kwargs.get("tools", [])):
-            if collected:
-                return AssistantMessage(content="collected")
-            collected = True
-            return AssistantMessage(content="", tool_calls=[ToolCall(
-                id="collect", name="collect_team_conclusions", type="function",
-                arguments='{"items":[{"label":"decision","content":"confirmed ocean plan","confirmed":true}]}',
-            )])
         return AssistantMessage(content="acknowledged")
+
     monkeypatch.setattr(Model, "invoke", invoke)
     model = Model(model_client_config=ModelClientConfig(client_provider="OpenAI",
         api_key="mock", api_base="http://mock-base"), model_config=ModelRequestConfig(model="mock-model"))
@@ -357,15 +592,22 @@ async def test_public_swarm_rail_runs_core_agent_and_persists_team_memory(tmp_pa
     await Runner.start()
     try:
         await rail._provider.initialize(**rail._identity)
-        await rail._provider.add_team_memories([{"label": "context", "content": "ocean recall sentinel"}])
-        result = await Runner.run_agent(agent, {"query": "review ocean"})
+        await rail._provider.sync_turn("", "", sources=[
+            {"id": "sentinel", "role": "assistant", "text": "ocean recall sentinel"},
+        ])
+        from jiuwenswarm.common.team_memory_binding import team_memory_user_context
+
+        result = await Runner.run_agent(agent, {
+            "query": "review ocean",
+            "run": {"context": team_memory_user_context(None, "review ocean")},
+        })
         await rail.drain()
         assert result["output"] == "acknowledged"
         assert any("ocean recall sentinel" in messages for messages in history)
         for name in ("team_memory_search", "team_memory_read", "team_memory_write", "team_memory_edit"):
             assert any(name in tools for tools in tool_history)
-        assert collected
-        document = (tmp_path / "memory/teams" / team / "MEMORY.md").read_text()
+        assert all("collect_team_conclusions" not in tools for tools in tool_history)
+        document = (tmp_path / "memory/team_memory/teams" / team / "MEMORY.md").read_text()
         assert "confirmed ocean plan" in document
     finally:
         await rail.aclose()
@@ -393,13 +635,23 @@ async def test_close_failure_quarantines_root_without_leaking_other_roots(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_configured_identity_shares_profiles_and_keeps_project_team_scope(tmp_path, monkeypatch):
+async def test_configured_identity_shares_profiles_and_keeps_project_team_scope(
+    tmp_path, monkeypatch, collective_extraction,
+):
     adapter = pytest.importorskip("jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider")
     from jiuwen_memory.construction.extractor_impl.agent_llm_extractor import AgentLlmExtractor
     from jiuwenswarm.agents.harness.common.memory import jiuwen_rail_builder as builder
     from jiuwenswarm.agents.harness.common.memory import document_runtime_holder as pool
 
-    def extract_response(_extractor, messages):
+    original_extract = AgentLlmExtractor._call_llm_with_retry
+    from jiuwenswarm.agents.harness.common.memory.team_memory_members import (
+        prepare_project_memory, prepare_team_memory,
+    )
+    from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+
+    def extract_response(extractor, messages, **options):
+        if "source_segments" in messages[-1].content:
+            return original_extract(extractor, messages, **options)
         source = re.search(r"\[ID: ([^\]]+)\]", messages[-1].content).group(1)
         return json.dumps([
             {"source_id": source, "target": "fact", "confidence": 1.0, "tier": "semantic",
@@ -430,16 +682,23 @@ async def test_configured_identity_shares_profiles_and_keeps_project_team_scope(
         ("team", "repo", "b", {}, (True, True, False)),
         ("team", "elsewhere", "a", {}, (True, False, False)),
         ("code", "repo", "a", {"user_id": "other-user"}, (False, False, False)),
-        ("code", "repo", "a", {"agent_id": "main_agent"}, (False, False, False)),
+        ("code", "repo", "a", {"agent_id": "main_agent"}, (True, True, False)),
     ]
     try:
         for index, (scene, project, group, overrides, _) in enumerate(cases):
             settings = {"mode": "sdk", "scope_id": "local", "user_id": "developer",
                         "agent_id": "shared-memory", "sdk": cfg, **overrides}
             host_config = {"memory": {"builtin": {"provider": "jiuwen", "jiuwen": settings}}}
+            team = project + "--" + group * 24
+            if scene == "team":
+                assert await prepare_team_memory(SwarmBuildContext(
+                    config=host_config, mode="team.work.normal", memory_project=project, memory_team=team,
+                ))
+            else:
+                assert await prepare_project_memory(host_config, project)
             rail = builder.build_jiuwen_memory_rail(host_config, agent_name=f"runtime-{index}",
                 scene=scene, project=project,
-                team_binding={"team": project + "--" + group * 24, "member": f"member-{index}"})
+                team_binding={"team": team, "member": f"member-{index}"})
             assert rail is not None
             provider = rail._provider
             providers.append(provider)
@@ -448,10 +707,13 @@ async def test_configured_identity_shares_profiles_and_keeps_project_team_scope(
             }
             await provider.initialize(**identity)
         assert all(provider.runtime is providers[0].runtime for provider in providers)
-        await providers[0].sync_turn("confirmed preferences and architecture", "acknowledged")
-        await providers[0].add_team_memories([{"label": "decision", "content": "ocean team approval"}])
+        await providers[0].sync_turn("", "", sources=[
+            {"id": "profile", "role": "user", "text": "user prefers violet"},
+            {"id": "project", "role": "assistant", "text": "ocean project uses sqlite"},
+            {"id": "team", "role": "assistant", "text": "ocean team approval"},
+        ])
         assert "user prefers violet" in (tmp_path / "USER.md").read_text()
-        assert "ocean project uses sqlite" in (tmp_path / "memory/repo/MEMORY.md").read_text()
+        assert "ocean project uses sqlite" in (tmp_path / "memory/team_memory/projects/repo/MEMORY.md").read_text()
         for provider, (_, project, _, _, expected) in zip(providers, cases):
             recalled = await provider.prefetch("ocean", project=project)
             actual = tuple(text in recalled for text in (
@@ -522,6 +784,9 @@ async def test_shared_sdk_video_imports_later_sessions(tmp_path, monkeypatch, fi
             assert rail is not None
             provider = rail._provider
             providers.append(provider)
+            if scene == "agent":
+                names = {schema["name"] for schema in provider.get_tool_schemas()}
+                assert {"agent_memory_video_submit", "agent_memory_video_status"} <= names
             await provider.initialize(scope_id="local", user_id="developer",
                                       agent_id="main_agent", session_id="")
             assert provider.runtime is providers[0].runtime

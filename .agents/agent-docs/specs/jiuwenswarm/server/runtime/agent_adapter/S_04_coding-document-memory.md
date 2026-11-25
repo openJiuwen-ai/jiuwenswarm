@@ -12,7 +12,7 @@ files: [jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/
 
 # Coding 文档记忆接入
 
-最近一次修订日期：2026-11-23。
+最近一次修订日期：2026-11-24。
 
 ## 单人 Coding 配置与选择
 
@@ -25,7 +25,7 @@ files: [jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/
 | `memory.builtin.jiuwen.mode` | 模板缺省 `sdk`；`http` 连接服务；配置和环境变量均空时回落 `http` |
 | `memory.builtin.jiuwen.sdk` | SDK 内核配置；模板使用本地 hashing 向量、64 维，LLM 沿用 Swarm 默认模型；可覆盖 embedder、模型、根目录及看门狗配置 |
 | `memory.builtin.jiuwen.user_id/scope_id/space/session_id` | 沿用已有身份配置；session 默认空字符串，不自动绑定聊天会话 ID |
-| `memory.builtin.jiuwen.agent_id` | Work/Code/Team 共用的记忆身份，默认 `main_agent`；不取运行 Agent 名称 |
+| `memory.builtin.jiuwen.agent_id` | 单人 Work/Code 的记忆身份，默认 `main_agent`；也用于登记对应的项目访问 |
 
 永恒会话不挂新 Rail。选中 jiuwen 后，条件不满足或初始化失败均不回退旧 CodingMemoryRail；ProjectMemoryRail 独立遵循总开关。Code 不挂工作模式 MemoryRail/JiuwenMemoryRail/ExternalMemoryRail。
 
@@ -58,9 +58,9 @@ memory:
 
 ## 身份和存储
 
-Jiuwen 路线的 Work/Code/Team 统一以 memory.builtin.jiuwen.agent_id 绑定记忆，未配置或空值时使用 main_agent。运行 Agent 的名称、角色及其原解析方式不变；实例参数、Agent 定义和成员名称不覆盖记忆身份。配置身份改变会重建记忆 Rail，仅运行名称变化不会。session_id 如实传入，默认空字符串，不强制清空显式配置。公共 builder 的 agent_name 参数保留调用兼容，但不再参与记忆身份解析。
+单人 Work/Code 以 memory.builtin.jiuwen.agent_id 绑定记忆，未配置或空值时使用 main_agent。配置身份改变会重建记忆 Rail，仅运行名称变化不会。session_id 如实传入，默认空字符串。公共 builder 的 agent_name 参数保留调用兼容。Team 按下文的稳定成员归属绑定。
 
-单人 Work/Code 共用 markdown 根（默认用户工作区下 agent/workspace），显式 root 优先。共用根目录与身份解析独立。在 SDK 路径，org/user/space 及配置的 agent_id 相同即可跨模式共享画像；不同运行名称的自定义助手也共享。不同配置身份仍按 Scope 过滤。普通聊天的新建、刷新和成员替换不改变配置身份。文档读取仍匹配 session；现有影子索引搜索跨 session，不能把显式 session 视为所有查询的隔离开关。
+单人 Work/Code 共用 markdown 根（默认用户工作区下 agent/workspace），显式 root 优先。画像文档按同一 org、space、user 和会话坐标共享，忽略 Agent 轴。项目记忆按宿主绑定的项目与成员权跨模式检索。普通聊天的新建、刷新和成员替换沿用配置身份。现有影子索引搜索跨 session。
 
 既有数据保留写入时的 Scope，不自动迁移或跨 Agent 兜底搜索。默认 main_agent 与原默认写入身份对齐；其他维度不变时可继续访问原默认身份数据。已有配置若显式设置其他 agent_id，则仍使用该值；需访问旧 main_agent 数据时应调整为 main_agent。配置统一作用于三种模式，不合并多个旧身份。
 
@@ -102,7 +102,7 @@ HTTP 身份映射沿用 agent-memory 现有契约，不能套用本节之前的 
 服务端独立配置模型、文档根、索引与认证；参考 agent-memory 适配 README 的 HTTP 部分。
 本地 SDK 记忆不随连接方式切换自动上传。服务端抽取失败或超时不以“已经记住”交付。
 
-完整 Spec 重载复用同一 JiuwenMemoryCodingRail 时，保留已初始化的 Provider；卸载后在进入异步初始化前重新绑定工具和提示词，避免最后一个 owner 暂时离开导致连接被关闭。回调注册仍由 DeepAgent 完成。实际身份、项目或连接配置改变则按原逻辑关闭旧 Provider，再使用新轨。
+完整 Spec 重载复用同一 JiuwenMemoryCodingRail 时，保留已初始化的 Provider；卸载后在进入异步初始化前重新绑定工具和提示词，避免最后一个 owner 暂时离开导致连接被关闭。回调注册仍由 DeepAgent 完成。实际身份、项目或连接配置改变则按原逻辑关闭旧 Provider，再使用新轨。Code 冷启动、完整 Spec 重载和 Rail 协调均检查项目成员登记，按绑定成功后复用，失败可在后续请求重试。Work 的内置 Jiuwen Rail 随有效项目键变更更新绑定和登记。
 
 
 SDK 文档存储配置的 `markdown_store`、`default`、`params` 允许 YAML 空值，按缺省字典补齐；`default` 的字符串 target 简写继续支持。其他错误类型明确记录配置错误，不静默丢弃后使用默认存储。
@@ -127,11 +127,11 @@ SDK 装配保留视频/音频模型与获准媒体目录的透传；首次装配
 
 team.work、team.code 仅按 memory.builtin.provider=jiuwen 选择并启用新团队记忆，不受 modes.team.*.memory.enabled、modes.agent/code.memory.enabled 或 memory.mode/engine 控制；旧开关关闭或未配置时仍挂载 Team Rail。SDK/HTTP 参数及宿主团队坐标仍须有效；缺少团队坐标时记录告警并跳过 Rail，初始化失败不回退旧记忆。team.design 和 provider 为空时保持原生路线；单人 Work/Code 的开关和门禁不变。
 
-团队入口将配置身份 memory_agent_name、memory_project、memory_team 写入 SwarmBuildContext 及其 seed；恢复时重新按当前配置解析记忆身份，不使用 seed 中旧运行名称。Leader 和成员沿用同一记忆身份，各持独立 Rail/Provider/缓存。入口自身不执行记忆预取与回写，不装原生 TeamMemoryManager。SDK 按规范根目录共享 Runtime，首份配置生效，后续差异告警；身份在每次请求解析。HTTP 不创建本地 Runtime。builder 的 shared_document_root 仅作兼容参数保留，SDK 始终提供共享根目录，HTTP 忽略该参数。
+团队入口通过 SwarmBuildContext 绑定账号、项目与团队，在 Swarm 内部保留专家团标识用于派生稳定团队键与解析成员模板身份（包括 role="leader" 对应的 {专家团}:leader），但向 Memory 仅绑定和登记项目与团队维度，不向 Memory 传递或登记 group 维度。常规集群使用主 Agent 身份，专家团的稳定专家（含配置了 leader 模板的团长）使用模板身份，临时成员使用 main_agent。每位回答者各持 Rail、Provider 和缓存。SDK 按规范文档根共享 Runtime，首份配置生效，后续差异告警。入口只装配 Rail，答复者负责预取和回写。恢复时按当前配置解析记忆身份。SDK 始终提供共享文档根，每次请求解析调用身份。HTTP 通过现有可信连接调用服务端 Runtime。
 
-团队键为项目键加 -- 和 org/user/项目/专家团 JSON 数组 SHA-256 前 24 位；无项目 default，无专家团空字符串。不以会话、成员、sidebar 拆分。USER.md 画像共享；项目事实按项目隔离；memory/teams/{team}/MEMORY.md 只供同团队查询，单人排除团队类别。
+团队键按归属账号和专家团派生。项目使用宿主确定的项目键，无项目时为 default。Swarm 在装配时经专用管理身份登记成员，普通 Work/Code 登记自己的项目成员权。成员管理失败时记录错误，团队执行继续。登记失败同步到成员恢复使用的 seed，恢复成员与 Leader 一样跳过 Team 记忆 Rail。显式加人可初始化成员库。
 
-Team 的四个工具为 team_memory_search/read/write/edit。项目、团队均由宿主绑定；项目和团队搜索各最多 5 条，画像及兜底文档不受此限制。自动抽取分别生成画像/项目事实和团队结论；未确认草稿不落盘。敏感内容过滤沿用原开关，同时覆盖 Team write/edit、自动 sync_turn 和结论写入。
+Team 的四个工具为 team_memory_search/read/write/edit。每次搜索使用请求的总条数预算及前置成员和分享校验。自动提炼由真人成功回合或子任务验收触发，单次抽取决定条目的合适落点。敏感内容过滤沿用原开关，覆盖显式写改及自动回写。
 
 租约构造成功才计入引用；首次绑定失败清理无人持有的实例，已有实例的借用失败不增加引用、不影响原持有者。成员退出归还租约；最后一个引用退出前等待已接受操作结束。正常关闭期间的新申请等待完成后重新查找或创建实例，等待不阻塞其他根目录；关闭失败继续隔离，不新建覆盖旧实例。进程退出清理资源。独立 Provider 未使用宿主持有者时保持原生命周期；SDK continuity 池的配置和主体冲突规则不变。
 

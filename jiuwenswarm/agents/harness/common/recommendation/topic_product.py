@@ -1326,7 +1326,7 @@ def write_terminal_pool(
     expected_model: str,
     corpus_text_by_id: dict[str, str] | None = None,
 ) -> TerminalPoolWriteResult:
-    """Atomically append one 1-7-card global or four-card project pool."""
+    """Atomically append one 1-6-card global or four-card project pool."""
 
     del corpus_text_by_id
     rejection_reason = _terminal_pool_rejection_reason(

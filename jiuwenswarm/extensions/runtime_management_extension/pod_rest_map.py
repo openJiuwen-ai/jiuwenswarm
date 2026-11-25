@@ -125,6 +125,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("team.snapshot", "GET", "/sessions/{session_id}/team/snapshot"),
     ("team.list", "GET", "/sessions/{session_id}/teams"),
     ("org.snapshot", "GET", "/sessions/{session_id}/organization/snapshot"),
+    ("org.expert_teams.add", "POST", "/sessions/{session_id}/organization/expert-teams"),
     ("a4p.config.get", "GET", "/a4p/config"),
     ("a4p.config.update", "PUT", "/a4p/config"),
     ("a4p.authorization.pending", "GET", "/a4p/authorization/pending"),
@@ -377,9 +378,11 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     ``channel_context.ext`` 是白名单过滤后的请求级扩展字段，经内部
     ``X-Jiuwenswarm-Request-Ext`` 传输；该头不承担鉴权。
 
-    定时任务的推送真渠道 ``channel_context.targets``（= job.targets）经
-    ``X-Cron-Targets`` 透传；执行侧 ``X-Channel-Id`` 仍可能是 ``__cron__``。
-    Agent 重建为 ``metadata["targets"]``，供 send_file 等按真渠道开关。
+    定时任务字段与 WebSocket 路径对齐：WS 把整份 ``channel_context`` 当作
+    ``AgentRequest.metadata``；HTTP body 只有 ``params``，因此：
+    - ``channel_context.targets`` → ``X-Cron-Targets`` → ``metadata["targets"]``
+    - ``channel_context.cron`` → ``X-Cron-Meta`` → ``metadata["cron"]``
+    Agent 侧用同一套 ``metadata.get("cron")`` 识别无人值守执行（与个人版一致）。
 
     企业版另附 ``X-Jiuwenswarm-Expert-Packages``。值按这只 bot 的专家包模板展开，
     不用 ``channel_context`` 里客户端自带的字段。
@@ -430,6 +433,11 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     cron_targets = str(channel_context.get("targets") or "").strip()
     if cron_targets:
         headers["X-Cron-Targets"] = cron_targets
+    cron_meta = channel_context.get("cron")
+    if isinstance(cron_meta, dict) and cron_meta:
+        headers["X-Cron-Meta"] = json.dumps(
+            cron_meta, ensure_ascii=True, separators=(",", ":"),
+        )
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext

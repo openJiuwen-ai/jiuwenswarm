@@ -48,6 +48,7 @@ from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
 )
 
 from .app_market.models import AppManifest
+from .app_market.storage import MarketStorage
 from .editor_sessions import CoreRequest
 
 logger = logging.getLogger(__name__)
@@ -907,6 +908,15 @@ async def update_hub_app(
         })
         if new_manifest is None:
             raise AppInstallError("app_register_failed", "Application adaptation or validation failed")
+        # Updating replaces the package, not the market registration: keep the
+        # pinned flag, creation time and editor bindings owned by this copy.
+        new_manifest.pinned = current.pinned
+        new_manifest.created_at = current.created_at
+        new_manifest.editor_session_id = current.editor_session_id
+        new_manifest.editor_create_token = current.editor_create_token
+        new_manifest.editor_create_pending = current.editor_create_pending
+        new_manifest.editor_session_ids = list(current.editor_session_ids)
+        manager.storage.save_manifest(app_id, new_manifest)
         manager.storage.save_install_record(app_id, new_record)
     except (Exception, asyncio.CancelledError) as exc:
         _recover_after_failure(operation, manager.storage, operation_dir)
@@ -994,6 +1004,54 @@ def _cleanup_uninstalled_files(
         shutil.rmtree(work_dir)
     except (OSError, RuntimeError, ValueError) as exc:
         logger.warning("Local cleanup failed after uninstalling %s: %s", manifest.app_id, exc)
+        return "", preserved_dir, str(exc) or "Local application files could not be removed"
+    return str(work_dir), preserved_dir, ""
+
+
+def cleanup_local_app_files(manifest: AppManifest, storage: MarketStorage) -> tuple[str, str, str]:
+    """Remove an app-owned local program directory, archiving data/ and .git.
+
+    Returns ``(removed_dir, preserved_dir, cleanup_warning)``. Local apps may
+    point at a user source directory. A converted installation outside the
+    default root needs the release ID retained from its install record.
+    """
+    if not manifest.work_dir:
+        return "", "", ""
+    work_dir = Path(manifest.work_dir).expanduser()
+    preserved_dir = ""
+    try:
+        if not work_dir.exists() and not work_dir.is_symlink():
+            return "", "", ""
+        install_root = default_install_root(os.environ.get("APP_MARKET_INSTALL_ROOT", ""))
+        identity = _directory_identity(work_dir)
+        under_install_root = work_dir.is_relative_to(install_root)
+        archived = any(part.casefold() == ".app-archive" for part in work_dir.parts)
+        owned = (
+            _owns_release(work_dir, manifest.local_release_id)
+            if manifest.local_release_id else under_install_root
+        )
+        kept_message = f"The application directory is not owned by App Market and was kept: {work_dir}"
+        if not identity or not owned:
+            return "", "", kept_message
+        if install_root.is_relative_to(work_dir) or archived:
+            return "", "", kept_message
+        if storage.has_overlapping_work_dir(work_dir):
+            return "", "", "The application directory is still used by another application"
+        if any((work_dir / name).exists() or (work_dir / name).is_symlink() for name in ("data", ".git")):
+            archive_root = _archive_root(install_root if under_install_root else work_dir.parent)
+            archive = archive_root / f"{work_dir.name}-{uuid.uuid4().hex}"
+            archive.mkdir()
+            _copy_preserved_paths(work_dir, archive)
+            preserved_dir = str(archive)
+        if _directory_identity(work_dir) != identity or (
+            manifest.local_release_id and not _owns_release(work_dir, manifest.local_release_id)
+        ):
+            raise AppInstallError("install_path_conflict", "Application directory changed during cleanup")
+        if storage.has_overlapping_work_dir(work_dir):
+            return "", preserved_dir, "The application directory is still used by another application"
+        shutil.rmtree(work_dir)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("Local app cleanup failed for %s: %s", manifest.app_id, exc)
         return "", preserved_dir, str(exc) or "Local application files could not be removed"
     return str(work_dir), preserved_dir, ""
 

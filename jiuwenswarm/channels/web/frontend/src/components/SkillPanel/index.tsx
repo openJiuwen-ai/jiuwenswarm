@@ -498,7 +498,7 @@ export function SkillPanel({
           success: boolean;
           cancelled?: boolean;
           pending?: boolean;
-          skill?: { name: string };
+          skill?: { name: string; display_name?: string };
           detail?: string;
           detail_key?: string;
           message?: string;
@@ -551,7 +551,12 @@ export function SkillPanel({
         if (data.pending) {
           throw new Error(t('skills.errors.installFailedHint'));
         }
-        showMessage('success', t('skills.messages.installed', { name: data.skill?.name || skill.name }));
+        showMessage(
+          'success',
+          t('skills.messages.installed', {
+            name: skill.display_name || data.skill?.display_name || data.skill?.name || skill.name,
+          }),
+        );
         await fetchSkills();
       } catch (error) {
         console.error(error);

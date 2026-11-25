@@ -14,7 +14,21 @@ design_note: 依据 D-20261113-2017-jiuwen-memory-team-upgrade 及已确认的�
 
 日期：2026-11-18。
 
-## 决策与装配
+## 当前群体记忆接线
+
+沿用现有 `memory.builtin.provider=jiuwen`，团队的 Work 和 Code 模式使用同一 Team 场景。常规集群使用按账号归属派生的稳定主团队键，项目和会话只在各自的上下文中绑定。专家团按稳定团和模板身份绑定，临时成员使用 `main_agent`。SDK 使用原有文档 Runtime 持有者。
+
+宿主标记真实用户原文，Core 将来源交给共享记忆 Provider。任务验收后的经验抽取由 Memory 统一完成。成员关系以 Memory 的持久登记为准。
+
+常规集群与专家团在组装团队规格时登记名册，登记结果同步到成员恢复使用的 seed。Work 选中项目时刷新记忆绑定并登记成员，Code 在冷启动、完整 Spec 重载和 Rail 协调时补齐登记，成功后复用登记结果。管理租约在登记后释放。运行期 Provider 使用调用身份。登记失败记录错误，团队照常执行。显式加人成员库缺失时可初始化。
+
+同一用户的画像支持跨 Agent 显式读取和修订，修订沿用 SUPERSEDE 并保留原条目归属。单人项目搜索同时考虑普通记忆与当前授权项目的群体条目，保留原工具的参数和返回格式。
+
+SDK 与 HTTP 的成员管理复用 Provider 连接配置。注册的专用身份持有成员管理权，团长和专家按普通成员登记。HTTP 在 Memory 的可信主体注册表登记该专用身份，沿用原有网关密钥。显式专家登记、移出、模板删除和专家团卸载通过成员管理契约同步；停止会话保留持久名册。Rail 安装和显式成员变更共用同一模板身份解析。Team Provider 实例固定项目和群体坐标，SDK 租约调用使用自身的绑定；同一会话内切项目及撤权失败后的补偿留待后续。
+
+Swarm 的 agent_group_name 仅在宿主侧用于派生专家团的稳定 team 键和解析成员模板身份（包括 role="leader" 对应的 {agent_group}:leader），不再作为 group 维度传给 Memory 或登记到 members.db（Memory 内核保留 group 维度能力供后续独立协作组使用）。
+
+## 上游基线决策与装配
 
 按原设计 D-08、5.7 和 V-15，memory.builtin.provider=jiuwen 即启用 team.work 与 team.code 的文档记忆，由 scene=team 工厂创建每位回答者独立的 JiuwenTeamMemoryRail/Provider。不读取旧团队 modes.team.*.memory.enabled、单人 modes.agent/code.memory.enabled 或 memory.mode/engine 作为启用条件；旧开关为 false 或缺省均可启用。仍需宿主绑定团队坐标及有效的 SDK/HTTP 配置；启用 Jiuwen 但缺少团队坐标时记录告警并跳过 Rail，不回退旧记忆。默认 provider 不改，team.design 和原生路线保留既有行为，单人开关不变。此前实施中的单人开关及 mode/engine 限制属于偏离原设计，本次按已确认要求移除。
 

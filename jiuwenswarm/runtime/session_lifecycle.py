@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 from jiuwenswarm.runtime.session.model import (
     ExecutionLifecycleContext,
@@ -251,8 +251,8 @@ class SessionRuntimeLifecyclePort(Protocol):
         *,
         reason: str,
         channel_id: str | None = None,
-    ) -> bool:
-        """Return whether one Team Session generation was paused or drained."""
+    ) -> Any:
+        """Return structured pause result (or legacy bool) for one Team generation."""
         ...
 
     async def stop_session(

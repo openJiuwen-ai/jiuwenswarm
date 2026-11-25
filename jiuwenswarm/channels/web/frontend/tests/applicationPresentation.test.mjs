@@ -6,6 +6,7 @@ import { JSDOM } from 'jsdom';
 import { createPresentationRequests, parsePresentationRequest, conversationActivity, presentationConversations, useChatStore,
   useSessionStore, useWorkspaceStore, ApplicationPresentationHost, usePresentationHost, WebUIProvider, componentCatalog,
   createRendererRegistry, createWebUIRuntime, createMockTransport, createPresentationReplyReader, lastPresentationReply, lastPresentationUserMessage, selectConversationModel, webClient,
+  WebUIApplicationSurface,
 } from '../node_modules/.cache/application-presentation/protocol.mjs';
 
 const request = (id, action = 'send', params = { conversationKey: 'session::team', text: 'hello' }) => ({
@@ -266,7 +267,7 @@ test('snapshots expose only single Agent summaries, with the last user message a
   assert.ok(!JSON.stringify(snapshot).includes('private reasoning'));
 });
 
-async function mountHost(onSend = async () => ({ accepted: true, conversationKey: 'a' }), onWorkspace = async () => {}, callbacks = {}) {
+async function mountHost(onSend = async () => ({ accepted: true, conversationKey: 'a' }), onWorkspace = async () => {}, callbacks = {}, activateInitial = true, liveSurface = false, desktop = true) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
   const globals = ['window', 'document', 'getComputedStyle', 'MutationObserver', 'HTMLElement', 'Element', 'ShadowRoot', 'CustomEvent',
     'IS_REACT_ACT_ENVIRONMENT'];
@@ -292,8 +293,8 @@ async function mountHost(onSend = async () => ({ accepted: true, conversationKey
     close: async key => { closes.push(key); return true; },
     resize: async () => true, move: async () => true, hitTest: async () => true,
   };
-  window.jiuwenDesktop = { presentation: api };
-  function Probe() { port = usePresentationHost(); return null; }
+  if (desktop) window.jiuwenDesktop = { presentation: api };
+  function Probe(props) { port = usePresentationHost(); return liveSurface ? React.createElement(WebUIApplicationSurface, props) : null; }
   const registry = createRendererRegistry(Object.fromEntries(componentCatalog.listComponents().map(rule =>
     [rule.name, rule.name === 'ApplicationSurface' ? Probe : () => null])));
   const transport = createMockTransport();
@@ -308,16 +309,21 @@ async function mountHost(onSend = async () => ({ accepted: true, conversationKey
   await act(async () => transport.injectRenderFrame({ target, revision: 1, mode: 'replace', schema_version: 1,
     root: { component: 'ApplicationSurface', props: { title: 'Bee', src: '/extension-assets/bee/g1/index.html' } } }));
   assert.ok(port);
-  const declaration = { key: 'bee', title: 'Bee', src: '/extension-assets/bee/g1/index.html',
+  const declaration = { key: liveSurface ? '|application.presentation|bee|main' : 'bee', revision: liveSurface ? 1 : undefined,
+    title: 'Bee', src: '/extension-assets/bee/g1/index.html',
     resourceUrl: '/extension-assets/bee/g1/index.html', width: 300, height: 320, config: {} };
   let opening;
-  await act(async () => { opening = port.activate(declaration); });
+  if (activateInitial) await act(async () => { opening = port.activate(declaration); });
   return {
     requests, results, updates, opening, closes, editorUpdates,
-    activate: () => port.activate(declaration),
+    nativeApi: api, runtime, transport, target, declaration,
+    register: (changes = {}) => port.update({ ...declaration, ...changes }),
+    release: (key = declaration.key) => port.release(key),
+    activate: (changes = {}) => port.activate({ ...declaration, ...changes }),
     ready: (generation = 'current') => resolveOpen({ generation }),
-    receive: (message, generation = 'current') => onRequest({ key: 'bee', generation, request: message }),
-    closed: generation => onClosed({ key: 'bee', generation, reason: 'closed' }),
+    receive: (message, generation = 'current') => onRequest({ key: declaration.key, generation, request: message }),
+    closed: (generation, reason = 'closed') => onClosed({ key: declaration.key, generation, reason }),
+    unmount: () => root.unmount(),
     async dispose() {
       await act(async () => root.unmount());
       runtime.dispose(); dom.window.close();
@@ -327,6 +333,229 @@ async function mountHost(onSend = async () => ({ accepted: true, conversationKey
     },
   };
 }
+
+test('render-controlled desktop forms stay out of the launcher and retain the current page', async () => {
+  const selections = [];
+  const host = await mountHost(undefined, undefined, { onSelect: async conversation => selections.push(conversation) }, false);
+  try {
+    await act(async () => host.register({ autoStart: true }));
+    assert.equal(document.querySelector('[data-testid="webui-presentation-launcher"]'), null);
+    assert.equal(host.requests.length, 1);
+    await act(async () => host.ready());
+    assert.deepEqual(selections, [], 'starting the current conversation does not navigate away from settings');
+    await act(async () => host.receive(request(1, 'select', { conversationKey: 'b' })));
+    assert.equal(selections.at(-1).conversationKey, 'b', 'explicit conversation selection still works');
+  } finally { await host.dispose(); }
+});
+
+test('physical overlay close reports the exact rendered instance without waiting on the plugin', async () => {
+  const host = await mountHost(undefined, undefined, {}, false, true);
+  let finishClose;
+  const dispatch = host.transport.dispatch;
+  host.transport.dispatch = value => value.event === 'ui.closed'
+    ? new Promise(resolve => { finishClose = () => resolve({ accepted: true, status: 'closed' }); dispatch(value); })
+    : dispatch(value);
+  try {
+    await act(async () => host.transport.injectRenderFrame({ target: host.target, revision: 2, mode: 'replace', schema_version: 1,
+      root: { component: 'ApplicationSurface', props: { title: 'Bee', src: host.declaration.src, mode: 'overlay', autoStart: true } } }));
+    const frame = document.querySelector('iframe');
+    await act(async () => {
+      window.dispatchEvent(new window.MessageEvent('message', { source: frame.contentWindow,
+        data: { protocol: 'workswarm.presentation', version: 1, type: 'ready' } }));
+    });
+    await act(async () => document.querySelector('[data-testid="webui-presentation-overlay-close"]').click());
+    assert.equal(document.querySelector('iframe'), null);
+    const closed = host.transport.dispatches.filter(item => item.event === 'ui.closed');
+    const closedId = closed[0].payload.presentation_id;
+    assert.ok(Number.isSafeInteger(closedId) && closedId > 0);
+    assert.deepEqual(closed, [{ event: 'ui.closed', target: { scope: 'application', sessionId: '',
+      slotId: 'application.presentation', packageId: 'bee', instanceKey: 'main' }, payload: { reason: 'closed', revision: 2, presentation_id: closedId } }]);
+    assert.ok(finishClose, 'the plugin receipt is still pending after physical destruction');
+    finishClose();
+    assert.equal(await host.runtime.notifyClosed(host.declaration.key, 'closed', 1), null);
+    assert.equal(host.transport.dispatches.filter(item => item.event === 'ui.closed').length, 1, 'old revisions are never reported as current');
+  } finally { finishClose?.(); await host.dispose(); }
+});
+
+test('returning to the workspace reports a normal close without a restore notice', async () => {
+  const host = await mountHost(undefined, undefined, {}, true, true);
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    await act(async () => host.closed('current', 'workspace'));
+    const closed = host.transport.dispatches.filter(item => item.event === 'ui.closed');
+    assert.deepEqual(closed.map(item => item.payload.reason), ['closed']);
+    assert.equal(document.querySelector('[data-testid="webui-presentation-notice"]'), null);
+  } finally { await host.dispose(); }
+});
+
+test('render updates switch the same resource between hosts, preserve config updates, and reopen after CLEAR', async () => {
+  const host = await mountHost(undefined, undefined, {}, false, true);
+  const render = (revision, mode, config = {}) => host.transport.injectRenderFrame({
+    target: host.target, revision, mode: 'replace', schema_version: 1,
+    root: { component: 'ApplicationSurface', props: {
+      title: 'Bee', src: host.declaration.src, mode, autoStart: true, config,
+    } },
+  });
+  try {
+    await act(async () => render(2, 'desktop'));
+    assert.equal(host.requests.length, 1);
+    await act(async () => host.ready('desktop'));
+    await act(async () => render(3, 'overlay'));
+    const frame = document.querySelector('iframe');
+    assert.ok(frame);
+    assert.deepEqual(host.closes, [host.declaration.key]);
+    await act(async () => window.dispatchEvent(new window.MessageEvent('message', { source: frame.contentWindow,
+      data: { protocol: 'workswarm.presentation', version: 1, type: 'ready' } })));
+    await act(async () => render(4, 'overlay', { expanded: true }));
+    assert.equal(document.querySelector('iframe'), frame);
+    await act(async () => document.querySelector('[data-testid="webui-presentation-overlay-close"]').click());
+    assert.equal(host.transport.dispatches.filter(item => item.event === 'ui.closed').at(-1).payload.revision, 4);
+    await act(async () => host.transport.injectClearFrame({ target: host.target, revision: 5, reason: 'requested' }));
+    await act(async () => render(6, 'desktop'));
+    assert.equal(host.requests.length, 2);
+    await act(async () => host.ready('reopened'));
+    assert.equal(document.querySelector('[data-testid="webui-presentation-launcher"]'), null);
+  } finally { await host.dispose(); }
+});
+
+test('native open failure reports one lifecycle close for the current rendered revision', async () => {
+  const host = await mountHost(undefined, undefined, {}, false, true);
+  host.nativeApi.open = async () => { throw new Error('native open failed'); };
+  try {
+    await act(async () => host.transport.injectRenderFrame({ target: host.target, revision: 2, mode: 'replace', schema_version: 1,
+      root: { component: 'ApplicationSurface', props: { title: 'Bee', src: host.declaration.src, autoStart: true } } }));
+    const closes = host.transport.dispatches.filter(item => item.event === 'ui.closed');
+    assert.equal(closes.length, 1);
+    assert.equal(closes[0].payload.reason, 'open_failed');
+    assert.equal(closes[0].payload.revision, 2);
+    assert.ok(closes[0].payload.presentation_id > 0);
+    assert.deepEqual(host.closes, [host.declaration.key]);
+  } finally { await host.dispose(); }
+});
+
+test('an overlay that fails before ready is destroyed and reports one lifecycle close', async () => {
+  const host = await mountHost(undefined, undefined, {}, false, true);
+  try {
+    await act(async () => host.transport.injectRenderFrame({ target: host.target, revision: 2, mode: 'replace', schema_version: 1,
+      root: { component: 'ApplicationSurface', props: { title: 'Bee', src: host.declaration.src, mode: 'overlay', autoStart: true } } }));
+    const frame = document.querySelector('iframe');
+    assert.ok(frame);
+    await act(async () => window.dispatchEvent(new window.MessageEvent('message', { source: frame.contentWindow,
+      data: { protocol: 'workswarm.presentation', version: 1, type: 'ready', transition: { durationMs: 300 } } })));
+    assert.ok(document.querySelector('iframe') === null, 'a rejected overlay transition must close the pending container');
+    const closes = host.transport.dispatches.filter(item => item.event === 'ui.closed');
+    assert.equal(closes.length, 1);
+    assert.equal(closes[0].payload.reason, 'open_failed');
+    assert.equal(closes[0].payload.revision, 2);
+  } finally { await host.dispose(); }
+});
+
+test('desktop autoStart in a browser reports failure instead of leaving a requested form without a container', async () => {
+  const host = await mountHost(undefined, undefined, {}, false, true, false);
+  try {
+    await act(async () => host.transport.injectRenderFrame({ target: host.target, revision: 2, mode: 'replace', schema_version: 1,
+      root: { component: 'ApplicationSurface', props: { title: 'Bee', src: host.declaration.src, autoStart: true } } }));
+    assert.equal(host.requests.length, 0);
+    const closes = host.transport.dispatches.filter(item => item.event === 'ui.closed');
+    assert.equal(closes.length, 1);
+    assert.equal(closes[0].payload.reason, 'open_failed');
+    assert.equal(closes[0].payload.revision, 2);
+  } finally { await host.dispose(); }
+});
+
+test('late close from a retired native generation does not notify the new form owner', async () => {
+  const host = await mountHost(undefined, undefined, {}, true, true);
+  try {
+    await act(async () => { host.ready('old'); await host.opening; });
+    await act(async () => host.transport.injectRenderFrame({ target: host.target, revision: 2, mode: 'replace', schema_version: 1,
+      root: { component: 'ApplicationSurface', props: { title: 'Next', src: '/extension-assets/bee/g1/next.html' } } }));
+    let next;
+    await act(async () => { next = host.activate({ src: '/extension-assets/bee/g1/next.html', revision: 2 }); });
+    await act(async () => { host.ready('new'); await next; });
+    await act(async () => host.closed('old'));
+    assert.equal(host.transport.dispatches.filter(item => item.event === 'ui.closed').length, 0);
+    await act(async () => host.closed('new'));
+    assert.deepEqual(host.transport.dispatches.filter(item => item.event === 'ui.closed').map(item => ({
+      reason: item.payload.reason, revision: item.payload.revision })),
+      [{ reason: 'closed', revision: 2 }]);
+  } finally { await host.dispose(); }
+});
+
+test('an unchanged legacy candidate can reopen and close with a new container identity', async () => {
+  const host = await mountHost(undefined, undefined, {}, true, true);
+  try {
+    await act(async () => { host.ready('first'); await host.opening; });
+    await act(async () => host.closed('first'));
+    assert.equal(host.runtime.getInstance(host.declaration.key).revision, 1);
+    let opening;
+    await act(async () => { opening = host.activate(); });
+    await act(async () => { host.ready('second'); await opening; });
+    await act(async () => host.closed('second'));
+    const closes = host.transport.dispatches.filter(item => item.event === 'ui.closed');
+    assert.equal(closes.length, 2);
+    assert.equal(closes[0].payload.revision, 1);
+    assert.equal(closes[1].payload.revision, 1);
+    assert.ok(closes[1].payload.presentation_id > closes[0].payload.presentation_id);
+  } finally { await host.dispose(); }
+});
+
+test('automatic overlays follow declaration enable and release without a switch-menu entry', async () => {
+  const host = await mountHost(undefined, undefined, {}, false);
+  const declaration = { mode: 'overlay', autoStart: true };
+  const ready = async () => {
+    const frame = document.querySelector('iframe');
+    assert.ok(frame);
+    await act(async () => window.dispatchEvent(new window.MessageEvent('message', { source: frame.contentWindow,
+      data: { protocol: 'workswarm.presentation', version: 1, type: 'ready' } })));
+    return frame;
+  };
+  try {
+    await act(async () => host.register(declaration));
+    const first = await ready();
+    assert.equal(document.querySelector('[data-testid="webui-presentation-launcher"]'), null);
+    assert.equal(host.requests.length, 0, 'automatic overlays never open a native window');
+    await act(async () => {
+      useChatStore.getState().setInputValue('a', 'editing');
+      host.register({ ...declaration, title: 'Updated title', config: { expanded: true } });
+    });
+    assert.equal(document.querySelector('iframe'), first);
+    await act(async () => document.querySelector('[data-testid="webui-presentation-overlay-close"]').click());
+    assert.equal(document.querySelector('iframe'), null);
+    await act(async () => host.register({ ...declaration, config: { expanded: false } }));
+    assert.equal(document.querySelector('iframe'), null, 'ordinary updates do not reopen a manually closed pet');
+    await act(async () => host.release());
+    await act(async () => host.register(declaration));
+    const second = await ready();
+    assert.notEqual(second, first);
+    await act(async () => host.release());
+    assert.equal(document.querySelector('iframe'), null, 'disabling releases the pet');
+    await act(async () => host.register(declaration));
+    assert.ok(document.querySelector('iframe'));
+    await act(async () => host.release());
+    assert.equal(document.querySelector('iframe'), null, 'disable cancels pending readiness too');
+    assert.equal(document.querySelector('[data-testid="webui-presentation-notice"]'), null);
+  } finally { await host.dispose(); }
+});
+
+test('automatic overlays do not replace an active form or retry on unrelated updates', async () => {
+  const host = await mountHost();
+  const declaration = { key: 'pet', mode: 'overlay', autoStart: true };
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    assert.equal('autoStart' in host.requests[0], false);
+    await act(async () => host.register(declaration));
+    assert.equal(document.querySelector('iframe'), null);
+    assert.deepEqual(host.closes, []);
+    assert.match(document.querySelector('[data-testid="webui-presentation-notice"]').textContent, /已有|already/);
+    await act(async () => host.closed('current'));
+    await act(async () => host.register({ ...declaration, config: { changed: true } }));
+    assert.equal(document.querySelector('iframe'), null);
+    await act(async () => host.release('pet'));
+    await act(async () => host.register(declaration));
+    assert.ok(document.querySelector('iframe'), 're-enabling explicitly requests another automatic start');
+    await act(async () => host.release('pet'));
+  } finally { await host.dispose(); }
+});
 
 
 
@@ -427,11 +656,160 @@ test('a previous window workspace request cannot close a newer window after its 
     assert.equal(typeof finishWorkspace, 'function');
     await act(async () => { host.closed('current'); });
     let reopened;
-    await act(async () => { reopened = host.activate(); });
+    await act(async () => { reopened = host.activate({ src: '/extension-assets/bee/g2/index.html' }); });
     await act(async () => { host.ready('next'); await reopened; });
     await act(async () => { finishWorkspace(); });
     assert.deepEqual(host.closes, []);
     assert.equal(host.results.find(item => item.id === 1).error.code, 'STALE_REQUEST');
+  } finally { await host.dispose(); }
+});
+
+test('unmount invalidates a pending workspace action before it can close a later host', async () => {
+  let finishWorkspace;
+  const host = await mountHost(undefined, () => new Promise(resolve => { finishWorkspace = resolve; }));
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    await act(async () => { await host.receive(request(1, 'workspace', { conversationKey: 'a' })); });
+    await act(async () => host.unmount());
+    assert.deepEqual(host.closes, ['bee']);
+    await act(async () => finishWorkspace());
+    assert.deepEqual(host.closes, ['bee']);
+    assert.equal(host.results.find(item => item.id === 1).error.code, 'STALE_REQUEST');
+  } finally { await host.dispose(); }
+});
+
+test('the new container waits for an old asynchronous close and accepts its matching render registration', async () => {
+  const host = await mountHost();
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    let finishClose;
+    host.nativeApi.close = async () => new Promise(resolve => { finishClose = resolve; });
+    let replacing;
+    await act(async () => { replacing = host.activate({ mode: 'overlay', revision: 2 }); });
+    assert.equal(document.querySelector('iframe'), null, 'new container cannot open before physical close finishes');
+    await act(async () => host.register({ mode: 'overlay', revision: 2 }));
+    await act(async () => finishClose(true));
+    const frame = document.querySelector('iframe');
+    assert.ok(frame);
+    await act(async () => {
+      window.dispatchEvent(new window.MessageEvent('message', { source: frame.contentWindow,
+        data: { protocol: 'workswarm.presentation', version: 1, type: 'ready' } }));
+      await replacing;
+    });
+  } finally { await host.dispose(); }
+});
+
+test('failed closes retain the old surface until a later activation confirms its close', async () => {
+  const host = await mountHost();
+  let finishClose;
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    let closeCalls = 0;
+    host.nativeApi.close = async key => {
+      host.closes.push(key);
+      if (++closeCalls <= 2) throw new Error('close failed');
+      return new Promise(resolve => { finishClose = resolve; });
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await act(async () => { await assert.rejects(host.activate({ mode: 'overlay' }), /close failed/); });
+      assert.equal(document.querySelector('iframe'), null);
+    }
+    assert.deepEqual(host.closes, ['bee', 'bee']);
+    assert.equal(host.requests.length, 1);
+    let replacing, retryError;
+    await act(async () => {
+      replacing = host.activate({ mode: 'overlay' }).catch(error => { retryError = error; });
+    });
+    assert.equal(typeof finishClose, 'function');
+    assert.equal(document.querySelector('iframe'), null, 'replacement must wait for the retried close');
+    await act(async () => finishClose(true));
+    const frame = document.querySelector('iframe');
+    assert.ok(frame);
+    await act(async () => {
+      window.dispatchEvent(new window.MessageEvent('message', { source: frame.contentWindow,
+        data: { protocol: 'workswarm.presentation', version: 1, type: 'ready' } }));
+      await replacing;
+    });
+    assert.equal(retryError, undefined);
+    assert.deepEqual(host.closes, ['bee', 'bee', 'bee']);
+  } finally { finishClose?.(true); await host.dispose(); }
+});
+
+test('a failed release close is retried before reopening on the same native host', async () => {
+  const host = await mountHost();
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    let closeCalls = 0;
+    host.nativeApi.close = async key => {
+      host.closes.push(key);
+      if (++closeCalls === 1) throw new Error('release close failed');
+      return false;
+    };
+    await act(async () => host.release());
+    assert.equal(closeCalls, 1);
+    let reopened, retryError;
+    await act(async () => { reopened = host.activate().catch(error => { retryError = error; }); });
+    assert.equal(host.requests.length, 2);
+    await act(async () => { host.ready('reopened'); await reopened; });
+    assert.equal(retryError, undefined);
+    assert.deepEqual(host.closes, ['bee', 'bee']);
+  } finally { await host.dispose(); }
+});
+
+test('unmount cleans a surface retained after a failed close', async () => {
+  const host = await mountHost();
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    host.nativeApi.close = async key => { host.closes.push(key); throw new Error('close failed'); };
+    await act(async () => { await assert.rejects(host.activate({ mode: 'overlay' }), /close failed/); });
+    host.nativeApi.close = async key => { host.closes.push(key); return true; };
+    await act(async () => host.unmount());
+    assert.deepEqual(host.closes, ['bee', 'bee']);
+  } finally { await host.dispose(); }
+});
+
+test('unmount while closing the old surface cannot open a replacement afterward', async () => {
+  const host = await mountHost();
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    let finishClose;
+    host.nativeApi.close = async key => {
+      host.closes.push(key);
+      return new Promise(resolve => { finishClose = resolve; });
+    };
+    let replacing;
+    await act(async () => { replacing = host.activate({ mode: 'overlay' }); });
+    const rejected = assert.rejects(replacing, /STALE_REQUEST/);
+    await act(async () => { host.unmount(); finishClose(true); await rejected; });
+    assert.equal(host.requests.length, 1);
+    assert.equal(document.querySelector('iframe'), null);
+    assert.deepEqual(host.closes, ['bee']);
+  } finally { await host.dispose(); }
+});
+
+test('replacing one in-app form does not let the old close event clear the new activation', async () => {
+  const host = await mountHost();
+  const ready = async opening => {
+    const frame = document.querySelector('iframe');
+    await act(async () => {
+      window.dispatchEvent(new window.MessageEvent('message', { source: frame.contentWindow,
+        data: { protocol: 'workswarm.presentation', version: 1, type: 'ready' } }));
+      await opening;
+    });
+    return frame;
+  };
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    let first, second;
+    await act(async () => { first = host.activate({ mode: 'overlay' }); });
+    const previousFrame = await ready(first);
+    await act(async () => { second = host.activate({ key: 'second', mode: 'overlay' }); });
+    const frame = await ready(second);
+    assert.notEqual(frame, previousFrame);
+    assert.equal(document.querySelector('[data-testid="webui-presentation-overlay"]').style.visibility, 'visible');
+    await act(async () => window.dispatchEvent(new window.MessageEvent('message', { source: frame.contentWindow,
+      data: request(1, 'draft', { conversationKey: 'a', text: 'replacement draft' }) })));
+    assert.equal(useChatStore.getState().getRuntime('a').inputValue, 'replacement draft');
   } finally { await host.dispose(); }
 });
 

@@ -13,7 +13,7 @@ from agent_gateway.channel_manager.web.trajectory_http import TrajectoryHttpServ
 from jiuwenswarm.observability.config import TrajectoryStoreSettings
 from jiuwenswarm.server.trajectory.host import TrajectoryHost
 import asyncio
-from jiuwenswarm.common.schema.message import Message
+from jiuwenswarm.common.schema.message import Message, ReqMethod
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 from agent_gateway.routing.keys import RoutingKey
@@ -88,7 +88,10 @@ async def _usage_metadata_loader(
 def TrajectoryHttpService(settings=None, *, reader=None, metadata_loader=None, fetch=None):
     """Exercise the gateway usage route through the in-process trajectory host."""
     if fetch is None:
-        fetch = TrajectoryHost(settings=settings, reader=reader).call
+        host = TrajectoryHost(settings=settings, reader=reader)
+
+        async def fetch(method, params, user_id=None):
+            return await host.call(ReqMethod(method.value), params, user_id=user_id)
     return _GatewayTrajectoryHttpService(metadata_loader=metadata_loader, fetch=fetch)
 
 class _UsageReader:

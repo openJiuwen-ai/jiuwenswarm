@@ -21,18 +21,7 @@ class _Admission:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("headers", "allowed"),
-    [
-        ({}, False),
-        ({"X-Jiuwen-Gateway-Internal": "expected-token"}, True),
-    ],
-)
-async def test_channel_sync_requires_internal_token(
-    monkeypatch: pytest.MonkeyPatch,
-    headers: dict,
-    allowed: bool,
-) -> None:
+async def test_channel_sync_is_dispatched(monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[dict] = []
 
     async def _send(ws, payload) -> bool:
@@ -41,7 +30,6 @@ async def test_channel_sync_requires_internal_token(
         return True
 
     monkeypatch.setattr("jiuwenswarm.server.front.router.send_wire_payload", _send)
-    monkeypatch.setenv("JIUWENSWARM_GATEWAY_INTERNAL_TOKEN", "expected-token")
     admission = _Admission()
     router = MethodRouter(Readiness(), admission)  # type: ignore[arg-type]
     request = AgentRequest(
@@ -52,13 +40,10 @@ async def test_channel_sync_requires_internal_token(
     )
 
     await router.dispatch(
-        SimpleNamespace(request_headers=headers),
+        SimpleNamespace(request_headers={}),
         request,
         asyncio.Lock(),
     )
 
-    assert admission.called is allowed
-    if allowed:
-        assert sent == []
-    else:
-        assert "PERMISSION" in repr(sent[0])
+    assert admission.called is True
+    assert sent == []

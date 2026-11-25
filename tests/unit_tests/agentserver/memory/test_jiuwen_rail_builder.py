@@ -86,6 +86,7 @@ class _FakeAgentMemoryProvider:
             "space": space,
             "identity_org": identity_org,
             "identity_user": identity_user,
+            **_kwargs,
         }
 
     @staticmethod
@@ -178,7 +179,7 @@ def test_sdk_bare_uses_provider_builtin_default():
     assert isinstance(rail, _FakeJiuwenRail)
     init = _FakeAgentMemoryProvider.last_init_kwargs
     root = init["config_dict"]["markdown_store"]["default"]["params"]["root"]
-    assert root.endswith("agent/workspace")  # Shared SDK root; provider fills remaining defaults.
+    assert root.replace("\\", "/").endswith("/agent/workspace")
     assert init["config_path"] is None
     assert not init["base_url"]
     assert init["security_provider"] is not None  # mem2.0 进程内身份 fail-closed
@@ -537,7 +538,7 @@ def test_fingerprint_sensitive_to_http_endpoint():
 @pytest.mark.parametrize("mode", ["sdk", "http"])
 @pytest.mark.asyncio
 async def test_jiuwen_provider_uses_default_project_across_operations(monkeypatch, mode):
-    prefetch = AsyncMock()
+    prefetch = AsyncMock(return_value="")
     sync_turn = AsyncMock()
     tool = AsyncMock(return_value='{"result": "ok"}')
     monkeypatch.setattr(_FakeAgentMemoryProvider, "prefetch", prefetch, raising=False)
@@ -551,6 +552,8 @@ async def test_jiuwen_provider_uses_default_project_across_operations(monkeypatc
     await provider.prefetch("query", project="testMemory")
     await provider.sync_turn("user", "assistant", project="testMemory")
     assert prefetch.call_args.kwargs["project"] == sync_turn.call_args.kwargs["project"] == "testMemory"
+
+    assert _FakeAgentMemoryProvider.last_init_kwargs["collective_coordinates"] == {"project": "default"}
 
     for tool_name in (
         "agent_memory_conclude", "agent_memory_search", "agent_memory_video_submit",

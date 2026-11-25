@@ -5,6 +5,8 @@ export type SidebarNavKey =
   | 'skills'
   | 'rea'
   | 'agents'
+  | 'workspace'
+  | 'approvals'
   | 'design'
   | 'teams'
   | 'connectorMarket'

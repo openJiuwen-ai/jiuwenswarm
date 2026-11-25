@@ -3,6 +3,10 @@
   min-height: 160px;
 }
 
+.app-market-card .entity-header__identity {
+  flex: 1;
+}
+
 .app-market-card-actions {
   display: flex;
   flex-shrink: 0;
@@ -36,6 +40,20 @@
   white-space: pre-wrap;
 }
 
+.app-market-detail__introduction {
+  display: grid;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.app-market-detail__introduction blockquote {
+  margin: 0;
+  padding-inline-start: 12px;
+  border-inline-start: 2px solid var(--color-border-default);
+}
+
 .app-market-detail__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -67,6 +85,39 @@
 .app-market-detail__value--mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
+}
+
+.app-market-ai-roles {
+  display: grid;
+  gap: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border-default);
+}
+
+.app-market-ai-role-group {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.app-market-ai-role-group__session,
+.app-market-ai-role-card .page-card__body {
+  overflow-wrap: anywhere;
+}
+
+.card-grid-auto.app-market-ai-role-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+}
+
+.app-market-ai-role-grid > .app-market-ai-role-card {
+  min-width: 0;
+  height: auto;
+  cursor: default;
+}
+
+.app-market-ai-role-card .page-card__body {
+  display: block;
+  white-space: pre-wrap;
 }
 
 .app-market-layout {

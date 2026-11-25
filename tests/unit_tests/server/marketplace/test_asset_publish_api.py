@@ -65,7 +65,8 @@ def params(**kwargs):
 
 
 @pytest.mark.asyncio
-async def test_local_app_publishes_wrapped_snapshot_with_owner_and_version_checks(tmp_path, monkeypatch):
+@pytest.mark.parametrize("declares_roles", [False, True])
+async def test_local_app_publishes_wrapped_snapshot_with_owner_and_version_checks(tmp_path, monkeypatch, declares_roles):
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.marketplace.asset_publish_api.get_user_workspace_dir",
         lambda: tmp_path,
@@ -86,8 +87,18 @@ async def test_local_app_publishes_wrapped_snapshot_with_owner_and_version_check
     storage.save_manifest("demo", AppManifest(
         app_id="demo", name="demo--app", version="1.2-beta.1", run_type="static",
         page_entry_path="main.htm", work_dir=str(app_dir), owner_id="browser-user",
-        permissions=["ai"],
+        permissions=[] if declares_roles else ["ai"],
     ))
+    declaration = {
+        "schema_version": 1,
+        "session_groups": [{
+            "id": "guide",
+            "mode": "agent",
+            "session_description": "A new session for each game.",
+            "roles": [{"id": "guide", "name": "Guide", "description": "Helps players"}],
+        }],
+    }
+    role_file = app_dir / "app-ai-roles.json"
     uploaded = []
 
     async def upload(request):
@@ -126,6 +137,12 @@ async def test_local_app_publishes_wrapped_snapshot_with_owner_and_version_check
             await server.call(
                 "prepare", params(**ref, metadata={**metadata, "version": "2.0"}), gateway_user=owner,
             )
+        if declares_roles:
+            role_file.write_text('{"schema_version": 1, "session_groups": []}', encoding="utf-8")
+            with pytest.raises(PublishAPIError, match="INVALID_PACKAGE") as exc:
+                await server.call("prepare", params(**ref, metadata=metadata), gateway_user=owner)
+            assert exc.value.field == "app-ai-roles.json"
+            role_file.write_text(json.dumps(declaration), encoding="utf-8")
         draft = await server.call("prepare", params(**ref, metadata=metadata), gateway_user=owner)
         assert draft["can_submit"]
         assert set(draft["excluded"]) == {
@@ -147,10 +164,16 @@ async def test_local_app_publishes_wrapped_snapshot_with_owner_and_version_check
             assert wrapper["runtime"] == {"type": "app"}
             assert wrapper["description"] == defaults["description"]
             assert wrapper["metadata"]["app"] == {"permissions": ["ai"], "requires_project": True}
-            assert set(archive.namelist()) == set(draft["files"]) == {
+            expected_files = {
                 "demo--app/plugin.yaml", "demo--app/demo--app/index.html",
                 "demo--app/demo--app/main.htm", "demo--app/demo--app/out/bundle.js",
             }
+            if declares_roles:
+                bundled_roles = "demo--app/demo--app/app-ai-roles.json"
+                expected_files.add(bundled_roles)
+                assert json.loads(archive.read(bundled_roles)) == declaration
+                assert storage.load_manifest("demo").permissions == []
+            assert set(archive.namelist()) == set(draft["files"]) == expected_files
             assert archive.read("demo--app/demo--app/index.html").decode() == html
         assert not (app_dir / "index.html").exists()
     finally:

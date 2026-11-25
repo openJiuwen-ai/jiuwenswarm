@@ -180,6 +180,25 @@ async def test_callback_returns_at_once_and_scan_waits_for_it(tmp_path, monkeypa
         await bridge.aclose()
 
 
+async def test_scan_recovers_auto_replies_without_colleagues_or_a_child_backend(tmp_path, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.swarmchat import bridge as module
+    from jiuwenswarm.server.runtime import group_auto_reply
+
+    expert_group = dict(_group("experts"), members=[{"kind": "agent_template", "member_name": "writer"}])
+    states = {"experts": expert_group, "offline": _group("offline")}
+    bridge, manager, reads = _bridge(module, tmp_path, monkeypatch, states, {"offline": None}, [])
+    recover = AsyncMock()
+    monkeypatch.setattr(group_auto_reply, "recover_group", recover)
+    try:
+        await bridge.catch_up()
+        assert {call.args[0] for call in recover.await_args_list} == {"experts", "offline"}
+        module.resolve_group_backend.assert_awaited_once_with(states["offline"])
+        manager.accept_swarmchat_message.assert_not_awaited()
+        reads.assert_not_awaited()
+    finally:
+        await bridge.aclose()
+
+
 async def test_group_stop_continues_when_colleague_stop_fails(monkeypatch):
     from jiuwenswarm.server import agent_ws_server
     from jiuwenswarm.server.runtime import group_service
@@ -214,3 +233,100 @@ async def test_group_stop_continues_when_colleague_stop_fails(monkeypatch):
     await agent_ws_server.AgentWebSocketServer._handle_cancel(server, None, request, asyncio.Lock(),
                                                               send_response=False)
     server._jiuwenmate_web.stop_swarmchat_group.assert_not_awaited()
+
+
+async def test_notification_reaches_colleague_once_without_a_mention(tmp_path, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.swarmchat import bridge as module
+    from jiuwenswarm.server.runtime import group_auto_reply
+
+    backend = SimpleNamespace(register_host_managed_inbound=AsyncMock())
+    message = _message("m1", 1, mentions=())
+    bridge, manager, _ = _bridge(module, tmp_path, monkeypatch, {"b-good": _group("b-good")},
+                                 {"b-good": backend}, [message])
+    try:
+        # Without a notification an unmentioned message never starts the colleague.
+        assert await bridge.submit("b-good", "researcher", message)
+        manager.accept_swarmchat_message.assert_not_awaited()
+
+        await bridge.start()
+        assert group_auto_reply._colleague_notifier == bridge.notify
+        assert await group_auto_reply._colleague_notifier("b-good", "researcher", message)
+        assert await bridge.notify("b-good", "researcher", message)
+        assert manager.accept_swarmchat_message.await_count == 1
+        assert manager.accept_swarmchat_message.await_args.args[1]["member_name"] == "researcher"
+
+        own = _message("m2", 2, sender="researcher", mentions=())
+        await bridge.notify("b-good", "researcher", own)
+        assert manager.accept_swarmchat_message.await_count == 1
+    finally:
+        await bridge.aclose()
+    assert group_auto_reply._colleague_notifier is None
+
+
+async def test_whole_group_stop_withdraws_auto_replies_and_survives_their_failure(monkeypatch):
+    from jiuwenswarm.server import agent_ws_server
+    from jiuwenswarm.server.runtime import group_auto_reply, group_service
+
+    monkeypatch.setattr(group_service, "read_group", lambda group_id: dict(_group(group_id), members=[]))
+    stop = AsyncMock(side_effect=RuntimeError("down"))
+    monkeypatch.setattr(group_auto_reply, "stop", stop)
+    expected = SimpleNamespace(ok=True, payload={})
+    runtime = SimpleNamespace(cancel_request=AsyncMock(return_value=expected))
+    server = SimpleNamespace(
+        _jiuwenmate_web=SimpleNamespace(stop_swarmchat_group=AsyncMock()),
+        _cancel_organization=AsyncMock(return_value=expected),
+        _cancel_targeted_expert=AsyncMock(return_value=expected),
+        _is_targeted_expert_cancel_request=lambda request: request.params.get("target_team_id") == "expert",
+        _is_client_disconnect_cancel_request=agent_ws_server.AgentWebSocketServer._is_client_disconnect_cancel_request,
+        _execution_runtime=lambda: runtime,
+    )
+    request = SimpleNamespace(
+        params={}, metadata={}, session_id="b-good", channel_id="web", user_id="", request_id="request",
+    )
+    monkeypatch.setattr("jiuwenswarm.server.runtime.organization_execution.owner_is_stopped", lambda _: False)
+
+    response = await agent_ws_server.AgentWebSocketServer._handle_cancel(
+        server, None, request, asyncio.Lock(), send_response=False,
+    )
+    assert response is expected
+    stop.assert_awaited_once()
+    runtime.cancel_request.assert_awaited_once()
+
+    # Scoped cancellations must leave the group's other judgements alone.
+    stop.reset_mock()
+    for params in (
+        {"organization_stop": True}, {"organization_owner_stop": True}, {"target_team_id": "expert"},
+        {"target_request_id": "one-request"},
+    ):
+        request.params = params
+        await agent_ws_server.AgentWebSocketServer._handle_cancel(
+            server, None, request, asyncio.Lock(), send_response=False,
+        )
+    request.params = {}
+    request.metadata = {
+        agent_ws_server.E2A_INTERNAL_CANCEL_SOURCE_KEY: agent_ws_server.E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    }
+    await agent_ws_server.AgentWebSocketServer._handle_cancel(
+        server, None, request, asyncio.Lock(), send_response=False,
+    )
+    stop.assert_not_awaited()
+
+
+async def test_notified_colleague_receives_the_message_as_addressed_to_it(tmp_path, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.swarmchat import bridge as module
+
+    backend = SimpleNamespace(register_host_managed_inbound=AsyncMock())
+    message = _message("m1", 1, mentions=())
+    bridge, manager, _ = _bridge(module, tmp_path, monkeypatch, {"b-good": _group("b-good")},
+                                 {"b-good": backend}, [message])
+    try:
+        assert await bridge.notify("b-good", "researcher", message)
+        source = manager.accept_swarmchat_message.await_args.args[2]
+        # The colleague's participation check sees itself addressed; the group message is unchanged.
+        assert source.mention_ids == ("mate",)
+        assert message.mentions == []
+        other = _message("m2", 2, mentions=("researcher",))
+        await bridge.submit("b-good", "researcher", other)
+        assert manager.accept_swarmchat_message.await_args.args[2].mention_ids == ("mate",)
+    finally:
+        await bridge.aclose()

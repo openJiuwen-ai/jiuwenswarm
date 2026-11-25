@@ -465,6 +465,7 @@ def _app_icon_png(root: Path, icon_href: str) -> bytes:
 
 
 def _app(root: Path, identity: PublishIdentity, metadata: dict[str, object]) -> dict[str, object]:
+    from jiuwenswarm.extensions.app_market.app_ai_roles import APP_AI_ROLES_FILE, load_ai_role_groups
     from jiuwenswarm.extensions.app_market.hub_install import (
         AppInstallError,
         app_package_validator,
@@ -514,6 +515,11 @@ def _app(root: Path, identity: PublishIdentity, metadata: dict[str, object]) -> 
     )
     if len(display_name) > 128 or not types_valid or not items_valid:
         _fail()
+    try:
+        if load_ai_role_groups(root):
+            permissions = ["ai"]
+    except ValueError as exc:
+        _fail("INVALID_PACKAGE", APP_AI_ROLES_FILE, str(exc))
     return {
         "normalizations": changes,
         "icon_png": _app_icon_png(root, entry_metadata["icon_href"]),

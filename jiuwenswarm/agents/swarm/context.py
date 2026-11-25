@@ -136,6 +136,8 @@ class SwarmBuildContext(BuildContext):
     memory_agent_name: str = ""
     memory_project: str = "default"
     memory_team: str = ""
+    memory_group: str = ""
+    memory_experts: tuple[str, ...] = ()
     team_ws_root: str | None = None
     task_workspace_root: str | None = None
     team_outputs_dir: str | None = None
@@ -160,6 +162,18 @@ class SwarmBuildContext(BuildContext):
         """
         if (self.request_metadata or {}).get("cron"):
             self.extras["is_cron"] = True
+        if self.memory_team:
+            self.bind_memory_membership_hook()
+
+    def bind_memory_membership_hook(self) -> None:
+        if not self.memory_team:
+            return
+        from jiuwenswarm.agents.harness.common.memory.team_memory_members import change_expert_membership
+
+        async def change(member_name: str, template_ref: dict, added: bool) -> None:
+            await change_expert_membership(self, member_name, template_ref, added)
+
+        self.extras["team.on_explicit_member_change"] = change
 
     def resolve_member_skill_visibility_path(self) -> str | None:
         """Resolve the current member's Skill visibility metadata file path.
@@ -246,6 +260,9 @@ class SwarmBuildContext(BuildContext):
             "memory_agent_name": self.memory_agent_name,
             "memory_project": self.memory_project,
             "memory_team": self.memory_team,
+            "memory_group": self.memory_group,
+            "memory_experts": list(self.memory_experts),
+            "memory_members_ready": self.extras.get("team.memory_members_ready"),
             "team_ws_root": self.team_ws_root,
             "task_workspace_root": self.task_workspace_root,
             "team_outputs_dir": self.team_outputs_dir,
@@ -279,11 +296,7 @@ class SwarmBuildContext(BuildContext):
 
         memory_agent_name = seed.get("memory_agent_name", "")
         if uses_jiuwen_team_memory(config, seed.get("mode") or "team"):
-            from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import (
-                get_jiuwen_memory_scope,
-            )
-            # Current configuration takes precedence over a saved runtime Agent name.
-            memory_agent_name = get_jiuwen_memory_scope(config)["agent"]
+            memory_agent_name = "main_agent"
         context_kwargs = {
             "execution_settings_managed": seed.get("execution_settings_managed", False),
             "session_id": seed.get("session_id", ""),
@@ -302,6 +315,8 @@ class SwarmBuildContext(BuildContext):
             "memory_agent_name": memory_agent_name,
             "memory_project": seed.get("memory_project", "default"),
             "memory_team": seed.get("memory_team", ""),
+            "memory_group": seed.get("memory_group", ""),
+            "memory_experts": tuple(seed.get("memory_experts") or ()),
             "team_ws_root": seed.get("team_ws_root"),
             "task_workspace_root": seed.get("task_workspace_root"),
             "team_outputs_dir": seed.get("team_outputs_dir"),
@@ -313,6 +328,9 @@ class SwarmBuildContext(BuildContext):
         }
         if extension_bus is not None:
             context_kwargs["extras"] = {"team.extension_bus": extension_bus}
+        memory_members_ready = seed.get("memory_members_ready")
+        if isinstance(memory_members_ready, bool):
+            context_kwargs.setdefault("extras", {})["team.memory_members_ready"] = memory_members_ready
         if "extension_bus" in getattr(cls, "__dataclass_fields__", {}):
             context_kwargs["extension_bus"] = extension_bus
         return cls(**context_kwargs)
