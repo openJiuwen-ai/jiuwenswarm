@@ -52,6 +52,7 @@ from jiuwenswarm.common.config import (
     TEAM_MEMBER_MESSAGING_CONFIG_PATH,
     TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH,
     TEAM_TASK_VERIFICATION_CONFIG_PATH,
+    coerce_config_bool,
     coerce_subtask_depth,
     get_config,
     get_config_raw,
@@ -1905,9 +1906,13 @@ async def config_get_handler(
             "true" if setup_guide_cfg.get("enabled", True) else "false"
         )
         rsi_cfg = raw.get("rsi") or {}
-        payload["rsi_enabled"] = "true" if rsi_cfg.get("enabled", True) else "false"
+        payload["rsi_enabled"] = (
+            "true" if coerce_config_bool(rsi_cfg.get("enabled"), True) else "false"
+        )
         rea_cfg = raw.get("rea") or {}
-        payload["rea_enabled"] = "true" if rea_cfg.get("enabled", True) else "false"
+        payload["rea_enabled"] = (
+            "true" if coerce_config_bool(rea_cfg.get("enabled"), True) else "false"
+        )
         crypto_provider = _get_crypto_provider()
         if crypto_provider is not None:
             for key, val in list(payload.items()):
