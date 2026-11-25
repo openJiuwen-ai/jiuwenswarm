@@ -11,7 +11,7 @@ files:
   - jiuwenswarm/server/runtime/agent_adapter/interface.py
   - tests/unit_tests/agentserver/test_chat_turn_method_guard.py
 designs: []
-design_note: 静态审计全部枚举成员的认领层，确认只有 3 个聊天入口方法允许落入 chat 执行器；兜底不维护 175 方法白名单，而是挂在两个入口的收口点上。
+design_note: 静态审计全部枚举成员的认领层，确认只有 4 个聊天入口方法允许落入 chat 执行器；兜底不维护 175 方法白名单，而是挂在两个入口的收口点上。
 ---
 
 # 枚举内未接 handler 的方法落入聊天分支
@@ -41,7 +41,9 @@ design_note: 静态审计全部枚举成员的认领层，确认只有 3 个聊�
 - 175 个会到达 runtime 入口，其中 121 个由无状态 handler 接住：
   skills 70、packages 24（其中 8 个 agent_groups 方法由同一个 handler 按
   route 表分发）、skilldev 7、plugins 6、session assets 4、assets 2、
-  其它显式分支 2、聊天入口 3。
+  其它显式分支 2、聊天入口 3。这里的"聊天入口 3"按非流式入口统计；
+  `chat.user_answer` 在非流式入口归"其它显式分支"，在流式入口没有专属分支，
+  同样靠聊天链路续跑，所以白名单是 4 个方法。
 - 剩余 54 个没有任何一层认领。逐个 grep 后，除 7 个企业 team 方法外，
   其余在服务端没有 Python 调用点（`files.*`、`mode.*`、`channel.*`、
   `updater.*`、`heartbeat.*`、`commands.list`、`tts.synthesize`、`ssh.relay`、
@@ -51,15 +53,21 @@ design_note: 静态审计全部枚举成员的认领层，确认只有 3 个聊�
 
 **修复**：
 
-1. 新增 `method_guard.py`，只声明 3 个允许落入 chat 执行器的方法：
-   `chat.send`、`chat.resume`、`command.goal`。带专属分支的
-   `chat.answer`、`chat.cancel`、`chat.swarmflow_reply` 在更前面就分流，
+1. 新增 `method_guard.py`，只声明 4 个允许落入 chat 执行器的方法：
+   `chat.send`、`chat.resume`、`chat.user_answer`、`command.goal`。
+   `chat.user_answer` 必须在列：非流式入口有专属分支，流式入口没有，
+   带 `Accept: text/event-stream` 的应答会走到流式聊天链路续跑，口径与
+   `jiuwenswarm.runtime.request.CHAT_TURN_METHODS` 一致。`chat.cancel`、
+   `chat.swarmflow_reply` 只在非流式入口有专属分支，流式下没有调用方，
    不在此列。比较一律取 wire value（`getattr(method, "value", method)`），
    为后续 `e2a.Message.req_method` 支持 `str` 做准备。
 2. 在 `_process_message` 的 `_ensure_adapter` 之前、所有无状态 handler 之后
    插入判定，未命中返回 `METHOD_NOT_FOUND`。
 3. 在 `_process_message_stream` 的无状态 handler 循环之后插入同样的判定，
-   产出一个 `is_complete=True` 的错误 chunk。
+   产出一个 `is_complete=True` 的错误 chunk。流式 chunk 没有 `ok` 字段，
+   下游只按 `event_type` 识别终止错误，所以 payload 带
+   `event_type: "chat.error"`（`method_not_found_stream_payload`），
+   与同函数内其它终止错误 chunk 一致；非流式仍用入口层契约的两字段形状。
 4. 顺带把流式入口漏掉的两个无状态 handler（session assets、assets）
    补进循环，与非流式入口保持一致。否则同一方法在两条通道上一条正常、
    一条被判为未实现。
@@ -76,13 +84,15 @@ design_note: 静态审计全部枚举成员的认领层，确认只有 3 个聊�
 
 ## 回归证据与适用范围
 
-- `test_chat_turn_method_guard.py`：19 passed。覆盖白名单、payload 形状、
-  回包保留 `request_id/channel_id/metadata`、AST 断言兜底在
-  `_ensure_adapter` 与全部无状态 handler 之后、两条入口查询同一组 handler，
-  以及用 `object.__new__(JiuWenSwarm)` 真实执行两个入口断言返回
-  `METHOD_NOT_FOUND`。
+- `test_chat_turn_method_guard.py`：23 passed。覆盖白名单、白名单包含
+  runtime 的 `CHAT_TURN_METHODS`、两种 payload 形状（流式带
+  `event_type: chat.error` 且属于 `TERMINAL_ERROR_EVENT_TYPES`）、
+  回包保留 `request_id/channel_id/metadata`、AST 断言兜底排在全部无状态
+  handler 之后且在其后第一处 `_ensure_adapter` 之前、两条入口查询同一组
+  handler、用 `object.__new__(JiuWenSwarm)` 真实执行两个入口断言返回
+  `METHOD_NOT_FOUND`，以及流式 `chat.user_answer` 越过兜底到达 chat 执行器。
 - `test_chat_turn_method_guard.py` + `test_front_method_validation.py` +
-  `common/test_local_req_method.py`：**629 passed**。
+  `common/test_local_req_method.py`：**633 passed**。
 - `test_agentserver_modes.py` + `test_agentserver_boundary_characterization.py`：
   **124 passed, 2 failed**。两条失败均为本机缺 `openjiuwen_runtime`
   （`jiuwenswarm/enterprise/team/runtime_storage.py:16`），与本次改动无关。

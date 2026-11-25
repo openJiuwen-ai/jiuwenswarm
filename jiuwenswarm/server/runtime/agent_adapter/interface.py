@@ -101,8 +101,8 @@ from jiuwenswarm.common.schema.agent import (
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.method_guard import (
     is_chat_turn_method,
-    method_not_found_payload,
     method_not_found_response,
+    method_not_found_stream_payload,
     req_method_value,
 )
 from jiuwenswarm.common.utils import (
@@ -4852,7 +4852,7 @@ class JiuWenSwarm:
             yield AgentResponseChunk(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
-                payload=method_not_found_payload(request.req_method),
+                payload=method_not_found_stream_payload(request.req_method),
                 is_complete=True,
             )
             return
