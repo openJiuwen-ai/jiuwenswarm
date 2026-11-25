@@ -89,6 +89,7 @@ export function validateAppearance(value: unknown): WebUIAppearance | null {
 /** Read one `webui.appearance` payload; malformed frames return null and are ignored. */
 export function readAppearanceFrame(payload: unknown): WebUIAppearanceFrame | null {
   if (!isPlainObject(payload)) return null;
+  if ('parts' in payload) return readSnapshotFrame(payload);
   if (Object.keys(payload).some((key) => !['package_id', 'revision', 'appearance', 'activation_generation'].includes(key))) {
     return null;
   }
@@ -98,4 +99,40 @@ export function readAppearanceFrame(payload: unknown): WebUIAppearanceFrame | nu
   if (appearance === null) return { packageId, revision, appearance: null };
   const valid = validateAppearance(appearance);
   return valid ? { packageId, revision, appearance: valid } : null;
+}
+
+const SNAPSHOT_FIELDS = ['revision', 'parts', 'activation_generation'];
+const PART_NAMES = ['colors', 'identity', 'welcome', 'mascot'] as const;
+
+/**
+ * Read the host's composed snapshot (Gateway S_08): ``parts`` holds one provider per part.
+ *
+ * Only the colors part is applied here. Other parts are validated by the host and ignored
+ * until this client renders them; unknown part names are ignored too, so a host that adds a
+ * part later does not make the colors it sends unusable.
+ */
+function readSnapshotFrame(payload: Record<string, unknown>): WebUIAppearanceFrame | null {
+  if (Object.keys(payload).some((key) => !SNAPSHOT_FIELDS.includes(key))) return null;
+  const revision = payload.revision;
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) return null;
+  const parts = payload.parts;
+  if (!isPlainObject(parts)) return null;
+  const colors = parts.colors;
+  if (colors === undefined) {
+    // No colors provider: the host defaults apply, and the first provider still names the splash owner.
+    let packageId = '';
+    for (const name of PART_NAMES) {
+      const part = parts[name];
+      if (isPlainObject(part) && typeof part.package_id === 'string' && part.package_id) {
+        packageId = part.package_id;
+        break;
+      }
+    }
+    return { packageId, revision, appearance: null };
+  }
+  if (!isPlainObject(colors) || typeof colors.package_id !== 'string' || !colors.package_id
+    || colors.package_id.length > 128 || !('value' in colors)) return null;
+  if (colors.value === null) return { packageId: colors.package_id, revision, appearance: null };
+  const valid = validateAppearance(colors.value);
+  return valid ? { packageId: colors.package_id, revision, appearance: valid } : null;
 }

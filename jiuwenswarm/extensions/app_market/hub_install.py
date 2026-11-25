@@ -528,11 +528,11 @@ def hub_app_downloader() -> HubPackageDownloader:
 def default_install_root(configured_root: str = "", user_workspace: Path | None = None) -> Path:
     if configured_root.strip():
         return Path(configured_root).expanduser().resolve()
-    if user_workspace is None:
-        from jiuwenswarm.common.utils import get_user_workspace_dir
+    if user_workspace is not None:
+        return (Path(user_workspace) / "apps").resolve()
+    from jiuwenswarm.common.paths import get_market_apps_dir
 
-        user_workspace = get_user_workspace_dir()
-    return (Path(user_workspace) / "apps").resolve()
+    return get_market_apps_dir()
 
 
 async def install_hub_app(

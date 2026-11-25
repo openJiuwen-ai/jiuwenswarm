@@ -220,7 +220,6 @@ async def test_dissolution_does_not_touch_a_same_id_feishu_group(tmp_path):
 async def test_lifecycle_flows_through_gateway_and_agentserver_without_chat_dispatch(monkeypatch):
     import asyncio
     from jiuwenswarm.server import agent_ws_server as module
-    from jiuwenswarm.server.worker import execution_requests
     from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 
@@ -229,7 +228,7 @@ async def test_lifecycle_flows_through_gateway_and_agentserver_without_chat_disp
     server = object.__new__(module.AgentWebSocketServer)
     server._ensure_persistent_group_fanout = AsyncMock(return_value=SimpleNamespace(dingtalk_inbound=inbound))
     wire = AsyncMock()
-    monkeypatch.setattr(execution_requests, "send_wire_payload", wire)
+    monkeypatch.setattr(module, "send_wire_payload", wire)
     handler = object.__new__(MessageHandler)
 
     async def send(envelope):

@@ -4892,6 +4892,18 @@ class JiuWenSwarmDeepAdapter:
             or self._session_agent_tasks
         )
 
+    def get_session_workspace_paths(self, session_id: str) -> RuntimeWorkspacePaths | None:
+        """Return only a selected session's immutable, already-bound paths."""
+        sid = self._session_adapter_key(session_id)
+        if self._is_session_scoped_adapter:
+            if sid != self._session_adapter_key(self._parent_session_id):
+                return None
+            if self._external_harness_binding is not None:
+                return None
+            return self._session_workspace_snapshot
+        child = self._get_cached_session_adapter(session_id)
+        return child.get_session_workspace_paths(session_id) if child is not None else None
+
     def _session_has_registered_tasks(self, session_id: str) -> bool:
         tasks = getattr(self, "_session_agent_tasks", {}).get(session_id)
         return bool(tasks and any(not task.done() for task in tasks))
@@ -9700,9 +9712,11 @@ class JiuWenSwarmDeepAdapter:
             from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
                 RsiHarnessActivationStore,
             )
-            from jiuwenswarm.common.utils import get_user_workspace_dir
+            from jiuwenswarm.common.paths import get_profile_data_dir
 
-            store = RsiHarnessActivationStore(get_user_workspace_dir() / "rsi" / "tasks")
+            from jiuwenswarm.common.paths import get_rsi_dir
+
+            store = RsiHarnessActivationStore(get_rsi_dir() / "tasks")
             active = store.get_active()
         except Exception as exc:  # noqa: BLE001 - startup must remain available
             logger.warning("[JiuWenSwarmDeepAdapter] RSI Harness state unavailable: %s", exc)
@@ -11795,6 +11809,7 @@ class JiuWenSwarmDeepAdapter:
     def _current_config_file_stamp() -> tuple[int, int] | None:
         """Return the on-disk config identity captured with a pending reload."""
         from jiuwenswarm.common.utils import get_config_file
+
 
         try:
             stat_result = get_config_file().stat()
@@ -13906,11 +13921,9 @@ class JiuWenSwarmDeepAdapter:
 
             if rail is None:
                 try:
-                    from jiuwenswarm.common.utils import get_user_workspace_dir
+                    from jiuwenswarm.common.paths import get_personal_context_dir
 
-                    rail = PersonalContextRail(
-                        get_user_workspace_dir() / ".personal_context"
-                    )
+                    rail = PersonalContextRail(get_personal_context_dir())
                     await self._instance.register_rail(rail)
                 except Exception as exc:  # noqa: BLE001
                     if rail is not None:
@@ -23084,6 +23097,7 @@ class JiuWenSwarmDeepAdapter:
         try:
             from jiuwenswarm.agents.harness.common.memory.dreaming import start_dreaming
             from jiuwenswarm.common.utils import get_agent_sessions_dir
+
             sessions_dir = str(get_agent_sessions_dir() or "")
             mode = getattr(self, "_dreaming_mode", "agent")
             # _dreaming_mode 在 create_instance 已归一到二元 "agent"/"code"；这里仍用

@@ -38,7 +38,7 @@ def test_install_gateway_config_projects_legacy_values(
     )
 
     generated = yaml.safe_load(
-        (workspace / "infra" / "config" / "config.yaml").read_text(encoding="utf-8")
+        (workspace / "config" / "config-gateway.yaml").read_text(encoding="utf-8")
     )
     assert generated["gateway"]["agent_client"]["type"] == "http"
     assert generated["gateway"]["cron"]["store_backend"] == "etcd"
@@ -70,7 +70,7 @@ def test_install_gateway_config_migrates_only_gateway_hooks(
     )
 
     generated = yaml.safe_load(
-        (workspace / "infra" / "config" / "config.yaml").read_text(encoding="utf-8")
+        (workspace / "config" / "config-gateway.yaml").read_text(encoding="utf-8")
     )
     assert generated["hooks"]["disable_all_hooks"] is True
     assert generated["hooks"]["SessionStart"] == [
@@ -114,7 +114,7 @@ def test_install_gateway_config_preserves_gateway_owned_keys(
     )
 
     generated = yaml.safe_load(
-        (workspace / "infra" / "config" / "config.yaml").read_text(encoding="utf-8")
+        (workspace / "config" / "config-gateway.yaml").read_text(encoding="utf-8")
     )
     assert generated["extensions"]["install_dir"] == "/old/extensions"
     assert generated["extensions"]["data_dir"] == "/old/data"
@@ -136,7 +136,7 @@ def test_install_gateway_config_keeps_existing_gateway_file(
     monkeypatch.setattr(utils, "get_gateway_config_template", lambda: template)
 
     workspace = tmp_path / "workspace"
-    existing = workspace / "infra" / "config" / "config.yaml"
+    existing = workspace / "config" / "config-gateway.yaml"
     _write_yaml(existing, {"gateway": {"agent_client": {"type": "http"}}})
 
     utils._install_gateway_config(
@@ -161,7 +161,7 @@ def test_install_gateway_config_merges_template_keys(
     monkeypatch.setattr(utils, "get_gateway_config_template", lambda: template)
 
     workspace = tmp_path / "workspace"
-    existing = workspace / "infra" / "config" / "config.yaml"
+    existing = workspace / "config" / "config-gateway.yaml"
     _write_yaml(existing, {
         "gateway": {"agent_client": {"type": "http"}},
         "custom_operator_key": "keep",
@@ -191,7 +191,7 @@ def test_ensure_gateway_config_creates_missing_file(
 
     assert utils.ensure_gateway_config(workspace) is True
     generated = yaml.safe_load(
-        (workspace / "infra" / "config" / "config.yaml").read_text(encoding="utf-8")
+        (workspace / "config" / "config-gateway.yaml").read_text(encoding="utf-8")
     )
     assert generated["gateway"]["agent_client"]["type"] == "websocket"
 
@@ -205,7 +205,7 @@ def test_ensure_gateway_config_merges_existing_file(
         "proactive_recommendation": {"enabled": False},
     })
     workspace = tmp_path / "workspace"
-    existing = workspace / "infra" / "config" / "config.yaml"
+    existing = workspace / "config" / "config-gateway.yaml"
     _write_yaml(existing, {"gateway": {"agent_client": {"type": "http"}}})
     monkeypatch.setattr(utils, "get_gateway_config_template", lambda: template)
 
@@ -220,12 +220,14 @@ def test_ensure_gateway_config_skips_agentos(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setattr(utils, "is_agentos_runtime", lambda: True)
 
     assert utils.ensure_gateway_config(workspace) is False
-    assert not (workspace / "infra" / "config" / "config.yaml").exists()
+    assert not (workspace / "config" / "config-gateway.yaml").exists()
 
 
-def test_gateway_config_dir_uses_infra_config(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: tmp_path)
-    assert utils.get_gateway_config_file() == tmp_path / "infra" / "config" / "config.yaml"
+def test_gateway_config_file_uses_shared_config_dir(tmp_path: Path, monkeypatch) -> None:
+    from jiuwenswarm.common import paths
+
+    monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path)
+    assert utils.get_gateway_config_file() == tmp_path / "config" / "config-gateway.yaml"
 
 
 def test_gateway_config_dir_honors_environment_override(
@@ -234,5 +236,4 @@ def test_gateway_config_dir_honors_environment_override(
     custom = tmp_path / "custom-gateway"
     monkeypatch.setenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", str(custom))
 
-    assert utils.get_gateway_config_dir(tmp_path) == custom
-    assert utils.get_gateway_config_file() != tmp_path / "infra" / "config" / "config.yaml"
+    assert utils.get_gateway_config_file() == custom / "config-gateway.yaml"

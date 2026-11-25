@@ -71,7 +71,7 @@ def test_invalid_packets_rejected_without_starting_task(tmp_path, case):
 def test_default_rsi_context_uses_legacy_rsi_tasks_root(monkeypatch, tmp_path: Path):
     user_workspace = tmp_path / ".jiuwenswarm"
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir",
+        "jiuwenswarm.common.paths.get_user_workspace_dir",
         lambda: user_workspace,
     )
 
@@ -80,7 +80,7 @@ def test_default_rsi_context_uses_legacy_rsi_tasks_root(monkeypatch, tmp_path: P
         enable_harness_materialization=False,
     )
 
-    expected_root = (user_workspace / "rsi" / "tasks").resolve()
+    expected_root = (user_workspace / "profile" / "rsi" / "tasks").resolve()
     assert context.tasks_root == expected_root
     assert context.harness_activation_store.root == expected_root
     assert context.harness_activation_store.activation_path == expected_root / "activation.json"

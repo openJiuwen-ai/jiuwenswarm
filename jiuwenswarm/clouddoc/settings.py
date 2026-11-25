@@ -63,7 +63,7 @@ def workspace_dir() -> Path:
 
 
 def infra_config_dir() -> Path:
-    """infra/config 分区（系统区）：clouddoc 状态文件落点。"""
+    """clouddoc 状态文件落点（数据根 config/，系统区）。"""
     if _infra_config_provider is not None:
         return _infra_config_provider()
     from jiuwenswarm.common.utils import get_config_dir

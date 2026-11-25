@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.worker import execution_requests
+from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
 
 
 def _request(session_id: str | None, *, params: dict | None = None) -> AgentRequest:
@@ -25,6 +27,45 @@ def _request(session_id: str | None, *, params: dict | None = None) -> AgentRequ
         req_method=ReqMethod.SESSION_PLAN_STATUS,
         params=params if params is not None else ({"session_id": session_id} if session_id else {}),
     )
+
+
+@pytest.mark.parametrize("mode", ["agent.work.normal", "team.work.normal", "team.work.plan"])
+@pytest.mark.parametrize("active", [False, True])
+async def test_production_host_plan_status_agrees_across_ws_and_shared_handler(monkeypatch, mode, active):
+    from jiuwenswarm.runtime.plan import PlanModeController
+    from jiuwenswarm.server.context import AgentServerServices
+    from jiuwenswarm.server.handlers import session
+
+    sid = "runtime-owned-plan"
+    host = WorkerExecutionHost()
+    controller = host._runtime.plan_controller
+    if active:
+        controller.active_sessions.add(sid)
+    compatibility_controller = PlanModeController()
+    if not active:
+        compatibility_controller.active_sessions.add(sid)
+    monkeypatch.setattr(agent_ws_server_module, "_SERVER_PLAN_CONTROLLER", compatibility_controller)
+    metadata = {"session_id": sid, "channel_id": "web", "mode": mode}
+    monkeypatch.setattr(session, "get_session_metadata", lambda *_args, **_kwargs: metadata)
+    monkeypatch.setattr(execution_requests, "get_session_metadata", lambda *_args, **_kwargs: metadata)
+    wire, replies = [], []
+
+    async def send_wire(value):
+        wire.append(json.loads(value))
+
+    async def send_response(value):
+        replies.append(value)
+
+    request = _request(sid)
+    await host._handle_session_plan_status(SimpleNamespace(send=send_wire), request, asyncio.Lock())
+    await session.handle_session_plan_status(SimpleNamespace(
+        request=request, services=AgentServerServices(host), sink=SimpleNamespace(send_response=send_response),
+    ))
+    expected = active or mode == "team.work.plan"
+    assert wire[0]["body"]["result"]["in_plan"] is expected
+    assert replies[0].ok is True
+    assert replies[0].payload["in_plan"] is expected
+    assert (sid in controller.active_sessions) is active
 
 
 def _server(*, agents: dict | None = None) -> SimpleNamespace:

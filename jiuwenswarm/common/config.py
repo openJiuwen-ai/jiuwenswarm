@@ -274,6 +274,17 @@ def _config_env_names(value: Any) -> set[str]:
     return names
 
 
+def _contains_exec_reference(value: Any) -> bool:
+    """Keep asynchronously resolved credentials out of normalized snapshots."""
+    if isinstance(value, str):
+        return value.startswith(EXEC_PREFIX)
+    if isinstance(value, dict):
+        return any(_contains_exec_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_exec_reference(item) for item in value)
+    return False
+
+
 def _resolved_config() -> dict[str, Any]:
     """Cache normalization, while every caller retains its own mutable snapshot."""
     path = Path(get_config_file())
@@ -293,7 +304,9 @@ def _resolved_config() -> dict[str, Any]:
     values = tuple(os.getenv(name) for name in names)
     resolved = resolve_env_vars(base)
     _normalize_config(resolved)
-    if stamp is not None and _yaml_file_stamp(path) == stamp:
+    # Exec references can complete or recover without any YAML/env change.
+    # Reuse their parsed YAML, but always consult the credential resolver.
+    if stamp is not None and not _contains_exec_reference(base) and _yaml_file_stamp(path) == stamp:
         if (values == tuple(os.getenv(name) for name in names)
                 and get_crypto_provider() is provider and _read_with_retry is reader):
             with _YAML_PARSE_CACHE_LOCK:

@@ -17,11 +17,11 @@ from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
 @pytest.fixture
 def isolated_kernel(monkeypatch, tmp_path):
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths
 
     owner = kernel.ResourceKernel()
     monkeypatch.setattr(kernel, "_PROCESS_KERNEL", owner)
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / "data")
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path / "data")
     return owner
 
 

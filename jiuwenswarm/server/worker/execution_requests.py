@@ -4215,14 +4215,14 @@ class ExecutionRequests:
     ) -> None:
         """Tell Gateway whether a colleague may serve a DingTalk app before that binding is saved."""
         from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
-        from jiuwenswarm.server.jiuwenmate.service import default_data_dir
+        from jiuwenswarm.common.paths import get_jiuwenmate_dir
 
         params = request.params if isinstance(request.params, dict) else {}
         agent_id, app_id = params.get("agent_id"), params.get("app_id")
         ok, payload = False, {"error": "invalid DingTalk binding check"}
         if all(isinstance(value, str) and value.strip() for value in (agent_id, app_id)):
             try:
-                repository = ExecutionRepository(default_data_dir() / "agents.sqlite3")
+                repository = ExecutionRepository(get_jiuwenmate_dir() / "agents.sqlite3")
                 served_elsewhere = await asyncio.to_thread(
                     repository.has_sessions_outside_dingtalk_app, "local", agent_id.strip(), app_id.strip(),
                 )

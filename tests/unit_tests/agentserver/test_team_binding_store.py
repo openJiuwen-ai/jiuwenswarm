@@ -19,7 +19,7 @@ from jiuwenswarm.server.runtime.team_binding_store import (
 def test_default_store_uses_agent_teams_home(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         team_binding_store,
-        "get_domain_data_dir",
+        "get_workspace_root_dir",
         lambda: tmp_path,
     )
     monkeypatch.setattr(
@@ -54,13 +54,12 @@ def test_default_store_migrates_legacy_bindings(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         team_binding_store,
-        "get_domain_data_dir",
+        "get_workspace_root_dir",
         lambda: tmp_path,
     )
     monkeypatch.setattr(
-        team_binding_store,
-        "get_agent_root_dir",
-        lambda: tmp_path / "agent",
+        "jiuwenswarm.common.paths.get_agent_root_dir",
+        lambda tenant_key=None: tmp_path / "agent",
     )
 
     store = TeamBindingStore()

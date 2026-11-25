@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.paths import get_user_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ _LAST_DIR_FILENAME = "last_file_picker_dir.txt"
 
 
 def _last_dir_state_path() -> Path:
-    return get_infra_data_dir() / _LAST_DIR_FILENAME
+    return get_user_workspace_dir() / _LAST_DIR_FILENAME
 
 
 def get_last_file_picker_dir() -> str | None:

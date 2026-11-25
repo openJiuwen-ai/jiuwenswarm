@@ -114,3 +114,33 @@ def test_header_normalization_refreshes_referenced_environment(config_path, monk
         monkeypatch.setenv("STARTUP_HEADERS", json.dumps({"X-Test": value}))
         assert config.get_config()["models"]["custom"]["model_client_config"]["custom_headers"] == {
             "X-Test": value}
+
+
+@pytest.mark.parametrize("initial_status", ["pending", "failed"])
+def test_snapshot_observes_exec_credential_completion(config_path, monkeypatch, initial_status):
+    from jiuwenswarm.common.credentials import registry, resolver
+
+    reference = "exec:synthetic-command-must-not-run"
+    config_path.write_text(json.dumps({
+        "models": {"defaults": [{"model_client_config": {"api_key": reference}}]},
+    }), encoding="utf-8")
+    monkeypatch.setattr(registry, "_load_patterns", lambda: [
+        ["models", "*", "model_client_config", "api_key"],
+    ])
+    monkeypatch.setattr(resolver, "_RESOLVED_SECRETS", {})
+
+    def unexpected_command(*_args, **_kwargs):
+        pytest.fail("configuration reads must not execute credential commands")
+
+    monkeypatch.setattr(resolver, "_exec_secret_command", unexpected_command)
+    resolver._release_claim(reference, "", initial_status)
+    assert config.get_config()["models"]["defaults"][0]["model_client_config"]["api_key"] == ""
+    stamp = config_path.stat()
+
+    for value in ("synthetic-ready", "synthetic-refreshed"):
+        resolver._release_claim(reference, value, "resolved")
+        snapshot = config.get_config()
+        assert snapshot["models"]["defaults"][0]["model_client_config"]["api_key"] == value
+        snapshot["models"]["defaults"][0]["model_client_config"]["api_key"] = "caller-only"
+        assert config.get_config()["models"]["defaults"][0]["model_client_config"]["api_key"] == value
+    assert (stamp.st_mtime_ns, stamp.st_size) == (config_path.stat().st_mtime_ns, config_path.stat().st_size)

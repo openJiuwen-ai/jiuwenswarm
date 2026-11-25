@@ -10,8 +10,8 @@ import threading
 from typing import Iterator
 
 from jiuwenswarm.common import utils
+from jiuwenswarm.common.paths import get_workspace_root_dir
 from jiuwenswarm.common.utils import (
-    get_domain_data_dir,
     migrate_team_skill_views,
 )
 
@@ -41,7 +41,7 @@ class TeamStoragePreparation:
         )
 
         with _storage_lock:
-            home = Path(get_domain_data_dir()).resolve()
+            home = Path(get_workspace_root_dir()).resolve()
             configure_openjiuwen_home(home)
             library = Path(utils.configure_skill_library()).resolve()
             # Rebind even on cache hits: a different owner may have used the

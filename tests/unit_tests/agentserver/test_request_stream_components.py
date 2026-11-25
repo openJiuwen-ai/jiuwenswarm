@@ -27,13 +27,13 @@ def strip_debug(value):
 
 def test_request_context_normalizes_an_envelope_without_mutating_it():
     params = {
-        "query": "", "content": None, "message": "/debug inspect",
+        "query": "", "content": None, "message": "/debug inspect", "ui_language": "en",
         "trusted_dirs": [" D:/safe ", 12, ""], "skills": [None, " docs "],
         "project_dir": " D:/project ",
         "metadata": {"cwd": " D:/cwd ", "scene": "params", TEAM_EXECUTION_CONTEXT_METADATA_KEY: "untrusted"},
     }
     metadata = {"scene": "envelope", "project_dir": "ignored", "other": True}
-    context = RequestContext.from_request(request(params, metadata), {"preferred_language": "en"}, strip_debug=strip_debug)
+    context = RequestContext.from_request(request(params, metadata), strip_debug=strip_debug)
     assert context.query == "inspect"
     assert context.request_debug is True
     assert context.channel == "tui" and context.request_channel == ""
@@ -51,13 +51,13 @@ def test_request_context_normalizes_an_envelope_without_mutating_it():
 
 @pytest.mark.parametrize("extra", [{"team": True}, {SESSION_MESSAGE_INTERNAL_KEY: {"id": "m1"}}])
 def test_request_context_preserves_team_and_internal_debug_directives(extra):
-    context = RequestContext.from_request(request({"query": "/debug inspect", **extra}), {}, strip_debug=strip_debug)
+    context = RequestContext.from_request(request({"query": "/debug inspect", **extra}), strip_debug=strip_debug)
     assert context.query == "/debug inspect" and context.request_debug is False
 
 
 @pytest.mark.parametrize("query", [object(), 0, 42, {"answer": "resume"}])
 def test_request_context_preserves_nontext_sdk_inputs(query):
-    context = RequestContext.from_request(request({"query": query}, channel=" web "), {}, strip_debug=strip_debug)
+    context = RequestContext.from_request(request({"query": query}, channel=" web "), strip_debug=strip_debug)
     assert context.query is query
     assert context.request_channel == "web" and context.channel == "web"
 

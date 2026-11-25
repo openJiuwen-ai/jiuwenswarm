@@ -66,6 +66,11 @@ test('HTTP Team sessions do not submit a persistent WebSocket attachment', async
 
 await webClient.connect();
 
+async function flushAsyncWork() {
+  // Requests await readiness and browser context before sending.
+  await new Promise(resolve => setImmediate(resolve));
+}
+
 function gatewayResponse(id, ok = true) {
   FakeWebSocket.instance.receive({ type: 'res', id, ok, payload: { accepted: ok } });
 }
@@ -80,7 +85,7 @@ function runtimeEvent(event, requestId, payload = {}) {
 
 test('request without a deadline accepts delayed receipts and remains abortable', async () => {
   const pending = webClient.request('video.qwen.tool', {}, { timeoutMs: 0 });
-  await Promise.resolve();
+  await flushAsyncWork();
   const id = FakeWebSocket.instance.lastRequest.id;
   await new Promise(resolve => setTimeout(resolve, 20));
   gatewayResponse(id);
@@ -88,7 +93,7 @@ test('request without a deadline accepts delayed receipts and remains abortable'
 
   const controller = new AbortController();
   const aborted = webClient.request('video.qwen.tool', {}, { timeoutMs: 0, signal: controller.signal });
-  await Promise.resolve();
+  await flushAsyncWork();
   controller.abort();
   await assert.rejects(aborted, error => error.code === 'REQUEST_ABORTED');
 });
@@ -124,12 +129,12 @@ test('runtime-ack request stays pending after gateway response and resolves exac
     .finally(() => {
       settled = true;
     });
-  await Promise.resolve();
+  await flushAsyncWork();
   const requestId = FakeWebSocket.instance.lastRequest.id;
 
   gatewayResponse(requestId);
   runtimeEvent('runtime.accepted', 'other-request');
-  await Promise.resolve();
+  await flushAsyncWork();
   assert.equal(settled, false);
 
   runtimeEvent('runtime.accepted', requestId, { accepted: true });
@@ -142,14 +147,14 @@ test('runtime-ack request rejects exact Host error while ordinary request keeps 
     { source: 'permission_interrupt' },
     { awaitRuntimeAccepted: true, timeoutMs: 1000 },
   );
-  await Promise.resolve();
+  await flushAsyncWork();
   const permissionId = FakeWebSocket.instance.lastRequest.id;
   gatewayResponse(permissionId);
   runtimeEvent('chat.error', permissionId, { error: 'send failed' });
   await assert.rejects(permission, /send failed/);
 
   const ordinary = webClient.request('chat.send', { source: 'ask_user_interrupt' });
-  await Promise.resolve();
+  await flushAsyncWork();
   const ordinaryId = FakeWebSocket.instance.lastRequest.id;
   gatewayResponse(ordinaryId);
   assert.deepEqual(await ordinary, { accepted: true });
@@ -166,14 +171,14 @@ test('abort keeps runtime-ack request rejected without waiting for Host event', 
       signal: controller.signal,
     },
   );
-  await Promise.resolve();
+  await flushAsyncWork();
   const requestId = FakeWebSocket.instance.lastRequest.id;
   gatewayResponse(requestId);
   controller.abort();
 
   await assert.rejects(pending, (error) => error.code === 'REQUEST_ABORTED');
   runtimeEvent('runtime.accepted', requestId);
-  await Promise.resolve();
+  await flushAsyncWork();
 });
 
 test('request identity is bound before send and runtime errors preserve their code and payload', async () => {
@@ -196,7 +201,7 @@ test('request identity is bound before send and runtime errors preserve their co
         },
       },
     );
-    await Promise.resolve();
+    await flushAsyncWork();
     runtimeEvent('chat.error', boundId, { code: 'SESSION_INPUT_DELIVERY_UNKNOWN', error: 'uncertain' });
     await assert.rejects(pending, (error) => {
       assert.equal(error.code, 'SESSION_INPUT_DELIVERY_UNKNOWN');
@@ -216,7 +221,7 @@ test('legacy content wrapping an acceptance is routed as ACK, not final output',
   });
   try {
     const pending = webClient.request('chat.send', { input_mode: 'steer' }, { awaitRuntimeAccepted: true });
-    await Promise.resolve();
+    await flushAsyncWork();
     const requestId = FakeWebSocket.instance.lastRequest.id;
     FakeWebSocket.instance.receive({
       type: 'content',
@@ -235,7 +240,7 @@ test('timeout and disconnect reject runtime-ack requests after gateway acceptanc
     { source: 'permission_interrupt' },
     { awaitRuntimeAccepted: true, timeoutMs: 5 },
   );
-  await Promise.resolve();
+  await flushAsyncWork();
   gatewayResponse(FakeWebSocket.instance.lastRequest.id);
   await assert.rejects(timedOut, (error) => error.code === 'REQUEST_TIMEOUT');
 
@@ -244,7 +249,7 @@ test('timeout and disconnect reject runtime-ack requests after gateway acceptanc
     { source: 'permission_interrupt' },
     { awaitRuntimeAccepted: true, timeoutMs: 1000 },
   );
-  await Promise.resolve();
+  await flushAsyncWork();
   gatewayResponse(FakeWebSocket.instance.lastRequest.id);
   const closed = webClient.disconnect();
   await assert.rejects(disconnected, (error) => error.code === 'WS_CLOSED');
@@ -316,7 +321,7 @@ test('a fresh page subscribes to the execution discovered in session metadata', 
   });
   try {
     const pending = fresh.request('session.get_metadata', { session_id: 'fresh-session' });
-    await Promise.resolve();
+    await flushAsyncWork();
     socket.receive({
       type: 'res',
       id: socket.lastRequest.id,
@@ -354,7 +359,7 @@ test('a fresh page subscribes to the execution discovered in session metadata', 
 async function beginMetadataRecovery(client, sessionId, options) {
   const socket = FakeWebSocket.instance;
   const result = client.request('session.get_metadata', { session_id: sessionId }, options);
-  await Promise.resolve();
+  await flushAsyncWork();
   const query = socket.lastRequest;
   const sessionDetails = { session_id: sessionId, title: 'Original metadata', mode: 'team' };
   socket.receive({
@@ -432,7 +437,7 @@ test('metadata still rejects when the first request fails', async () => {
   await client.connect();
   try {
     const result = client.request('session.get_metadata', { session_id: 'missing-session' });
-    await Promise.resolve();
+    await flushAsyncWork();
     const socket = FakeWebSocket.instance;
     socket.receive({ type: 'res', id: socket.lastRequest.id, ok: false, code: 'NOT_FOUND' });
     await assert.rejects(result, { code: 'NOT_FOUND' });
@@ -772,7 +777,7 @@ test('late callbacks from a replaced socket preserve current requests, processin
       },
     });
     const pending = fresh.request('config.get');
-    await Promise.resolve();
+    await flushAsyncWork();
     const currentRequest = currentSocket.lastRequest;
     oldSocket.onopen?.();
     oldSocket.receive({
@@ -831,7 +836,7 @@ test('replaced pending connections reject only their own promise on late lifecyc
       assert.equal(fresh.getState(), 'ready', callback);
       const currentSocket = FakeWebSocket.instance;
       const pending = fresh.request('config.get');
-      await Promise.resolve();
+      await flushAsyncWork();
       currentSocket.receive({ type: 'res', id: currentSocket.lastRequest.id, ok: true, payload: { callback } });
       assert.deepEqual(await pending, { callback });
     } finally {

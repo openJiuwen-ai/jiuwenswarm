@@ -1042,7 +1042,7 @@ def test_default_dingtalk_program_cache_is_outside_project_data(tmp_path, monkey
     monkeypatch.setattr(dingtalk_cli_local_provider, '_find_npx', lambda: tmp_path / 'npx')
     monkeypatch.setattr(sys, 'platform', platform)
     monkeypatch.setattr(utils, 'get_user_home', lambda: tmp_path)
-    monkeypatch.setattr(service, 'default_data_dir', lambda: tmp_path / '.jiuwenswarm' / 'jiuwenmate')
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_jiuwenmate_dir", lambda: tmp_path / ".jiuwenswarm" / "jiuwenmate")
     for name in ('LOCALAPPDATA', 'XDG_CACHE_HOME', 'JIUWENMATE_DINGTALK_CLI_HOME', 'JIUWENMATE_DWS_BIN'):
         monkeypatch.delenv(name, raising=False)
     runtime = create_provider()

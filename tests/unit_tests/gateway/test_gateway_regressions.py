@@ -235,7 +235,6 @@ def joined():
 @pytest.mark.asyncio
 async def test_silent_joins_are_acknowledged_without_registering_groups_or_requests(tmp_path, monkeypatch):
     from jiuwenswarm.server import agent_ws_server as module
-    from jiuwenswarm.server.worker import execution_requests
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import FeishuBinding
@@ -248,7 +247,7 @@ async def test_silent_joins_are_acknowledged_without_registering_groups_or_reque
     server = object.__new__(module.AgentWebSocketServer)
     server._ensure_persistent_group_fanout = AsyncMock(return_value=fanout)
     wire = AsyncMock()
-    monkeypatch.setattr(execution_requests, "send_wire_payload", wire)
+    monkeypatch.setattr(module, "send_wire_payload", wire)
     handler = object.__new__(MessageHandler)
 
     async def send(envelope):

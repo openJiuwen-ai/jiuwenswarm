@@ -14,11 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.extension_config import (
-    DEFAULT_DATA_DIR,
     DEFAULT_EXAMPLES_DIR,
-    DEFAULT_INSTALL_DIR,
-    DEFAULT_STATE_DIR,
-    DEFAULT_STORE_DIR,
     DATA_DIR_ENV,
     INSTALL_DIR_ENV,
     INSTALL_REPORT_FILENAME,
@@ -34,11 +30,7 @@ from jiuwenswarm.common.extension_config import (
 )
 
 __all__ = [
-    "DEFAULT_DATA_DIR",
     "DEFAULT_EXAMPLES_DIR",
-    "DEFAULT_INSTALL_DIR",
-    "DEFAULT_STATE_DIR",
-    "DEFAULT_STORE_DIR",
     "DATA_DIR_ENV",
     "INSTALL_DIR_ENV",
     "INSTALL_REPORT_FILENAME",

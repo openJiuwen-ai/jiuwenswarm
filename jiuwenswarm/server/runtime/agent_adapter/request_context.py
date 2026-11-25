@@ -9,6 +9,8 @@ from typing import Any, Callable
 
 from agent_gateway.common.mode_matrix import is_team_mode
 from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from jiuwenswarm.common.i18n import try_normalize_preferred_language
+from jiuwenswarm.enterprise.config.preferred_language import resolve_preferred_language
 from jiuwenswarm.runtime.session.model import TEAM_EXECUTION_CONTEXT_METADATA_KEY
 
 
@@ -36,11 +38,12 @@ class RequestContext:
     def from_request(
         cls,
         request: Any,
-        config: dict[str, Any],
         *,
         strip_debug: Callable[[str], tuple[str, bool]],
     ) -> RequestContext:
         params = dict(request.params) if isinstance(request.params, dict) else {}
+        ui_language = try_normalize_preferred_language(params.get("ui_language"))
+        language = ui_language if ui_language is not None else resolve_preferred_language()
         query = params.get("query")
         if query is None or query == "":
             query = params.get("content", "")
@@ -95,7 +98,7 @@ class RequestContext:
             metadata=metadata,
             request_channel=request_channel,
             channel=channel,
-            language=config.get("preferred_language", "zh"),
+            language=language,
             trusted_dirs=trusted_dirs,
             skills=skills,
             project_dir=_nonempty_text(params.get("project_dir"))

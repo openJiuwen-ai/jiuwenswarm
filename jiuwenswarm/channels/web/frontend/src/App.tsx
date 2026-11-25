@@ -2453,10 +2453,6 @@ function AppContent({
     };
   }, [designModelGate, isConnected, loadSessionMetadata, route]);
 
-  useEffect(() => {
-    loadSessionMetadataRef.current = loadSessionMetadata;
-  }, [loadSessionMetadata]);
-
   const handleModelsRefresh = useCallback(async () => {
     const revision = ++modelsRequestRevisionRef.current;
     const contextEpoch = browserClientCapabilities.getEpoch();

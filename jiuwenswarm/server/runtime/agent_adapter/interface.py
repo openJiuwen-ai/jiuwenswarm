@@ -1910,7 +1910,7 @@ class JiuWenSwarm:
                 "conversation_id": request.session_id, "query": query,
                 "enable_memory": False, "supports_user_interaction": False,
             }, "off", turn
-        context = RequestContext.from_request(request, config_base, strip_debug=strip_debug_directive)
+        context = RequestContext.from_request(request, strip_debug=strip_debug_directive)
         params, query, metadata = context.params, context.query, context.metadata
         starter_context = _starter_interaction_context(params, query)
         if starter_context:

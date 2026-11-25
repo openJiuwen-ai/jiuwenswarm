@@ -140,11 +140,11 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
     @property
     def _personal_context_host(self) -> Any:
         if getattr(self, "_personal_context_host_instance", None) is None:
-            from jiuwenswarm.common.utils import get_domain_data_dir
+            from jiuwenswarm.common.paths import get_personal_context_dir
             from jiuwenswarm.server.personal_context import PersonalContextHostAPI
 
             self._personal_context_host_instance = PersonalContextHostAPI(
-                home=get_domain_data_dir() / ".personal_context",
+                home=get_personal_context_dir(),
             )
         return self._personal_context_host_instance
 
