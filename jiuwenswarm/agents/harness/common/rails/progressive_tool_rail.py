@@ -249,6 +249,17 @@ def _required_skill_requirement(tool: Any) -> tuple[bool, str | None]:
     return True, skill_name
 
 
+def _hoist_mcp_app_block(safe_result: Any, payload: dict[str, Any]) -> None:
+    """MCP Apps：内层工具结果携带的 mcp_app 块提升到 InvokeTool 帧顶层。
+
+    ProgressiveToolRail 的 InvokeTool 间接调用（dev-stable 独有路径）把
+    工具结果嵌在 result 一层，而前端契约读 raw_output.mcp_app 顶层键
+    （develop 直调路径无此嵌套）。
+    """
+    if isinstance(safe_result, dict) and isinstance(safe_result.get("mcp_app"), dict):
+        payload.setdefault("mcp_app", safe_result["mcp_app"])
+
+
 class ProgressiveToolRail(DeepAgentRail):
     """Progressive tool visibility with a stable base eager-tools schema.
 
@@ -2319,12 +2330,14 @@ class ProgressiveToolRail(DeepAgentRail):
                     (env_inv[:8] + "…") if env_inv else "-",
                     pinned_thread or "-",
                 )
-                return {
+                payload = {
                     "success": False,
                     "error": error_text or f"工具 '{tool_name}' 返回失败结果",
                     "tool_name": tool_name,
                     "result": safe_result,
                 }
+                _hoist_mcp_app_block(safe_result, payload)
+                return payload
             logger.info(
                 "%s invoke tool=%s success=True result_type=%s tool_id=%s "
                 "env_invocation_id=%s delivery_thread_id=%s",
@@ -2335,11 +2348,13 @@ class ProgressiveToolRail(DeepAgentRail):
                 (env_inv[:8] + "…") if env_inv else "-",
                 pinned_thread or "-",
             )
-            return {
+            payload = {
                 "success": True,
                 "tool_name": tool_name,
                 "result": safe_result,
             }
+            _hoist_mcp_app_block(safe_result, payload)
+            return payload
         except Exception as exc:
             logger.warning(
                 "%s invoke tool=%s failed: %s",
