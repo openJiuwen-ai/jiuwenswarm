@@ -68,9 +68,11 @@ const ASSET_ERROR_KEYS = {
   ASSET_LIMIT_EXCEEDED: 'assetTransfer.errors.limitExceeded',
   ASSET_ALREADY_EXISTS: 'assetTransfer.errors.alreadyExists',
   ASSET_BUILTIN_READ_ONLY: 'assetTransfer.errors.builtinReadOnly',
-  // 以下两码仅由前端产生：上传/下载 HTTP 阶段失败且未拿到服务端契约码。
+  // 以下码仅由前端产生：上传/下载 HTTP 阶段失败（未拿到服务端契约码），
+  // 以及下载内容与服务端 sha256 不一致的完整性校验失败。
   ASSET_UPLOAD_FAILED: 'assetTransfer.errors.uploadFailed',
   ASSET_DOWNLOAD_FAILED: 'assetTransfer.errors.downloadFailed',
+  ASSET_CHECKSUM_MISMATCH: 'assetTransfer.errors.checksumMismatch',
 } as const;
 
 export type AssetIssueKey =
@@ -107,7 +109,21 @@ export async function requestAssetExport(
   return request<AssetExportInfo>('assets.export', query);
 }
 
-/** 导出并保存到本地：assets.export → fetch 短效链接 → 双路径保存；返回保存结果（含用户取消）。 */
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+/** Blob 的 sha256 十六进制摘要；crypto.subtle 不可用（纯 HTTP 非安全上下文）或计算失败时返回 null。 */
+async function computeSha256Hex(blob: Blob): Promise<string | null> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return null;
+  try {
+    const digest = await subtle.digest('SHA-256', await blob.arrayBuffer());
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return null;
+  }
+}
+
+/** 导出并保存到本地：assets.export → fetch 短效链接 → sha256 校验 → 双路径保存；返回保存结果（含用户取消）。 */
 export async function exportAssetToLocalFile(
   params: AssetExportParams,
   deps: AssetTransferDeps = {},
@@ -127,8 +143,18 @@ export async function exportAssetToLocalFile(
   if (!response.ok) {
     throw new AssetTransferError('ASSET_DOWNLOAD_FAILED', `download failed: HTTP ${response.status}`, response.status);
   }
+  const blob = await response.blob();
+  // 完整性校验：仅当服务端给出规范 64 位十六进制 sha256 时执行；摘要缺失、
+  // 形态非法或本机无 crypto.subtle（纯 HTTP 部署）时静默跳过，不阻断下载。
+  const expected = (info.sha256 ?? '').trim().toLowerCase();
+  if (SHA256_HEX_RE.test(expected)) {
+    const actual = await computeSha256Hex(blob);
+    if (actual && actual !== expected) {
+      throw new AssetTransferError('ASSET_CHECKSUM_MISMATCH', `sha256 mismatch: expected ${expected}, got ${actual}`);
+    }
+  }
   const saveBlob = deps.saveBlob ?? saveBlobWithResult;
-  return saveBlob(await response.blob(), info.filename);
+  return saveBlob(blob, info.filename);
 }
 
 /** 上传资产包到受控暂存目录（TTL 1 小时），返回供 assets.import 使用的服务端路径。 */

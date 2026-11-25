@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import {
   AssetTransferError,
   assetIssueKey,
@@ -9,11 +10,14 @@ import {
   uploadAssetPackage,
 } from '../node_modules/.cache/asset-transfer/assetTransfer.mjs';
 
+// 与测试用 Blob 内容一致的真实摘要，供 sha256 校验通过路径使用。
+const ZIP_SHA256 = createHash('sha256').update('zip-bytes').digest('hex');
+
 const EXPORT_INFO = {
   download_url: '/file-api/download?token=tok&user_id=u1',
   filename: 'expert-1-1.2.0.zip',
   size_bytes: 9,
-  sha256: 'a'.repeat(64),
+  sha256: ZIP_SHA256,
 };
 
 function fakeResponse(overrides = {}) {
@@ -81,6 +85,63 @@ test('download failures converge to ASSET_DOWNLOAD_FAILED', async () => {
   );
   await assert.rejects(netFail, /network down/);
   assert.equal(assetIssueKey(await netFail.catch((e) => e)), 'assetTransfer.errors.downloadFailed');
+});
+
+test('sha256 check: mismatch rejects; malformed/missing digest or absent crypto.subtle skip', async () => {
+  const blob = new Blob(['zip-bytes']);
+  const depsFor = (info, saved) => ({
+    request: async () => info,
+    fetchImpl: async () => fakeResponse({ blob: async () => blob }),
+    saveBlob: async () => {
+      saved.push(blob);
+      return { outcome: 'saved', transport: 'browser-download' };
+    },
+  });
+
+  // 摘要不一致 → 前端本地码 ASSET_CHECKSUM_MISMATCH，不落盘
+  const mismatch = exportAssetToLocalFile(
+    { kind: 'skill', local_id: 's1' },
+    depsFor({ ...EXPORT_INFO, sha256: 'b'.repeat(64) }, []),
+  );
+  await assert.rejects(
+    mismatch,
+    (err) => err instanceof AssetTransferError && err.code === 'ASSET_CHECKSUM_MISMATCH',
+  );
+  assert.equal(assetIssueKey(await mismatch.catch((e) => e)), 'assetTransfer.errors.checksumMismatch');
+
+  // 非法形态（非 64 位十六进制）→ 跳过校验正常保存
+  const savedMalformed = [];
+  await exportAssetToLocalFile(
+    { kind: 'skill', local_id: 's1' },
+    depsFor({ ...EXPORT_INFO, sha256: 'x' }, savedMalformed),
+  );
+  assert.equal(savedMalformed.length, 1);
+
+  // 摘要缺失（契约中 sha256 可选）→ 跳过校验正常保存
+  const savedMissing = [];
+  await exportAssetToLocalFile(
+    { kind: 'skill', local_id: 's1' },
+    depsFor(
+      {
+        download_url: EXPORT_INFO.download_url,
+        filename: EXPORT_INFO.filename,
+        size_bytes: EXPORT_INFO.size_bytes,
+      },
+      savedMissing,
+    ),
+  );
+  assert.equal(savedMissing.length, 1);
+
+  // 无 crypto.subtle（纯 HTTP 部署的非安全上下文）→ 优雅降级，不阻断下载
+  const originalCrypto = globalThis.crypto;
+  Object.defineProperty(globalThis, 'crypto', { value: undefined, configurable: true });
+  try {
+    const savedNoSubtle = [];
+    await exportAssetToLocalFile({ kind: 'skill', local_id: 's1' }, depsFor(EXPORT_INFO, savedNoSubtle));
+    assert.equal(savedNoSubtle.length, 1);
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', { value: originalCrypto, configurable: true });
+  }
 });
 
 test('upload success returns the staged server path', async () => {

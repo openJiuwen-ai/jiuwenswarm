@@ -1020,6 +1020,25 @@ test('Expert Team upload dialog puts Expert first and removes the reference link
   assert.doesNotMatch(groupUploadSource, /uploadHintReference|hint-reference/);
 });
 
+test('Expert Team upload dialog wires the browser file channel through unified upload-temp', () => {
+  // 纯浏览器环境：隐藏 .zip 文件输入 + 拖拽收下 File 对象，确认时先经统一
+  // uploadAssetPackage 换暂存路径再走既有 onConfirm 链；桌面 path 通道保持不变。
+  assert.match(
+    groupUploadSource,
+    /<input\s*\n?\s*ref=\{browserInputRef\}\s*\n?\s*type="file"\s*\n?\s*accept="\.zip"\s*\n?\s*hidden/,
+  );
+  assert.match(groupUploadSource, /data-testid="agent-management-group-upload-browser-file-input"/);
+  assert.match(
+    groupUploadSource,
+    /const stagedPath = await uploadAssetPackage\(browserFile\);\s*\n\s*await onConfirm\(stagedPath, kind\);/,
+  );
+  assert.match(groupUploadSource, /if \(desktopReady\) \{[\s\S]*?acceptPick\(pickFromDroppedFile\(file\)\);[\s\S]*?acceptBrowserFile\(file\);/);
+  assert.match(groupUploadSource, /setPickerError\(t\(assetIssueKey\(error\)\)\);/);
+  // 新文案中英文齐备
+  assert.ok(zhLocale.agentManagement.form.webUploadInvalidType);
+  assert.ok(enLocale.agentManagement.form.webUploadInvalidType);
+});
+
 test('concurrent Expert installs keep every affected card busy', async () => {
   const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
   const { JSDOM } = await import('jsdom');

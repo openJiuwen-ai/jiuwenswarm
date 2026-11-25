@@ -2382,6 +2382,7 @@
       "builtinReadOnly": "与系统内置资产冲突，不可覆盖",
       "uploadFailed": "文件上传失败，请重试",
       "downloadFailed": "导出包下载失败，请重新导出或稍后重试",
+      "checksumMismatch": "导出文件完整性校验失败，内容可能已损坏，请重新导出",
       "saveFailed": "文件保存失败，请重试",
       "requestFailed": "请求失败，请重试"
     },
@@ -4980,7 +4981,8 @@
       "personaPreview": "专家人设 Markdown 预览",
       "uploadHint": "支持.zip和.tar文件，解压后的文件夹需要至少包含 manifest.json 文件、persona目录文件和 README.md，.json 文件需包含 package_type 声明包类型",
       "uploadPlaceholder": "点击或拖动文件到此处",
-      "webUploadPlaceholder": "点击上传文件",
+      "webUploadPlaceholder": "点击选择或拖拽 .zip 文件到此处",
+      "webUploadInvalidType": "浏览器上传仅支持 .zip 格式的资产包",
       "uploadInvalidType": "仅支持 .zip 和 .tar 文件",
       "uploadDirectoryUnsupported": "不支持直接拖拽文件夹，请先将文件夹压缩为 .zip 或 .tar 文件后再上传",
       "uploadVirtualFileUnsupported": "不支持直接从 WinRAR 等压缩软件中拖入文件，请先解压或复制到本地磁盘后再上传",
