@@ -79,6 +79,10 @@ CODE_NAME_CONFLICT = "MCP_NAME_CONFLICT"
 # token-schema env var; the CLI's auth status rejected the stored token at
 # connect time. Frontend maps this to a "token invalid, re-enter" hint.
 CODE_CREDENTIALS_INVALID = "MCP_CREDENTIALS_INVALID"
+# Probe failed but the stored credentials were NOT proven rejected (timeout /
+# unreachable / 5xx / local env). Frontend maps this to the "keep credentials,
+# retry later" hint (review P2 on PR !10905).
+CODE_UNREACHABLE = "MCP_UNREACHABLE"
 # CLI install script could not find PowerShell (npm postinstall spawn
 # powershell.exe ENOENT); frontend shows a friendly hint instead of the
 # misleading "version too low".
@@ -1018,21 +1022,23 @@ def _install_bundled_skills_safe(name: str) -> list[str]:
         return []
 
 
-def rollback_failed_connect(name: str) -> None:
+def rollback_failed_connect(name: str, *, wipe_credentials: bool = True) -> None:
     """Roll back a state.json entry after a failed connect/CLI auth.
 
     Marketplace MCP (has package dir): remove record + uninstall skills.
     Custom MCP: flip state back to ``registered`` so the user can retry/edit.
 
-    Both branches wipe the local CredentialStore token file. A failed connect
-    means the provisioned tokens did not authenticate (wrong value / expired /
-    service rejected) — keeping them would make the MCP permanently broken:
-    the next ``mcp.connect`` would find the stale tokens, skip the
-    ``credentials_required`` prompt, and re-probe with the same bad tokens
-    forever. Wiping forces ``connect_mcp``'s form-B missing-token check to
-    re-trigger, so the user gets the credentials modal again and can correct
-    the value. No-op for form-A (no tokens stored) and form-C (CLI manages its
-    own OAuth state, CredentialStore is empty).
+    ``wipe_credentials`` deletes the local CredentialStore token file. Only a
+    failure that proves the provisioned tokens did not authenticate (auth
+    rejected 401/403, or the CLI's own auth status rejecting the token)
+    should pass True: the tokens are known bad and keeping them would make the
+    next ``mcp.connect`` skip the ``credentials_required`` prompt and re-probe
+    with the same bad value forever. Network-class failures (timeout /
+    unreachable / 5xx) never validated the tokens, so they must pass False —
+    wiping there would delete a freshly provisioned (or OAuth-exchanged) token
+    because of a transient outage and force the user to re-enter it. Callers
+    classify with :func:`probe_failure_is_auth_rejected`; the default keeps
+    the legacy behavior for existing callers that don't classify yet.
     """
     n = str(name or "").strip()
     if not n:
@@ -1052,7 +1058,15 @@ def rollback_failed_connect(name: str) -> None:
                 set_mcp_state,
             )
             set_mcp_state(n, state="registered")
-        _wipe_stored_credentials(n)
+        if wipe_credentials:
+            _wipe_stored_credentials(n)
+        else:
+            # Diagnosability: a retried connect reuses the kept tokens, so the
+            # log must show why they were not treated as proven bad.
+            logger.info(
+                "[mcp.registry] rollback '%s' kept stored credentials "
+                "(probe failure not proven to be an auth rejection)", n,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp.registry] rollback '%s' failed: %s", n, exc)
 

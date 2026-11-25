@@ -210,6 +210,9 @@ function invalidateDetail(detailCache: Record<string, ConnectorDetail>, name: st
 // code（MCP_RUNTIME_MISSING 等四种）+ runtime + install_cmd；这里按 code
 // 映射 i18n 文案，其余错误回退 error.message。
 // mcp.install 内联的 connect_failed 复用同一套映射。
+// 2026-11-25：探活失败按原因分流——MCP_UNREACHABLE（网络类，凭据保留）与
+// MCP_CREDENTIALS_INVALID（服务确证拒绝凭据）分别给文案，避免"提示不可达、
+// 实际 token 被清"的误导。
 const RUNTIME_LABELS: Record<string, string> = { node: 'Node.js', python: 'Python' };
 
 interface McpFailureFields {
@@ -237,6 +240,21 @@ function friendlyMcpFailure(fields: McpFailureFields): string {
     return installCmd
       ? i18n.t('connectorMarket.errors.cliIncompleteNamed', { command: installCmd })
       : i18n.t('connectorMarket.errors.cliIncomplete');
+  }
+  if (fields.code === 'MCP_CREDENTIALS_INVALID') {
+    return i18n.t('connectorMarket.errors.probeAuthRejected');
+  }
+  if (fields.code === 'MCP_UNREACHABLE') {
+    // MCP_UNREACHABLE 是"非确证凭据被拒"的兜底码，覆盖的不只是网络故障——
+    // stdio 命令缺失、URL 非法这类本地环境失败也走这个码。固定文案会把它们
+    // 误报成"服务暂不可达"，因此把后端 reason 里的具体细节拼在后面；没有细节
+    // （网络类探活 reason 前端已屏蔽或后端未带）时保持纯固定文案。
+    const generic = i18n.t('connectorMarket.errors.probeUnreachable');
+    const detail = (fields.message ?? '').trim();
+    if (detail && detail !== 'MCP live-connect probe failed') {
+      return `${generic} (${detail})`;
+    }
+    return generic;
   }
   return fields.message ?? ''; // 兜底：非 CLI 边界失败，展示原文
 }
@@ -803,7 +821,10 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       set((state) => ({
         ...patchConnectionAll(state, name, 'error'),
         busyMap: { ...state.busyMap, [name]: undefined },
-        error: error instanceof Error ? error.message : String(error),
+        // 与 connect() 一致走错误码映射：Token 弹窗提交后探活失败时，
+        // MCP_CREDENTIALS_INVALID / MCP_UNREACHABLE 也要给出"凭据被拒需重填"
+        // 或"服务暂不可达、凭据保留"的文案，而不是原始英文错误。
+        error: friendlyCliError(error),
       }));
       scheduleQuickRefresh(get);
       return null;

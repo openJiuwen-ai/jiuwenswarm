@@ -10538,11 +10538,19 @@ class AgentWebSocketServer:
             )
         if not probe_ok:
             logger.warning("[command.mcp] live-probe failed: %s", probe_reason)
+            from jiuwenswarm.common.mcp_config import (
+                probe_failure_is_auth_rejected,
+            )
+            auth_rejected = probe_failure_is_auth_rejected(probe_reason)
             try:
                 from jiuwenswarm.server.runtime.mcp.registry import (
+                    CODE_CREDENTIALS_INVALID,
+                    CODE_UNREACHABLE,
                     rollback_failed_connect,
                 )
-                rollback_failed_connect(name)
+                # Only a proven auth rejection wipes the stored tokens; a
+                # network-class failure keeps them for the next connect.
+                rollback_failed_connect(name, wipe_credentials=auth_rejected)
             except Exception as rollback_exc:  # noqa: BLE001
                 logger.warning("[command.mcp] rollback '%s' failed: %s", name, rollback_exc)
             return AgentResponse(
@@ -10553,7 +10561,7 @@ class AgentWebSocketServer:
                     "type": types.fail,
                     "name": payload["name"],
                     "error": probe_reason or "MCP live-connect probe failed",
-                    "code": "MCP_UNREACHABLE",
+                    "code": CODE_CREDENTIALS_INVALID if auth_rejected else CODE_UNREACHABLE,
                 },
             )
         if not is_config_yaml:
@@ -11432,8 +11440,14 @@ class AgentWebSocketServer:
         self, name: str, *, rollback_on_probe_failure: bool = True
     ) -> dict[str, Any]:
         """Run the shared connect flow and return a frontend payload."""
-        from jiuwenswarm.common.mcp_config import discard_probed_mcp
+        from jiuwenswarm.common.mcp_config import (
+            discard_probed_mcp,
+            probe_failure_is_auth_rejected,
+            probe_failure_is_local_env,
+        )
         from jiuwenswarm.server.runtime.mcp.registry import (
+            CODE_CREDENTIALS_INVALID,
+            CODE_UNREACHABLE,
             connect_mcp,
             was_connect_cancelled,
         )
@@ -11460,21 +11474,32 @@ class AgentWebSocketServer:
             return {"type": "cancelled", "name": name}
         if not probe_ok:
             logger.warning("[mcp] probe failed for '%s': %s", name, probe_reason)
+            auth_rejected = probe_failure_is_auth_rejected(probe_reason)
             if rollback_on_probe_failure:
                 try:
                     from jiuwenswarm.server.runtime.mcp.registry import (
                         rollback_failed_connect,
                     )
-                    rollback_failed_connect(name)
+                    # Only a proven auth rejection wipes the stored tokens;
+                    # a network-class failure keeps them so a retry reuses them.
+                    rollback_failed_connect(name, wipe_credentials=auth_rejected)
                 except Exception as rollback_exc:  # noqa: BLE001
                     logger.warning(
                         "[mcp] rollback failed-probe entry '%s' failed: %s",
                         name, rollback_exc,
                     )
+            # Runner connect-failure strings can embed the full server_config
+            # (env credentials included), so the default stays the redacted
+            # fixed message; only locally-built reasons (PATH-missing command,
+            # invalid URL) are safe to surface — and those must NOT read as
+            # "service unreachable" (review P2 on PR !10905).
+            error = "MCP live-connect probe failed"
+            if not auth_rejected and probe_failure_is_local_env(probe_reason):
+                error = probe_reason
             return {
                 "type": "connect_failed",
-                "error": "MCP live-connect probe failed",
-                "code": "MCP_UNREACHABLE",
+                "error": error,
+                "code": CODE_CREDENTIALS_INVALID if auth_rejected else CODE_UNREACHABLE,
                 "name": name,
             }
         # Promote connecting state and sync skill-only credentials.
@@ -11996,20 +12021,41 @@ class AgentWebSocketServer:
                     logger.warning(
                         "[mcp] host OAuth probe failed for '%s': %s", name, probe_reason,
                     )
+                    from jiuwenswarm.common.mcp_config import (
+                        probe_failure_is_auth_rejected,
+                    )
+                    auth_rejected = probe_failure_is_auth_rejected(probe_reason)
                     try:
                         from jiuwenswarm.server.runtime.mcp.registry import (
                             rollback_failed_connect,
                         )
-                        rollback_failed_connect(name)
+                        # The just-exchanged OAuth tokens are only known bad
+                        # when the server itself rejected them (401/403). A
+                        # network-class failure must keep them — wiping would
+                        # force a full browser re-authorization after a mere
+                        # transient outage.
+                        rollback_failed_connect(name, wipe_credentials=auth_rejected)
                     except Exception as rollback_exc:  # noqa: BLE001
                         logger.warning(
                             "[mcp] rollback failed host-OAuth probe '%s': %s",
                             name, rollback_exc,
                         )
+                    if auth_rejected:
+                        return {
+                            "type": "auth_failed",
+                            "name": name,
+                            "error": f"MCP '{name}' rejected the authorization token",
+                        }
+                    # Network-class failure: the OAuth tokens were never
+                    # validated (and are kept) — report the service as
+                    # unreachable so the user retries instead of re-authorizing.
                     return {
                         "type": "auth_failed",
                         "name": name,
-                        "error": f"MCP '{name}' rejected the authorization token",
+                        "error": (
+                            f"MCP '{name}' is temporarily unreachable; "
+                            "the authorization was kept — retry connect later"
+                        ),
                     }
                 try:
                     from jiuwenswarm.server.runtime.mcp.state_store import (

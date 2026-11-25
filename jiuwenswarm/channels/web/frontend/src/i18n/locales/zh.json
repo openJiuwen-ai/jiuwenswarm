@@ -6071,7 +6071,9 @@
       "installNetwork": "依赖下载失败，请检查网络连接后重试",
       "installScriptDep": "CLI 安装脚本需要 PowerShell 环境，请先启用或恢复 PowerShell 后重试",
       "cliIncomplete": "CLI 安装不完整或版本过低，请重新连接以重试",
-      "cliIncompleteNamed": "CLI 安装不完整或版本过低，请手动执行以下命令安装或升级后重试：{{command}}"
+      "cliIncompleteNamed": "CLI 安装不完整或版本过低，请手动执行以下命令安装或升级后重试：{{command}}",
+      "probeUnreachable": "服务暂不可达，请稍后重试；已保存的凭据会保留",
+      "probeAuthRejected": "服务拒绝了已保存的凭据，请重新填写 Token 后重试"
     },
     "card": {
       "connect": "连接",

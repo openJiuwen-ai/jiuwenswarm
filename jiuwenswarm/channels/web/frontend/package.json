@@ -249,6 +249,7 @@
     "test:plugin-mine-actions": "node --test tests/pluginMineActions.test.mjs",
     "test:connector-store-uninstall-guard": "node --test tests/connectorStoreUninstallGuard.test.mjs",
     "test:connector-store-silent-refresh": "node --test tests/connectorStoreSilentRefresh.test.mjs",
+    "test:connector-store-probe-failure-copy": "node --test tests/connectorStoreProbeFailureCopy.test.mjs",
     "test:host-oauth-connector-modal": "node --test tests/hostOAuthConnectorModal.test.mjs",
     "test:cli-auth-modal": "node --test tests/cliAuthModal.test.mjs",
     "test:equipment-marketplace": "esbuild src/features/equipmentMarketplace.ts src/components/ConnectorMarket/mcpState.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/equipment-marketplace && node --test tests/equipmentMarketplace.test.mjs",
