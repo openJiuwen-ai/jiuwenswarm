@@ -266,6 +266,7 @@ const AgentGraphNode = ({ data }: NodeProps) => {
 };
 
 const LoopGraphNode = ({ data }: NodeProps) => {
+  const { t } = useTranslation();
   const loop = data.loop as PhaseLoopGroup;
   const activeIdx = findActiveIterationIndex(loop.members);
   const loopStatus = computeLoopStatus(loop.members);
@@ -277,7 +278,7 @@ const LoopGraphNode = ({ data }: NodeProps) => {
       <div className="flex items-start gap-1">
         <RefreshCw className={`w-3 h-3 text-purple-500 shrink-0 mt-0.5 ${loopStatus === 'running' ? 'animate-spin' : ''}`} />
         <span className="text-xs font-medium text-text break-words min-w-0" title={loop.baseName}>{loop.baseName}</span>
-        <span className="text-[10px] text-text-muted shrink-0">×{loop.members.length}轮</span>
+        <span className="text-[10px] text-text-muted shrink-0">{t('swarmflow.iterationCount', { count: loop.members.length })}</span>
       </div>
       <div className="flex items-center gap-0.5 mt-0.5">
         {loop.members.map((m, i) => (

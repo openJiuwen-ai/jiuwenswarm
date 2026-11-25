@@ -49,8 +49,40 @@ def reset_group_turn(token: Token) -> None:
     _CURRENT_TURN.reset(token)
 
 
-def _verified_public_broadcast(message: Any, meta: Any, trigger_id: str, member_name: str, team_name: str) -> bool:
-    """Accept only the persisted broadcast that this member was actually mentioned in."""
+def _notified(session_id: str | None, message_id: str, member_name: str) -> bool:
+    """Whether the group's auto-reply judgement asked this member to answer the message."""
+    if not session_id:
+        return False
+    from jiuwenswarm.server.runtime.group_auto_reply import is_notified
+
+    return is_notified(session_id, message_id, member_name)
+
+
+def _coordinated(session_id: str | None, message_id: str, client_message_id: str, member_name: str) -> bool:
+    """Whether the judgement put this expert team into the message's joint organization.
+
+    Both facts are required: the decision names the member, and the
+    organization candidate that every later step reads was registered.
+    """
+    if not session_id:
+        return False
+    from jiuwenswarm.agents.swarm.group_route import candidate
+    from jiuwenswarm.server.runtime.group_auto_reply import organization_members
+
+    if member_name not in organization_members(session_id, message_id):
+        return False
+    item = candidate(session_id, client_message_id)
+    return item is not None and member_name in item["members"]
+
+
+def _verified_public_broadcast(
+    message: Any, meta: Any, trigger_id: str, member_name: str, team_name: str, session_id: str | None = None,
+) -> bool:
+    """Accept only the persisted broadcast that addresses this member.
+
+    A member is addressed by a mention, a notification, or a joint decision
+    that includes it.
+    """
     if message is None or not isinstance(meta, dict):
         return False
     if meta.get("type") != "group_chat" or message.team_name != team_name:
@@ -63,14 +95,19 @@ def _verified_public_broadcast(message: Any, meta: Any, trigger_id: str, member_
     if not isinstance(client_message_id, str) or not client_message_id.strip():
         return False
     mentions = meta.get("mentions")
-    return isinstance(mentions, list) and member_name in mentions
+    if not isinstance(mentions, list):
+        return False
+    return (
+        member_name in mentions or _notified(session_id, trigger_id, member_name)
+        or _coordinated(session_id, trigger_id, client_message_id, member_name)
+    )
 
 
 def is_group_notice(part: str) -> bool:
     return _NOTICE.match(str(part)) is not None
 
 
-async def expand_public_group_inputs(parts: list[str], backend: Any, member_name: str) -> None:
+async def expand_public_group_inputs(parts: list[str], backend: Any, session_id: str, member_name: str) -> None:
     """Normalize public broadcasts delivered by the ordinary mailbox handler.
 
     Only the outer envelope identifies a message; its body and archived
@@ -101,7 +138,7 @@ async def expand_public_group_inputs(parts: list[str], backend: Any, member_name
             raw = getattr(message, "meta", None)
             meta = json.loads(raw) if isinstance(raw, str) else raw
             if not _verified_public_broadcast(
-                message, meta, trigger_id, member_name, backend.team_name,
+                message, meta, trigger_id, member_name, backend.team_name, session_id,
             ):
                 continue
             parts[index] = await context_for(backend, member_name, message)
@@ -191,7 +228,7 @@ async def bind_consumed_group_turn(ctx: Any, backend: Any, session_id: str, memb
     from jiuwenswarm.agents.swarm.group_route import expand_route_notices
 
     await expand_route_notices(parts, backend, session_id, member_name)
-    await expand_public_group_inputs(parts, backend, member_name)
+    await expand_public_group_inputs(parts, backend, session_id, member_name)
     notice_parts = [part for part in parts if str(part).startswith(("群聊消息通知。", "Group message notice."))]
     if not notice_parts:
         # Internal reminders and interrupt answers do not introduce another
@@ -288,8 +325,17 @@ async def resolve_group_turn(
         return unknown("The trigger is not a persisted user message.")
     mentions = message.get("mentions") or []
     client_id = message.get("client_message_id")
-    if member_name not in mentions or not isinstance(client_id, str) or not client_id:
+    if not isinstance(client_id, str) or not client_id:
         return unknown("The trigger does not address this member or lacks its stable identity.")
+    if member_name not in mentions:
+        # The Owner is woken by its notification, the other teams by the Owner's
+        # private notice; neither is mentioned.
+        if _coordinated(session_id, trigger, client_id, member_name):
+            return GroupTurn(session_id, member_name, client_id, "organization")
+        if not _notified(session_id, trigger, member_name):
+            return unknown("The trigger does not address this member or lacks its stable identity.")
+        # A notified member answers on its own; a notification alone never forms an organization.
+        return GroupTurn(session_id, member_name, client_id, "direct")
     members = {item["member_name"]: item for item in group.get("members", [])}
     selected = [members.get(name) for name in dict.fromkeys(mentions)]
     organization = len(selected) >= 2 and all(

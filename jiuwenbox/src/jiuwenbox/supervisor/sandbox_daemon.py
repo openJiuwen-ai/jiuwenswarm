@@ -73,7 +73,7 @@ import struct
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -178,6 +178,22 @@ def _normalize_env(env: Any) -> dict[str, str | None] | None:
     return {str(key): None if value is None else str(value) for key, value in env.items()}
 
 
+def apply_env_overrides(
+    environ: MutableMapping[str, str], overrides: Mapping[str, str | None],
+) -> None:
+    """Apply exec env overrides in place; a None value deletes the variable.
+
+    The ForkServer worker is a self-contained ``python -c`` script and cannot
+    call this function. ``FORKSERVER_WORKER_SOURCE`` keeps an equivalent copy;
+    change both together.
+    """
+    for key, value in overrides.items():
+        if value is None:
+            environ.pop(key, None)
+        else:
+            environ[key] = value
+
+
 def build_child_env(env_override: dict[str, str | None] | None) -> dict[str, str]:
     """Merge an exec environment while preserving runtime-owned metadata.
 
@@ -192,11 +208,7 @@ def build_child_env(env_override: dict[str, str | None] | None) -> dict[str, str
     # an unusable internal descriptor number.
     merged_env.pop(LISTENER_FD_ENV, None)
     if env_override is not None:
-        for key, value in env_override.items():
-            if value is None:
-                merged_env.pop(key, None)
-            else:
-                merged_env[key] = value
+        apply_env_overrides(merged_env, env_override)
     # The sandbox address is a lifecycle snapshot owned by the runtime.
     # Always remove a caller value, including when address discovery failed.
     merged_env.pop(SANDBOX_IP_ENV, None)
@@ -1055,6 +1067,19 @@ def _exec_script_in_child(plan):
         os._exit(1)
 
 
+def apply_env_overrides(environ, overrides):
+    """Apply exec env overrides in place; a None value deletes the variable.
+
+    Copy of ``sandbox_daemon.apply_env_overrides``. This worker is launched
+    with ``python -c`` and cannot import the daemon module.
+    """
+    for key, value in overrides.items():
+        if value is None:
+            environ.pop(key, None)
+        else:
+            environ[key] = value
+
+
 def _run_child(code, stdin_bytes, workdir, env_overrides, timeout, control_fd,
                plan=None):
     """Fork a child that runs ``code`` (or a script); return (rc, out, err).
@@ -1099,7 +1124,8 @@ def _run_child(code, stdin_bytes, workdir, env_overrides, timeout, control_fd,
                 except OSError:
                     pass
             if env_overrides:
-                os.environ.update(env_overrides)
+                # Same None-deletes semantics as the non-fastpath children.
+                apply_env_overrides(os.environ, env_overrides)
             if plan:
                 _exec_script_in_child(plan)
             else:

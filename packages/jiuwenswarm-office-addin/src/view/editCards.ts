@@ -1,7 +1,10 @@
 /**
  * The suggestion cards under a ``propose_doc_edits`` call: per edit its section, summary and the change word by
  * word, the alternatives to pick from, and the user's choices (apply as an edit, as a tracked change, add as a
- * comment, skip; undo once applied). The cards' state is ``DocEditReview``'s; the alternative picked is the view's.
+ * comment, skip; undo once applied). With more than one card pending, "apply all" applies them one after another
+ * as the user last applied a card as a change (an edit until then), a comment card as its comment, each with the
+ * alternative picked. The cards' state is ``DocEditReview``'s; the alternative picked and the way the user last
+ * applied a card are the view's.
  */
 import { copy } from '../copy';
 import type { AppliedAs, CardView, DocEditReview, ProposedEdit } from '../docEditReview';
@@ -22,17 +25,36 @@ export interface ToolCards {
 export function editCards(review: DocEditReview): ToolCards {
   const picked = new Map<string, number>();
   const listeners = new Set<() => void>();
-  let picks = 0;
+  let lastAs: Exclude<AppliedAs, 'comment'> = 'edit';
+  /** Calls whose cards are being applied all together. */
+  const applyingAll = new Set<string>();
+  let viewVersion = 0;
   const changed = () => listeners.forEach(listener => listener());
   review.subscribe(changed);
+  const viewChanged = () => {
+    viewVersion += 1;
+    changed();
+  };
   const pick = (key: string, alternative: number) => {
     picked.set(key, alternative);
-    picks += 1;
-    changed();
+    viewChanged();
+  };
+  const applyAll = async (callId: string, edits: ProposedEdit[]) => {
+    const as = lastAs;
+    applyingAll.add(callId);
+    viewChanged();
+    try {
+      for (const edit of edits) {
+        await review.apply(callId, edit, edit.comment ? 'comment' : as, picked.get(`${callId}\n${edit.id}`) ?? 0);
+      }
+    } finally {
+      applyingAll.delete(callId);
+      viewChanged();
+    }
   };
   return {
     tools: new Set(['propose_doc_edits']),
-    version: () => `${review.version}:${picks}`,
+    version: () => `${review.version}:${viewVersion}`,
     subscribe: listener => void listeners.add(listener),
     render: (callId, args) => {
       const edits = (Array.isArray(args.edits) ? args.edits : []) as unknown as ProposedEdit[];
@@ -43,12 +65,22 @@ export function editCards(review: DocEditReview): ToolCards {
         const alternative = picked.get(key) ?? 0;
         return [card(edit, view, alternative, key, {
           pick: index => pick(key, index),
-          apply: as => void review.apply(callId, edit, as, alternative),
+          apply: as => {
+            if (as !== 'comment') lastAs = as;
+            void review.apply(callId, edit, as, alternative);
+          },
           dismiss: () => review.dismiss(callId, edit.id),
           undo: () => void review.undo(callId, edit),
         })];
       });
-      return cards.length ? h('section', { class: 'entry edit-cards', 'aria-label': copy.editCards }, ...cards) : null;
+      const pending = edits.filter(edit => review.card(callId, edit.id)?.state.status === 'pending');
+      const all = pending.length > 1 ? h('div', { class: 'edit-actions edit-all' }, h('button', {
+        type: 'button', class: 'button edit-button', 'data-key': `edit-all:${callId}`,
+        disabled: applyingAll.has(callId) || pending.some(edit => review.card(callId, edit.id)?.busy),
+        onclick: () => void applyAll(callId, pending),
+      }, copy.editApplyAll[lastAs])) : null;
+      return cards.length ? h('section', { class: 'entry edit-cards', 'aria-label': copy.editCards }, all, ...cards)
+        : null;
     },
   };
 }

@@ -20,7 +20,6 @@ from agent_gateway.channel_manager.web.app_web_handlers import (
 )
 from tests.unit_tests.gateway.gateway_server_fakes import FakeWebSocket, build_server
 from datetime import datetime, timezone
-from e2a.message import ReqMethod as WireMethod
 from e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
@@ -51,12 +50,12 @@ async def test_resume_is_owned_by_the_original_channel_runtime(tmp_path, channel
     await asyncio.gather(*manager._permission_resume_tasks.values())
     assert manager._resume_permission_approval.await_count == int(expected)
 
-def test_production_web_factory_claims_only_web_approvals(monkeypatch):
+def test_production_web_factory_claims_web_and_swarmchat_approvals(monkeypatch):
     factory = Mock(return_value=object())
     monkeypatch.setattr(web_adapter.AgentManager, "create_default", factory)
     observer = Mock()
     web_adapter._default_manager(object(), on_event=observer)
-    assert factory.call_args.kwargs["approval_channels"] == frozenset({"web"})
+    assert factory.call_args.kwargs["approval_channels"] == frozenset({"web", "swarmchat"})
 
 # --- from test_dingtalk_cli_app_scope.py ---
 
@@ -139,7 +138,7 @@ def test_gateway_group_event_and_receipt_decode_on_host(channel):
         return e2a_to_agent_request(E2AEnvelope.from_dict(wire.to_dict()))
 
     inbound = request(f"jiuwenmate.{channel}.inbound", {"event": source.to_payload()})
-    assert inbound.req_method is WireMethod(f"jiuwenmate.{channel}.inbound")
+    assert inbound.req_method is ReqMethod(f"jiuwenmate.{channel}.inbound")
     assert parse(inbound.params["event"]).to_payload() == source.to_payload()
     receipt = request("jiuwenmate.delivery.ack", {"delivery_id": "delivery", "stage": "send",
                                                  "outcome": "delivered", "external_message_id": "sent"})

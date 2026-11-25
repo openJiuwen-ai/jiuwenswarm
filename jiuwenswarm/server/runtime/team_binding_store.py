@@ -18,7 +18,7 @@ from typing import Any
 
 from openjiuwen.agent_teams.paths import configure_openjiuwen_home, get_agent_teams_home
 
-from jiuwenswarm.common.utils import get_agent_root_dir, get_domain_data_dir
+from jiuwenswarm.common.paths import get_agent_root_dir, get_workspace_root_dir
 
 TEAM_NAME_RE = re.compile(r"^[^/\\\x00-\x1f\x7f]{1,64}$")
 
@@ -125,9 +125,11 @@ class TeamBindingStore:
 
     def __init__(self, path: Path | None = None) -> None:
         if path is None:
-            configure_openjiuwen_home(get_domain_data_dir())
+            configure_openjiuwen_home(get_workspace_root_dir())
             self._path = get_agent_teams_home() / "bindings.json"
-            self._migrate_legacy_file(get_agent_root_dir() / "teams" / "bindings.json")
+            from jiuwenswarm.common.paths import get_teams_dir
+
+            self._migrate_legacy_file(get_teams_dir() / "bindings.json")
         else:
             self._path = path
         self._lock = threading.RLock()

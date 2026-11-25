@@ -27,6 +27,13 @@
 - **状态分组**：按进行中、待处理、已完成分组显示
 - **实时更新**：任务状态变化实时同步
 
+#### 右侧面板页签
+
+- 任务、团队或子代理、产物、审查、浏览器和插件页面在同一层页签中切换。
+- 浏览器页签保留原有的关闭按钮，关闭后隐藏且状态按会话持久化；插件页签不提供宿主关闭按钮，由插件通过 `clear` 移除。
+- Iframe 页面默认适应面板；切换“桌面宽度”后以至少 1280px 宽度展示，窄面板底部可横向滚动。组件提供重新加载和在新标签页打开原始地址；加载超过 15 秒会提示，不中断页面。
+- 定向验证：`npm run test:panel-pages`。
+
 #### 📂 会话管理
 - **会话列表**：侧边栏显示历史会话
 - **会话切换**：点击切换不同会话
@@ -283,6 +290,32 @@ jiuwenswarm/channels/web/frontend/
   --accent-hover: #3b82f6;  /* 悬停色 */
 }
 ```
+
+## 插件 WebUI 图标白名单
+
+唯一手工维护文件：[src/features/webui/icons/whitelist.json](src/features/webui/icons/whitelist.json)。
+仓库完整路径为 `jiuwenswarm/channels/web/frontend/src/features/webui/icons/whitelist.json`。
+Button 和 Dropdown 共用其中约 100 个 Lucide 图标，具体名单以该文件为准；`refresh` 是 `refresh-cw` 的兼容别名。
+例如插件可声明 `{"label": "搜索", "icon": "search"}`，不传 icon 时仍是普通文字按钮。
+
+新增图标只需在 `icons` 增加一项，例如 `"file-text": "FileText"`；键是插件使用的名称，值是
+当前 `lucide-react` 的组件导出名。兼容旧名称时在 `aliases` 增加 `"旧名称": "已有名称"`。
+宿主统一图标大小和主题颜色，插件不能通过该文件传入 SVG、CSS 或组件代码。
+
+在前端目录运行 `npm run generate:webui-icons`，自动更新前端静态导入表
+`src/features/webui/icons/registry.generated.ts` 和后端 `jiuwenswarm/extensions_v2/webui/icon_whitelist_generated.py`。
+生成文件随白名单一起提交，不手工编辑。`npm run dev`、`npm run build` 和组件、契约测试启动前会自动生成；
+已运行的开发服务在修改白名单后需重新启动。`npm run check:webui-icons` 检查导出名、别名和生成文件是否同步。
+静态导入只保留白名单图标，后端运行无需前端源码或 Node。组件语义见[组件规约](src/features/webui/docs/specs/S_01_components.md)。
+
+## 插件 WebUI 组件接口
+
+Select 可绑定 `ui.change` 接收完整选择值，支持多选取消和清空；原有 select/search/clear 按需独立绑定。
+组件尺寸推荐 small/medium/large，兼容 sm/md/lg；Switch/Card 仅有 small/medium，Avatar 兼容 default 和数值。
+Text.max_lines 必须为正整数，不限行时省略（旧的 0 需移除）；显式 tone 优先于 variant。
+Text 的 primary/danger/ghost 及 Button.secondary 均有对应主题样式。
+Dropdown 必须在 icon 与非空 children 中选择一个触发区；两者同时存在或均缺失会被拒绝。
+`application.menu.main` 支持普通组件树和宿主页滚动。完整规则见[组件规约](src/features/webui/docs/specs/S_01_components.md)。
 
 ## License
 

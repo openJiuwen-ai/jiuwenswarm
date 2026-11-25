@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from jiuwenswarm.common.schema.message import Message, ReqMethod
+from e2a.message import Message, ReqMethod
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
     FeishuChannel,
     FeishuConfig,

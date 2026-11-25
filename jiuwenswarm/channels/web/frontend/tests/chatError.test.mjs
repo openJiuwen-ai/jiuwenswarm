@@ -8,8 +8,11 @@ const vite = await createServer({
   server: { middlewareMode: true, hmr: false, watch: null },
 });
 let describeChatError;
+let isFinishedTurnWorkerLifecycleError;
 try {
-  ({ describeChatError } = await vite.ssrLoadModule('/src/features/free-models/chatError.ts'));
+  ({ describeChatError, isFinishedTurnWorkerLifecycleError } = await vite.ssrLoadModule(
+    '/src/features/free-models/chatError.ts',
+  ));
 } finally {
   await vite.close();
 }
@@ -124,5 +127,49 @@ test('ambiguous model-selection errors gain actionable guidance', () => {
   assert.equal(
     describeChatError(streamFailure, 'ambiguous legacy model name; select a stable model_id', t),
     'ambiguous legacy model name; select a stable model_id\n<chat.modelNameAmbiguousHint>',
+  );
+});
+
+test('worker lifecycle close after a delivered final is not a task error', () => {
+  // #6373：任务正常收尾后常驻 worker 关闭只是 INFO 级生命周期事件，
+  // 已交过整轮 final 且该轮不再处理的请求不能再追加"错误: runtime worker closed"。
+  const finalized = new Set(['req-1']);
+  const idle = { isProcessing: false };
+  for (const code of ['WORKER_CLOSED', 'WORKER_UNSTABLE']) {
+    assert.equal(isFinishedTurnWorkerLifecycleError({ code }, 'req-1', finalized, idle), true);
+  }
+  // 同一轮中途崩溃没有 final，仍必须报错。
+  assert.equal(isFinishedTurnWorkerLifecycleError({ code: 'WORKER_CLOSED' }, 'req-2', finalized, idle), false);
+  assert.equal(isFinishedTurnWorkerLifecycleError({ code: 'WORKER_CLOSED' }, undefined, finalized, idle), false);
+  // 其它错误码即使已有 final 也不能被吞掉。
+  assert.equal(isFinishedTurnWorkerLifecycleError({ code: 'INTERNAL_ERROR' }, 'req-1', finalized, idle), false);
+});
+
+test('worker lifecycle close while the same request is still running stays a task error', () => {
+  // 复核意见：中间段 final（Goal 续跑、团队多轮）之后 worker 真正崩溃时，
+  // 该请求仍是会话正在处理的一轮，必须让用户看到半截回答伴随的失败。
+  const finalized = new Set(['req-1']);
+  assert.equal(
+    isFinishedTurnWorkerLifecycleError(
+      { code: 'WORKER_CLOSED' }, 'req-1', finalized,
+      { isProcessing: true, processingRequestId: 'req-1' },
+    ),
+    false,
+  );
+  // 新一轮已在处理别的请求：上一轮收尾后的回收仍按生命周期事件忽略。
+  assert.equal(
+    isFinishedTurnWorkerLifecycleError(
+      { code: 'WORKER_CLOSED' }, 'req-1', finalized,
+      { isProcessing: true, processingRequestId: 'req-2' },
+    ),
+    true,
+  );
+  // 恢复出的处理态没有 request_id 时，不把它当成该请求仍在运行。
+  assert.equal(
+    isFinishedTurnWorkerLifecycleError(
+      { code: 'WORKER_CLOSED' }, 'req-1', finalized,
+      { isProcessing: true },
+    ),
+    true,
   );
 });

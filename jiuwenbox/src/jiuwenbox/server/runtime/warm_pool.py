@@ -148,6 +148,7 @@ class _MountClient:
         self._proc: subprocess.Popen[str] | None = None
         self._lock = threading.Lock()
         self._next_id = 0
+        self._private_bind_noted = False
 
     def start(self) -> None:
         self._proc = subprocess.Popen(
@@ -192,6 +193,12 @@ class _MountClient:
         reply = json.loads(line)
         if not reply.get("ok"):
             raise RuntimeError(str(reply.get("error") or "mount helper failed"))
+        if reply.get("propagation") == "private-bind" and not self._private_bind_noted:
+            self._private_bind_noted = True
+            logger.info(
+                "mount_setattr is not available; warm checkout privatizes "
+                "binds in a private mount namespace",
+            )
 
     @staticmethod
     def _helper_ready(proc: subprocess.Popen[str] | None) -> bool:

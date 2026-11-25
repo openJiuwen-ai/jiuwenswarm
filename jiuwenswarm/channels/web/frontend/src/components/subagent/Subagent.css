@@ -9,48 +9,153 @@
   padding: 16px 32px 18px;
 }
 
-.panel-tab-icon-btn:hover {
+/* Tab-bar icon button. Self-contained on purpose: borrowing ChatPanel's `.chat-header-icon-btn`
+   made the final look depend on which stylesheet the bundler emits last, because both rules have
+   the same specificity. */
+.panel-tab-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.panel-tab-icon-btn:hover,
+.panel-tab-icon-btn:focus-visible {
   background: var(--color-tool-tab-active-bg);
   border-radius: 10.67px;
 }
 
-.panel-tab-icon-btn--collapse {
-  background: var(--color-tool-tab-active-bg);
-  border-radius: 10.67px;
+.panel-tab-icon-btn:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.panel-tab-icon-btn:active {
+  transform: scale(0.94);
 }
 
 .single-agent-tool-tabs {
   display: flex;
-  min-height: 68px;
+  height: 64px;
+  min-height: 64px;
   flex-shrink: 0;
   align-items: stretch;
   justify-content: space-between;
+  gap: 8px;
   border-bottom: 1px solid var(--color-border-default);
   background: var(--color-surface-card);
-  padding-left: 24px;
-  padding-right: 24px;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+/* Shrink-to-fit group: wide enough for every tab, but it gives up width to the actions group
+   and lets the list scroll. The add button is its own flex item beside the scroller, which is
+   what keeps the plus off the tabs at any scroll position. */
+.single-agent-tool-tabs__strip {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
 }
 
 .single-agent-tool-tabs__list {
+  box-sizing: border-box;
   display: flex;
+  flex: 0 1 auto;
+  height: 52px;
   min-width: 0;
-  align-items: center;
-  gap: 16px;
+  align-items: flex-start;
+  gap: 4px;
+  /* Fixed top padding aligns the 30px tabs with the 32px buttons, regardless of scrollbar size. */
+  padding: 11px 2px 0;
+  /* Always reserve the horizontal scrollbar lane, including while the tabs still fit. */
+  overflow-x: scroll;
+  overflow-y: hidden;
+  scroll-behavior: auto;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.single-agent-tool-tabs__list::-webkit-scrollbar {
+  height: 6px;
+}
+
+.single-agent-tool-tabs__list::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.single-agent-tool-tabs__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.single-agent-tool-tabs__list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+
+.single-agent-tool-tabs:hover .single-agent-tool-tabs__list::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb);
+}
+
+/* Firefox uses the standard properties; Chromium keeps the explicit 6px WebKit size. */
+@supports not selector(::-webkit-scrollbar) {
+  .single-agent-tool-tabs__list {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  .single-agent-tool-tabs:hover .single-agent-tool-tabs__list {
+    scrollbar-color: var(--color-scrollbar-thumb) transparent;
+  }
 }
 
 .single-agent-tool-tab {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 8px 16px;
-  border-bottom: 2px solid transparent;
+  gap: 6px;
+  height: 30px;
+  max-width: 200px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 8px;
+  box-shadow: none;
   cursor: pointer;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  font-size: 13px;
   white-space: nowrap;
   letter-spacing: 0;
+  /* Clips the label while the tab collapses into the strip. The close
+     button's -4px offset stays inside the 10px padding, so it is not clipped. */
+  overflow: hidden;
+  transform-origin: left center;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+.single-agent-tool-tab > svg {
+  flex-shrink: 0;
+}
+
+.single-agent-tool-tab__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .single-agent-tool-tab:hover,
@@ -71,8 +176,129 @@
   border-radius: 8px;
 }
 
-.single-agent-tool-tabs__collapse {
+.single-agent-tool-tab:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.single-agent-tool-tab__close {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-right: -4px;
+  opacity: 0.45;
+  transition: opacity 160ms ease;
+}
+
+.single-agent-tool-tab:hover .single-agent-tool-tab__close,
+.single-agent-tool-tab:focus-within .single-agent-tool-tab__close,
+.single-agent-tool-tab--active .single-agent-tool-tab__close {
+  opacity: 1;
+}
+
+.single-agent-tool-tab__close button {
+  min-width: 20px;
+  min-height: 20px;
+  border-radius: 6px;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+
+.single-agent-tool-tab__close button:hover {
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+}
+
+.single-agent-tool-tab__close button:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 1px;
+}
+
+.single-agent-tool-tab__close button:active {
+  transform: scale(0.9);
+}
+
+.single-agent-tool-tabs__actions {
+  padding-left: 8px;
+  border-left: 1px solid var(--color-border-default);
   align-self: center;
+}
+
+/* Sits beside the scrolling list, not inside it: the plus stays reachable when the strip
+   overflows without covering the tabs it would otherwise float above. */
+.single-agent-tool-tabs__add {
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.single-agent-tool-tabs__add:hover,
+.single-agent-tool-tabs__add:focus-visible,
+.single-agent-tool-tabs__add:active {
+  background: var(--color-tool-tab-active-bg);
+  color: var(--color-text-primary);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .single-agent-tool-tab {
+    animation: panel-tab-appear 200ms cubic-bezier(0.2, 0.9, 0.3, 1);
+  }
+
+  .single-agent-tool-tab--closing {
+    pointer-events: none;
+    animation: panel-tab-collapse 140ms ease-in forwards;
+  }
+
+  .single-agent-tool-tab--closing:not(:last-child) {
+    /* Cancel only a following gap; a negative trailing margin makes a fitting strip overflow. */
+    margin-right: -4px;
+  }
+}
+
+/* Enter at the final width so scroll positioning does not need a delayed correction. */
+@keyframes panel-tab-appear {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Starts from the width measured in JS: `auto` cannot be interpolated, and animating the
+   200px cap alone would leave short tabs motionless until the cap drops below their width. */
+@keyframes panel-tab-collapse {
+  from {
+    width: var(--tab-shrink-from, auto);
+    max-width: var(--tab-shrink-from, 200px);
+    padding-left: 10px;
+    padding-right: 10px;
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  to {
+    width: 0;
+    max-width: 0;
+    padding-left: 0;
+    padding-right: 0;
+    opacity: 0;
+    transform: scaleX(0.9);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-tab-icon-btn,
+  .single-agent-tool-tab,
+  .single-agent-tool-tab__close,
+  .single-agent-tool-tab__close button {
+    transition: none;
+  }
+
+  .panel-tab-icon-btn:active,
+  .single-agent-tool-tab__close button:active {
+    transform: none;
+  }
 }
 
 .subagent-compact-panel__header,

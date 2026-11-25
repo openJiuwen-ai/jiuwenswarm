@@ -52,7 +52,7 @@ async def _persisted_interrupt(h, checkpointer):
 
 
 @pytest.fixture(autouse=True)
-def disable_observability(answer_host, monkeypatch):
+def disable_observability(answer_host, monkeypatch):  # noqa: F811 - imported pytest fixture
     monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda **_kwargs: None)
 
 
@@ -218,7 +218,8 @@ async def _recovered_ids(h, *, session_id=None):
 @pytest.mark.parametrize("count,first", [(1, 0), (2, 0), (2, 1)])
 @pytest.mark.parametrize("action", ["allow_once", "reject", "session_allow", "always_allow"])
 async def test_sqlite_reopen_recovers_only_unanswered_tools(
-    answer_host, sqlite_checkpoint, monkeypatch, streaming, count, first, action,
+    answer_host,  # noqa: F811 - imported pytest fixture
+    sqlite_checkpoint, monkeypatch, streaming, count, first, action,
 ):
     h = answer_host
     answer = await _interrupt(h, monkeypatch, mode="manual", kind="permission", count=count)
@@ -237,8 +238,8 @@ async def test_sqlite_reopen_recovers_only_unanswered_tools(
         payload["answers"][0]["selected_options"] = [action]
         await _send_request(h, streaming=streaming, **payload)
         pending.remove(f"call_{index}")
-        # A session grant can also authorize the next tool of the same name.
-        if action == "session_allow" and index == 0:
+        # A remembered grant covers the other pending call of the same tool.
+        if action in {"session_allow", "always_allow"}:
             pending.clear()
         await sqlite_checkpoint()
         assert await _recovered_ids(h) == pending
@@ -255,7 +256,8 @@ async def test_sqlite_reopen_recovers_only_unanswered_tools(
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("boundary", ["close", "commit", "observer"])
 async def test_round_persistence_and_cleanup_at_output_boundaries(
-    answer_host, checkpointer, monkeypatch, streaming, boundary,
+    answer_host,  # noqa: F811 - imported pytest fixture
+    checkpointer, monkeypatch, streaming, boundary,
 ):
     h = answer_host
     answer = await _interrupt(h, monkeypatch, mode="manual", kind="ask")
@@ -308,7 +310,8 @@ async def test_round_persistence_and_cleanup_at_output_boundaries(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("answered", [False, True])
 async def test_session_rebuild_after_idle_cleanup_recovers_round_state(
-    answer_host, sqlite_checkpoint, monkeypatch, answered,
+    answer_host,  # noqa: F811 - imported pytest fixture
+    sqlite_checkpoint, monkeypatch, answered,
 ):
     h = answer_host
     answer = await _interrupt(h, monkeypatch, mode="manual", kind="ask")

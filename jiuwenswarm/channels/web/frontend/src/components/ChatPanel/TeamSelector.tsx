@@ -21,6 +21,7 @@ import { webClient } from '../../services/webClient';
 import type { AgentGroupCatalogItem, AgentGroupIdentity } from '../../features/agentManagement/types';
 import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '../../features/teamOrganization/teamIdentity';
+import { resolveOrganizationRoster } from '../teamArea/organizationTree';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
 const MENU_GAP = 10;
@@ -77,7 +78,8 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
       ? sessionRuntimes[conversationKey(sessionId, team.is_owner ? null : team.team_id)]?.teamGroupIdentity
       : null,
   );
-  const teamCount = runtime?.teams.length ?? 0;
+  const { visibleTeams: teams, teamIds } = useMemo(() => resolveOrganizationRoster(runtime?.teams ?? []), [runtime?.teams]);
+  const teamCount = teams.length;
   const fetchTeams = useTeamSelectorStore((s) => s.fetchTeams);
   const selectTeam = useTeamSelectorStore((s) => s.selectTeam);
 
@@ -207,7 +209,6 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
     };
   }, [open]);
 
-  const teams = runtime?.teams ?? [];
   const loading = runtime?.loading ?? false;
   // 没拉到 team 时整体不渲染：集群模式的老会话/未启用 team 的场景不该多出一个空下拉。
   if (!organizationUiEnabled || (!loading && teams.length === 0)) return null;
@@ -295,7 +296,7 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
             }
           >
             {teams.map((team) => {
-              const isActive = selected?.team_id === team.team_id;
+              const isActive = Boolean(selected && (teamIds.get(selected.team_id) ?? selected.team_id) === team.team_id);
               const teamIdentity = resolveIdentity(team);
               return (
                 <button

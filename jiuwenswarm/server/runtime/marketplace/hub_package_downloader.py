@@ -43,7 +43,15 @@ def _allow_insecure_http() -> bool:
 
 
 class HubDownloadError(RuntimeError):
-    """Raised when a Hub artifact fails transport or archive validation."""
+    """Raised when a Hub artifact fails transport or archive validation.
+
+    ``code`` is a stable app-market error code so callers do not have to
+    classify failures by message text.
+    """
+
+    def __init__(self, message: str, *, code: str = "download_failed") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class HubPackageDownloader:
@@ -53,9 +61,23 @@ class HubPackageDownloader:
         fetch_bytes: Callable[[str], Awaitable[bytes]] | None = None,
         allowed_download_hosts: tuple[str, ...] | None = None,
         timeout: float = 60.0,
+        max_download_bytes: int | None = None,
+        max_total_uncompressed_bytes: int | None = None,
+        max_single_file_bytes: int | None = None,
+        max_file_count: int | None = None,
+        verify_archive_crc: bool = True,
+        verify: bool = True,
     ) -> None:
         self._fetch_bytes = fetch_bytes or self._http_fetch_bytes
         self.timeout = max(1.0, float(timeout))
+        self.verify = verify
+        self.max_download_bytes = max_download_bytes or _MAX_DOWNLOAD_BYTES
+        self.max_total_uncompressed_bytes = (
+            max_total_uncompressed_bytes or _MAX_TOTAL_UNCOMPRESSED_BYTES
+        )
+        self.max_single_file_bytes = max_single_file_bytes or _MAX_SINGLE_FILE_BYTES
+        self.max_file_count = max_file_count or _MAX_FILE_COUNT
+        self.verify_archive_crc = verify_archive_crc
         if allowed_download_hosts is None:
             raw = os.getenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", "").strip()
             allowed_download_hosts = (
@@ -68,31 +90,35 @@ class HubPackageDownloader:
     async def _http_fetch_bytes(self, url: str) -> bytes:
         try:
             async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=False
+                timeout=self.timeout, follow_redirects=False, verify=self.verify
             ) as client:
                 async with client.stream("GET", url) as response:
                     response.raise_for_status()
-                    return await self._read_bounded_response(response)
+                    return await self._read_bounded_response(
+                        response, max_bytes=self.max_download_bytes
+                    )
         except Exception as exc:
             if isinstance(exc, HubDownloadError):
                 raise
-            raise HubDownloadError(f"下载 Hub 包失败: {exc}") from exc
+            raise HubDownloadError(f"下载 Hub 包失败: {exc}", code="hub_unavailable") from exc
 
     @staticmethod
-    async def _read_bounded_response(response: object) -> bytes:
+    async def _read_bounded_response(
+        response: object, max_bytes: int = _MAX_DOWNLOAD_BYTES
+    ) -> bytes:
         headers = getattr(response, "headers", {})
         raw_length = headers.get("content-length") if hasattr(headers, "get") else None
         if raw_length:
             try:
-                if int(raw_length) > _MAX_DOWNLOAD_BYTES:
-                    raise HubDownloadError("下载 ZIP 大小超过限制")
+                if int(raw_length) > max_bytes:
+                    raise HubDownloadError("下载 ZIP 大小超过限制", code="file_too_large")
             except ValueError:
                 pass
         body = bytearray()
         async for chunk in response.aiter_bytes():
             body.extend(chunk)
-            if len(body) > _MAX_DOWNLOAD_BYTES:
-                raise HubDownloadError("下载 ZIP 大小超过限制")
+            if len(body) > max_bytes:
+                raise HubDownloadError("下载 ZIP 大小超过限制", code="file_too_large")
         return bytes(body)
 
     @staticmethod
@@ -111,78 +137,97 @@ class HubPackageDownloader:
     def assert_download_url_allowed(self, url: str) -> None:
         parsed = urlparse(str(url or "").strip())
         if parsed.scheme not in {"http", "https"}:
-            raise HubDownloadError("Hub download_url 必须使用 HTTP 或 HTTPS")
+            raise HubDownloadError("Hub download_url 必须使用 HTTP 或 HTTPS", code="download_blocked")
         host = (parsed.hostname or "").strip().lower()
         if not host:
-            raise HubDownloadError("Hub download_url 缺少主机名")
+            raise HubDownloadError("Hub download_url 缺少主机名", code="download_blocked")
         if (
             parsed.scheme == "http"
             and host not in {"localhost", "127.0.0.1", "::1"}
             and not _allow_insecure_http()
         ):
-            raise HubDownloadError("Hub 生产下载地址必须使用 HTTPS")
+            raise HubDownloadError("Hub 生产下载地址必须使用 HTTPS", code="download_blocked")
         if not any(
             self._host_matches(host, rule) for rule in self.allowed_download_hosts
         ):
-            raise HubDownloadError(f"Hub download_url host 不在白名单: {host}")
+            raise HubDownloadError(f"Hub download_url host 不在白名单: {host}", code="download_blocked")
 
     @staticmethod
     def _verify_checksum(body: bytes, expected: str) -> None:
         normalized = str(expected or "").strip().lower()
         if re.fullmatch(r"[0-9a-f]{64}", normalized) is None:
             raise HubDownloadError(
-                "Hub SHA-256 checksum must be a 64-character hexadecimal value"
+                "Hub SHA-256 checksum must be a 64-character hexadecimal value",
+                code="checksum_mismatch",
             )
         if hashlib.sha256(body).hexdigest().lower() != normalized:
-            raise HubDownloadError("下载文件校验失败（SHA256 不匹配）")
+            raise HubDownloadError("下载文件校验失败（SHA256 不匹配）", code="checksum_mismatch")
 
     @staticmethod
     def validated_members(
         archive: zipfile.ZipFile,
+        *,
+        max_total_uncompressed_bytes: int = _MAX_TOTAL_UNCOMPRESSED_BYTES,
+        max_single_file_bytes: int = _MAX_SINGLE_FILE_BYTES,
+        max_file_count: int = _MAX_FILE_COUNT,
     ) -> list[tuple[zipfile.ZipInfo, PurePosixPath]]:
         """Return ZIP members after rejecting unsafe paths, links, and oversized entries."""
         infos = archive.infolist()
-        if len(infos) > _MAX_FILE_COUNT:
-            raise HubDownloadError("ZIP 文件数量超过限制")
+        if len(infos) > max_file_count:
+            raise HubDownloadError("ZIP 文件数量超过限制", code="invalid_plugin_structure")
         total_size = 0
         validated: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
         for info in infos:
             raw = (info.filename or "").replace("\\", "/")
             if not raw or "\0" in raw:
-                raise HubDownloadError("ZIP 包含非法路径")
+                raise HubDownloadError("ZIP 包含非法路径", code="invalid_plugin_structure")
             relative = PurePosixPath(raw.rstrip("/"))
             if relative.is_absolute() or PureWindowsPath(raw).is_absolute():
-                raise HubDownloadError("ZIP 包含非法路径")
+                raise HubDownloadError("ZIP 包含非法路径", code="invalid_plugin_structure")
             if ".." in relative.parts or len(relative.parts) > _MAX_PATH_DEPTH:
-                raise HubDownloadError("ZIP 包含非法路径")
+                raise HubDownloadError("ZIP 包含非法路径", code="invalid_plugin_structure")
             mode = info.external_attr >> 16
             if stat.S_ISLNK(mode):
-                raise HubDownloadError("ZIP 包含链接文件")
-            if info.file_size > _MAX_SINGLE_FILE_BYTES:
-                raise HubDownloadError("ZIP 单文件大小超过限制")
+                raise HubDownloadError("ZIP 包含链接文件", code="invalid_plugin_structure")
+            if info.file_size > max_single_file_bytes:
+                raise HubDownloadError("ZIP 单文件大小超过限制", code="file_too_large")
             total_size += info.file_size
-            if total_size > _MAX_TOTAL_UNCOMPRESSED_BYTES:
-                raise HubDownloadError("ZIP 解包总大小超过限制")
+            if total_size > max_total_uncompressed_bytes:
+                raise HubDownloadError("ZIP 解包总大小超过限制", code="file_too_large")
             validated.append((info, relative))
         return validated
 
     @classmethod
-    def extract_zip(cls, body: bytes, destination: Path) -> None:
+    def extract_zip(
+        cls,
+        body: bytes,
+        destination: Path,
+        *,
+        max_total_uncompressed_bytes: int = _MAX_TOTAL_UNCOMPRESSED_BYTES,
+        max_single_file_bytes: int = _MAX_SINGLE_FILE_BYTES,
+        max_file_count: int = _MAX_FILE_COUNT,
+        verify_crc: bool = True,
+    ) -> None:
         if not body.startswith(b"PK"):
-            raise HubDownloadError("下载内容不是 ZIP 文件")
+            raise HubDownloadError("下载内容不是 ZIP 文件", code="invalid_plugin_structure")
         destination.mkdir(parents=True, exist_ok=True)
         root = destination.resolve()
         try:
             with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
-                members = cls.validated_members(archive)
-                if archive.testzip() is not None:
-                    raise HubDownloadError("下载 ZIP 文件已损坏")
+                members = cls.validated_members(
+                    archive,
+                    max_total_uncompressed_bytes=max_total_uncompressed_bytes,
+                    max_single_file_bytes=max_single_file_bytes,
+                    max_file_count=max_file_count,
+                )
+                if verify_crc and archive.testzip() is not None:
+                    raise HubDownloadError("下载 ZIP 文件已损坏", code="invalid_plugin_structure")
                 for info, relative in members:
                     target = root.joinpath(*relative.parts)
                     try:
                         target.resolve().relative_to(root)
                     except ValueError as exc:
-                        raise HubDownloadError("ZIP 包含非法路径") from exc
+                        raise HubDownloadError("ZIP 包含非法路径", code="invalid_plugin_structure") from exc
                     if info.is_dir():
                         target.mkdir(parents=True, exist_ok=True)
                         continue
@@ -194,29 +239,36 @@ class HubPackageDownloader:
                                 break
                             output.write(chunk)
         except zipfile.BadZipFile as exc:
-            raise HubDownloadError("下载内容不是有效 ZIP 文件") from exc
+            raise HubDownloadError("下载内容不是有效 ZIP 文件", code="invalid_plugin_structure") from exc
 
     async def download_and_extract(
         self, artifact: HubDownloadArtifact, destination: Path
     ) -> None:
         body = await self.download_bytes(artifact)
-        self.extract_zip(body, destination)
+        self.extract_zip(
+            body,
+            destination,
+            max_total_uncompressed_bytes=self.max_total_uncompressed_bytes,
+            max_single_file_bytes=self.max_single_file_bytes,
+            max_file_count=self.max_file_count,
+            verify_crc=self.verify_archive_crc,
+        )
 
     async def download_bytes(self, artifact: HubDownloadArtifact) -> bytes:
         """Download and validate an artifact without extracting it."""
         self.assert_download_url_allowed(artifact.download_url)
         body = await self._fetch_bytes(artifact.download_url)
         if not body:
-            raise HubDownloadError("下载内容为空")
-        if len(body) > _MAX_DOWNLOAD_BYTES:
-            raise HubDownloadError("下载 ZIP 大小超过限制")
+            raise HubDownloadError("下载内容为空", code="invalid_plugin_structure")
+        if len(body) > self.max_download_bytes:
+            raise HubDownloadError("下载 ZIP 大小超过限制", code="file_too_large")
         self._verify_checksum(body, artifact.checksum_sha256)
         if not body.startswith(b"PK"):
-            raise HubDownloadError("下载内容不是 ZIP 文件")
+            raise HubDownloadError("下载内容不是 ZIP 文件", code="invalid_plugin_structure")
         try:
             with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
-                if archive.testzip() is not None:
-                    raise HubDownloadError("下载 ZIP 文件已损坏")
+                if self.verify_archive_crc and archive.testzip() is not None:
+                    raise HubDownloadError("下载 ZIP 文件已损坏", code="invalid_plugin_structure")
         except zipfile.BadZipFile as exc:
-            raise HubDownloadError("下载内容不是有效 ZIP 文件") from exc
+            raise HubDownloadError("下载内容不是有效 ZIP 文件", code="invalid_plugin_structure") from exc
         return body

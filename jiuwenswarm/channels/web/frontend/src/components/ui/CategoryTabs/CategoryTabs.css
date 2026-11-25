@@ -12,6 +12,7 @@
   flex: 1 1 auto;
   overflow-x: auto;
   scrollbar-width: none;
+  margin-bottom: 14px;
 }
 
 .categoryTabs__viewport::-webkit-scrollbar {

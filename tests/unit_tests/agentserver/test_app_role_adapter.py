@@ -164,10 +164,12 @@ async def test_profile_survives_fork_and_stale_metadata_writes(monkeypatch, tmp_
     stale = dict(session_metadata.get_session_metadata("role-source"))
     stale.pop("execution_profile")
     stale.pop("role_instructions")
+    stale.pop("npc_session")
     session_metadata._enqueue_write("role-source", stale, sync_write=True)
     session_ops_service.fork_session(source_session_id="role-source", target_session_id="role-fork")
     restored = session_metadata.get_session_metadata("role-fork", cache_bust=True)
     assert restored["execution_profile"] == "app_role"
+    assert restored["npc_session"] is True
     assert restored["role_instructions"] == "Fisherman"
     assert restored["work_mode"] == "code"
     monkeypatch.setattr(role_module, "get_session_metadata", session_metadata.get_session_metadata)

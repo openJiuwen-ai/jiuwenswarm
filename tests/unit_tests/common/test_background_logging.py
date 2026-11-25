@@ -163,7 +163,10 @@ def test_reconfigured_logger_drains_before_closing_old_sink():
     target.handlers = []
     assert writer.stop(timeout=2)
     assert sink.messages == ["before reload"]
-    assert sink.was_closed
+    # 退役 handler 不再由后台线程 close()（与启动期 uvicorn/logging 重配的
+    # handler 关闭存在锁争用，曾致 NFS 上 25s 停顿）：排空由 writer 保证，
+    # 关闭交给引用释放后的 GC，因此这里只断言消息已落 sink
+    assert not sink.was_closed
 
 
 def test_shared_sink_is_kept_until_all_loggers_retire():
@@ -256,9 +259,9 @@ def test_failed_overflow_summary_and_close_are_reported(capsys):
         assert writer.stop(timeout=2)
     diagnostic = capsys.readouterr().err
     assert writer.dropped == 1
-    assert writer.sink_failures == {"emit": 1, "close": 1}
+    # 退役 handler 不再由后台线程 close()：close 失败无从发生，仅统计 emit 失败
+    assert writer.sink_failures == {"emit": 1, "close": 0}
     assert "operation=emit" in diagnostic
-    assert "operation=close" in diagnostic
     assert output.getvalue().splitlines() == ["first", "Worker log queue full: dropped=1", "second"]
 
 

@@ -13,7 +13,7 @@ import psutil
 import pytest
 
 from jiuwenswarm.common.utils import get_user_workspace_dir
-from jiuwenswarm.common import utils
+from jiuwenswarm.common import paths, utils
 from jiuwenswarm.server.ipc.client import connect_with_retry
 from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor import identity, worker_process
@@ -51,7 +51,7 @@ def legacy_workspace(monkeypatch):
     with tempfile.TemporaryDirectory(prefix="jw-old-") as directory:
         with monkeypatch.context() as patch:
             workspace = Path(directory)
-            patch.setattr(utils, "_workspace_base_dir", workspace)
+            patch.setattr(paths, "_workspace_base_dir", workspace)
             patch.setenv("JIUWENSWARM_DATA_DIR", str(workspace))
             yield workspace
 
@@ -110,7 +110,7 @@ async def test_unknown_legacy_worker_does_not_block_startup_and_requires_explici
 
 
 @pytest.mark.asyncio
-async def test_changed_installed_dependency_replaces_resident_worker(monkeypatch, tmp_path):
+async def test_changed_installed_dependency_replaces_resident_worker(monkeypatch, tmp_path, ipc_dir):
     dependencies = tmp_path / "dependencies"
     distribution = dependencies / "worker_probe-1.0.dist-info"
     distribution.mkdir(parents=True)
@@ -119,7 +119,7 @@ async def test_changed_installed_dependency_replaces_resident_worker(monkeypatch
     monkeypatch.syspath_prepend(str(dependencies))
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(dependencies), str(SOURCE)]))
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
-    path = str(tmp_path / "runtime.pipe")
+    path = str(ipc_dir / "runtime.pipe")
     first = RuntimeSupervisor(Readiness(), socket_path=path, stub=True, max_restarts=0)
     second = None
     owned = None
@@ -203,7 +203,7 @@ async def test_shared_data_instances_keep_independent_resident_workers(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_shutdown_ack_does_not_hide_a_surviving_worker_thread(monkeypatch, tmp_path):
+async def test_shutdown_ack_does_not_hide_a_surviving_worker_thread(monkeypatch, tmp_path, ipc_dir):
     shim = tmp_path / "blocked-exit"
     shim.mkdir()
     (shim / "sitecustomize.py").write_text(
@@ -220,7 +220,7 @@ async def test_shutdown_ack_does_not_hide_a_surviving_worker_thread(monkeypatch,
         "    stub._serve_one = serve\n", encoding="utf-8")
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(shim), str(SOURCE)]))
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
-    path = str(tmp_path / "runtime.pipe")
+    path = str(ipc_dir / "runtime.pipe")
     front = RuntimeSupervisor(Readiness(), stub=True, socket_path=path, max_restarts=0)
     owned = None
     try:
@@ -329,18 +329,18 @@ def test_legacy_posix_paths_include_historical_temp_fallback(monkeypatch, tmp_pa
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_INSTANCE", instance)
     workspace = tmp_path / ("deep-" * 25)
     temp = tmp_path / "os-temp"
-    monkeypatch.setattr(utils, "_workspace_base_dir", workspace)
+    monkeypatch.setattr(paths, "_workspace_base_dir", workspace)
     monkeypatch.setattr(identity, "data_scope", lambda: "a" * 64)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
     monkeypatch.setattr(worker_process, "os", SimpleNamespace(name="posix", environ=os.environ, getuid=lambda: 42))
-    paths = worker_process.legacy_socket_paths()
+    socket_paths = worker_process.legacy_socket_paths()
     prefix = "runtime-" + "a" * 16
-    assert str(temp / "jiuwenswarm-runtime-42" / (prefix + ".sock")) in paths
+    assert str(temp / "jiuwenswarm-runtime-42" / (prefix + ".sock")) in socket_paths
     token = worker_process._runtime_instance_token()
     if token:
-        assert str(temp / "jiuwenswarm-runtime-42" / (prefix + "-" + token + ".sock")) in paths
-    assert str(workspace / "run/runtime-worker.sock") in paths
-    assert len(paths) == len(set(paths))
+        assert str(temp / "jiuwenswarm-runtime-42" / (prefix + "-" + token + ".sock")) in socket_paths
+    assert str(workspace / "run/runtime-worker.sock") in socket_paths
+    assert len(socket_paths) == len(set(socket_paths))
     assert not temp.exists(), "Endpoint discovery must not create a directory"
 
 
@@ -366,7 +366,7 @@ async def test_instance_shutdown_loads_target_environment_without_touching_calle
     workers = []
     try:
         for workspace, label in [(legacy_workspace, "target"), (other, "other")]:
-            monkeypatch.setattr(utils, "_workspace_base_dir", workspace)
+            monkeypatch.setattr(paths, "_workspace_base_dir", workspace)
             monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(workspace))
             monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", label)
             monkeypatch.setenv("JIUWENSWARM_RUNTIME_INSTANCE", label)

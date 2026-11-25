@@ -125,6 +125,8 @@ async def prepare_session_execution(
     Members resolve the policy from the team database at every tool call, so
     an update committed here applies to new tool calls of a running team too.
     """
+    if requested is not None and not isinstance(requested, dict):
+        raise ValueError("Invalid execution settings")
     metadata = get_session_metadata(session_id) or {}
     if metadata.get("work_mode") != "code":
         if requested and requested.get("independent_git_identity"):

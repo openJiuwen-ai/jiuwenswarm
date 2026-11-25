@@ -1936,6 +1936,219 @@ async def test_consume_stream_with_query_launches_watcher_after_runtime_ready(mo
     ]
 
 
+@pytest.mark.anyio
+async def test_consume_stream_with_query_holds_input_for_completed_stream(monkeypatch):
+    """team.completed holds new input until the producer's cleanup finishes.
+
+    The leader is stopped once the team completes, while Core closes the
+    interact gate only after finalize; without the hold a follow-up is
+    delivered to the dead leader and surfaces the raw delivery error.
+    """
+    calls: list[str] = []
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            calls.append(f"clear:{session_id}")
+
+        @staticmethod
+        def clear_active_runtime(session_id: str) -> None:
+            calls.append(f"clear_active:{session_id}")
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None):
+            calls.append(f"pop:{session_id}")
+            return None
+
+        @staticmethod
+        def begin_request_stop(session_id: str) -> None:
+            calls.append(f"hold:{session_id}")
+
+        @staticmethod
+        def end_request_stop(session_id: str) -> None:
+            calls.append(f"release:{session_id}")
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return None
+
+        @staticmethod
+        def resolve_team_agent(session_id: str):
+            return None
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(payload={"event_type": "team.completed", "member_count": 1})
+
+    async def _fake_org_finalize(**kwargs):
+        calls.append("org_finalize")
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    monkeypatch.setattr(
+        team_helpers,
+        "parse_stream_chunk",
+        lambda chunk: {"event_type": "team.completed", "member_count": 1},
+    )
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(team_helpers, "sync_team_identity_metadata", lambda **kwargs: None)
+    monkeypatch.setattr(team_helpers, "_finalize_org_bound_team_after_idle", _fake_org_finalize)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-completed-hold",
+        SimpleNamespace(team_name="spec-team"),
+        "hello",
+    )
+
+    # The hold is taken when completion is announced (before the runtime
+    # markers clear) and released only after the producer popped the stream.
+    assert "hold:sess-completed-hold" in calls
+    assert calls.index("hold:sess-completed-hold") < calls.index("clear:sess-completed-hold")
+    assert calls.index("pop:sess-completed-hold") < calls.index("release:sess-completed-hold")
+    assert calls[-1] == "release:sess-completed-hold"
+
+
+@pytest.mark.anyio
+async def test_consume_stream_with_query_releases_completed_hold_when_cleanup_fails(monkeypatch):
+    """A cleanup exception must not leave the completed-stream gate hanging."""
+    calls: list[str] = []
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        async def release_current_round(session_id: str) -> bool:
+            calls.append("release_round")
+            raise RuntimeError("cleanup exploded")
+
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            calls.append(f"clear:{session_id}")
+
+        @staticmethod
+        def clear_active_runtime(session_id: str) -> None:
+            calls.append(f"clear_active:{session_id}")
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None):
+            calls.append(f"pop:{session_id}")
+            return None
+
+        @staticmethod
+        def begin_request_stop(session_id: str) -> None:
+            calls.append(f"hold:{session_id}")
+
+        @staticmethod
+        def end_request_stop(session_id: str) -> None:
+            calls.append(f"release:{session_id}")
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return None
+
+        @staticmethod
+        def resolve_team_agent(session_id: str):
+            return None
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(payload={"event_type": "team.completed", "member_count": 1})
+
+    async def _fake_org_finalize(**kwargs):
+        calls.append("org_finalize")
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    monkeypatch.setattr(
+        team_helpers,
+        "parse_stream_chunk",
+        lambda chunk: {"event_type": "team.completed", "member_count": 1},
+    )
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(team_helpers, "sync_team_identity_metadata", lambda **kwargs: None)
+    monkeypatch.setattr(team_helpers, "_finalize_org_bound_team_after_idle", _fake_org_finalize)
+
+    with pytest.raises(RuntimeError, match="cleanup exploded"):
+        await _TeamHelpersTestApi.consume_stream_with_query(
+            "web",
+            "sess-cleanup-fail",
+            SimpleNamespace(team_name="spec-team"),
+            "hello",
+        )
+
+    # The cleanup failure stays observable, and the registration drops plus
+    # the gate release still ran in the independent finally: stale
+    # registrations must not outlive the open gate, or the next message
+    # would be routed as a follow-up of the dead runtime.
+    assert "hold:sess-cleanup-fail" in calls
+    assert "clear:sess-cleanup-fail" in calls
+    assert "clear_active:sess-cleanup-fail" in calls
+    assert "pop:sess-cleanup-fail" in calls
+    assert calls[-1] == "release:sess-cleanup-fail"
+
+
+@pytest.mark.anyio
+async def test_consume_stream_with_query_idle_keeps_stream_resumable(monkeypatch):
+    """team.idle must not take the teardown hold.
+
+    An idle stream deliberately stays open and is woken by the next message;
+    a hold taken there would block the very message that should resume it.
+    """
+    calls: list[str] = []
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            calls.append(f"clear:{session_id}")
+
+        @staticmethod
+        def clear_active_runtime(session_id: str) -> None:
+            calls.append(f"clear_active:{session_id}")
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None):
+            calls.append(f"pop:{session_id}")
+            return None
+
+        @staticmethod
+        def begin_request_stop(session_id: str) -> None:
+            calls.append(f"hold:{session_id}")
+
+        @staticmethod
+        def end_request_stop(session_id: str) -> None:
+            calls.append(f"release:{session_id}")
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return None
+
+        @staticmethod
+        def resolve_team_agent(session_id: str):
+            return None
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(payload={"event_type": "team.idle", "member_count": 1})
+
+    async def _fake_org_finalize(**kwargs):
+        calls.append("org_finalize")
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    monkeypatch.setattr(
+        team_helpers,
+        "parse_stream_chunk",
+        lambda chunk: {"event_type": "team.idle", "member_count": 1},
+    )
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(team_helpers, "sync_team_identity_metadata", lambda **kwargs: None)
+    monkeypatch.setattr(team_helpers, "_finalize_org_bound_team_after_idle", _fake_org_finalize)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-idle-resumable",
+        SimpleNamespace(team_name="spec-team"),
+        "hello",
+    )
+
+    assert "hold:sess-idle-resumable" not in calls
+    assert "release:sess-idle-resumable" not in calls
+    assert "pop:sess-idle-resumable" in calls
+
+
 def test_sync_team_identity_metadata_persists_ready_team_for_any_activation(monkeypatch):
     updates: list[dict[str, object]] = []
 
@@ -4301,7 +4514,13 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
 
 
 @pytest.mark.anyio
-async def test_process_team_message_stream_silences_gate_closed_when_shutdown_race_times_out(monkeypatch):
+async def test_process_team_message_stream_surfaces_gate_closed_after_shutdown_race_timeout(monkeypatch):
+    """A gate_closed the drain guard could not resolve must surface as chat.error.
+
+    The old silent terminal completion recorded empty successes with no
+    answer for the user, so the rejection is now explicit and the stream
+    still terminates.
+    """
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def has_stream_task(session_id, *, generation: int | None = None) -> bool:
@@ -4359,12 +4578,332 @@ async def test_process_team_message_stream_silences_gate_closed_when_shutdown_ra
     ):
         chunks.append(chunk)
 
-    # gate_closed 静默处理：不报 chat.error，直接以 is_complete=True 结束流
-    assert chunks[-1].is_complete is True
-    assert not any(
-        chunk.payload and chunk.payload.get("event_type") == "chat.error"
+    # gate_closed is no longer silenced: the mapped error reaches the user
+    # and the stream still ends with a terminal completion chunk.
+    error_events = [
+        chunk.payload
         for chunk in chunks
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.error"
+    ]
+    assert error_events, "gate_closed must surface as chat.error"
+    assert error_events[0]["error"] == "Team is shutting down, please try again later"
+    assert chunks[-1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_deliver_followup_interact_waits_out_round_teardown(monkeypatch):
+    """A follow-up arriving in a teardown window waits instead of hammering.
+
+    Core keeps the interact gate open until finalize finishes while the old
+    leader is already stopped, so delivery attempts can only fail against a
+    dead harness. After the teardown releases the hold, the message must go
+    to the resume/new-round path without a single interact attempt.
+    """
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+    released = asyncio.Event()
+
+    async def fake_wait_for_stop(session_id: str) -> None:
+        assert session_id == "sess-team-drain"
+        await released.wait()
+
+    monkeypatch.setattr(manager, "is_request_stop_pending", lambda session_id: True)
+    monkeypatch.setattr(manager, "wait_for_request_stop", fake_wait_for_stop)
+    monkeypatch.setattr(manager, "is_runtime_active", lambda session_id: False)
+    monkeypatch.setattr(manager, "is_runtime_pending", lambda session_id: False)
+    monkeypatch.setattr(manager, "has_stream_task", lambda session_id, generation=None: True)
+
+    async def fail_interact(*args, **kwargs):
+        raise AssertionError("must not deliver while the round is draining")
+
+    monkeypatch.setattr(team_helpers, "_interact_with_team_context", fail_interact)
+
+    async def finish_teardown() -> None:
+        await asyncio.sleep(0.01)
+        monkeypatch.setattr(manager, "is_request_stop_pending", lambda session_id: False)
+        monkeypatch.setattr(manager, "has_stream_task", lambda session_id, generation=None: False)
+        released.set()
+
+    finisher = asyncio.create_task(finish_teardown())
+    try:
+        result = await team_helpers._deliver_followup_interact_across_boundary(
+            manager,
+            "sess-team-drain",
+            "next question",
+            poll_interval_sec=0.01,
+        )
+    finally:
+        released.set()
+        await asyncio.gather(finisher, return_exceptions=True)
+
+    assert result.success is False
+    assert result.first_request_ready is True
+
+
+@pytest.mark.anyio
+async def test_deliver_followup_interact_teardown_wait_times_out(monkeypatch):
+    """A teardown that outlives its budget surfaces as an explicit failure."""
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+
+    async def never_stop_waiting(session_id: str) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "is_request_stop_pending", lambda session_id: True)
+    monkeypatch.setattr(manager, "wait_for_request_stop", never_stop_waiting)
+    monkeypatch.setattr(manager, "is_runtime_active", lambda session_id: True)
+    monkeypatch.setattr(manager, "is_runtime_pending", lambda session_id: False)
+    monkeypatch.setattr(manager, "has_stream_task", lambda session_id, generation=None: True)
+    monkeypatch.setattr(team_helpers, "_TEAM_TEARDOWN_WAIT_TIMEOUT_SEC", 0.05)
+
+    async def fail_interact(*args, **kwargs):
+        raise AssertionError("must not deliver while the round is draining")
+
+    monkeypatch.setattr(team_helpers, "_interact_with_team_context", fail_interact)
+
+    result = await team_helpers._deliver_followup_interact_across_boundary(
+        manager,
+        "sess-team-drain-stuck",
+        "next question",
     )
+
+    assert result.success is False
+    assert result.reason == "gate_closed"
+    assert result.first_request_ready is False
+
+
+@pytest.mark.anyio
+async def test_deliver_followup_interact_waits_out_pause_tail_after_runtime_markers_clear(monkeypatch):
+    """A pause clears runtime markers before its drain and push finish.
+
+    The boundary delivery must wait on the still-pending pause hold instead
+    of returning first_request_ready=True on the presence check, or the
+    reclassified message would start a new round inside the pause tail.
+    """
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+    released = asyncio.Event()
+
+    async def fake_wait_for_stop(session_id: str) -> None:
+        await released.wait()
+
+    monkeypatch.setattr(manager, "is_request_stop_pending", lambda session_id: True)
+    monkeypatch.setattr(manager, "wait_for_request_stop", fake_wait_for_stop)
+    # The pause already cleared the runtime markers; only its hold remains.
+    monkeypatch.setattr(manager, "is_runtime_active", lambda session_id: False)
+    monkeypatch.setattr(manager, "is_runtime_pending", lambda session_id: False)
+    monkeypatch.setattr(manager, "has_stream_task", lambda session_id, generation=None: False)
+
+    async def fail_interact(*args, **kwargs):
+        raise AssertionError("the pause tail must not deliver to a dead leader")
+
+    monkeypatch.setattr(team_helpers, "_interact_with_team_context", fail_interact)
+
+    arrived = asyncio.Event()
+    proceed = asyncio.Event()
+
+    probe = asyncio.create_task(
+        team_helpers._deliver_followup_interact_across_boundary(
+            manager,
+            "sess-pause-tail",
+            "next question",
+        )
+    )
+
+    async def release_pause_tail() -> None:
+        # Give the probe a scheduling turn to settle into its wait (or to
+        # expose an early return), then park at the release point until the
+        # main test has made its assertion.
+        await asyncio.sleep(0.05)
+        arrived.set()
+        await proceed.wait()
+        monkeypatch.setattr(manager, "is_request_stop_pending", lambda session_id: False)
+        released.set()
+
+    releaser = asyncio.create_task(release_pause_tail())
+    try:
+        await asyncio.wait_for(arrived.wait(), timeout=2)
+        # Asserted in the main test so a failure actually fails the case:
+        # with the old presence-first order the probe is already done here.
+        assert not probe.done(), "boundary returned while the pause hold was still pending"
+        proceed.set()
+        result = await asyncio.wait_for(probe, timeout=2)
+    finally:
+        released.set()
+        proceed.set()
+        await asyncio.gather(releaser, return_exceptions=True)
+
+    assert result.success is False
+    assert result.first_request_ready is True
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_entry_teardown_wait_times_out(monkeypatch):
+    """Input blocked by a hanging teardown gets an explicit error, not a hang."""
+    monkeypatch.setattr(team_helpers, "_TEAM_TEARDOWN_WAIT_TIMEOUT_SEC", 0.05)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        async def wait_for_request_stop(session_id: str) -> None:
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = AgentRequest(
+        session_id="sess-team-entry-wait",
+        request_id="req-team-entry-wait",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team"},
+    )
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+        request,
+        {"query": "hi"},
+        object(),
+    ):
+        chunks.append(chunk)
+
+    error_events = [
+        chunk.payload
+        for chunk in chunks
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.error"
+    ]
+    assert error_events
+    assert error_events[0]["error"] == (
+        "Team is finishing a previous round, please try again in a moment"
+    )
+    assert chunks[-1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_rechecks_teardown_after_startup_lock(monkeypatch):
+    """A gate appearing while the message queues on the startup lock holds it.
+
+    The entry wait passes before a pause starts; without a recheck under the
+    lock the message would choose and activate a runtime inside the teardown.
+    """
+    class _LockGateManager(_InactiveTeamRuntimeManagerMixin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate_open = False
+            self.gate_entered = asyncio.Event()
+            self.gate_cleared = asyncio.Event()
+            self.spec_called = False
+            self.prepared = False
+            self.registered = False
+
+        @staticmethod
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
+            _ = session_id, generation
+            return False
+
+        @staticmethod
+        def is_session_initialized(session_id: str) -> bool:
+            _ = session_id
+            return False
+
+        def is_request_stop_pending(self, session_id: str) -> bool:
+            _ = session_id
+            return self.gate_open
+
+        async def wait_for_request_stop(self, session_id: str) -> None:
+            _ = session_id
+            if not self.gate_open:
+                return
+            self.gate_entered.set()
+            await self.gate_cleared.wait()
+
+        async def get_swarm_enriched_team_spec(self, **kwargs):
+            self.spec_called = True
+            return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
+
+        async def prepare_runtime_activation(self, session_id: str, team_name: str):
+            _ = session_id, team_name
+            self.prepared = True
+
+        def register_stream_task(self, session_id, task, *, generation: int | None = None) -> None:
+            _ = session_id, task, generation
+            self.registered = True
+
+        @staticmethod
+        def resolve_team_agent(session_id):
+            _ = session_id
+            return None
+
+        @staticmethod
+        def get_workflow_handler(session_id):
+            _ = session_id
+            return None
+
+    manager = _LockGateManager()
+    consumed: dict[str, Any] = {}
+
+    async def _fake_consume_stream_with_query(
+        channel_id: str | None,
+        session_id: str,
+        spec: object,
+        query: object,
+        **kwargs,
+    ) -> None:
+        _ = channel_id, session_id, kwargs
+        consumed["spec"] = spec
+        consumed["query"] = query
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+    monkeypatch.setattr(
+        team_helpers, "_consume_stream_with_query", _fake_consume_stream_with_query,
+    )
+    monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda session_id: 9)
+
+    request = AgentRequest(
+        session_id="sess-lock-recheck",
+        request_id="req-lock-recheck",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team"},
+    )
+
+    async def _collect_chunks():
+        collected = []
+        async for chunk in team_helpers.process_team_message_stream(
+            request,
+            {"query": "hi"},
+            object(),
+        ):
+            collected.append(chunk)
+        return collected
+
+    # Hold the startup lock so the message queues on it, then let a teardown
+    # gate appear while it waits: the reviewer's probe scenario.
+    lock = manager.get_startup_lock("sess-lock-recheck")
+    await lock.acquire()
+    collector = asyncio.create_task(_collect_chunks())
+    await asyncio.sleep(0.05)
+    assert manager.spec_called is False
+
+    manager.gate_open = True
+    lock.release()
+
+    await asyncio.wait_for(manager.gate_entered.wait(), timeout=2)
+    # Under the lock and with the gate pending, the flow must not have
+    # chosen a runtime yet.
+    assert manager.spec_called is False
+
+    manager.gate_open = False
+    manager.gate_cleared.set()
+
+    chunks = await asyncio.wait_for(collector, timeout=5)
+
+    assert manager.spec_called is True
+    assert manager.prepared is True
+    assert manager.registered is True
+    assert consumed["spec"] is not None
+    assert chunks[-1].is_complete is True
 
 
 @pytest.mark.anyio
@@ -9946,3 +10485,78 @@ def test_group_input_restores_persisted_type_without_per_message_type(monkeypatc
     request.params["type"] = "chat"
     with pytest.raises(ValueError, match="requires group_chat"):
         team_helpers._group_chat_input(request, "Hello")
+
+
+@pytest.mark.anyio
+async def test_leader_goal_blocked_ends_request_without_ending_resident_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broadcasted: list[dict] = []
+    terminal = asyncio.Event()
+    keep_open = asyncio.Event()
+
+    async def stream(
+        *, agent_team: Any, inputs: dict, session: Any, envs: dict,
+        stream_logger: Any, background_task_controller: Any,
+    ):
+        yield SimpleNamespace(
+            type="message", role=TeamRole.LEADER,
+            payload={"event_type": "team.goal.blocked", "reason": "attempt limit reached"},
+        )
+        await keep_open.wait()
+
+    class FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
+            pass
+
+    manager = FakeManager()
+    record = _broadcast_recorder(broadcasted, manager)
+
+    async def broadcast(channel_id: str, session_id: str, payload: dict) -> None:
+        await record(channel_id, session_id, payload)
+        if payload.get("reason") == "team.goal.blocked":
+            terminal.set()
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", stream)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel: manager)
+    monkeypatch.setattr(team_helpers, "_broadcast_event", broadcast)
+    task = asyncio.create_task(_TeamHelpersTestApi.consume_stream_with_query(
+        "web", "goal-blocked-session", SimpleNamespace(team_name="goal-team"), "ship it",
+    ))
+    try:
+        await asyncio.wait_for(terminal.wait(), timeout=2)
+        assert not task.done()
+        error = next(event for event in broadcasted if event.get("code") == "TEAM_GOAL_BLOCKED")
+        assert error["error"] == "attempt limit reached"
+        assert any(event.get("is_processing") is False for event in broadcasted)
+        assert not any(event["event_type"] == "team.completed" for event in broadcasted)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_public_group_ready_skips_enterprise_occupancy_and_quota_reconciliation(monkeypatch):
+    from jiuwenswarm.enterprise.team import member_limits
+
+    backend = SimpleNamespace(conversation_mode="group_chat")
+    leader = SimpleNamespace(team_backend=backend)
+    monkeypatch.setattr(team_helpers, "_current_pool_team_agent", AsyncMock(return_value=leader))
+    occupancy = Mock()
+    detach = Mock()
+    actor = AsyncMock()
+    monkeypatch.setattr(team_helpers, "_record_session_team_occupancy", occupancy)
+    monkeypatch.setattr(member_limits, "detach_teammate_limit_guard", detach)
+    monkeypatch.setattr("jiuwenswarm.infrastructure.db.team_store_actor.run_team_store", actor)
+    await team_helpers._apply_enterprise_runtime_ready_hooks(
+        channel_id="web", session_id="group", runtime_team_name="group-team", parsed={},
+    )
+    detach.assert_called_once_with(leader)
+    occupancy.assert_not_called()
+    actor.assert_not_awaited()

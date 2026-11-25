@@ -283,6 +283,7 @@ def filter_engine_result(
         reward_failure_causes=causes,
         evolution_judge=judges,
         artifact_improvement=result.artifact_improvement,
+        design_suggestion=result.design_suggestion,
         error=result.error,
         reward=result.reward,
     )
@@ -705,6 +706,7 @@ class DiagnosisService:
         record.reward_failure_causes = result.reward_failure_causes
         record.evolution_judge = result.evolution_judge
         record.artifact_improvement = result.artifact_improvement
+        record.design_suggestion = result.design_suggestion
         # An engine may report a terminal attribution failure while keeping
         # its partial results; the record stays completed but carries the error.
         record.error = result.error

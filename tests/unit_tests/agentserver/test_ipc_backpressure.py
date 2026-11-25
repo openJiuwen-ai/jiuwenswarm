@@ -798,7 +798,6 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
         async with _gateway(supervisor) as (url, gateway, attached):
             async with ws_connect(url) as client:
                 await asyncio.wait_for(attached.wait(), 2)
-                started = time.monotonic()
                 dispatch = asyncio.create_task(
                     supervisor.dispatch_parsed_request(
                         gateway["ws"], _request(1), gateway["lock"]
@@ -811,10 +810,14 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
                 assert first["probe_calls"] == first["probe_threads"] == 1
                 assert first["probe_daemon"]
 
-                # No business frames are emitted during this interval, so
-                # last_rx advancing beyond 25 seconds demonstrates heartbeats.
-                await asyncio.sleep(31)
-                assert supervisor._last_rx > started + 25
+                # No business frames follow shell_pending during this interval.
+                # Heartbeats follow IPC attach, so their phase is independent of
+                # dispatch. Verify progress in two windows longer than one tick.
+                last_rx = supervisor._last_rx
+                for window in (15, 16):
+                    await asyncio.sleep(window)
+                    assert supervisor._last_rx > last_rx
+                    last_rx = supervisor._last_rx
                 assert supervisor.worker_pid == pid and process.returncode is None
                 assert supervisor._restart_count == 0
                 assert supervisor._readiness.state is ReadinessState.AGENT_READY
@@ -1227,18 +1230,22 @@ async def test_event_loop_lag_dump_is_bounded_and_omits_queue_payload(
 ):
     monkeypatch.setattr(supervisor_module, "_WATCHDOG_INTERVAL", 0.01)
     monkeypatch.setattr(supervisor_module, "_HEARTBEAT_TIMEOUT", 0.05)
+    monkeypatch.setattr(supervisor_module, "_HEARTBEAT_INTERVAL", 0.05)
     supervisor = RuntimeSupervisor(Readiness(), forwarder=EventForwarder())
     supervisor._generation = 1
-    supervisor._last_rx = time.monotonic()
     supervisor._process = SimpleNamespace(stderr_path=tmp_path / "worker.stderr.log")
     supervisor._forward_queue = asyncio.Queue()
     await supervisor._forward_queue.put(
         {"payload": "DO_NOT_COPY_BUSINESS_PAYLOAD" * 10000}
     )
-    task = asyncio.create_task(supervisor._watchdog(1))
-    await asyncio.sleep(0.005)
-    time.sleep(0.1)  # A real short scheduler stall; no artificial last_rx offset.
-    await asyncio.wait_for(task, 1)
+    async with _pair() as (conn, _silent_peer, _server):
+        supervisor._conn = supervisor._validated_conn = conn
+        supervisor._peer_echoes_probe = True
+        supervisor._last_rx = time.monotonic()
+        task = asyncio.create_task(supervisor._watchdog(1))
+        await asyncio.sleep(0.005)
+        time.sleep(0.1)  # A real short scheduler stall; no artificial last_rx offset.
+        await asyncio.wait_for(task, 1)
     text = supervisor._last_dump_path.read_text(encoding="utf-8")
     snapshot = json.loads(text.splitlines()[0])
     assert snapshot["event_loop_lag_seconds"] >= 0.08
@@ -1248,7 +1255,7 @@ async def test_event_loop_lag_dump_is_bounded_and_omits_queue_payload(
     assert "ASYNCIO TASKS" in text and "THREAD STACKS" in text
     assert (
         text.index("THREAD STACKS")
-        < text.index("in dump_runtime_state")
+        < text.index("PYTHON STACK TRACE")
         < text.index("ASYNCIO TASKS")
     )
     assert "DO_NOT_COPY_BUSINESS_PAYLOAD" not in text

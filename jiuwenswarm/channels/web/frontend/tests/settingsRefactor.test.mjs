@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -316,9 +318,10 @@ test('registry definition preserves module order and fails invalid registrations
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
-    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule/,
+    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule,\s*appearanceModule,\s*systemPluginRecoveryModule/,
   );
   assert.doesNotMatch(definition, /securityModule/);
+  assert.doesNotMatch(definition, /extensionsModule/);
   for (const removedPath of [
     'src/features/settings/modules/security/SecuritySettings.tsx',
     'src/features/settings/modules/security/definition.ts',
@@ -1213,6 +1216,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'team_member_messaging_enabled',
       'team_member_subtasks_enabled',
       'team_code_todo_reminder_disabled',
+      'team_leader_goal_enabled',
       'progressive_tool_optimize',
     ].sort(),
   );
@@ -1247,6 +1251,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'task_asr_enabled',
     'task_full_duplex_enabled',
     'team_code_todo_reminder_disabled',
+    'team_leader_goal_enabled',
     'team_member_messaging_enabled',
     'team_member_subtasks_enabled',
     'team_organization_ui_enabled',
@@ -2074,7 +2079,7 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   assert.doesNotMatch(app, /ConfigPanel|BrowserPanel|ChannelsPanel|ExtensionsHubPanel/);
   assert.match(settingsChannelsModule, /import \{ SettingsChannelsPanel \} from '\.\/SettingsChannelsPanel'/);
   assert.doesNotMatch(settingsChannelsModule, /components\/ChannelsPanel/);
-  assert.match(settingsNavigation, /export type SettingsModuleTarget = 'general' \| 'models' \| 'agent'/);
+  assert.match(settingsNavigation, /export type SettingsModuleTarget =\s*(?:\|\s*)?'general'\s*\|\s*'models'\s*\|\s*'agent'/);
   assert.doesNotMatch(settingsNavigation, /'recommendation'/);
   assert.match(settingsNavigation, /SETTINGS_MODULE_NAVIGATION_EVENT = 'jiuwen:settings-module'/);
   assert.equal(existsSync(new URL('src/components/ConfigPanel/index.tsx', root)), false);

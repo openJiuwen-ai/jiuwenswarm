@@ -39,7 +39,7 @@ def make_handler(context, token, gateway_api_url=""):
         def translate_path(self, path):
             candidate = Path(super().translate_path(path)).resolve()
             root = Path(context["work_dir"]).resolve()
-            sensitive = {".env", ".git", ".jiuwenswarm", ".ssh"}
+            sensitive = {".env", ".git", ".jiuwenswarm", ".ssh", ".workswarm-app-release"}
             if not candidate.is_relative_to(root) or any(
                 part in sensitive or part.startswith(".env.")
                 for part in candidate.relative_to(root).parts

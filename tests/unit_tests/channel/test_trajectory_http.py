@@ -34,7 +34,19 @@ from agent_gateway.channel_manager.web.trajectory_http import (
 )
 
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
-from jiuwenswarm.common.schema.message import ReqMethod
+from e2a.message import ReqMethod
+from jiuwenswarm.common.schema.message import ReqMethod as HostReqMethod
+
+
+def _fetch_via_host(settings, reader):
+    from jiuwenswarm.server.trajectory.host import TrajectoryHost
+
+    host = TrajectoryHost(settings=settings, reader=reader)
+
+    async def fetch(method, params, user_id=None):
+        return await host.call(HostReqMethod(method.value), params, user_id=user_id)
+
+    return fetch
 
 
 def TrajectoryHttpService(settings=None, *, reader=None, metadata_loader=None, fetch=None):
@@ -45,18 +57,14 @@ def TrajectoryHttpService(settings=None, *, reader=None, metadata_loader=None, f
     validation in front of it.
     """
     if fetch is None:
-        from jiuwenswarm.server.trajectory.host import TrajectoryHost
-
-        fetch = TrajectoryHost(settings=settings, reader=reader).call
+        fetch = _fetch_via_host(settings, reader)
     return _GatewayTrajectoryHttpService(metadata_loader=metadata_loader, fetch=fetch)
 
 
 def attach_trajectory_routes(app, channel, *, settings=None, reader=None, metadata_loader=None, fetch=None):
     """Mount routes with the in-process host the HTTP tests already own."""
     if fetch is None:
-        from jiuwenswarm.server.trajectory.host import TrajectoryHost
-
-        fetch = TrajectoryHost(settings=settings, reader=reader).call
+        fetch = _fetch_via_host(settings, reader)
     return _attach_trajectory_routes(
         app,
         channel,
@@ -1483,10 +1491,12 @@ def test_web_proxy_preserves_canonical_outer_host_without_loopback(
     class _FakeResponse:
         status = 200
         reason = "OK"
+        _body = b'{"ok":true}'
 
-        @staticmethod
-        def read() -> bytes:
-            return b'{"ok":true}'
+        def read(self, amt: int | None = None) -> bytes:
+            # Behave like http.client.HTTPResponse: return the body once, then EOF.
+            body, self._body = self._body, b""
+            return body
 
         @staticmethod
         def getheaders() -> list[tuple[str, str]]:

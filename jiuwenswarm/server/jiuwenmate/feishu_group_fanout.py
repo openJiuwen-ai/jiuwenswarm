@@ -267,11 +267,12 @@ def create_default_persistent_group_fanout(
     from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
     from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
     from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
-    from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService, default_data_dir
+    from jiuwenswarm.common.paths import get_jiuwenmate_dir
+    from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
     from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
     from jiuwenswarm.server.jiuwenmate.conversation_resources import ConversationResources
 
-    root = data_dir if data_dir is not None else default_data_dir()
+    root = data_dir if data_dir is not None else get_jiuwenmate_dir()
     db_path = root / "agents.sqlite3"
     service = PersistentAgentService.create_default(root)
     sessions = ExecutionRepository(db_path)
@@ -885,7 +886,7 @@ def feishu_member_names(platform_chat_id: str, app_ids: Sequence[str]) -> dict[s
         return cached[1]
     names: dict[str, str] = {}
     try:
-        names = _query_feishu_members(platform_chat_id, requested_apps)
+        names = _query_feishu_members(platform_chat_id, requested_apps) or {}
     except Exception:
         logger.warning("[JiuwenMate] Feishu member name lookup failed")
     if names:
@@ -895,12 +896,21 @@ def feishu_member_names(platform_chat_id: str, app_ids: Sequence[str]) -> dict[s
     return names
 
 
-def _query_feishu_members(platform_chat_id: str, app_ids: Sequence[str]) -> dict[str, str]:
+def feishu_group_roster(platform_chat_id: str, app_id: str) -> dict[str, str] | None:
+    """Read one authorized app's complete roster. None means the API could not supply it."""
+    if not platform_chat_id.startswith("oc_") or not app_id:
+        return None
+    return _query_feishu_members(platform_chat_id, (app_id,), require_complete=True)
+
+
+def _query_feishu_members(
+    platform_chat_id: str, app_ids: Sequence[str], *, require_complete: bool = False,
+) -> dict[str, str] | None:
     try:
         import lark_oapi as lark
         from lark_oapi.api.im.v1 import GetChatMembersRequest
     except ImportError:
-        return {}
+        return None if require_complete else {}
     from jiuwenswarm.common.config import get_config
 
     config = get_config()
@@ -919,13 +929,16 @@ def _query_feishu_members(platform_chat_id: str, app_ids: Sequence[str]) -> dict
     for app_id in app_ids:
         secret = secrets.get(app_id)
         if secret is None:
+            if require_complete:
+                return None
             continue
         client = _MEMBER_CLIENTS.get(app_id)
         if client is None:
             client = lark.Client.builder().app_id(app_id).app_secret(secret).build()
             _MEMBER_CLIENTS[app_id] = client
         page_token = ""
-        while True:
+        seen_tokens: set[str] = set()
+        for _ in range(100):
             builder = (
                 GetChatMembersRequest.builder()
                 .chat_id(platform_chat_id)
@@ -935,16 +948,26 @@ def _query_feishu_members(platform_chat_id: str, app_ids: Sequence[str]) -> dict
             if page_token:
                 builder = builder.page_token(page_token)
             response = client.im.v1.chat_members.get(builder.build())
-            if not response.success():
+            if not response.success() or response.data is None:
+                if require_complete:
+                    return None
                 break
             for item in getattr(response.data, "items", None) or ():
                 member_id = str(getattr(item, "member_id", "") or "").strip()
                 member_name = str(getattr(item, "name", "") or "").strip()
                 if member_id and member_name:
                     names.setdefault(member_id, member_name)
+                elif require_complete:
+                    return None
             if not getattr(response.data, "has_more", False):
                 break
             page_token = str(getattr(response.data, "page_token", "") or "")
-            if not page_token:
+            if not page_token or page_token in seen_tokens:
+                if require_complete:
+                    return None
                 break
+            seen_tokens.add(page_token)
+        else:
+            if require_complete:
+                return None
     return names

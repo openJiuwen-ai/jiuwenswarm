@@ -7,12 +7,13 @@ import pytest
 from sqlalchemy import URL, insert, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from jiuwenswarm.channels.web.app_web import create_enterprise_app
 from jiuwenswarm.channels.web.enterprise_backend import Settings, _target, create_app
 from jiuwenswarm.channels.web.enterprise_catalog import Catalog, User, _matches_agent_rule
 
 
 def test_app_web_exports_enterprise_backend(monkeypatch):
+    from jiuwenswarm.channels.web.app_web import create_enterprise_app
+
     for name, value in {
         "JIUWENSWARM_EDITION": "enterprise",
         "USER_BACKEND_DB_USER": "fixture_reader",
@@ -26,12 +27,35 @@ def test_app_web_exports_enterprise_backend(monkeypatch):
         monkeypatch.setenv(name, value)
 
     app = create_enterprise_app()
-    paths = {route.path for route in app.routes}
+    # FastAPI >=0.165 keeps include_router results as _IncludedRouter (no .path);
+    # walk nested original_router.routes so both old and new layouts work.
+    paths: set[str] = set()
+    stack = list(app.routes)
+    while stack:
+        route = stack.pop()
+        path = getattr(route, "path", None)
+        if isinstance(path, str):
+            paths.add(path)
+        nested = getattr(route, "original_router", None)
+        if nested is not None:
+            stack.extend(nested.routes)
     assert {"/ready", "/api/v1/user-console/agent-contexts", "/{path:path}"} <= paths
+
+
+@pytest.mark.parametrize("edition", [None, "", "personal"])
+def test_direct_enterprise_backend_requires_enterprise_edition(monkeypatch, edition):
+    if edition is None:
+        monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    else:
+        monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+
+    with pytest.raises(RuntimeError, match="JIUWENSWARM_EDITION=enterprise"):
+        create_app()
 
 
 @pytest.mark.asyncio
 async def test_identity_proxy_keeps_browser_binding_cookies_separate(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     cookie_name = "__Host-identity_federation_browser"
     upstream_cookies = []
 

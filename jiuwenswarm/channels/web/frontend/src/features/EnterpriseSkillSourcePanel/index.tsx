@@ -37,7 +37,7 @@ type SkillCandidate = {
   version_id: string;
   name: string;
   display_name?: string;
-  summary?: string;
+  short_description?: string;
   version?: string;
   namespace?: string;
   owner_display_name?: string;
@@ -45,8 +45,7 @@ type SkillCandidate = {
   rating_count?: number;
   download_count?: number;
   updated_at?: string | number;
-  labels?: Array<{ name?: string } | string>;
-  downloadable?: boolean;
+  tags?: string[];
   accessible?: boolean;
 };
 
@@ -61,7 +60,6 @@ type UpdateStatus = {
   has_update: boolean;
   remote_status?: string;
   accessible?: boolean;
-  downloadable?: boolean;
 };
 
 interface EnterpriseSkillSourcePanelProps {
@@ -94,12 +92,6 @@ function normalizeUpdatedAt(value: SkillCandidate['updated_at']): string {
     return '';
   }
   return String(value).slice(0, 10);
-}
-
-function labelText(label: { name?: string } | string | undefined): string {
-  if (label == null) return '';
-  if (typeof label === 'string') return label;
-  return label.name || '';
 }
 
 /** 安装/更新中状态按产物唯一键判定：name 在 Hub 侧可重复或为空，直接用会让所有按钮一起转 */
@@ -374,7 +366,7 @@ export function EnterpriseSkillSourcePanel({
           success: boolean;
           error_code?: string;
           error_message?: string;
-          skill?: { name: string };
+          skill?: { name: string; display_name?: string };
         }>(
           'skills.source.install',
           withSession({
@@ -394,7 +386,9 @@ export function EnterpriseSkillSourcePanel({
           throw new Error(data.error_message || t('skills.source.errors.installFailed'));
         }
         const skillName = data.skill?.name || item.name;
-        showToast('success', t('skills.source.messages.installed', { name: skillName }));
+        showToast('success', t('skills.source.messages.installed', {
+          name: item.display_name || data.skill?.display_name || skillName,
+        }));
         await onInstalled?.(skillName);
         // 安装后刷新已装状态缓存，保证卡片徽章与下次挂载读取的缓存一致
         void loadUpdates(item.source_id || sourceId, true);
@@ -520,7 +514,8 @@ export function EnterpriseSkillSourcePanel({
   const renderCard = (item: SkillCandidate) => {
     const avatar = getSkillAvatar(item.name);
     const displayName = item.display_name || item.name;
-    const tags = (item.labels || []).map(labelText).filter(Boolean).slice(0, 4);
+    const tags = (item.tags || []).map((tag) => String(tag).trim()).filter(Boolean).slice(0, 4);
+    const description = item.short_description || t('skills.noDescription');
     const status = updateStatuses.get(sourceSkillIdentity(item, sourceId));
     return (
       <div
@@ -543,7 +538,7 @@ export function EnterpriseSkillSourcePanel({
               <span className="text-base font-semibold text-text-strong truncate">{displayName}</span>
               {item.namespace && <span className="shrink-0 text-xs text-text-muted">{item.namespace}</span>}
             </div>
-            <div className="text-sm text-text-muted mt-1 line-clamp-2">{item.summary || t('skills.noDescription')}</div>
+            <div className="text-sm text-text-muted mt-1 line-clamp-2">{description}</div>
             <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-xs text-text-muted">
               {item.owner_display_name && (
                 <span>

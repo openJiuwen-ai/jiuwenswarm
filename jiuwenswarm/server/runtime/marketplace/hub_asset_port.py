@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-HubAssetKind = Literal["agent_template", "agent_group", "plugin", "mcp"]
+HubAssetKind = Literal["agent_template", "agent_group", "plugin", "mcp", "system_plugin", "app"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,7 @@ class HubSearchRequest:
 class HubAssetQuery:
     kind: HubAssetKind
     asset_id: str
+    version: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,9 +82,19 @@ class HubAssetDetail:
     icon_uri: str
     tags: tuple[str, ...]
     package_name: str = ""
+    category_name: str = ""
+    preview_url: str = ""
     # Published package profile from the version endpoint; renders detail cards without
     # downloading the package archive.
     package_profile: dict[str, Any] | None = None
+    versions: tuple[str, ...] = ()
+    # App-only distribution metadata (absent for other kinds).
+    file_size: int | None = None
+    source_size: int | None = None
+    requires_project: bool | None = None
+    permissions: tuple[str, ...] = ()
+    has_server_script: bool | None = None
+    checksum_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +105,7 @@ class HubResolvedDownload:
     download_url: str
     checksum_sha256: str
     package_name: str = ""
+    file_size: int | None = None
 
 
 class HubAssetPort(Protocol):
@@ -115,3 +128,20 @@ def create_default_hub_asset_port() -> HubAssetPort:
     from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient
 
     return HubClient()
+
+
+def verify_package_hub_tls(kind: HubAssetKind) -> bool:
+    """Apply the AgentServer Hub TLS setting to experts and expert teams."""
+    if kind not in {"agent_template", "agent_group"}:
+        return True
+    return os.getenv("TEAM_SKILLS_HUB_VERIFY_SSL", "").strip().lower() not in {"false", "0", "no", "off"}
+
+
+def create_package_hub_port(kind: HubAssetKind) -> HubAssetPort:
+    """Build a Hub client with the TLS policy for the requested package kind."""
+    if verify_package_hub_tls(kind):
+        return create_default_hub_asset_port()
+
+    from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient
+
+    return HubClient(verify=False)

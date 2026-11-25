@@ -10,6 +10,7 @@
 import type { OfficeHost, Platform } from './appContract';
 import type { DocEditReview } from './docEditReview';
 import { type HostWriteQueue, type Looks, UserChanges } from './hostWriteQueue';
+import type { Selection } from './selectionLine';
 import type { ClientState } from './sessionFacade';
 import { quoted } from './stateText';
 import { headingLevel, markedLines, PARAGRAPH_FIELDS } from './wordParagraphs';
@@ -337,6 +338,16 @@ async function commentThreads(context: Word.RequestContext, comments: Word.Comme
     ]),
     '</untrusted_content>',
   ];
+}
+
+/** How many characters the user selected, white space aside, for the pane's selection line. */
+export function selectedText(run: WordRun): Promise<Selection> {
+  return run(async context => {
+    const range = context.document.getSelection();
+    range.load('text');
+    await context.sync();
+    return { kind: 'text', characters: [...range.text.replace(/\s/g, '')].length };
+  });
 }
 
 /** What the user selected: a cursor, a place outside the body, part of one paragraph, or several paragraphs. */

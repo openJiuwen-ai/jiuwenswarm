@@ -32,6 +32,8 @@ MoA configuration. A successful response contains `configured` and, when ready,
 AgentServer client is absent or not ready, the Gateway returns
 `SERVICE_UNAVAILABLE` instead of evaluating configuration in its own directory.
 
+AgentServer preserves the Gateway-injected top-level `traceparent` in request metadata across Worker IPC. A truthy top-level value takes precedence over a channel-context value; when the top-level value is absent, the channel-context value is preserved (compatibility with channel-context-only writers). The Worker binds a valid W3C parent context only in the request execution task and restores the previous context on completion, failure, or cancellation. Missing or invalid input keeps the existing SDK context behavior; tracing enablement and exporter settings retain their existing precedence.
+
 ---
 
 ## 2. Pitfall: two meanings of `method` (required reading)
@@ -72,6 +74,7 @@ The same field **`method`** means different things by origin. It is **not** two 
 | `session_id` | string / null | Session |
 | `message_id` | string / null | Platform or A2A message id; do not conflate with `request_id` |
 | `is_stream` | boolean | Streamed response or not |
+| `traceparent` | string / null | Gateway-injected W3C parent context; AgentServer normalizes it into request metadata. A truthy top-level value overrides a `channel_context` value; when absent, the channel value is preserved |
 
 ### 4.2 `provenance` (`E2AProvenance`)
 
@@ -104,6 +107,8 @@ Hand-built defaults use `source_protocol` = `e2a`. Legacy `binding` migrates to 
 | `expected_output_modes` | A2A `acceptedOutputModes` |
 
 At the Gateway-facing WebSocket ingress, AgentServer converts an explicitly supplied method to its own `ReqMethod`. Unknown or non-string methods receive a final error response with `payload.code` set to `METHOD_NOT_FOUND`. Internal requests without a method retain their existing path.
+
+`ReqMethod` is defined locally in `jiuwenswarm.common.schema.message` and re-exported by `common.schema.agent`; JiuwenSwarm no longer re-exports or extends the E2A request enum at runtime. Existing names and string values are unchanged. New AgentServer methods are maintained here without updating the protocol dependency solely for enum members. `Message` and `AgentRequest` retain the shared model fields with the local method type. Outbound requests use `jiuwenswarm.common.e2a.request_wire` to convert enum members to strings; inbound E2A and Worker IPC decode them into the local enum. Cross-repository communication does not depend on Python enum identity.
 
 **Common `params` keys** (extend as needed; names below cooperate with ACP bridging):
 
@@ -553,5 +558,9 @@ existing session usage snapshot. Readers continue to accept older records with
 ## Automatic recovery of session snapshots and model lists
 
 `session.get_metadata` queries runtime snapshots over the shared Worker IPC connection. If the send wait times out or connection retirement cancels the send, the metadata request still returns `runtime.recovery_pending=true`, with `recovery_reason` set to `snapshot_transport_timeout` or `snapshot_transport_cancelled`, respectively. Such responses preserve the persisted `is_processing` and `status` metadata; an unavailable snapshot does not imply an idle session. An observer timeout does not cancel the shared pipe write. Connection retirement remains responsible for cancelling and cleaning up the send task.
+
+A new chat sent while a replacement Worker is starting waits for its IPC handshake. If this wait expires, the request returns `RUNTIME_WARMING` before dispatch. A cold session can return `HISTORY_RESTORE_BUSY` when recovery capacity is exhausted or its queue deadline expires. Clients may retry after either error. A `HISTORY_RESTORE_LIMIT` during history migration indicates that a recovery budget was exceeded. Repeating the same request against unchanged history can reach the same limit.
+
+If history recovery rejects a Team chat before dispatch and no other Team work is active, the client receives `chat.processing_status` with `is_processing=false` and `is_complete=true` before the request error. The error carries the recovery code. If other Team work is active, the request returns the same error and the session keeps its processing state.
 
 While connected and active, the model settings page automatically retries `models.list` after `WORKER_CLOSED`, `WORKER_UNSTABLE`, `RUNTIME_WARMING`, `RUNTIME_FAILED`, or `SERVICE_UNAVAILABLE`: after 1, 2, and 4 seconds, then every 10 seconds. `RUNTIME_FAILED` may also represent a backend waiting for automatic recovery, so this code alone does not stop observation. Success refreshes the list, clears the temporary error, and enables the add button. Disconnecting or leaving the page clears the retry timer. This recovery flow requires no manual reload control.

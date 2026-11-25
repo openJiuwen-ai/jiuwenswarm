@@ -106,6 +106,32 @@ async def create(service, token="one", **params):
 
 
 @pytest.mark.asyncio
+async def test_colleague_create_and_add_retries_keep_the_original_request(service, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
+
+    colleague = SimpleNamespace(name="Authoritative name", description="Profile", enabled=True,
+                                avatar_url="", category="custom", is_default=False)
+    monkeypatch.setattr(PersistentAgentService, "create_default",
+                        lambda: SimpleNamespace(get_colleague=lambda *_: colleague))
+    first = {"kind": "colleague", "id": "one", "member_name": "assistant"}
+    group = await create(service, members=[dict(first)])
+    assert group["members"][0]["display_name"] == colleague.name
+    assert await create(service, members=[dict(first)]) == group
+    with pytest.raises(gs.GroupError, match="different group"):
+        await create(service, members=[{**first, "id": "different"}])
+
+    second = {"kind": "colleague", "id": "two", "member_name": "reviewer", "display_name": "Old"}
+    args = {"user_id": "owner", "channel_id": "web", "request_id": "add"}
+    response = await service.add_member(group["group_id"], {"member": dict(second)}, **args)
+    assert response["member"]["display_name"] == colleague.name
+    assert await service.add_member(group["group_id"], {"member": dict(second)}, **args) == response
+    persisted = gs.read_group(group["group_id"])
+    assert persisted["receipts"]["add"] == second
+    with pytest.raises(gs.GroupError, match="different member"):
+        await service.add_member(group["group_id"], {"member": {**second, "id": "different"}}, **args)
+
+
+@pytest.mark.asyncio
 async def test_create_list_update_and_owner_isolation(service):
     group = await create(service)
     assert not {"compiled", "user_id", "receipts"} & group.keys()
@@ -565,6 +591,7 @@ async def test_history_waits_for_live_backend_database_initialization(
 
     assert result == {
         "group_id": group["group_id"],
+        "auto_replies": {},
         "messages": [],
         "total": 0,
         "limit": 50,
@@ -1247,3 +1274,65 @@ async def test_delete_cleans_runs_kept_under_the_outer_team_home(service, monkey
     await service.delete(group["group_id"], user_id="owner", channel_id="web")
     assert remove.await_args.kwargs["team_name"] == "group-expert-one"
     assert not runs.exists()
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_defaults_and_settings_persist(service, monkeypatch):
+    from jiuwenswarm.server.runtime import model_routing_registry as registry
+
+    group = await create(service, members=[
+        {"kind": "agent_template", "id": "leader", "member_name": "writer"},
+        {"kind": "agent_group", "id": "team", "member_name": "lab"},
+    ])
+    group_id = group["group_id"]
+    assert group["auto_reply"] == {"enabled": True, "model_selection": None}
+    assert "reply_rules" not in group
+
+    async def update(**params):
+        return await service.update(group_id, params, user_id="owner", channel_id="web")
+
+    changed = await update(auto_reply={"enabled": False})
+    assert changed["auto_reply"] == {"enabled": False, "model_selection": None}
+    assert gs.read_group(group_id)["auto_reply"]["enabled"] is False
+
+    resolved = []
+    monkeypatch.setattr(registry.ModelSelectionResolver, "__init__", lambda self: None)
+    monkeypatch.setattr(registry.ModelSelectionResolver, "resolve", lambda self, selection: resolved.append(selection))
+    changed = await update(auto_reply={"model_selection": {"type": "model", "id": "small"}})
+    assert changed["auto_reply"] == {"enabled": False, "model_selection": {"type": "model", "id": "small"}}
+    assert resolved[0].id == "small"
+    changed = await update(auto_reply={"enabled": True, "model_selection": None})
+    assert changed["auto_reply"] == {"enabled": True, "model_selection": None}
+
+    def unresolved(self, selection):
+        raise ValueError("unknown model")
+
+    monkeypatch.setattr(registry.ModelSelectionResolver, "resolve", unresolved)
+    for params in (
+        {"reply_rules": {"lab": "mention"}},
+        {"auto_reply": {"enabled": "yes"}}, {"auto_reply": {"limit": 2}}, {"auto_reply": None},
+        {"auto_reply": {"model_selection": {"type": "model", "id": "missing"}}},
+    ):
+        with pytest.raises(gs.GroupError) as rejected:
+            await update(**params)
+        assert rejected.value.code == "BAD_REQUEST"
+    with pytest.raises(gs.GroupError, match="not found"):
+        await service.update(group_id, {"auto_reply": {"enabled": False}}, user_id="other", channel_id="web")
+    assert gs.read_group(group_id)["auto_reply"]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_groups_saved_before_auto_reply_judge_by_default(service):
+    group = await create(service, members=[{"kind": "agent_template", "id": "leader", "member_name": "writer"}])
+    path = gs.group_path(group["group_id"])
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state.pop("auto_reply", None)
+    # A per-member rule saved by an earlier build is ignored: one group switch covers everyone.
+    state["reply_rules"] = {"writer": "mention"}
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    restored = service.get(group["group_id"], user_id="owner", channel_id="web")
+    assert restored["auto_reply"] == {"enabled": True, "model_selection": None}
+    assert "reply_rules" not in restored
+    history = await service.history(group["group_id"], {}, user_id="owner", channel_id="web")
+    assert history["auto_replies"] == {}

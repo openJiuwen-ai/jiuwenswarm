@@ -1179,7 +1179,7 @@ export function ExternalCliAgentsSection({
         // the path block / install button during the probe would collapse and
         // regrow the card, shaking the whole page. Stale controls are disabled
         // below instead.
-        const installed = isInstalledStatus(result);
+        const installed = isInstalledStatus(result) && Boolean(custom || result?.reference_version?.trim());
         const installStatus = installStatuses?.[cliAgent];
         // This agent's own dependency install is running: only its card goes
         // busy, other agents' cards stay fully usable (installs are per-agent).
@@ -1610,8 +1610,7 @@ export function ExternalCliAgentsSection({
                     inline
                   />
                 ) : !installed && (!result || !detectingNow) ? (
-                  // One-click install entry: shown initially (no result yet)
-                  // and whenever a finished detect reports the agent missing.
+                  // Show one-click install before detection and when the CLI or SDK is missing.
                   // While a detect is in flight with a result on screen the
                   // banner hides, so a manual re-detect never flashes it.
                   // The toggle is disabled when not installed, so the user

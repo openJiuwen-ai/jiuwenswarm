@@ -353,6 +353,7 @@ export function DropdownMenuItem({
   onSelect,
   className,
   children,
+  testId,
   ...props
 }: {
   icon?: ReactNode;
@@ -361,6 +362,7 @@ export function DropdownMenuItem({
   onSelect?: () => void;
   className?: string;
   children: ReactNode;
+  testId?: string;
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children' | 'onSelect'>) {
   const { open, close } = useDropdownMenuContext('DropdownMenuItem');
 
@@ -370,6 +372,7 @@ export function DropdownMenuItem({
       type="button"
       role="menuitem"
       disabled={disabled}
+      data-testid={testId}
       className={`ui-dropdown-menu__item${danger ? ' ui-dropdown-menu__item--danger' : ''}${className ? ` ${className}` : ''}`}
       onClick={() => {
         // 出场动画期间节点仍挂载，逻辑上已关闭的菜单不再触发动作

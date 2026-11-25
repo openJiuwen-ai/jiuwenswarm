@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import type { ModelEntry } from '../../../types';
 
 export const SETTINGS_CONFIG_CHANGED_EVENT = 'jiuwen:settings-config-changed';
@@ -159,6 +161,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   ),
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
+  yamlField('rea_enabled', 'experimental', 'boolean', 'rea.enabled'),
   yamlField('rsi_enabled', 'experimental', 'boolean', 'rsi.enabled'),
   yamlField('cua_agent_enabled', 'experimental', 'boolean', 'react.subagents.cua_agent.enabled'),
   yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
@@ -166,6 +169,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   yamlField('trajectory_ui_diagnosis_enabled', 'experimental', 'boolean', 'trajectory_ui.diagnosis_enabled'),
   yamlField('team_organization_ui_enabled', 'experimental', 'boolean', 'experimental.team_organization_ui_enabled'),
   yamlField('comfyui_workflow_enabled', 'experimental', 'boolean', 'experimental.comfyui_workflow_enabled'),
+  yamlField('team_leader_goal_enabled', 'experimental', 'boolean', 'modes.team.jiuwen_team.leader.goal'),
   yamlField('team_scheduled_dispatch_enabled', 'experimental', 'boolean', 'modes.team.jiuwen_team.dispatch_mode'),
   yamlField(
     'team_task_verification_enabled',
@@ -248,7 +252,8 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
 export const SETTINGS_CONFIG_FIELD_BY_KEY = new Map(SETTINGS_CONFIG_FIELDS.map((field) => [field.key, field] as const));
 
 export const SETTINGS_OTHER_PERSISTENCE = [
-  { id: 'language', method: 'locale.set_conf', persistence: 'config.yaml', path: 'preferred_language' },
+  // 个人版：写 config.yaml；企业版：Gateway 写 user_preference[user_id]（不写 yaml）。
+  { id: 'language', method: 'locale.set_conf', persistence: 'config.yaml | gateway.user_preference', path: 'preferred_language' },
   { id: 'models', method: 'models.replace_all', persistence: 'config.yaml', path: 'models.defaults' },
   {
     id: 'browser',

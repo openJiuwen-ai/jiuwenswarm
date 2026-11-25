@@ -94,6 +94,8 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("mcp.register_custom", "POST", "/mcp/actions/register-custom"),
     ("mcp.delete_custom", "POST", "/mcp/actions/delete-custom"),
     ("mcp.save_credentials", "POST", "/mcp/actions/save-credentials"),
+    # Enterprise connector square needs source_id from providers before mcp.list.
+    ("mcp.sources.providers", "POST", "/mcp/actions/sources-providers"),
     ("command.sandbox", "POST", "/sessions/{session_id}/commands/sandbox"),
     ("command.btw", "POST", "/sessions/{session_id}/commands/btw"),
     ("command.add_dir", "POST", "/sessions/{session_id}/commands/add-dir"),
@@ -123,6 +125,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("team.snapshot", "GET", "/sessions/{session_id}/team/snapshot"),
     ("team.list", "GET", "/sessions/{session_id}/teams"),
     ("org.snapshot", "GET", "/sessions/{session_id}/organization/snapshot"),
+    ("org.expert_teams.add", "POST", "/sessions/{session_id}/organization/expert-teams"),
     ("a4p.config.get", "GET", "/a4p/config"),
     ("a4p.config.update", "PUT", "/a4p/config"),
     ("a4p.authorization.pending", "GET", "/a4p/authorization/pending"),
@@ -204,6 +207,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("plugins.uninstall", "DELETE", "/plugins/{name}"),
     ("plugins.enable", "POST", "/plugins/{name}/actions/enable"),
     ("plugins.disable", "POST", "/plugins/{name}/actions/disable"),
+    # 统一资产导入导出：包体经 /file-api/assets/upload-temp 上传、
+    # /file-api/download 短效链接下载，此处只登记控制面 RPC。
+    ("assets.export", "POST", "/assets/export"),
+    ("assets.import", "POST", "/assets/import"),
     ("schedule.check_config", "GET", "/schedule/config"),
     ("schedule.update_config", "PATCH", "/schedule/config"),
     ("schedule.list", "GET", "/schedule/tasks"),
@@ -371,9 +378,11 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     ``channel_context.ext`` 是白名单过滤后的请求级扩展字段，经内部
     ``X-Jiuwenswarm-Request-Ext`` 传输；该头不承担鉴权。
 
-    定时任务的推送真渠道 ``channel_context.targets``（= job.targets）经
-    ``X-Cron-Targets`` 透传；执行侧 ``X-Channel-Id`` 仍可能是 ``__cron__``。
-    Agent 重建为 ``metadata["targets"]``，供 send_file 等按真渠道开关。
+    定时任务字段与 WebSocket 路径对齐：WS 把整份 ``channel_context`` 当作
+    ``AgentRequest.metadata``；HTTP body 只有 ``params``，因此：
+    - ``channel_context.targets`` → ``X-Cron-Targets`` → ``metadata["targets"]``
+    - ``channel_context.cron`` → ``X-Cron-Meta`` → ``metadata["cron"]``
+    Agent 侧用同一套 ``metadata.get("cron")`` 识别无人值守执行（与个人版一致）。
 
     企业版另附 ``X-Jiuwenswarm-Expert-Packages``。值按这只 bot 的专家包模板展开，
     不用 ``channel_context`` 里客户端自带的字段。
@@ -424,6 +433,11 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     cron_targets = str(channel_context.get("targets") or "").strip()
     if cron_targets:
         headers["X-Cron-Targets"] = cron_targets
+    cron_meta = channel_context.get("cron")
+    if isinstance(cron_meta, dict) and cron_meta:
+        headers["X-Cron-Meta"] = json.dumps(
+            cron_meta, ensure_ascii=True, separators=(",", ":"),
+        )
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext
@@ -460,6 +474,11 @@ def method_has_http_handler(method: str) -> bool:
 # Gateway lifecycle_handlers 轮询用：全量 events / inventory，无 project_id。
 _PROJECT_LIFECYCLE_FEED_ROUTE: tuple[str, str] = ("POST", "/projects/actions/lifecycle")
 
+# team.list 目录态（TeamPanel）：params 无业务 session_id。会话选择器仍走
+# /sessions/{session_id}/teams（见 _ROUTE_ROWS / _lookup_route）。
+_TEAM_LIST_CATALOG_ROUTE: tuple[str, str] = ("GET", "/teams")
+_TEAM_LIST_SESSION_ROUTE: tuple[str, str] = ("GET", "/sessions/{session_id}/teams")
+
 
 def declared_http_routes() -> tuple[tuple[str, str, str], ...]:
     """返回实际要注册的 ``(方法名, 动词, 路径)``。没有处理函数的不出现。"""
@@ -468,6 +487,9 @@ def declared_http_routes() -> tuple[tuple[str, str, str], ...]:
     # 否则 Starlette 会把 ``actions`` 当成 project_id。
     if method_has_http_handler("project.lifecycle"):
         chosen[_PROJECT_LIFECYCLE_FEED_ROUTE] = "project.lifecycle"
+    # 目录态与会话态两条 URL 都要挂上；表里的 team.list 只保留会话路径。
+    if method_has_http_handler("team.list"):
+        chosen[_TEAM_LIST_CATALOG_ROUTE] = "team.list"
     for method, (verb, path) in REST_ROUTES.items():
         if not method_has_http_handler(method):
             continue
@@ -492,6 +514,10 @@ def _lookup_route(
         feed = params or {}
         if feed.get("events") or feed.get("inventory"):
             return _PROJECT_LIFECYCLE_FEED_ROUTE
+    # 业务 params 有 session_id → 会话选择器；否则目录态（勿用信封亲和号分路）。
+    if method == "team.list" and method_has_http_handler(method):
+        sid = str((params or {}).get("session_id") or "").strip()
+        return _TEAM_LIST_SESSION_ROUTE if sid else _TEAM_LIST_CATALOG_ROUTE
     found = REST_ROUTES.get(method)
     if found is not None and method_has_http_handler(method):
         return found[0], found[1]
@@ -564,7 +590,13 @@ def assemble_rest_request(envelope: E2AEnvelope, *, base_url: str) -> AssembledR
     if method in _METHODS_WITHOUT_PARAM_SESSION_ID:
         # 勿 setdefault 信封 session_id；并剥掉 params 里误带的客户端临时 id。
         values.pop("session_id", None)
-    elif envelope.session_id and not values.get("session_id"):
+    elif (
+        envelope.session_id
+        and not values.get("session_id")
+        and "{session_id}" in template
+    ):
+        # 仅当路径需要占位时才用信封回填。目录态 team.list（/teams）不得把
+        # shared_user_* / webhttp_* 亲和号写进 query，否则会误进会话分支。
         values["session_id"] = envelope.session_id
 
     filled, used = _fill_path(template, values)

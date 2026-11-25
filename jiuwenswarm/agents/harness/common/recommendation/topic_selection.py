@@ -34,7 +34,7 @@ PREFERENCE_PAIR_VERSION = "topic-starter-v6-preference-pair-v1"
 
 FIRST_SCREEN_CARD_TARGET = 4
 """Cards one screen shows at once."""
-GLOBAL_POOL_TARGET_SIZE = 7
+GLOBAL_POOL_TARGET_SIZE = 6
 """Cards a global round prepares: one screen, then the cards that replace opened or dismissed ones."""
 
 _GLOBAL_SCOPE = "global_new_chat"
@@ -212,7 +212,7 @@ class ListSearchConstraints:
 
     @property
     def target_size(self) -> int:
-        """D10: the global pool holds up to seven cards whatever the mix, a leading card included."""
+        """D10: the global pool holds up to six cards whatever the mix, a leading card included."""
 
         return (
             GLOBAL_POOL_TARGET_SIZE - self.leading_cards

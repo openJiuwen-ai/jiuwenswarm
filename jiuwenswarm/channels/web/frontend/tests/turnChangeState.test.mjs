@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFile } from 'node:fs/promises';
+
+// 从 zh 词典构造最小翻译函数：t('a.b.c') 沿嵌套对象取值，缺键回退键名。
+const zh = JSON.parse(await readFile(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
+const t = (key) => key.split('.').reduce((node, part) => (node && typeof node === 'object' ? node[part] : undefined) ?? key, zh);
 
 import {
   latestModifiedTurn,
@@ -51,10 +56,10 @@ test('falls back to the turn index when the backend returns no change set id', (
 
 test('localizes backend redo history errors', () => {
   const error = Object.assign(new Error('raw backend message'), { code: 'REDO_HISTORY_MISSING' });
-  assert.equal(turnChangeErrorMessage(error, 'redo'), '撤销记录不完整，无法重新应用修改');
+  assert.equal(turnChangeErrorMessage(error, 'redo', t), '撤销记录不完整，无法重新应用修改');
 });
 
 test('localizes diff history expired errors', () => {
   const error = Object.assign(new Error('raw backend message'), { code: 'DIFF_HISTORY_EXPIRED' });
-  assert.equal(turnChangeErrorMessage(error, 'discard'), '修改记录已过期，无法定位该轮修改，请刷新后重试');
+  assert.equal(turnChangeErrorMessage(error, 'discard', t), '修改记录已过期，无法定位该轮修改，请刷新后重试');
 });

@@ -16,10 +16,10 @@ import types
 import httpx
 import pytest
 
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
 from jiuwenswarm.common.request_identity import apply_routing_metadata
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.runtime_management_extension.invoke_ids import (
     apply_invoke_ids_to_envelope,
 )
@@ -28,11 +28,6 @@ from jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client i
 )
 from jiuwenswarm.extensions.runtime_management_extension.session_route_client import RouteResult
 from agent_gateway.enterprise.team.route import TeamRouteResolver
-
-
-@pytest.fixture(autouse=True)
-def _register_team_control_methods():
-    ensure_team_control_req_methods()
 from jiuwenswarm.enterprise.team.route_binding_store import InMemoryTeamRouteBindingStore
 
 

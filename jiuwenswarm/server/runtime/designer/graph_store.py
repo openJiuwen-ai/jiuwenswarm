@@ -23,6 +23,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     DesignerGraphValidationError,
     normalize_execution_graph,
     normalize_execution_run,
+    apply_incoming_layouts,
     preserve_expanded_shot_nodes,
     preserve_nodes_added_since,
     preserve_node_output_refs,
@@ -37,7 +38,9 @@ _STORE_LOCK = threading.Lock()
 
 
 def _designer_root() -> Path:
-    root = get_agent_root_dir() / "designer"
+    from jiuwenswarm.common.paths import get_designer_dir
+
+    root = get_designer_dir()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -118,7 +121,9 @@ class DesignerGraphStore:
     """File-backed store for Designer graphs and execution runs."""
 
     @staticmethod
-    def save_graph(graph: DesignerExecutionGraph) -> DesignerExecutionGraph:
+    def save_graph(
+        graph: DesignerExecutionGraph, *, layout_only: bool = False
+    ) -> DesignerExecutionGraph:
         normalized = normalize_execution_graph(graph)
         path = _record_path(_graphs_dir(), normalized["graph_id"])
         if path is None:
@@ -127,14 +132,17 @@ class DesignerGraphStore:
             if path.is_file():
                 try:
                     existing = normalize_execution_graph(_read_json(path))
-                    normalized = preserve_expanded_shot_nodes(normalized, existing)
-                    normalized = preserve_nodes_added_since(normalized, existing)
-                    normalized = preserve_node_output_refs(normalized, existing)
-                    from jiuwenswarm.server.runtime.designer.user_references import (
-                        reapply_user_reference_routes,
-                    )
+                    if layout_only:
+                        normalized = apply_incoming_layouts(normalized, existing)
+                    else:
+                        normalized = preserve_expanded_shot_nodes(normalized, existing)
+                        normalized = preserve_nodes_added_since(normalized, existing)
+                        normalized = preserve_node_output_refs(normalized, existing)
+                        from jiuwenswarm.server.runtime.designer.user_references import (
+                            reapply_user_reference_routes,
+                        )
 
-                    normalized = reapply_user_reference_routes(normalized, existing) or normalized
+                        normalized = reapply_user_reference_routes(normalized, existing) or normalized
                 except (ValueError, OSError):
                     pass
             normalized["updated_at"] = utc_now_ms()

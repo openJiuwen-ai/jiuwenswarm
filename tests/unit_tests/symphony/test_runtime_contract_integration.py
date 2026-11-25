@@ -44,19 +44,19 @@ class LifecycleModel:
 
 
 @pytest.mark.asyncio
-async def test_background_graph_build_rejects_multiple_sources_before_writing_state(monkeypatch, tmp_path):
+async def test_background_graph_build_rejects_multiple_skill_sources_before_writing_state(monkeypatch, tmp_path):
     artifact_root = tmp_path / "runtime"
     config = load_symphony_config({"symphony": {
         "capability": {"sources": [
             {"type": "skill", "root": str(tmp_path / "skills")},
-            {"type": "expert", "root": str(tmp_path / "experts")},
+            {"type": "skill", "root": str(tmp_path / "more-skills")},
         ]},
         "storage": {"artifact_root": str(artifact_root)},
         "orchestration": {"enabled": True},
     }})
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
     service = SwarmSymphonyService()
-    with pytest.raises(ValueError, match=r"exactly one capability\.sources entry"):
+    with pytest.raises(ValueError, match="exactly one skill capability source"):
         await service.start_refresh_graph()
     assert not artifact_root.exists()
 
@@ -100,7 +100,10 @@ symphony:
     config = load_symphony_config(raw)
     default_model, session_model = LifecycleModel("build-model"), LifecycleModel("session-model")
     default_llm, session_llm = LLMConfig(model="build-model"), LLMConfig(model="session-model")
-    resolve_model = lambda llm, **_kwargs: session_model if llm.model == "session-model" else default_model
+
+    def resolve_model(llm, **_kwargs):
+        return session_model if llm.model == "session-model" else default_model
+
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: raw)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model", lambda: default_llm)
@@ -122,11 +125,11 @@ symphony:
         assert toolkit.index_enabled
         assert toolkit.candidate_budget_tokens == 10
         assert {record.worker_id for record in toolkit.current_records()} == {"extract", "summarize"}
-        found = await toolkit.skill_index(operation="search", query="documents")
+        found = await toolkit.runtime.retrieval.search(operation="search", query="documents")
         assert "extract" in str(found) or "summarize" in str(found)
         calls_before_plan = len(default_model.calls)
         planned = await service.plan("Extract and summarize the document", candidate_skill_ids=["extract", "summarize"],
-                                     llm_config=session_llm)
+                                     capability_type="skill", llm_config=session_llm)
         assert planned["success"]
         assert planned["planned_graph"]["graph_snapshot"]["static_revision"]
         assert set(planned["planned_graph"]["graph"]["nodes"]) == {"extract", "summarize"}

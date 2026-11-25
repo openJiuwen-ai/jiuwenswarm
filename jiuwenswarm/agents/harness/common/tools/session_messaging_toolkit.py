@@ -28,6 +28,15 @@ from jiuwenswarm.server.runtime.session.session_message_service import (
 
 logger = logging.getLogger(__name__)
 
+# ``pending_context`` raises SessionMessagingError only from its session
+# admission checks. Those are design-level denials (unsupported/deleted
+# session) and are expected on the per-model-call refresh path; any other code
+# is unexpected and must stay observable.
+_EXPECTED_QUEUE_CONTEXT_DENIALS = frozenset({
+    "NOT_FOUND_OR_FORBIDDEN",
+    "INVALID_ARGUMENT",
+})
+
 
 @dataclass(slots=True)
 class SessionMessagingRoute:
@@ -209,7 +218,25 @@ class SessionMessagingRouteRail(DeepAgentRail):
             return
         try:
             state = await self._service.pending_context(route.source_for_list())
-        except (SessionMessagingError, OSError, sqlite3.Error):
+        except SessionMessagingError as exc:
+            if exc.code in _EXPECTED_QUEUE_CONTEXT_DENIALS:
+                # 服务端设计内拒绝（会话类型不支持跨会话消息、目标已删除）：正常
+                # 现象，逐次模型调用告警只会淹没日志，也不应注入误导快照。跳过本段
+                # 提示；服务端拒绝语义保持不变（JW-69）。带上源会话便于在删除
+                # 竞态下用 debug 日志定位。
+                logger.debug(
+                    "Skipping cross-Session queue context for %s: %s (%s)",
+                    route.session_id,
+                    exc,
+                    exc.code,
+                )
+                return
+            # 未预期错误码：保留 WARNING + traceback 与降级快照，不静默吞掉。
+            logger.warning(
+                "Could not refresh cross-Session queue context", exc_info=True
+            )
+            state = {"state_unavailable": True}
+        except (OSError, sqlite3.Error):
             logger.warning("Could not refresh cross-Session queue context", exc_info=True)
             state = {"state_unavailable": True}
         content = (

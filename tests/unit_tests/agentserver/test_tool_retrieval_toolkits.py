@@ -79,6 +79,7 @@ def test_static_category_table_shape() -> None:
     assert "video_understanding" in by_path["video-understanding"].tools
     assert "audio_metadata" in by_path["audio-processing"].tools
     assert "generate_visual" in by_path["image-generation"].tools
+    assert "diff_files" in by_path["file-diff"].tools
     assert "check_video_status" in by_path["video-generation"].tools
     assert "coding_memory_write" in by_path["coding-memory"].tools
     assert "enter_worktree" in by_path["worktree"].tools
@@ -100,7 +101,7 @@ def test_tool_search_card_is_registered_with_tool_search_name() -> None:
     tools = toolkit.get_tools()
 
     assert [tool.card.name for tool in tools] == ["tool_search"]
-    # Mirrors the skill_index card contract: same parameter set and limits,
+    # Mirrors the capability_search card contract: same parameter set and limits,
     # reworded for tools (call_goal is NOT in the card — stream_event_rail
     # injects it uniformly into the model-facing ToolInfo; the singular
     # string ``tool`` drives the schema-read phase). ``keyword`` (BM25

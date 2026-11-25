@@ -35,9 +35,11 @@ syncs the project dependencies, neither of which exists in a package install.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import platform
 import shutil
@@ -84,6 +86,9 @@ _SPAWN_SETTLE_SECONDS = 2.0
 
 # Default grace period given to the background service on stop.
 DEFAULT_STOP_TIMEOUT = 15.0
+
+# Cover the Worker's 30-second cleanup budget plus IPC and process exit observation.
+DEFAULT_WORKER_STOP_TIMEOUT = 35.0
 
 # Marker that start_services._print_port_banner puts in its title line. The
 # banner is the only place the *resolved* ports appear (they shift when the
@@ -831,7 +836,9 @@ def _stop_process_tree(
     return not _process_group_alive(pgid)
 
 
-def _stop_resident_worker(timeout: float = DEFAULT_STOP_TIMEOUT, *, legacy_worker_pid: int | None = None) -> bool:
+def _stop_resident_worker(
+    timeout: float = DEFAULT_WORKER_STOP_TIMEOUT, *, legacy_worker_pid: int | None = None,
+) -> bool:
     """Shut down the resident Runtime Worker left behind by the service.
 
     The Worker is spawned in its own session so it outlives Front restarts,
@@ -841,6 +848,7 @@ def _stop_resident_worker(timeout: float = DEFAULT_STOP_TIMEOUT, *, legacy_worke
 
     Args:
         timeout: Seconds to wait for a graceful exit before force-killing.
+        legacy_worker_pid: Explicitly selected old Worker whose installation was verified.
 
     Returns:
         True when this deployment's Worker shutdown is complete.
@@ -856,19 +864,31 @@ def _stop_resident_worker(timeout: float = DEFAULT_STOP_TIMEOUT, *, legacy_worke
     return result.get("ok") is True
 
 
-def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT, *, legacy_worker_pid: int | None = None) -> int:
+def stop_debug_service(
+    timeout: float | None = None,
+    *,
+    worker_timeout: float | None = None,
+    legacy_worker_pid: int | None = None,
+) -> int:
     """Stop the background service recorded by ``jiuwenswarm-start debug``.
 
     Args:
-        timeout: Seconds to wait for a graceful shutdown before giving up.
+        timeout: Explicit budget for each shutdown phase. When omitted, Front and
+            Worker use their respective defaults of 15 and 35 seconds.
+        worker_timeout: Override only the Worker budget, including an explicit timeout.
+        legacy_worker_pid: Explicitly selected old Worker whose installation was verified.
 
     Returns:
         Exit code: 0 when nothing is left running, 1 on failure.
     """
+    front_timeout = DEFAULT_STOP_TIMEOUT if timeout is None else timeout
+    if worker_timeout is None:
+        worker_timeout = DEFAULT_WORKER_STOP_TIMEOUT if timeout is None else timeout
+
     def stop_worker() -> bool:
         if legacy_worker_pid is not None:
-            return _stop_resident_worker(timeout=timeout, legacy_worker_pid=legacy_worker_pid)
-        return _stop_resident_worker(timeout=timeout)
+            return _stop_resident_worker(timeout=worker_timeout, legacy_worker_pid=legacy_worker_pid)
+        return _stop_resident_worker(timeout=worker_timeout)
 
     state = read_debug_state()
     if state is None:
@@ -893,7 +913,7 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT, *, legacy_worker_p
         return 0
 
     logging.info(f"[debug] Stopping debug service (PID={state.pid})...")
-    stopped = _stop_process_tree(state.pid, timeout=timeout)
+    stopped = _stop_process_tree(state.pid, timeout=front_timeout)
     if not stopped or is_process_alive(state.pid):
         logging.info(f"[debug] ERROR: failed to stop debug service (PID={state.pid}).")
         logging.info("[debug] Kill it manually, then rerun 'jiuwenswarm-stop'.")
@@ -909,17 +929,15 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT, *, legacy_worker_p
     return 0
 
 
-def _parse_stop_options(argv: list[str] | None = None):
+def _parse_stop_options(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse ``jiuwenswarm-stop`` arguments.
 
     Args:
         argv: Argument list to parse, defaults to ``sys.argv[1:]``.
 
     Returns:
-        The shutdown timeout in seconds.
+        Parsed phase budgets and the optional legacy Worker PID.
     """
-    import argparse
-
     parser = argparse.ArgumentParser(
         prog="jiuwenswarm-stop",
         description=(
@@ -930,13 +948,27 @@ def _parse_stop_options(argv: list[str] | None = None):
     parser.add_argument(
         "--timeout",
         type=float,
-        default=DEFAULT_STOP_TIMEOUT,
+        default=None,
         metavar="<seconds>",
-        help=f"Seconds to wait for graceful shutdown (default: {DEFAULT_STOP_TIMEOUT}).",
+        help=(
+            "Seconds allowed for each shutdown phase. By default, Front gets "
+            f"{DEFAULT_STOP_TIMEOUT}s and Worker gets {DEFAULT_WORKER_STOP_TIMEOUT}s."
+        ),
+    )
+    parser.add_argument(
+        "--worker-timeout",
+        type=float,
+        default=None,
+        metavar="<seconds>",
+        help="Override the Worker shutdown budget independently of --timeout.",
     )
     parser.add_argument("--legacy-worker-pid", type=int,
         help="Stop this specific legacy Python Worker after verifying its installation")
     args = parser.parse_args(argv)
+    for name in ("timeout", "worker_timeout"):
+        value = getattr(args, name)
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            parser.error(f"--{name.replace('_', '-')} must be a positive finite number")
     if args.legacy_worker_pid is not None and args.legacy_worker_pid <= 0:
         parser.error("--legacy-worker-pid must be positive")
     return args
@@ -944,7 +976,8 @@ def _parse_stop_options(argv: list[str] | None = None):
 
 def _parse_stop_args(argv: list[str] | None = None) -> float:
     """Keep the timeout parser compatible with existing callers."""
-    return _parse_stop_options(argv).timeout
+    timeout = _parse_stop_options(argv).timeout
+    return DEFAULT_STOP_TIMEOUT if timeout is None else timeout
 
 
 def main() -> None:
@@ -955,9 +988,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
 
     args = _parse_stop_options()
-    if args.legacy_worker_pid is not None:
-        raise SystemExit(stop_debug_service(args.timeout, legacy_worker_pid=args.legacy_worker_pid))
-    raise SystemExit(stop_debug_service(args.timeout))
+    raise SystemExit(stop_debug_service(
+        args.timeout,
+        worker_timeout=args.worker_timeout,
+        legacy_worker_pid=args.legacy_worker_pid,
+    ))
 
 
 if __name__ == "__main__":

@@ -19,6 +19,8 @@
 | [agent-creator](capabilities/agent-creator/SKILL.md) | 创建、验证与注册 Agent 模板 |
 | [agent-group-creator](capabilities/agent-group-creator/SKILL.md) | 创建与注册专家团包 |
 | [plugin-creator](capabilities/plugin-creator/SKILL.md) | 插件能力扩展包开发 |
+| [jiuwen-system-plugin-dev](capabilities/jiuwen-system-plugin-dev/SKILL.md) | 系统插件开发、修改、测试、打包及用户授权后的安装，复用已有事件与 Ops |
+| [deepseek-harness-plugin-converter](capabilities/deepseek-harness-plugin-converter/SKILL.md) | 查找并理解 DeepSeek Harness 插件源码，转换为 JiuwenSwarm 系统插件 |
 
 ## 应用与环境
 

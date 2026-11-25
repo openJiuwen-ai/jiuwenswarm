@@ -63,6 +63,25 @@ def test_default_transport_uses_configured_swarmskills_service(
     transport = HttpHubTransport()
 
     assert transport.base_url == "https://swarmskills.openjiuwen.com"
+    assert transport.verify is True
+
+
+def test_transport_and_client_accept_explicit_verify_flag() -> None:
+    transport = HttpHubTransport(
+        base_url="https://hub.example.test",
+        verify=False,
+    )
+    assert transport.verify is False
+
+    client = HubClient(base_url="https://hub.example.test", verify=False)
+    assert isinstance(client.transport, HttpHubTransport)
+    assert client.transport.verify is False
+
+
+def test_hub_client_default_verify_leaves_other_callers_unchanged() -> None:
+    client = HubClient(base_url="https://hub.example.test")
+    assert isinstance(client.transport, HttpHubTransport)
+    assert client.transport.verify is True
 
 
 @pytest.mark.parametrize(
@@ -574,3 +593,33 @@ async def test_asset_port_download_rejects_conflicting_types() -> None:
                 kind="agent_template", asset_id="conflicting", version="1.0.0"
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_asset_port_query_honours_requested_version() -> None:
+    item_payload = _catalog_payload()
+    item_payload["items"][0].update(
+        {
+            "asset_type": "system-plugin",
+            "plugin_type": "system-plugin",
+            "all_versions": ["1.0.0", "1.1.0", "1.2.3"],
+        }
+    )
+    version_payload = {
+        "asset_id": "sales-expert",
+        "asset_type": "system-plugin",
+        "plugin_type": "system-plugin",
+        "version": "1.0.0",
+        "name": "sales-expert",
+        "display_name": "销售专家",
+    }
+    transport = RecordingTransport([item_payload, version_payload])
+    client = HubClient(transport=transport)
+
+    result = await client.query_asset(
+        HubAssetQuery(kind="system_plugin", asset_id="sales-expert", version="1.0.0")
+    )
+
+    assert result.version == "1.0.0"
+    assert result.versions == ("1.0.0", "1.1.0", "1.2.3")
+    assert transport.requests[1][0] == "/api/v1/plugins/sales-expert/versions/1.0.0"

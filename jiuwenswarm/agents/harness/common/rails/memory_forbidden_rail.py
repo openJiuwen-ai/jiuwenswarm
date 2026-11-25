@@ -29,7 +29,11 @@ _MEMORY_WRITE_TOOLS = frozenset(
         "write_memory",
         "edit_memory",
         "coding_memory_write",
+        "agent_memory_coding_memory_write",
+        "agent_memory_coding_memory_edit",
         "coding_memory_edit",
+        "team_memory_write",
+        "team_memory_edit",
         "experience_learn",
     }
 )

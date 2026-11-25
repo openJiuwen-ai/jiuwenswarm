@@ -13,7 +13,7 @@ import yaml
 
 pytestmark = [pytest.mark.system, pytest.mark.integration, pytest.mark.asyncio]
 ROOT = Path(__file__).resolve().parents[2]
-OBSERVATIONS = {"tool_search", "skill_index", "list_skill", "get_current_goal", "recall_compressed_context"}
+OBSERVATIONS = {"tool_search", "capability_search", "list_skill", "get_current_goal", "recall_compressed_context"}
 
 
 def _jsonl(path):
@@ -52,7 +52,7 @@ class _LiveRun:
             "---\nname: e2e-observation-probe\ndescription: Local readonly observation acceptance fixture.\n---\n"
             "Synthetic skill used to verify the real installed-skill catalogue.\n"
         )
-        self.tools = sorted((OBSERVATIONS - {"list_skill" if retrieval else "skill_index"}) | {"tool_call", "write_file"})
+        self.tools = sorted((OBSERVATIONS - {"list_skill" if retrieval else "capability_search"}) | {"tool_call", "write_file"})
         self.client = Client(
             [sys.executable, "-B", "-m", "jiuwenswarm.channels.process_cli.main"], cwd=str(ROOT),
             env={"JIUWENSWARM_DATA_DIR": str(root), "JIUWENSWARM_CONFIG_DIR": str(self.config_dir)},
@@ -93,7 +93,7 @@ class _LiveRun:
         if persistent.exists():
             return _jsonl(persistent)
         rows = []
-        for path in sorted((self.root / "infra/logs/process_cli").glob("*.log")):
+        for path in sorted((self.root / "logs/process_cli").glob("*.log")):
             for line in path.read_text().splitlines():
                 if "permission_audit " in line:
                     rows.append(json.loads(line.split("permission_audit ", 1)[1]))
@@ -188,7 +188,7 @@ async def test_live_each_observation(live, mode, name):
     else:
         args = {
             "tool_search": {"query": "get_current_goal"},
-            "skill_index": {"operation": "search", "query": ["e2e-observation-probe"]},
+            "capability_search": {"type": ["skill"], "operation": "search", "query": ["e2e-observation-probe"]},
             "list_skill": {"query": "https://example.invalid/local-probe; Stop-Process -Force"},
             "get_current_goal": {},
         }[name]
@@ -201,7 +201,7 @@ async def test_live_each_observation(live, mode, name):
     assert all(item.get("success") is not False and not item.get("is_error") for item in results), results
     if name == "recall_compressed_context":
         assert "READONLY_ARCHIVE_SENTINEL_5364" in json.dumps(results), results
-    elif name in {"skill_index", "list_skill"}:
+    elif name in {"capability_search", "list_skill"}:
         assert "e2e-observation-probe" in json.dumps(results), results
     elif name == "get_current_goal":
         assert all(item.get("raw_output", {}).get("has_goal") is False for item in results), results
@@ -215,7 +215,7 @@ async def test_live_explicit_denial_is_preserved(live, name, source):
     run = live(retrieval=name != "list_skill", progressive=name == "tool_search")
     args = {
         "tool_search": {"query": "get_current_goal"},
-        "skill_index": {"operation": "list"}, "list_skill": {},
+        "capability_search": {"type": ["skill"], "operation": "list"}, "list_skill": {},
         "get_current_goal": {}, "recall_compressed_context": {"query": "synthetic archive"},
     }[name]
     if source == "installed":

@@ -125,6 +125,10 @@ export interface Message {
   isTimestampPending?: boolean;
   /** True until runtime.accepted confirms the server received this optimistic input. */
   isAcceptedPending?: boolean;
+  /** Local input request identity; null while preparing, absent on restored history. */
+  inputRequestId?: string | null;
+  /** Terminal input outcome retained after transient request notices disappear. */
+  inputOutcome?: 'failed' | 'stopped';
   /** A displayed supplement belongs to the existing execution, not a new user turn. */
   supplementalInput?: {
     executionId: string;

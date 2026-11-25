@@ -48,9 +48,11 @@ def _assert_nodes_do_not_overlap(nodes: list) -> None:
 def designer_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_director_llm: None
 ) -> DesignerGraphStore:
+    # designer 根经 _designer_root() → paths.get_designer_dir() →
+    # get_agent_root_dir() 派生（函数内局部 import），patch 需落在 paths 层
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.designer.graph_store.get_agent_root_dir",
-        lambda: tmp_path,
+        "jiuwenswarm.common.paths.get_agent_root_dir",
+        lambda tenant_key=None: tmp_path,
     )
     return DesignerGraphStore()
 
@@ -62,6 +64,45 @@ def test_graph_store_roundtrip(designer_store: DesignerGraphStore) -> None:
     assert loaded is not None
     assert loaded["graph_id"] == saved["graph_id"]
     assert loaded["project_id"] == "proj_test01"
+
+
+def test_layout_only_save_keeps_stored_prompts_and_output_refs(
+    designer_store: DesignerGraphStore,
+) -> None:
+    graph = make_pipeline_graph(project_id="proj_layout01", prompt="fallback room")
+    saved = designer_store.save_graph(graph)
+    nodes = {str(node["id"]): node for node in saved["nodes"]}
+    scene = nodes["n_scene"]
+    scene["config"] = {
+        **(scene.get("config") or {}),
+        "prompt": "real prompt",
+        "last_wan_prompt": "real prompt",
+        "generate": {"prompt": "real prompt", "aspect_ratio": "16:9"},
+    }
+    scene["output_ref"] = {"kind": "image", "uri": "file:///tmp/scene.png"}
+    saved = designer_store.save_graph(saved)
+
+    stale = deepcopy(saved)
+    stale_nodes = {str(node["id"]): node for node in stale["nodes"]}
+    stale_scene = stale_nodes["n_scene"]
+    stale_scene["config"] = {
+        **(stale_scene.get("config") or {}),
+        "prompt": "fallback room",
+        "last_wan_prompt": "fallback room",
+        "generate": {"prompt": "fallback room"},
+    }
+    stale_scene.pop("output_ref", None)
+    stale_scene["layout"] = {"x": 900, "y": 320, "width": 280, "height": 160}
+
+    merged = designer_store.save_graph(stale, layout_only=True)
+    merged_scene = next(node for node in merged["nodes"] if node["id"] == "n_scene")
+    assert merged_scene["layout"]["x"] == 900
+    assert merged_scene["layout"]["y"] == 320
+    assert merged_scene["config"]["prompt"] == "real prompt"
+    assert merged_scene["config"]["last_wan_prompt"] == "real prompt"
+    assert merged_scene["config"]["generate"]["prompt"] == "real prompt"
+    assert merged_scene["config"]["generate"]["aspect_ratio"] == "16:9"
+    assert merged_scene["output_ref"]["uri"] == "file:///tmp/scene.png"
 
 
 def test_graph_and_run_ids_cannot_escape_their_directories(

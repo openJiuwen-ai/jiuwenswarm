@@ -15,6 +15,9 @@ import {
 const fastRetryOptions = {
   metadataPollAttempts: 3,
   metadataPollIntervalMs: 0,
+  noPodRetryWindowMs: 60_000,
+  noPodRetryBaseDelayMs: 0,
+  noPodRetryMaxDelayMs: 0,
   sleep: async () => {},
 };
 
@@ -115,3 +118,108 @@ test('requires create_token and does not swallow non-timeout errors', async () =
     (error) => error.code === 'BAD_REQUEST',
   );
 });
+
+test('NO_POD_AVAILABLE retries within the 30s budget and reuses create_token', async () => {
+  const calls = [];
+  const request = async (method, params) => {
+    calls.push({ method, params: { ...params } });
+    if (calls.length < 3) {
+      const error = new Error('no pod available in scope');
+      error.code = 'NO_POD_AVAILABLE';
+      throw error;
+    }
+    return { session_id: 'web_no_pod', persist_session: false };
+  };
+  const created = await createConversationSession(
+    request,
+    { create_token: 'no-pod-token', mode: 'agent' },
+    fastRetryOptions,
+  );
+  assert.equal(created.session_id, 'web_no_pod');
+  assert.equal(calls.length, 3);
+  assert.deepEqual(
+    calls.map((call) => call.params.create_token),
+    ['no-pod-token', 'no-pod-token', 'no-pod-token'],
+  );
+});
+
+test('NO_POD_AVAILABLE is still recognized when the gateway folds the code', async () => {
+  const calls = [];
+  const request = async () => {
+    calls.push(1);
+    if (calls.length === 1) {
+      const error = new Error('scope service-1 Pod 冷启动中，暂时没有可用 Pod，请稍后再试');
+      error.code = 'SERVICE_UNAVAILABLE';
+      throw error;
+    }
+    return { session_id: 'web_cold' };
+  };
+  const created = await createConversationSession(
+    request,
+    { create_token: 'cold-token' },
+    fastRetryOptions,
+  );
+  assert.equal(created.session_id, 'web_cold');
+  assert.equal(calls.length, 2);
+});
+
+test('only NO_POD_AVAILABLE is retried; other transient-looking errors fail fast', async () => {
+  let calls = 0;
+  const request = async () => {
+    calls += 1;
+    const error = new Error('scope service-1 at concurrency limit (4)');
+    error.code = 'SERVICE_UNAVAILABLE';
+    throw error;
+  };
+  await assert.rejects(
+    () =>
+      createConversationSession(request, { create_token: 'full-token' }, fastRetryOptions),
+    (error) => error.code === 'SERVICE_UNAVAILABLE',
+  );
+  assert.equal(calls, 1);
+});
+
+test('NO_POD_AVAILABLE backoff grows 1s→2s and stays at 2s', async () => {
+  const delays = [];
+  const stop = new Error('stop-after-three');
+  const request = async () => {
+    const error = new Error('NO_POD_AVAILABLE');
+    error.code = 'NO_POD_AVAILABLE';
+    throw error;
+  };
+  await assert.rejects(
+    () =>
+      createConversationSession(request, { create_token: 'backoff-token' }, {
+        noPodRetryWindowMs: 60_000,
+        noPodRetryBaseDelayMs: 1_000,
+        noPodRetryMaxDelayMs: 2_000,
+        sleep: async (ms) => {
+          delays.push(ms);
+          if (delays.length === 3) throw stop;
+        },
+      }),
+    (error) => error === stop,
+  );
+  assert.deepEqual(delays, [1000, 2000, 2000]);
+});
+
+test('NO_POD_AVAILABLE stops retrying once the budget is exhausted', async () => {
+  let calls = 0;
+  const request = async () => {
+    calls += 1;
+    const error = new Error('NO_POD_AVAILABLE');
+    error.code = 'NO_POD_AVAILABLE';
+    throw error;
+  };
+  await assert.rejects(
+    () =>
+      createConversationSession(
+        request,
+        { create_token: 'exhaust-token' },
+        { ...fastRetryOptions, noPodRetryWindowMs: 0 },
+      ),
+    (error) => error.code === 'NO_POD_AVAILABLE',
+  );
+  assert.equal(calls, 1);
+});
+

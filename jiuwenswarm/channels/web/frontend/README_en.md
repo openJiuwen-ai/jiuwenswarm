@@ -28,6 +28,13 @@ AI coding assistant web UI built with React + TypeScript + Tailwind CSS, with de
 - **Status grouping**: Grouped by in progress, pending, completed
 - **Live updates**: Task status changes sync in real time
 
+#### Right panel pages
+
+- Tasks, team or subagents, artifacts, review, browser, and plugin pages share one row of tabs.
+- The browser tab keeps its original close button; closing hides it and persists the state per session. Plugin tabs have no host close button and are removed by the plugin through `clear`.
+- Iframe pages fit the panel by default. Select Desktop width to use a width of at least 1280px with horizontal scrolling at the bottom of narrow panels. Reload and open-original-URL actions are available; loading longer than 15 seconds shows a notice without interrupting the page.
+- Focused validation: `npm run test:panel-pages`.
+
 #### 📂 Session Management
 - **Session list**: Sidebar shows past sessions
 - **Switch sessions**: Click to switch between sessions
@@ -267,6 +274,34 @@ Edit CSS variables in `src/index.css`:
   --accent-hover: #3b82f6;  /* Hover */
 }
 ```
+
+## Plugin WebUI icon whitelist
+
+The only hand-maintained file is [src/features/webui/icons/whitelist.json](src/features/webui/icons/whitelist.json).
+Its repository path is `jiuwenswarm/channels/web/frontend/src/features/webui/icons/whitelist.json`.
+Button and Dropdown share roughly 100 Lucide icons; the file defines the current list. `refresh` remains an alias for `refresh-cw`.
+For example, a plugin can declare `{"label": "Search", "icon": "search"}`. Omitting icon keeps a text button.
+
+Add entries to `icons`, mapping a protocol name to an installed Lucide React export, such as
+`"file-text": "FileText"`. Add legacy names to `aliases`, mapping each alias to an existing icon name.
+The host controls size and theme colors; the whitelist does not accept SVG, CSS, or component code.
+
+Run `npm run generate:webui-icons` in the frontend directory to update the static imports in
+`src/features/webui/icons/registry.generated.ts` and the backend list at
+`jiuwenswarm/extensions_v2/webui/icon_whitelist_generated.py`. Commit these generated files with the whitelist;
+do not edit them manually. Dev, build, component tests, and contract tests generate them automatically before starting.
+Restart an active dev server after editing the whitelist. Run `npm run check:webui-icons` to detect invalid exports,
+aliases, or stale generated files. Static imports retain only whitelisted icons; the backend needs neither Node nor
+frontend sources at runtime. See the [component specification](src/features/webui/docs/specs/S_01_components.md).
+
+## Plugin WebUI component API
+
+Select can bind `ui.change` to receive the entire selection, including deselection and clearing; select/search/clear remain independent.
+Prefer small/medium/large sizes; sm/md/lg remain aliases. Switch/Card support small/medium only; Avatar also accepts default and numbers.
+Text.max_lines must be a positive integer; omit it for unlimited lines (remove legacy 0 values). Explicit tone overrides variant.
+Text primary/danger/ghost and Button.secondary use distinct theme styles.
+Dropdown requires exactly one trigger source: icon or nonempty children. Supplying both or neither rejects the tree.
+`application.menu.main` supports native component trees and host page scrolling. See the [component specification](src/features/webui/docs/specs/S_01_components.md).
 
 ## License
 

@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { Plus, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -196,7 +197,7 @@ export function DesignerStoryboardTableFromUrl({
   useEffect(() => {
     let cancelled = false;
     setState({ text: '', failed: false, loading: true });
-    void fetch(url, { cache: 'no-store' })
+    void gatewayFetch(url, { cache: 'no-store' })
       .then((response) => {
         if (!response.ok) throw new Error(String(response.status));
         return response.text();

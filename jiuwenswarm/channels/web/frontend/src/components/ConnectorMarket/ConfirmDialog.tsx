@@ -5,18 +5,22 @@ interface ConfirmDialogProps {
   title: string;
   message: string;
   confirmLabel?: string;
+  secondaryLabel?: string;
   busy?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
+  onSecondary?: () => void;
 }
 
 export function ConfirmDialog({
   title,
   message,
   confirmLabel,
+  secondaryLabel,
   busy = false,
   onCancel,
   onConfirm,
+  onSecondary,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
   // 用 Portal 渲染到 document.body：这个遮罩根节点原本是详情页 `.detail-body` 的直接子元素，
@@ -44,6 +48,17 @@ export function ConfirmDialog({
           >
             {t('connectorMarket.common.cancel')}
           </button>
+          {secondaryLabel && onSecondary && (
+            <button
+              type="button"
+              onClick={onSecondary}
+              disabled={busy}
+              className="flex h-8 items-center justify-center rounded-lg border border-border px-3 text-[13px] text-danger hover:border-danger/60 disabled:cursor-not-allowed disabled:opacity-60"
+              data-testid="connector-market-confirm-secondary"
+            >
+              {secondaryLabel}
+            </button>
+          )}
           <button
             type="button"
             onClick={onConfirm}

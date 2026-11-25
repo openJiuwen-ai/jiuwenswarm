@@ -1,6 +1,17 @@
 /** Standalone trajectory toolbar dictionary. */
 
 export type TrajectoryKey =
+  | 'goalAssessment.status.running'
+  | 'goalAssessment.status.complete'
+  | 'goalAssessment.status.continue'
+  | 'goalAssessment.status.blocked'
+  | 'goalAssessment.status.error'
+  | 'goalAssessment.status.unknown'
+  | 'goalAssessment.label'
+  | 'goalAssessment.title'
+  | 'goalAssessment.summary'
+  | 'goalAssessment.isolated'
+
   | 'toolbar.aria'
   | 'toolbar.duration'
   | 'toolbar.useActualDuration'
@@ -20,6 +31,17 @@ export type TrajectoryKey =
 export type TrajectoryTranslate = (key: TrajectoryKey) => string
 
 export const en: Readonly<Record<TrajectoryKey, string>> = {
+  'goalAssessment.status.running': 'Assessing',
+  'goalAssessment.status.complete': 'Complete',
+  'goalAssessment.status.continue': 'Continue execution',
+  'goalAssessment.status.blocked': 'Blocked',
+  'goalAssessment.status.error': 'Failed',
+  'goalAssessment.status.unknown': 'No valid verdict',
+  'goalAssessment.label': 'Goal assessments',
+  'goalAssessment.title': 'Goal assessment · Attempt {{attempt}}',
+  'goalAssessment.summary': 'Independent assessments: {{count}} calls · {{tokens}} tokens',
+  'goalAssessment.isolated': 'Goal verification only; separate from the execution conversation',
+
   'toolbar.aria': 'Trajectory toolbar',
   'toolbar.duration': 'Duration',
   'toolbar.useActualDuration': 'Use actual duration',

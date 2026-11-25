@@ -95,6 +95,7 @@ class CreateRuntime:
                 # lazy migration to ``agent.work.normal``.
                 canonical_mode="agent",
                 execution_profile=provision_input.execution_profile,
+                npc_session=provision_input.npc_session or provision_input.execution_profile == "app_role",
             ),
         )
         self.prepared.append(prepared)
@@ -190,6 +191,7 @@ async def test_role_creation_fields_cross_server_runtime_boundary():
     assert runtime.inputs[0].role_instructions == "Fisherman"
     response = parse_agent_server_wire_unary(ws.sent[0])
     assert response.payload["execution_profile"] == "app_role"
+    assert response.payload["npc_session"] is True
 
 
 def test_session_create_handler_is_runtime_adapter_only() -> None:

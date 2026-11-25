@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / group-public-records |
 | 关联模块 | `jiuwenswarm.server.jiuwenmate` 群归档、访问关系与 `ports.group_chat` |
-| 最近一次修订日期 | 2026-10-30 |
+| 最近一次修订日期 | 2026-11-17 |
 | 关联 feature | [F_11](../features/F_11_group-public-records.md)、[F_21](../features/F_21_cross-group-search.md)、[F_21_03](../features/F_21_03_group-sharing-approval.md) |
 
 本规约维护 JM-11 已实现的宿主契约；验证证据、未完成的生产验证及交付状态见 F_11 和开发计划。
@@ -96,7 +96,11 @@ Gateway 使用当前渠道凭据查询，并以内部 E2A 方法 `jiuwenmate.gro
 
 仅当目标范围完整读取且没有已知采集缺口时，才能返回 `found` 或 `empty` 并令 `query_complete=true`。有下一页时返回 `incomplete` 和 next_cursor；存在部分可读目标、已知缺口、读取中变化或无法取得下一页时返回无 cursor 的 `incomplete`；没有任何可读取目标归档时返回 `failed`。授权未知或查询目标不可用返回 `unavailable`，执行身份不匹配返回 `forbidden`。搜索结果不代表平台全量历史；钉钉不完整回调带来的缺口会保持 `incomplete`，JM-11 §6 的归档限制继续适用。
 
-### 4.6 所有者跨群分享审批
+### 4.6 群消息直读与文件分享审批
+
+search_group_messages 返回有效授权范围内的群消息，不创建跨群分享审批。此规则适用于 Web、IM 和 SwarmChat 查询入口；读取前后继续校验身份、成员资格、可见下界和消息状态。
+同事的启用 IM 连接按配置身份关联，SwarmChat 通过宿主管理成员关系接入；群消息不进入 IM 归档的重复副本。
+以下审批快照、一次／长期授权及撤销规则继续适用于文件、在线文档、受控 CLI 和历史审批兼容路径，不作为搜索工具消息查询的审批要求。
 
 2026-11-03 增补：本地所有者的可信 Web 私聊可免分享审批读取该 Agent 当前有权访问的 IM 群消息、最终文件及在线文档链接。必须同时核验宿主 Request、Session、所有者 principal 与私聊接收目标；不得只按 `channel=web` 放行。来源平台资格、可见下界、撤回及文件完整性校验继续有效。搜索、匹配 CLI 和缓存复用使用相同豁免；私有 `owner_read` 来源回执不展示为审批，不生成长期授权、不推进一次批准窗口边界，且不能用于群聊交付。IM 私聊仍走既有审批；本增补不支持检索私聊来源。Web 与 IM 的访问校验统一按来源平台分派，钉钉和 WeLink 不调用飞书消息检查。
 
@@ -158,7 +162,7 @@ Core 以 `GroupContentApprovalRequired` 发出安全中断，旧 `GroupMessageAp
 
 ### 7.1 群目录 Prompt Attachment（2026-11-04）
 
-当前 Agent 的各渠道群目录由宿主 `GroupDirectoryRail` 注入当前 Session 的模型窗口，不是新工具，也不作为 Web／IM 可见消息发送。目录只含平台、群名、内部群 ID 与登记状态，不包含群消息正文、附件路径、其他 Agent 或其他 namespace 的群。跨群内容仍走既有搜索审批。
+当前 Agent 的各渠道群目录由宿主 `GroupDirectoryRail` 注入当前 Session 的模型窗口，不是新工具，也不作为 Web／IM 可见消息发送。目录只含平台、群名、内部群 ID 与登记状态，不包含群消息正文、附件路径、其他同事或其他 namespace 的群；同一同事的启用连接可合并目录，并包含其 SwarmChat 成员关系。消息搜索在有效授权内直接返回，文件与在线文档继续走分享授权。
 
 每次执行只读取一次本地目录；每个 Session 首次写入完整有界快照，后续由已有 PromptAttachmentManager 根据内容 hash 判断是否追加。改名记录旧名／新名；可访问快照只含 active，退群、解散或访问失效后从快照移除，并对此前可见条目提示一次“已移出”。内部仍保留 left／dissolved／unknown 用于核验与审计。active_count 不包含失效或歧义关系；长目录提供省略数量，不能将省略视为退群。没有目录快照的新窗口重新注入。进程重建从窗口内带标记且 hash 匹配的 attachment 恢复，不依赖内存去重。
 

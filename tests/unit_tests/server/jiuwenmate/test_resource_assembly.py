@@ -30,6 +30,15 @@ import pytest
 NS = "workspace-1"
 
 
+def _symlink(target, link):
+    try:
+        os.symlink(target, link)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows test account cannot create symbolic links")
+        raise
+
+
 class FakeModels:
     def default_selection(self):
         return "deepseek#0"
@@ -110,7 +119,7 @@ def test_each_colleague_gets_its_own_skill_copy_and_deletion_keeps_the_others(tm
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.txt").write_text("secret", encoding="utf-8")
-    os.symlink(outside / "secret.txt", notes / "leaked.txt")
+    _symlink(outside / "secret.txt", notes / "leaked.txt")
     catalog = MapCatalog(skills={"meeting-notes": SkillSource(name="meeting-notes", directory=notes)})
     ids = iter(["mate_one", "mate_two"])
     host = service(tmp_path, catalog, ids)
@@ -152,7 +161,7 @@ def test_selected_knowledge_pages_are_copied_and_other_pages_stay_out(tmp_path):
     other.write_text("不应复制", encoding="utf-8")
     outside = tmp_path / "outside.md"
     outside.write_text("secret", encoding="utf-8")
-    os.symlink(outside, context / "linked.md")
+    _symlink(outside, context / "linked.md")
     catalog = MapCatalog(
         knowledge={"topics/description.md": KnowledgeSource(name="topics/description.md", path=chosen)}
     )
@@ -208,7 +217,7 @@ def test_installed_catalog_lists_only_regular_pages_inside_the_context_root(tmp_
     article.write_text("专栏", encoding="utf-8")
     outside = tmp_path / "secret.md"
     outside.write_text("secret", encoding="utf-8")
-    os.symlink(outside, context / "linked.md")
+    _symlink(outside, context / "linked.md")
     (context / "notes.txt").write_text("不是页面", encoding="utf-8")
     catalog = InstalledResourceCatalog(knowledge_root=context)
 

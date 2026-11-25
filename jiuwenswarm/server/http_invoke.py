@@ -42,10 +42,19 @@ async def _request_tenant_scope(ctx: RequestContext):
             return
 
     from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
-    from jiuwenswarm.enterprise.tenant.tenant_identity import extract_tenant_key
+    from jiuwenswarm.enterprise.tenant.tenant_identity import (
+        extract_tenant_key,
+        extract_triple,
+    )
 
-    # 无完整 Runtime 时仍按请求绑 TenantContext（企业盘路径 / 个人 key）。
-    with TenantContext.scoped(extract_tenant_key(ctx.request)):
+    # 无完整 Runtime 时仍按请求绑 TenantContext（企业盘路径 / 个人 key + 三元组）。
+    group_id, bot_id, user_id = extract_triple(ctx.request)
+    with TenantContext.scoped(
+        extract_tenant_key(ctx.request),
+        group_id=group_id,
+        bot_id=bot_id,
+        user_id=user_id,
+    ):
         yield
 
 

@@ -41,6 +41,7 @@ def _cfg(
     transport: str = "sse",
     url: str = "https://mcp-pan.baidu.com/sse",
     headers: dict[str, str] | None = None,
+    auth_query_params: dict[str, str] | None = None,
 ) -> SimpleNamespace:
     params: dict[str, Any] = {"timeout_s": 5}
     if headers:
@@ -50,7 +51,7 @@ def _cfg(
         server_path=url,
         params=params,
         auth_headers=None,
-        auth_query_params=None,
+        auth_query_params=auth_query_params,
     )
 
 
@@ -132,3 +133,56 @@ async def test_streamable_http_still_probes_with_post() -> None:
     assert reason == "ok (http 200)"
     assert seen["method"] == "POST"
     assert '"method": "initialize"' in seen["body"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["sse", "streamable-http"])
+async def test_probe_preserves_query_in_configured_url(transport: str) -> None:
+    """#6836: a ``?appId=`` configured in ``server_path`` must reach the server.
+
+    ``McpServerConfig`` defaults ``auth_query_params`` to ``{}``. httpx treats a
+    ``params=`` argument as a query *replacement* (``URL(url, params={})`` has no
+    query at all), so forwarding that empty dict silently stripped the URL's own
+    query from the probe. Both transports must probe exactly the configured URL.
+    """
+    url = "https://mcp.example.com/mcp/agent/sse?appId=2120763488500129793"
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 0, "result": {}})
+
+    with patch("httpx.AsyncClient", _ClientFactory(handler)):
+        ok, reason = await preflight_mcp_server_reachable(
+            _cfg(transport=transport, url=url, auth_query_params={})
+        )
+    assert ok is True
+    assert reason == "ok (http 200)"
+    assert seen["url"] == url
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["sse", "streamable-http"])
+async def test_probe_merges_auth_query_params_into_url_query(transport: str) -> None:
+    """#6836: non-empty ``auth_query_params`` must be *merged* into the URL.
+
+    The real connect path adds them through ``URL.copy_merge_params`` (the auth
+    provider), keeping the URL's own query. The probe must mirror that instead
+    of replacing the query, otherwise enabling auth params would drop ``appId``.
+    """
+    url = "https://mcp.example.com/mcp/agent/sse?appId=2120763488500129793"
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 0, "result": {}})
+
+    with patch("httpx.AsyncClient", _ClientFactory(handler)):
+        ok, reason = await preflight_mcp_server_reachable(
+            _cfg(transport=transport, url=url, auth_query_params={"token": "abc"})
+        )
+    assert ok is True
+    assert reason == "ok (http 200)"
+    probed = httpx.URL(seen["url"])
+    assert probed.params["appId"] == "2120763488500129793"
+    assert probed.params["token"] == "abc"

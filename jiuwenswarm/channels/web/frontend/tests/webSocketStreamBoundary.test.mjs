@@ -476,3 +476,71 @@ test('late paused output stays with its request across a new user turn and anoth
     assert.deepEqual(connection.runtime(other).messages.map(m => m.content), ['另一会话']);
   } finally { await connection.dispose(); }
 });
+
+test('worker close after the turn final does not append an error bubble', async (context) => {
+  const sessionId = 'worker-close-after-final';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    connection.delta(sessionId, '任务完成。');
+    connection.receive('chat.final', { session_id: sessionId, request_id: 'req-finished', content: '任务完成。' });
+    const finished = connection.runtime();
+    assert.equal(finished.messages.length, 1);
+
+    // #6373：本轮已交 chat.final，之后 worker 回收只是 INFO 级生命周期事件。
+    connection.receive('chat.error', {
+      session_id: sessionId, request_id: 'req-finished', code: 'WORKER_CLOSED', error: 'runtime worker closed',
+    });
+    assert.equal(connection.runtime().messages.length, 1);
+    assert.equal(connection.runtime().executionError, null);
+
+    // 同一错误落在没有 final 的请求上仍然必须让用户看到。
+    connection.receive('chat.error', {
+      session_id: sessionId, request_id: 'req-crashed', code: 'WORKER_CLOSED', error: 'runtime worker closed',
+    });
+    assert.equal(connection.runtime().messages.length, 2);
+    assert.ok(connection.runtime().executionError);
+  } finally { await connection.dispose(); }
+});
+
+test('worker close during a continuing turn after an intermediate final still reports the crash', async (context) => {
+  const sessionId = 'worker-close-mid-turn';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    // 团队多轮/Goal 续跑时，中途的 chat.final 只收尾当前段，整轮仍在处理。
+    useSessionStore.getState().setMode(sessionId, 'team');
+    connection.receive('chat.processing_status', {
+      session_id: sessionId, request_id: 'req-mid-turn', is_processing: true,
+    });
+    teamDelta(connection, sessionId, 'req-mid-turn', '阶段一完成');
+    connection.receive('chat.final', {
+      session_id: sessionId, request_id: 'req-mid-turn', content: '阶段一完成',
+    });
+    assert.equal(connection.runtime().isProcessing, true);
+
+    // 复核意见：这一轮还没收尾，worker 此时关闭是真实故障，不能因为已收到中间段
+    // final 就静默，否则用户会把半截回答当成完整结果。
+    connection.receive('chat.error', {
+      session_id: sessionId, request_id: 'req-mid-turn', code: 'WORKER_CLOSED', error: 'runtime worker closed',
+    });
+    assert.ok(connection.runtime().executionError);
+    assert.match(connection.runtime().messages.at(-1).content, /runtime worker closed/);
+  } finally { await connection.dispose(); }
+});
+
+test('cross-session finals do not mark a request as a finished turn', async (context) => {
+  const sessionId = 'worker-close-cross-session';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    // 跨会话请求一个 request 会有多个 final，收到一个不代表整轮收尾。
+    connection.receive('chat.final', {
+      session_id: sessionId,
+      request_id: 'req-cross',
+      content: '外部会话消息',
+      cross_session: { message_id: 'sm-1', source_session_id: 'other-session' },
+    });
+    connection.receive('chat.error', {
+      session_id: sessionId, request_id: 'req-cross', code: 'WORKER_CLOSED', error: 'runtime worker closed',
+    });
+    assert.ok(connection.runtime().executionError);
+  } finally { await connection.dispose(); }
+});

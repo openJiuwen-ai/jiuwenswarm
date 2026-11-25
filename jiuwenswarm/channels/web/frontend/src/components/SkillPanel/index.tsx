@@ -1,4 +1,10 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { matchesAssetName } from '../../features/assetNameSearch';
+import {
+  AssetTransferError,
+  assetIssueKey,
+  exportAssetToLocalFile,
+} from '../../features/assetTransfer';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
  * SkillPanel 组件
@@ -274,6 +280,7 @@ export function SkillPanel({
   const [enableFilterOpen, setEnableFilterOpen] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
+  const [exportingSkill, setExportingSkill] = useState(false);
   const [synthesizeTooltip, setSynthesizeTooltip] = useState<{ left: number; top: number } | null>(null);
 
   // 挂载/激活时序标记
@@ -491,7 +498,7 @@ export function SkillPanel({
           success: boolean;
           cancelled?: boolean;
           pending?: boolean;
-          skill?: { name: string };
+          skill?: { name: string; display_name?: string };
           detail?: string;
           detail_key?: string;
           message?: string;
@@ -544,7 +551,12 @@ export function SkillPanel({
         if (data.pending) {
           throw new Error(t('skills.errors.installFailedHint'));
         }
-        showMessage('success', t('skills.messages.installed', { name: data.skill?.name || skill.name }));
+        showMessage(
+          'success',
+          t('skills.messages.installed', {
+            name: skill.display_name || data.skill?.display_name || data.skill?.name || skill.name,
+          }),
+        );
         await fetchSkills();
       } catch (error) {
         console.error(error);
@@ -688,13 +700,14 @@ export function SkillPanel({
   }, []);
 
   // 新建会话并将技能选中到输入框：只有集群技能进集群模式，其余（普通技能、技能包等）固定单 agent
-  const handleGoToChat = useCallback((skillName: string, skillType?: string) => {
+  const handleGoToChat = useCallback((skillName: string, skillType?: string, resetAttachmentDrafts = false) => {
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
         detail: {
           skillName,
           mode: skillType === 'swarm_skill' ? ('team' as const) : ('agent' as const),
           preserveDraft: true,
+          resetAttachmentDrafts,
         },
       }),
     );
@@ -784,7 +797,7 @@ export function SkillPanel({
     async (file: File): Promise<string> => {
       const form = new FormData();
       form.append('file', file);
-      const uploadResp = await fetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
+      const uploadResp = await gatewayFetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
       const uploadData = await uploadResp.json();
       if (!uploadResp.ok || !uploadData.path) {
         throw createUploadError(uploadData.code, uploadResp.status);
@@ -980,6 +993,33 @@ export function SkillPanel({
       setSearch(nextSearch);
     },
     [activeTab, enterpriseEdition, search, invalidateHubFetch, setMarketplaceSubView],
+  );
+
+  // 统一资产导出：assets.export → 短效链接下载保存；错误按 ASSET_* 契约码映射 i18n。
+  const handleExportSkill = useCallback(
+    async (skillName: string, skillType?: string) => {
+      if (!skillName || exportingSkill) return;
+      setExportingSkill(true);
+      showMessage('loading', t('skills.actions.exportingSkill', { name: skillName }));
+      try {
+        const result = await exportAssetToLocalFile({
+          kind: skillType === 'skillpack' ? 'skillpack' : 'skill',
+          local_id: skillName,
+        });
+        if (result.outcome === 'cancelled') {
+          showMessage('success', t('skills.actions.exportCancelled'));
+        } else {
+          showMessage('success', t('skills.actions.exportSuccess', { name: skillName }));
+        }
+      } catch (error) {
+        const key =
+          error instanceof AssetTransferError ? assetIssueKey(error.code) : assetIssueKey(error);
+        showMessage('error', t(key, { name: skillName }));
+      } finally {
+        setExportingSkill(false);
+      }
+    },
+    [exportingSkill, showMessage, t],
   );
 
   const handleUninstall = useCallback(
@@ -1778,6 +1818,8 @@ export function SkillPanel({
           onBack={handleBackOneLevel}
           onEditSkill={handleEditSkill}
           onUninstall={handleUninstall}
+          onExportSkill={handleExportSkill}
+          exportingSkill={exportingSkill}
           onToggleSkillDisabled={toggleSkillDisabled}
           onGoToChat={handleGoToChat}
           onOpenPackMember={handleOpenPackMember}

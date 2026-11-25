@@ -47,6 +47,7 @@
 | Swarmflow                       | Deterministic multi-stage workflows via Python scripts: the Leader hands off between stage agents; supports **HITL** (`human` / `human_session`), **team token budget**, TUI **`/swarmflows`** run-tree monitoring, opt-in **progressive tool exposure** for workers (`swarmflow_progressive_tool`), and **AgentGroup expert workers** (`agent_template`). |
 | Skill Self-Evolution            | Automatically detects error signals and user dissatisfaction, then optimizes Skill definitions                                                            |
 | Skill Hub Sharing               | Capability assets are built once and reused everywhere, search, install, remix, and publish Skills through the Swarm Skills Hub                           |
+| App Hub                         | Install apps from the Marketplace. To share a local app, choose **Publish to Hub** on its card, sign in, and review the files before submitting. |
 | Auto Harness                    | Evaluation drive end-to-end optimization of the Harness itself, which learns and improves in practice with no model-weight training                       |
 | AI Infrastructure Compatibility | Compatible with Huawei Cloud MaaS and other mainstream platforms, OpenAI-compatible APIs, and local models                                                |
 | Tool Permissions & Security     | Every step is under your control, tools require approval before execution, file access goes through a whitelist, and sensitive operations are intercepted |

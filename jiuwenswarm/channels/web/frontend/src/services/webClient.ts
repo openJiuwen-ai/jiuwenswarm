@@ -16,10 +16,13 @@ import { readStoredSessionId } from './authClient';
 import i18n from '../i18n';
 import { appendRuntimeScopeQuery } from './runtimeScope';
 import { withExpertUiLanguage } from './expertUiLanguage';
+import { withSwarmChatSurface } from './swarmChatSurface';
 import { GoalRecord } from '../types/goal';
 import { createSessionEventGate } from './sessionEventGate';
 import { RuntimeResume } from './runtimeResume';
 import { useChatStore } from '../stores/chatStore';
+import { browserClientCapabilities } from '../features/webui/client/browserClient.ts';
+import { shouldReportWorkerInterruption } from '../features/interruptSettleGuard';
 
 type RuntimeResumeQuery = ReturnType<RuntimeResume['queries']>[number];
 type RuntimeRecoveryMetadata = Pick<Session, 'status' | 'is_processing'> & { runtime?: Record<string, unknown> };
@@ -29,6 +32,8 @@ type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => v
 type StateHandler = (state: WebConnectionState) => void;
 
 interface PendingRequest {
+  control: boolean;
+  settled: Set<() => void>;
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timeoutId: number | undefined;
@@ -38,8 +43,10 @@ interface PendingRequest {
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 15000;
 const MAX_RECOVERY_ATTEMPTS = 3;
 const MIN_RECOVERY_RETRY_MS = 1000;
+
 const MAX_RECOVERY_RETRY_MS = 30_000;
 
 /** 暂停期间暂存、恢复后回放的流式事件 */
@@ -55,6 +62,9 @@ export interface PauseBufferHook {
   isActive: () => boolean;
   onBuffer: (event: WsEvent) => void;
 }
+
+// 重连后等待适配器注入新声明的上限；超时后宿主会整页刷新，这里只需避免请求瞬间失败。
+const DECLARATION_WAIT_MS = 8000;
 
 const LEGACY_EVENT_MAP: Record<string, string> = {
   connection_ack: 'connection.ack',
@@ -88,6 +98,19 @@ function logDevWsTraffic(entry: DevWsLogEntry): void {
     return;
   }
 
+  const data = entry.data as Record<string, unknown> | null;
+  if (data && typeof data === 'object') {
+    if (data.event === 'client.operation') entry = { ...entry, data: { type: data.type, event: data.event } };
+    else if (data.type === 'res') entry = { ...entry, data: { type: data.type, id: data.id, ok: data.ok, code: data.code } };
+    else if (typeof data.event === 'string' && data.event.startsWith('webui.')) {
+      entry = { ...entry, data: { type: data.type, event: data.event } };
+    }
+    else if (data.method === 'webui.dispatch') entry = { ...entry, data: { type: data.type, id: data.id, method: data.method } };
+    else if ('request_context' in data) {
+      const { request_context: _context, ...safe } = data;
+      entry = { ...entry, data: safe };
+    }
+  }
   const body = {
     ...entry,
     at: new Date().toISOString(),
@@ -111,6 +134,31 @@ class WebClient {
   private readonly resumeRequests = new Map<string, Promise<RuntimeRecoveryMetadata | undefined>>();
   private readonly resumeRetryTimers = new Map<string, number>();
   private connectedOnce = false;
+  private connectionRetainers = 0;
+  retainConnection(): () => void {
+    this.connectionRetainers++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (--this.connectionRetainers === 0) void this.disconnect();
+    };
+  }
+  constructor() {
+    browserClientCapabilities.setInvocationWaiter((id) => {
+      const pending = this.pending.get(id);
+      return pending ? new Promise<void>((resolve) => pending.settled.add(resolve)) : Promise.resolve();
+    });
+    browserClientCapabilities.subscribe(({ phase }) => {
+      if (phase !== 'changing') return;
+      for (const [id, pending] of this.pending) {
+        if (pending.control) continue;
+        window.clearTimeout(pending.timeoutId);
+        this.finishPending(id);
+        pending.reject(this.createWebError(i18n.t('network.requestAborted'), 'CONTEXT_CHANGED', id, false));
+      }
+    });
+  }
   private ws: WebSocket | null = null;
   private state: WebConnectionState = 'idle';
   private handlers = new Map<string, Set<EventHandler>>();
@@ -160,6 +208,7 @@ class WebClient {
   }
 
   async connect(options: WebConnectOptions = {}): Promise<void> {
+    this.lastConnectOptions = options;
     if (this.ws?.readyState === WebSocket.OPEN) {
       return;
     }
@@ -167,7 +216,6 @@ class WebClient {
       return this.connectPromise;
     }
 
-    this.lastConnectOptions = options;
     const owner = resolveUserId() || '';
     if (owner !== this.resumeOwner) this.runtimeResume.clear();
     this.resumeOwner = owner;
@@ -189,7 +237,7 @@ class WebClient {
         }
         logDevWsTraffic({
           direction: 'lifecycle',
-          data: { event: 'open', url },
+          data: { event: 'open' },
         });
         this.reconnectAttempts = 0;
         this.updateState('ready');
@@ -313,6 +361,7 @@ class WebClient {
     options: WebRequestOptions = {},
   ): Promise<T> {
     await this.ensureReady();
+    await this.waitForClientContext();
 
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw this.createWebError(i18n.t('network.connectionUnavailable'), 'WS_NOT_READY', undefined, true);
@@ -320,21 +369,30 @@ class WebClient {
 
     const id = this.generateRequestId();
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const message: WsRequest = {
+    const message: WsRequest = browserClientCapabilities.bindWebSocket({
       type: 'req',
       id,
       method,
-      params: withExpertUiLanguage(method, params),
+      params: withSwarmChatSurface(method, withExpertUiLanguage(method, params)),
       ...(options.isStream ? { is_stream: true } : {}),
-    };
+    });
+
+    // Extension management requests change the declarations themselves; aborting them as
+    // the change lands would report a false failure for a completed operation.
+    const control = method === 'webui.dispatch' || method.startsWith('extensions.v2.');
+
+    if (!control && browserClientCapabilities.isChanging()) {
+      throw this.createWebError(i18n.t('network.requestAborted'), 'CONTEXT_CHANGED', id, false);
+    }
 
     return new Promise<T>((resolve, reject) => {
       const timeoutId = timeoutMs === 0 ? undefined : window.setTimeout(() => {
-        this.pending.delete(id);
+        this.finishPending(id);
         reject(this.createWebError(i18n.t('network.requestTimeout'), 'REQUEST_TIMEOUT', id, true));
       }, timeoutMs);
 
       const pending: PendingRequest = {
+        control, settled: new Set(),
         resolve: (value) => resolve(value as T),
         reject,
         timeoutId,
@@ -349,7 +407,7 @@ class WebClient {
             return;
           }
           window.clearTimeout(timeoutId);
-          this.pending.delete(id);
+          this.finishPending(id);
           reject(this.createWebError(i18n.t('network.requestAborted'), 'REQUEST_ABORTED', id, false));
         };
         if (options.signal.aborted) {
@@ -369,7 +427,7 @@ class WebClient {
         this.ws!.send(JSON.stringify(message));
       } catch (error) {
         window.clearTimeout(timeoutId);
-        this.pending.delete(id);
+        this.finishPending(id);
         reject(error);
       }
     }).then(async (value) => {
@@ -415,18 +473,23 @@ class WebClient {
     options: { isStream?: boolean } = {},
   ): Promise<void> {
     await this.ensureReady();
+    await this.waitForClientContext();
 
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw this.createWebError(i18n.t('network.connectionUnavailable'), 'WS_NOT_READY', undefined, true);
     }
 
-    const message: WsRequest = {
+    const message: WsRequest = browserClientCapabilities.bindWebSocket({
       type: 'req',
       id: this.generateRequestId(),
       method,
-      params: params ?? {},
+      params: withSwarmChatSurface(method, params) ?? {},
       ...(options.isStream ? { is_stream: true } : {}),
-    };
+    });
+
+    if (browserClientCapabilities.isChanging()) {
+      throw this.createWebError(i18n.t('network.requestAborted'), 'CONTEXT_CHANGED', message.id, false);
+    }
 
     logDevWsTraffic({
       direction: 'outgoing',
@@ -440,7 +503,64 @@ class WebClient {
     if (this.ws?.readyState === WebSocket.OPEN && this.state === 'ready') {
       return;
     }
-    await this.connect(this.lastConnectOptions);
+    let timer: number | undefined;
+    const connecting = this.connect(this.lastConnectOptions);
+    const connectingWs = this.ws;
+    try {
+      await Promise.race([
+        connecting,
+        new Promise<void>((_, reject) => {
+          timer = window.setTimeout(() => {
+            if (this.ws === connectingWs) {
+              this.ws = null;
+              this.connectPromise = null;
+              if (connectingWs && connectingWs.readyState !== WebSocket.CLOSED) {
+                connectingWs.close(4000, 'connect timeout');
+              }
+              this.updateState('closed');
+            }
+            reject(
+              this.createWebError(
+                i18n.t('network.requestTimeout'),
+                'WS_CONNECT_TIMEOUT',
+                undefined,
+                true,
+              ),
+            );
+          }, DEFAULT_CONNECT_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    }
+  }
+
+  /**
+   * 重连后业务处于“等待新声明”的暂停状态：此时直接发请求会被
+   * CLIENT_DECLARATIONS_REQUIRED 判为失败，列表/设置页会短暂报错。
+   * 这里等适配器注入快照后再继续发送；超时仍无快照则由宿主整页刷新兜底。
+   */
+  private async waitForClientContext(): Promise<void> {
+    const host = browserClientCapabilities;
+    if (!host.isUnavailable()) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      let timerId = 0;
+      const finish = () => {
+        window.clearTimeout(timerId);
+        unsubscribe();
+        resolve();
+      };
+      const unsubscribe = host.subscribe((change) => {
+        if (change.phase === 'ready' && !host.isUnavailable()) {
+          finish();
+        }
+      });
+      timerId = window.setTimeout(finish, DECLARATION_WAIT_MS);
+    });
   }
 
   private handleIncoming(rawData: string): void {
@@ -450,7 +570,7 @@ class WebClient {
     } catch {
       logDevWsTraffic({
         direction: 'incoming',
-        data: { rawData, parse: 'failed' },
+        data: { parse: 'failed' },
       });
       return;
     }
@@ -459,7 +579,7 @@ class WebClient {
     if (!message) {
       logDevWsTraffic({
         direction: 'incoming',
-        data: { parsed, normalize: 'ignored' },
+        data: { normalize: 'ignored' },
       });
       return;
     }
@@ -474,6 +594,10 @@ class WebClient {
       this.resolvePending(message);
       return;
     }
+
+    if (!message.event.startsWith('connection.') && !message.event.startsWith('webui.')
+      && message.event !== 'client.operation' && message.event !== 'client.declarations'
+      && browserClientCapabilities.isUnavailable()) return;
 
     if (!this.runtimeResume.observe(message)) return;
     this.resolveRuntimeAcceptedPending(message);
@@ -654,7 +778,15 @@ class WebClient {
             },
           });
         }
-        if (runtime.interrupted === true) {
+        const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
+        // A worker-instance mismatch invalidates the resume cursor and requires
+        // a history reload, but an idle session was not interrupted. Treat the
+        // snapshot as an execution failure only while work is still active.
+        if (shouldReportWorkerInterruption(
+          runtime.interrupted === true,
+          runtime.is_processing === true,
+          localRuntime?.foregroundIsProcessing === true,
+        )) {
           this.dispatchEvent({
             type: 'event',
             event: 'chat.error',
@@ -667,7 +799,6 @@ class WebClient {
           });
         }
         if (runtime.history_required === true) {
-          const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
           for (const dispatch of dispatches) {
             const interactions = Array.isArray(dispatch.pending_interactions) ? dispatch.pending_interactions : [];
             for (const interaction of interactions) {
@@ -716,7 +847,7 @@ class WebClient {
       return;
     }
     window.clearTimeout(pending.timeoutId);
-    this.pending.delete(message.id);
+    this.finishPending(message.id);
 
     if (message.ok) {
       pending.resolve(message.payload);
@@ -748,7 +879,7 @@ class WebClient {
       return;
     }
     window.clearTimeout(pending.timeoutId);
-    this.pending.delete(requestId);
+    this.finishPending(requestId);
     if (message.event === 'runtime.accepted') {
       pending.resolve(message.payload);
       return;
@@ -801,15 +932,27 @@ class WebClient {
   }
 
   private rejectAllPending(error: WebError): void {
-    this.pending.forEach((entry) => {
+    this.pending.forEach((entry, id) => {
       window.clearTimeout(entry.timeoutId);
+      this.finishPending(id);
       entry.reject(error);
     });
     this.pending.clear();
   }
 
+  private finishPending(id: string): void {
+    const pending = this.pending.get(id);
+    this.pending.delete(id);
+    pending?.settled.forEach((resolve) => resolve());
+  }
+
   private updateState(state: WebConnectionState): void {
     this.state = state;
+    // 重连成功后若始终收不到声明，由宿主在超时后整页刷新，避免导航请求永久被
+    // CLIENT_DECLARATIONS_REQUIRED 拦截；断开期间不启动该计时。
+    if (state === 'ready') browserClientCapabilities.armDeclarationTimeout();
+    else browserClientCapabilities.clearDeclarationTimeout();
+    if (state === 'closed' || state === 'reconnecting') browserClientCapabilities.suspendConnection();
     this.stateHandlers.forEach((handler) => {
       handler(state);
     });

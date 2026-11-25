@@ -45,3 +45,17 @@ export function mayProcessingTrueFrameRelight(
   if (hasEventType) return true;
   return !interruptSettled;
 }
+
+/**
+ * worker 实例变化是否应当作为执行中断报给用户。
+ *
+ * 旧的 resume cursor 在 worker 更换后必然失效，只能说明需要重拉历史；
+ * 只有后端或本地仍存在活跃执行时，才代表这一轮确实被中断。
+ */
+export function shouldReportWorkerInterruption(
+  snapshotInterrupted: boolean,
+  metadataIsProcessing: boolean,
+  localForegroundIsProcessing: boolean,
+): boolean {
+  return snapshotInterrupted && (metadataIsProcessing || localForegroundIsProcessing);
+}

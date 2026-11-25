@@ -16,6 +16,8 @@ import logging
 from typing import Any
 
 from agent_gateway.common.mode_matrix import is_team_mode
+
+from jiuwenswarm.common.i18n import t
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
@@ -625,7 +627,9 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
                 team_name=snapshot_team_name,
                 session_id=session_id,
             )
-            runtime_available = scoped_monitor is not None
+            if runtime_available is None:
+                # A running session monitor already proved the runtime is up.
+                runtime_available = scoped_monitor is not None
             if scoped_monitor is not None:
                 scoped_snapshot = await TeamMonitorHandler(scoped_monitor, session_id).get_team_snapshot()
                 if scoped_snapshot is not None:
@@ -829,11 +833,20 @@ async def handle_swarmflow_control(ctx: RequestContext) -> None:
             payload={"error": "run_id is required"},
         )
     elif not team_runtime_running:
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=channel_id,
             ok=False,
-            payload={"error": "工作流控制不可用，发送一条消息唤醒团队后即可使用。"},
+            payload={
+                "error": t(
+                    "enterprise.team.workflow_unavailable",
+                    language=resolve_preferred_language(),
+                )
+            },
         )
     else:
         run_id = run_id.strip()
