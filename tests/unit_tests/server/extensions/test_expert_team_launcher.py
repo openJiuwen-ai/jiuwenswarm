@@ -1135,10 +1135,16 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failed", [False, True])
 @pytest.mark.parametrize("source", ["org_expert_direct", "org_expert_background"])
-async def test_cleanup_push_failure_preserves_turn_result_and_unregisters(monkeypatch, failed, source):
+@pytest.mark.parametrize("diagnostic_failure", [False, True])
+async def test_cleanup_push_failure_preserves_turn_result_and_unregisters(monkeypatch, failed, source, diagnostic_failure):
     from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
     from jiuwenswarm.server.runtime.organization_execution import active_turns
+    if diagnostic_failure:
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.team.expert_org.turn_diagnostics.OrganizationTurnDiagnostics.stop",
+            AsyncMock(side_effect=RuntimeError("diagnostic cleanup failed")),
+        )
 
     async def stream(inputs, session):
         if failed:

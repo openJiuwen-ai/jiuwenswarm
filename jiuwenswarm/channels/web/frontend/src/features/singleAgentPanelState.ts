@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { activateNativeWebUIPanel } from './webui/react/pluginPanelTabsStore';
 
 export type SingleAgentToolTab = 'planning' | 'subagents' | 'artifacts' | 'review' | 'browser' | 'app';
 
@@ -59,6 +60,7 @@ function publishState(state: SingleAgentPanelState): void {
 }
 
 export function openSingleAgentPanel(activeTab: SingleAgentToolTab, selectedArtifactId?: string): void {
+  activateNativeWebUIPanel('conversation.panel.right');
   const nextState: SingleAgentPanelState = {
     ...loadState(),
     expanded: true,
@@ -97,6 +99,7 @@ export function useSingleAgentPanelState(): UseSingleAgentPanelStateResult {
 
   const setSingleAgentPanelActiveTab = useCallback(
     (activeTab: SingleAgentToolTab) => {
+      activateNativeWebUIPanel('conversation.panel.right');
       updateState({ activeTab });
     },
     [updateState],

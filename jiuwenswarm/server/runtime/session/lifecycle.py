@@ -120,7 +120,7 @@ def atomic_json(path: Path, value: dict) -> None:
 
 
 @contextmanager
-def resource_lock(kind: str, resource_id: str) -> Iterator[None]:
+def resource_lock(kind: str, resource_id: str, *, blocking: bool = True) -> Iterator[None]:
     path = resource_path(kind, resource_id)
     held = getattr(_HELD_LOCKS, "paths", None)
     if held is None:
@@ -128,7 +128,7 @@ def resource_lock(kind: str, resource_id: str) -> Iterator[None]:
     if path in held:
         yield
         return
-    with file_lock(path):
+    with file_lock(path, blocking=blocking):
         held.add(path)
         try:
             yield
@@ -255,6 +255,7 @@ def renew_operation(
 
 
 def update(kind: str, resource_id: str, **changes: Any) -> dict:
+    """Update and return the lifecycle state's operation record."""
     with resource_lock(kind, resource_id):
         value = state(kind, resource_id)
         operation = value["operation"]
@@ -845,7 +846,9 @@ def page(items: list[dict], params: dict, key: str, maximum: int) -> dict:
 
 def event_snapshots() -> list[dict]:
     """Internal Gateway refresh feed. Resource revisions survive restarts."""
-    directory = get_agent_root_dir() / "lifecycle" / "resources"
+    from jiuwenswarm.common.paths import get_lifecycle_dir
+
+    directory = get_lifecycle_dir() / "resources"
     result = []
     # Sessions share few projects: cache each project state once per poll and
     # hand every entry its own already-loaded value instead of letting
@@ -913,7 +916,9 @@ def inventory_feed() -> dict:
         ]
     }
     known = {item["project_id"] for item in payload["projects"]}
-    directory = get_agent_root_dir() / "lifecycle" / "resources"
+    from jiuwenswarm.common.paths import get_lifecycle_dir
+
+    directory = get_lifecycle_dir() / "resources"
     for path in directory.glob("project_*.json") if directory.exists() else ():
         operation = read_json(path).get("operation") or {}
         project_id = operation.get("resource_id")

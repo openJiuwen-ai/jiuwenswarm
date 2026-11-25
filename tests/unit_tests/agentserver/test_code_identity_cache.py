@@ -536,7 +536,7 @@ def test_launch_parent_accepts_only_the_known_windows_launcher_hop(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", [b'\xef\xbb\xbf[core]\n autocrlf = true\n', b'broken syntax\n'])
 async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, monkeypatch, value):
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths, utils
     from jiuwenswarm.server.ipc.client import connect_with_retry
     from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
 
@@ -544,7 +544,7 @@ async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, m
     config.write_bytes(value)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / "data")
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path / "data")
     monkeypatch.setenv("JIUWENSWARM_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
     root = Path(__file__).resolve().parents[3]

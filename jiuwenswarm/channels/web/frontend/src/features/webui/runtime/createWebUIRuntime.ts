@@ -417,16 +417,18 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     void reportReadyAfterReconnect();
   }
 
-  async function notifyClosed(instanceKey: string, reason: string): Promise<WebUIDispatchReceipt | null> {
+  async function notifyClosed(instanceKey: string, reason: string, expectedRevision?: number, presentationId?: number): Promise<WebUIDispatchReceipt | null> {
     const record = records.get(instanceKey);
-    if (disposed || !record || connectionState !== 'connected') {
+    if (disposed || !record || connectionState !== 'connected'
+      || (expectedRevision !== undefined && record.snapshot.revision !== expectedRevision)) {
       return null;
     }
     try {
       return await transport.dispatch({
         event: 'ui.closed',
         target: { ...record.target, scope: 'application' },
-        payload: { reason, revision: record.snapshot.revision },
+        payload: { reason, revision: record.snapshot.revision,
+          ...(presentationId === undefined ? {} : { presentation_id: presentationId }) },
       });
     } catch {
       return null;

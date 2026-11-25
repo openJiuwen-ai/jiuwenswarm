@@ -58,7 +58,11 @@ def create_extension():
 
 def _git(directory: Path, *arguments: str) -> str:
     environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
-    environment.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull})
+    # GIT_CONFIG_GLOBAL 不能指 /dev/null：部分环境（git 2.34 + 容器 /dev/null）报
+    # "bad config line 1"，改用保证为空的常规文件
+    empty_global_config = directory / ".gitconfig-empty"
+    empty_global_config.write_text("", encoding="utf-8")
+    environment.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(empty_global_config)})
     result = subprocess.run(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *arguments],
         cwd=directory,

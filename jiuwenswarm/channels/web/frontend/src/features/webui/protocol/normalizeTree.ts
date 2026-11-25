@@ -168,7 +168,7 @@ function normalizeProps(
 
   const normalized: Record<string, unknown> = { ...(rule.defaults ?? {}) };
   for (const [name, value] of Object.entries(raw)) {
-    if (value === undefined) {
+    if (value === undefined || (name === 'permissions' && rule.name === 'Iframe' && raw.src === undefined)) {
       continue;
     }
     const propRule = Object.prototype.hasOwnProperty.call(rule.props, name) ? rule.props[name] : undefined;

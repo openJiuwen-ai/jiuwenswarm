@@ -29,6 +29,7 @@ from jiuwenswarm.server.handlers.bootstrap import (
 )
 from jiuwenswarm.server.handlers.video_conversation import handle_video_conversation_append
 from jiuwenswarm.server.handlers.hub_catalog import handle_hub_equipment_catalog
+from jiuwenswarm.server.handlers.expert_team_batch import handle_expert_teams_add
 from jiuwenswarm.server.handlers.chat import handle_chat_cancel
 from jiuwenswarm.server.handlers.cron_gateway import handle_cron_gateway_callback
 from jiuwenswarm.server.handlers.a4p import handle_a4p_request
@@ -76,6 +77,7 @@ from jiuwenswarm.server.handlers.mcp_hub import (
     handle_mcp_register_custom,
     handle_mcp_save_credentials,
     handle_mcp_show,
+    handle_mcp_sources_providers,
     handle_mcp_uninstall,
     handle_mcp_wait_auth,
 )
@@ -109,6 +111,10 @@ from jiuwenswarm.server.handlers.session import (
     handle_session_rewind_context,
     handle_session_switch,
     handle_session_unarchive,
+)
+from jiuwenswarm.server.handlers.assets import (
+    handle_assets_export,
+    handle_assets_import,
 )
 from jiuwenswarm.server.handlers.session_assets import handle_session_assets_request
 from jiuwenswarm.server.handlers.team import (
@@ -190,6 +196,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.MCP_LIST: handle_mcp_list,
     ReqMethod.MCP_SHOW: handle_mcp_show,
     ReqMethod.MCP_INSTALL: handle_mcp_install,
+    ReqMethod.MCP_SOURCES_PROVIDERS: handle_mcp_sources_providers,
     ReqMethod.MCP_UNINSTALL: handle_mcp_uninstall,
     ReqMethod.MCP_CONNECT: handle_mcp_connect,
     ReqMethod.MCP_WAIT_AUTH: handle_mcp_wait_auth,
@@ -226,6 +233,10 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SESSION_ASSETS_LIST: handle_session_assets_request,
     ReqMethod.SESSION_ASSETS_REGISTER: handle_session_assets_request,
     ReqMethod.SESSION_ASSETS_RENAME: handle_session_assets_request,
+    # 统一资产导入导出（技能/专家/专家团/插件共用）。HTTP 北向经本表；
+    # WS 入口在 agent_adapter/interface.py，两条入口共用编排层与错误收敛。
+    ReqMethod.ASSETS_EXPORT: handle_assets_export,
+    ReqMethod.ASSETS_IMPORT: handle_assets_import,
     # 企业版 HTTP：与 WS ``_handle_lifecycle_request`` 同契约，否则
     # Gateway mapped 路由南向落到 agentserver 时 HANDLERS 缺项 → HTTP_METHOD_NOT_HANDLED。
     ReqMethod.SESSION_ARCHIVE: handle_session_archive,
@@ -253,6 +264,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.TEAM_SNAPSHOT: handle_team_snapshot,
     ReqMethod.TEAM_LIST: handle_team_list,
     ReqMethod.ORG_SNAPSHOT: handle_org_snapshot,
+    ReqMethod.ORG_EXPERT_TEAMS_ADD: handle_expert_teams_add,
     ReqMethod.A4P_CONFIG_GET: handle_a4p_request,
     ReqMethod.A4P_CONFIG_UPDATE: handle_a4p_request,
     # 企业版 Gateway→Pod HTTP：授权 complete/reject 等必须进 HANDLERS，
@@ -295,6 +307,9 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.WORKSPACE_PREVIEW: handle_gateway_adapter,
     ReqMethod.WORKSPACE_USAGE: handle_gateway_adapter,
     ReqMethod.WORKSPACE_ENTRIES_DELETE: handle_gateway_adapter,
+    # download 与 tree/preview 等同走 WorkspaceFileAdapter；漏登会导致
+    # Gateway→Pod HTTP 回 HTTP_METHOD_NOT_HANDLED（对齐 !7494）。
+    ReqMethod.WORKSPACE_DOWNLOAD: handle_gateway_adapter,
     # 语言配置在 AgentServer 的 ConfigAdapter。企业版 runtime 客户端会转发到这里。
     ReqMethod.LOCALE_GET_CONF: handle_gateway_adapter,
     ReqMethod.LOCALE_SET_CONF: handle_gateway_adapter,
@@ -378,7 +393,6 @@ def _register_enterprise_team_handlers() -> None:
 
     if not is_enterprise():
         return
-    from jiuwenswarm.common.schema.message import ensure_team_control_req_methods
     from jiuwenswarm.enterprise.team.handlers import (
         handle_team_create,
         handle_team_get,
@@ -389,7 +403,6 @@ def _register_enterprise_team_handlers() -> None:
         handle_team_stop,
     )
 
-    ensure_team_control_req_methods()
     HANDLERS.update({
         ReqMethod.TEAM_CREATE: handle_team_create,
         ReqMethod.TEAM_GET: handle_team_get,

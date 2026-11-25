@@ -1,0 +1,12 @@
+.webui-presentation-overlay {
+  position: fixed;
+  z-index: 40;
+  -webkit-app-region: no-drag;
+}
+.webui-presentation-overlay__close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-radius: 6px;
+  background: var(--color-surface-elevated);
+}

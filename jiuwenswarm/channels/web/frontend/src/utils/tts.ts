@@ -3,6 +3,7 @@
  */
 
 import { webRequest } from '../services/webClient';
+import i18n from '../i18n';
 
 interface TtsResponse {
   success: boolean;
@@ -35,7 +36,7 @@ export function sanitizeTtsText(
   }
 
   const sanitized = input
-    .replace(CODE_BLOCK_RE, '代码块已省略')
+    .replace(CODE_BLOCK_RE, i18n.t('speech.codeBlockOmitted'))
     .replace(INLINE_CODE_RE, '')
     .replace(MEDIA_BRACE_RE, '')
     .replace(MEDIA_SIMPLE_RE, '')

@@ -102,6 +102,14 @@ class ChatSendParams(TypedDict, total=False):
     mode: NotRequired[str]
     """运行模式。如 agent.plan / agent.fast / code.normal / code.team / team。"""
 
+    ui_language: NotRequired[Literal["zh", "en"]]
+    """当前页面界面语言（本请求覆盖）。
+
+    由用户面 Web 随 chat.send 带上；AgentServer 用它决议框架句语言，
+    优先于 memo / yaml 的 ``preferred_language``。不是会话回复语言
+    （普通用户回合仍走 ``preferred_response_language=match``）。
+    """
+
     attachments: NotRequired[list[dict]]
     """附件列表（@file 等）。结构待统一定义。"""
 

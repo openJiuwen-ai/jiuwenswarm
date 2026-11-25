@@ -2,7 +2,8 @@ import { webRequest } from '../../services/webClient';
 import { webAppViews } from './webAppViews';
 
 export function appMarketStartTimeoutMs(seconds = 30) {
-  return Math.max(120_000, (seconds + 30) * 1000);
+  // An older local app may need to list projects, look up its source, and create a project.
+  return (seconds + 210) * 1000;
 }
 
 export interface InstanceInfo {

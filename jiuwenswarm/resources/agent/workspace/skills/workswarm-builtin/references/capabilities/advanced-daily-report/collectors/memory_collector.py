@@ -43,7 +43,7 @@ class MemoryCollector:
         初始化记忆采集器
 
         Args:
-            workspace_dir: Agent 根目录（如 ~/.jiuwenswarm/agent）
+            workspace_dir: Agent 根目录（如 ~/.jiuwenswarm/profile/agent）
         """
         self.workspace_dir = Path(workspace_dir)
         self.memory_dir = self.workspace_dir / "memory"

@@ -11,6 +11,67 @@
     "valid": true
   },
   {
+    "name": "iframe tab icon with explicit permissions",
+    "root": {
+      "component": "Iframe",
+      "props": {
+        "src": "https://example.com",
+        "title": "Page",
+        "icon": "video",
+        "permissions": ["clipboard-write", "fullscreen", "camera", "microphone", "display-capture", "autoplay", "future-feature"]
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "empty iframe permissions",
+    "root": {
+      "component": "Iframe",
+      "props": { "src": "https://example.com", "title": "Page", "permissions": [] }
+    },
+    "valid": true
+  },
+  {
+    "name": "iframe permission with an origin allowlist rejected",
+    "root": {
+      "component": "Iframe",
+      "props": { "src": "https://example.com", "title": "Page", "permissions": ["fullscreen *"] }
+    },
+    "valid": false
+  },
+  {
+    "name": "iframe permission with multiple directives rejected",
+    "root": {
+      "component": "Iframe",
+      "props": { "src": "https://example.com", "title": "Page", "permissions": ["fullscreen; autoplay"] }
+    },
+    "valid": false
+  },
+  {
+    "name": "duplicate iframe permissions accepted",
+    "root": {
+      "component": "Iframe",
+      "props": { "src": "https://example.com", "title": "Page", "permissions": ["fullscreen", "fullscreen"] }
+    },
+    "valid": true
+  },
+  {
+    "name": "inline document ignores iframe permissions",
+    "root": {
+      "component": "Iframe",
+      "props": { "srcDoc": "<p>Usage</p>", "title": "Page", "permissions": ["fullscreen"] }
+    },
+    "valid": true
+  },
+  {
+    "name": "inline document ignores a malformed iframe permission value",
+    "root": {
+      "component": "Iframe",
+      "props": { "srcDoc": "<p>Usage</p>", "title": "Page", "permissions": "fullscreen" }
+    },
+    "valid": true
+  },
+  {
     "name": "inline document",
     "root": {
       "component": "Iframe",

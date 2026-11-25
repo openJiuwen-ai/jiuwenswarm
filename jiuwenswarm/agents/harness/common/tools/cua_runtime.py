@@ -68,6 +68,7 @@ class ReplRuntime:
         # Align the embedded REPL with the host's single-step desktop tools.
         os.environ.setdefault("COMPUTER_USE_DESKTOP", "exclusive")
         self.session = session
+        self._banner = None
         self.call_lock = asyncio.Lock()
         self.close_task = None
         self.closing = False
@@ -97,7 +98,11 @@ class ReplRuntime:
                                 "No REPL code was executed."
                             )
                             return CallToolResult(isError=True, content=[TextContent(type="text", text=message)])
-                    self.session = ExecutionSession()
+                    if sys.platform == "win32":
+                        from computer_use_mcp.windows_banner import DEFAULT_AGENT_DISPLAY_NAME, WindowsExecutionBanner
+
+                        self._banner = WindowsExecutionBanner(DEFAULT_AGENT_DISPLAY_NAME)
+                    self.session = ExecutionSession(banner=self._banner)
                 # No retained-history capability is advertised: reads stay full.
                 result = await self.session.execute(code, title=title.strip() or None)
                 return CallToolResult.model_validate(result)
@@ -112,11 +117,15 @@ class ReplRuntime:
 
     async def _close(self):
         try:
-            if self.session is not None:
-                result = await self.session.close()
-                if result.get("isError"):
-                    detail = "\n".join(part["text"] for part in result["content"] if part["type"] == "text")
-                    raise RuntimeError(detail or "The engine could not confirm native cleanup.")
+            try:
+                if self.session is not None:
+                    result = await self.session.close()
+                    if result.get("isError"):
+                        detail = "\n".join(part["text"] for part in result["content"] if part["type"] == "text")
+                        raise RuntimeError(detail or "The engine could not confirm native cleanup.")
+            finally:
+                if self._banner is not None:
+                    await self._banner.close()
         except Exception as error:
             self.cleanup_error = str(error) or type(error).__name__
             desktop_lane().blocker = self.cleanup_error

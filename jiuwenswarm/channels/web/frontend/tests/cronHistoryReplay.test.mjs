@@ -30,8 +30,11 @@ const { useChatStore } = await import('../node_modules/.cache/cron-history-repla
 const { useSessionStore } = await import('../node_modules/.cache/cron-history-replay/session.mjs');
 const { webClient } = await import('../node_modules/.cache/cron-history-replay/client.mjs');
 
+// 每个用例一个独立 sid：live_seq 去重表是模块级的，共用 sid 会让相邻用例互相吞帧。
+let fixtureSeq = 0;
+
 async function fixture(run) {
-  const sid = 'cron_history_replay';
+  const sid = `cron_history_replay_${++fixtureSeq}`;
   const originals = { fetch: globalThis.fetch, connect: webClient.connect, request: webClient.request };
   const previousChat = useChatStore.getState();
   const previousSession = useSessionStore.getState();

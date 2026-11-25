@@ -107,6 +107,9 @@ class FakeWebChannel:
     async def routing_keys_for_ws(self, ws):
         return list(self.routing_keys)
 
+    def a4p_pending_routes(self, routes, *, ws, session_id):
+        return set()
+
     def record_a4p_rebound(self, session_id, ws_id):
         self.rebounds.append((session_id, ws_id))
 
@@ -176,9 +179,30 @@ async def test_a4p_rpc_uses_current_websocket_route(method, untrusted_identity) 
         assert channel.forgotten_routes == [(channel.routing_keys[0], "intent-1")]
     else:
         # Configuration belongs to the application, independently of the active session.
+        assert agent_client.envelope.session_id is None
         assert agent_client.envelope.channel_context == {"app_id": "app-1"}
         assert channel.rebounds == []
         assert channel.forgotten_routes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,params,code",
+    [
+        ("a4p.authorization.complete", {"requestId": "intent-1"}, "A4P_WEB_SESSION_REQUIRED"),
+        ("a4p.authorization.pending", {}, "A4P_SESSION_IDENTITY_UNAVAILABLE"),
+    ],
+)
+async def test_a4p_authorization_rejects_websocket_without_session_route(method, params, code) -> None:
+    channel = FakeWebChannel()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True))
+    )
+    await channel.methods[method](
+        SimpleNamespace(_jiuwen_ws_id="ws-1"), "rpc-1", params, "session-1"
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == code
 
 
 class FakeAgentClient:
@@ -1515,6 +1539,31 @@ async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_config", "expected"),
+    [
+        ({}, "true"),
+        ({"rea": {"enabled": False}}, "false"),
+    ],
+)
+async def test_config_get_returns_rea_switch(monkeypatch, raw_config, expected):
+    channel = FakeWebChannel()
+    monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(config_set_handlers, "get_config", lambda: raw_config)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+
+    await channel.methods["config.get"](
+        object(),
+        "req-get-rea",
+        {},
+        "sess-get-rea",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["rea_enabled"] == expected
+
+
+@pytest.mark.asyncio
 async def test_config_save_all_persists_rsi_switch(monkeypatch):
     channel = FakeWebChannel()
     persisted: list[bool] = []
@@ -1565,6 +1614,62 @@ async def test_config_save_all_persists_rsi_switch(monkeypatch):
     ]
     assert channel.responses[-1]["payload"] == {
         "updated": ["rsi_enabled"],
+        "applied_without_restart": True,
+        "models_count": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_config_save_all_persists_rea_switch(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    reload_options_seen: list[dict] = []
+
+    monkeypatch.setattr(
+        config_set_handlers,
+        "get_config_raw",
+        lambda: {"rea": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        config_set_handlers,
+        "get_config",
+        lambda: {"rea": {"enabled": False}},
+    )
+    monkeypatch.setattr(
+        config_set_handlers,
+        "update_rea_enabled_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+
+    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
+        del updated_keys, env_updates, config_payload
+        reload_options_seen.append(dict(reload_options))
+        return True
+
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
+            on_config_saved=on_config_saved,
+        )
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-set-rea",
+        {"config": {"rea_enabled": False}},
+        "sess-set-rea",
+    )
+
+    assert persisted == [False]
+    assert reload_options_seen == [
+        {
+            "target_channel_id": "web",
+            "reload_scopes": ["web_ui"],
+        }
+    ]
+    assert channel.responses[-1]["payload"] == {
+        "updated": ["rea_enabled"],
         "applied_without_restart": True,
         "models_count": None,
     }
@@ -3703,11 +3808,11 @@ def test_update_channel_subsection_in_config_overwrites_existing(tmp_path, monke
 # ── media.persist 大图 HTTP bridge 分流（Phase 2 传输取舍） ──────────────────
 
 
-def _a4p_config_request(method, params, channel="web", session="session"):
-    from e2a.agent_models import AgentRequest
-    from e2a.message import ReqMethod
+def _a4p_config_request(method, params, channel="web", session=None, user_id="", metadata=None):
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
     return AgentRequest(request_id="rpc", channel_id=channel, session_id=session,
-                        req_method=ReqMethod(method), params=params)
+                        req_method=ReqMethod(method), params=params, user_id=user_id, metadata=metadata)
 
 
 @pytest.mark.asyncio
@@ -3723,9 +3828,9 @@ async def test_a4p_config_disabled_partial_update_and_get(monkeypatch):
         events.append("apply")
     monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", persist)
     monkeypatch.setattr(a4p_rpc, "reconfigure_a4p_runtime", apply)
-    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.get", {"session_id": "session"}))
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.get", {}))
     assert response.ok and response.payload == {"enabled": False}
-    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", {"enabled": True, "session_id": "session"}))
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", {"enabled": True}))
     assert response.ok and response.payload == {"enabled": True}
     assert events == ["persist", "apply"]
     assert config["server_id"] == "private"
@@ -3742,11 +3847,33 @@ async def test_a4p_config_rejects_invalid_updates_without_writing(monkeypatch, p
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["a4p.config.get", "a4p.config.update"])
-async def test_a4p_config_requires_web_route(monkeypatch, method):
+@pytest.mark.parametrize("channel,metadata", [("cli", None), ("web", {"cron": True})])
+async def test_a4p_config_requires_interactive_web_ingress(monkeypatch, method, channel, metadata):
     from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
     monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: pytest.fail("unexpected config access"))
-    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request(method, {"enabled": True}, channel="cli"))
-    assert not response.ok and response.payload["code"] == "A4P_WEB_SESSION_REQUIRED"
+    monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", lambda _: pytest.fail("unexpected write"))
+    params = {"enabled": True} if method == "a4p.config.update" else {}
+    response = await a4p_rpc.dispatch_a4p_request(
+        _a4p_config_request(method, params, channel=channel, metadata=metadata),
+    )
+    assert not response.ok and response.payload["code"] == "FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_a4p_config_enterprise_uses_forwarded_user_identity(monkeypatch):
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
+
+    monkeypatch.setattr(a4p_rpc, "is_enterprise", lambda: True)
+    monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: {"enabled": True})
+    monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", lambda _: pytest.fail("unexpected write"))
+    response = await a4p_rpc.dispatch_a4p_request(
+        _a4p_config_request("a4p.config.update", {"enabled": True, "user_id": "forged"}),
+    )
+    assert not response.ok and response.payload["code"] == "FORBIDDEN"
+    response = await a4p_rpc.dispatch_a4p_request(
+        _a4p_config_request("a4p.config.get", {}, user_id="alice"),
+    )
+    assert response.ok and response.payload == {"enabled": True}
 
 
 @pytest.mark.asyncio

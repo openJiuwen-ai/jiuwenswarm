@@ -165,6 +165,10 @@ export type McpOption = {
   source: string;
   runtimePackageName?: string;
   hubAssetId?: string;
+  /** Hub / multi-source catalogue id for enterprise install. */
+  sourceId?: string;
+  /** Catalogue latest version; required by enterprise SPI install. */
+  version?: string;
   installed?: boolean;
   icon?: string | null;
 };

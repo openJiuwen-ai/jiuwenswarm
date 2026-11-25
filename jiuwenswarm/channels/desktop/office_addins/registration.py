@@ -10,6 +10,7 @@ it loads from its ``publish.xml``.
 
 from __future__ import annotations
 
+import plistlib
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -25,19 +26,42 @@ _PANE_URL = re.compile(r'(/taskpane\.\w+\.html)"')
 
 
 @dataclass(frozen=True)
+class MinimumVersion:
+    """The first release with the API set the app's manifest requires (Microsoft's requirement set tables)."""
+
+    # The app bundle's CFBundleShortVersionString on macOS.
+    mac: str
+    # The last two parts of the Click-to-Run VersionToReport on Windows, and the version Office's About page shows.
+    windows_build: str
+    windows: str
+
+
+@dataclass(frozen=True)
 class Host:
     # Distinct from the source manifest's Id, so a development sideload and the
     # installed add-in do not replace each other's registration.
     addin_id: str
     # The sandbox container (the app's bundle id) whose Data/Documents/wef folder the host reads on macOS.
     mac_container: str
+    mac_bundle: str
+    minimum: MinimumVersion
 
 
 HOSTS: Mapping[str, Host] = {
-    "powerpoint": Host("340428ab-de7e-43fd-b7ca-d77377bb73d5", "com.microsoft.Powerpoint"),
-    "word": Host("b65bfac2-6aec-4c86-acd7-a0be9f174e17", "com.microsoft.Word"),
-    "excel": Host("59f438ed-5f60-4b45-bd97-7c8be28d6b8d", "com.microsoft.Excel"),
+    # PowerPointApi 1.8
+    "powerpoint": Host("340428ab-de7e-43fd-b7ca-d77377bb73d5", "com.microsoft.Powerpoint", "Microsoft PowerPoint.app",
+                       MinimumVersion(mac="16.96", windows_build="18730.20030", windows="2504")),
+    # WordApi 1.6
+    "word": Host("b65bfac2-6aec-4c86-acd7-a0be9f174e17", "com.microsoft.Word", "Microsoft Word.app",
+                 MinimumVersion(mac="16.76", windows_build="16731.20234", windows="2308")),
+    # ExcelApi 1.13
+    "excel": Host("59f438ed-5f60-4b45-bd97-7c8be28d6b8d", "com.microsoft.Excel", "Microsoft Excel.app",
+                  MinimumVersion(mac="16.50", windows_build="13801.20738", windows="2102")),
 }
+
+
+def _parts(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", version))
 
 
 def manifest_name(app: str) -> str:
@@ -56,6 +80,10 @@ def render_manifest(app: str, template: str, origin: str, user_id: str) -> str:
 
 class Registration(Protocol):
     def host_found(self) -> bool:
+        ...
+
+    def outdated(self) -> str | None:
+        """The version the host must be updated to while the installed one is older; None if new enough or unknown."""
         ...
 
     def read(self) -> str | None:
@@ -83,13 +111,28 @@ def _rewrite(registration: Registration | _WpsList, manifest: Callable[[], str])
 
 
 class MacRegistration:
-    def __init__(self, home: Path, app: str) -> None:
+    def __init__(self, home: Path, app: str, applications: Path = Path("/Applications")) -> None:
         self._container = home / "Library" / "Containers" / HOSTS[app].mac_container
         self.path = self._container / "Data" / "Documents" / "wef" / f"jiuwenswarm-{app}.xml"
+        self._bundles = [folder / HOSTS[app].mac_bundle for folder in (applications, home / "Applications")]
+        self._minimum = HOSTS[app].minimum.mac
 
     def host_found(self) -> bool:
         # The app creates its container on first launch; never create it for an app that has not run.
         return self._container.is_dir()
+
+    def outdated(self) -> str | None:
+        for bundle in self._bundles:
+            info = bundle / "Contents" / "Info.plist"
+            if info.is_file():
+                # A version that cannot be read is unknown, and an unknown version installs.
+                try:
+                    with info.open("rb") as handle:
+                        version = str(plistlib.load(handle).get("CFBundleShortVersionString", ""))
+                except (OSError, plistlib.InvalidFileException):
+                    return None
+                return self._minimum if _parts(version) < _parts(self._minimum) else None
+        return None
 
     def read(self) -> str | None:
         return self.path.read_text(encoding="utf-8") if self.path.is_file() else None
@@ -130,6 +173,18 @@ class WinRegistry:
         except FileNotFoundError:
             return None
 
+    def office_version(self) -> str | None:
+        """Click-to-Run Office's VersionToReport, such as 16.0.18730.20030; None for an MSI install or no Office."""
+        try:
+            with self._winreg.OpenKey(
+                self._winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Office\ClickToRun\Configuration", 0,
+                self._winreg.KEY_READ | self._winreg.KEY_WOW64_64KEY,
+            ) as handle:
+                return str(self._winreg.QueryValueEx(handle, "VersionToReport")[0])
+        except OSError:
+            # Not there, or not readable for this user: an unknown version installs.
+            return None
+
     def set(self, key: str, name: str, value: str) -> None:
         with self._winreg.CreateKey(self._winreg.HKEY_CURRENT_USER, key) as handle:
             self._winreg.SetValueEx(handle, name, 0, self._winreg.REG_SZ, value)
@@ -149,15 +204,26 @@ class WindowsRegistration:
 
     KEY = r"SOFTWARE\Microsoft\Office\16.0\Wef\Developer"
 
-    def __init__(self, directory: Path, registry: Registry, app: str) -> None:
+    def __init__(
+        self, directory: Path, registry: Registry, app: str, office_version: Callable[[], str | None] = lambda: None,
+    ) -> None:
         self.path = directory / manifest_name(app)
         self._registry = registry
         self._addin_id = HOSTS[app].addin_id
+        self._office_version = office_version
+        self._minimum = HOSTS[app].minimum
 
     @staticmethod
     def host_found() -> bool:
         # A value Office never reads is harmless, so there is nothing to detect.
         return True
+
+    def outdated(self) -> str | None:
+        # One Office install serves every app; its build is the last two parts of VersionToReport.
+        reported = self._office_version()
+        if reported is None or _parts(reported)[2:] >= _parts(self._minimum.windows_build):
+            return None
+        return self._minimum.windows
 
     def read(self) -> str | None:
         if self._registry.get(self.KEY, self._addin_id) is None:
@@ -223,6 +289,10 @@ class WpsRegistration:
 
     def host_found(self) -> bool:
         return bool(self._found())
+
+    @staticmethod
+    def outdated() -> str | None:
+        return None
 
     def read(self) -> str | None:
         """The URL our entries load: None while no edition holds one, and stale ("") while editions disagree.

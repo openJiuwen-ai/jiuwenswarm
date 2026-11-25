@@ -911,7 +911,7 @@ export const MessageItem = memo(function MessageItem({
  	                   </svg>
  	                 </span>
  	                 <span className="font-mono text-sm font-medium text-text" data-testid="chat-panel-session-result-card-title">
- 	                   会话任务：【{description || '未知任务'}】已完成
+	                   {t('chat.sessionTaskCompleted', { description: description || t('chatUi.toolGroup.sessionTaskUnknown') })}
  	                 </span>
  	                 <span className="text-text-muted text-sm">
  	                   {isExpanded ? '▼' : '▶'}
@@ -1040,7 +1040,7 @@ export const MessageItem = memo(function MessageItem({
 	         <TeamLeaderPlainTextMessage
 	           renderTextActions={renderTextActions}
 	           member="team_leader"
-	           content={messageContent || (isStreaming ? '正在接收中...' : '')}
+	           content={messageContent || (isStreaming ? t('chat.receiving') : '')}
 	           messageId={id}
 	           timestamp={timestamp}
 	           isStreaming={isStreaming}
@@ -1064,7 +1064,7 @@ export const MessageItem = memo(function MessageItem({
 	           renderTextActions={renderTextActions}
 	           member={teamMemberName}
               timestamp={timestamp}
-	           content={content || (isStreaming ? '正在接收中...' : '')}
+	           content={content || (isStreaming ? t('chat.receiving') : '')}
 	           messageId={id}
 	           isStreaming={isStreaming}
 	           showAvatar={showAvatar}

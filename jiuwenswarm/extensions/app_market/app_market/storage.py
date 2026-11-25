@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -102,18 +103,34 @@ class MarketStorage:
             if app.source == "local" and app.work_dir
         )
 
+    def has_overlapping_work_dir(self, work_dir: Path) -> bool:
+        """Check whether cleanup could affect any remaining registration.
+
+        Both sides are compared as canonical paths, and an unresolvable path
+        counts as a possible overlap so cleanup keeps files it cannot verify.
+        """
+        try:
+            target = Path(work_dir).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return True
+        for app in self.list_apps():
+            if not app.work_dir:
+                continue
+            try:
+                other_dir = Path(app.work_dir).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                return True
+            if other_dir.is_relative_to(target) or target.is_relative_to(other_dir):
+                return True
+        return False
+
     def delete_app(self, app_id: str) -> None:
         """删除应用，同时级联删除其实例记录"""
-        try:
-            # 删除应用目录
-            app_dir = self._apps_dir / app_id
-            if app_dir.exists():
-                self._remove_tree(app_dir)
-            # 级联删除该应用的所有实例记录
-            for instance in self.list_instances(app_id):
-                self.delete_instance(instance.instance_id)
-        except Exception as e:
-            logger.error("删除应用失败 app_id=%s: %s", app_id, e)
+        app_dir = self._apps_dir / app_id
+        if app_dir.exists():
+            shutil.rmtree(app_dir)
+        for instance in self.list_instances(app_id):
+            self.delete_instance(instance.instance_id)
 
     # ── 安装凭据（Hub 来源） ──────────────────────────────
 
@@ -257,12 +274,3 @@ class MarketStorage:
         excess = stopped if keep_stopped <= 0 else stopped[:-keep_stopped]
         for instance in excess:
             self.delete_instance(instance.instance_id)
-
-    # ── 辅助方法 ──────────────────────────────────────────
-
-    @staticmethod
-    def _remove_tree(path: Path) -> None:
-        """递归删除目录树"""
-        import shutil
-
-        shutil.rmtree(path, ignore_errors=True)

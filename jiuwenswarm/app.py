@@ -25,9 +25,11 @@ from jiuwenswarm.common.system_plugin_recovery import (
     SystemPluginRecovery,
     begin_system_plugin_recovery_session,
 )
+from jiuwenswarm.common.paths import get_gateway_config_dir
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     cleanup_stale_openjiuwen_descs,
+    ensure_gateway_config,
     get_env_file,
     prepare_local_gateway_config,
     prepare_runtime_workspace,
@@ -43,6 +45,7 @@ prepare_runtime_workspace(cleanup_stale_descs=False)
 
 _env_file = get_env_file()
 load_dotenv_runtime(dotenv_path=_env_file, override=True)
+ensure_gateway_config()
 apply_free_search_runtime_defaults()
 
 
@@ -103,6 +106,10 @@ def main() -> None:
         # Early parsing failed - error was already printed
         raise SystemExit(1)
 
+    # gateway 专属配置：config/config-gateway.yaml（get_gateway_config_file），
+    # env 注入 config 目录（gateway 子进程读取 <env>/config-gateway.yaml）。
+    gateway_config_dir = get_gateway_config_dir()
+
     python = sys.executable
 
     # Build subprocess commands – in frozen (PyInstaller) mode use flags
@@ -143,12 +150,23 @@ def main() -> None:
         "JIUWENSWARM_RECOVERY_SESSION_ID": recovery_session_id,
     }
     prepare_local_gateway_config(child_env)
+    gateway_env = {
+        **child_env,
+        "JIUWENSWARM_GATEWAY_CONFIG_DIR": str(gateway_config_dir),
+    }
+    agent_env = {
+        key: value
+        for key, value in child_env.items()
+        if key != "JIUWENSWARM_GATEWAY_CONFIG_DIR"
+    }
     _popen_kwargs: dict = {"env": child_env}
     if os.name != "nt":
         # Own process group per child so a crash respawn can killpg the dead
         # child's lingering descendants (see process_supervision). Ctrl-C and
         # SIGTERM still tear everything down through this supervisor's handlers.
         _popen_kwargs["start_new_session"] = True
+    gateway_popen_kwargs = {**_popen_kwargs, "env": gateway_env}
+    agent_popen_kwargs = {**_popen_kwargs, "env": agent_env}
 
     from jiuwenswarm.common.process_supervision import application_shutdown
     from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
@@ -156,8 +174,14 @@ def main() -> None:
     recovery = SystemPluginRecovery()
 
     def _retire_recovery_worker() -> None:
-        if not shutdown_application_worker():
-            raise RuntimeError("Recovery restart refused an incomplete Worker shutdown")
+        if shutdown_application_worker():
+            return
+        # A Worker that could not drain must not take the Web front down with
+        # it: keep supervision alive, start the replacements, and surface the
+        # incomplete drain instead of aborting the whole application.
+        logger.error(
+            "[SystemPluginRecovery] Worker shutdown incomplete; restarting services anyway"
+        )
 
     def _backend_restart_requested() -> bool:
         try:
@@ -178,6 +202,10 @@ def main() -> None:
             restart_requested=_backend_restart_requested,
             restart_names=("gateway", "agentserver"),
             before_restart=_retire_recovery_worker,
+            command_popen_kwargs={
+                "agentserver": agent_popen_kwargs,
+                "gateway": gateway_popen_kwargs,
+            },
         )
     finally:
         if recovery_process is not None:

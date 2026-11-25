@@ -208,3 +208,15 @@ def test_desktop_browser_uses_publishing_hub_when_oauth_override_is_absent(monke
     monkeypatch.setattr(desktop_app.webbrowser, "open", lambda _url: True)
     api = desktop_app._WindowApi(None)
     assert api.open_external_url("http://119.8.233.112:8080/api/v1/auth/oauth/github/start?redirect_to=x") is True
+
+
+def test_configured_insecure_http_hub_requires_explicit_switch(monkeypatch):
+    monkeypatch.delenv("SKILLHUB_OAUTH_BASE_URL", raising=False)
+    monkeypatch.setenv("TEAM_SKILLS_HUB_BASE_URL", "http://101.44.96.226:8080")
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOW_INSECURE_HTTP", raising=False)
+    assert hub_oauth.start("gitcode", "127.0.0.1:6173")[0] == 400
+
+    monkeypatch.setenv("TEAM_SKILLS_HUB_ALLOW_INSECURE_HTTP", "true")
+    status, started = hub_oauth.start("gitcode", "127.0.0.1:6173")
+    assert status == 200
+    assert urlparse(started["authorize_url"]).netloc == "101.44.96.226:8080"

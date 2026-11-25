@@ -1,0 +1,1 @@
+"""Example converted system plugin."""

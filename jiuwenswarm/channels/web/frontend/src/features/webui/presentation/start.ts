@@ -31,14 +31,17 @@ export function createPresentationStartHandler(options: PresentationStartOptions
     const snapshot = options.runtime.getInstance(key);
     let code = 'TARGET_INACTIVE';
     if ((payload.deadline as number) <= Date.now()) code = 'TARGET_INACTIVE';
-    else if (!options.desktop()) code = 'DESKTOP_REQUIRED';
     else if (snapshot?.connected && snapshot.state === 'active' && snapshot.revision === payload.revision
       && snapshot.frame?.tree.component === 'ApplicationSurface') {
-      try {
-        await options.activate(presentationDeclaration(key, snapshot.frame.tree, options.language()));
-        code = options.runtime.getInstance(key) === snapshot ? 'STARTED' : 'TARGET_INACTIVE';
-      } catch (error) {
-        code = error instanceof Error && error.message === 'BUSY' ? 'BUSY' : 'OPEN_FAILED';
+      const declaration = presentationDeclaration(key, snapshot.frame.tree, options.language(), snapshot.revision);
+      if (declaration.mode !== 'overlay' && !options.desktop()) code = 'DESKTOP_REQUIRED';
+      else {
+        try {
+          await options.activate(declaration);
+          code = options.runtime.getInstance(key) === snapshot ? 'STARTED' : 'TARGET_INACTIVE';
+        } catch (error) {
+          code = error instanceof Error && error.message === 'BUSY' ? 'BUSY' : 'OPEN_FAILED';
+        }
       }
     }
     await options.result({ request_id: payload.request_id, code });

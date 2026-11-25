@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.common import utils
+from jiuwenswarm.common import paths, utils
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.admission import ExecutionAdmission
@@ -42,7 +42,7 @@ async def test_front_history_stream_reads_enterprise_tenant_workspace(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
 
     expected = utils.build_tenant_key("g1", "b1", "user1")
     wrong = utils.build_tenant_key("default", "default", "user1")
@@ -107,7 +107,7 @@ async def test_front_session_list_binds_enterprise_tenant(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
 
     expected = utils.build_tenant_key("g1", "b1", "user1")
     seen: dict[str, object] = {}
@@ -165,7 +165,7 @@ async def test_front_history_stream_personal_keeps_default_layout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
 
     seen: dict[str, object] = {}
 

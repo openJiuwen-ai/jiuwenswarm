@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-08 前端槽位渲染与复杂面板 |
 | 所属模块 | `jiuwenswarm/channels/web/frontend/src/features/webui/` |
 | 设计依据 | [F_06 渲染服务](F_06_render-service.md)、[F_07 界面项与上行交互](F_07_ui-contributions.md) |
-| 最近一次修订日期 | 2026-11-06 |
+| 最近一次修订日期 | 2026-11-24 |
 | 方案状态 | 新链路已接入生产页面并承接全部 15 个已登记槽位，同时支持会话与全局槽位范围；旧链路与旧 action 组件已删除；真实插件联调与浏览器验收待整批验证 |
 
 ## 1. 问题与目标
@@ -32,6 +32,9 @@
 
 当前生产入口使用 `WebUIAppRoot`、`WebUIProvider`、`WebUIHost`、`useWebUIPanels` 与
 `WebUINavigationHost`/`WebUIPageHost`，由组件、协议、运行时、传输与渲染测试共同覆盖。
+右侧工作区插件不再自动占用页签：`useWebUIPanels` 只提供发现结果，用户从加号创建的空白页签中选择插件，
+选择后空白页签原地转为插件页签；规则与验证见
+[右侧工作区插件页签与空白页](../../../channels/web/frontend/src/features/webui/docs/features/F_03_plugin-panel-launcher.md)。
 
 组件契约模块包含独立目录、事件数据规则和属性校验器。模块职责见
 [F_01 组件目录与属性校验](../../../channels/web/frontend/src/features/webui/docs/features/F_01_antd-components.md)，
@@ -93,7 +96,7 @@ flowchart LR
 | --- | --- | --- |
 | `conversation.input.above` | `list` | `ChatPanel` 消息列表下方、输入区上方 |
 | `conversation.input.below` | `single` | 输入区下方 |
-| `conversation.panel.right` | `list` | `App` 主区域右侧工作区 |
+| `conversation.panel.right` | `list` | `App` 主区域右侧工作区，插件经加号空白页签选择后成为页签 |
 | `message.assistant.meta` | `list` | `MessageItem` 的助手消息 meta 行，消息级宿主按实例键过滤 |
 
 - `list` 槽位展示范围内全部实例，每个实例对应一个独立的 `WebUIInstanceView`。
@@ -143,12 +146,13 @@ React 宿主接口：
 
 当前状态：`main.tsx` 用 `WebUIAppRoot` 创建唯一运行时，并由 `WebUIEntryHost` 承接 `application.entry`；
 15 个已登记槽位全部由 `WebUIHost` 承载，位置为：ChatPanel（输入区、头部）、MessageItem（单轮内容、meta）、
-ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar（应用菜单与底部用户入口）、ConversationSidebar（任务功能区）、
+ToolPanel（右侧页签，经空白页签选择）、SettingsPageLayout（设置页）、SessionSidebar（应用菜单与底部用户入口）、ConversationSidebar（任务功能区）、
 `WebUIPageHost`（菜单主页面与任务页面）。
 
 ### 3.5 渲染代次、显示确认与失败反馈
 
-- `WebUIInstanceView` 以 `localFrameId` 作为错误边界与 `SchemaRenderer` 的重挂载键：`clear` 后按相同 `revision` 重建时，旧组件树被卸载，节点局部状态和旧错误不会继承。
+- `WebUIInstanceView` 以 `mountKey` 作为错误边界与 `SchemaRenderer` 的重挂载键。rebuild 槽位使用 `localFrameId`，`keep-mounted` 槽位使用实例 `lifetimeId`。`clear` 后按相同 `revision` 重建时仍会换键并卸载旧组件树。
+- `application.menu.main`、`task.function.main` 与 `conversation.panel.right` 使用 `keep-mounted`。同一实例的新帧由 React 按节点协调，继续匹配的组件可以保留本地状态，并按各自的属性规则更新。受控值和初始值的行为见 [S_17](../specs/S_17_webui-component-props.md)。
 - 渲染树按帧对象与代次缓存；显示确认等快照更新不重建未变化的组件树，避免重复执行适配器。
 - `reportDisplayed` 与 `reportRenderFailure` 同时匹配 `revision` 和 `localFrameId`；旧代次迟到的确认或失败被忽略。
 - 新的合法渲染帧会清空上一帧的失败反馈；错误帧只附着错误信息，不触发整树重建。
@@ -164,7 +168,7 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 3. 规范化：目标字段转驼峰，节点生成路径 key（根 `0`、子节点 `0.0`、Tabs 内容 `0.items.1.children.0`），事件参数补齐为对象，结果与输入隔离并递归冻结。Tabs 隐藏内容共享预算，根组件受槽位约束。
 4. 实例提交：`replace` 帧只接受更大的 `revision`；`clear` 帧删除实例；旧 `error` 帧被忽略，其余错误附着到已有实例，没有实例时创建只显示错误的空实例。
 5. 通知：新实例、删除实例、消费者变化通知范围；实例内容更新只通知该实例；`single` 槽位在内容更新时额外通知范围，宿主据此按 `localFrameId` 重新选择最新实例。
-6. `WebUIHost` 渲染实例列表；`WebUIInstanceView` 订阅的快照变化后按新代次重建或复用组件树。
+6. `WebUIHost` 渲染实例列表；`WebUIInstanceView` 订阅的快照变化后按槽位 `rerender` 策略重建或复用组件树。
 
 ### 4.2 上行
 
@@ -189,7 +193,7 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 ### 4.4 React 渲染、显示确认与错误隔离
 
 1. `WebUIInstanceView` 用 `useSyncExternalStore` 订阅实例版本，只重建变化实例的视图；组件树按帧与代次缓存。
-2. 实例错误边界以 `localFrameId` 为 key；任一适配器抛错时整棵实例树降级为失败态，不展示部分内容，并把失败反馈写回运行时。
+2. 实例错误边界以 `mountKey` 为 key；任一适配器抛错时整棵实例树降级为失败态，不展示部分内容，并把失败反馈写回运行时。
 3. 渲染提交后，确认组件在 effect 中以 `{ revision, localFrameId }` 上报显示；同一帧的显示确认不会再次执行适配器。
 4. `StrictMode` 的挂载/卸载与宿主重复挂载按消费者句柄独立处理，不泄漏范围所有权。
 
@@ -224,23 +228,27 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 
 ### 4.6 Iframe 权限与点击交互
 
-Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址，但这只检查地址格式，不证明页面可信。
-不可信文档若同时获得脚本与同源权限，且最终地址与宿主同源，就能访问父页面 DOM 和同源存储，
-并可移除 sandbox 后重新加载以解除剩余限制。因此宿主固定设置
-`sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`，不允许插件传入或扩展权限。
-该限制同样适用于绝对地址指向宿主、重定向或后续导航回宿主的文档。
+Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址。基本沙盒为
+`sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`。
+内置 Personal Web 入口标识宿主文档隔离已经启用。客户端按浏览器解析后的地址判断来源，
+为与宿主来源独立的 HTTP(S) 地址加上 `allow-same-origin`。本地和远程网页遵循同一规则。
+内联 HTML、宿主同源地址和未启用文档隔离的入口使用基本沙盒。
+
+内置 Web 服务用 `frame-ancestors 'none'` 保护宿主界面和需要在顶层运行的登录回调，
+对其他宿主响应施加不含 `allow-same-origin` 的 HTTP 沙盒。响应策略覆盖代理内容、文件预览、
+重定向后的文档和嵌套文档。
 
 脚本、表单、弹窗、模态框和下载能力保持可用；弹窗继承 sandbox，不开放
 `allow-popups-to-escape-sandbox` 或顶层导航权限。普通点击、输入和 iframe 内导航不需要 `allow-same-origin`。
 `referrerPolicy="no-referrer"` 只限制 Referer，不承担同源隔离或禁用凭据的职责。
+宿主校验 URL iframe 的 `permissions` 名称格式。非空列表按首次出现的顺序去重后写入当前实例的 `allow`，省略或传空列表时不设置 `allow`。`allow` 变更时重建浏览上下文。权限约定见 [S_17 的 Iframe 规约](../specs/S_17_webui-component-props.md#418-iframe)。
 
 加载提示改为角标并设置 `pointer-events: none`，不再用全屏提示层拦截已渲染文档的点击。
 错误与非激活提示仍占满容器，且不保留 iframe。浏览器的 `load` 事件只用于结束加载提示，不保证远端页面业务可用。
 
 2026-11-02 修订取消本地曾加入的 `allow-same-origin`：没有证据表明普通点击需要该权限。
 保留它并仅禁止相对路径不能隔离绝对同源地址；仅增加风险说明也不能恢复隔离。
-代价是 iframe 文档使用不透明 origin，依赖 localStorage、IndexedDB 或同源请求的页面可能无法正常工作；
-这类需求应另行设计独立 origin、请求授权和导航边界，不能直接放开宿主同源访问。
+普通预览使用不透明 origin。使用本地存储的应用按 [S_17 的 Iframe 规约](../specs/S_17_webui-component-props.md#418-iframe) 接入独立入口。
 该隔离限制脚本访问父页面，不承诺阻止所有携带 cookie 的网络请求。
 
 ## 5. 组件与样式映射
@@ -266,7 +274,7 @@ Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址，但这只检查地�
 - 未知组件在目录校验阶段即失败：要么组装前目录与注册表不匹配，要么实例渲染时缺少适配器，整棵实例树降级，不影响其他实例。
 - 组件没有声明对应事件时不派发；目录或节点未声明该事件时返回 `invalid_action`。
 - 交互请求失败保留当前界面，不自动重试；结果只作为适配器可观察的返回值。
-- `clear` 后按相同 `revision` 重建时，以新的 `localFrameId` 触发重新挂载；旧代次的显示确认与失败反馈被拒绝。
+- `clear` 后按相同 `revision` 重建时，以新的 `localFrameId`（`keep-mounted` 槽位为新的 `lifetimeId`）触发重新挂载；旧代次的显示确认与失败反馈被拒绝。
 - 消费者释放后不再持有其未覆盖的实例；旧交互因实例不存在返回 `inactive`。
 
 ## 7. 实施影响
@@ -291,20 +299,42 @@ Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址，但这只检查地�
 | F-08-V-07 | 内容 `clear` 后重连 | 运行时测试 | 按消费者原实例键重发 `ui.ready`，不变成空实例键 |
 | F-08-V-08 | Iframe 加载、非激活、错误及同源 URL | 组件 JSDOM 回归；浏览器另验证实际交互 | 加载提示不拦截鼠标；错误与非激活时卸载 iframe；相对与绝对同源地址均不开放同源权限 |
 | F-08-V-09 | 已挂载包热重载 | 运行时与传输测试 | 收到 clear 后的 `extensions.v2.installed`，只为该包重发 `ui.ready`，无需浏览器刷新 |
+| F-08-V-10 | 全页槽位连续 replace | `test:webui-renderer` 与 `test:webui-components` | `keep-mounted` 槽位更新 props 但保留适配器本地状态；rebuild 槽位仍按新 `localFrameId` 重建 |
 
 ### 8.2 验证入口
 
 前端目录下执行 `npm run test:webui-protocol`、`npm run test:webui-runtime`、
 `npm run test:webui-events`、`npm run test:webui-transport`、`npm run test:webui-renderer`
-与 `npm run test:webui-components`。
+与 `npm run test:webui-components`。右侧页签添加/关闭的状态规则使用
+`npm run test:webui-plugin-panels`。
 
 2026-11-06 补充包变更恢复验证：`npm run test:webui-runtime` 的 19 项和
 `npm run test:webui-transport` 的 9 项通过，分别覆盖指定包的 ready 重放和通知参数校验。
 
+2026-11-21 验证 URL iframe 的权限声明。WebUI 组件 380 项、面板页签 7 项、AgentServer WebUI 363 项和 Gateway 渲染 344 项通过。
+Chrome 本地运行实际组件，同一地址的三个 iframe 分别省略权限、只申请全屏、声明空列表。浏览器分别识别到剪贴板写入和全屏、仅全屏、两项均未启用。测试页面均处于不透明来源的沙盒。
+
+2026-11-21 在内置 Personal Web、独立 Gateway 和 AgentServer 进程之间用 Chrome 验证受管网页。
+安装验证插件，在 `task.function.main` 中打开 OpenMotion Studio 的示例项目。应用在宿主刷新 iframe 后读回
+`localStorage` 和 `IndexedDB` 的测试数据。重定向或嵌套到 WorkSwarm 主界面时浏览器拦截导航。
+宿主文件的嵌套预览、原有 `srcDoc` 仍使用不透明来源。OpenMotion 运行在隔离的验证数据目录，
+通过本地转接适配该应用的回环地址要求。
+
+2026-11-23 验证权限名称校验和去重。WebUI 组件 382 项、面板页签 7 项、AgentServer 和内置 Web 377 项、Gateway 407 项通过，Vite 打包通过。通过真实 V2 插件打开 OpenMotion，Chrome 识别 `autoplay`，重复的 `fullscreen` 在 `allow` 中只出现一次。示例项目打开、刷新后读取浏览器存储以及导航和嵌套隔离的用例均通过。
+
+2026-11-23 验证 iframe 仅委派显式声明的权限。WebUI 组件 382 项、面板页签 7 项和 Vite 打包通过。Chrome 中通过真实 V2 插件打开 OpenMotion，省略权限时 iframe 无 `allow` 属性，应用可打开示例项目并在刷新后读回浏览器存储。显式声明剪贴板写入和全屏时，两个名称各写入一次。导航和嵌套隔离及 `srcDoc` 预览回归通过。
+
+2026-11-23 验证 V2 Iframe 直接加载独立网页。WebUI 组件 382 项、面板页签 7 项、AgentServer 和内置 Web 377 项及 Vite 打包通过。在隔离环境直接运行 OpenMotion 的启动入口，V2 插件把它返回的 HTTP 地址填入 `src`。Chrome 能打开示例项目，刷新 iframe 后读回 `localStorage` 和 `IndexedDB` 数据。浏览器拦截了重定向和嵌套加载宿主界面，宿主文件及 `srcDoc` 使用不透明来源。
+
+2026-11-23 验证内联 Iframe 忽略 `permissions`。WebUI 组件 383 项、AgentServer WebUI 606 项、Gateway V2 750 项和 Vite 打包通过。后端测试检查内联 HTML 正常通过校验，且下行数据省略该字段。前端渲染测试确认内联 iframe 保留基本沙盒并省略 `allow`。
+
+2026-11-23 验证 Electron 主窗口的跨源 iframe 设备授权。桌面定向测试 22 项通过。macOS Electron 43.7.6 加载实际 V2 Iframe，使用模拟摄像头和麦克风验证用户允许后取得媒体流，拒绝或关闭原生对话框后没有媒体流，网页导航会取消待确认请求。Chromium 在桌面批准后仍检查 iframe 权限策略。
+
+2026-11-23 验证弹框前的设备声明检查。桌面定向测试 26 项、WebUI 组件测试 384 项通过。macOS Electron 43.7.6 加载实际 V2 Iframe，使用模拟设备验证省略设备声明、只声明麦克风却同时申请摄像头、同域页面尝试使用另一实例的声明，以及地址相同且候选权限冲突时直接拒绝。已声明设备的页面仍能通过桌面确认批准或拒绝本次请求。
+
 ## 9. 风险与遗留
 
-- **真实联调未完成**：15 个槽位已由新宿主承接，但尚未完成真实插件发帧 → 页面操作 → Handler → 回执的跨进程验证；
-  旧链路已删除，后续问题只能在单链路上定位。
+- **真实联调范围**：本次 Chrome 联调覆盖任务入口发帧、主页面 iframe 和应用操作。其他槽位和事件回执的完整跨进程验证仍待补充。
 - **双端规则维护**：前端组件目录与后端规则分别实现，共用组件属性样本；变更规则时需要同时验证两端。
 - **显示确认仅本地（未联调）**：`displayedRevision` 只保存在前端运行时，未接入后端显示回执事件；跨端显示语义需要另行确认。
 - **真实恢复链路（未验证）**：`ui.ready` 的重连重发只验证到请求构造，插件端是否按实例键恢复轮次视图需要真实联调。
@@ -339,3 +369,35 @@ transport、renderer、i18n-locales）通过，Vite 生产打包通过。
 右侧内容仍按选择挂载，保持隐藏面板的内容不执行；后台渲染只更新目录，不自动展开面板。会话切换和不支持面板导航的模式会消费不适用的旧请求。ToolPanel 等待面板发现完成后再消费有效请求，避免初次挂载时丢失选择。
 
 验证：254 项 WebUI 组件和插件设置测试、7 项面板页面测试及 Vite 生产打包通过。真实插件在浏览器 1100 px 窄视口、ToolPanel 自动隐藏时，点击“打开详情”能展开并选中“用量详情”。本次只有 Web Client 的发现与导航所有权调整；Gateway、Server、Agent Harness、Team 没有相关代码改动。已撤回此前暖黄背景恢复的全部修改，状态条沿用原有灰底。未运行格式化、lint 或类型检查。
+### 2026-11-06 右侧插件页签与空白页
+
+右侧工作区改为“发现 + 主动创建”：加号先创建一个不属于任何插件的空白页签，空白页签列出已注册插件，
+选择后原地转为该插件页签；已有插件时关闭空白页签并激活已有页签。空白页签与插件页签共用关闭逻辑，
+关闭激活页签按右侧、左侧相邻页签回退，全部关闭后回到原生页签；无插件时空态显示“暂时没有可用的插件”。
+插件声明与渲染树 `title` 契约不变，详细规则见
+[F_03](../../../channels/web/frontend/src/features/webui/docs/features/F_03_plugin-panel-launcher.md)。
+`npm run test:webui-plugin-panels` 19 项与 `npm run test:i18n-locales` 4 项通过；Edge 真实浏览器已验收
+插件列表、添加、关闭和相邻页签回退，空白页签创建与原地转换、空态、长标题、多页签溢出、窄屏、
+会话切换与键盘焦点仍待补充。Panel / Iframe 新增可选 `icon`（白名单图标名）用于页签图标，
+共享组件用例已补充合法与非法取值，前端契约 152 项及两端 `validate_props` 定向校验通过；Vite 构建未执行。
+
+### 2026-11-24 应用范围入口打开当前会话右侧面板
+
+`application.sidebar.footer`、`task.function` 等 application 范围槽位不持有聊天会话。`Button.openPanel`
+在源实例为 application 范围时，改用宿主 `WebUISlotProvider` 提供的当前聊天会话定位同包右侧目标；
+没有当前会话时不导航，目标仍须已渲染且活跃。会话范围源行为不变，目标和 tab 逻辑未新增分支。
+
+验证：`npm run test:webui-components` 375 项、`npm run test:panel-pages` 12 项、
+`npm run test:webui-plugin-panels` 28 项通过。真实浏览器与窄屏未验收。
+
+### 2026-11-24 保留组件树时的页签选择和输入草稿
+
+连续帧会复用同一位置的组件。右侧面板因此出现了两类状态残留：Tabs 的本地选择覆盖了服务端重复下发的选择，Input 在切换字段时沿用了旧草稿。Tabs 现在以显式 `activeKey` 为准，本地选中项失效时回退。独立 Input 在字段定义或事件绑定发生变化时重新初始化，同一字段的普通属性更新保留草稿。详细规则见 [S_17](../specs/S_17_webui-component-props.md)。
+
+WebUI 组件测试在 Node 和 JSDOM 下通过 379 项，其中 3 项经右侧面板宿主验证连续帧、页签回退和草稿隔离。
+
+复查发现独立 Input 会忽略新帧重复下发的值，Select 会保留已经移除的选项。独立 Input 现在按帧同步显式值，输入法组合期间继续保留正在编辑的文本。Select 在未收到显式值时会校验本地选择，保留有效项并为失效的选择使用当前帧的默认值或空值。
+
+本次在 Node 和 JSDOM 下通过 383 项 WebUI 组件测试。新增的 4 项回归覆盖重复赋值、输入法组合期间收帧、单选失效以及多选和自定义标签保留。
+
+风格复查后，Select 的新帧同步与事件校验共用单值规则。应用范围导航用例通过真实按钮验证有会话和无会话的行为。WebUI 组件测试 383 项和契约测试 169 项均通过。

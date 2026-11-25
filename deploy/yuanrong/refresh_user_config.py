@@ -42,6 +42,16 @@ except ImportError:  # pragma: no cover - Windows 本地测试
 DEFAULT_HOME_BASE = "/home/agentos/users"
 DEFAULT_TEMPLATE = "/root/.jiuwenswarm/config/config.yaml"
 DEFAULT_OS_USER = "agentos"
+
+
+def _default_template() -> str:
+    """实例模式下 root AS 模板在实例目录，不能固定读默认 workspace。"""
+    instance = os.environ.get("JIUWENSWARM_INSTANCE_NAME", "").strip()
+    if instance:
+        return f"/root/.jiuwenswarm-instances/{instance}/config/config.yaml"
+    return DEFAULT_TEMPLATE
+
+
 USERNAME_RE = re.compile(r"^[a-z0-9_-]{3,32}$")
 
 ABSENT = "absent"
@@ -534,9 +544,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--template",
-        default=os.environ.get("AGENTOS_SWARM_TEMPLATE", DEFAULT_TEMPLATE),
+        default=os.environ.get("AGENTOS_SWARM_TEMPLATE", _default_template()),
         metavar="FILE",
-        help=f"模板 config.yaml，默认 {DEFAULT_TEMPLATE}",
+        help=f"模板 config.yaml，默认 {DEFAULT_TEMPLATE}（实例模式为实例目录）",
     )
     parser.add_argument(
         "--all",

@@ -48,9 +48,18 @@ async def bind_request_tenant(ctx: RequestContext) -> AsyncIterator[RequestConte
         else:
             # 兼容未注入 TenantStrategy 的 runtime 桩：仍按身份绑 TenantContext。
             from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
-            from jiuwenswarm.enterprise.tenant.tenant_identity import extract_tenant_key
+            from jiuwenswarm.enterprise.tenant.tenant_identity import (
+                extract_tenant_key,
+                extract_triple,
+            )
 
-            tenant_ctx = TenantContext.bind(extract_tenant_key(ctx.request))
+            group_id, bot_id, user_id = extract_triple(ctx.request)
+            tenant_ctx = TenantContext.bind(
+                extract_tenant_key(ctx.request),
+                group_id=group_id,
+                bot_id=bot_id,
+                user_id=user_id,
+            )
             try:
                 yield ctx
             finally:

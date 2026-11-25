@@ -1,6 +1,6 @@
 import { resolveAgentGroupSelectionId } from '../agentManagement/port';
 import type { AgentCatalogItem, AgentGroupCatalogItem } from '../agentManagement/types';
-import type { GroupRoute, GroupExecution, GroupMember, GroupMessage } from './client';
+import type { GroupAutoReply, GroupRoute, GroupExecution, GroupMember, GroupMessage } from './client';
 
 // Keep pending-reply eligibility across workspace remounts, scoped to this page lifetime.
 const sessionSentIdsByGroup = new Map<string, Set<string>>();
@@ -176,6 +176,26 @@ export interface PendingMentionReply {
   route?: GroupRoute;
 }
 
+/** 被自动判断通知、尚无执行的成员，占位最多保留这么久。 */
+export const AUTO_REPLY_WAIT_MS = 3 * 60 * 1000;
+
+/** 用户消息下方的自动判断提示：协作决策只唤醒 Owner，文案与“分别回复”区分。 */
+export function autoReplyNotice(
+  reply: GroupAutoReply,
+  members: GroupMember[],
+  separator: string,
+): { key: string; values?: Record<string, string> } {
+  if (reply.status !== 'notified') return { key: `groupChat.autoReply.${reply.status}` };
+  const label = (name: string) => members.find((member) => member.member_name === name)?.display_name || name;
+  if (reply.organization) {
+    return {
+      key: 'groupChat.autoReply.coordinated',
+      values: { owner: label(reply.organization.owner), names: reply.organization.members.map(label).join(separator) },
+    };
+  }
+  return { key: 'groupChat.autoReply.notified', values: { names: reply.notified.map(label).join(separator) } };
+}
+
 /**
  * 推导每条带 @ 的用户消息下应挂的「待回复」占位，键为 message_id。
  *
@@ -190,32 +210,43 @@ export function pendingMentionReplies(
   members: GroupMember[],
   sentIds: Set<string>,
   routes: GroupRoute[] = [],
+  autoReplies: Record<string, GroupAutoReply> = {},
+  now: number = Date.now(),
 ): Map<string, PendingMentionReply[]> {
-  const asks = messages.filter((message) => message.sender === 'user' && !message.pending).map((message) => ({
-    message,
-    mentioned: message.mentions?.length
-      ? message.mentions
-      : selectedMentions(groupMessageContent(message), [], members),
-  }));
+  const asks = messages.filter((message) => message.sender === 'user' && !message.pending).map((message) => {
+    // 未 @ 的消息由自动判断通知成员：被通知的成员与被 @ 一样占位，但各自独立回复，不构成组织协作。
+    // 例外是协作决策：只通知 Owner，按组织协作占位。
+    const notified = message.mentions?.length ? [] : autoReplies[message.message_id]?.notified ?? [];
+    return {
+      message,
+      coordinated: message.mentions?.length ? undefined : autoReplies[message.message_id]?.organization,
+      auto: notified.length > 0,
+      mentioned: message.mentions?.length
+        ? message.mentions
+        : notified.length ? notified : selectedMentions(groupMessageContent(message), [], members),
+    };
+  });
   // 组织执行只记录 Owner；它由创建前最近一条 @ Owner 的消息触发，该消息里 @ 的成员都参与这次组织协作。
   const organizationTrigger = (execution: GroupExecution) => asks.filter((ask) =>
     Boolean(execution.owner_member) && ask.mentioned.includes(execution.owner_member as string)
     && ask.message.timestamp <= execution.created_at * 1000).pop()?.message.message_id;
   const pending = new Map<string, PendingMentionReply[]>();
-  for (const { message, mentioned } of asks) {
+  for (const { message, mentioned, auto, coordinated } of asks) {
     const sentHere = sentIds.has(message.client_message_id);
     // Bind organization progress to its request, not to a member's latest run.
     const organization = executions.find((item) => item.execution_kind === 'organization'
       && Boolean(message.client_message_id) && item.organization_plan_id === message.client_message_id);
     const names = [...new Set(mentioned)];
-    const organizationMentions = names.length >= 2
+    const organizationMentions = !auto && names.length >= 2
       && names.every((name) => members.find((member) => member.member_name === name)?.kind === 'agent_group');
     const route = routes.find((item) => item.plan_id === message.client_message_id);
-    if (organization || organizationMentions || route) {
+    if (organization || organizationMentions || route || coordinated) {
       if (route?.status === 'completed') continue;
       if (organization && FINISHED_EXECUTIONS.has(organization.status)) continue;
-      if (!organization && !sentHere && !route) continue;
-      const memberName = organization?.owner_member || route?.owner_member || names[0];
+      // 协作决策在候选事件到达前也按组织占位；候选始终未出现时与其他自动通知一样超时收起。
+      if (!organization && !route && coordinated && now - message.timestamp > AUTO_REPLY_WAIT_MS) continue;
+      if (!organization && !sentHere && !route && !coordinated) continue;
+      const memberName = organization?.owner_member || route?.owner_member || coordinated?.owner || names[0];
       if (!memberName) continue;
       const hasResult = organization && messages.some((item) => item.sender === memberName
         && (item.execution_id === organization.execution_id
@@ -233,6 +264,8 @@ export function pendingMentionReplies(
       if (!execution && messages.some((item) => item.timestamp > message.timestamp && item.sender === memberName)) {
         return [];
       }
+      // 被自动判断通知的成员可以选择不回复，且此时没有任何终态信号；占位只保留有限时间，不无限等待。
+      if (!execution && auto && now - message.timestamp > AUTO_REPLY_WAIT_MS) return [];
       if (!execution) return sentHere ? [{ memberName, execution }] : [];
       const owner = asks.filter((ask) => ask.mentioned.includes(memberName)
         && ask.message.timestamp <= execution.created_at * 1000).pop();

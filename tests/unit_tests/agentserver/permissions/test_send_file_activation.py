@@ -69,6 +69,10 @@ async def test_new_ordinary_send_tool_does_not_require_auto_authorization(
         "get_config",
         return_value={"permissions": {"mode": permission_mode}},
     ), patch.object(
+        adapter,
+        "_resolve_prompt_language",
+        return_value="en",
+    ), patch.object(
         adapter_module,
         "SendFileToolkit",
         return_value=toolkit,
@@ -87,6 +91,7 @@ async def test_new_ordinary_send_tool_does_not_require_auto_authorization(
         user_id=None,
         project_dir=None,
         require_execution_authorization=False,
+        language="en",
     )
 
 

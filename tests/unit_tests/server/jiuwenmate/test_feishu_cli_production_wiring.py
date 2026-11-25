@@ -6,12 +6,12 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 
 from tests.unit_tests.server.jiuwenmate.test_resource_assembly import MapCatalog, service, settings, write_skill
 from tests.unit_tests.server.jiuwenmate.test_feishu_group_production_wiring import _agent_websocket_server_type
 from tests.unit_tests.gateway.test_app_web_handlers import FakeWebChannel, FakeChannelManager
-from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from tests.unit_tests.server.jiuwenmate.test_lark_cli_runtime import config, setup_cli

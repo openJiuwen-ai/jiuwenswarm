@@ -8,7 +8,6 @@ import {
   consumeSilentCallback, endBrowserSession, rememberBrowserSession,
 } from './federation';
 import { AuthApi, type FederationConnection } from './userLogin';
-import { resolveApiUrl } from '../../utils/env';
 import { userWebPaths } from './userWebPaths';
 import './userLogin.css';
 
@@ -44,7 +43,7 @@ export function UserLoginPage() {
         if (route === '/auth/federation/logout') {
           const refresh = getManagerRefreshToken();
           if (refresh) {
-            await fetch(resolveApiUrl('/idp/v1/auth/logout'), {
+            await fetch('/idp/v1/auth/logout', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ refresh_token: refresh }),

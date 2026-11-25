@@ -20,6 +20,7 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
 import yaml
 import portalocker
 
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled
 from jiuwenswarm.common.kv_cache_affinity_config import (
     APPLICATION_KV_CACHE_CONFIG_KEY,
     KV_CACHE_AFFINITY_ENABLED_KEY,
@@ -768,6 +769,70 @@ def update_channel_in_config(channel_id: str, conf: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+_CHANNEL_CONFIG_SYNC_SECTIONS = frozenset({"feishu", "dingtalk", "welink"})
+_CHANNEL_APP_LIST_SYNC_SECTIONS = frozenset({"xiaoyi"})
+
+
+def apply_channel_config_snapshot(channels: Any) -> bool:
+    """Merge a Gateway channel snapshot into the local AgentServer config."""
+    if not isinstance(channels, dict) or not channels:
+        return False
+
+    changed = False
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
+        nonlocal changed
+        current = data.get("channels")
+        if not isinstance(current, dict):
+            current = {}
+            data["channels"] = current
+        for channel_id, section in channels.items():
+            if not isinstance(channel_id, str) or not isinstance(section, dict):
+                continue
+            if channel_id == "feishu_enterprise":
+                # feishu_enterprise is a dynamic bot map. Keep only bots present
+                # in the snapshot, while preserving local fields on retained bots.
+                previous = current.get(channel_id)
+                previous = previous if isinstance(previous, dict) else {}
+                merged = {}
+                for bot_id, bot_conf in section.items():
+                    old_bot = previous.get(bot_id)
+                    if isinstance(old_bot, dict) and isinstance(bot_conf, dict):
+                        bot_conf = {**deepcopy(old_bot), **deepcopy(bot_conf)}
+                    else:
+                        bot_conf = deepcopy(bot_conf)
+                    merged[bot_id] = bot_conf
+                current[channel_id] = merged
+                changed = True
+            elif channel_id in _CHANNEL_CONFIG_SYNC_SECTIONS or channel_id in _CHANNEL_APP_LIST_SYNC_SECTIONS:
+                # Gateway owns the app list. Replace apps as a whole; preserve
+                # local-only fields such as dingtalk file settings unless the
+                # snapshot explicitly provides a replacement.
+                target = current.get(channel_id)
+                if not isinstance(target, dict):
+                    target = {}
+                    current[channel_id] = target
+                if "apps" in section:
+                    target["apps"] = deepcopy(section["apps"])
+                elif channel_id in _CHANNEL_CONFIG_SYNC_SECTIONS:
+                    target.pop("apps", None)
+                for key, value in section.items():
+                    if key != "apps":
+                        target[key] = deepcopy(value)
+                changed = True
+            elif "send_file_allowed" in section:
+                target = current.get(channel_id)
+                if not isinstance(target, dict):
+                    target = {}
+                    current[channel_id] = target
+                target["send_file_allowed"] = deepcopy(section["send_file_allowed"])
+                changed = True
+        return data if changed else None
+
+    update_config(_mutate)
+    return changed
+
+
 def _as_plain_yaml_str(value: Any) -> Any:
     """字符串写成无引号 plain scalar，避免顶层/apps 因旧值风格（如 ``''``）不一致。"""
     if isinstance(value, str):
@@ -921,10 +986,10 @@ def update_channel_app_field(
 
 
 def update_preferred_language_in_config(lang: str) -> None:
-    """只更新顶层 preferred_language 并写回。非法值回退为 zh，与 set_preferred_language_in_config_file 一致。"""
-    normalized = str(lang or "zh").strip().lower()
+    """只更新顶层 preferred_language 并写回。仅接受已归一的 ``zh`` / ``en``。"""
+    normalized = str(lang or "").strip().lower()
     if normalized not in ("zh", "en"):
-        normalized = "zh"
+        raise ValueError(f"preferred_language must be zh or en, got {lang!r}")
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     data["preferred_language"] = normalized
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
@@ -932,13 +997,13 @@ def update_preferred_language_in_config(lang: str) -> None:
 
 def set_preferred_language_in_config_file(config_path: Path, lang: str) -> None:
     """将 preferred_language 写入指定 config.yaml（用于 init 等尚未绑定全局路径的场景）。"""
-    lang = str(lang or "zh").strip().lower()
-    if lang not in ("zh", "en"):
-        lang = "zh"
+    normalized = str(lang or "").strip().lower()
+    if normalized not in ("zh", "en"):
+        raise ValueError(f"preferred_language must be zh or en, got {lang!r}")
     if not config_path.exists():
         return
     data = load_yaml_round_trip(config_path)
-    data["preferred_language"] = lang
+    data["preferred_language"] = normalized
     dump_yaml_round_trip(config_path, data)
 
 
@@ -1108,21 +1173,41 @@ def update_rsi_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
-def update_cua_agent_enabled_in_config(value: bool | None) -> None:
-    """Persist an explicit desktop preference, or null to follow the release default."""
+def update_rea_enabled_in_config(value: bool) -> None:
+    """原子更新 rea.enabled（Web REA 逆向入口开关）。"""
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("rea")
+        if not isinstance(section, dict):
+            section = {}
+            data["rea"] = section
+        section["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
+def update_cua_agent_enabled_in_config(value: bool | None) -> bool:
+    """Persist the desktop preference and report a transition to enabled."""
     if value is not None and not isinstance(value, bool):
         raise ValueError("cua_agent.enabled must be true, false or null")
 
+    just_enabled = False
+
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        nonlocal just_enabled
         current = data
         for key in ("react", "subagents", "cua_agent"):
             if not isinstance(current.get(key), dict):
                 current[key] = {}
             current = current[key]
+        was_enabled = is_cua_agent_enabled(current)
         current["enabled"] = value
+        just_enabled = is_cua_agent_enabled(current) and not was_enabled
         return data
 
     update_config(mutator)
+    return just_enabled
 
 
 def update_enable_free_models_in_config(value: bool) -> None:
@@ -1957,7 +2042,8 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
         if value or value in (None, ""):
             mcc[key] = str(value) if value else value
     temp = saved.pop("temperature", None)
-    if temp is not None:
+    # An empty string means "unset" (same as models.replace_all); float("") raises.
+    if temp is not None and not (isinstance(temp, str) and not temp.strip()):
         mco["temperature"] = float(temp)
     rl = saved.pop("reasoning_level", None)
     if rl is not None and str(rl).strip():
@@ -2036,8 +2122,23 @@ def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, A
             saved["is_default"] = True
 
 
+def _clears_temperature(entry: dict[str, Any]) -> bool:
+    """Return whether the payload explicitly clears ``temperature`` (#6856).
+
+    An empty string means "unset", matching ``models.replace_all``, which
+    normalises a blank ``temperature`` to null instead of persisting ``""``.
+    """
+    model_config = entry.get("model_config_obj")
+    if isinstance(model_config, dict) and "temperature" in model_config:
+        value = model_config["temperature"]
+    else:
+        value = entry.get("temperature")
+    return isinstance(value, str) and not value.strip()
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
+    clear_temperature = _clears_temperature(entry)
     clear_max_tokens = (
         isinstance(entry.get("model_config_obj"), dict)
         and "max_tokens" in entry["model_config_obj"]
@@ -2080,6 +2181,12 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
                 # A null max_tokens is the resource API's explicit "unlimited"
                 # signal. Omission still preserves an existing user setting.
                 saved_model_config.pop("max_tokens", None)
+        if clear_temperature:
+            saved_model_config = saved.get("model_config_obj")
+            if isinstance(saved_model_config, dict):
+                # A blank temperature is "unset", never a literal empty string,
+                # so the response and persisted YAML stay numeric-or-absent.
+                saved_model_config.pop("temperature", None)
         for key in ("vendor_key", "plan"):
             if key in client_update and client_update[key] in (None, ""):
                 saved.pop(key, None)

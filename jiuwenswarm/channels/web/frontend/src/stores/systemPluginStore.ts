@@ -40,8 +40,8 @@ interface SystemPluginState {
   busyIds: Record<string, boolean>;
   loading: boolean;
   error: string | null;
-  loadCatalog: (options?: SystemPluginLoadOptions) => Promise<void>;
-  loadMine: (options?: SystemPluginLoadOptions) => Promise<void>;
+  loadCatalog: (options?: SystemPluginLoadOptions) => Promise<boolean>;
+  loadMine: (options?: SystemPluginLoadOptions) => Promise<boolean>;
   loadDetail: (id: string, version?: string) => Promise<boolean>;
   install: (id: string, version?: string) => Promise<MutationResult>;
   importPath: (path: string) => Promise<MutationResult>;
@@ -49,6 +49,15 @@ interface SystemPluginState {
   reload: (id: string) => Promise<MutationResult>;
   setEnabled: (id: string, enable: boolean) => Promise<MutationResult>;
   clearError: () => void;
+}
+
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
 }
 
 function messageOf(error: unknown): string {
@@ -92,17 +101,20 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
     }
     try {
       const packages = await systemPluginApi.catalog(scope, options?.refresh === true);
-      if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return;
+      if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return true;
       scheduleCatalogRefresh(
         `systemPluginStore.ts:${scope}`,
         packages.cache,
         () => { void load(scope, { silent: true }); },
         () => listRequestSeq[scope] === seq,
       );
-      set(scope === 'catalog' ? { catalog: packages } : { mine: packages });
+      const unique = uniqueById(packages);
+      set(scope === 'catalog' ? { catalog: unique } : { mine: unique });
+      return true;
     } catch (error) {
-      if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return;
+      if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return true;
       if (!silent && !isTransientManagementError(error)) set({ error: messageOf(error) });
+      return false;
     } finally {
       if (!silent) {
         pendingLoads -= 1;

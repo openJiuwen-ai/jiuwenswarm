@@ -19,6 +19,13 @@ await i18next.use(initReactI18next).init({
             install: '安装',
           },
         },
+        marketplace: {
+          cache: {
+            refreshFailed: '目录刷新失败，继续显示上次可用内容。',
+            stale: '当前显示旧缓存。',
+            updatedAt: '上次更新时间：{{time}}',
+          },
+        },
       },
     },
   },

@@ -12,6 +12,9 @@ from jiuwenswarm.common import symphony_config
 
 def test_product_defaults_are_explicit_and_preserve_core_defaults(monkeypatch, tmp_path):
     monkeypatch.setattr(symphony_config, "get_agent_workspace_dir", lambda: tmp_path)
+    # 默认 artifact_root 经 paths.get_symphony_dir() 派生（= agent workspace
+    # 下 symphony/），函数内局部 import，patch 需覆盖 paths 层
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_agent_workspace_dir", lambda: tmp_path)
     cfg = symphony_config.symphony_config_from_dict({})
     assert isinstance(cfg, SymphonyConfig)
     assert [source.model_dump() for source in cfg.capability.sources] == [
@@ -106,6 +109,14 @@ def test_switches_resolve_null_in_host(group, value):
 def test_experience_switch_inherits_core_default_or_uses_explicit_value(value):
     cfg = symphony_config.symphony_config_from_dict({"orchestration": {"experience": {"enabled": value}}})
     assert cfg.orchestration.experience.enabled is (False if value is None else value)
+
+
+def test_legacy_empty_root_categories_migrates_to_unset():
+    cfg = symphony_config.symphony_config_from_dict({
+        "skill_retrieval": {"build": {"root_categories": ""}},
+    })
+
+    assert cfg.retrieval.index_build.structure.root_categories is None
 
 
 def test_legacy_symphony_values_migrate_without_mutating_input():

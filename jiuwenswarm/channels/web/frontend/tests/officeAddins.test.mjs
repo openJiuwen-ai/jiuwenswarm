@@ -30,7 +30,7 @@ await esbuild.build({
   platform: 'node',
   format: 'esm',
   outfile: 'node_modules/.cache/office-addins/OfficeSuite.js',
-  loader: { '.css': 'empty', '.svg': 'dataurl' },
+  loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
   plugins: [viteAssets],
   jsx: 'automatic',
   define: { 'import.meta.env.DEV': 'false' },
@@ -183,6 +183,23 @@ test('the detail page shows the suite state by its name, each app with its statu
       else absent(noteLine, 'a missing-app note');
     });
   }
+});
+
+test('an app older than its add-in requires reads as outdated, with the version to update to under the list', async () => {
+  const status = { ...office(false, [], { powerpoint: 'host_outdated' }), required: { powerpoint: '16.96' } };
+  await withPlaza(desktop(status), async container => {
+    await click(card(container));
+    assert.deepEqual(['word', 'excel', 'powerpoint'].map(id => statusOf(container, id)), ['未安装', '未安装', '版本过低']);
+    assert.match($(detail(container), 'office-addins-app-outdated').textContent, /^PowerPoint 版本过低，升级到 16\.96 或更高版本/);
+    assert.equal($(detail(container), 'office-addins-action').textContent, '安装');
+  });
+  const onlyOutdated = { ...office(false, [], { word: 'host_not_found', excel: 'host_not_found', powerpoint: 'host_outdated' }),
+    required: { powerpoint: '2504' } };
+  await withPlaza(desktop(onlyOutdated), async container => {
+    await click(card(container));
+    assert.equal($(detail(container), 'office-addins-suite-status').textContent, '版本过低');
+    absent($(detail(container), 'office-addins-action'), 'an install action');
+  });
 });
 
 test('install, repair and remove each ask first, then call their route', async () => {

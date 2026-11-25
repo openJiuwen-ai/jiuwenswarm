@@ -5,9 +5,29 @@ import test from 'node:test';
 import {
   NEW_CONVERSATION_ID,
   resetNewConversationRuntime,
+  registerCreatedConversation,
+  moveConversationDraft,
   useChatStore,
   useSessionStore,
 } from '../node_modules/.cache/new-conversation-draft-preserve/newConversationDraftPreserveExports.mjs';
+
+test('plugin session creation moves text and skill positions only after the target runtime exists', () => {
+  const target = 'expert-batch-draft';
+  const store = useChatStore.getState();
+  store.ensureRuntime(NEW_CONVERSATION_ID);
+  store.removeRuntime(target);
+  const positions = [{ name: 'review', offset: 0 }];
+  store.setInputValue(NEW_CONVERSATION_ID, '/review keep my draft', positions);
+  assert.equal(moveConversationDraft(NEW_CONVERSATION_ID, target), false);
+  assert.equal(store.getRuntime(NEW_CONVERSATION_ID).inputValue, '/review keep my draft');
+  registerCreatedConversation(target, { mode: 'team', selectedModelName: null });
+  assert.equal(moveConversationDraft(NEW_CONVERSATION_ID, target), true);
+  assert.equal(store.getRuntime(target).inputValue, '/review keep my draft');
+  assert.deepEqual(store.getRuntime(target).inputSkillPositions, positions);
+  assert.equal(store.getRuntime(NEW_CONVERSATION_ID).inputValue, '');
+  store.removeRuntime(target);
+  useSessionStore.getState().removeRuntime(target);
+});
 
 test('resetNewConversationRuntime keeps draft skills and slash text (#5771)', () => {
   useChatStore.getState().ensureRuntime(NEW_CONVERSATION_ID);

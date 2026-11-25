@@ -312,7 +312,7 @@ async def clear_agent_config_cache(
     """写回 config.yaml 后清除 agent 侧配置缓存，使下次读取时得到最新文件内容。"""
     try:
         if agent_client is not None:
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+            from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
             from jiuwenswarm.common.schema.message import ReqMethod
             import uuid
 
@@ -510,7 +510,11 @@ async def config_get_handler(
         payload["memory_forbidden_enabled"] = (
             "true" if mem_cfg.get("enabled", False) else "false"
         )
-        payload["preferred_language"] = raw.get("preferred_language") or "zh"
+        from jiuwenswarm.common.i18n import normalize_preferred_language
+
+        payload["preferred_language"] = normalize_preferred_language(
+            raw.get("preferred_language")
+        )
         auto_recap_cfg = raw.get("auto_recap") or {}
         payload["auto_recap_enabled"] = (
             "true" if auto_recap_cfg.get("enabled", True) else "false"
@@ -588,7 +592,7 @@ async def config_get_handler(
         payload.setdefault("context_engine_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("memory_forbidden_enabled", "false")
-        payload.setdefault("preferred_language", "zh")
+        payload.setdefault("preferred_language", "en")
         payload.setdefault("skill_evolution", "false")
 
     # Auto-Harness config values (from ~/.jiuwenswarm/auto-harness/config.yaml)
@@ -1135,7 +1139,7 @@ async def command_model_handler(
     E2A 代理分叉与 ``force_local_config`` 语义由 gateway 侧包装器处理；
     本 handler 假定已在正确的用户目录上下文中执行。
     """
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+    from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
     from jiuwenswarm.common.schema.message import ReqMethod
 
     if not isinstance(params, dict):

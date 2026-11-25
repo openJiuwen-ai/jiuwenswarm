@@ -157,7 +157,7 @@ function compareStable(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-/** 将合法的 planned_graph JGF 投影成 Mermaid，必要时用安全别名保留原始标签。 */
+/** 将合法的 planned_graph JGF 投影成 Mermaid，同一对节点之间的产物映射共用一条有向边。 */
 export function plannedGraphToMermaid(rawOutput: unknown): string | undefined {
   const output = asRecord(rawOutput);
   const plannedGraph = asRecord(output?.planned_graph);
@@ -213,9 +213,9 @@ export function plannedGraphToMermaid(rawOutput: unknown): string | undefined {
     ...nodeIds.map((nodeId) =>
       `${renderedNodeIds.get(nodeId)}(${JSON.stringify(String(asRecord(nodes[nodeId])?.label || nodeId))})`
     ),
-    ...normalizedEdges.map(
+    ...new Set(normalizedEdges.map(
       ({ source, target }) => `${renderedNodeIds.get(source)} --> ${renderedNodeIds.get(target)}`,
-    ),
+    )),
   ].join('\n');
 }
 

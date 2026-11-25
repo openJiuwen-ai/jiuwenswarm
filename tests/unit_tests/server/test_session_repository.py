@@ -75,7 +75,8 @@ async def test_get_metadata_preserves_read_options_and_payload(monkeypatch, para
         "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata", read,
     )
     response = await handle_session_request(_request(ReqMethod.SESSION_GET_METADATA, params))
-    assert response.ok and response.payload == payload
+    # Front path always surfaces durable is_paused (False when metadata omits it).
+    assert response.ok and response.payload == {**payload, "is_paused": False}
     assert calls == [("sess-1", True, writeback)]
     assert response.request_id == "req-1" and response.channel_id == "web"
 

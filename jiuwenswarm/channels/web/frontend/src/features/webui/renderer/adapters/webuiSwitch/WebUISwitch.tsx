@@ -21,7 +21,10 @@ export function WebUISwitch({ node, context, emit, appearance }: WebUIAdapterPro
   const [checked, setChecked] = useState(p.checked ?? p.defaultChecked ?? false);
   useEffect(() => {
     if (p.checked !== undefined) setChecked(p.checked);
-  }, [p.checked]);
+  }, [node, p.checked]);
+  useEffect(() => {
+    if (p.checked === undefined) setChecked(p.defaultChecked ?? false);
+  }, [p.checked, p.defaultChecked]);
   const disabled = p.disabled || p.loading || !context.connected;
   return (
     <>

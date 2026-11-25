@@ -8,14 +8,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from agent_gateway.channel_manager.persistent_events import FeishuInboundEvent as GatewayFeishuEvent, InboundDisposition as GatewayDisposition
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
 from agent_gateway.message_handler.message_handler import MessageHandler
+
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
     FeishuBinding,
     FeishuInboundEvent,
