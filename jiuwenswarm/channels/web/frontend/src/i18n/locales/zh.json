@@ -185,6 +185,7 @@
     "serverResourceHint": "统计运行后端服务的整台服务器 CPU 与内存占用，包含该机器上的所有进程，不是 WorkSwarm 单独占用。本地连接通常指向本机，但代理、端口转发可能指向远程服务器；容器可能返回宿主机指标。每 3 秒更新，CPU 或内存连续 3 次达到 85% 时提醒，两项均低于 75% 时解除。",
     "highResourceUsage": "整机资源占用偏高，建议停止暂时不用的应用或其他任务。",
     "title": "应用",
+    "subtitle": "Swarm 应用的管理和监控",
     "myApps": "我的应用",
     "market": "应用广场",
     "marketLoadFailed": "加载应用广场失败",
@@ -202,6 +203,7 @@
       "loadFailed": "加载 AI 角色失败",
       "agent": "单角色会话",
       "team": "团队会话",
+      "teamBadge": "团队",
       "leader": "队长"
     },
     "backToMyApps": "返回我的应用",
