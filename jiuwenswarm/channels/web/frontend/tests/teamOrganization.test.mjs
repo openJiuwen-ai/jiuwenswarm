@@ -2888,6 +2888,108 @@ test('only structured user-facing Team messages are mirrored and source identiti
   assert.equal(mergeUniqueMessages([first, second, first]).length, 2);
 });
 
+test('owner Team keeps one readable label and one dot shape when it leaves the runtime pool', async () => {
+  const ownerTeamId = 'jiuwen_team_web_1a1c88ff877_235e6785d75a';
+  // 冷态：Team 只在会话 metadata 里，后端只给内部 id，没有 display_name。
+  const coldTeams = [
+    { team_id: ownerTeamId, team_name: ownerTeamId, is_owner: true, state: 'configured' },
+    { team_id: 'org-expert-1', team_name: 'org-expert-1', state: 'started' },
+  ];
+  await withOrganizationPanel(
+    (method, params) => method === 'team.list' ? { teams: coldTeams, default_team_id: ownerTeamId }
+      : method === 'org.snapshot' ? {
+          organization: {
+            ...boundSnapshot.organization, owner_team_id: ownerTeamId, leaders: [{ team_id: ownerTeamId }],
+          },
+          tasks: [],
+        }
+      : method === 'agent_groups.list' ? { agentGroups: [] }
+      : { team_id: params.team_name, members: [], tasks: [] },
+    async ({ root }) => {
+      await act(async () => root.render(React.createElement(TeamSelector, { sessionId: 'session', groups: [] })));
+      const value = document.querySelector('[data-testid="chat-panel-team-select-value"]');
+      assert.equal(value.textContent, '团队领导');
+      assert.doesNotMatch(value.textContent, /jiuwen_team_web/);
+      const dot = value.querySelector('[data-testid="chat-panel-team-select-dot"]');
+      assert.equal(dot.getAttribute('data-tone'), 'idle');
+      assert.equal(dot.getAttribute('title'), '待命');
+      assert.equal(dot.getAttribute('role'), 'img');
+      assert.equal(dot.getAttribute('aria-label'), '待命');
+      await act(async () => document.querySelector('[data-testid="chat-panel-team-select-trigger"]').click());
+      const ownerOption = document.querySelector(`[data-testid="chat-panel-team-select-option"][data-team-id="${ownerTeamId}"]`);
+      assert.match(ownerOption.textContent, /团队领导/);
+      // title 悬浮提示与显示名保持一致，不再暴露内部 id。
+      assert.equal(ownerOption.getAttribute('title'), '团队领导');
+      assert.equal(
+        document.querySelector('[data-testid="chat-panel-team-select-option"][data-team-id="org-expert-1"]').getAttribute('title'),
+        'org-expert-1',
+      );
+      // 未知状态仍然是一个圆点，不再在圆点与人形图标之间切换。
+      const unknownDot = document.querySelector(
+        '[data-testid="chat-panel-team-select-option"][data-team-id="org-expert-1"] [data-testid="chat-panel-team-select-dot"]',
+      );
+      assert.equal(unknownDot.tagName, 'SPAN');
+      assert.equal(unknownDot.getAttribute('data-tone'), 'unknown');
+
+      // 同一 Team 在组织信息面板与团队列表里沿用同一条 owner 回退规则，不再出现裸 id。
+      const panelHost = document.createElement('div');
+      document.body.appendChild(panelHost);
+      const panelRoot = createRoot(panelHost);
+      await act(async () => panelRoot.render(React.createElement(OrganizationTeamsList, { groups: [], variant: 'cards' })));
+      const rosterOwner = panelHost.querySelector(
+        `[data-testid="team-area-organization-team"][data-variant="${ownerTeamId}"]`,
+      );
+      assert.ok(rosterOwner);
+      assert.match(rosterOwner.textContent, /团队领导/);
+      assert.doesNotMatch(rosterOwner.textContent, /jiuwen_team_web/);
+      await act(async () => panelRoot.render(React.createElement(OrgInfoPanel)));
+      const infoOwner = panelHost.querySelector(
+        `[data-testid="team-area-org-info-team-name"][data-variant="${ownerTeamId}"]`,
+      );
+      assert.ok(infoOwner);
+      assert.equal(infoOwner.textContent, '团队领导');
+      await act(async () => panelRoot.unmount());
+      panelHost.remove();
+
+      // 热态：Team 回到运行时池，后端补上 display_name，显示名保持一致。
+      await act(async () => useTeamSelectorStore.setState((state) => ({
+        runtimes: {
+          ...state.runtimes,
+          session: {
+            ...state.runtimes.session,
+            teams: [{ ...coldTeams[0], display_name: '团队领导', state: 'running' }, coldTeams[1]],
+          },
+        },
+      })));
+      const liveValue = document.querySelector('[data-testid="chat-panel-team-select-value"]');
+      assert.equal(liveValue.textContent, '团队领导');
+      const liveDot = liveValue.querySelector('[data-testid="chat-panel-team-select-dot"]');
+      assert.equal(liveDot.getAttribute('data-tone'), 'running');
+      assert.equal(liveDot.getAttribute('title'), '运行中');
+      assert.equal(liveDot.getAttribute('aria-label'), '运行中');
+
+      // 部署配置了自定义团长显示名：热态以后端下发的配置名为准，owner 回退不得覆盖；
+      // 单团队时触发按钮的 title 也显示解析后的标签，不再回退内部 team_id。
+      await act(async () => useTeamSelectorStore.setState((state) => ({
+        runtimes: {
+          ...state.runtimes,
+          session: {
+            ...state.runtimes.session,
+            teams: [{ ...coldTeams[0], display_name: '张主管', state: 'running' }],
+          },
+        },
+      })));
+      const configuredValue = document.querySelector('[data-testid="chat-panel-team-select-value"]');
+      assert.equal(configuredValue.textContent, '张主管');
+      assert.doesNotMatch(configuredValue.textContent, /jiuwen_team_web/);
+      assert.equal(
+        document.querySelector('[data-testid="chat-panel-team-select-trigger"]').getAttribute('title'),
+        '张主管',
+      );
+    },
+  );
+});
+
 test('live expert responses reach Owner once and history restore uses the same mirrored IDs', async () => {
   seed();
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });

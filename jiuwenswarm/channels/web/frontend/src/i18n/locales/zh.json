@@ -2666,7 +2666,13 @@
       "unavailableHint": "该专家团已不可用，请重新安装专家团后继续；历史记录仍可查看。",
       "tooltip": "切换当前查看的 Team",
       "loadingLabel": "加载 Team…",
-      "fallbackLabel": "选择 Team"
+      "fallbackLabel": "选择 Team",
+      "ownerLabel": "团队领导",
+      "state": {
+        "running": "运行中",
+        "idle": "待命",
+        "unknown": "状态未知"
+      }
     },
     "configLockedHistory": "会话已有消息，请新建会话后更改配置",
     "modeSwitchTitle": "切换模式",

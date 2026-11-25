@@ -53,7 +53,7 @@ export function OrganizationTeamsList({ groups: providedGroups, variant = 'compa
     );
     const label = identity
       ? resolveTeamGroupDisplayName(identity, i18n.language)
-      : resolveOrganizationTeamLabel(team, groups, team.team_id);
+      : resolveOrganizationTeamLabel(team, groups, team.team_id, t('chat.teamSelect.ownerLabel'));
     const selected = visibleSelectedId === team.team_id;
     // Match the composer: a live Team runtime can remain "running" after team.idle.
     const key = conversationKey(sessionId, team.is_owner ? null : team.team_id);

@@ -33,15 +33,21 @@ export function resolveOrganizationTeamLabel(
   team: RuntimeTeamInfo | undefined | null,
   groups: AgentGroupCatalogItem[],
   fallback: string,
+  ownerFallback: string,
 ): string {
-  return (
+  const label =
     resolveOrganizationTeamIdentity(team, groups)?.displayName ||
     team?.display_name?.trim() ||
     team?.agent_group_name?.trim() ||
     team?.team_id?.trim() ||
     team?.team_name?.trim() ||
-    fallback
-  );
+    fallback;
+  // 主团（会话默认 Team）没有业务名时，冷态（只有会话 metadata）后端只给内部 id，
+  // 热态（Team 在运行时池里）给的是团长名。显示名不能随 Team 是否在池里变化。
+  if (ownerFallback && team?.is_owner && (label === team.team_id?.trim() || label === team.team_name?.trim())) {
+    return ownerFallback;
+  }
+  return label;
 }
 
 /** The organization panel loads the installed directory only while it is displaying an organization. */

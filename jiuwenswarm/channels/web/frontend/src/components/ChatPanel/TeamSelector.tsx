@@ -8,13 +8,16 @@
  *
  * 交互样式刻意复用 chat-mode-select 那一套（触发按钮 + portal 菜单 + 上/下翻方向兜底），
  * 两个下拉并排放置时视觉一致。
+ *
+ * 显示规范（issue #106）：名称统一按「AgentGroup 身份 → team.display_name → agent_group_name →
+ * 主团显示为团队领导 → 内部 team_id」解析，主团不再随 Team 是否留在运行时池里改变名字；
+ * 状态点固定为圆点，绿=运行中、黄=待命、灰=未知，颜色语义写入点的 title 与 aria-label。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
-import { Users } from 'lucide-react';
 import { conversationKey, useSessionStore, useTeamSelectorStore, type RuntimeTeamInfo } from '../../stores';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import { webClient } from '../../services/webClient';
@@ -47,10 +50,16 @@ function stateTone(state: string): 'running' | 'idle' | 'unknown' {
   return 'unknown';
 }
 
-/** 下拉显示专家团目录中的名称；未绑定模板的 Team 保留运行时名称。 */
-function teamLabel(team: RuntimeTeamInfo, identity: AgentGroupIdentity | null, language: string, fallback: string): string {
+/** 下拉显示专家团目录中的名称；未绑定模板的 Team 保留运行时名称，主团统一显示为「团队领导」。 */
+function teamLabel(
+  team: RuntimeTeamInfo,
+  identity: AgentGroupIdentity | null,
+  language: string,
+  ownerLabel: string,
+  fallback: string,
+): string {
   if (identity) return resolveTeamGroupDisplayName(identity, language);
-  return resolveOrganizationTeamLabel(team, [], fallback);
+  return resolveOrganizationTeamLabel(team, [], fallback, ownerLabel);
 }
 
 export interface TeamSelectorProps {
@@ -214,8 +223,9 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
   if (!organizationUiEnabled || (!loading && teams.length === 0)) return null;
 
   const identity = resolveIdentity(selected);
+  const ownerLabel = t('chat.teamSelect.ownerLabel');
   const label = selected
-    ? teamLabel(selected, identity, i18n.language, t('chat.teamSelect.fallbackLabel'))
+    ? teamLabel(selected, identity, i18n.language, ownerLabel, t('chat.teamSelect.fallbackLabel'))
     : t('chat.teamSelect.loadingLabel');
 
   return (
@@ -232,10 +242,10 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
         onClick={openMenu}
         aria-haspopup="menu"
         aria-expanded={open}
-        title={teamCount > 1 ? `${t('chat.teamSelect.tooltip')} · ${teamCount}` : (selected?.team_id ?? undefined)}
+        title={teamCount > 1 ? `${t('chat.teamSelect.tooltip')} · ${teamCount}` : label}
       >
         <span className="chat-mode-select__value" data-testid="chat-panel-team-select-value">
-          <span className="chat-mode-select__icon" aria-hidden="true">
+          <span className="chat-mode-select__icon">
             <TeamStateDot state={String(selected?.state ?? '')} />
           </span>
           {identity?.avatarUrl && (
@@ -298,6 +308,7 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
             {teams.map((team) => {
               const isActive = Boolean(selected && (teamIds.get(selected.team_id) ?? selected.team_id) === team.team_id);
               const teamIdentity = resolveIdentity(team);
+              const optionLabel = teamLabel(team, teamIdentity, i18n.language, ownerLabel, team.team_id);
               return (
                 <button
                   type="button"
@@ -308,7 +319,7 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
                   data-testid="chat-panel-team-select-option"
                   data-team-id={team.team_id}
                   data-team-state={team.state}
-                  title={team.team_id}
+                  title={optionLabel}
                   onClick={() => {
                     if (sessionId) {
                       // 标记为已选，避免 selectedTeamId 更新后自动选择 effect 再请求一次快照。
@@ -319,7 +330,7 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
                   }}
                 >
                   <span className="chat-mode-select__option-main">
-                    <span className="chat-mode-select__icon" aria-hidden="true">
+                    <span className="chat-mode-select__icon">
                       <TeamStateDot state={String(team.state ?? '')} />
                     </span>
                     {teamIdentity?.avatarUrl && (
@@ -336,7 +347,7 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
                       data-testid="chat-panel-team-select-option-label"
                       data-variant={team.team_id}
                     >
-                      {teamLabel(team, teamIdentity, i18n.language, team.team_id)}
+                      {optionLabel}
                     </span>
                     {team.available === false && (
                       <span className="text-danger" data-testid="chat-panel-team-select-option-unavailable" data-variant={team.team_id}>
@@ -366,17 +377,19 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
   );
 }
 
-/** 状态点：running 绿、pending/configured 灰，未知状态退回 Users 图标。 */
+/** 状态点：running 绿、pending/configured/paused 黄、未知灰；形状统一为圆点，语义同时写入 title 与 aria-label。 */
 function TeamStateDot({ state }: { state: string }) {
+  const { t } = useTranslation();
   const tone = stateTone(state);
-  if (tone === 'unknown') {
-    return <Users className="w-4 h-4" />;
-  }
+  const stateText = t(`chat.teamSelect.state.${tone}`);
   return (
     <span
       className={clsx('chat-team-select__dot', `chat-team-select__dot--${tone}`)}
       data-testid="chat-panel-team-select-dot"
       data-tone={tone}
+      role="img"
+      aria-label={stateText}
+      title={stateText}
     />
   );
 }

@@ -2667,7 +2667,13 @@
       "unavailableHint": "This Expert Team is unavailable. Reinstall its package to continue; history is preserved.",
       "tooltip": "Switch the Team being viewed",
       "loadingLabel": "Loading teams…",
-      "fallbackLabel": "Select Team"
+      "fallbackLabel": "Select Team",
+      "ownerLabel": "Team Leader",
+      "state": {
+        "running": "Running",
+        "idle": "Standby",
+        "unknown": "Status unknown"
+      }
     },
     "modeSwitchTitle": "Switch Mode",
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",

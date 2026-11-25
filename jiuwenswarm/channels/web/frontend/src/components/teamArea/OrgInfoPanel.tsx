@@ -214,7 +214,7 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
   const byTask = useMemo(() => new Map((tasks ?? []).filter((task) => task.task_id).map((task) => [task.task_id!, task])), [tasks]);
   const teamLabel = (id: string) => id.startsWith('org-summary-')
     ? t('team.org.summaryTeam')
-    : resolveOrganizationTeamLabel(byTeam.get(id), groups, id);
+    : resolveOrganizationTeamLabel(byTeam.get(id), groups, id, t('chat.teamSelect.ownerLabel'));
   const teamAvatar = (id: string): string | undefined =>
     resolveOrganizationTeamIdentity(byTeam.get(id), groups)?.avatarUrl ?? undefined;
   const taskLabel = (id: string) => byTask.get(id)?.title?.trim() || id;
