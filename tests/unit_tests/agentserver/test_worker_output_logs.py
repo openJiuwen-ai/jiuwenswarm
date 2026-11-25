@@ -196,6 +196,120 @@ def test_blocked_log_maintenance_does_not_extend_worker_shutdown(tmp_path, monke
     assert not rotation._thread.is_alive()
 
 
+def _maintenance_clock(monkeypatch, rotation, ticks):
+    clock = [0.0]
+    remaining = iter(ticks)
+    monkeypatch.setattr(output_logs, "time", SimpleNamespace(monotonic=lambda: clock[0], time=time.time))
+
+    def advance(_interval):
+        try:
+            clock[0] = next(remaining)
+        except StopIteration:
+            rotation._stopped.set()
+            return True
+        return False
+
+    monkeypatch.setattr(rotation._stopped, "wait", advance)
+    return clock
+
+
+@pytest.mark.parametrize("failure", ["missing", "denied"])
+def test_rotation_failure_does_not_disable_retention(tmp_path, monkeypatch, caplog, failure):
+    # Immutable archives and snapshots do not require a process scan. Keep the
+    # controlled clock independent of the host's process count and permissions.
+    monkeypatch.setattr(output_logs, "_active_log_paths", lambda _directory: None)
+    path = _stderr(tmp_path)
+    original = b"important original traceback\n" * 8
+    if failure == "denied":
+        path.write_bytes(original)
+        original_open = Path.open
+
+        def deny_rotation(target, mode="r", *args, **kwargs):
+            if target == path and mode == "r+b":
+                raise PermissionError("stderr is not writable")
+            return original_open(target, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", deny_rotation)
+    archives = []
+    dumps = []
+    for number in range(5):
+        archive = path.with_name(f"{path.stem}_20261125_120000_{number}.log")
+        archive.write_bytes(b"archived traceback")
+        _age(archive, 150 - number)
+        archives.append(archive)
+        dump = tmp_path / f"supervisor-1234-{number}.txt"
+        dump.write_bytes(b"old snapshot")
+        _age(dump, 150 - number)
+        dumps.append(dump)
+    rotation = output_logs.WorkerLogRotation(path, max_bytes=32, backup_count=2)
+    clock = _maintenance_clock(monkeypatch, rotation, [5.0, 59.0, 60.0, 61.0, 120.0])
+    cleanup_times = []
+    original_prune = output_logs.prune_worker_logs
+
+    def prune(*args, **kwargs):
+        cleanup_times.append(clock[0])
+        original_prune(*args, **kwargs)
+
+    monkeypatch.setattr(output_logs, "prune_worker_logs", prune)
+
+    rotation._run()
+
+    assert cleanup_times == [0.0, 60.0, 120.0]
+    assert [item for item in archives if item.exists()] == archives[-2:]
+    assert [item for item in dumps if item.exists()] == dumps[-2:]
+    if failure == "denied":
+        assert path.read_bytes() == original
+    else:
+        assert not path.exists()
+    assert sum("output log rotation failed" in record.message for record in caplog.records) == 3
+
+
+def test_maintenance_failures_retry_and_warn_independently(tmp_path, monkeypatch, caplog):
+    rotation = output_logs.WorkerLogRotation(_stderr(tmp_path), max_bytes=32, backup_count=2)
+    clock = _maintenance_clock(monkeypatch, rotation, [5.0, 59.0, 60.0, 61.0, 120.0])
+    rotation_times = []
+    cleanup_times = []
+
+    def fail_rotate():
+        rotation_times.append(clock[0])
+        raise PermissionError("stderr cannot rotate")
+
+    def fail_prune(*_args, **_kwargs):
+        cleanup_times.append(clock[0])
+        raise OSError("directory is temporarily unavailable")
+
+    monkeypatch.setattr(rotation, "rotate", fail_rotate)
+    monkeypatch.setattr(output_logs, "prune_worker_logs", fail_prune)
+
+    rotation._run()
+
+    assert rotation_times == [0.0, 5.0, 59.0, 60.0, 61.0, 120.0]
+    assert cleanup_times == [0.0, 60.0, 120.0]
+    assert sum("output log rotation failed" in record.message for record in caplog.records) == 3
+    assert sum("output log cleanup failed" in record.message for record in caplog.records) == 3
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_retention_interval_starts_after_cleanup_attempt(tmp_path, monkeypatch, cleanup_fails):
+    rotation = output_logs.WorkerLogRotation(_stderr(tmp_path), max_bytes=32, backup_count=2)
+    clock = _maintenance_clock(monkeypatch, rotation, [30.0, 76.0, 77.0])
+    cleanup_times = []
+    monkeypatch.setattr(rotation, "rotate", lambda: None)
+
+    def cleanup(*_args, **_kwargs):
+        cleanup_times.append(clock[0])
+        if len(cleanup_times) == 1:
+            clock[0] += 17.0
+        if cleanup_fails:
+            raise OSError("cleanup failed after some I/O")
+
+    monkeypatch.setattr(output_logs, "prune_worker_logs", cleanup)
+
+    rotation._run()
+
+    assert cleanup_times == [0.0, 77.0]
+
+
 def test_retention_bounds_retired_outputs_and_supervisor_dumps(tmp_path, monkeypatch):
     monkeypatch.setattr(output_logs, "_active_log_paths", lambda _directory: set())
     outputs = []

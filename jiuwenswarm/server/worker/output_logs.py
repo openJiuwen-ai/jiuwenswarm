@@ -376,22 +376,30 @@ class WorkerLogRotation:
 
     def _run(self) -> None:
         last_retention = float("-inf")
-        last_warning = float("-inf")
+        last_rotation_warning = float("-inf")
+        last_cleanup_warning = float("-inf")
         while not self._stopped.is_set():
             try:
                 self.rotate()
+            except Exception:  # noqa: BLE001 - logging maintenance must not stop the Worker
                 now = time.monotonic()
-                if now - last_retention >= self._retention_interval:
-                    last_retention = now
+                if now - last_rotation_warning >= 60:
+                    last_rotation_warning = now
+                    logger.warning("[Worker] output log rotation failed", exc_info=True)
+            now = time.monotonic()
+            if now - last_retention >= self._retention_interval:
+                try:
                     prune_worker_logs(
                         self.path.parent, max_bytes=self.max_bytes,
                         backup_count=self.backup_count, protected=self.path,
                     )
-            except Exception:  # noqa: BLE001 - logging maintenance must not stop the Worker
-                now = time.monotonic()
-                if now - last_warning >= 60:
-                    last_warning = now
-                    logger.warning("[Worker] output log maintenance failed", exc_info=True)
+                except Exception:  # noqa: BLE001 - logging maintenance must not stop the Worker
+                    now = time.monotonic()
+                    if now - last_cleanup_warning >= 60:
+                        last_cleanup_warning = now
+                        logger.warning("[Worker] output log cleanup failed", exc_info=True)
+                # Retry on the configured schedule even after a failed attempt.
+                last_retention = time.monotonic()
             if self._stopped.wait(self._interval):
                 break
 
