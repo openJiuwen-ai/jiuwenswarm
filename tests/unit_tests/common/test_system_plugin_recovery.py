@@ -9,7 +9,11 @@ import pytest
 
 from jiuwenswarm.common import system_plugin_recovery
 from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
-from jiuwenswarm.common.system_plugin_recovery_sidecar import _RecoveryHandler, _page, _parent_origin
+from jiuwenswarm.common.system_plugin_recovery_sidecar import (
+    _RecoveryHandler,
+    _page,
+    _parent_origin,
+)
 
 
 def _write_package(root: Path, package_id: str, version: str, enabled: bool) -> Path:
@@ -67,7 +71,7 @@ def test_recovery_page_renders_collapsible_details() -> None:
     assert ".record-detail.is-open { grid-template-columns: 1fr; gap: 14px; }" in page
     assert "function toggleDetail(item, toggle, detail, record, packages)" in page
     assert "void loadPreview(record.id, packages, detail);" in page
-    assert "/api/preview?token=${query}&record_id=${recordQuery}" in page
+    assert "fetch(apiUrl('preview', recordId))" in page
     assert "detail.hidden" not in page
     assert "restoreButton.onclick = () => {" in page
     assert "if (selectedRecordId) confirmRestore(selectedRecordId, restoreButton);" in page
@@ -90,6 +94,15 @@ def test_parent_origin_rejects_non_origin_urls() -> None:
     assert _parent_origin("http://127.0.0.1:3000") == "http://127.0.0.1:3000"
     assert _parent_origin("https://example.com/path") == ""
     assert _parent_origin("javascript:alert(1)") == ""
+
+
+def test_recovery_page_escapes_data_embedded_in_html_script() -> None:
+    page = _page("<token-marker>", "en", "https://<origin-marker>.example")
+
+    assert "<token-marker>" not in page
+    assert "<origin-marker>" not in page
+    assert r'const token = "\u003ctoken-marker>";' in page
+    assert r'https://\u003corigin-marker>.example' in page
 
 
 def test_restore_disables_packages_installed_after_the_selected_record(tmp_path: Path) -> None:

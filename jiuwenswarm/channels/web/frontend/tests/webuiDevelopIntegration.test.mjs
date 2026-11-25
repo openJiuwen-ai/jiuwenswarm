@@ -118,33 +118,36 @@ test('a WS Gateway without V2 methods leaves ordinary pages usable after the spl
   } finally { await view.close(); }
 });
 
-test('the recovery settings page keeps the SPA prefix while its isolated sidecar retains its own route', async (t) => {
+test('the recovery settings page keeps the chat URL and uses the same-origin recovery proxy', async (t) => {
   const fetches = [];
   t.mock.method(globalThis, 'fetch', async (path) => {
     fetches.push(path);
-    return Response.json({ url: 'http://127.0.0.1:8765/system-plugin-recovery' });
+    return Response.json({ url: './proxy' });
   });
   window.history.replaceState(null, '', '/portal/chat/new');
   const view = await mount(createElement(http.WebUIAppRoot, null, createElement(http.SystemPluginRecoverySettings)));
   try {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
-    assert.equal(window.location.pathname, '/portal/system-plugin-recovery');
+    assert.equal(window.location.pathname, '/portal/chat/new');
     assert.deepEqual(fetches, ['/portal/system-plugin-recovery/endpoint']);
     const frame = view.container.querySelector('iframe');
-    assert.equal(new URL(frame.src).pathname, '/system-plugin-recovery');
-    assert.equal(new URL(frame.src).searchParams.get('parent_origin'), 'http://localhost');
+    const frameUrl = new URL(frame.src);
+    assert.equal(frameUrl.origin, 'http://localhost');
+    assert.equal(frameUrl.pathname, '/portal/system-plugin-recovery/proxy');
+    assert.deepEqual([...frameUrl.searchParams.keys()], ['locale']);
+    assert.ok(view.container.querySelector('[data-testid="settings-system-plugin-recovery-restore"]'));
+    assert.equal(view.container.querySelector('a[target="_blank"]'), null);
   } finally { await view.close(); }
 });
 
-test('persistent JiuwenMate yields only to the explicit recovery route', async () => {
+test('persistent JiuwenMate is not disabled by a stale recovery URL', async () => {
   window.localStorage.setItem('jiuwenswarm:jiuwenmate-mode', 'true');
   const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const predicate = app.match(/if \((isJiuwenMate[^\r\n]*)\) \{\s*return \(\s*<>\s*<JiuwenMateApp/)[1];
   const compiled = await transform(`export default (isJiuwenMate, route) => ${predicate}`, { format: 'esm' });
   const { default: showJiuwenMate } = await import(`data:text/javascript;base64,${Buffer.from(compiled.code).toString('base64')}`);
   const persisted = window.localStorage.getItem('jiuwenswarm:jiuwenmate-mode') === 'true';
-  assert.equal(showJiuwenMate(persisted, { kind: 'system-plugin-recovery' }), false);
-  for (const kind of ['chat-new', 'chat-session', 'group-chat', 'design-project']) {
+  for (const kind of ['chat-new', 'chat-session', 'group-chat', 'design-project', 'system-plugin-recovery']) {
     assert.equal(showJiuwenMate(persisted, { kind }), true);
   }
   assert.equal(window.localStorage.getItem('jiuwenswarm:jiuwenmate-mode'), 'true');

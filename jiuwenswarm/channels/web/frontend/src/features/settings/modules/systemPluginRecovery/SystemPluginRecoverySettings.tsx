@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { CircleAlert, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useOptionalWebUIAppContext } from '../../../webui/react/WebUIProvider';
-import { chatRoutePath } from '../../../../multi-session/routing/route';
+import { appRoutePath } from '../../../../multi-session/routing/route';
 import './SystemPluginRecoverySettings.css';
 
 const RECOVERY_ROUTE = '/system-plugin-recovery';
+const RECOVERY_ROUTE_PATH = appRoutePath(RECOVERY_ROUTE);
 const MAX_ENDPOINT_ATTEMPTS = 10;
 const ENDPOINT_RETRY_DELAY_MS = 500;
 const RECOVERY_HEIGHT_MESSAGE = 'jiuwenswarm.system-plugin-recovery.height';
@@ -33,24 +34,22 @@ type RecoveryMessage = {
 function recoveryPageUrl(value: unknown, locale: string): string | null {
   if (typeof value !== 'string') return null;
   try {
-    const url = new URL(value);
-    if (url.protocol !== 'http:') return null;
-    if (url.hostname !== '127.0.0.1') return null;
-    if (!url.port) return null;
-    if (url.pathname !== RECOVERY_ROUTE) return null;
+    const url = new URL(value, `${window.location.origin}${RECOVERY_ROUTE_PATH}/`);
+    if (url.username || url.password || url.hash) return null;
+    const directSidecar = url.protocol === 'http:'
+      && url.hostname === '127.0.0.1'
+      && Boolean(url.port)
+      && url.pathname === RECOVERY_ROUTE;
+    const sameOriginProxy = url.origin === window.location.origin
+      && url.pathname === `${RECOVERY_ROUTE_PATH}/proxy`;
+    if (!directSidecar && !sameOriginProxy) return null;
+    if (sameOriginProxy) url.search = '';
     url.searchParams.set('locale', locale);
-    url.searchParams.set('parent_origin', window.location.origin);
+    if (directSidecar) url.searchParams.set('parent_origin', window.location.origin);
     return url.toString();
   } catch {
     return null;
   }
-}
-
-function navigateToRecoveryRoute(): void {
-  const routePath = chatRoutePath({ kind: 'system-plugin-recovery' });
-  if (window.location.pathname === routePath) return;
-  window.history.pushState(null, '', routePath);
-  window.dispatchEvent(new PopStateEvent('popstate'));
 }
 
 function recoveryMessage(value: unknown): RecoveryMessage | null {
@@ -119,15 +118,11 @@ export function SystemPluginRecoverySettings() {
   }, [url, runtime]);
 
   useEffect(() => {
-    navigateToRecoveryRoute();
-    const routePath = chatRoutePath({ kind: 'system-plugin-recovery' });
-    if (window.location.pathname !== routePath) return undefined;
-
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const loadEndpoint = async (attempt: number) => {
       try {
-        const response = await fetch(`${routePath}/endpoint`, {
+        const response = await fetch(`${RECOVERY_ROUTE_PATH}/endpoint`, {
           cache: 'no-store',
           credentials: 'same-origin',
         });
