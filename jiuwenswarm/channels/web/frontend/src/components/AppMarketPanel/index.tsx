@@ -112,7 +112,7 @@ type AppState = 'stopped' | 'starting' | 'running' | 'stopping';
 type PendingAction = 'starting' | 'stopping' | 'deleting' | 'converting' | 'pinning';
 type Tab = 'all' | 'market';
 type LoadState = 'loading' | 'success' | 'error';
-type MarketDetailState = { state: LoadState; detail?: MarketAppDetail };
+type MarketDetailState = { state: LoadState; detail?: MarketAppDetail; version?: string };
 type DetailTarget = { kind: 'installed'; id: string } | { kind: 'market'; id: string };
 
 function appState(state?: string): AppState {
@@ -272,7 +272,7 @@ function MarketAppDetailPage({ item, detailState, onBack }: {
           {detailState.detail.detail_desc || item.short_desc ? (
             <p className="app-market-detail__description">{detailState.detail.detail_desc || item.short_desc}</p>
           ) : null}
-          <dl className="app-market-detail__grid">
+          <dl className="app-market-detail__grid" data-testid="app-market-detail-grid">
             <DetailRow label={t('appMarket.detail.version')} value={`v${detailState.detail.version || item.public_latest_version}`} />
             <DetailRow label={t('appMarket.detail.packageSize')} value={formatBytes(detailState.detail.file_size)} />
             <DetailRow label={t('appMarket.detail.sourceSize')} value={formatBytes(detailState.detail.source_size)} />
@@ -425,20 +425,54 @@ export function AppMarketPanel({
     }
   }, [marketPage, marketPageSize, showError]);
 
-  const openMarketDetail = async (item: MarketAppInfo) => {
+  // Market details are cached per asset_id and only reused while the plaza list
+  // still reports the same version; installs, updates and Hub releases bump
+  // public_latest_version, so a mismatch forces a fresh market_detail request
+  // and the detail page never disagrees with the card label.
+  const openMarketDetail = useCallback(async (item: MarketAppInfo) => {
     setDetailTarget({ kind: 'market', id: item.asset_id });
     const known = marketDetails[item.asset_id];
-    if (known && known.state !== 'error') return;
-    setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'loading' } }));
+    // The version pin also covers in-flight loading entries, so a matching
+    // version never starts a duplicate request.
+    if (known && known.state !== 'error' && known.version === item.public_latest_version) return;
+    const requestedVersion = item.public_latest_version;
+    setMarketDetails((current) => ({
+      ...current,
+      [item.asset_id]: { state: 'loading', version: requestedVersion },
+    }));
     try {
       const detail = await webRequest<MarketAppDetail>('app_market.market_detail', {
         asset_id: item.asset_id,
-        version: item.public_latest_version,
+        version: requestedVersion,
       });
-      setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'success', detail } }));
+      setMarketDetails((current) => {
+        // A newer request or invalidation replaced this entry while the request
+        // was in flight; the stale response must not overwrite it.
+        const currentEntry = current[item.asset_id];
+        if (currentEntry && currentEntry.version !== requestedVersion) return current;
+        return {
+          ...current,
+          [item.asset_id]: { state: 'success', detail, version: requestedVersion },
+        };
+      });
     } catch {
-      setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'error' } }));
+      setMarketDetails((current) => {
+        const currentEntry = current[item.asset_id];
+        if (currentEntry && currentEntry.version !== requestedVersion) return current;
+        // Keep the version pin on failed entries too, so a later response for
+        // the same request cannot overwrite a newer entry (mirrors success).
+        return { ...current, [item.asset_id]: { state: 'error', version: requestedVersion } };
+      });
     }
+  }, [marketDetails]);
+
+  const invalidateMarketDetail = (assetId: string) => {
+    setMarketDetails((current) => {
+      if (!(assetId in current)) return current;
+      const next = { ...current };
+      delete next[assetId];
+      return next;
+    });
   };
 
   const waitForInstallJob = useCallback(async (jobId: string, assetId: string) => {
@@ -482,7 +516,11 @@ export function AppMarketPanel({
       ? t('appMarket.updateBackupSuccess', { name: detail.display_name, path: backup })
       : t('appMarket.installSuccess', { name: detail.display_name });
     showNotice(text);
+    // Refresh the lists first, then drop the cached detail: a detail page that
+    // is open while the install finishes is re-requested against the refreshed
+    // list version instead of being left on the loading placeholder.
     await Promise.all([fetchApps(), fetchMarket()]);
+    invalidateMarketDetail(key);
     setActiveTab('all');
     window.dispatchEvent(new Event('app-market-apps-changed'));
   };
@@ -604,7 +642,12 @@ export function AppMarketPanel({
         ? t('appMarket.updateBackupSuccess', { name: app.name, path: backup })
         : t('appMarket.updateSuccess', { name: app.name });
       showNotice(text);
+      // Same contract as runInstall: refresh the lists first, then drop the
+      // cached detail, so a refetch while the update finished resolves against
+      // the refreshed list version. A failed or cancelled update keeps the
+      // cache intact instead of discarding still-valid entries.
       await Promise.all([fetchApps(), fetchInstances()]);
+      invalidateMarketDetail(app.hub_asset_id);
     } catch (error) {
       showError('appMarket.updateFailed', error);
     } finally {
@@ -703,6 +746,16 @@ export function AppMarketPanel({
   useEffect(() => {
     if (activeTab === 'market') void fetchMarket();
   }, [activeTab, fetchMarket]);
+
+  // An invalidation can remove the cached entry while its detail page is open
+  // (for example an install finishing in the background). Re-request it so the
+  // page cannot stay on the loading placeholder forever. Entries that exist,
+  // including failed ones, are left untouched so errors are not retried in a loop.
+  useEffect(() => {
+    if (!marketDetail) return;
+    if (marketDetails[marketDetail.asset_id]) return;
+    void openMarketDetail(marketDetail);
+  }, [marketDetail, marketDetails, openMarketDetail]);
 
   const beginAction = (appId: string, action: PendingAction) => {
     if (actionLocks.current.has(appId)) return false;
@@ -807,6 +860,7 @@ export function AppMarketPanel({
         directory = result.work_dir || '';
       }
       removeInstalledApp(app.app_id);
+      if (app.source === 'hub' && app.hub_asset_id) invalidateMarketDetail(app.hub_asset_id);
       showNotice(t(messageKey, { directory }), messageKey === 'appMarket.uninstallCleanupWarning' ? 'warning' : 'success');
       await closeApplication(app);
       window.dispatchEvent(new Event('app-market-apps-changed'));
@@ -822,6 +876,7 @@ export function AppMarketPanel({
     if (!beginAction(app.app_id, 'converting')) return;
     try {
       await webRequest('app_market.convert_to_local', { app_id: app.app_id });
+      if (app.hub_asset_id) invalidateMarketDetail(app.hub_asset_id);
       await fetchApps();
       showNotice(t('appMarket.convertSuccess', { name: app.name }));
     } catch (error) {
@@ -849,6 +904,7 @@ export function AppMarketPanel({
     if (!beginAction(app.app_id, 'deleting')) return;
     try {
       await webRequest('app_market.delete', { app_id: app.app_id });
+      if (app.hub_asset_id) invalidateMarketDetail(app.hub_asset_id);
       removeInstalledApp(app.app_id);
       await fetchMarket();
       setActiveTab('market');

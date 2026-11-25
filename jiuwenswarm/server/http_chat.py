@@ -18,6 +18,7 @@ from jiuwenswarm.server.middleware.chat import (
     try_record_implicit_feedback,
 )
 from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, guard
+from jiuwenswarm.server.transports.http_sink import SSESink
 
 _CHAT_BOOKKEEPING = (
     ReqMethod.CHAT_SEND,
@@ -91,6 +92,8 @@ async def _handle_http_chat(ctx: RequestContext) -> None:
         if request.req_method == ReqMethod.CHAT_SEND:
             await try_record_implicit_feedback(request)
         if request.is_stream:
+            if isinstance(ctx.sink, SSESink):
+                ctx.sink.configure_chat(request)
             await chat_default.handle_stream(ctx)
         else:
             await chat_default.handle_unary(ctx)

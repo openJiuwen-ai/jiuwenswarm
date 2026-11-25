@@ -3850,6 +3850,19 @@
       "collectionStoppingHint": "Collection is stopping. Wait until it has stopped and try again.",
       "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
       "stateFailed": "Failed",
+      "failureStage": {
+        "scan": "Failed at: directory scan",
+        "fetch": "Failed at: data fetching",
+        "pipeline": "Failed at: content processing (chunking and embedding)",
+        "publish": "Failed at: index writing",
+        "config": "Failed at: configuration validation",
+        "state": "Failed at: state check",
+        "timeout": "Failed at: execution timeout",
+        "unknown": "Failed at: unknown stage"
+      },
+      "failureCode": "Error code {{code}}",
+      "failureCounts": "Scanned {{total}} · succeeded {{completed}} · failed {{failed}}",
+      "failureOmitted": "{{count}} more failed items are not shown; check the run log for details",
       "stateWaiting": "Waiting",
       "stateStopped": "Stopped",
       "stateStopping": "Stopping",
@@ -5840,7 +5853,8 @@
         "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
         "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again.",
         "archiveSessionFinalizing": "This conversation is still finishing up. Try archiving again shortly.",
-        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly."
+        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly.",
+        "pinCronNoIdentity": "This scheduled-task session has no job identity; pinning it would hide it from the sidebar, so the pin was cancelled"
       },
       "cancel": "Cancel",
       "confirm": "Confirm"

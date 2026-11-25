@@ -275,6 +275,186 @@ test('market cards open a detail page and return to the plaza', async () => {
   }
 });
 
+test('market detail refreshes after an install completes and the list reports a new version', async () => {
+  let hubVersion = '1.0.0';
+  const marketItem = () => ({
+    asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [],
+  });
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') return { total: 1, items: [marketItem()] };
+    if (method === 'app_market.market_detail') {
+      return { asset_id: params.asset_id, version: hubVersion, display_name: 'Listed' };
+    }
+    if (method === 'app_market.install_dir_default') return { path: '/workspace/apps' };
+    if (method === 'app_market.install') return { job_id: 'install-job' };
+    if (method === 'app_market.install_status') return { state: 'done', phase: 'done' };
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    // Assert on the detail grid only: the EntityHeader tags come from the list
+    // item, so a whole-page match would pass even with a stale cached detail.
+    const detailGrid = () => find('app-market-detail-grid').textContent;
+    assert.match(detailGrid(), /v1\.0\.0/);
+    await click(find('app-market-detail-back'));
+    // The Hub publishes v2 and the user installs it; the install flow refreshes
+    // the list, so the card label and the detail grid must both show v2.0.0.
+    hubVersion = '2.0.0';
+    await click(find('app-market-install'));
+    await click(find('app-market-install-dir').querySelector('button:last-child'));
+    await tick();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1100)); });
+    await tick();
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await tick();
+    assert.match(find('app-market-market-card').textContent, /v2\.0\.0/);
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.doesNotMatch(detailGrid(), /v1\.0\.0/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('market detail refreshes when the list reports a new version after tab switches', async () => {
+  let hubVersion = '1.0.0';
+  const marketItem = () => ({
+    asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [],
+  });
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') return { total: 1, items: [marketItem()] };
+    if (method === 'app_market.market_detail') {
+      return { asset_id: params.asset_id, version: hubVersion, display_name: 'Listed' };
+    }
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    // Assert on the detail grid only: the EntityHeader tags come from the list
+    // item, so a whole-page match would pass even with a stale cached detail.
+    const detailGrid = () => find('app-market-detail-grid').textContent;
+    assert.match(detailGrid(), /v1\.0\.0/);
+    await click(find('app-market-detail-back'));
+    // The Hub publishes v2 without any install; a plaza refresh must update the
+    // detail grid too instead of replaying the cached v1 detail.
+    hubVersion = '2.0.0';
+    await click(document.querySelector('button[data-variant="all"]'));
+    await tick();
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    assert.match(find('app-market-market-card').textContent, /v2\.0\.0/);
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.doesNotMatch(detailGrid(), /v1\.0\.0/);
+    // An unchanged version must reuse the cache: one extra detail open, no new request.
+    const detailCalls = ctx.calls.filter(({ method }) => method === 'app_market.market_detail').length;
+    await click(find('app-market-detail-back'));
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.equal(ctx.calls.filter(({ method }) => method === 'app_market.market_detail').length, detailCalls);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('market detail refreshes when an install finishes while its detail page is open', async () => {
+  let hubVersion = '1.0.0';
+  const job = deferred();
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') {
+      return { total: 1, items: [{ asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [] }] };
+    }
+    if (method === 'app_market.market_detail') {
+      return { asset_id: params.asset_id, version: params.version || hubVersion, display_name: 'Listed' };
+    }
+    if (method === 'app_market.install_dir_default') return { path: '/workspace/apps' };
+    if (method === 'app_market.install') return { job_id: 'install-job' };
+    if (method === 'app_market.install_status') return job.promise;
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-install'));
+    await click(find('app-market-install-dir').querySelector('button:last-child'));
+    await tick();
+    // The user opens the detail page while the install job is still running.
+    await click(find('app-market-market-card'));
+    await tick();
+    const detailPage = () => find('app-market-detail-page');
+    const detailGrid = () => find('app-market-detail-grid').textContent;
+    assert.doesNotMatch(detailPage().textContent, /Loading\.\.\./);
+    // Assert on the detail grid only: the EntityHeader tags come from the list
+    // item, so a whole-page match would pass even with a stale cached detail.
+    assert.match(detailGrid(), /v1\.0\.0/);
+    hubVersion = '2.0.0';
+    job.resolve({ state: 'done', phase: 'done' });
+    for (let i = 0; i < 5; i += 1) await tick();
+    // Dropping the stale cache must not leave the open page on the placeholder.
+    assert.doesNotMatch(detailPage().textContent, /Loading\.\.\./);
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.doesNotMatch(detailGrid(), /v1\.0\.0/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('a late stale detail response cannot overwrite the refreshed version', async () => {
+  let hubVersion = '1.0.0';
+  const firstDetail = deferred();
+  let firstDetailPending = true;
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') {
+      return { total: 1, items: [{ asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [] }] };
+    }
+    if (method === 'app_market.market_detail') {
+      // The first (v1) request hangs; every later request answers immediately
+      // with the version the caller asked for.
+      if (firstDetailPending) return firstDetail.promise;
+      return { asset_id: params.asset_id, version: params.version || hubVersion, display_name: 'Listed' };
+    }
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    // The first detail request is still hanging, so the page shows loading.
+    assert.match(find('app-market-detail-page').textContent, /Loading\.\.\./);
+    await click(find('app-market-detail-back'));
+    // The Hub publishes v2 and the plaza refreshes; the pinned v1 entry no
+    // longer matches the list version, so reopening re-requests v2.
+    hubVersion = '2.0.0';
+    firstDetailPending = false;
+    await click(document.querySelector('button[data-variant="all"]'));
+    await tick();
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+    // The v1 response arrives after the v2 cache entry is already in place;
+    // it must not put v1 back on the screen.
+    firstDetail.resolve({ asset_id: 'listed', version: '1.0.0', display_name: 'Listed' });
+    for (let i = 0; i < 5; i += 1) await tick();
+    assert.doesNotMatch(find('app-market-detail-page').textContent, /v1\.0\.0/);
+    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('market detail returns to the plaza when a pending refresh removes its app', async () => {
   const refreshed = deferred();
   const item = { asset_id: 'listed', display_name: 'Listed', public_latest_version: '1.0.0', tags: [] };
