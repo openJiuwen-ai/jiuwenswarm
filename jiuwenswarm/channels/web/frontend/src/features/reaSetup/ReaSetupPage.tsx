@@ -39,7 +39,8 @@ const SCAN_CACHE_KEY = 'reaSetup.scan.v4';
 type GroupKind = 'base' | 'enhanced';
 
 interface ReaSetupPageProps {
-  onUseRea: (prompt: string) => void;
+  autoConnect: boolean;
+  onUseRea: (prompt: string) => void | Promise<void>;
 }
 
 interface GroupStats {
@@ -192,7 +193,7 @@ function statusLabel(state: VisualState, t: (key: string) => string): string {
   return t(`reaSetup.visualState.${state}`);
 }
 
-export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
+export function ReaSetupPage({ autoConnect, onUseRea }: ReaSetupPageProps) {
   const { t } = useTranslation();
   const activeJobStorage = typeof window === 'undefined' ? null : window.localStorage;
   const initialActiveJobRef = useRef<ReaSetupJob | null | undefined>(undefined);
@@ -220,6 +221,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   const [configureSaving, setConfigureSaving] = useState(false);
   const [copiedCommand, setCopiedCommand] = useState('');
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [usingRea, setUsingRea] = useState(false);
   const baseStartingRef = useRef(false);
   const enhancedStartingRef = useRef(false);
   const scanRef = useRef<ReaSetupScan | null>(scan);
@@ -399,6 +401,23 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     setDecisionPending(true);
     setDecisionModalOpen(true);
   }, []);
+
+  const handleUseRea = useCallback(
+    async (prompt: string) => {
+      if (!autoConnect) {
+        void onUseRea(prompt);
+        return;
+      }
+      if (usingRea) return;
+      setUsingRea(true);
+      try {
+        await onUseRea(prompt);
+      } finally {
+        setUsingRea(false);
+      }
+    },
+    [autoConnect, onUseRea, usingRea],
+  );
 
   const skipEnhanced = useCallback(() => {
     setDecisionPending(false);
@@ -1090,8 +1109,15 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
           <section className="rea-task-guide">
             <div className="rea-task-guide__head">
               <h2>{t('reaSetup.guide.title')}</h2>
-              <button type="button" className="rea-button rea-button--dark rea-button--small" onClick={() => onUseRea(t('reaSetup.guide.actionPrompt'))}>
-                {t('reaSetup.goUse')}
+              <button
+                type="button"
+                className="rea-button rea-button--dark rea-button--small"
+                data-testid="rea-setup-use-btn"
+                data-variant={usingRea ? 'connecting' : 'idle'}
+                disabled={usingRea}
+                onClick={() => void handleUseRea(t('reaSetup.guide.actionPrompt'))}
+              >
+                {usingRea ? t('reaSetup.connectingUse') : t('reaSetup.goUse')}
               </button>
             </div>
             <div className="rea-guide-grid">
@@ -1100,7 +1126,15 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
                 { type: 'mcp' as const, icon: guideMcpArt, title: t('reaSetup.guide.step2'), desc: t('reaSetup.guide.step2Desc'), prompt: t('reaSetup.guide.actionPrompt') },
                 { type: 'confirm' as const, icon: guideConfirmArt, title: t('reaSetup.guide.step3'), desc: t('reaSetup.guide.step3Desc'), prompt: t('reaSetup.guide.prompt1') },
               ].map((item) => (
-                <button type="button" className="rea-guide-card" key={item.type} onClick={() => onUseRea(item.prompt)}>
+                <button
+                  type="button"
+                  className="rea-guide-card"
+                  key={item.type}
+                  data-testid="rea-setup-guide-card"
+                  data-variant={item.type}
+                  disabled={usingRea}
+                  onClick={() => void handleUseRea(item.prompt)}
+                >
                   <img className="rea-guide-card__icon" src={item.icon} alt="" />
                   <strong>{item.title}</strong>
                   <span>{item.desc}</span>
@@ -1113,7 +1147,14 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
                 t('reaSetup.guide.prompt2'),
                 t('reaSetup.guide.prompt3'),
               ].map((prompt) => (
-                <button type="button" className="rea-prompt-chip" key={prompt} onClick={() => onUseRea(prompt)}>
+                <button
+                  type="button"
+                  className="rea-prompt-chip"
+                  key={prompt}
+                  data-testid="rea-setup-prompt-chip"
+                  disabled={usingRea}
+                  onClick={() => void handleUseRea(prompt)}
+                >
                   <span className="rea-prompt-chip__brand">
                     <SkillIcon className="rea-prompt-chip__skill-icon" aria-hidden />
                     <b>rea</b>

@@ -41,6 +41,8 @@ import { requestOpenWorkspaceExpand } from './features/workspace/workspaceExpand
 import { TeamPanel } from './components/TeamPanel';
 import { RsiPage } from './features/rsi/RsiPage';
 import { ReaSetupPage } from './features/reaSetup/ReaSetupPage';
+import { connectReaIfNeeded, shouldAutoConnectRea } from './features/reaSetup/reaConnector';
+import { useConnectorStore } from './stores/connectorStore';
 import {
   normalizeREAEnabled,
   setREAFeatureEnabled,
@@ -5627,15 +5629,25 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         {activeNav === 'rea' && (
           <div className="app-section">
             <ReaSetupPage
-              onUseRea={(prompt) =>
+              autoConnect={shouldAutoConnectRea(navigator.userAgent)}
+              onUseRea={async (prompt) => {
+                const connectorStore = useConnectorStore.getState();
+                const connector = connectorStore.connectors.find((item) => item.name === 'rea');
+                if (shouldAutoConnectRea(navigator.userAgent)) {
+                  const connected = await connectReaIfNeeded(
+                    connector?.connectionState,
+                    connectorStore.connect,
+                  );
+                  if (!connected) connectorStore.clearError();
+                }
                 requestSessionNavigation('new', {
                   initialInputValue: prompt,
                   initialSelectedSkills: ['reverse-engineer-anything'],
                   initialEnabledMcps: ['rea'],
                   forceMode: 'agent.code.normal',
                   metadata: { prefer_mcp: 'rea' },
-                })
-              }
+                });
+              }}
             />
           </div>
         )}
