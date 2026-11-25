@@ -175,6 +175,7 @@ namespaces = false
 jiuwenswarm = [
     "channels/web/frontend/dist/**/*",
     "channels/web/frontend/dist/*",
+    "agents/harness/common/auto_harness/issue_fix/code_rule.txt",
     # config / env 模板放在 resources 目录
     "resources/**/*",
     "resources/*",

@@ -21,12 +21,12 @@ function StageStatusIcon({ status }: StageStatusIconProps) {
 
   // Don't show icon for pending status
   if (status === 'pending') {
-    return <span className="harness-stage-icon harness-stage-pending" />;
+    return <span className="harness-stage-icon harness-stage-pending" data-testid="chat-panel-harness-stage-icon" data-variant="pending" />;
   }
 
   if (status === 'success') {
     return (
-      <span className="harness-stage-icon harness-stage-success" title={t('autoHarness.stageSuccess')}>
+      <span className="harness-stage-icon harness-stage-success" data-testid="chat-panel-harness-stage-icon" data-variant="success" title={t('autoHarness.stageSuccess')}>
         ✓
       </span>
     );
@@ -34,7 +34,7 @@ function StageStatusIcon({ status }: StageStatusIconProps) {
 
   if (status === 'failed') {
     return (
-      <span className="harness-stage-icon harness-stage-failed" title={t('autoHarness.stageFailed')}>
+      <span className="harness-stage-icon harness-stage-failed" data-testid="chat-panel-harness-stage-icon" data-variant="failed" title={t('autoHarness.stageFailed')}>
         ✗
       </span>
     );
@@ -42,7 +42,7 @@ function StageStatusIcon({ status }: StageStatusIconProps) {
 
   if (status === 'running') {
     return (
-      <span className="harness-stage-icon harness-stage-running" title={t('autoHarness.stageRunning')}>
+      <span className="harness-stage-icon harness-stage-running" data-testid="chat-panel-harness-stage-icon" data-variant="running" title={t('autoHarness.stageRunning')}>
         <span className="harness-spinner" />
       </span>
     );
@@ -50,7 +50,7 @@ function StageStatusIcon({ status }: StageStatusIconProps) {
 
   if (status === 'timeout') {
     return (
-      <span className="harness-stage-icon harness-stage-timeout" title={t('autoHarness.stageFailed')}>
+      <span className="harness-stage-icon harness-stage-timeout" data-testid="chat-panel-harness-stage-icon" data-variant="timeout" title={t('autoHarness.stageFailed')}>
         ◐
       </span>
     );
@@ -98,49 +98,50 @@ function StageItem({ stageLabel, status, isCurrent, metrics, messages, error, ch
       'harness-stage-success': status === 'success',
       'harness-stage-failed': status === 'failed' || status === 'timeout',
       'harness-stage-running': status === 'running',
-    })}>
+    })} data-testid="chat-panel-harness-stage-item">
       <button
         className="harness-stage-header"
+        data-testid="chat-panel-harness-stage-header"
         onClick={() => hasDetails && setExpanded(!expanded)}
         disabled={!hasDetails}
       >
         <StageStatusIcon status={status} />
-        <span className="harness-stage-name">{stageLabel}</span>
+        <span className="harness-stage-name" data-testid="chat-panel-harness-stage-name">{stageLabel}</span>
         {hasDetails && (
-          <span className={clsx('harness-stage-expand-icon', { expanded })}>
+          <span className={clsx('harness-stage-expand-icon', { expanded })} data-testid="chat-panel-harness-stage-expand-icon">
             ▾
           </span>
         )}
       </button>
 
       {expanded && hasDetails && (
-        <div className="harness-stage-details">
+        <div className="harness-stage-details" data-testid="chat-panel-harness-stage-details">
           {children && (
-            <div className="harness-stage-inline-details">
+            <div className="harness-stage-inline-details" data-testid="chat-panel-harness-stage-inline-details">
               {children}
             </div>
           )}
           {error && (
-            <div className="harness-stage-error">
+            <div className="harness-stage-error" data-testid="chat-panel-harness-stage-error">
               <strong>Error:</strong> {error}
             </div>
           )}
           {visibleMessages.length > 0 && (
-            <div className="harness-stage-messages">
+            <div className="harness-stage-messages" data-testid="chat-panel-harness-stage-messages">
               <strong>{t('autoHarness.stageMessage')}:</strong>
               <ul>
                 {visibleMessages.map((msg, idx) => (
-                  <li key={idx}>{msg}</li>
+                  <li key={idx} data-testid="chat-panel-harness-stage-message" data-variant={idx}>{msg}</li>
                 ))}
               </ul>
             </div>
           )}
           {metrics && Object.keys(metrics).length > 0 && (
-            <div className="harness-stage-metrics">
+            <div className="harness-stage-metrics" data-testid="chat-panel-harness-stage-metrics">
               <strong>Metrics:</strong>
-              <div className="harness-metrics-grid">
+              <div className="harness-metrics-grid" data-testid="chat-panel-harness-metrics-grid">
                 {Object.entries(metrics).map(([key, value]) => (
-                  <div key={key} className="harness-metric-item">
+                  <div key={key} className="harness-metric-item" data-testid="chat-panel-harness-metric-item" data-variant={key}>
                     <span className="harness-metric-key">{key}:</span>
                     <span className="harness-metric-value">
                       {typeof value === 'number' ? (Number.isFinite(value) ? value.toFixed(2) : value) : String(value)}
@@ -157,13 +158,13 @@ function StageItem({ stageLabel, status, isCurrent, metrics, messages, error, ch
 }
 
 function ExtensionStatusIcon({ status }: { status: ExtensionProgressStatus }) {
-  if (status === 'success') return <span className="harness-extension-status success">✓</span>;
-  if (status === 'failed' || status === 'timeout') return <span className="harness-extension-status failed">×</span>;
-  if (status === 'running') return <span className="harness-extension-status running">◉</span>;
-  if (status === 'skipped') return <span className="harness-extension-status skipped">↷</span>;
-  if (status === 'rejected') return <span className="harness-extension-status failed">×</span>;
-  if (status === 'waiting') return <span className="harness-extension-status pending">○</span>;
-  return <span className="harness-extension-status pending">○</span>;
+  if (status === 'success') return <span className="harness-extension-status success" data-testid="chat-panel-harness-extension-status-icon" data-variant="success">✓</span>;
+  if (status === 'failed' || status === 'timeout') return <span className="harness-extension-status failed" data-testid="chat-panel-harness-extension-status-icon" data-variant={status}>×</span>;
+  if (status === 'running') return <span className="harness-extension-status running" data-testid="chat-panel-harness-extension-status-icon" data-variant="running">◉</span>;
+  if (status === 'skipped') return <span className="harness-extension-status skipped" data-testid="chat-panel-harness-extension-status-icon" data-variant="skipped">↷</span>;
+  if (status === 'rejected') return <span className="harness-extension-status failed" data-testid="chat-panel-harness-extension-status-icon" data-variant="rejected">×</span>;
+  if (status === 'waiting') return <span className="harness-extension-status pending" data-testid="chat-panel-harness-extension-status-icon" data-variant="waiting">○</span>;
+  return <span className="harness-extension-status pending" data-testid="chat-panel-harness-extension-status-icon" data-variant="pending">○</span>;
 }
 
 function statusLabel(status: ExtensionProgressStatus): string {
@@ -238,14 +239,14 @@ function StageSummaryList({
   emptyLabel: string;
 }) {
   if (items.length === 0) {
-    return <div className="harness-stage-empty">{emptyLabel}</div>;
+    return <div className="harness-stage-empty" data-testid="chat-panel-harness-stage-summary-empty">{emptyLabel}</div>;
   }
   return (
-    <div className="harness-extension-list">
+    <div className="harness-extension-list" data-testid="chat-panel-harness-stage-summary-list">
       {items.map((item) => (
-        <div key={item} className="harness-extension-row">
-          <div className="harness-extension-name" title={item}>{item}</div>
-          <div className="harness-extension-flow">
+        <div key={item} className="harness-extension-row" data-testid="chat-panel-harness-extension-row" data-variant={item}>
+          <div className="harness-extension-name" title={item} data-testid="chat-panel-harness-extension-name">{item}</div>
+          <div className="harness-extension-flow" data-testid="chat-panel-harness-extension-flow">
             <span>
               <ExtensionStatusIcon status={stageStatus === 'running' ? 'running' : 'success'} />
               {itemLabel}
@@ -287,25 +288,27 @@ export function HarnessProgressBar() {
     const isCompleted = !isProcessing && stageResults.every(s => s.status !== 'pending' && s.status !== 'running');
 
     return (
-      <div className="harness-progress-bar">
+      <div className="harness-progress-bar" data-testid="chat-panel-harness-progress-bar">
         <button
           className="harness-progress-header"
+          data-testid="chat-panel-harness-progress-header"
           onClick={() => setExpanded(!expanded)}
           type="button"
         >
-          <span className="harness-progress-title">
+          <span className="harness-progress-title" data-testid="chat-panel-harness-progress-title" data-variant={isCompleted ? 'completed' : 'running'}>
             {isCompleted ? t('autoHarness.completed') : t('autoHarness.running')}
           </span>
-          <span className="harness-progress-percent">{progressPercent}%</span>
+          <span className="harness-progress-percent" data-testid="chat-panel-harness-progress-percent">{progressPercent}%</span>
           <span className={clsx('harness-progress-expand-icon', { expanded })}>
             ▾
           </span>
         </button>
 
         {/* Visual progress bar - only show markers when started */}
-        <div className="harness-progress-track">
+        <div className="harness-progress-track" data-testid="chat-panel-harness-progress-track">
           <div
             className="harness-progress-fill"
+            data-testid="chat-panel-harness-progress-fill"
             style={{ width: `${progressPercent}%` }}
           />
           {/* Stage markers on the progress bar - only visible after started */}
@@ -329,6 +332,15 @@ export function HarnessProgressBar() {
                   'harness-marker-running': markerStatus === 'running',
                   'harness-marker-current': currentStage === stageInfo.stage,
                 })}
+                data-testid="chat-panel-harness-progress-marker"
+                data-variant={stageInfo.stage}
+                data-state={
+                  markerStatus === 'success' ? 'success'
+                    : (markerStatus === 'failed' || markerStatus === 'timeout') ? 'failed'
+                    : markerStatus === 'running' ? 'running'
+                    : currentStage === stageInfo.stage ? 'current'
+                    : undefined
+                }
                 style={{ left: `${markerPosition}%` }}
                 title={label}
               />
@@ -338,7 +350,7 @@ export function HarnessProgressBar() {
 
         {/* Stage details list - collapsible */}
         {expanded && (
-          <div className="harness-progress-stages">
+          <div className="harness-progress-stages" data-testid="chat-panel-harness-progress-stages">
             {stageResults.map((stageInfo) => {
               // Get label: from stage definition, harness.message content, or i18n fallback, or stage key
               const definitionLabel = stageDefinitions.find(d => d.slot === stageInfo.stage)?.display_name;
@@ -351,11 +363,11 @@ export function HarnessProgressBar() {
                 ? parseNamedList(stageInfo.messages, 'Designs:')
                 : [];
               const buildVerifyRows = stageInfo.stage === 'build_verify' ? (
-                <div className="harness-extension-list">
+                <div className="harness-extension-list" data-testid="chat-panel-harness-build-verify-list">
                   {extensionRows.map((ext) => (
-                    <div key={ext.extensionName} className="harness-extension-row">
-                      <div className="harness-extension-name" title={ext.extensionName}>{ext.extensionName}</div>
-                      <div className="harness-extension-flow">
+                    <div key={ext.extensionName} className="harness-extension-row" data-testid="chat-panel-harness-extension-row" data-variant={ext.extensionName}>
+                      <div className="harness-extension-name" title={ext.extensionName} data-testid="chat-panel-harness-extension-name">{ext.extensionName}</div>
+                      <div className="harness-extension-flow" data-testid="chat-panel-harness-extension-flow">
                         <span><ExtensionStatusIcon status={ext.implementStatus} />实现扩展</span>
                         <span className="harness-extension-arrow">→</span>
                         <span><ExtensionStatusIcon status={ext.verifyStatus} />验证扩展</span>
@@ -369,9 +381,9 @@ export function HarnessProgressBar() {
                 stageInfo.status,
               );
               const activateRows = stageInfo.stage === 'activate' ? (
-                <div className="harness-extension-list">
-                  <div className="harness-extension-row">
-                    <div className="harness-extension-flow">
+                <div className="harness-extension-list" data-testid="chat-panel-harness-activate-list">
+                  <div className="harness-extension-row" data-testid="chat-panel-harness-extension-row" data-variant="activate">
+                    <div className="harness-extension-flow" data-testid="chat-panel-harness-extension-flow">
                       <span>
                         <ExtensionStatusIcon status={activateDisplayStatus} />
                         {statusLabel(activateDisplayStatus)}

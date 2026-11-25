@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from openjiuwen.auto_harness.pipelines import META_EVOLVE_PIPELINE
+from openjiuwen.rsi.harness_rsi.auto_harness.pipelines import META_EVOLVE_PIPELINE
 from openjiuwen.core.foundation.llm import Model
 
 from .run_log_status import has_terminal_session_event
@@ -73,6 +73,8 @@ class Scheduler:
         """Build model cache from jiuwenswarm config.yaml (reuse interface_deep logic)."""
         try:
             from jiuwenswarm.common.config import get_config, get_default_models
+            # Stable splits model factory onto the adapter class; import the
+            # module-level builder the same way AgentWebSocketServer does.
             from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
                 _build_model_from_entry as build_model_from_entry,
             )
@@ -86,9 +88,6 @@ class Scheduler:
                 if not model_name:
                     continue
                 mco = entry.get("model_config_obj") or {}
-                # 与 agent_ws_server / interface_deep 保持一致：模型条目的能力声明
-                # （modalities）必须透传，否则同样配置经 scheduler
-                # 路径构建的缓存会静默丢失看图能力（S_22 铁律 46）。
                 self._model_cache[model_name] = build_model_from_entry(
                     mcc,
                     mco,
