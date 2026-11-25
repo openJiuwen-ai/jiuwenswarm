@@ -25,7 +25,7 @@
 }
 
 .mcp-app-view--error {
-  color: var(--color-feedback-danger-text);
+  color: var(--color-feedback-danger);
 }
 
 .mcp-app-view__approval {
