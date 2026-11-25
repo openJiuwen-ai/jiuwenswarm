@@ -64,6 +64,10 @@ class _DownloadHandlerStub:
 
     # 复用真实 Gateway 代理逻辑（stub 提供其依赖的 self 接口）
     _proxy_file_download = _SpaStaticHandler._proxy_file_download
+    _DOCUMENT_MIME_TYPES = _SpaStaticHandler._DOCUMENT_MIME_TYPES
+    _apply_raw_file_security_headers = (
+        _SpaStaticHandler._apply_raw_file_security_headers
+    )
 
 
 class _UploadHandlerStub:
@@ -86,6 +90,7 @@ class _FakeAgentDownloadServer(BaseHTTPRequestHandler):
     """
 
     file_path: Path | None = None
+    omit_headers: frozenset[str] = frozenset()
 
     def do_GET(self) -> None:  # noqa: N802
         query = parse_qs(urlsplit(self.path).query)
@@ -107,6 +112,11 @@ class _FakeAgentDownloadServer(BaseHTTPRequestHandler):
             "Content-Type": mime_type or "application/octet-stream",
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded}",
             "Accept-Ranges": "bytes",
+        }
+        base_headers = {
+            name: value
+            for name, value in base_headers.items()
+            if name not in self.omit_headers
         }
         range_header = self.headers.get("Range")
         byte_range = _parse_single_byte_range(range_header, file_size) if range_header else None
@@ -142,6 +152,7 @@ class _FakeAgentDownloadServer(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def fake_agent_server(tmp_path: Path):
+    _FakeAgentDownloadServer.omit_headers = frozenset()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeAgentDownloadServer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -158,6 +169,7 @@ def _serve_file(
     *,
     command: str = "HEAD",
     headers: dict[str, str] | None = None,
+    omit_headers: tuple[str, ...] = (),
 ) -> _DownloadHandlerStub:
     """Phase 2 迁移后：Gateway 为薄代理，stub token 校验失败走纯代理路径。"""
     monkeypatch.setattr(
@@ -166,6 +178,7 @@ def _serve_file(
         lambda _token, **_kwargs: None,
     )
     _FakeAgentDownloadServer.file_path = file_path
+    _FakeAgentDownloadServer.omit_headers = frozenset(omit_headers)
     monkeypatch.setattr(
         app_web,
         "_resolve_agent_http_base",
@@ -345,6 +358,100 @@ def test_download_handler_keeps_attachment_disposition_for_download(
     assert handler.response_headers["Content-Disposition"] == (
         "attachment; filename*=UTF-8''report.pdf"
     )
+
+
+def test_inline_proxy_sandboxes_document_without_upstream_disposition(
+    tmp_path,
+    fake_agent_server,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy upstream may omit Content-Disposition; the request flag wins."""
+    file_path = tmp_path / "report.html"
+    file_path.write_text("<script>alert(1)</script>", encoding="utf-8")
+    handler = _serve_file(
+        monkeypatch,
+        fake_agent_server,
+        file_path,
+        {"token": "signed-token", "inline": "1"},
+        omit_headers=("Content-Disposition",),
+    )
+
+    assert handler.status == 200
+    assert handler.response_headers["Content-Type"] == "text/html"
+    assert "Content-Disposition" not in handler.response_headers
+    assert handler.response_headers["X-Content-Type-Options"] == "nosniff"
+    assert handler.response_headers["Content-Security-Policy"] == (
+        "sandbox allow-scripts allow-popups"
+    )
+
+
+def test_inline_proxy_treats_missing_content_type_as_document(
+    tmp_path,
+    fake_agent_server,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a declared type the browser sniffs a document, so keep the CSP."""
+    file_path = tmp_path / "report.html"
+    file_path.write_text("<script>alert(1)</script>", encoding="utf-8")
+    handler = _serve_file(
+        monkeypatch,
+        fake_agent_server,
+        file_path,
+        {"token": "signed-token", "inline": "1"},
+        omit_headers=("Content-Disposition", "Content-Type"),
+    )
+
+    assert handler.status == 200
+    assert "Content-Type" not in handler.response_headers
+    assert handler.response_headers["X-Content-Type-Options"] == "nosniff"
+    assert handler.response_headers["Content-Security-Policy"] == (
+        "sandbox allow-scripts allow-popups"
+    )
+
+
+def test_proxy_sandboxes_document_without_inline_flag_or_disposition(
+    tmp_path,
+    fake_agent_server,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing disposition renders inline even when the client asked to save."""
+    file_path = tmp_path / "report.html"
+    file_path.write_text("<script>alert(1)</script>", encoding="utf-8")
+    handler = _serve_file(
+        monkeypatch,
+        fake_agent_server,
+        file_path,
+        {"token": "signed-token"},
+        omit_headers=("Content-Disposition",),
+    )
+
+    assert handler.status == 200
+    assert handler.response_headers["Content-Type"] == "text/html"
+    assert handler.response_headers["X-Content-Type-Options"] == "nosniff"
+    assert handler.response_headers["Content-Security-Policy"] == (
+        "sandbox allow-scripts allow-popups"
+    )
+
+
+def test_proxy_leaves_attachment_downloads_without_sandbox_csp(
+    tmp_path,
+    fake_agent_server,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit attachment response is saved, so it needs no sandbox."""
+    file_path = tmp_path / "report.html"
+    file_path.write_text("<script>alert(1)</script>", encoding="utf-8")
+    handler = _serve_file(
+        monkeypatch,
+        fake_agent_server,
+        file_path,
+        {"token": "signed-token"},
+    )
+
+    assert handler.status == 200
+    assert "attachment" in handler.response_headers["Content-Disposition"]
+    assert handler.response_headers["X-Content-Type-Options"] == "nosniff"
+    assert "Content-Security-Policy" not in handler.response_headers
 
 
 @pytest.mark.parametrize(
