@@ -30,7 +30,7 @@
 - **N2（Runtime 动态、每轮刷新）**：RuntimePromptRail 在 **`before_model_call`** 读 `runtime_state.yaml`、时钟、shell 环境、trusted dirs、browser 策略等；priority **5**。Good：时间/模式变更不依赖工具调用。Bad：把 runtime 状态写进静态 AGENT.md。
 - **N3（Response 格式归 ResponsePromptRail）**：回复格式、thinking discipline、final visible reply 规则由 **ResponsePromptRail** 注入 section 名 `response` / `LocalSectionName.*`；A2UI section 按 channel/query 条件追加。
 - **N4（Attachments）**：RuntimePromptRail 使用 **PromptAttachmentManager**（`attachment` sections，实现见 `_upsert_prompt_attachment`（runtime_prompt_rail.py:904）/ `_clear_prompt_attachment`（:932））；与 core 附件 kind 枚举协作。
-- **N5（压缩召回用法）**：若模型需要知道 `[[HANDLE]]` / `[[COMPRESSION_RECALL]]` 用法，提示段由 **agent-core processor / context sections** 或产品 prompt 段承担——新增时须登记本 spec 与 [[S_04]]，避免 duplicate 冲突。
+- **N5（压缩召回用法）**：若模型需要知道 `[[OFFLOAD]]` / `[[COMPRESSION_RECALL]]` 用法，提示段由 **agent-core processor / context sections** 或产品 prompt 段承担——新增时须登记本 spec 与 [[S_04]]，避免 duplicate 冲突。
 
 ## 接口契约
 
@@ -91,7 +91,7 @@ before_model_call:
 ### P3：压缩相关提示
 
 ```
-Processor 替换/卸载消息 + optional COMPRESSION_RECALL/HANDLE 标记
+Processor 替换/卸载消息 + optional COMPRESSION_RECALL/OFFLOAD 标记
   → 窗口内保留索引段；召回工具/标记由 [[S_04]] 负责
 ```
 
@@ -105,6 +105,6 @@ Processor 替换/卸载消息 + optional COMPRESSION_RECALL/HANDLE 标记
 ## 与其它 spec 的关系
 
 - [[S_03]]：Assemble 与 prompt rails 分工
-- [[S_04]]：HANDLE / COMPRESSION_RECALL 语义
+- [[S_04]]：OFFLOAD / COMPRESSION_RECALL 语义
 - [[S_06]]：context_read_patch
 - [[S_01]]：边界（skill prompt rails 不归本模块）

@@ -788,7 +788,7 @@ react:
     enable_openrouter_model_context_window_tokens: false # 从 OpenRouter 拉取模型的上下文窗口大小；false 时按内置模型表解析
     # 显式覆盖上下文窗口 token 上限（正整数）；注释掉或留空则按模型自动解析
     # context_window_tokens: 131072
-    enable_reload: true    # 卸载重载：开启后模型可通过 [[HANDLE:xxx]] 标记把已卸载的大消息原文拉回上下文
+    enable_reload: true    # 卸载重载：开启后注入重载提示，模型可按 [[OFFLOAD: handle=…, path=…]] 标记的 path 用 read_file 读回已卸载的大消息原文
 
     enable_context_debug: false     # 上下文压缩 debug 模式：开启后各处理器在阈值判断、片段切分、压缩重试、 前后对比等每个阶段落盘 JSONL 记录，便于排查压缩问题。关闭时零开销。默认关闭
     # 精确 token 计数（tiktoken BPE）：文本走 BPE、图片仍按像素计价；false 则用字符估算，

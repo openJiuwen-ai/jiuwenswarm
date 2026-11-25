@@ -36,7 +36,7 @@ ContextEngine 持有会话消息池与 processor 列表。**Preset 链**（forke
 | 机制 | 配置 | 模型侧 |
 |---|---|---|
 | **压缩召回** | `compression_recall_config.enabled`（yaml 默认 true；代码缺键 false） | `[[COMPRESSION_RECALL: id=...]]` / 工具 `recall_compressed_context`（常驻 schema） |
-| **卸载重载** | `enable_reload` | core 注入 reload prompt 段 + `ContextMessageBuffer.reload`；`[[HANDLE:xxx]]` 由调用方/模型按提示触发 |
+| **卸载重载** | `enable_reload` | core 注入 reload prompt 段 + `OffloadMessageBuffer.reload`；模型按 `[[OFFLOAD: …, path=…]]` 的 path 用 read_file 读回（path 指向 .txt 文本副本） |
 
 二者独立开关；归档目录为会话下 `compression_recall/`（召回开启时）。
 
