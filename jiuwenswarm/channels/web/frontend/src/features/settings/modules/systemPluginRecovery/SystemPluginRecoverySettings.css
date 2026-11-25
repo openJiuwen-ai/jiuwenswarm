@@ -3,6 +3,17 @@
   background: transparent;
 }
 
+.system-plugin-recovery__standalone {
+  width: min(920px, calc(100% - 32px));
+  margin: 16px auto;
+}
+
+.system-plugin-recovery__standalone a {
+  color: var(--color-settings-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .system-plugin-recovery__frame {
   display: block;
   width: 100%;

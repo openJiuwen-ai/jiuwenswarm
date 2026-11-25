@@ -503,8 +503,7 @@ test('a confirmed restore in settings removes the application presentation launc
   document.body.append(container);
   const root = createRoot(container);
   const path = window.location.href;
-  // Enter through the recovery route so navigation is already settled.
-  window.history.replaceState(null, '', '/system-plugin-recovery');
+  window.history.replaceState(null, '', '/chat/new');
   const render = (settings) => root.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
     createElement(ApplicationPresentationHost, { sessionId: 'sess-1', connected: true }),
     settings && createElement(SystemPluginRecoverySettings)));
@@ -517,6 +516,7 @@ test('a confirmed restore in settings removes the application presentation launc
   });
   try {
     await act(async () => render(true));
+    assert.equal(window.location.pathname, '/chat/new');
     const source = container.querySelector('iframe').contentWindow;
     const message = (type, data, from = source, fromOrigin = origin) =>
       window.dispatchEvent(new window.MessageEvent('message', { origin: fromOrigin, source: from,
