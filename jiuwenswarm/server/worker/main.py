@@ -128,6 +128,9 @@ def _run_worker() -> int:
     # 模块级调用会在导入期加载 openjiuwen，破坏 front 侧导入隔离契约。
     configure_openjiuwen_runtime_logging()
     configure_openjiuwen_core_logging()
+    from jiuwenswarm.server.worker.output_logs import start_worker_log_rotation
+
+    start_worker_log_rotation()
     logging.basicConfig(level=logging.INFO)
     _configure_worker_diagnostic_logging()
     from jiuwenswarm.common.background_logging import (

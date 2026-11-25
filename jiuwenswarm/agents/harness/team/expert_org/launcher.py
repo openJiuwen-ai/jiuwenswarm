@@ -128,6 +128,66 @@ def _team_build_labels(
     return team_display, team_desc, leader_display, leader_desc
 
 
+async def _resolve_expert_member_quota(
+    *,
+    session_id: str,
+    spec: Any,
+    predefined_non_leaders: int | None = None,
+) -> tuple[int, Any | None]:
+    """``(member cap, owner)`` for an expert Team, refusing an oversized package.
+
+    Runs before activation so both shared-DB and standalone expert launches are
+    covered. Framework bootstrap materializes the roster inside activation, so
+    the refusal must happen before ``runtime.activate``.
+    """
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from jiuwenswarm.enterprise.team.quota import team_quota_enabled
+
+    if not is_enterprise() or not team_quota_enabled():
+        return 0, None
+    from jiuwenswarm.enterprise.team.member_limits import (
+        count_predefined_quota_members,
+        predefined_team_size_user_message,
+        resolve_session_member_limit,
+    )
+
+    if predefined_non_leaders is None:
+        predefined_non_leaders = count_predefined_quota_members(
+            getattr(spec, "predefined_members", []) or []
+        )
+    limit, owner = await resolve_session_member_limit(session_id)
+    team_size = max(int(predefined_non_leaders), 0) + 1
+    if limit > 0 and team_size > limit:
+        raise ValueError(predefined_team_size_user_message(team_size, limit))
+    return limit, owner
+
+
+def _attach_expert_member_guard(
+    agent: Any,
+    *,
+    team_id: str,
+    limit: int,
+    owner: Any,
+) -> None:
+    """Bind the same per-member cap to later ``spawn_*`` calls on this Team.
+
+    A real ``team_id`` is passed so admission uses the shared lease instead of
+    the non-atomic roster count. Without a resolved owner the lease cannot be
+    keyed, so fall back to the roster guard rather than fail every spawn.
+    """
+    if limit <= 0:
+        return
+    from jiuwenswarm.enterprise.team.member_limits import attach_teammate_limit_guard
+
+    owner_user_id = str(getattr(owner, "user_id", "") or "").strip()
+    attach_teammate_limit_guard(
+        agent,
+        max_teammates=limit,
+        team_id=str(team_id or "") if owner_user_id else "",
+        owner=owner,
+    )
+
+
 def _resolve_launch_channel_id(channel_id: str | None, session_id: str) -> str:
     """Resolve the delivery channel when agent-core omits it from expert launch."""
     explicit = str(channel_id or "").strip().lower()
@@ -1206,10 +1266,16 @@ class JiuwenExpertTeamLauncher:
             self.ensure_turn_runner_installed()
             if not organization_enabled():
                 raise ValueError("Team Organization is disabled")
+            from jiuwenswarm.enterprise.team.member_limits import resolve_session_member_limit
+
+            quota_limit, quota_owner = await resolve_session_member_limit(session_id)
             try:
                 activation = await runtime.activate(spec, session_id)
                 await self._locate_group(group_name)
                 agent = getattr(activation, "agent", None)
+                _attach_expert_member_guard(
+                    agent, team_id=team_id, limit=quota_limit, owner=quota_owner,
+                )
                 backend = getattr(agent, "team_backend", None)
                 if (
                     backend is None or backend.db is not db
@@ -1292,12 +1358,19 @@ class JiuwenExpertTeamLauncher:
                 leader_prompt_suffix=leader_prompt_suffix,
                 extra_capabilities=extra_capabilities,
             )
+            quota_limit, quota_owner = await _resolve_expert_member_quota(
+                session_id=session_id, spec=spec,
+            )
             activation_attempted = True
             activation = await runtime.activate(spec, session_id)
             await self._locate_group(group_name)
             agent = getattr(activation, "agent", None)
             if agent is None:
                 raise ValueError(f"activate returned no agent for team: {team_id}")
+
+            _attach_expert_member_guard(
+                agent, team_id=team_id, limit=quota_limit, owner=quota_owner,
+            )
 
             if donor_backend is not None:
                 await self._materialize_expert_team_in_db(

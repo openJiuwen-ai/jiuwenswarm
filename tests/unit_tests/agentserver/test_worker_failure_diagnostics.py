@@ -257,6 +257,65 @@ async def test_spawn_routes_paths_resets_stale_error_and_inherits_stdout(monkeyp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["resident", "front_loopback"])
+async def test_custom_log_rotation_preserves_failure_diagnostic(monkeypatch, tmp_path, mode):
+    script = """
+import os, sys, time
+from pathlib import Path
+from jiuwenswarm.server.worker.diagnostics import write_worker_failure
+from jiuwenswarm.server.worker.output_logs import prune_worker_logs, start_worker_log_rotation
+sys.stdin.buffer.read()
+diagnostic = Path(os.environ['JIUWEN_WORKER_DIAGNOSTIC_PATH'])
+assert not diagnostic.exists(), 'stale diagnostic was not cleared'
+rotation = start_worker_log_rotation(max_bytes=1024, backup_count=2, interval=0.01)
+assert rotation is not None, 'stderr configuration did not reach the child'
+assert rotation.path.parent == diagnostic.parent
+try:
+    os.write(2, b'x' * 2048)
+    deadline = time.monotonic() + 5
+    while rotation.path.stat().st_size >= rotation.max_bytes and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert rotation.path.stat().st_size < rotation.max_bytes
+finally:
+    rotation.stop()
+write_worker_failure(RuntimeError('diagnostic after rotation'))
+stamp = time.time() - 120
+os.utime(diagnostic, (stamp, stamp))
+prune_worker_logs(rotation.path.parent, max_bytes=1024, backup_count=1, protected=rotation.path)
+assert 'diagnostic after rotation' in diagnostic.read_text(encoding='utf-8')
+"""
+    directory = tmp_path / "configured logs"
+    directory.mkdir()
+    diagnostic = directory / "latest-worker-error.log"
+    diagnostic.write_text("STALE_ERROR_DO_NOT_REUSE", encoding="utf-8")
+    monkeypatch.setenv("JIUWEN_WORKER_LOG_DIR", str(directory))
+    monkeypatch.setenv("JIUWEN_WORKER_DIAGNOSTIC_PATH", str(tmp_path / "wrong-diagnostic.log"))
+    monkeypatch.setenv("JIUWENSWARM_WORKER_STDERR_LOG", str(tmp_path / "wrong-stderr.log"))
+    monkeypatch.setattr(
+        worker_process, "build_worker_command",
+        lambda *args, **kwargs: [sys.executable, "-c", script],
+    )
+    listener = worker_process.FrontLoopbackListener() if mode == "front_loopback" else None
+    process = worker_process.WorkerProcess(
+        str(tmp_path / "worker"), host="127.0.0.1", port=0, ipc_listener=listener,
+    )
+    try:
+        await process.spawn()
+        assert await process.wait(timeout=10) == 0, process.stderr_path.read_text(encoding="utf-8", errors="replace")
+        assert process.stderr_path.parent == directory
+        assert list(directory.glob("*.stderr_*.log"))
+        text = diagnostic.read_text(encoding="utf-8")
+        assert "diagnostic after rotation" in text
+        assert "STALE_ERROR_DO_NOT_REUSE" not in text
+        assert not (tmp_path / "wrong-diagnostic.log").exists()
+        assert not (tmp_path / "wrong-stderr.log").exists()
+    finally:
+        await process.stop()
+        if listener is not None:
+            await listener.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["resident", "front_loopback"])
 async def test_real_failed_bringup_reports_diagnostic_after_cleanup(monkeypatch, tmp_path, caplog, capfd, mode):
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", mode)

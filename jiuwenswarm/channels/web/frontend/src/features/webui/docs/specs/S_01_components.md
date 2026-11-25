@@ -1,6 +1,6 @@
 # WebUI 组件规则规约
 
-最近修订：2026-11-24。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
+最近修订：2026-11-25。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
 
 ## 范围与适用条件
 
@@ -12,7 +12,7 @@
 Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown、Icon、MediaSurface、FileImport。字段、默认值、必填与事件数据统一遵循
 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
 [`catalog/components/`](../../catalog/components/) 和后端规则是该规范的实现；本文维护运行与交互不变量，不复制完整属性表。
-槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`task.function` 与 `task.function.main`；
+槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`application.appearance`、`task.function` 与 `task.function.main`；
 其余 11 个槽位默认使用会话范围，设置槽位也允许显式应用范围。
 
 ## 表单、菜单与应用插槽
@@ -40,6 +40,7 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
 - application.sidebar.footer 是应用级 list 槽位，不依赖聊天 session；多个实例在左侧图标栏底部纵向排列，宿主为底部保留 12px 间距。
 - application.background 是 Gateway 应用级单实例槽位，只接受 MediaSurface 根（槽位规则 strictRoot）。WebUIBackgroundHost 在应用根部全窗口底层挂载该槽位，不接收输入与焦点；宿主策略与消息协议见 [Gateway S_07](../../../../../../../../gateway/extensions_v2/docs/specs/S_07_media-surface.md)。
 - application.splash 同样只接受 MediaSurface 根，由 WebUISplashGate 播放；门控开放前 application.entry 的对话框不弹出，见 [Gateway S_09](../../../../../../../../gateway/extensions_v2/docs/specs/S_09_startup-splash.md)。
+- application.appearance 只用于声明外观提供者，不渲染内容：WebUISplashGate 的外观准备挂载它并发送不指定包的 `ui.ready`，各包在回执前用 `ops.appearance.apply` 提交外观部件。快照格式、主页品牌位置与首帧记录见 agent-gateway 的 Extension V2 规约 S_08、S_09（EXTV2-GW-16，F_16）。
 - Gateway 包的设置与 AgentServer 包共用 application.settings 与设置目录（S_18、Gateway S_10 第 2 节），没有单独的设置槽位。FileImport 由宿主注入的导入服务（WebUIUploadContext）取得凭据并上传，完成后派发 `ui.change` 的 `upload_id`；没有导入服务时禁用。`webui.download` 由应用根交给桌面保存对话框或下载链接。见 [Gateway S_10](../../../../../../../../gateway/extensions_v2/docs/specs/S_10_application-settings.md)。
 
 ### English contract summary
@@ -184,7 +185,7 @@ Select 与 TreeSelect 的 ui.change 用于承载整体选择值，ui.select 仍�
 包含 action_id、args、data、node_key 和 revision 的完整 payload 序列化后按 maxFrameBytes 校验，默认上限为 256 KiB。
 前后端遍历全部 Tabs 内容，
 隐藏内容也计入 8 层、512 节点预算，Panel/Iframe/MediaSurface 不能嵌套为普通子节点。
-`application.entry`、`application.sidebar.footer`、`application.background` 与 `application.splash` 使用 application 范围，以当前 Web 连接为身份，不要求会话。
+`application.entry`、`application.sidebar.footer`、`application.background`、`application.splash` 与 `application.appearance` 使用 application 范围，以当前 Web 连接为身份，不要求会话。
 `application.settings` 默认 session，允许按声明显式使用 application；两种范围的实例和挂载所有权隔离，
 清理会话不清理应用范围设置。其他槽位使用 session 范围。设置菜单、分类、位置及实例准入见
 [设置 location 规约](../../../../../../../../extensions_v2/docs/specs/S_18_settings-location.md)。

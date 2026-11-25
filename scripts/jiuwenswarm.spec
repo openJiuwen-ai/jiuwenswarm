@@ -219,6 +219,13 @@ for _relative in (
         str(Path("jiuwenswarm", _relative).parent),
     ))
 datas += collect_data_files("jiuwenswarm.server.runtime.designer.skills", include_py_files=False)
+# Tool discovery parses these physical sources rather than importing PYZ modules.
+datas += collect_data_files(
+    "jiuwenswarm.agents.harness.common.tools",
+    include_py_files=True,
+    includes=["*_tools.py", "specs/*.py"],
+)
+datas += collect_data_files("jiuwenswarm.common.i18n", includes=["catalog/*.yaml"])
 datas += collect_data_files("agent_gateway", include_py_files=False)
 # Gateway reads the product version from the frozen WorkSwarm distribution metadata.
 datas += copy_metadata("workswarm")
@@ -342,6 +349,7 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "websockets",
     # The extension loader opens extension.py from disk in frozen builds.
     *collect_submodules("jiuwenswarm.extensions.app_market"),
+    "jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers",
     "loguru",
     "dotenv",
     "webview",

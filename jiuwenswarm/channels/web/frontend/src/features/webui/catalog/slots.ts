@@ -20,6 +20,8 @@ export const webUISlots: readonly WebUISlotRule[] = [
     rerender: 'keep-mounted' },
   // Gateway-only startup layer above the workspace, played by the splash gate.
   { id: 'application.splash', display: 'single', scope: 'application', rootComponents: ['MediaSurface'], strictRoot: true },
+  // Gateway-only declaration of appearance providers: nothing renders here, the gate sends its ready (S_09).
+  { id: 'application.appearance', display: 'list', scope: 'application' },
   { id: 'conversation.session.content.after', display: 'list' },
   { id: 'conversation.turn.footer.actions', display: 'list' },
   { id: 'conversation.header.title.after', display: 'list' },

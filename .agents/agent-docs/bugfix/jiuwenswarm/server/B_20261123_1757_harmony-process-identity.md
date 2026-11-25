@@ -187,6 +187,29 @@ develop 将默认 Worker 日志迁到数据根的 `logs/worker-logs`，统一经
 `D:/work_space/.codex-temp/harmony-process-identity-conflicts-20261125/` 的
 `merge-verified.xml`、`native-verified.json` 和 `harmony-controlled/verified.json`。
 
+## 2026-11-25 同步 develop Worker 日志轮转
+
+将 develop `797299fa5` 合入候选 `488612236`，解决 Worker 日志初始化及中英文生命周期说明的三处文件冲突。
+保留主干 `worker_stderr_name()` 的归属标识、`open_worker_stderr()` 的追加句柄与 Worker 自有轮转线程；
+显式日志目录仍优先于默认的 `common.paths.get_worker_logs_dir()`。
+Supervisor 同时向子进程传入实际 stderr 文件和固定诊断路径，保留启动前清理旧诊断及失败后读取诊断的行为。
+中英文说明同时保留轮转、保留预算与诊断的共享目录限制。
+
+自动合并的入口 UT 仍 patch 模块级日志函数，而本 PR 已将这些函数延迟到 `_run_worker()` 内导入，
+因此改为 patch 公共工具模块，保留“日志初始化、轮转、Runtime”的顺序断言，不改变生产入口的导入隔离。
+新增 resident 与 front_loopback 实进程用例，验证自定义目录和两个内部环境变量覆盖父进程旧值，
+旧诊断在启动前清除，stderr 成功轮转后仍能写入诊断，过期诊断不会被输出日志清理删除。
+
+Windows / Python 3.11.15 定向回归 **199 passed**，覆盖输出日志轮转与保留、失败诊断、入口、身份规约、
+进程监督、旧 owner、Front 导入隔离及真实异常退出。
+原生 Windows resident（未设置目录）与 front_loopback（空目录）检查均通过；resident 断开后复用同一 Worker 完成请求，
+最终子进程退出码为 0，IPC、端口和 owner/startup 锁均完成清理。
+另重跑 resident/loopback 创建时间拒绝回退及双来源拒绝三组受控实验，启动/拒绝、诊断和清理均通过。
+该实验在 Windows 注入权限错误与模拟 start counter，不代表 HarmonyOS 真机验收；未执行全仓 UT 或远端 CodeCheck。
+
+本轮报告在 `D:/work_space/.codex-temp/harmony-process-identity-develop-conflicts-20261125/`：
+`merge-regression.xml`、`native-verified.json` 和 `harmony-controlled-verified.json`，运行产物不提交。
+
 ## 遗留与重验条件
 
 未连接 HarmonyOS 真机、未构建 HAP；真实模型服务和其他系统 API 的权限仍需用户设备验收。
