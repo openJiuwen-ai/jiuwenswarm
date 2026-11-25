@@ -21,7 +21,8 @@ from jiuwenswarm.server.worker import output_logs
 
 
 def _stderr(directory: Path, number: int = 0) -> Path:
-    return directory / f"runtime-worker-{number:032x}.stderr.log"
+    owner = output_logs._local_log_owner() or "a" * 32
+    return directory / f"runtime-worker-{number:032x}-{owner}.stderr.log"
 
 
 def _age(path: Path, seconds: int = 120) -> None:
@@ -188,7 +189,8 @@ def test_retention_bounds_retired_outputs_and_supervisor_dumps(tmp_path, monkeyp
         dumps.append(dump)
     unrelated = tmp_path / "user-notes.log"
     unrelated.write_text("keep", encoding="utf-8")
-    legacy_stdout = tmp_path / f"runtime-worker-{'f' * 32}.stdout.log"
+    legacy_stdout = _stderr(tmp_path, 99)
+    legacy_stdout = legacy_stdout.with_name(legacy_stdout.name.replace(".stderr.", ".stdout."))
     legacy_stdout.write_bytes(b"legacy stdout")
     _age(legacy_stdout, 140)
 
@@ -218,7 +220,8 @@ def test_retention_enforces_byte_budget_for_old_oversized_logs(tmp_path, monkeyp
 @pytest.mark.parametrize("partial_copies", [1, 8])
 def test_retention_prunes_closed_temporary_files_left_by_interrupted_rotation(tmp_path, monkeypatch, partial_copies):
     monkeypatch.setattr(output_logs, "_active_log_paths", lambda _directory: set())
-    orphan = tmp_path / f"runtime-worker-{'a' * 32}.stderr_20261120_120000_123.tmp"
+    orphan = _stderr(tmp_path, 99)
+    orphan = orphan.with_name(f"{orphan.stem}_20261120_120000_123.tmp")
     orphan.write_bytes(b"partial archive" * partial_copies)
     _age(orphan, 100)
     retained = _stderr(tmp_path)
@@ -307,8 +310,144 @@ def test_retention_protects_another_process_inherited_stderr(tmp_path, monkeypat
 
 def _posix_processes(monkeypatch, processes):
     # Execute POSIX retention on any test host without changing pathlib's OS.
+    owner = output_logs._local_log_owner() or "a" * 32
+    monkeypatch.setattr(output_logs, "_local_log_owner", lambda: owner)
     monkeypatch.setattr(output_logs, "os", SimpleNamespace(name="posix", path=os.path, geteuid=lambda: 1000))
     monkeypatch.setattr(psutil, "process_iter", lambda *_args: iter(processes))
+
+
+def test_shared_volume_retention_keeps_foreign_and_unattributed_mutable_files(tmp_path, monkeypatch):
+    retired = [_stderr(tmp_path, number) for number in range(5)]
+    for number, path in enumerate(retired):
+        path.write_bytes(b"closed local output")
+        _age(path, 130 - number)
+    owner = output_logs._local_log_owner() or "a" * 32
+    foreign = "b" * 32 if owner != "b" * 32 else "c" * 32
+    protected = []
+    for suffix in (f"-{foreign}", ""):
+        base = tmp_path / f"runtime-worker-{'f' * 32}{suffix}.stderr.log"
+        temporary = base.with_name(f"{base.stem}_20261120_120000_123.tmp")
+        for path in (base, temporary):
+            path.write_bytes(b"remote Worker may still be writing")
+            _age(path, 300)
+            protected.append(path)
+    archive = protected[0].with_name(f"{protected[0].stem}_20261120_120000_123.log")
+    archive.write_bytes(b"completed foreign archive")
+    _age(archive, 200)
+    _posix_processes(monkeypatch, [])
+
+    output_logs.prune_worker_logs(tmp_path, max_bytes=32, backup_count=2)
+
+    assert all(path.read_bytes() == b"remote Worker may still be writing" for path in protected)
+    assert [path for path in retired if path.exists()] == retired[-2:]
+    assert not archive.exists()
+
+
+def test_missing_local_ownership_keeps_mutable_files_but_prunes_archives(tmp_path, monkeypatch):
+    bases = [_stderr(tmp_path, number) for number in range(3)]
+    for path in bases:
+        path.write_bytes(b"possibly remote")
+        _age(path)
+    temporary = bases[0].with_name(f"{bases[0].stem}_20261120_120000_123.tmp")
+    temporary.write_bytes(b"possibly copying")
+    _age(temporary)
+    archives = [base.with_name(f"{base.stem}_20261120_120000_123.log") for base in bases]
+    for number, path in enumerate(archives):
+        path.write_bytes(b"closed")
+        _age(path, 200 - number)
+    _posix_processes(monkeypatch, [])
+    monkeypatch.setattr(output_logs, "_local_log_owner", lambda: None)
+
+    output_logs.prune_worker_logs(tmp_path, max_bytes=32, backup_count=2)
+
+    assert all(path.exists() for path in bases)
+    assert temporary.exists()
+    assert [path for path in archives if path.exists()] == archives[-2:]
+
+
+def _linux_owner_sources(monkeypatch):
+    sources = {
+        "boot": "12345678-1234-1234-1234-123456789abc", "pid": 10, "user": 20, "start": 100, "uid": 1000,
+    }
+
+    def proc_path(name):
+        if name.endswith("boot_id"):
+            return SimpleNamespace(read_text=lambda **_kwargs: sources["boot"])
+        if name.endswith("/stat"):
+            return SimpleNamespace(
+                read_text=lambda **_kwargs: "1 (init (with spaces)) S " + "0 " * 18 + str(sources["start"]),
+            )
+        namespace = "pid" if name.endswith("/pid") else "user"
+        return SimpleNamespace(stat=lambda: SimpleNamespace(st_dev=1, st_ino=sources[namespace]))
+
+    monkeypatch.setattr(output_logs, "Path", proc_path)
+    monkeypatch.setattr(output_logs, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(output_logs, "os", SimpleNamespace(name="posix", geteuid=lambda: sources["uid"]))
+    return sources
+
+
+@pytest.mark.parametrize("identity", ["boot", "pid", "user", "start", "uid"])
+def test_linux_owner_is_stable_and_distinguishes_process_views(monkeypatch, identity):
+    sources = _linux_owner_sources(monkeypatch)
+    owner = output_logs._local_log_owner()
+    assert owner is not None and len(owner) == 32
+    assert output_logs._local_log_owner() == owner
+    sources[identity] = "87654321-1234-1234-1234-123456789abc" if identity == "boot" else sources[identity] + 1
+    assert output_logs._local_log_owner() != owner
+
+
+def test_missing_kernel_ownership_does_not_fall_back_to_hostname(monkeypatch, caplog):
+    sources = _linux_owner_sources(monkeypatch)
+    sources["boot"] = "not a boot UUID"
+    monkeypatch.setenv("HOSTNAME", "same-name-on-both-hosts")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_INSTANCE", "same-instance")
+    assert output_logs._local_log_owner() is None
+    assert "ownership unavailable" in caplog.text
+    assert output_logs.worker_stderr_name("0" * 32) == f"runtime-worker-{'0' * 32}.stderr.log"
+
+
+def test_darwin_owner_uses_boot_session_and_uid(monkeypatch):
+    monkeypatch.setattr(output_logs, "os", SimpleNamespace(name="posix", geteuid=lambda: 1000))
+    monkeypatch.setattr(output_logs, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(output_logs, "_darwin_boot_id", lambda: "a" * 32)
+    owner = output_logs._local_log_owner()
+    assert owner is not None and output_logs._local_log_owner() == owner
+    assert output_logs.worker_stderr_name("0" * 32) == f"runtime-worker-{'0' * 32}-{owner}.stderr.log"
+    monkeypatch.setattr(output_logs, "_darwin_boot_id", lambda: "b" * 32)
+    assert output_logs._local_log_owner() != owner
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "invalid_name", "mismatch", "no_fileno", "closed", "missing"])
+def test_configured_rotation_validation_failure_is_observable(tmp_path, monkeypatch, caplog, failure):
+    path = _stderr(tmp_path)
+    path.write_bytes(b"keep original stderr")
+    monkeypatch.setattr(output_logs, "_rotation", None)
+    monkeypatch.setenv(output_logs.STDERR_LOG_ENV, str(path))
+    with path.open("ab") as stream, (tmp_path / "another.log").open("ab") as other:
+        stderr = stream
+        if failure == "unavailable":
+            stderr = None
+        elif failure == "invalid_name":
+            monkeypatch.setenv(output_logs.STDERR_LOG_ENV, str(other.name))
+        elif failure == "mismatch":
+            stderr = other
+        elif failure == "no_fileno":
+            stderr = object()
+        elif failure == "closed":
+            stream.close()
+        else:
+            monkeypatch.setenv(output_logs.STDERR_LOG_ENV, str(_stderr(tmp_path, 999)))
+        monkeypatch.setattr(output_logs, "sys", SimpleNamespace(stderr=stderr))
+        assert output_logs.start_worker_log_rotation() is None
+    assert output_logs._rotation is None
+    assert "output log rotation could not start" in caplog.text
+
+
+def test_rotation_without_parent_configuration_is_silent(monkeypatch, caplog):
+    monkeypatch.setattr(output_logs, "_rotation", None)
+    monkeypatch.delenv(output_logs.STDERR_LOG_ENV, raising=False)
+    assert output_logs.start_worker_log_rotation() is None
+    assert not caplog.records
 
 
 def test_posix_retention_ignores_unresolvable_names_and_protects_inherited_output(tmp_path, monkeypatch):

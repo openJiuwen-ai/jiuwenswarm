@@ -72,7 +72,7 @@ For sandbox operation audit logs, the storage location can be specified through 
 
 ### 1.5 Worker Output and Diagnostics (run/worker-logs/)
 
-Worker stderr is written directly to `runtime-worker-<UUID>.stderr.log`; stdout inherits the launching process's output. Every five seconds, stderr rotation checks the application's 20 MiB threshold and retains at most 20 bounded archives. The Worker maintenance thread prunes closed historical outputs and Supervisor snapshots on its first run and every 60 seconds, protecting files in use or recently modified without delaying Front startup. See [Worker output logs](runtime-worker-lifecycle.md#worker-output-logs) for archive names, directory budgets, and copy/truncate limitations.
+Worker stderr is written directly to `runtime-worker-<UUID>[-<owner>].stderr.log`; stdout inherits the launching process's output. New Linux/macOS logs include a kernel-derived ownership token to protect other hosts and containers sharing the directory. Every five seconds, stderr rotation checks the application's 20 MiB threshold and retains at most 20 bounded archives. The Worker maintenance thread prunes confirmed closed historical outputs and Supervisor snapshots on its first run and every 60 seconds, protecting files in use or recently modified without delaying Front startup. POSIX mutable files with foreign or unknown ownership are retained outside the cleanup budget. See [Worker output logs](runtime-worker-lifecycle.md#worker-output-logs) for archive names, directory budgets, and copy/truncate limitations.
 
 ## 2. Viewing Logs
 
