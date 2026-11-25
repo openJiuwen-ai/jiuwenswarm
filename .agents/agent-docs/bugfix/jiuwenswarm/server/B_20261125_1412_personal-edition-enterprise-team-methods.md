@@ -74,36 +74,39 @@ design_note: 依据代码逐跳核实定位，无独立设计文档；修复只�
 
 ## 回归证据与适用范围
 
-环境：Windows，Python 3.14。`openjiuwen` 装不上（PyPI 没有对应版本，
-agent-core 源码克隆失败），导入链经过它的用例本机都跑不了。
-
 `tests/unit_tests/agentserver/test_front_method_validation.py`：
-**29 passed，1 failed**。运行时跳过了 `conftest.py` 和 `pytest.ini`
-（缺 `portalocker` 等依赖和 `--cov` 插件参数）。
+**30 passed**。
 
-- 通过的 29 个覆盖 `parse_raw_message` / `rejected_method_wire` 路径。
-- 失败的 1 个是新增的
-  `test_personal_edition_blocks_enterprise_method_before_dispatch`：导入
-  `agent_ws_server` 时 `ModuleNotFoundError: No module named 'openjiuwen'`，
-  用例体没有执行到，不是断言失败。
+- `test_personal_edition_blocks_enterprise_method_before_dispatch` 直接调用
+  `AgentWebSocketServer.dispatch_parsed_request`，确认个人版 `team.create`
+  在入口返回 `FORBIDDEN`。
+- 其余用例覆盖 `parse_raw_message` / `rejected_method_wire` 路径。
+
+运行环境与仓库的标准环境有出入，结果应以 CI 为准：
+
+- Windows，Python 3.14.0，没有用 `uv sync` 建环境。
+- `openjiuwen` 和 `openjiuwen-e2a` 取 `pyproject.toml` 锁定的提交
+  （`31171fb`、`10ad4a2`），以源码目录经 `PYTHONPATH` 导入，没有安装。
+- 第三方依赖只装了导入链用到的部分，从 PyPI 取最新版。`tiktoken`
+  （0.14.0，锁定 0.12.0）和 `pdfplumber`（0.11.11，锁定 0.11.10）与
+  `uv.lock` 不一致。
+- 跳过了 `conftest.py` 和 `pytest.ini`（缺部分依赖和 `--cov` 插件参数）。
+
+这份记录的上一版写的是“29 passed，1 failed”：当时本机导入不了
+`openjiuwen`，上面那条用例没能运行。改用锁定的 agent-core 提交后可以
+运行并通过。
 
 已执行：
 
 - 4 个改动文件 `py_compile` 通过。
-- 把 `pyproject.toml` 锁定的 `openjiuwen-e2a` 提交（`10ad4a2`）导出到临时目录，
-  经 `PYTHONPATH` 真实导入 `parse_raw_message` 运行，结果如下：
+- 经 `PYTHONPATH` 真实导入 `parse_raw_message` 运行，结果如下：
   - 个人版：7 个企业方法全部返回 `FORBIDDEN`，应答保留 `request_id`。
   - 个人版：`team.list`、`team.delete`、`team.snapshot`、`chat.send` 正常解析。
   - 未知方法仍返回 `METHOD_NOT_FOUND`；未带方法的内部请求仍放行。
   - 企业版（`JIUWENSWARM_EDITION=enterprise`）：`team.create` 正常解析。
-- 按 `dispatch_parsed_request` 闸门的同一构造方式编码应答，确认
-  `body.details` 为 `{"error": "...team.create", "code": "FORBIDDEN"}`。
-  这只验证了负载构造，没有经过 `dispatch_parsed_request` 本身。
 
 未验证：
 
-- `dispatch_parsed_request` 开头的闸门没有任何一次真实运行的结果（对应用例
-  未能运行，见上）。
 - `_handle_message` 的两处改动（E2A 直传、legacy fallback）没有用例直接覆盖，
   也没有运行过。
 - 未做端到端联调（真实 WS 连接、supervisor/worker 多进程）。
