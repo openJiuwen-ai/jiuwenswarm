@@ -19,6 +19,9 @@ from openjiuwen.harness.security.permission_engine.policy_sources import SOURCE_
 from jiuwenswarm.agents.harness.common.rails.interrupt.permission_prompt import (
     build_permission_prompt,
 )
+from jiuwenswarm.agents.harness.common.rails.interrupt.workspace_delete_exempt import (
+    maybe_approve_in_workspace_delete,
+)
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     build_plan_approval_actions,
 )
@@ -542,6 +545,21 @@ def build_permission_rail(
             if inp.normalized_tool_name in {"ask_user", "symphony_plan_experts"} and (
                 perm_ctx is None
                 or getattr(perm_ctx, "scene", None) != "group_digital_avatar"
+            ):
+                return ("approve",)
+
+            # 工作空间内删除豁免：命令层内置规则（shell_delete_files）路径盲，区内 rm
+            # 同样弹卡；路径层把 rm 目标归入 write 轴（区内本就放行），无法表达删除的
+            # 内外差异。普通桌面会话不设置 TOOL_PERMISSION_CONTEXT（仅数字分身/记忆
+            # 门控场景设置），因此该分支必须放在 perm_ctx 早退之前；豁免不依赖上下文，
+            # 但让位给数字分身场景限制。
+            if (
+                inp.user_input is None
+                and getattr(perm_ctx, "scene", None) != "group_digital_avatar"
+                and await maybe_approve_in_workspace_delete(
+                    inp,
+                    zones=[Path(zone) for zone in runtime_trusted_dirs_state],
+                )
             ):
                 return ("approve",)
 
