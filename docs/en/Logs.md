@@ -70,6 +70,10 @@ For sandbox operation audit logs, the storage location can be specified through 
 - Can be specified via `--save-logs DIR` parameter or `JIUWENBOX_SAVE_LOGS_DIR` environment variable
 - File name format: `{sandbox_id}-{YYYYMMDDTHHMMSS}.audit.log`
 
+### 1.5 Worker Output and Diagnostics (logs/worker-logs/)
+
+Worker stderr is written directly to `runtime-worker-<UUID>[-<owner>].stderr.log`; stdout inherits the launching process's output. New Linux/macOS logs include a kernel-derived ownership token to protect other hosts and containers sharing the directory. Every five seconds, stderr rotation checks the application's 20 MiB threshold and retains at most 20 bounded archives. The Worker maintenance thread prunes confirmed closed historical outputs and Supervisor snapshots on its first run and every 60 seconds, protecting files in use or recently modified without delaying Front startup. POSIX mutable files with foreign or unknown ownership are retained outside the cleanup budget. See [Worker output logs](runtime-worker-lifecycle.md#worker-output-logs) for archive names, directory budgets, and copy/truncate limitations.
+
 ## 2. Viewing Logs
 
 ### 2.1 Real-time Log Viewing
