@@ -7,12 +7,14 @@ from __future__ import annotations
 import atexit
 import codecs
 import datetime
+import hashlib
 import logging
 import os
 import re
 import sys
 import threading
 import time
+import uuid
 from functools import cache
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -20,10 +22,65 @@ from typing import Any, BinaryIO
 logger = logging.getLogger(__name__)
 
 STDERR_LOG_ENV = "JIUWENSWARM_WORKER_STDERR_LOG"
-_LOG_NAME = re.compile(r"runtime-worker-[0-9a-f]{32}\.(?:stderr|stdout)(?:_\d{8}_\d{6}_\d+)?\.log")
-_TEMP_NAME = re.compile(r"runtime-worker-[0-9a-f]{32}\.(?:stderr|stdout)_\d{8}_\d{6}_\d+\.tmp")
+_LOG_PREFIX = r"runtime-worker-[0-9a-f]{32}(?:-(?P<owner>[0-9a-f]{32}))?"
+_LOG_NAME = re.compile(_LOG_PREFIX + r"\.(?:stderr|stdout)(?:_\d{8}_\d{6}_\d+)?\.log")
+_TEMP_NAME = re.compile(_LOG_PREFIX + r"\.(?:stderr|stdout)_\d{8}_\d{6}_\d+\.tmp")
 _DUMP_NAME = re.compile(r"supervisor-\d+-\d+\.txt")
 _rotation: WorkerLogRotation | None = None
+
+
+def _darwin_boot_id() -> str:
+    """Read the kernel's boot-session UUID without starting a subprocess."""
+    import ctypes
+
+    sysctl = ctypes.CDLL(None, use_errno=True).sysctlbyname
+    sysctl.argtypes = (
+        ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p, ctypes.c_size_t,
+    )
+    sysctl.restype = ctypes.c_int
+    value = ctypes.create_string_buffer(37)
+    size = ctypes.c_size_t(len(value))
+    if sysctl(b"kern.bootsessionuuid", value, ctypes.byref(size), None, 0) != 0:
+        raise OSError(ctypes.get_errno(), "Cannot read boot-session UUID")
+    return uuid.UUID(value.value.decode("ascii")).hex
+
+
+def _local_log_owner() -> str | None:
+    """Identify the local process view, never a configurable hostname.
+
+    A complete local process scan says nothing about another host or PID
+    namespace sharing this directory. Only matching ownership permits that
+    scan to establish closure. Missing evidence must keep mutable files.
+    """
+    if os.name == "nt":
+        return None
+    try:
+        if sys.platform.startswith("linux"):
+            boot = uuid.UUID(Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()).hex
+            pid_namespace = Path("/proc/self/ns/pid").stat()
+            user_namespace = Path("/proc/self/ns/user").stat()
+            # Field 22 follows the parenthesized command and fields 3..21.
+            start = int(Path("/proc/1/stat").read_text(encoding="utf-8").rpartition(")")[2].split()[19])
+            identity = (
+                f"{boot}:{pid_namespace.st_dev}:{pid_namespace.st_ino}:"
+                f"{user_namespace.st_dev}:{user_namespace.st_ino}:{start}:{os.geteuid()}"
+            )
+        elif sys.platform == "darwin":
+            identity = f"{_darwin_boot_id()}:{os.geteuid()}"
+        else:
+            return None
+    except (AttributeError, IndexError, OSError, ValueError):
+        logger.warning("[Worker] output log ownership unavailable; keeping mutable logs", exc_info=True)
+        return None
+    return hashlib.sha256(identity.encode("ascii")).hexdigest()[:32]
+
+
+def worker_stderr_name(worker_id: str) -> str:
+    """Tag POSIX outputs with the process view that can prove their closure."""
+    owner = _local_log_owner()
+    suffix = f"-{owner}" if owner is not None else ""
+    return f"runtime-worker-{worker_id}{suffix}.stderr.log"
 
 
 @cache
@@ -195,6 +252,7 @@ def prune_worker_logs(
     prune_outputs = len(outputs) > backup_count or sum(item[1] for item in outputs) > max_bytes * backup_count
     if prune_outputs or temporary_outputs:
         active = _active_log_paths(directory) if os.name != "nt" else None
+        owner = _local_log_owner() if os.name != "nt" else None
         closed = []
         abandoned = []
         for item in outputs + temporary_outputs:
@@ -207,8 +265,10 @@ def prune_worker_logs(
             elif os.name == "nt":
                 if _windows_log_is_closed(path):
                     eligible.append(item)
-            elif active is not None and os.path.normcase(str(path.resolve())) not in active:
-                eligible.append(item)
+            elif active is not None and owner is not None:
+                match = (_TEMP_NAME if path.suffix == ".tmp" else _LOG_NAME).fullmatch(path.name)
+                if match.group("owner") == owner and os.path.normcase(str(path.resolve())) not in active:
+                    eligible.append(item)
         if prune_outputs:
             _prune(closed, max_bytes=max_bytes, backup_count=backup_count)
         # An interrupted copy is disposable; keep its complete source log.
@@ -345,13 +405,21 @@ def start_worker_log_rotation(
     if _rotation is not None:
         return _rotation
     value = os.environ.get(STDERR_LOG_ENV, "")
-    if not value or sys.stderr is None:
+    if not value:
+        return None
+    if sys.stderr is None:
+        logger.warning("[Worker] output log rotation could not start: stderr is unavailable")
         return None
     path = Path(value)
     try:
-        if not _LOG_NAME.fullmatch(path.name) or not os.path.samestat(path.stat(), os.fstat(sys.stderr.fileno())):
+        if not _LOG_NAME.fullmatch(path.name):
+            logger.warning("[Worker] output log rotation could not start: invalid stderr log name")
+            return None
+        if not os.path.samestat(path.stat(), os.fstat(sys.stderr.fileno())):
+            logger.warning("[Worker] output log rotation could not start: stderr file identity mismatch")
             return None
     except (AttributeError, OSError, ValueError):
+        logger.warning("[Worker] output log rotation could not start: stderr validation failed", exc_info=True)
         return None
     from jiuwenswarm.common.utils import _LOG_FILE_BACKUP_COUNT, _LOG_FILE_MAX_BYTES
 

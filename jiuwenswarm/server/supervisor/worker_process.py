@@ -183,10 +183,12 @@ class WorkerProcess:
         self._ipc_listener = ipc_listener
         self._proc: subprocess.Popen[bytes] | None = None
         self.launch_identity: str | None = None
+        from jiuwenswarm.server.worker.output_logs import worker_stderr_name
+
         self._stderr_path = (
             Path(socket_path).parent
             / "worker-logs"
-            / f"runtime-worker-{uuid.uuid4().hex}.stderr.log"
+            / worker_stderr_name(uuid.uuid4().hex)
         )
 
     @property
