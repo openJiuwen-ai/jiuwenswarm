@@ -12,8 +12,7 @@ from jiuwenswarm.extensions.sdk import (
     ApplicationPluginExtension,
     ApplicationPluginServices,
 )
-from jiuwenswarm.common.utils import get_user_workspace_dir
-from jiuwenswarm.extensions.app_market.app_market.storage import APP_MARKET_DIRNAME
+from jiuwenswarm.common.paths import get_app_market_dir
 
 from jiuwenswarm.extensions.app_market.manager import (
     AppMarketError,
@@ -42,7 +41,7 @@ class AppMarketPlugin(ApplicationPluginExtension):
         """Resolve the data root at use time, like the other workspace paths."""
         data_dir = getattr(self, "_data_dir", None)
         if data_dir is None:
-            data_dir = get_user_workspace_dir() / APP_MARKET_DIRNAME
+            data_dir = get_app_market_dir()
         self._data_dir = data_dir
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir

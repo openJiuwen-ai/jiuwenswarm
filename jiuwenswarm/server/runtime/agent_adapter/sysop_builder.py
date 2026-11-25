@@ -576,7 +576,7 @@ def _team_context_from_spec(spec: Any) -> dict[str, str] | None:
        ``<outer>/runs/<hash>``) still has its members' workspaces under the
        standard team home.
     2. jiuwenswarm aligns the openjiuwen home to its own data root at startup
-       (``configure_openjiuwen_home(get_domain_data_dir())``, bootstrap.py),
+       (``configure_openjiuwen_home(get_workspace_root_dir())``, bootstrap.py),
        so ``team_home(team_name)`` and the jiuwenswarm-side team directory
        are the same tree — there is no second data root to diverge.
 

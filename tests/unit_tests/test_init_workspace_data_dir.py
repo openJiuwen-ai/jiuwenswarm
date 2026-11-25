@@ -3,15 +3,16 @@
 from pathlib import Path
 
 from jiuwenswarm import init_workspace
-from jiuwenswarm.common import utils
+from jiuwenswarm.common import paths, utils
 
 
 def test_run_init_force_with_data_dir_skips_default_instance_check(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / "instance-workspace"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(target))
-    monkeypatch.setattr(utils, "_workspace_base_dir", None)
-    monkeypatch.setattr(utils, "_user_home", tmp_path / "home")
-    monkeypatch.setattr(utils, "_initialized", False)
+    monkeypatch.setattr(paths, "_workspace_base_dir", None)
+    # home 与解析缓存已收敛进 common.paths（utils 仅转发），patch 点随之迁移
+    monkeypatch.setattr(paths, "_user_home", tmp_path / "home")
+    monkeypatch.setattr(paths, "_initialized", False)
 
     def fail_default_status():
         raise AssertionError("default instance status must not be checked for DATA_DIR init")
@@ -29,9 +30,9 @@ def test_run_init_force_with_data_dir_skips_default_instance_check(monkeypatch, 
 def test_run_init_uses_data_dir_for_default_workspace(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / "instance-workspace"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(target))
-    monkeypatch.setattr(utils, "_workspace_base_dir", None)
-    monkeypatch.setattr(utils, "_user_home", tmp_path / "home")
-    monkeypatch.setattr(utils, "_initialized", False)
+    monkeypatch.setattr(paths, "_workspace_base_dir", None)
+    monkeypatch.setattr(paths, "_user_home", tmp_path / "home")
+    monkeypatch.setattr(paths, "_initialized", False)
 
     captured: dict[str, object] = {}
 

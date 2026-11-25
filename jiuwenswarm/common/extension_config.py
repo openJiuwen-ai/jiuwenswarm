@@ -18,12 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.common import paths as _paths
+from jiuwenswarm.common.paths import get_extension_data_dir, get_extension_pkgs_dir
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_INSTALL_DIR = "extension_pkgs"
-DEFAULT_STORE_DIR = "extension/store"
-DEFAULT_STATE_DIR = "extension/state"
-DEFAULT_DATA_DIR = "extension"
 DEFAULT_EXAMPLES_DIR = "examples"
 INSTALL_DIR_ENV = "EXTENSION_INSTALL_DIR"
 STORE_DIR_ENV = "EXTENSION_STORE_DIR"
@@ -53,7 +52,7 @@ def resolve_install_dir(config: Mapping[str, Any] | None = None) -> Path:
         config,
         key="install_dir",
         env_name=INSTALL_DIR_ENV,
-        default=DEFAULT_INSTALL_DIR,
+        default=str(get_extension_pkgs_dir()),
     )
 
 
@@ -63,7 +62,7 @@ def resolve_store_dir(config: Mapping[str, Any] | None = None) -> Path:
         config,
         key="store_dir",
         env_name=STORE_DIR_ENV,
-        default=DEFAULT_STORE_DIR,
+        default=str(get_extension_data_dir() / "store"),
     )
 
 
@@ -73,7 +72,7 @@ def resolve_state_dir(config: Mapping[str, Any] | None = None) -> Path:
         config,
         key="state_dir",
         env_name=STATE_DIR_ENV,
-        default=DEFAULT_STATE_DIR,
+        default=str(get_extension_data_dir() / "state"),
     )
 
 
@@ -83,7 +82,7 @@ def resolve_extension_data_dir(config: Mapping[str, Any] | None = None) -> Path:
         config,
         key="data_dir",
         env_name=DATA_DIR_ENV,
-        default=DEFAULT_DATA_DIR,
+        default=str(get_extension_data_dir()),
     )
 
 
@@ -131,9 +130,9 @@ def _resolve_configured_dir(
 
     path = Path(raw).expanduser()
     if not path.is_absolute():
-        from jiuwenswarm.common.utils import get_user_workspace_dir
-
-        path = get_user_workspace_dir() / path
+        # 经模块对象限定调用（call-time 查找），测试可对 paths.get_user_workspace_dir
+        # 打桩隔离工作区
+        path = _paths.get_user_workspace_dir() / path
     return path.resolve()
 
 

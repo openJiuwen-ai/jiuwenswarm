@@ -1194,7 +1194,7 @@ def test_get_session_extra_history_roots_discovers_sub_agent_workspaces(tmp_path
             },
         ),
         patch(
-            "jiuwenswarm.common.utils.get_agent_workspace_dir",
+            "jiuwenswarm.common.paths.get_agent_workspace_dir",
             return_value=tmp_path / "workspace",
         ),
     ):

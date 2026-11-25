@@ -8,6 +8,7 @@ import difflib
 import copy
 import json
 import logging
+
 import os
 import re
 import threading
@@ -16,12 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import (
+from jiuwenswarm.common.paths import (
+    get_agent_history_dir,
     get_agent_sessions_dir,
     get_agent_workspace_dir,
-    get_domain_data_dir,
     get_user_workspace_dir,
+    get_workspace_root_dir,
 )
+
 from jiuwenswarm.server.runtime.session.session_history import load_history_records
 
 
@@ -1001,21 +1004,31 @@ class DiffService:
             paths.append(path)
             history_file_priorities.setdefault(path_key(path), priority)
 
-        # 1. 从 Agent Workspace 和 User Workspace 读取（公共位置）
+        # 1. 从 Agent Workspace 和工作空间根读取（公共位置，租户/工作空间隔离）。
+        #    agent_history 按工作空间根隔离：企业版落在绑定租户的
+        #    profile/profile/profile_{tk}/.agent_teams 同级的
+        #    .agent_history，避免 file_ops_{agent_id}.json（agent_id 为常量
+        #    "jiuwenswarm"，文件名不含租户键）在 zone 级跨租户合并泄漏。
         paths: list[Path] = []
         add_history_file(
             get_agent_workspace_dir() / ".agent_history" / f"file_ops_{self._agent_id}.json",
             HISTORY_PRIORITY_SHARED_WORKSPACE,
         )
         add_history_file(
-            get_domain_data_dir() / ".agent_history" / f"file_ops_{self._agent_id}.json",
+            get_agent_history_dir() / f"file_ops_{self._agent_id}.json",
+            HISTORY_PRIORITY_SHARED_WORKSPACE,
+        )
+        # 2'. 工作空间根（get_workspace_root_dir）：个人版 profile/.agent_history，
+        #     企业版绑定租户的 workspace_{tk}/.agent_history——按工作空间根隔离。
+        add_history_file(
+            get_agent_history_dir() / f"file_ops_{self._agent_id}.json",
             HISTORY_PRIORITY_SHARED_WORKSPACE,
         )
 
         # 2. session-specific file_ops（如 file_ops_jiuwenswarm_tui_xxx.json）
         if session_id:
-            for base_dir in (get_agent_workspace_dir(),
-                             get_domain_data_dir(), get_user_workspace_dir()):
+            for base_dir in (get_agent_workspace_dir(), get_agent_history_dir(),
+                             get_user_workspace_dir()):
                 hist_dir = base_dir / ".agent_history"
                 if not hist_dir.is_dir():
                     continue
@@ -2419,7 +2432,7 @@ class DiffService:
         file_ops_paths: list[Path] = []
 
         for base_dir in (get_agent_workspace_dir(),
-                         get_domain_data_dir(), get_user_workspace_dir()):
+                         get_agent_history_dir(), get_user_workspace_dir()):
             hist_dir = base_dir / ".agent_history"
             if not hist_dir.is_dir():
                 continue

@@ -28,10 +28,10 @@ import aiofiles.os
 import yaml
 
 from jiuwenswarm.common.filesystem_paths import extended_path
+from jiuwenswarm.common.paths import get_workspace_root_dir
 from jiuwenswarm.common.utils import (
     get_agent_skills_dir,
     get_agent_workspace_dir,
-    get_user_workspace_dir,
     mask_sensitive,
 )
 from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
@@ -1064,10 +1064,12 @@ def _equipment_workspace(agent_workspace: Path | None = None) -> Path:
 
 
 def _agent_group_catalog_bound() -> bool:
-    """False when enterprise has no tenant, so catalog reads stay empty.
+    """False when enterprise has no bound tenant.
 
-    Writes still call ``_agent_group_home`` and raise. Reads must not fall
-    back to the shared domain root.
+    agent_groups 按工作空间根/租户根隔离（_agent_group_home）：个人版在
+    profile/.agent_teams，企业版在绑定租户的
+    profile/profile_{tk}/.agent_teams；未绑定租户的
+    企业版目录类读操作返回空、写操作报错，不回退共享根。
     """
     from jiuwenswarm.enterprise.edition import is_enterprise
     from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
@@ -1080,12 +1082,12 @@ def _agent_group_catalog_bound() -> bool:
 def _agent_group_home(*, agent_workspace: Path | None = None) -> Path:
     """Home directory that owns ``.agent_teams/agent_groups``.
 
-    Personal edition keeps the data root. Enterprise uses the tenant
-    root already bound on this request. An unbound enterprise call must not
-    fall back to the shared data root or the default tenant key.
+    个人版：工作空间根（profile）；企业版：当前请求绑定的租户根
+    （profile/profile_{tk}）——团队名册/任务按租户隔离。
+    未绑定租户的企业版调用必须报错，不得回退共享根或默认租户键。
     """
     if agent_workspace is not None:
-        # ``agent_workspace`` is ``<home>/agent/workspace``.
+        # agent_workspace 即 <工作空间根>/agent/workspace，上溯两级即工作空间根
         return agent_workspace.parent.parent
     from jiuwenswarm.enterprise.edition import is_enterprise
     from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
@@ -1098,16 +1100,12 @@ def _agent_group_home(*, agent_workspace: Path | None = None) -> Path:
                 "AGENT_GROUP_TENANT_REQUIRED",
             )
         return bound
-    return get_user_workspace_dir()
+    return get_workspace_root_dir()
 
 
 def _kind_root(kind: str, *, agent_workspace: Path | None = None) -> Path:
     if kind == _AGENT_GROUP_KIND:
-        return (
-            _agent_group_home(agent_workspace=agent_workspace)
-            / ".agent_teams"
-            / _AGENT_GROUP_KIND
-        )
+        return _agent_group_home(agent_workspace=agent_workspace) / ".agent_teams" / _AGENT_GROUP_KIND
     return _equipment_workspace(agent_workspace) / "plugins" / kind
 
 

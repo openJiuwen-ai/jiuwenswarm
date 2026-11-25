@@ -397,7 +397,7 @@ async def test_task_loop_error_does_not_submit_another_video(
     monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "vllm-omni")
     monkeypatch.setenv("VIDEO_GEN_API_BASE", "http://127.0.0.1:8091/v1")
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        "jiuwenswarm.common.paths.get_agent_workspace_dir",
         lambda: tmp_path,
     )
     captured = _install_fake_deep_agent(
@@ -446,7 +446,7 @@ async def test_task_loop_failure_keeps_original_cause(
     from jiuwenswarm.server.runtime.designer.node_agent import NodeAgentHost
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        "jiuwenswarm.common.paths.get_agent_workspace_dir",
         lambda: tmp_path,
     )
     _install_fake_deep_agent(
@@ -480,7 +480,7 @@ async def test_creative_text_still_materializes_one_video(
     from jiuwenswarm.server.runtime.designer.node_agent import NodeAgentHost
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        "jiuwenswarm.common.paths.get_agent_workspace_dir",
         lambda: tmp_path,
     )
     _install_fake_deep_agent(
@@ -591,7 +591,7 @@ async def test_completed_character_image_is_not_generated_again(
     )
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        "jiuwenswarm.common.paths.get_agent_workspace_dir",
         lambda: tmp_path,
     )
     _install_fake_deep_agent(monkeypatch, {"output": "done", "result_type": "answer"})

@@ -618,6 +618,9 @@ def _unbind_reconcile_stores() -> None:
 def _use_personal_volume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     volume = tmp_path / "vol"
     volume.mkdir()
+    # session_cleanup 的 volume 读取绑定在 utils 命名空间，会话目录派生走
+    # paths（profile 布局）——两个命名空间都要重定向
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: volume)
     monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: volume)
     monkeypatch.setattr(
         "jiuwenswarm.enterprise.tenant.tenant_paths.is_enterprise", lambda: False,
@@ -632,7 +635,7 @@ def test_reconcile_keeps_team_when_session_dir_exists(
     from jiuwenswarm.enterprise.team.session_cleanup import reconcile_teams_with_sessions
 
     volume = _use_personal_volume(tmp_path, monkeypatch)
-    (volume / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
+    (volume / "profile" / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
     control, svc = _bind_reconcile_stores(tmp_path)
     try:
         ident = _ident()
@@ -658,7 +661,7 @@ def test_reconcile_purges_team_when_session_dir_missing(
     from jiuwenswarm.enterprise.team.session_cleanup import reconcile_teams_with_sessions
 
     volume = _use_personal_volume(tmp_path, monkeypatch)
-    (volume / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
+    (volume / "profile" / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
     control, svc = _bind_reconcile_stores(tmp_path)
     try:
         ident = _ident()
@@ -715,6 +718,11 @@ def test_reconcile_skips_when_data_volume_missing(
     from jiuwenswarm.enterprise.team.session_cleanup import reconcile_teams_with_sessions
 
     monkeypatch.setattr(
+        "jiuwenswarm.common.paths.get_user_workspace_dir",
+        lambda: tmp_path / "missing-volume",
+    )
+    # session_cleanup 的 volume 读取绑定在 utils 命名空间，一并重定向
+    monkeypatch.setattr(
         "jiuwenswarm.common.utils.get_user_workspace_dir",
         lambda: tmp_path / "missing-volume",
     )
@@ -747,8 +755,8 @@ def test_reconcile_purges_when_tenant_sessions_dir_missing(
     volume.mkdir()
     ident = _ident()
     key = build_tenant_key(ident.group_id, ident.bot_id, ident.user_id)
-    (volume / f"workspace_{key}").mkdir(parents=True)
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: volume)
+    (volume / "profile" / f"profile_{key}").mkdir(parents=True)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: volume)
     monkeypatch.setattr(
         "jiuwenswarm.enterprise.tenant.tenant_paths.is_enterprise", lambda: True,
     )
@@ -773,7 +781,7 @@ def test_reconcile_purges_when_tenant_sessions_dir_missing(
         )) / "sessions" / "sess-wiped"
         assert not expected.is_dir()
         assert expected == (
-            volume / f"workspace_{key}" / "agent" / "sessions" / "sess-wiped"
+            volume / "profile" / f"profile_{key}" / "agent" / "sessions" / "sess-wiped"
         )
     finally:
         _unbind_reconcile_stores()
@@ -1142,7 +1150,7 @@ async def test_manager_usage_data_exposes_items(tmp_path: Path, monkeypatch: pyt
 
 def _use_enterprise_volume(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: root)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: root)
     monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: True)
     monkeypatch.setattr(
         "jiuwenswarm.enterprise.tenant.tenant_paths.is_enterprise", lambda: True,

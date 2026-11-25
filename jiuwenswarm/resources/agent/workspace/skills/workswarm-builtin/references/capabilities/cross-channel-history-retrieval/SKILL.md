@@ -1,13 +1,13 @@
 ---
 name: cross-channel-history-retrieval
 description: >-
-  跨会话检索聊天原文（记忆不足时再用）。在回答任何关于历史事件、日期、人物、过去对话的问题时，如果记忆中没有相关信息或不足以回答，则需要使用跨会话检索聊天原文。用 mcp_exec_command 执行 scripts/search_history.py，读 ~/.jiuwenswarm/agent/sessions/*/history.json。支持 channel、session_id、关键词、时间窗。如果搜索结果不足，尝试用不同的关键词再次搜索。
+  跨会话检索聊天原文（记忆不足时再用）。在回答任何关于历史事件、日期、人物、过去对话的问题时，如果记忆中没有相关信息或不足以回答，则需要使用跨会话检索聊天原文。用 mcp_exec_command 执行 scripts/search_history.py，读 ~/.jiuwenswarm/profile/agent/sessions/*/history.json。支持 channel、session_id、关键词、时间窗。如果搜索结果不足，尝试用不同的关键词再次搜索。
 allowed_tools: [mcp_exec_command]
 ---
 
 # 跨频道历史检索
 
-用于从 `~/.jiuwenswarm/agent/sessions/<session_id>/history.json` 中检索历史消息，并把命中结果整理为可直接粘贴进当前上下文的文本块。
+用于从 `~/.jiuwenswarm/profile/agent/sessions/<session_id>/history.json` 中检索历史消息，并把命中结果整理为可直接粘贴进当前上下文的文本块。
 
 ## 何时使用
 
@@ -21,7 +21,7 @@ allowed_tools: [mcp_exec_command]
 必须使用 `mcp_exec_command` 执行脚本，不要只口头总结。
 
 ```bash
-python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabilities/cross-channel-history-retrieval/scripts/search_history.py --channel feishu --query "报销 审批" --start "2026-03-26 09:00" --end "2026-03-26 18:00" --limit 30
+python ~/.jiuwenswarm/profile/agent/workspace/skills/workswarm-builtin/references/capabilities/cross-channel-history-retrieval/scripts/search_history.py --channel feishu --query "报销 审批" --start "2026-03-26 09:00" --end "2026-03-26 18:00" --limit 30
 ```
 
 （Windows：**`--channel` / `--query` / 时间参数等与 Unix 相同**；默认 `mcp_exec_command` 走 **cmd**，**cmd 不会展开 `~`**，不要用 `~/.jiuwenswarm`，应写 `python %USERPROFILE%\.jiuwenswarm\agent\workspace\skills\workswarm-builtin\references\capabilities\cross-channel-history-retrieval\scripts\search_history.py` 再接同样参数。若整条命令在 PowerShell 里执行，`~` 一般会展开，也可用 `$env:USERPROFILE\...`。）

@@ -439,9 +439,10 @@ class JiuwenMateWebAdapter(GatewayAdapter):
     async def _refresh_models(self, config_payload: dict[str, Any] | None = None) -> bool:
         """Refresh published models for future Web and Feishu Requests, without starting either runtime."""
         from jiuwenswarm.common.config import get_default_models
-        from jiuwenswarm.server.jiuwenmate.service import ConfiguredModelProvider, default_data_dir
+        from jiuwenswarm.common.paths import get_jiuwenmate_dir
+        from jiuwenswarm.server.jiuwenmate.service import ConfiguredModelProvider
 
-        if self._service is None and not (default_data_dir() / "agents.sqlite3").is_file():
+        if self._service is None and not (get_jiuwenmate_dir() / "agents.sqlite3").is_file():
             return True
         try:
             service = await asyncio.to_thread(self._colleagues)
