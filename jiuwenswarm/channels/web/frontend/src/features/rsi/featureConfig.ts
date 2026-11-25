@@ -26,7 +26,8 @@ export function useRSIFeatureEnabled(): boolean {
 
 export function normalizeRSIEnabled(value: unknown): boolean {
   if (typeof value === 'boolean') return value;
-  const text = String(value ?? 'true')
+  if (value === undefined || value === null || value === '') return rsiFeatureEnabled;
+  const text = String(value)
     .trim()
     .toLowerCase();
   return !['0', 'false', 'no', 'off'].includes(text);
