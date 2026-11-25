@@ -74,8 +74,18 @@ design_note: 依据代码逐跳核实定位，无独立设计文档；修复只�
 
 ## 回归证据与适用范围
 
-环境：Windows，Python 3.14。本机无法安装依赖（内网 PyPI 域名不可解析），
-**pytest 未执行**。
+环境：Windows，Python 3.14。`openjiuwen` 装不上（PyPI 没有对应版本，
+agent-core 源码克隆失败），导入链经过它的用例本机都跑不了。
+
+`tests/unit_tests/agentserver/test_front_method_validation.py`：
+**29 passed，1 failed**。运行时跳过了 `conftest.py` 和 `pytest.ini`
+（缺 `portalocker` 等依赖和 `--cov` 插件参数）。
+
+- 通过的 29 个覆盖 `parse_raw_message` / `rejected_method_wire` 路径。
+- 失败的 1 个是新增的
+  `test_personal_edition_blocks_enterprise_method_before_dispatch`：导入
+  `agent_ws_server` 时 `ModuleNotFoundError: No module named 'openjiuwen'`，
+  用例体没有执行到，不是断言失败。
 
 已执行：
 
@@ -88,11 +98,14 @@ design_note: 依据代码逐跳核实定位，无独立设计文档；修复只�
   - 企业版（`JIUWENSWARM_EDITION=enterprise`）：`team.create` 正常解析。
 - 按 `dispatch_parsed_request` 闸门的同一构造方式编码应答，确认
   `body.details` 为 `{"error": "...team.create", "code": "FORBIDDEN"}`。
+  这只验证了负载构造，没有经过 `dispatch_parsed_request` 本身。
 
 未验证：
 
-- 新增的 `test_personal_edition_blocks_enterprise_method_before_dispatch` 没有
-  实际运行。导入 `agent_ws_server` 需要 `openjiuwen`，本机没有。
+- `dispatch_parsed_request` 开头的闸门没有任何一次真实运行的结果（对应用例
+  未能运行，见上）。
+- `_handle_message` 的两处改动（E2A 直传、legacy fallback）没有用例直接覆盖，
+  也没有运行过。
 - 未做端到端联调（真实 WS 连接、supervisor/worker 多进程）。
 
 重验条件：在装好依赖的环境执行
