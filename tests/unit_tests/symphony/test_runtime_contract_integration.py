@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 import yaml
 
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony import SkillRetrievalToolkit
 from jiuwenswarm.common.symphony_config import load_symphony_config
 from jiuwenswarm.runtime.symphony.llm import LLMConfig
 from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService

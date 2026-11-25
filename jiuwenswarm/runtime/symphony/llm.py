@@ -472,6 +472,13 @@ async def probe_model_connection(config: LLMConfig) -> None:
         ) from exc
 
 
+def model_from_config(config: LLMConfig):
+    """Create the orchestration model and attach its token usage observer."""
+    model = config.create_model()
+    model.symphony_response_observer = create_model_response_observer(config)
+    return model
+
+
 def create_model_response_observer(config: LLMConfig):
     """Bridge native Symphony model responses to the existing usage tracker."""
 

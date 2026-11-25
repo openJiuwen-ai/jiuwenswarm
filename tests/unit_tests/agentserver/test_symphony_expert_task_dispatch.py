@@ -34,7 +34,7 @@ from openjiuwen.symphony import OrchestrationConfig, OrchestrationService, Symph
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.agents.harness.common.rails.symphony import task_tool as task_tool_module
 from jiuwenswarm.agents.harness.common.rails.symphony.expert_task_plan import ExpertTaskPlan
-from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony import SymphonyToolkit
 from jiuwenswarm.agents.harness.team.experts import catalog
 from jiuwenswarm.runtime.symphony.planning_inputs import supports_planning_inputs
 from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService

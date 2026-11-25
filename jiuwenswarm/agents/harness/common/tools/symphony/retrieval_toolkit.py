@@ -6,26 +6,34 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from openjiuwen.core.foundation.tool import Tool
 from openjiuwen.symphony import SymphonyRuntime
 from openjiuwen.symphony.config import RetrievalConfig
 from openjiuwen.symphony.discovery import (
     CapabilityCandidate,
+    CapabilitySearchTool,
     SkillFS,
     SkillIndexSnapshot,
     SkillPromptBranch,
     SkillPromptEntry,
     SkillPromptSnapshot,
     SkillRecord,
+    consume_incremental_skill_reminder,
+    initialize_incremental_skill_notice_state,
 )
 
-from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
+from jiuwenswarm.runtime.symphony.skill_retrieval import (
+    disabled_skills_from_directories,
+    resolve_retrieval_config_base,
+    resolve_skill_retrieval_strategy,
+    skill_sources_from_directories,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +46,80 @@ VisibleSkillsProvider = (
 
 SKILL_RETRIEVAL_SESSION_PROFILE_VERSION = 2
 _PROFILE_SETTINGS_FIELDS = {"prompt", "output", "use_existing_index"}
+
+
+class RetrievalPromptEnvironment(Protocol):
+    """The inventory reads used by the session prompt."""
+
+    def prompt_snapshot(self) -> SkillPromptSnapshot: ...
+
+    def selection_cards(self) -> dict[str, dict[str, str]]: ...
+
+
+@dataclass(frozen=True)
+class RetrievalPromptSnapshot:
+    """Read-only candidate data consumed by the prompt renderer."""
+
+    candidate_budget_tokens: int
+    all_candidates_included: bool = True
+    entries: tuple[SkillPromptEntry, ...] = ()
+    branches: tuple[SkillPromptBranch, ...] = ()
+    omitted_branch_count: int = 0
+
+
+def read_retrieval_prompt(
+    toolkit: SkillRetrievalToolkit | None,
+    environment: RetrievalPromptEnvironment | None,
+    budget: int,
+) -> RetrievalPromptSnapshot:
+    if toolkit is not None:
+        snapshot = toolkit.frozen_prompt_snapshot
+    elif environment is not None:
+        snapshot = environment.prompt_snapshot()
+    else:
+        return RetrievalPromptSnapshot(budget)
+    return RetrievalPromptSnapshot(
+        candidate_budget_tokens=snapshot.candidate_budget_tokens,
+        all_candidates_included=snapshot.all_candidates_included,
+        entries=snapshot.entries,
+        branches=snapshot.branches,
+        omitted_branch_count=snapshot.omitted_branch_count,
+    )
+
+
+def initialize_retrieval_prompt(
+    toolkit: SkillRetrievalToolkit | None,
+    environment: RetrievalPromptEnvironment | None,
+    budget: int,
+    session_scope: str,
+) -> RetrievalPromptSnapshot:
+    """Freeze prompt data and initialize the matching session notice baseline."""
+    cards = toolkit.frozen_selection_cards if toolkit is not None else _selection_cards(environment)
+    snapshot = read_retrieval_prompt(toolkit, environment, budget)
+    initialize_incremental_skill_notice_state(session_scope, cards)
+    return snapshot
+
+
+def consume_retrieval_prompt_reminder(
+    environment: RetrievalPromptEnvironment | None, session_scope: str, max_chars: int,
+) -> str | None:
+    return consume_incremental_skill_reminder(session_scope, _selection_cards(environment), max_chars=max_chars)
+
+
+def _selection_cards(environment: RetrievalPromptEnvironment | None) -> dict[str, dict[str, str]]:
+    return environment.selection_cards() if environment is not None else {}
+
+
+def matches_skill_search_binding(
+    toolkit: SkillRetrievalToolkit,
+    session_scope: str,
+    resolve_tool: Callable[[type[Tool], Callable[..., Any]], Tool | None],
+) -> bool:
+    """Verify the registered search executor belongs to this retrieval session."""
+    tool = resolve_tool(CapabilitySearchTool, CapabilitySearchTool.invoke)
+    return tool is not None and CapabilitySearchTool.is_bound_to(
+        tool, toolkit.runtime.retrieval, toolkit.environment, session_scope,
+    )
 
 
 def _settings_from_profile(profile: Mapping[str, Any] | None) -> RetrievalConfig | None:
@@ -175,38 +257,8 @@ def skill_sources_from_manager(manager: Any) -> dict[str, str]:
     return sources
 
 
-def skill_sources_from_directories(directories: Sequence[str | Path]) -> dict[str, str]:
-    """Read collection-local provenance using the same IDs as Core inventory."""
-    from jiuwenswarm.server.runtime.skill.skilldev.state_utils import load_skill_state
-
-    sources: dict[str, str] = {}
-    for directory in directories:
-        state = load_skill_state(skills_dir=directory)
-        for key in ("local_skills", "installed_plugins"):
-            items = state.get(key)
-            for item in items if isinstance(items, list) else []:
-                if not isinstance(item, dict):
-                    continue
-                identifier = str(item.get("worker_id") or item.get("dir_name") or item.get("name") or "").strip()
-                source = str(item.get("source") or item.get("marketplace") or "").strip()
-                if identifier and source:
-                    sources.setdefault(identifier, source)
-    return sources
-
-
-def _config(config_base: dict[str, Any] | None = None) -> dict[str, Any]:
-    if isinstance(config_base, dict):
-        return config_base
-    value = get_config() or {}
-    return value if isinstance(value, dict) else {}
-
-
-def is_skill_retrieval_enabled(config_base: dict[str, Any] | None = None) -> bool:
-    return load_symphony_config(_config(config_base)).retrieval.enabled
-
-
 def build_model_discovery_settings(config_base: dict[str, Any] | None = None, *, model: Any = None) -> RetrievalConfig:
-    config = _config(config_base)
+    config = resolve_retrieval_config_base(config_base)
     context_window_tokens = None
     if model is not None:
         request = getattr(model, "model_config", None)
@@ -222,13 +274,8 @@ def build_model_discovery_settings(config_base: dict[str, Any] | None = None, *,
 
 
 def skill_retrieval_artifact_root(config_base: dict[str, Any] | None = None) -> Path:
-    return SymphonyRuntime(None, load_symphony_config(_config(config_base))).retrieval.artifact_root
-
-
-def disabled_skills_from_directories(directories: Sequence[Path]) -> list[str]:
-    from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
-
-    return sorted({name for root in directories for name in load_execution_disabled_skills(skills_dir=root)})
+    config = load_symphony_config(resolve_retrieval_config_base(config_base))
+    return SymphonyRuntime(None, config).retrieval.artifact_root
 
 
 class SkillRetrievalToolkit:
@@ -240,7 +287,7 @@ class SkillRetrievalToolkit:
                  config_base: dict[str, Any] | None = None, settings: RetrievalConfig | None = None,
                  model: Any = None, auto_build_index: bool = False,
                  frozen_profile: Mapping[str, Any] | None = None) -> None:
-        self._config_base = deepcopy(_config(config_base))
+        self._config_base = deepcopy(resolve_retrieval_config_base(config_base))
         self._config = load_symphony_config(self._config_base)
         self._model = model
         self._disabled_skills = disabled_skills
@@ -461,27 +508,9 @@ class SkillRetrievalToolkit:
             await self.runtime.aclose()
 
 
-def resolve_skill_retrieval_strategy(
-    *,
-    enabled: bool,
-    candidate_scale: str,
-    layout: str,
-    index_state: str,
-) -> str:
-    if not enabled:
-        return "legacy"
-    if candidate_scale == "small":
-        return "small_full"
-    if layout != "tree":
-        return "large_flat"
-    return "indexed" if index_state == "fresh" else "indexed_stale"
-
-
 __all__ = [
     "SkillRetrievalToolkit",
     "build_model_discovery_settings",
-    "is_skill_retrieval_enabled",
-    "resolve_skill_retrieval_strategy",
     "skill_retrieval_artifact_root",
     "skill_sources_from_manager",
 ]

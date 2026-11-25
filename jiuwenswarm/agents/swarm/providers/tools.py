@@ -54,13 +54,13 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     complete_multimodal_model_configured,
     multimodal_model_enabled,
 )
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
     SkillRetrievalToolkit,
     build_model_discovery_settings,
-    is_skill_retrieval_enabled,
 )
+from jiuwenswarm.runtime.symphony.skill_retrieval import is_skill_retrieval_enabled
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
-from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony import SymphonyToolkit
 from jiuwenswarm.agents.harness.common.tools.user_todo_tool import get_decorated_tools
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.video_gen_tools import (
@@ -391,7 +391,7 @@ def skill_retrieval_toolkit_for_context(
         or getattr(ctx, "role", None)
         or "member"
     )
-    from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import skill_sources_from_directories
+    from jiuwenswarm.runtime.symphony.skill_retrieval import skill_sources_from_directories
     toolkit = SkillRetrievalToolkit(
         skill_directories=lambda: [str(_skill_library_dir(ctx))],
         disabled_skills=lambda: load_execution_disabled_skills(skills_dir=_skill_library_dir(ctx)),

@@ -1,6 +1,5 @@
 import asyncio
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -8,28 +7,40 @@ import pytest
 from openai import BadRequestError
 from openai.types.chat import ChatCompletion
 
-from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.foundation.llm.request_context import (
     is_disabled_thinking_fallback_allowed,
 )
 from openjiuwen.symphony import (
     FINGERPRINT_ARTIFACT_FILENAME,
-    FingerprintService,
-    SkillFolderScanner,
+    GraphArtifactStore,
     SymphonyRuntime,
 )
 
 from jiuwenswarm.common.symphony_config import symphony_config_from_dict
-from jiuwenswarm.runtime.symphony.build import build_graph, graph_status
-from jiuwenswarm.runtime.symphony.graph_storage import resolve_graph_artifact_dir
+from jiuwenswarm.runtime.symphony.build import build_graph, graph_exists, graph_status, resolve_graph_artifact_dir
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, thinking_disabled_request_overrides
 from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
 
 
+def test_unpublished_graph_has_no_artifact_directory(tmp_path):
+    assert not graph_exists(tmp_path)
+    with pytest.raises(FileNotFoundError, match="No published Symphony graph"):
+        resolve_graph_artifact_dir(tmp_path)
 
 
-
-
+def test_graph_exists_validates_the_published_artifact(tmp_path):
+    artifact = GraphArtifactStore(tmp_path).publish(
+        {"schema_version": "1.0", "generated_at": "2026-11-24T00:00:00Z"},
+        version="v1",
+    )
+    assert graph_exists(tmp_path)
+    artifact.graph_path.write_text("{", encoding="utf-8")
+    assert resolve_graph_artifact_dir(tmp_path) == artifact.graph_path.parent
+    assert not graph_exists(tmp_path)
+    artifact.graph_path.unlink()
+    assert not graph_exists(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        resolve_graph_artifact_dir(tmp_path)
 
 
 @pytest.mark.asyncio
@@ -234,10 +245,12 @@ async def test_runtime_applies_fingerprint_concurrency_and_request_policy(tmp_pa
     root = tmp_path / "skills"
     for index in range(5):
         write_capability(root, f"capability-{index}", "a" * 200 + "TAIL_SHOULD_BE_TRUNCATED")
+
     class Model(_FingerprintAndGraphModel):
         active = 0
         peak = 0
         requests = []
+
         async def invoke(self, messages, **kwargs):
             if "Extract a capability fingerprint" in messages[0]["content"]:
                 self.requests.append((messages, kwargs))
@@ -249,6 +262,7 @@ async def test_runtime_applies_fingerprint_concurrency_and_request_policy(tmp_pa
                 finally:
                     self.active -= 1
             return await super().invoke(messages, **kwargs)
+
     model = Model()
     observed = []
     model.symphony_response_observer = lambda response, stage, operation: observed.append(stage)
@@ -309,8 +323,10 @@ async def test_failed_application_artifact_preserves_published_version(tmp_path,
     model = _FingerprintAndGraphModel()
     runtime = SymphonyRuntime(model, config)
     first = await runtime.orchestration.build()
+
     def fail(_path):
         raise OSError("application output failed")
+
     with pytest.raises(OSError, match="application output"):
         await runtime.orchestration.build(force=True, prepare_artifact=fail)
     assert runtime.orchestration.status().version == first.version

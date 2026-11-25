@@ -16,8 +16,7 @@ from openjiuwen.symphony.flow import PackageReviewGate
 from openjiuwen.symphony import SymphonyRuntime
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 
-from jiuwenswarm.agents.harness.common.tools.skillpack_toolkit import SkillPackToolkit
-from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony import SkillPackToolkit, SymphonyToolkit
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     SessionMessagingRoute, SessionMessagingRouteRail,
     bind_session_messaging_route, current_session_messaging_route,

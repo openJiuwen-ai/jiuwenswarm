@@ -761,6 +761,7 @@ async def test_candidate_push_is_concurrency_idempotent(monkeypatch) -> None:
 
     class Flow:
         enabled = True
+
         def __init__(self) -> None:
             self.acknowledged: list[tuple[str, int]] = []
 
@@ -1787,7 +1788,7 @@ async def test_team_leader_rail_forwards_team_capture(
         lambda: object(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.adapter.model_from_config",
+        "jiuwenswarm.runtime.symphony.llm.model_from_config",
         lambda _config: "model",
     )
 

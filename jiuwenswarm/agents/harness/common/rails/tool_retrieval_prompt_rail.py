@@ -1,6 +1,6 @@
 """Prompt boundary for progressive ``tool_search`` deferred-tool disclosure.
 
-Mirrors the skill-side ``SkillRetrievalPromptRail`` disclosure model: the
+Mirrors the skill-side ``SymphonyRetrievalRail`` disclosure model: the
 system prompt shows only the tool category catalogue (static in-code
 categories plus MCP connector virtual branches), NOT a flat dump of every
 deferred tool's name+description. The full inventory is discovered on
@@ -180,7 +180,7 @@ class ToolRetrievalPromptRail(DeepAgentRail):
         self._agent = agent
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         # Freeze the disclosure catalogue at session start — same contract as
-        # SkillRetrievalPromptRail. init() runs during ensure_initialized(),
+        # SymphonyRetrievalRail. init() runs during ensure_initialized(),
         # after AbilityManager resolved exposure, so refresh first to pick up
         # the live deferred set (the toolkit was constructed pre-init with an
         # empty snapshot).
@@ -450,7 +450,7 @@ class ToolRetrievalPromptRail(DeepAgentRail):
     ) -> str:
         """Render the progressive disclosure section: categories + names.
 
-        Mirrors ``SkillRetrievalPromptRail._build_candidate_appendix``: only
+        Mirrors ``SymphonyRetrievalRail._build_candidate_appendix``: only
         the category catalogue is shown, never a full flat dump. Each category
         line carries only its description — tool names are discovered
         through tool_search. MCP connector tools get one virtual branch line

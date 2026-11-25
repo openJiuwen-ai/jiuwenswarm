@@ -168,7 +168,27 @@ async def test_cancelled_close_waiter_keeps_single_owned_drain():
 
 def test_importing_toolkit_does_not_load_symphony_service(tmp_path):
     root = Path(__file__).resolve().parents[3]
-    script = "import sys; from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit; assert 'jiuwenswarm.runtime.symphony.service' not in sys.modules; assert SymphonyToolkit().get_tools({'symphony': {'orchestration': {'enabled': False}}}) == []; assert 'jiuwenswarm.runtime.symphony.service' not in sys.modules; print('lazy-service-boundary-ok')"
+    script = """
+import sys
+from jiuwenswarm.agents.harness.common import tools
+from jiuwenswarm.agents.harness.common.tools import symphony
+
+assert all(f"{symphony.__name__}.{part}" not in sys.modules
+           for part in ("retrieval_toolkit", "orchestration_toolkit", "skillpack_toolkit"))
+assert tools.SymphonyToolkit is symphony.SymphonyToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony.orchestration_toolkit import SymphonyToolkit
+assert tools.SymphonyToolkit is SymphonyToolkit
+assert f"{symphony.__name__}.retrieval_toolkit" not in sys.modules
+assert 'jiuwenswarm.runtime.symphony.service' not in sys.modules
+assert SymphonyToolkit().get_tools({'symphony': {'orchestration': {'enabled': False}}}) == []
+assert tools.SkillRetrievalToolkit is symphony.SkillRetrievalToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import SkillRetrievalToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony.skillpack_toolkit import SkillPackToolkit
+assert tools.SkillRetrievalToolkit is SkillRetrievalToolkit
+assert symphony.SkillPackToolkit is SkillPackToolkit
+assert 'jiuwenswarm.runtime.symphony.service' not in sys.modules
+print('lazy-service-boundary-ok')
+"""
     env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(root), os.environ.get("PYTHONPATH", ""))), "JIUWENSWARM_DATA_DIR": str(tmp_path / "data"),
            "JIUWENSWARM_HOME": str(tmp_path / "home")}
     output = subprocess.check_output([sys.executable, "-c", script], cwd=root, env=env,

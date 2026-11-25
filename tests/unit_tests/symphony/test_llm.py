@@ -19,11 +19,10 @@ from openjiuwen.core.foundation.llm.request_context import (
     is_disabled_thinking_fallback_allowed,
 )
 
-from jiuwenswarm.runtime.symphony.adapter import llm_config_signature
 from jiuwenswarm.runtime.symphony.llm import (
     LLMConfig,
-    create_model_response_observer,
     get_llm_token_usage_summary,
+    model_from_config,
     probe_model_connection,
     register_request_model,
     resolve_request_llm_config,
@@ -573,12 +572,14 @@ async def test_probe_model_connection_enforces_coroutine_deadline(monkeypatch):
     assert is_disabled_thinking_fallback_allowed() is False
 
 
-def test_model_response_observer_preserves_orchestration_usage_context():
+def test_model_from_config_tracks_orchestration_usage(monkeypatch):
     reset_llm_token_usage()
     config = _llm_config()
-    observer = create_model_response_observer(config)
+    model = SimpleNamespace()
+    monkeypatch.setattr(LLMConfig, "create_model", lambda self: model)
+    assert model_from_config(config) is model
 
-    observer(
+    model.symphony_response_observer(
         SimpleNamespace(
             usage_metadata=SimpleNamespace(
                 input_tokens=7,
@@ -639,7 +640,6 @@ def test_llm_identity_digest_is_complete_stable_and_redacted():
     digest = config.identity_digest()
 
     assert digest == reordered_config.identity_digest()
-    assert digest == llm_config_signature(config)
     assert len(digest) == 64
     for sensitive_value in (
         "super-secret-api-key",

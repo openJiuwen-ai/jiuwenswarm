@@ -14,12 +14,12 @@ from jiuwenswarm.agents.harness.common.tool_progress_context import (
     current_tool_progress,
 )
 from jiuwenswarm.common.symphony_config import load_symphony_config
-from jiuwenswarm.runtime.symphony.adapter import normalize_candidate_ids
 from jiuwenswarm.runtime.symphony.planning_inputs import (
     DISPATCH_GRAPH_ATTR,
     PLANNING_INPUTS_ATTR,
     PLANNING_INPUTS_SCHEMA,
     annotate_unavailable_inputs,
+    normalize_candidate_ids,
     prepare_planning_inputs,
     supports_planning_inputs,
 )
@@ -428,7 +428,7 @@ class SymphonyToolkit:
             return False
 
     def get_tools(self, config: dict[str, Any] | None = None) -> list[Tool]:
-        from jiuwenswarm.agents.harness.common.tools.skillpack_toolkit import SkillPackToolkit
+        from .skillpack_toolkit import SkillPackToolkit
 
         if not self.is_enabled(config):
             return []

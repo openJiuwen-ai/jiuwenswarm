@@ -12,13 +12,10 @@ from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.symphony import OrchestrationPlan, SymphonyRuntime
 
-from jiuwenswarm.runtime.symphony.adapter import (
-    llm_config_signature,
-    normalize_candidate_ids,
-)
-from jiuwenswarm.runtime.symphony.build import build_graph
+from jiuwenswarm.runtime.symphony.build import build_graph, graph_exists
 from jiuwenswarm.common.symphony_config import symphony_config_from_dict
 from jiuwenswarm.runtime.symphony.llm import LLMConfig
+from jiuwenswarm.runtime.symphony.planning_inputs import normalize_candidate_ids
 from jiuwenswarm.runtime.symphony.service import (
     SwarmSymphonyService,
     _BuildProcessLogger,
@@ -27,12 +24,19 @@ from jiuwenswarm.runtime.symphony.service import (
     _build_log_path,
     _graph_needs_build,
 )
-from jiuwenswarm.runtime.symphony.graph_storage import graph_exists
 
 
 _ALLOWED_SYMPHONY_FACADE_SYMBOLS = {
     "openjiuwen.symphony.flow": frozenset({"FlowStore", "RecipeEvidence"}),
     "openjiuwen.symphony.config": frozenset({"RetrievalConfig"}),
+}
+
+_SWARM_RETRIEVAL_CONSUMERS = {
+    "agents/harness/common/rails/permissions/_auto_permission/readonly_tool_bindings.py",
+    "agents/harness/common/rails/stream_event_rail.py",
+    "agents/harness/common/rails/symphony/retrieval_rail.py",
+    "server/runtime/agent_adapter/interface_deep.py",
+    "server/runtime/skill/skill_manager.py",
 }
 
 
@@ -86,6 +90,7 @@ def _forbidden_symphony_import(
     *,
     allowed_symbols,
     allowed_modules=frozenset(),
+    allow_direct=True,
 ):
     if isinstance(node, ast.Import):
         imported_modules = {
@@ -93,7 +98,9 @@ def _forbidden_symphony_import(
             for alias in node.names
             if alias.name.startswith("openjiuwen.symphony")
         }
-        forbidden = imported_modules - {"openjiuwen.symphony", *allowed_modules}
+        forbidden = imported_modules
+        if allow_direct:
+            forbidden = imported_modules - {"openjiuwen.symphony", *allowed_modules}
         return ",".join(sorted(forbidden))
     if not isinstance(node, ast.ImportFrom):
         return ""
@@ -102,6 +109,8 @@ def _forbidden_symphony_import(
         return "openjiuwen:symphony" if "symphony" in imported else ""
     if not (node.module or "").startswith("openjiuwen.symphony"):
         return ""
+    if not allow_direct:
+        return node.module
     if node.module in allowed_modules:
         return ""
     if imported <= _ALLOWED_SYMPHONY_FACADE_SYMBOLS.get(node.module, frozenset()):
@@ -174,15 +183,15 @@ def _minimal_planned_graph(status="ready"):
     }
 
 
-def test_adapter_deduplicates_candidate_skill_ids():
-    assert normalize_candidate_ids(["writer", "writer", "reviewer"]) == [
-        "writer",
-        "reviewer",
-    ]
-
-
-
-
+@pytest.mark.parametrize(("supplied", "expected"), [
+    (None, None),
+    ("invalid", []),
+    ('{"candidate": "writer"}', []),
+    ([" writer ", "writer", "", "reviewer"], ["writer", "reviewer"]),
+    ('["reviewer", "writer", "reviewer"]', ["reviewer", "writer"]),
+])
+def test_normalize_candidate_ids(supplied, expected):
+    assert normalize_candidate_ids(supplied) == expected
 
 
 @pytest.mark.asyncio
@@ -421,7 +430,7 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["fast", "beam"])
 async def test_skill_compose_uses_public_core_plan(monkeypatch, tmp_path, mode):
-    from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+    from jiuwenswarm.agents.harness.common.tools.symphony import SymphonyToolkit
 
     config = _config(tmp_path, evolution=False)
     skill = tmp_path / "skills" / "writer" / "SKILL.md"
@@ -444,7 +453,7 @@ async def test_skill_compose_uses_public_core_plan(monkeypatch, tmp_path, mode):
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_: set())
-    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config", lambda *_: config)
+    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony.orchestration_toolkit.load_symphony_config", lambda *_: config)
     compose = next(tool for tool in SymphonyToolkit(service, llm_config_provider=lambda: None).get_tools()
                    if tool.card.name == "symphony_compose_graph")
     try:
@@ -471,7 +480,7 @@ async def test_expert_compose_uses_live_catalog_and_shares_the_web_graph(monkeyp
     from openjiuwen.agent_teams.paths import get_agent_teams_home, reset_task_openjiuwen_home, set_task_openjiuwen_home
     from openjiuwen.agent_teams.tools.database import DatabaseConfig, TeamDatabase
 
-    from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+    from jiuwenswarm.agents.harness.common.tools.symphony import SymphonyToolkit
     from jiuwenswarm.agents.harness.team.experts import JiuwenExpertCatalog
 
     skills = tmp_path / "skills"
@@ -549,7 +558,7 @@ async def test_expert_compose_uses_live_catalog_and_shares_the_web_graph(monkeyp
     monkeypatch.setattr(JiuwenExpertCatalog, "list_expert_packages", list_packages)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
-    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config", lambda *_: config)
+    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony.orchestration_toolkit.load_symphony_config", lambda *_: config)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_: set())
     model = HandoffModel(confidences=[0.95])
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.build.model_from_config", lambda _: model)
@@ -919,7 +928,7 @@ def test_runtime_cache_rebuilds_when_default_llm_changes(monkeypatch, tmp_path):
 
     assert third is not second
     assert len(created) == 3
-    signature_text = repr(llm_config_signature(current["value"]))
+    signature_text = repr(current["value"].identity_digest())
     assert "secret-c" not in signature_text
     assert "https://b.example" not in signature_text
 
@@ -959,15 +968,17 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
     offenders = []
     for path in package_root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        relative_path = path.relative_to(package_root).as_posix()
         for node in ast.walk(tree):
             violation = _forbidden_symphony_import(
                 node,
                 allowed_symbols=allowed_symbols,
                 allowed_modules=allowed_modules,
+                allow_direct=relative_path not in _SWARM_RETRIEVAL_CONSUMERS,
             )
             if violation:
                 offenders.append(
-                    f"{path.relative_to(package_root)}:{node.lineno}:{violation}"
+                    f"{relative_path}:{node.lineno}:{violation}"
                 )
 
     assert offenders == []
@@ -985,6 +996,9 @@ def test_static_import_guard_detects_openjiuwen_symphony_alias_bypass():
     assert _forbidden_symphony_import(dotted, allowed_symbols=set())
     assert not _forbidden_symphony_import(legal, allowed_symbols=set())
     assert not _forbidden_symphony_import(stable_module, allowed_symbols=set())
+    assert _forbidden_symphony_import(stable_module, allowed_symbols=set(), allow_direct=False)
+    facade_alias = ast.parse("from openjiuwen.symphony.discovery import CapabilitySearchTool as Search").body[0]
+    assert _forbidden_symphony_import(facade_alias, allowed_symbols=set(), allow_direct=False)
 
 
 def test_flow_facade_import_guard_keeps_deep_imports_forbidden():

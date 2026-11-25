@@ -13,9 +13,7 @@ from jiuwenswarm.agents.harness.common.tool_progress_context import (
     bind_tool_progress,
     reset_tool_progress,
 )
-from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
-    SymphonyToolkit,
-)
+from jiuwenswarm.agents.harness.common.tools.symphony import SymphonyToolkit
 from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
 from jiuwenswarm.runtime.symphony.llm import LLMConfig
 from jiuwenswarm.runtime.symphony.planning_inputs import supports_planning_inputs
@@ -60,7 +58,7 @@ def enabled_symphony_config(monkeypatch):
         return SimpleNamespace(orchestration=SimpleNamespace(enabled=bool(enabled)))
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
+        "jiuwenswarm.agents.harness.common.tools.symphony.orchestration_toolkit.load_symphony_config",
         fake_load_symphony_config,
     )
 

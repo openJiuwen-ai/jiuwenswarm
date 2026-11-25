@@ -169,7 +169,6 @@ from openjiuwen.harness.schema.interaction import (
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from openjiuwen.harness.schema.config import SubAgentConfig
-from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
 
 from agent_gateway.common.interrupt_resume import answers_paused_calls, is_client_tool_resume
 
@@ -325,7 +324,10 @@ from jiuwenswarm.agents.harness.common.rails import (
     ResponsePromptRail,
     RuntimePromptRail,
     StructuredAskUserRail,
+)
+from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
+    SymphonyRetrievalRail,
 )
 from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
     SubagentToolActivityRail,
@@ -353,6 +355,9 @@ from jiuwenswarm.common.context_window import (
 from jiuwenswarm.runtime.symphony.llm import (
     SYMPHONY_LLM_CONFIG_REF_KEY,
     register_request_model,
+)
+from jiuwenswarm.runtime.symphony.skill_retrieval import (
+    CAPABILITY_SEARCH_TOOL_NAME, is_skill_retrieval_enabled, skill_sources_from_directories,
 )
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
@@ -489,17 +494,13 @@ from jiuwenswarm.agents.harness.common.tools import (
     SkillRetrievalToolkit,
     SkillToolkit,
     build_model_discovery_settings,
-    is_skill_retrieval_enabled,
     SymphonyToolkit,
 )
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-    SKILL_RETRIEVAL_SESSION_PROFILE_VERSION, skill_sources_from_directories,
+from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
+    SKILL_RETRIEVAL_SESSION_PROFILE_VERSION,
 )
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
     symphony_retrieval_compact_processor_spec,
-)
-from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
-    SkillRetrievalPromptRail,
 )
 from jiuwenswarm.common.symphony_config import load_symphony_config
 from jiuwenswarm.agents.harness.common.tools.archive_tools import (
@@ -2904,7 +2905,7 @@ class JiuWenSwarmDeepAdapter:
         self._skill_retrieval_toolkit: SkillRetrievalToolkit | None = None
         self._retired_skill_retrieval_toolkits: list[SkillRetrievalToolkit] = []
         self._skill_retrieval_environment: Any | None = None
-        self._skill_retrieval_prompt_rail: SkillRetrievalPromptRail | None = None
+        self._skill_retrieval_prompt_rail: SymphonyRetrievalRail | None = None
         # Frozen when this adapter/session is created. Config reloads are
         # persisted for future sessions without changing the current tool or
         # prompt prefix halfway through a conversation.
@@ -3297,7 +3298,7 @@ class JiuWenSwarmDeepAdapter:
                 return _unrecoverable("profile_checksum_mismatch")
             if str(payload.get("session_id") or "") != sid:
                 return _unrecoverable("session_id_mismatch")
-            from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+            from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
                 is_valid_skill_retrieval_session_profile,
             )
 
@@ -8902,12 +8903,12 @@ class JiuWenSwarmDeepAdapter:
             except Exception as exc:
                 self._skill_retrieval_prompt_rail = None
                 logger.warning(
-                    "[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail reload failed: %s",
+                    "[JiuWenSwarmDeepAdapter] SymphonyRetrievalRail reload failed: %s",
                     exc,
                 )
                 return
             self._skill_retrieval_prompt_rail = rail
-            logger.info("[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail registered")
+            logger.info("[JiuWenSwarmDeepAdapter] SymphonyRetrievalRail registered")
             return
 
         for toolkit in getattr(self, "_retired_skill_retrieval_toolkits", []):
@@ -8929,7 +8930,7 @@ class JiuWenSwarmDeepAdapter:
                 skill_rail.init(self._instance)
         except Exception as exc:
             logger.warning(
-                "[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail unregister failed: %s",
+                "[JiuWenSwarmDeepAdapter] SymphonyRetrievalRail unregister failed: %s",
                 exc,
             )
         finally:
@@ -8941,7 +8942,7 @@ class JiuWenSwarmDeepAdapter:
     ) -> tuple[bool, Path]:
         """Resolve the effective build permission and root before a reload."""
 
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+        from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
             skill_retrieval_artifact_root,
         )
 
@@ -12851,7 +12852,7 @@ class JiuWenSwarmDeepAdapter:
         setattr(context_processor_rail, "_session_memory_mgr", None)
         return True
 
-    def _build_skill_retrieval_prompt_rail(self) -> SkillRetrievalPromptRail | None:
+    def _build_skill_retrieval_prompt_rail(self) -> SymphonyRetrievalRail | None:
         """Build Skill directory guidance and per-session reminders."""
         if not self._skill_retrieval_tools_enabled_for_runtime(
             self._config_base_cache
@@ -12859,13 +12860,13 @@ class JiuWenSwarmDeepAdapter:
             return None
         try:
             toolkit = self._get_or_create_skill_retrieval_toolkit()
-            return SkillRetrievalPromptRail(
+            return SymphonyRetrievalRail(
                 toolkit=toolkit,
                 session_scope=self._skill_retrieval_session_scope(),
                 config_base=self._config_base_cache,
             )
         except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail create failed: %s", exc)
+            logger.warning("[JiuWenSwarmDeepAdapter] SymphonyRetrievalRail create failed: %s", exc)
             return None
 
     async def refresh_skill_rails(self) -> None:

@@ -36,7 +36,6 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.rails._multimodal import should_enable_read_image_multimodal
 from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
-from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     build_verified_permission_ask_user_question,
@@ -80,6 +79,7 @@ from jiuwenswarm.common.tool_display import (
 from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+from jiuwenswarm.runtime.symphony.skill_retrieval import CAPABILITY_SEARCH_TOOL_NAME
 from jiuwenswarm.server.wire_truncate import _json_wire_size
 
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify"])
@@ -833,7 +833,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # Use the real conversation_id as the session key; fall back to "default"
         # only for the pause/abort state lookup key (sid).  Do NOT store the
         # "default" sentinel as a conversation_id value — after_tool_call uses
-        # truthiness to decide whether to emit todo.updated, and a literal
+        # truthiness to decide whether to emit a task-list update, and a literal
         # "default" would trigger _emit_todo_updated with a bogus session key.
         # The key must be stripped to match the adapter's control calls
         # (pause/resume/cleanup arrive pre-normalized); the stored
@@ -1302,7 +1302,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 }
 
     # ------------------------------------------------------------------
-    # after_tool_call: emit tool_result + todo.updated
+    # after_tool_call: emit the tool result and task-list update
     # ------------------------------------------------------------------
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
@@ -1370,8 +1370,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if not conv_id:
             return
         if tool_name in _TODO_TOOL_NAMES:
-            # Emit the main-agent todo snapshot after every todo tool call.  The
-            # todo tool itself is loaded from the main workspace below, so this
+            # Emit the main agent's task list after each task-list tool call. The
+            # tool itself is loaded from the main workspace below, so this
             # stays authoritative even when a resumed/supplement turn uses a
             # different stream session object.
             await self._emit_todo_updated(session, conv_id)

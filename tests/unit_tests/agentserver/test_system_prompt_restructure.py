@@ -20,6 +20,7 @@ from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentManager,
 )
 from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
+from openjiuwen.harness.rails import SkillUseRail
 from openjiuwen.symphony.discovery import SkillPromptBranch, SkillPromptSnapshot
 
 from jiuwenswarm.agents.harness.common.browser_defaults import (
@@ -42,17 +43,15 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
 from jiuwenswarm.agents.harness.common.prompt.browser_task_prompt import (
     build_browser_task_prompt,
 )
-from jiuwenswarm.agents.harness.common.rails import skill_retrieval_prompt_rail as _skill_retrieval_prompt_mod
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
-from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
+    SymphonyRetrievalRail,
+    retrieval_rail,
 )
-from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
-    SymphonyToolkit,
-)
+from jiuwenswarm.agents.harness.common.tools.symphony import SkillRetrievalToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony import SymphonyToolkit
 from jiuwenswarm.runtime.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
 
 
@@ -464,7 +463,7 @@ async def test_symphony_timeout_is_terminal_manual_build_result(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
+        "jiuwenswarm.agents.harness.common.tools.symphony.orchestration_toolkit.load_symphony_config",
         lambda config=None: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     monkeypatch.setattr(
@@ -967,7 +966,7 @@ async def test_symphony_tool_model_is_isolated_from_interleaved_adapter_requests
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
+        "jiuwenswarm.agents.harness.common.tools.symphony.orchestration_toolkit.load_symphony_config",
         lambda config=None: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
@@ -2247,6 +2246,10 @@ async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime
     assert "当前语言：cn" in rendered
 
 
+def test_symphony_rails_run_on_either_side_of_native_skill_prompt_refresh() -> None:
+    assert SymphonyOrchestrationRail.priority > SkillUseRail.priority > SymphonyRetrievalRail.priority
+
+
 @pytest.mark.parametrize("language", ["cn", "en"])
 def test_skill_retrieval_prompt_counts_as_skills_without_double_counting(language: str) -> None:
     from openjiuwen.core.context_engine.base import ContextWindow
@@ -2257,7 +2260,7 @@ def test_skill_retrieval_prompt_counts_as_skills_without_double_counting(languag
 
     builder = SystemPromptBuilder(language=language)
     builder.add_section(PromptSection(name="identity", content={language: "Core rules."}, priority=10))
-    rail = SkillRetrievalPromptRail(config_base={"symphony": {
+    rail = SymphonyRetrievalRail(config_base={"symphony": {
         "retrieval": {"enabled": True, "prompt": {"context_window_tokens": 4000}},
     }})
     assert rail._prompt_snapshot().candidate_budget_tokens == 40
@@ -2282,7 +2285,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     tmp_path,
 ):
     monkeypatch.setattr(
-        _skill_retrieval_prompt_mod,
+        retrieval_rail,
         "is_skill_retrieval_enabled",
         lambda *_args: True,
     )
@@ -2309,7 +2312,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
             "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "skillfs")},
         }}
     )
-    rail = SkillRetrievalPromptRail(toolkit=toolkit)
+    rail = SymphonyRetrievalRail(toolkit=toolkit)
     rail.init(agent)
     await rail.before_model_call(ctx)
 
@@ -2384,10 +2387,87 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
             ),
         ),
     )
-    indexed_appendix = rail._build_candidate_appendix("cn", indexed)
+    rail.uninit(agent)
+    with pytest.raises(RuntimeError, match="closed"):
+        await toolkit.runtime.retrieval.search(operation="list")
+    await toolkit.aclose()
+    environment = Mock()
+    environment.prompt_snapshot.return_value = indexed
+    environment.selection_cards.return_value = {}
+    indexed_rail = SymphonyRetrievalRail(environment=environment, session_scope="indexed-prompt")
+    indexed_rail.init(agent)
+    await indexed_rail.before_model_call(ctx)
+    indexed_appendix = builder.build()
     assert "`OfficeDocs`: 办公文档处理。 Select when: 用户要处理 Word 或 PDF。" in indexed_appendix
     assert "Covers 8 descendant skills" not in indexed_appendix
     assert "Representative keywords" not in indexed_appendix
+
+
+@pytest.mark.parametrize("language", ["cn", "en"])
+@pytest.mark.asyncio
+async def test_skill_retrieval_restored_prompt_keeps_new_skills_in_one_tool_reminder(tmp_path, language):
+    root = tmp_path / "skills"
+    config = {"symphony": {
+        "storage": {"artifact_root": str(tmp_path / "index")},
+        "retrieval": {"enabled": True, "prompt": {"context_window_tokens": 10000}},
+    }}
+
+    def install(name):
+        folder = root / name
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {name} instructions\n---\n", encoding="utf-8")
+
+    install("original")
+    first = SkillRetrievalToolkit(skill_directories=[str(root)], config_base=config)
+    profile = first.session_profile()
+    await first.aclose()
+    install("new-skill")
+    toolkit = SkillRetrievalToolkit(skill_directories=[str(root)], config_base=config, frozen_profile=profile)
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeToolAgent(builder)
+    rail = SymphonyRetrievalRail(toolkit=toolkit, session_scope=tmp_path.name, config_base=config)
+    rail.init(agent)
+    ctx = AgentCallbackContext(agent=agent, inputs=SimpleNamespace(tools=[SimpleNamespace(name="capability_search")]),
+                               session=_FakeSession(), extra={})
+    try:
+        await rail.before_model_call(ctx)
+        prompt = builder.build()
+        assert ("## Installed Skills" if language == "en" else "## 已安装 Skill") in prompt
+        assert "`original`" in prompt and "new-skill" not in prompt
+        call = _tool_call_ctx("symphony_compose_score", {}, result="result")
+        call.exception = RuntimeError("failed")
+        await rail.after_tool_call(call)
+        assert call.inputs.tool_result == "result"
+        call.exception = None
+        await rail.after_tool_call(call)
+        assert "new-skill" in call.inputs.tool_result and "<system-reminder>" in call.inputs.tool_result
+        call.inputs.tool_result = "again"
+        await rail.after_tool_call(call)
+        assert call.inputs.tool_result == "again"
+        await rail.before_model_call(ctx)
+        assert builder.build() == prompt
+    finally:
+        rail.uninit(agent)
+        await toolkit.aclose()
+
+
+@pytest.mark.asyncio
+async def test_skill_retrieval_prompt_freezes_budgeted_empty_snapshot_after_read_failure():
+    environment = Mock()
+    environment.selection_cards.return_value = {}
+    environment.prompt_snapshot.side_effect = OSError("unavailable")
+    rail = SymphonyRetrievalRail(environment=environment, config_base={"symphony": {
+        "retrieval": {"enabled": True, "prompt": {"context_window_tokens": 4000}},
+    }})
+    builder = SystemPromptBuilder(language="en")
+    agent = _FakeToolAgent(builder)
+    rail.init(agent)
+    ctx = AgentCallbackContext(agent=agent, inputs=SimpleNamespace(tools=[SimpleNamespace(name="capability_search")]),
+                               session=_FakeSession(), extra={})
+    await rail.before_model_call(ctx)
+    assert "No available Skills." in builder.build()
+    assert rail._prompt_snapshot().candidate_budget_tokens == 40
+    environment.prompt_snapshot.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -2396,7 +2476,7 @@ async def test_skill_retrieval_prompt_clears_section_when_disabled(
     tmp_path,
 ):
     monkeypatch.setattr(
-        _skill_retrieval_prompt_mod,
+        retrieval_rail,
         "is_skill_retrieval_enabled",
         lambda *_args: False,
     )
@@ -2420,7 +2500,7 @@ async def test_skill_retrieval_prompt_clears_section_when_disabled(
             "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "skillfs")},
         }}
     )
-    rail = SkillRetrievalPromptRail(toolkit=toolkit)
+    rail = SymphonyRetrievalRail(toolkit=toolkit)
     rail.init(agent)
     await rail.before_model_call(ctx)
 
@@ -2486,7 +2566,7 @@ def test_deep_adapter_skill_retrieval_prompt_uses_live_toolkit(monkeypatch, tmp_
         lambda: tmp_path,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.SkillRetrievalPromptRail",
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.SymphonyRetrievalRail",
         FakeRail,
     )
 

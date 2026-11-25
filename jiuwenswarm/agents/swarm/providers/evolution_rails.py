@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openjiuwen.agent_teams.harness.manifest import (
     ConstructionInput,
@@ -44,6 +44,9 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.utils import get_agent_skills_dir
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+
+if TYPE_CHECKING:
+    from jiuwenswarm.agents.harness.team.team_runtime_inheritance import TeamWorkspaceInfo
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +78,8 @@ def build_symphony_graph_evolution_rail(
     if not config.orchestration.experience_enabled:
         return None
     try:
-        from jiuwenswarm.runtime.symphony.adapter import model_from_config
         from jiuwenswarm.runtime.symphony.experience import _build_graph_evolution_rail
-        from jiuwenswarm.runtime.symphony.llm import LLMConfig
+        from jiuwenswarm.runtime.symphony.llm import LLMConfig, model_from_config
 
         return _build_graph_evolution_rail(
             (Path(config.storage.artifact_root) / "graph"),
@@ -210,6 +212,11 @@ class SwarmTeamSkillEvolutionRail(TeamSkillEvolutionRail):
     the leader-side registration the legacy customizer performed.
     """
 
+    _swarm_channel: str
+    _swarm_session_id: str
+    _swarm_skills_dir: str | None
+    _swarm_team_workspace: TeamWorkspaceInfo
+
     def bind_swarm_context(
         self,
         *,
@@ -289,6 +296,10 @@ class SwarmTeamSkillEvolutionRail(TeamSkillEvolutionRail):
 class SwarmTeamSkillCreateRail(TeamSkillCreateRail):
     """``TeamSkillCreateRail`` that self-registers with the team manager."""
 
+    _swarm_channel: str
+    _swarm_session_id: str
+    _swarm_team_workspace: TeamWorkspaceInfo
+
     def bind_swarm_context(
         self,
         *,
@@ -364,6 +375,11 @@ class SwarmMemberSkillEvolutionRail(SkillEvolutionRail):
     a live rail so a disabled hot-reload can unregister it from the mounted
     teammate agent as well as clear the manager registry.
     """
+
+    _swarm_channel: str
+    _swarm_session_id: str
+    _swarm_team_workspace: TeamWorkspaceInfo
+    _swarm_member_info: tuple[str, str]
 
     def bind_swarm_context(
         self,

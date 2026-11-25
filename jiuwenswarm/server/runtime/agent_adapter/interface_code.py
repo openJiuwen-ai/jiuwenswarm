@@ -51,6 +51,7 @@ from openjiuwen.harness.tools import (
     is_paid_search_enabled,
 )
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
+from openjiuwen.harness.workspace.workspace import Workspace
 
 from jiuwenswarm.agents.harness.code import spec as code_agent_spec
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
@@ -90,9 +91,7 @@ from jiuwenswarm.agents.harness.common.rails import (
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     apply_permission_trusted_dirs,
 )
-from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
-    SkillRetrievalPromptRail,
-)
+from jiuwenswarm.agents.harness.common.rails.symphony import SymphonyRetrievalRail
 from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
     SubagentToolActivityRail,
 )
@@ -183,6 +182,11 @@ class _CodingMemoryToolWorkspace:
 
 class CodingMemoryRail(_BaseCodingMemoryRail):
     """Keep Coding Memory cold-start indexing out of the request path."""
+
+    workspace: Workspace | _CodingMemoryToolWorkspace | None
+    _manager_initialized: bool
+    _recalled_content: str | None
+    _prefetch_task: asyncio.Task[tuple[str | None, int]] | None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -564,6 +568,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     _subagent_runtime_supported = True
     _PLUGIN_RUNTIME_PROFILE = "code"
     _TTSE_BANK_PROFILE = "code"
+
+    _agent_workspace_dir: str
+    _runtime_workspace_dir: str | None
+    _memory_entry_mode: str
+    _memory_project_dir: str | None
+    _code_team_member: bool
 
     # 固定 Rails 名字集合 — 用于动态 Rails 去重
     _FIXED_RAIL_NAMES = frozenset({
@@ -3333,7 +3343,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _build_skill_retrieval_prompt_rail(
         self,
-    ) -> SkillRetrievalPromptRail | None:
+    ) -> SymphonyRetrievalRail | None:
         """Build prompt guidance from the active Code Spec snapshot."""
         return super()._build_skill_retrieval_prompt_rail()
 

@@ -32,9 +32,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract imp
 from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import PolicyEvaluation
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import classify_tool
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import build_tool_decision_facts
-from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
+from jiuwenswarm.agents.harness.common.rails.symphony import SymphonyRetrievalRail
 from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import ToolRetrievalPromptRail
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony import SkillRetrievalToolkit
 from jiuwenswarm.agents.harness.common.tools.tool_retrieval_toolkits import ToolRetrievalToolkit
 from tests.unit_tests.agentserver.permissions.test_auto_permission_pipeline import _rail, _runtime_ctx
 
@@ -79,7 +79,7 @@ async def installed(tmp_path, monkeypatch):
             toolkits.append(toolkit)
             tool, = toolkit.get_tools()
             owner.ability_manager.add_ability(tool.card, tool)
-            rail = SkillRetrievalPromptRail(toolkit=toolkit, session_scope="session-a")
+            rail = SymphonyRetrievalRail(toolkit=toolkit, session_scope="session-a")
         elif name == "list_skill":
             rail = SkillUseRail(str(tmp_path / "skills"), include_tools=False, list_skill_model=model)
         elif name == "get_current_goal":
@@ -136,6 +136,24 @@ async def test_current_owned_observation_bypasses_reviewer_and_manual(tmp_path, 
 async def test_unified_search_keeps_the_fast_path_on_the_skill_branch(installed, selection, trusted):
     env = await installed("capability_search", {**selection, "query": "python"})
     assert _trusted(env) is trusted
+
+
+@pytest.mark.asyncio
+async def test_skill_search_requires_the_environment_bound_to_the_registered_tool(installed, tmp_path, monkeypatch):
+    env = await installed("capability_search", {"type": ["skill"], "operation": "list"})
+    other = SkillRetrievalToolkit(skill_directories=[], session_scope="session-a", config_base={"symphony": {
+        "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "other")},
+    }})
+    try:
+        assert _trusted(env)
+        with monkeypatch.context() as changed:
+            changed.setattr(env.rail, "_prompt_skillfs", other.environment)
+            assert not _trusted(env)
+            changed.setattr(env.rail, "_source_toolkit", other)
+            assert not _trusted(env)
+        assert _trusted(env)
+    finally:
+        await other.aclose()
 
 
 @pytest.mark.parametrize(("name", "args"), CASES)
