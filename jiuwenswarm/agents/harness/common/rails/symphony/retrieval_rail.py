@@ -11,21 +11,19 @@ from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.rails import SkillUseRail
 from openjiuwen.harness.rails.base import DeepAgentRail
 
-from openjiuwen.symphony.discovery import (
-    CAPABILITY_SEARCH_TOOL_NAME,
-    SkillFS,
-    SkillPromptBranch,
-    SkillPromptEntry,
-    SkillPromptSnapshot,
-    consume_incremental_skill_reminder,
-    initialize_incremental_skill_notice_state,
-)
-
 from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
+    RetrievalPromptEnvironment,
+    RetrievalPromptSnapshot,
     SkillRetrievalToolkit,
     build_model_discovery_settings,
+    consume_retrieval_prompt_reminder,
+    initialize_retrieval_prompt,
+    read_retrieval_prompt,
 )
-from jiuwenswarm.runtime.symphony.skill_retrieval import is_skill_retrieval_enabled
+from jiuwenswarm.runtime.symphony.skill_retrieval import (
+    CAPABILITY_SEARCH_TOOL_NAME,
+    is_skill_retrieval_enabled,
+)
 
 _LEGACY_LIST_SKILL_TOOL_NAMES = frozenset({"list_skill", "list_skills"})
 _RUNTIME_SKILL_ATTACHMENT_SECTION = "skills.runtime_changes"
@@ -61,7 +59,7 @@ class SymphonyRetrievalRail(DeepAgentRail):
         toolkit: SkillRetrievalToolkit | None = None,
         session_scope: str = "default",
         incremental_notice_max_chars: int | None = None,
-        environment: SkillFS | None = None,
+        environment: RetrievalPromptEnvironment | None = None,
         config_base: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
@@ -77,7 +75,7 @@ class SymphonyRetrievalRail(DeepAgentRail):
         self._source_toolkit = toolkit
         self._incremental_notice_max_chars = notice_max_chars
         self._candidate_budget_tokens = settings.prompt.candidate_budget_tokens
-        self._prompt_skillfs: SkillFS | None = environment or (
+        self._prompt_skillfs = environment or (
             toolkit.environment if toolkit is not None else None
         )
         self._config_base = config_base
@@ -87,7 +85,7 @@ class SymphonyRetrievalRail(DeepAgentRail):
         self._hidden_legacy_abilities: dict[str, Any] = {}
         self._hidden_skills_section: PromptSection | None = None
         self.attachment_manager = None
-        self._frozen_prompt_snapshot: SkillPromptSnapshot | None = None
+        self._frozen_prompt_snapshot: RetrievalPromptSnapshot | None = None
 
     def init(self, agent: Any) -> None:
         self._agent = agent
@@ -101,24 +99,11 @@ class SymphonyRetrievalRail(DeepAgentRail):
             toolkit = self._toolkit()
             if toolkit is not None:
                 toolkit.bind_ability_manager(lambda: getattr(agent, "ability_manager", None))
-            selection_cards = (
-                toolkit.frozen_selection_cards
-                if toolkit is not None
-                else self._scan_selection_cards()
-            )
-            self._frozen_prompt_snapshot = (
-                toolkit.frozen_prompt_snapshot
-                if toolkit is not None
-                else self._prompt_skillfs.prompt_snapshot()
-                if self._prompt_skillfs is not None
-                else self._empty_prompt_snapshot()
-            )
-            initialize_incremental_skill_notice_state(
-                self._session_scope,
-                selection_cards,
+            self._frozen_prompt_snapshot = initialize_retrieval_prompt(
+                toolkit, self._prompt_skillfs, self._candidate_budget_tokens, self._session_scope,
             )
         except Exception:
-            self._frozen_prompt_snapshot = self._empty_prompt_snapshot()
+            self._frozen_prompt_snapshot = RetrievalPromptSnapshot(self._candidate_budget_tokens)
             logger.warning(
                 "Unable to initialize Symphony Skill prompt/delta baseline",
                 exc_info=True,
@@ -188,7 +173,7 @@ class SymphonyRetrievalRail(DeepAgentRail):
                 "Unable to build the Symphony Skill prompt snapshot",
                 exc_info=True,
             )
-            snapshot = self._empty_prompt_snapshot()
+            snapshot = RetrievalPromptSnapshot(self._candidate_budget_tokens)
         candidate_appendix = self._build_candidate_appendix(language, snapshot)
         await self._clear_prompt_attachments(ctx)
         self.system_prompt_builder.remove_section(self.SECTION_NAME)
@@ -249,10 +234,8 @@ class SymphonyRetrievalRail(DeepAgentRail):
         if tool_name not in _SYMPHONY_RUNTIME_TOOL_NAMES:
             return
         try:
-            reminder = consume_incremental_skill_reminder(
-                self._session_scope,
-                self._scan_selection_cards(),
-                max_chars=self._incremental_notice_max_chars,
+            reminder = consume_retrieval_prompt_reminder(
+                self._prompt_skillfs, self._session_scope, self._incremental_notice_max_chars,
             )
         except Exception:
             logger.warning(
@@ -262,11 +245,6 @@ class SymphonyRetrievalRail(DeepAgentRail):
             return
         if reminder:
             self._append_tool_result_reminder(inputs, reminder)
-
-    def _scan_selection_cards(self) -> dict[str, dict[str, str]]:
-        if self._prompt_skillfs is None:
-            return {}
-        return self._prompt_skillfs.selection_cards()
 
     @staticmethod
     def _append_tool_result_reminder(
@@ -386,15 +364,10 @@ class SymphonyRetrievalRail(DeepAgentRail):
             self.system_prompt_builder.add_section(self._hidden_skills_section)
         self._hidden_skills_section = None
 
-    def _prompt_snapshot(self) -> SkillPromptSnapshot:
+    def _prompt_snapshot(self) -> RetrievalPromptSnapshot:
         if self._frozen_prompt_snapshot is None:
-            toolkit = self._toolkit()
-            self._frozen_prompt_snapshot = (
-                toolkit.frozen_prompt_snapshot
-                if toolkit is not None
-                else self._prompt_skillfs.prompt_snapshot()
-                if self._prompt_skillfs is not None
-                else self._empty_prompt_snapshot()
+            self._frozen_prompt_snapshot = read_retrieval_prompt(
+                self._toolkit(), self._prompt_skillfs, self._candidate_budget_tokens,
             )
         return self._frozen_prompt_snapshot
 
@@ -408,20 +381,10 @@ class SymphonyRetrievalRail(DeepAgentRail):
         toolkit = getattr(self, "_source_toolkit", None)
         return toolkit if isinstance(toolkit, SkillRetrievalToolkit) else None
 
-    def _empty_prompt_snapshot(self) -> SkillPromptSnapshot:
-        return SkillPromptSnapshot(
-            mode="small",
-            total_count=0,
-            entries=(),
-            estimated_candidate_tokens=0,
-            candidate_budget_tokens=self._candidate_budget_tokens,
-            index_state="missing",
-        )
-
     def _build_candidate_appendix(
         self,
         language: str,
-        snapshot: SkillPromptSnapshot,
+        snapshot: RetrievalPromptSnapshot,
     ) -> str:
         english = str(language).lower().startswith("en")
         complete = snapshot.all_candidates_included
@@ -444,7 +407,11 @@ class SymphonyRetrievalRail(DeepAgentRail):
                 [
                     "",
                     "Categories (virtual groups):" if english else "分类（虚拟目录）：",
-                    *_render_prompt_branches(snapshot.branches),
+                    *(
+                        f"- `{_compact_prompt_text(branch.label)}`: "
+                        f"{_compact_branch_description(branch.description, branch.label)}"
+                        for branch in snapshot.branches
+                    ),
                 ]
             )
             if snapshot.omitted_branch_count:
@@ -461,7 +428,10 @@ class SymphonyRetrievalRail(DeepAgentRail):
                     ("Skills:" if complete else "Examples:")
                     if english
                     else ("Skill：" if complete else "示例："),
-                    *_render_prompt_entries(snapshot.entries, empty_text=""),
+                    *(
+                        f"- `{_compact_prompt_text(entry.worker_id)}`: {_compact_prompt_text(entry.description)}"
+                        for entry in snapshot.entries
+                    ),
                 ]
             )
         elif not snapshot.branches:
@@ -518,30 +488,6 @@ class SymphonyRetrievalRail(DeepAgentRail):
         if not tools:
             return False
         return any(cls._model_tool_name(tool) == CAPABILITY_SEARCH_TOOL_NAME for tool in tools)
-
-
-def _render_prompt_entries(
-    entries: tuple[SkillPromptEntry, ...],
-    *,
-    empty_text: str,
-) -> list[str]:
-    if not entries:
-        return [empty_text]
-    return [
-        f"- `{_compact_prompt_text(entry.worker_id)}`: "
-        f"{_compact_prompt_text(entry.description)}"
-        for entry in entries
-    ]
-
-
-def _render_prompt_branches(
-    branches: tuple[SkillPromptBranch, ...],
-) -> list[str]:
-    return [
-        f"- `{_compact_prompt_text(branch.label)}`: "
-        f"{_compact_branch_description(branch.description, branch.label)}"
-        for branch in branches
-    ]
 
 
 def _compact_branch_description(description: str, fallback: str) -> str:

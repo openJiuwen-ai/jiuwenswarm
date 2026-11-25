@@ -6,9 +6,9 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from openjiuwen.core.foundation.tool import Tool
 from openjiuwen.symphony import SymphonyRuntime
@@ -21,6 +21,8 @@ from openjiuwen.symphony.discovery import (
     SkillPromptEntry,
     SkillPromptSnapshot,
     SkillRecord,
+    consume_incremental_skill_reminder,
+    initialize_incremental_skill_notice_state,
 )
 
 from jiuwenswarm.common.context_window import resolve_context_window_tokens
@@ -43,6 +45,68 @@ VisibleSkillsProvider = (
 
 SKILL_RETRIEVAL_SESSION_PROFILE_VERSION = 2
 _PROFILE_SETTINGS_FIELDS = {"prompt", "output", "use_existing_index"}
+
+
+class RetrievalPromptEnvironment(Protocol):
+    """The inventory reads used by the session prompt."""
+
+    def prompt_snapshot(self) -> SkillPromptSnapshot: ...
+
+    def selection_cards(self) -> dict[str, dict[str, str]]: ...
+
+
+@dataclass(frozen=True)
+class RetrievalPromptSnapshot:
+    """Read-only candidate data consumed by the prompt renderer."""
+
+    candidate_budget_tokens: int
+    all_candidates_included: bool = True
+    entries: tuple[SkillPromptEntry, ...] = ()
+    branches: tuple[SkillPromptBranch, ...] = ()
+    omitted_branch_count: int = 0
+
+
+def read_retrieval_prompt(
+    toolkit: SkillRetrievalToolkit | None,
+    environment: RetrievalPromptEnvironment | None,
+    budget: int,
+) -> RetrievalPromptSnapshot:
+    if toolkit is not None:
+        snapshot = toolkit.frozen_prompt_snapshot
+    elif environment is not None:
+        snapshot = environment.prompt_snapshot()
+    else:
+        return RetrievalPromptSnapshot(budget)
+    return RetrievalPromptSnapshot(
+        candidate_budget_tokens=snapshot.candidate_budget_tokens,
+        all_candidates_included=snapshot.all_candidates_included,
+        entries=snapshot.entries,
+        branches=snapshot.branches,
+        omitted_branch_count=snapshot.omitted_branch_count,
+    )
+
+
+def initialize_retrieval_prompt(
+    toolkit: SkillRetrievalToolkit | None,
+    environment: RetrievalPromptEnvironment | None,
+    budget: int,
+    session_scope: str,
+) -> RetrievalPromptSnapshot:
+    """Freeze prompt data and initialize the matching session notice baseline."""
+    cards = toolkit.frozen_selection_cards if toolkit is not None else _selection_cards(environment)
+    snapshot = read_retrieval_prompt(toolkit, environment, budget)
+    initialize_incremental_skill_notice_state(session_scope, cards)
+    return snapshot
+
+
+def consume_retrieval_prompt_reminder(
+    environment: RetrievalPromptEnvironment | None, session_scope: str, max_chars: int,
+) -> str | None:
+    return consume_incremental_skill_reminder(session_scope, _selection_cards(environment), max_chars=max_chars)
+
+
+def _selection_cards(environment: RetrievalPromptEnvironment | None) -> dict[str, dict[str, str]]:
+    return environment.selection_cards() if environment is not None else {}
 
 
 def _settings_from_profile(profile: Mapping[str, Any] | None) -> RetrievalConfig | None:

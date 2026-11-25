@@ -33,6 +33,7 @@ _ALLOWED_SYMPHONY_FACADE_SYMBOLS = {
 
 _SWARM_RETRIEVAL_CONSUMERS = {
     "agents/harness/common/rails/stream_event_rail.py",
+    "agents/harness/common/rails/symphony/retrieval_rail.py",
     "server/runtime/agent_adapter/interface_deep.py",
     "server/runtime/skill/skill_manager.py",
 }
