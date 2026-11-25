@@ -2697,6 +2697,8 @@ class JiuWenSwarmDeepAdapter:
         self._process_cli_run_options = None
         self._external_harness_binding: dict[str, Any] | None = None
         self._external_harness: Any | None = None
+        # Steered input boundaries of the External Harness turn being streamed.
+        self._external_harness_boundaries: Any | None = None
         self._interaction_output_handoff: OutputHandoff | None = None
         self._session_input_guard: SessionInputGuard | None = None
         self._voice_agent_task_rail = None
@@ -21788,6 +21790,14 @@ class JiuWenSwarmDeepAdapter:
         )
         if cross_session_steer:
             self._require_cross_session_task_admission(request)
+        if getattr(self, "_external_harness_binding", None) is not None:
+            if mode is not InputDispatchMode.STEER:
+                return False
+            from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
+                steer_external_harness,
+            )
+
+            return await steer_external_harness(self, request, inputs)
         image_steer = mode is InputDispatchMode.STEER and bool(request.params.get("media_items"))
         instance = self._instance
         if instance is None or instance.active_round is None or not instance.has_output_stream():

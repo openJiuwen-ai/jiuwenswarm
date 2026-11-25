@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
@@ -17,9 +18,11 @@ from openjiuwen.core.session.stream.base import OutputSchema
 from openjiuwen.core.single_agent.interrupt.response import InterruptKind
 from openjiuwen.harness.resources import RuntimeSpec, read_agent_template_card
 from openjiuwen.harness_protocol import (
+    DeliveryMode,
     HarnessCapability,
     HarnessCheckpoint,
     HarnessState,
+    HarnessStateError,
     ResumePolicy,
     UnsupportedHarnessCapabilityError,
     json_value_to_builtin,
@@ -29,7 +32,7 @@ from openjiuwen.harness_providers import (
     build_harness_context,
     create_harness,
 )
-from openjiuwen.harness_providers.io_adapter import TURN_LIFECYCLE
+from openjiuwen.harness_providers.io_adapter import TURN_LIFECYCLE, to_harness_input
 
 from jiuwenswarm.common.schema.agent import (
     AgentRequest,
@@ -830,6 +833,104 @@ async def stream_turn_output(
             return
 
 
+async def _with_input_boundaries(
+    outputs: AsyncIterator[OutputSchema],
+    boundaries: asyncio.Queue[dict[str, Any]],
+) -> AsyncIterator[tuple[str, Any]]:
+    """Interleave the turn's output with the input steered into it.
+
+    Yields ``("output", chunk)`` for the turn's own output and
+    ``("input", boundary)`` for each steered input, in the order they arrive;
+    a boundary that is ready is yielded before the output that follows it.
+    """
+    iterator = outputs.__aiter__()
+    next_output: asyncio.Future[Any] | None = None
+    next_boundary: asyncio.Future[Any] | None = None
+    try:
+        while True:
+            if next_output is None:
+                next_output = asyncio.ensure_future(iterator.__anext__())
+            if next_boundary is None:
+                next_boundary = asyncio.ensure_future(boundaries.get())
+            done, _ = await asyncio.wait(
+                {next_output, next_boundary},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if next_boundary in done:
+                boundary = next_boundary.result()
+                next_boundary = None
+                yield "input", boundary
+                continue
+            try:
+                chunk = next_output.result()
+            except StopAsyncIteration:
+                return
+            next_output = None
+            yield "output", chunk
+    finally:
+        for pending in (next_output, next_boundary):
+            if pending is not None and not pending.done():
+                pending.cancel()
+                try:
+                    await pending
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+        closer = getattr(iterator, "aclose", None)
+        if callable(closer):
+            await closer()
+
+
+async def steer_external_harness(
+    adapter: Any,
+    request: AgentRequest,
+    inputs: dict[str, Any],
+) -> bool:
+    """Steer the session's running External Harness turn with new input.
+
+    The input goes to the provider as a steer of its active turn, and its
+    boundary, ``chat.input_received``, enters the stream of that turn as it
+    does for a turn of Swarm's own agent. Return False, before sending, when
+    there is no running turn whose stream this adapter projects or the
+    provider does not steer; the input then takes the path of a new message.
+    """
+    from agent_gateway.common.session_message import (
+        SESSION_MESSAGE_INTERNAL_KEY,
+        SESSION_MESSAGE_ORIGIN,
+    )
+    from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
+    io = getattr(adapter, "_external_harness", None)
+    boundaries = getattr(adapter, "_external_harness_boundaries", None)
+    if io is None or io.state is not HarnessState.RUNNING:
+        return False
+    if io.has_pending_interrupt():
+        raise SessionInputRejectedError(_error_text("waiting_for_interaction"))
+    if boundaries is None or io.delivery_mode(immediate=True) is not DeliveryMode.STEER:
+        return False
+    params = request.params if isinstance(request.params, dict) else {}
+    query = inputs.get("query")
+    try:
+        await io.harness.send(to_harness_input(query), mode=DeliveryMode.STEER)
+    except HarnessStateError:
+        # The turn ended before the provider took the input.
+        return False
+    boundary: dict[str, Any] = {
+        "input_request_id": request.request_id,
+        "content": str(params.get("content") or params.get("query") or query or ""),
+        "timestamp": time.time() * 1000,
+    }
+    cross_session = params.get(SESSION_MESSAGE_INTERNAL_KEY)
+    if isinstance(cross_session, dict):
+        boundary.update({
+            "message_origin": SESSION_MESSAGE_ORIGIN,
+            "session_message_id": cross_session.get("message_id"),
+            "cross_session": {**cross_session, "content": boundary["content"]},
+        })
+    boundaries.put_nowait(boundary)
+    return True
+
+
+
 def _response_chunk(
     request: AgentRequest,
     payload: dict[str, Any],
@@ -1027,6 +1128,7 @@ async def process_external_harness_stream(
     inputs: dict[str, Any],
 ) -> AsyncIterator[AgentResponseChunk]:
     """Run one External Harness request and project its ordered chat stream."""
+    input_timestamp_ms = time.time() * 1000
     _bind_external_workspace(adapter, inputs)
     try:
         io = await _ensure_external_harness(adapter, request)
@@ -1104,12 +1206,45 @@ async def process_external_harness_stream(
 
     has_streamed_answer = False
     receipt_turn_id = None if receipt is None else receipt.turn_id
+    # Input steered into this turn (steer_external_harness) and not yet answered.
+    boundaries: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    pending_input_ids: list[str] = []
+    adapter._external_harness_boundaries = boundaries  # pylint: disable=protected-access
+
+    def output_phase() -> AgentResponseChunk:
+        applied = list(pending_input_ids)
+        pending_input_ids.clear()
+        return _response_chunk(
+            request,
+            {
+                "event_type": "chat.output_phase",
+                "output_phase_id": f"phase-{uuid.uuid4().hex}",
+                "applied_input_ids": applied,
+                "input_timestamp": input_timestamp_ms,
+                # The stream clock in milliseconds, which history takes from
+                # every record of an output phase.
+                "timestamp": time.time() * 1000,
+            },
+            complete=False,
+        )
+
     try:
-        async for chunk in stream_turn_output(
-            io,
-            receipt_turn_id,
-            resume=resume,
+        async for source, chunk in _with_input_boundaries(
+            stream_turn_output(
+                io,
+                receipt_turn_id,
+                resume=resume,
+            ),
+            boundaries,
         ):
+            if source == "input":
+                pending_input_ids.append(chunk["input_request_id"])
+                yield _response_chunk(
+                    request,
+                    {"event_type": "chat.input_received", **chunk},
+                    complete=False,
+                )
+                continue
             if chunk.type == TURN_LIFECYCLE:
                 payload = chunk.payload if isinstance(chunk.payload, dict) else {}
                 kind = str(payload.get("kind") or "")
@@ -1121,6 +1256,8 @@ async def process_external_harness_stream(
                 if kind == "finished":
                     final_output = payload.get("final_output")
                     content = final_output if isinstance(final_output, str) else ""
+                    if pending_input_ids:
+                        yield output_phase()
                     yield _response_chunk(
                         request,
                         {"event_type": "chat.final", "content": content},
@@ -1155,6 +1292,9 @@ async def process_external_harness_stream(
             )
             if parsed is None:
                 continue
+            if pending_input_ids:
+                # The first output after steered input answers it.
+                yield output_phase()
             if chunk.type == "llm_output" and parsed.get("event_type") == "chat.delta":
                 has_streamed_answer = True
             is_interaction = chunk.type == INTERACTION
@@ -1181,6 +1321,9 @@ async def process_external_harness_stream(
             complete=True,
         )
         return
+    finally:
+        if getattr(adapter, "_external_harness_boundaries", None) is boundaries:
+            adapter._external_harness_boundaries = None  # pylint: disable=protected-access
 
     yield _response_chunk(
         request,
