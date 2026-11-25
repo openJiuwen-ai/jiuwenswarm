@@ -8,12 +8,14 @@ export function WebUITabs({ node, context, emit, contentGroups, appearance }: We
     | 'size' | 'centered' | 'destroyOnHidden'> & {
       items: { key: string; label: string; disabled?: boolean }[]; ariaLabel?: string;
     };
-  const [activeKey, setActiveKey] = useState(
-    p.activeKey ?? p.defaultActiveKey ?? p.items.find((item) => !item.disabled)?.key ?? '',
+  const firstEnabledKey = p.items.find((item) => !item.disabled)?.key ?? '';
+  const [localActiveKey, setLocalActiveKey] = useState(p.activeKey ?? p.defaultActiveKey ?? firstEnabledKey);
+  const activeKey = p.activeKey ?? (
+    p.items.some((item) => item.key === localActiveKey && !item.disabled) ? localActiveKey : firstEnabledKey
   );
   useEffect(() => {
-    if (p.activeKey !== undefined) setActiveKey(p.activeKey);
-  }, [p.activeKey]);
+    if (localActiveKey !== activeKey) setLocalActiveKey(activeKey);
+  }, [activeKey, localActiveKey]);
   const disabled = !context.connected;
   return <Tabs data-testid="webui-tabs" aria-label={p.ariaLabel} activeKey={activeKey} type={p.type}
     className={appearance?.className} style={appearance?.style}
@@ -29,7 +31,7 @@ export function WebUITabs({ node, context, emit, contentGroups, appearance }: We
     }))}
     onChange={(next) => {
       if (disabled) return;
-      setActiveKey(next);
+      if (p.activeKey === undefined) setLocalActiveKey(next);
       if (node.events['ui.change']) void emit('ui.change', { activeKey: next });
     }}
   />;
