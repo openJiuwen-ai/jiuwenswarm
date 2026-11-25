@@ -137,7 +137,9 @@ class _FakeClient:
         from openjiuwen.core.foundation.tool.mcp.client import streamable_http_client
 
         # Same call the real client makes; the patch records the raw result.
-        return streamable_http_client.extract_mcp_tool_result_content(self._raw, tool_name=tool_name)
+        # dev-stable agent-core 签名为单参（develop 侧多 tool_name kwarg，
+        # 落位按目标基座签名重锚）。
+        return streamable_http_client.extract_mcp_tool_result_content(self._raw)
 
 
 def _real_tool(mcp_base, client, name):
@@ -164,7 +166,8 @@ async def test_invoke_patch_attaches_mcp_app_block(patched_mcp_tool):
     assert block["server"] == "store" and block["resourceUri"] == UI_URI
     assert block["tool"] == "browse"
     assert block["toolResult"]["structuredContent"] == {"products": ["a"]}
-    assert tool.render_for_llm(result) == "grid shown"
+    # dev-stable 基座无 render_for_llm（develop 侧方法）；模型面投影即
+    # invoke 返回的 result["result"]，上行断言已覆盖。
 
 
 @pytest.mark.asyncio
