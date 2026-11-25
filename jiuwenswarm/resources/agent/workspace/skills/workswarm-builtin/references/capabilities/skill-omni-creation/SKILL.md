@@ -166,7 +166,7 @@ stage01/stage02/stage03 都输出一次相同全局预算的受限代表视图�
 ```
 [save_images] img_00.jpg <- raw_images/dom_002.jpg
 [save_images] img_01.png <- raw_images/dom_005.png
-[save_images] SKILL_MD_PATH: /Users/xxx/.jiuwenswarm/profile/agent/workspace/skills/exposure_fusion_opencv/SKILL.md
+[save_images] SKILL_MD_PATH: /Users/xxx/.jiuwenswarm/agent/workspace/skills/exposure_fusion_opencv/SKILL.md
 ```
 **生成 SKILL.md 时，用 write_file 写入 `SKILL_MD_PATH` 打印出的绝对路径。图片路径为 `references/<文件名>`，例如 `references/img_00.jpg`。**
 页面无图时也必须执行 `save_images.py <slug> --keep`；脚本会从 stage02（不存在则 stage01）生成 stage03，并打印同一个 `SKILL_MD_PATH`。

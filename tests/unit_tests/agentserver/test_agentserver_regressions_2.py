@@ -35,7 +35,7 @@ from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBr
 import json
 from pathlib import Path
 import psutil
-from jiuwenswarm.common import paths, utils
+from jiuwenswarm.common import utils
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.ipc.client import endpoint_is_listening
 from jiuwenswarm.server.lifecycle import Readiness
@@ -398,13 +398,13 @@ async def test_replacement_worker_reclaims_and_executes_persisted_session(monkey
         "    from session_owner_worker import configure\n"
         "    configure()\n", encoding="utf-8",
     )
-    bootstrap_paths = [str(bootstrap), str(Path(__file__).parent / "fixtures"), str(root)]
+    paths = [str(bootstrap), str(Path(__file__).parent / "fixtures"), str(root)]
     if os.environ.get("PYTHONPATH"):
-        bootstrap_paths.append(os.environ["PYTHONPATH"])
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(bootstrap_paths))
+        paths.append(os.environ["PYTHONPATH"])
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(paths))
     data = tmp_path / "data"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(data))
-    monkeypatch.setattr(paths, "_workspace_base_dir", data)
+    monkeypatch.setattr(utils, "_workspace_base_dir", data)
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     monkeypatch.setenv("JIUWENSWARM_BUILD_ID", "owner-recovery-old-build")
     session = data / "agent" / "sessions" / "persisted"

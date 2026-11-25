@@ -192,7 +192,7 @@ def _serve_file(
 def test_package_avatar_url_downloads_original_image(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from jiuwenswarm.server.runtime.package_avatars import resolve_package_avatar_url
 
-    monkeypatch.setattr("jiuwenswarm.common.paths._workspace_base_dir", tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", tmp_path)
     monkeypatch.setattr(WebFileDownloadManager, "_instance", WebFileDownloadManager(secret="s" * 32))
     monkeypatch.delenv("JIUWENSWARM_AGENT_DOWNLOAD_HTTP_BASE", raising=False)
     monkeypatch.delenv("JIUWENSWARM_AGENT_HTTP_BASE", raising=False)
@@ -661,19 +661,13 @@ def test_verified_single_user_upload_persists_without_http_bridge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(app_web, "_uses_agentos_routing", lambda: False)
-    # 会话轨迹收敛 profile 布局：token 相对路径为 profile/agent/sessions/…
     monkeypatch.setattr(
         web_file_download,
         "validate_file_download_token",
-        lambda _token, **_kwargs: {"path": "profile/agent/sessions/s1/uploads/report.txt"},
+        lambda _token, **_kwargs: {"path": "agent/sessions/s1/uploads/report.txt"},
     )
-    # app_web 为函数内局部 import（from common.utils import …），patch 需落
-    # utils 命名空间；paths 层一并重定向保证边界校验根一致
     monkeypatch.setattr(
         "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path
     )
     handler = _UploadHandlerStub(b"legacy upload")
 
@@ -681,7 +675,7 @@ def test_verified_single_user_upload_persists_without_http_bridge(
         handler, SimpleNamespace(query="token=legacy-upload-token")
     )
 
-    target = tmp_path / "profile" / "agent" / "sessions" / "s1" / "uploads" / "report.txt"
+    target = tmp_path / "agent" / "sessions" / "s1" / "uploads" / "report.txt"
     assert target.read_bytes() == b"legacy upload"
     assert handler.response == (200, {"path": str(target), "size": 13})
 

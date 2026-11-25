@@ -195,7 +195,7 @@ def test_unbound_deep_agent_does_not_create_runtime_binding(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths._workspace_base_dir",
+        "jiuwenswarm.common.utils._workspace_base_dir",
         tmp_path / ".jiuwenswarm",
     )
     install_template("plain-expert", None)
@@ -219,7 +219,7 @@ def test_first_external_resolve_returns_runtime_without_persisting(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths._workspace_base_dir",
+        "jiuwenswarm.common.utils._workspace_base_dir",
         tmp_path / ".jiuwenswarm",
     )
     package_dir = install_template("codex-expert", "codex")
@@ -249,7 +249,7 @@ def test_bound_external_session_rejects_runtime_or_template_switch(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths._workspace_base_dir",
+        "jiuwenswarm.common.utils._workspace_base_dir",
         tmp_path / f".jiuwenswarm-{requested_template}",
     )
     install_template("codex-expert", "codex")
@@ -330,7 +330,7 @@ async def test_external_child_creation_persists_runtime_binding(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths._workspace_base_dir",
+        "jiuwenswarm.common.utils._workspace_base_dir",
         tmp_path / ".jiuwenswarm",
     )
     install_template("codex-expert", "codex")
@@ -370,7 +370,7 @@ async def test_deep_agent_child_rejects_external_without_persisting_binding(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths._workspace_base_dir",
+        "jiuwenswarm.common.utils._workspace_base_dir",
         tmp_path / ".jiuwenswarm",
     )
     install_template("codex-expert", "codex")
@@ -447,7 +447,7 @@ async def test_child_creation_without_binding_uses_persisted_external_runtime(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths._workspace_base_dir",
+        "jiuwenswarm.common.utils._workspace_base_dir",
         tmp_path / ".jiuwenswarm",
     )
     install_template("codex-expert", "codex")
@@ -1207,7 +1207,7 @@ def test_runtime_binding_reads_only_the_manifest_card(
     from openjiuwen.harness.resources import extension_loader
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths._workspace_base_dir",
+        "jiuwenswarm.common.utils._workspace_base_dir",
         tmp_path / ".jiuwenswarm",
     )
     install_template("claude-expert", "claudecode")
@@ -1232,7 +1232,7 @@ def test_runtime_provider_outside_the_host_allowlist_keeps_its_error(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.paths._workspace_base_dir",
+        "jiuwenswarm.common.utils._workspace_base_dir",
         tmp_path / ".jiuwenswarm",
     )
     install_template("odd-expert", "unknown-provider")

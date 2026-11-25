@@ -16,10 +16,10 @@ import yaml
 
 from openjiuwen.core.extension.versions import parse_version
 
-from jiuwenswarm.common.paths import get_app_market_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.enterprise.edition import is_enterprise
 from jiuwenswarm.extensions.app_market.app_market.models import AppManifest
-from jiuwenswarm.extensions.app_market.app_market.storage import MarketStorage
+from jiuwenswarm.extensions.app_market.app_market.storage import APP_MARKET_DIRNAME, MarketStorage
 
 from .asset_package_builder import PackageBuildError
 from .asset_publish_adapters import PublishValidationError
@@ -139,7 +139,7 @@ def _version_key(path: Path) -> tuple[int, int, int, str]:
 def _resolve_local_app(local_id: str, owner_id: str) -> AppManifest:
     if not owner_id and is_enterprise():
         raise PublishAPIError("RESOURCE_NOT_FOUND")
-    storage = MarketStorage(str(get_app_market_dir()))
+    storage = MarketStorage(str(get_user_workspace_dir() / APP_MARKET_DIRNAME))
     manifest = storage.load_manifest(local_id)
     if (
         manifest is None

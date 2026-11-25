@@ -169,8 +169,7 @@ def test_desktop_executor_rejects_truncated_download(monkeypatch, tmp_path):
 
     statuses = []
     monkeypatch.setattr(upgrade_executor, "urlopen", lambda request, timeout: TruncatedResponse())
-    # 升级目录收敛为数据根 .updates/（upgrade_executor 经 get_updates_dir 取值）
-    monkeypatch.setattr(upgrade_executor, "get_updates_dir", lambda: tmp_path / ".updates")
+    monkeypatch.setattr(upgrade_executor, "get_user_workspace_dir", lambda: tmp_path)
     executor = DesktopExecutor(
         {
             "timeout_seconds": 20,

@@ -20,10 +20,7 @@ def test_gateway_uses_local_instance_config_and_extension_dirs(tmp_path: Path, m
     dotenv = config_dir / ".env"
     dotenv.write_text(f'EXTENSION_DIRS="{extension_dirs}"\nUNRELATED_SETTING=yes\n', encoding="utf-8")
     monkeypatch.setattr(utils, "get_config_dir", lambda: config_dir)
-    # get_env_file 在 paths 层解析 config 目录，需一并重定向；gateway 落盘名
-    # 已改为 config/config-gateway.yaml
-    monkeypatch.setattr("jiuwenswarm.common.paths.get_config_dir", lambda: config_dir)
-    monkeypatch.setattr(gateway_paths, "get_config_file", lambda: config_dir / "config-gateway.yaml")
+    monkeypatch.setattr(gateway_paths, "get_config_file", lambda: tmp_path / "infra" / "config" / "config.yaml")
     monkeypatch.setattr(utils, "is_agentos_runtime", lambda: False)
 
     env: dict[str, str] = {}

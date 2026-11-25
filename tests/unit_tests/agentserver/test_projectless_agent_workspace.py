@@ -316,6 +316,10 @@ async def test_runtime_prompt_describes_projectless_agent_task_dirs(
         lambda: agent_dir,
     )
     monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_runtime_state_path",
         lambda _session_id: config_dir / "runtime.yaml",
     )
@@ -798,6 +802,10 @@ async def test_conversations_share_one_system_prompt_so_the_provider_cache_is_sh
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_workspace_dir",
         lambda: agent_dir,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        lambda: tmp_path,
     )
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_runtime_state_path",

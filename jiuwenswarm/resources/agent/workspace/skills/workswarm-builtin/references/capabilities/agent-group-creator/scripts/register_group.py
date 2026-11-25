@@ -7,11 +7,6 @@ from pathlib import Path
 
 import yaml
 
-
-from jiuwenswarm.common.paths import (
-    get_agent_teams_dir,
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -58,6 +53,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         from openjiuwen.agent_teams.experts import load_agent_group_package
+        from jiuwenswarm.common.utils import get_user_workspace_dir
         from jiuwenswarm.server.runtime.extension_package_manager import (
             import_agent_group,
         )
@@ -74,7 +70,7 @@ def main() -> int:
             result = import_agent_group({"path": str(package)})
             logger.info("REGISTERED: %s", result["id"])
             logger.info("INSTALLED: %s", result["id"])
-            destination = get_agent_teams_dir() / "agent_groups" / "local" / result["id"]
+            destination = get_user_workspace_dir() / ".agent_teams" / "agent_groups" / "local" / result["id"]
             logger.info("PACKAGE: %s", destination)
         return 0
     except (ImportError, OSError, TypeError, ValueError) as exc:

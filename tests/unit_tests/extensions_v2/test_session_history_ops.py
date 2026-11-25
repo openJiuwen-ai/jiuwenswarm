@@ -19,7 +19,6 @@ from jiuwenswarm.extensions_v2.handler_ops.session_ops import session_messages
 from jiuwenswarm.extensions_v2.webui.models import RenderTarget, UiActionInput
 from jiuwenswarm.server.runtime.session import lifecycle, project_store, session_history, session_metadata
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
-from jiuwenswarm.server.runtime.session import model_selection_store
 from jiuwenswarm.server.runtime.session.history_context import (
     bound_history_context,
     capture_history_model,
@@ -106,9 +105,7 @@ def create_extension():
 async def history_host(tmp_path: Path, monkeypatch):
     sessions = tmp_path / "agent" / "sessions"
     sessions.mkdir(parents=True)
-    # model_selection_store 的 ops.session.model() 读取也绑定在自身命名空间，
-    # 需一并重定向，否则 saved model facts 落空
-    for module in (session_history, session_metadata, lifecycle, project_store, utils, model_selection_store):
+    for module in (session_history, session_metadata, lifecycle, project_store, utils):
         if hasattr(module, "get_agent_sessions_dir"):
             monkeypatch.setattr(module, "get_agent_sessions_dir", lambda: sessions)
         if hasattr(module, "get_agent_root_dir"):

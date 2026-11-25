@@ -335,14 +335,14 @@ async def test_parallel_queries_keep_tenant_and_request_context(monkeypatch, met
     ReqMethod.PROJECT_LIST, ReqMethod.SESSION_LIST, ReqMethod.SESSION_GET_METADATA,
 ])
 async def test_router_queries_keep_enterprise_workspace_in_background(monkeypatch, tmp_path, method):
-    from jiuwenswarm.common import paths, utils
+    from jiuwenswarm.common import utils
     from jiuwenswarm.enterprise import plane
     from jiuwenswarm.server.front.admission import ExecutionAdmission
     from jiuwenswarm.server.front.router import MethodRouter
     from jiuwenswarm.server.lifecycle import Readiness
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
     # Restore the process-wide edition assembly after exercising this tenant.
     monkeypatch.setattr(plane, "_PLANE", None)
     monkeypatch.setattr(plane, "_BUILD_ATTEMPTED", False)
@@ -550,13 +550,13 @@ async def test_cancellation_after_waiter_error_delivery_observes_exception(monke
 
 @pytest.mark.asyncio
 async def test_background_directory_lookup_does_not_assemble_enterprise_plane(monkeypatch, tmp_path):
-    from jiuwenswarm.common import paths, utils
+    from jiuwenswarm.common import utils
     from jiuwenswarm.enterprise import plane
     from jiuwenswarm.enterprise.tenant import tenant_context
     from jiuwenswarm.server.control.query_executor import run_control_query
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
     monkeypatch.setattr(tenant_context, "_TENANT_AGENT_ROOT_CV", ContextVar("query-root", default=None))
     monkeypatch.setattr(plane, "_PLANE", None)
     monkeypatch.setattr(plane, "_BUILD_ATTEMPTED", False)
@@ -565,6 +565,6 @@ async def test_background_directory_lookup_does_not_assemble_enterprise_plane(mo
         pytest.fail("A directory lookup must not assemble the enterprise plane")
 
     monkeypatch.setattr(plane, "try_build_enterprise_plane", unexpected_assembly)
-    session_dirs = await asyncio.gather(*(run_control_query(utils.get_agent_sessions_dir) for _ in range(4)))
-    assert all(path.is_relative_to(tmp_path) and path.name == "sessions" for path in session_dirs)
+    paths = await asyncio.gather(*(run_control_query(utils.get_agent_sessions_dir) for _ in range(4)))
+    assert all(path.is_relative_to(tmp_path) and path.name == "sessions" for path in paths)
     assert plane._PLANE is None and not plane._BUILD_ATTEMPTED
