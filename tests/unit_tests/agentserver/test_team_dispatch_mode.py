@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Session-level team dispatch / bootstrap modes: resolution, persistence and spec wiring."""
 
@@ -228,3 +228,15 @@ async def test_framework_team_config_rejects_autonomous_session(monkeypatch: pyt
     """A team configured for framework bootstrap cannot be run as an autonomous session."""
     with pytest.raises(ValueError, match="requires scheduled dispatch"):
         await _build_spec(monkeypatch, "autonomous", None, config_bootstrap_mode="framework")
+
+
+def test_framework_build_check_uses_session_team_row_not_first_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_metadata(monkeypatch, {"session_id": "s1"})
+
+    assert team_helpers._framework_bootstrap_will_build("s1") is True
+
+    _patch_metadata(monkeypatch, {"session_id": "s2", "team_name": "team-2"})
+
+    assert team_helpers._framework_bootstrap_will_build("s2") is False

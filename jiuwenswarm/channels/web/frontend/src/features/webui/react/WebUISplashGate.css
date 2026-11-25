@@ -37,6 +37,7 @@
   width: 64px;
   height: 64px;
   border-radius: 16px;
+  object-fit: contain;
 }
 
 .webui-splash__name {
