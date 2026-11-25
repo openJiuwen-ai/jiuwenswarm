@@ -2485,6 +2485,15 @@ def get_all_sessions_metadata(
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
             )
+            # 文件存在但读取失败/损坏（半写窗口、磁盘满等）不能静默伪装成合法
+            # 空会话：team_name/work_mode 等身份字段已丢失，打上标记让消费方
+            # 可以诚实呈现，而不是当作正常旧会话误导用户。
+            if (session_dir / "metadata.json").exists():
+                metadata["metadata_corrupted"] = True
+                logger.warning(
+                    "metadata.json exists but unreadable, listing with corrupted marker (session_id=%s)",
+                    session_id,
+                )
         else:
             # 低优先级迁移去重入队；队列满时留待下次扫描，不同步写盘。
             metadata = _apply_metadata_defaults_with_inference(
