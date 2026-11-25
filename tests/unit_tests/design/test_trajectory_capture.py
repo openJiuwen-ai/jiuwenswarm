@@ -36,8 +36,7 @@ def _settings(tmp_path: Path, *, enabled: bool) -> TrajectoryStoreSettings:
 
 @pytest.fixture
 def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    # designer 轨迹目录经 paths.get_trace_dir()（= <workspace>/.trace）派生
-    monkeypatch.setattr(paths, "get_trace_dir", lambda: tmp_path / ".trace")
+    monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path)
     return tmp_path
 
 

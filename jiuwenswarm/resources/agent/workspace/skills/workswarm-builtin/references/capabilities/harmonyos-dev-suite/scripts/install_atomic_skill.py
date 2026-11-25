@@ -124,8 +124,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--source", help="Local harmonyos-agent-skills checkout")
     parser.add_argument(
         "--target",
-        default=None,
-        help="JiuwenSwarm skills directory (default: <workspace>/skills)",
+        default="~/.jiuwenswarm/domain/agent/workspace/skills",
+        help="JiuwenSwarm skills directory",
     )
     parser.add_argument("--skill", help="Atomic Skill name to install")
     parser.add_argument(
@@ -135,28 +135,6 @@ def main(argv: list[str]) -> int:
         "--list", action="store_true", help="List indexed atomic Skills"
     )
     args = parser.parse_args(argv)
-
-    if not args.target:
-        # 默认目标：本脚本所在工作空间的 skills/（个人版与企业版租户各自正确）；
-        # 脚本不在 skills 树内运行时，回退运行期注入 / 数据根个人版路径。
-        skills_root = None
-        for parent in Path(__file__).resolve().parents:
-            if parent.name == "skills":
-                skills_root = parent
-                break
-        if skills_root is None:
-            agent_root_env = os.getenv("JIUWENSWARM_AGENT_ROOT", "").strip()
-            if agent_root_env:
-                skills_root = Path(agent_root_env).expanduser() / "workspace" / "skills"
-            else:
-                env_root = os.getenv("JIUWENSWARM_DATA_DIR", "").strip()
-                if env_root:
-                    data_root = Path(env_root).expanduser()
-                else:
-                    home = os.getenv("JIUWENSWARM_HOME", "").strip()
-                    data_root = (Path(home) if home else Path.home()) / ".jiuwenswarm"
-                skills_root = data_root / "profile" / "agent" / "workspace" / "skills"
-        args.target = str(skills_root)
 
     manifest = _load_manifest()
     if args.list:

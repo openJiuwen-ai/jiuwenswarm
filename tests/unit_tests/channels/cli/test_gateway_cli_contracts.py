@@ -66,7 +66,7 @@ async def isolate_control_context(
 ):
     await assembly.shutdown_gateway_extensions()
     # Both independently packaged local transports must publish into this test workspace.
-    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr("agent_gateway.common.paths.get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setenv("GATEWAY_PORT", "19001")
     monkeypatch.setenv("AGENT_SERVER_PORT", "18092")

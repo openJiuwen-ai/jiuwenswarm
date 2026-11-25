@@ -266,7 +266,7 @@ class TestCredentialSource:
     def test_empty_credential_dir_yields_nothing(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(cli_env_patch, "_credential_env", _REAL_CREDENTIAL_ENV)
         with patch(
-            "jiuwenswarm.common.paths.get_agent_workspace_dir",
+            "jiuwenswarm.common.utils.get_agent_workspace_dir",
             return_value=str(tmp_path),
         ):
             assert cli_env_patch._credential_env() == {}

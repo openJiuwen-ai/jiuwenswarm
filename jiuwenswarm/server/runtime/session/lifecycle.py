@@ -846,9 +846,7 @@ def page(items: list[dict], params: dict, key: str, maximum: int) -> dict:
 
 def event_snapshots() -> list[dict]:
     """Internal Gateway refresh feed. Resource revisions survive restarts."""
-    from jiuwenswarm.common.paths import get_lifecycle_dir
-
-    directory = get_lifecycle_dir() / "resources"
+    directory = get_agent_root_dir() / "lifecycle" / "resources"
     result = []
     # Sessions share few projects: cache each project state once per poll and
     # hand every entry its own already-loaded value instead of letting
@@ -916,9 +914,7 @@ def inventory_feed() -> dict:
         ]
     }
     known = {item["project_id"] for item in payload["projects"]}
-    from jiuwenswarm.common.paths import get_lifecycle_dir
-
-    directory = get_lifecycle_dir() / "resources"
+    directory = get_agent_root_dir() / "lifecycle" / "resources"
     for path in directory.glob("project_*.json") if directory.exists() else ():
         operation = read_json(path).get("operation") or {}
         project_id = operation.get("resource_id")

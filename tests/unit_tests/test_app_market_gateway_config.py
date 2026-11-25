@@ -40,7 +40,7 @@ class GatewayConfigTest(unittest.TestCase):
         )
         connection = SimpleNamespace(_web_connection_user_id="market-user")
         with tempfile.TemporaryDirectory() as directory, patch(
-            "jiuwenswarm.extensions.app_market.extension.get_app_market_dir",
+            "jiuwenswarm.extensions.app_market.extension.get_user_workspace_dir",
             return_value=Path(directory),
         ):
             plugin = AppMarketPlugin()
@@ -59,7 +59,7 @@ class GatewayConfigTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             with patch.dict(os.environ, gateway_env, clear=True), patch(
-                "jiuwenswarm.extensions.app_market.extension.get_app_market_dir",
+                "jiuwenswarm.extensions.app_market.extension.get_user_workspace_dir",
                 return_value=Path(directory),
             ):
                 plugin = AppMarketPlugin()
@@ -93,7 +93,7 @@ def _bound_publish_handler():
     )
     connection = SimpleNamespace(_web_connection_user_id="market-user")
     with tempfile.TemporaryDirectory() as directory, patch(
-        "jiuwenswarm.extensions.app_market.extension.get_app_market_dir",
+        "jiuwenswarm.extensions.app_market.extension.get_user_workspace_dir",
         return_value=Path(directory),
     ):
         plugin = AppMarketPlugin()
@@ -157,7 +157,7 @@ def test_ai_roles_are_registered_and_read_only_for_the_app_owner():
             response = channel.send_response.await_args.kwargs
             assert response["ok"] is True
             app_id = response["payload"]["app_id"]
-            assert MarketStorage(str(directory)).load_manifest(app_id).permissions == ["ai"]
+            assert MarketStorage(str(directory / "app_market")).load_manifest(app_id).permissions == ["ai"]
 
             read = methods["app_market.ai_roles"]
             await read(connection, "read", {"app_id": app_id}, None)
@@ -186,7 +186,7 @@ def test_ai_roles_are_registered_and_read_only_for_the_app_owner():
             response = channel.send_response.await_args.kwargs
             assert response["ok"] is False
             assert response["code"] == "PUBLISH_FAILED"
-            assert MarketStorage(str(directory)).load_manifest(app_id).version == "1.0.0"
+            assert MarketStorage(str(directory / "app_market")).load_manifest(app_id).version == "1.0.0"
 
             declaration.unlink()
             await read(connection, "read", {"app_id": app_id}, None)
@@ -195,10 +195,10 @@ def test_ai_roles_are_registered_and_read_only_for_the_app_owner():
     asyncio.run(run_case())
 
 
-def test_market_data_dir_follows_app_market_resolver(tmp_path, monkeypatch):
+def test_market_data_dir_follows_workspace_resolver(tmp_path, monkeypatch):
     from jiuwenswarm.extensions.app_market import extension as extension_module
 
-    monkeypatch.setattr(extension_module, "get_app_market_dir", lambda: tmp_path / "app_market")
+    monkeypatch.setattr(extension_module, "get_user_workspace_dir", lambda: tmp_path)
     plugin = AppMarketPlugin()
     asyncio.run(plugin.initialize(None))
 

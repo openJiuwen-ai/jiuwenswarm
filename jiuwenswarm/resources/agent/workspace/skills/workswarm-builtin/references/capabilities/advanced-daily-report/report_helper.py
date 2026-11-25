@@ -40,32 +40,35 @@ def get_workspace_dir() -> Path:
     """获取 Agent 根目录（含 memory/、sessions/、skills/）。
 
     优先级：
-    1. 脚本安装位置推导（workspace/skills/<skill>[/...] → agent 根，随租户自动正确；
-       包内 resources 模板树除外，开发期直跑走后续解析）
-    2. JIUWENSWARM_AGENT_ROOT 环境变量（运行期注入，租户感知）
-    3. jiuwenswarm 运行期 getter（如果可用）
-    4. 默认 ~/.jiuwenswarm/profile/agent（现行契约，个人版）
+    1. jiuwenswarm.utils.get_agent_root_dir()（如果可用）
+    2. JIUWENSWARM_DATA_DIR 环境变量 / agent
+    3. JIUWENSWARM_AGENT_ROOT 环境变量
+    4. 默认 ~/.jiuwenswarm/agent
     """
-    # 脚本安装位置推导：workspace/skills/<skill>[/...] → agent 根（个人版与企业版
-    # 租户各自正确）；包内 resources 模板树除外（开发期直跑走后续解析）
-    for parent in Path(__file__).resolve().parents:
-        if parent.name == "skills":
-            agent_root = parent.parent.parent
-            if "resources" not in agent_root.parts:
-                return agent_root
-            break
-    # 显式 agent 根环境变量（运行期注入，租户感知）
-    agent_root_env = os.getenv("JIUWENSWARM_AGENT_ROOT", "").strip()
-    if agent_root_env:
-        return Path(agent_root_env).expanduser()
-
     if _has_jiuwenswarm:
         return get_agent_root_dir()
 
-    # 现行契约：数据根下的 profile/agent（个人版）
+    # 检查多实例环境变量
     env_workspace = os.getenv("JIUWENSWARM_DATA_DIR")
-    base = Path(env_workspace).expanduser() if env_workspace else Path.home() / ".jiuwenswarm"
-    return base / "profile" / "agent"
+    if env_workspace:
+        return Path(env_workspace) / "agent"
+
+    # 检查旧的 AGENT_ROOT 环境变量
+    if "JIUWENSWARM_AGENT_ROOT" in os.environ:
+        return Path(os.environ["JIUWENSWARM_AGENT_ROOT"])
+
+    # 默认路径
+    home_agent = Path.home() / ".jiuwenswarm" / "agent"
+    if home_agent.is_dir():
+        return home_agent
+
+    # 开发模式：包内 resources/agent
+    script_dir = Path(__file__).resolve()
+    pkg_agent = script_dir.parent.parent.parent  # daily-report -> skills -> agent
+    if (pkg_agent / "memory").is_dir() or (pkg_agent / "skills").is_dir():
+        return pkg_agent
+
+    return home_agent
 
 
 def read_file_safe(file_path: Path) -> str:
