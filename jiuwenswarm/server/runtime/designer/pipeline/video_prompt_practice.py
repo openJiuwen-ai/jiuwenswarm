@@ -1453,6 +1453,7 @@ def director_prepare_video_prompt(
         prompt = user_text
     if str(cfg.get("reference_call_mode") or "").strip():
         from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            append_r2v_diegetic_sound,
             compose_reference_clip_prompt,
             reference_prompt_issues,
         )
@@ -1461,8 +1462,11 @@ def director_prepare_video_prompt(
         reasons = reference_prompt_issues(raw, cfg)
         if not reasons:
             note = "kept_user_prompt" if honor_user else "kept_reference_led_prompt"
-            return raw, [note]
-        return compose_reference_clip_prompt(cfg), ["rewritten_reference_led", *reasons]
+            return append_r2v_diegetic_sound(raw, cfg), [note]
+        return (
+            append_r2v_diegetic_sound(compose_reference_clip_prompt(cfg), cfg),
+            ["rewritten_reference_led", *reasons],
+        )
     reasons = prompt_respects_practice(
         prompt, cfg=cfg, graph=graph, honor_user_origin=honor_user,
     )
