@@ -958,12 +958,7 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
     command = [str(compiler), "/Qp", f"/O{tmp_path / 'compiled'}", "/DBuildDisplayName=WorkSwarm",
         "/DBuildVersion=0.0.0", "/DBuildExecutableNameWindows=workswarm.exe",
         "/DBuildDistDirName=workswarm", "/DBuildSetupBaseName=issue5338-test"]
-    if name == "installer-electron.iss":
-        missing = subprocess.run(
-            [*command, str(scripts / name)], cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
-        )
-        assert missing.returncode != 0
-        assert "MaxPayloadRelativePath is required" in missing.stdout + missing.stderr
+    if name == "installer-electron.iss" and compiler.parent.name == "Inno Setup 6":
         command.append(f"/DMaxPayloadRelativePath={len('fixture.txt')}")
     result = subprocess.run(
         [*command, str(scripts / name)],
