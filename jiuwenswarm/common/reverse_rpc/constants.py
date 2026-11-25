@@ -16,3 +16,7 @@ ERROR_CANCELLED = "CANCELLED"
 ERROR_TRANSPORT_DISCONNECTED = "TRANSPORT_DISCONNECTED"
 ERROR_INTERNAL = "INTERNAL_ERROR"
 ERROR_OVERLOADED = "REVERSE_RPC_OVERLOADED"
+
+# AskUser 跨进程镜像登记（agent_server → gateway）：桌面发起、手机作答时，
+# agent_server 反向调用，让 gateway 在 xiaoyi 通道登记 pending（只登记、不发卡）。
+ASK_USER_MIRROR_REVERSE_RPC_METHOD = "ask_user.mirror"

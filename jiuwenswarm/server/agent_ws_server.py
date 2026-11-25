@@ -165,7 +165,14 @@ from jiuwenswarm.common.mode_matrix import (
 )
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.reverse_rpc.errors import ReverseRpcTransportDisconnected
-from jiuwenswarm.common.reverse_rpc.models import ReverseRpcResponse
+from jiuwenswarm.common.reverse_rpc.constants import (
+    ASK_USER_MIRROR_REVERSE_RPC_METHOD,
+)
+from jiuwenswarm.common.reverse_rpc.models import (
+    ReverseRpcOrigin,
+    ReverseRpcResponse,
+    ReverseRpcRoute,
+)
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.server.request_context import (
     await_request_cleanup,
@@ -1089,6 +1096,32 @@ def _inject_session_xiaoyi_routing(request: AgentRequest) -> None:
         # root 路由字段），仍由后端计费——此时不打标记。
         if not request_metadata.get("xiaoyi_task_id"):
             request_metadata[ROUTING_INJECTED_METADATA_KEY] = True
+
+
+async def _mirror_ask_user_via_reverse_rpc(
+    client: Any,
+    payload: dict[str, Any],
+    origin: ReverseRpcOrigin,
+    route: ReverseRpcRoute,
+) -> None:
+    """桌面发起、手机作答的 AskUser 跨进程镜像登记（best-effort，异常吞掉）。
+
+    经反向 RPC 通知 gateway 在 xiaoyi 通道登记 pending（只登记、不发卡），
+    使手机回包能命中并 resume。失败/超时只记 debug 日志，绝不影响主链路。
+    """
+    try:
+        await client.call(
+            method=ASK_USER_MIRROR_REVERSE_RPC_METHOD,
+            payload=payload,
+            origin=origin,
+            route=route,
+            timeout=30.0,
+            remote_cancel=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - 镜像登记失败不得影响主链路
+        logger.debug(
+            "[AgentWebSocketServer] ask_user 镜像 RPC 失败: %s", exc
+        )
 
 
 def _harness_error_code(exc: BaseException) -> str:
@@ -3891,9 +3924,9 @@ class AgentWebSocketServer:
                             )
                         )
                     # 桌面发起、手机作答的 AskUser 跨进程桥接：非 xiaoyi 请求且请求
-                    # metadata 带小艺逻辑会话时，把该事件载荷写入共享镜像文件，供
-                    # 网关 xiaoyi 通道在收到手机回包时补登记 pending。best-effort：
-                    # 异常隔离、不阻塞出站流。
+                    # metadata 带小艺逻辑会话时，经反向 RPC 通知 gateway 在 xiaoyi
+                    # 通道登记 pending（只登记、不发卡）。best-effort：火后不管，
+                    # 异常隔离，不阻塞出站流。
                     if (
                         not is_xiaoyi_request
                         and isinstance(chunk_payload, dict)
@@ -3910,17 +3943,44 @@ class AgentWebSocketServer:
                         ).strip()
                         if _mirror_conv:
                             try:
-                                from jiuwenswarm.common.ask_user_mirror import (
-                                    write_ask_user_mirror,
-                                )
-
-                                write_ask_user_mirror(
-                                    _mirror_conv, dict(chunk_payload)
+                                asyncio.create_task(
+                                    _mirror_ask_user_via_reverse_rpc(
+                                        get_reverse_rpc_client(),
+                                        {
+                                            "conversation_id": _mirror_conv,
+                                            "root_session_id": str(
+                                                _mirror_meta.get(
+                                                    "xiaoyi_root_session_id"
+                                                )
+                                                or ""
+                                            ).strip(),
+                                            "agent_id": str(
+                                                _mirror_meta.get(
+                                                    "im_sender_user_id"
+                                                )
+                                                or ""
+                                            ).strip(),
+                                            "session_id": str(
+                                                request.session_id or ""
+                                            ),
+                                            "payload": dict(chunk_payload),
+                                        },
+                                        ReverseRpcOrigin(
+                                            request_id=(
+                                                request.request_id or None
+                                            ),
+                                            session_id=(
+                                                request.session_id or None
+                                            ),
+                                            channel_id="desktop",
+                                        ),
+                                        ReverseRpcRoute(channel_id="xiaoyi"),
+                                    )
                                 )
                             except Exception:
                                 logger.debug(
-                                    "[AgentWebSocketServer] ask_user 镜像登记"
-                                    "写入失败（不影响出站）",
+                                    "[AgentWebSocketServer] ask_user 镜像 RPC "
+                                    "调度失败（不影响出站）",
                                     exc_info=True,
                                 )
                     # 诊断：全量打印 chunk 载荷（E2A 帧内容排查，经桌面端 stderr 转发进 app.log）。

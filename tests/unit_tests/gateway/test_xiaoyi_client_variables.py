@@ -977,35 +977,49 @@ async def test_register_mirrored_ask_user_populates_pending(cfg_file):
 
 
 @pytest.mark.asyncio
-async def test_mirrored_desktop_ask_user_reply_routes_resume(
-    cfg_file, tmp_path, monkeypatch
-):
-    """桌面发起、手机作答：本通道无 pending 时从镜像文件补登记并路由 resume。"""
-    from jiuwenswarm.common import ask_user_mirror as aum
+async def test_ask_user_mirror_capability_then_reply_routes_resume(cfg_file):
+    """桌面发起、手机作答：反向 RPC capability 登记 pending → 手机回包命中并 resume。"""
+    from types import SimpleNamespace
 
-    monkeypatch.setattr(aum, "_mirror_path", lambda: tmp_path / "aum.json")
+    from jiuwenswarm.gateway.gateway_push.ask_user_mirror_reverse_rpc import (
+        AskUserMirrorCapability,
+    )
+
     captured, sent = [], []
     ch = _make_channel(captured, sent)
+
+    class _FakeChannelManager:
+        def get_channels_by_id(self, channel_id):
+            return [ch] if channel_id == "xiaoyi" else []
+
+    capability = AskUserMirrorCapability(_FakeChannelManager())
     try:
-        # 模拟 agent_server 写下的「桌面发起」载荷
-        aum.write_ask_user_mirror(
-            "conv-1",
+        # 模拟 agent_server 反向 RPC 调起：桌面发起的 ask_user 登记到 xiaoyi pending
+        await capability.handle(
+            SimpleNamespace(rpc_id="rrpc_test"),
             {
-                "event_type": "chat.ask_user_question",
-                "request_id": "call_mirror_1",
-                "source": "ask_user_interrupt",
-                "questions": [
-                    {
-                        "question": "这趟自驾你更想住哪类地方？",
-                        "tool_call_id": "call_mirror_1",
-                        "options": [
-                            {"label": "特色民宿"},
-                            {"label": "连锁酒店"},
-                        ],
-                    }
-                ],
+                "conversation_id": "conv-1",
+                "root_session_id": "root-1",
+                "agent_id": "ag",
+                "session_id": "desktop_x",
+                "payload": {
+                    "event_type": "chat.ask_user_question",
+                    "request_id": "call_mirror_1",
+                    "source": "ask_user_interrupt",
+                    "questions": [
+                        {
+                            "question": "这趟自驾你更想住哪类地方？",
+                            "tool_call_id": "call_mirror_1",
+                            "options": [
+                                {"label": "特色民宿"},
+                                {"label": "连锁酒店"},
+                            ],
+                        }
+                    ],
+                },
             },
         )
+        # 手机回包：结构化应答 → 命中 pending → 路由 resume
         await ch._handle_message_stream(_build_invoke_rsp_msg({
             "user_cancel": False,
             "answers": [{
@@ -1025,8 +1039,6 @@ async def test_mirrored_desktop_ask_user_reply_routes_resume(
                 "custom_input": "",
             }
         ]
-        # 镜像记录已消费，二次回包不再命中
-        assert aum.pop_ask_user_mirror("conv-1") is None
     finally:
         _cleanup_tasks(ch)
 

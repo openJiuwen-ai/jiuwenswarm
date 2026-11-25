@@ -3499,30 +3499,6 @@ class XiaoyiChannel(BaseChannel):
             ask_user_answer = None
         if ask_user_answer is not None:
             pending = self._pop_pending_approval_for_answer(logical_session)
-            if pending is None:
-                # 桌面发起、手机作答：本通道未登记 pending 时，从跨进程共享镜像
-                # 文件取回并补登记（只登记、不发卡；过期/不存在则维持原丢弃行为）。
-                try:
-                    from jiuwenswarm.common.ask_user_mirror import (
-                        pop_ask_user_mirror,
-                    )
-
-                    _mirror_payload = pop_ask_user_mirror(logical_session)
-                except Exception:
-                    _mirror_payload = None
-                if _mirror_payload is not None:
-                    self.register_mirrored_ask_user(
-                        _mirror_payload,
-                        {
-                            "xiaoyi_conversation_id": logical_session,
-                            "xiaoyi_root_session_id": top_session_id,
-                            "im_sender_user_id": agent_id,
-                        },
-                        session_id,
-                    )
-                    pending = self._pop_pending_approval_for_answer(
-                        logical_session
-                    )
             if pending is not None:
                 # InvokeRsp 应答补全上下文（source 回填 + question_id → question
                 # 文本 + user_cancel 空答案合成），后续白名单校验/透传逻辑不变。

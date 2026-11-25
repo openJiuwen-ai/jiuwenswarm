@@ -1526,6 +1526,9 @@ async def _run(
     from jiuwenswarm.gateway.gateway_push.cron_reverse_rpc import (
         register_cron_reverse_rpc,
     )
+    from jiuwenswarm.gateway.gateway_push.ask_user_mirror_reverse_rpc import (
+        register_ask_user_mirror_reverse_rpc,
+    )
     from jiuwenswarm.gateway.gateway_push.xiaoyi_device_reverse_rpc import (
         register_xiaoyi_device_reverse_rpc,
     )
@@ -1687,6 +1690,12 @@ async def _run(
     register_cron_reverse_rpc(
         message_handler.get_reverse_rpc_registry(),
         cron_controller,
+    )
+    # AskUser 跨进程镜像登记：桌面发起、手机作答时由 agent_server 反向 RPC 调起，
+    # 在 xiaoyi 通道登记 pending（只登记、不发卡）。
+    register_ask_user_mirror_reverse_rpc(
+        message_handler.get_reverse_rpc_registry(),
+        channel_manager,
     )
     channel_manager.set_config_persister(update_channel_in_config)
     updater_service = UpdaterService()
