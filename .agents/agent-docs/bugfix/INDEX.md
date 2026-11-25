@@ -48,6 +48,7 @@ generated: true
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
+| [jiuwenswarm/server/runtime/mcp](#module-jiuwenswarm-server-runtime-mcp) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
 | [jiuwenswarm/server/supervisor](#module-jiuwenswarm-server-supervisor) |
 | [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
@@ -194,6 +195,7 @@ generated: true
 | [B_20261119_1039_video-memory-submit-pending](jiuwenswarm/channels/web/frontend/B_20261119_1039_video-memory-submit-pending.md) | B | 视频记忆任务 pending 导致提交工具持续执行中 | ToNy_St4rk | 无独立 D：现有工具结果状态的局部修复，无独立设计。 |
 | [B_20261119_1150_chat-terminal-reasoning-close](jiuwenswarm/channels/web/frontend/B_20261119_1150_chat-terminal-reasoning-close.md) | B | 消息出错后思考段不收口，「思考中…」永久转圈直到下次发消息 | gunner_beat | 无独立 D：交互层缺陷修复，复用同文件 chat.processing_status(false) 分支已有的「终态兜底收口」口径（幂等空操作），无独立设计文档。 |
 | [B_20261121_1529_skill-install-toast-display-name-width](jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
+| [B_20261125_1856_personal-hub-failure-surface](jiuwenswarm/server/runtime/B_20261125_1856_personal-hub-failure-surface.md) | B | 个人版连接器广场 Hub 目录失败被静默吞成空结果 | CharlesWang2030 | 无独立 D：依据个人/企业双路径源码对比与既有单测契约定位，无独立设计文档；修复对齐同函数族企业版既有语义（失败显式 raise），不引入新契约。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 
@@ -378,6 +380,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261116_2059_hub-package-root](jiuwenswarm/server/runtime/B_20261116_2059_hub-package-root.md) | B | Hub 安装把包内子资产 manifest 误判为多个包根 | openjiuwen_ai | 无独立 D：仅修正包根识别的深度判定，不改变 Hub 包格式、安装状态机与 marketplace 契约；无独立设计。 |
+
+<a id="module-jiuwenswarm-server-runtime-mcp"></a>
+
+## jiuwenswarm/server/runtime/mcp
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261125_1856_personal-hub-failure-surface](jiuwenswarm/server/runtime/B_20261125_1856_personal-hub-failure-surface.md) | B | 个人版连接器广场 Hub 目录失败被静默吞成空结果 | CharlesWang2030 | 无独立 D：依据个人/企业双路径源码对比与既有单测契约定位，无独立设计文档；修复对齐同函数族企业版既有语义（失败显式 raise），不引入新契约。 |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 
