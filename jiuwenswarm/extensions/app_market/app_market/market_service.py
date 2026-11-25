@@ -160,6 +160,12 @@ class MarketService:
                         manifest.local_release_id = existing.local_release_id
                 if "requires_project" not in options:
                     manifest.requires_project = existing.requires_project
+                # User-set pinning and the original registration time survive
+                # republish/update; _sorted_apps orders by "registered at",
+                # not by the latest update.
+                manifest.pinned = existing.pinned
+                if existing.created_at:
+                    manifest.created_at = existing.created_at
             if not manifest.source:
                 manifest.source = "local"
             self._storage.save_manifest(manifest.app_id, manifest)
