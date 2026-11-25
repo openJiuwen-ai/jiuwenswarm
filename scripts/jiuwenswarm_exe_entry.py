@@ -10,6 +10,57 @@ import subprocess
 import traceback
 from pathlib import Path
 
+_DESKTOP_STOP_BUNDLED_EMAIL_MCP = "--desktop-stop-bundled-email-mcp"
+
+
+def _stop_bundled_email_mcp() -> int:
+    """Release the bundled Node executable before Windows uninstall deletes it."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return 0
+
+    import psutil
+
+    node_path = Path(sys.executable).resolve().parent / "runtime" / "node-runtime" / "node.exe"
+    entry_parts = ("node_modules", "@codefuturist", "email-mcp", "dist", "main.js")
+    stopped = []
+    failed = False
+    for process in psutil.process_iter(["name"]):
+        if (process.info["name"] or "").lower() != "node.exe":
+            continue
+        try:
+            if Path(process.exe()) != node_path:
+                continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        try:
+            args = process.cmdline()
+            # On Windows, npx launches the entry through node_modules\.bin\..
+            if len(args) < 2 or Path(os.path.normcase(os.path.normpath(args[1]))).parts[-5:] != entry_parts:
+                continue
+            process.kill()
+            stopped.append(process)
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.AccessDenied:
+            failed = True
+    _, alive = psutil.wait_procs(stopped, timeout=3)
+    return int(failed or bool(alive))
+
+
+# Installer cleanup needs only the bundled Node path. Dispatch before any
+# user workspace access, including imports that initialize logging.
+if __name__ == "__main__" and getattr(sys, "frozen", False) and os.name == "nt":
+    if sys.argv[1:2] == [_DESKTOP_STOP_BUNDLED_EMAIL_MCP]:
+        if len(sys.argv) != 2:
+            raise SystemExit(2)
+        try:
+            cleanup_exit = _stop_bundled_email_mcp()
+        except Exception:
+            # Report failure without a windowed PyInstaller exception dialog.
+            cleanup_exit = 2
+        raise SystemExit(cleanup_exit)
+
+
 from jiuwenswarm.common._build_config import DISPLAY_NAME, ERROR_LOG_NAME
 
 _ENTRY_ARGV = tuple(sys.argv)
@@ -140,7 +191,6 @@ _DESKTOP_PREPARE_RUNTIME_WORKSPACE = "--desktop-prepare-runtime-workspace"
 _DESKTOP_INSTALL_EXTERNAL_CLI = "--desktop-install-external-cli"
 _DESKTOP_RESET_EXTERNAL_CLI_CONFIG = "--desktop-reset-external-cli-config"
 _DESKTOP_REMOVE_OFFICE_ADDINS = "--desktop-remove-office-addins"
-_DESKTOP_STOP_BUNDLED_EMAIL_MCP = "--desktop-stop-bundled-email-mcp"
 
 # 子进程 flag 集合，这些模式下需要将错误写入日志文件，
 # 因为 console=False 的 PyInstaller exe 在 Windows 上无法通过 stderr 捕获错误。
@@ -175,7 +225,6 @@ _CHILD_FLAGS = {
     _DESKTOP_INSTALL_EXTERNAL_CLI,
     _DESKTOP_RESET_EXTERNAL_CLI_CONFIG,
     _DESKTOP_REMOVE_OFFICE_ADDINS,
-    _DESKTOP_STOP_BUNDLED_EMAIL_MCP,
     _DESKTOP_INSTALL_UPDATE,
 }
 
@@ -205,7 +254,6 @@ def _should_hold_windows_app_mutex() -> bool:
         and _DESKTOP_INSTALL_EXTERNAL_CLI not in sys.argv
         and _DESKTOP_RESET_EXTERNAL_CLI_CONFIG not in sys.argv
         and _DESKTOP_REMOVE_OFFICE_ADDINS not in sys.argv
-        and _DESKTOP_STOP_BUNDLED_EMAIL_MCP not in sys.argv
     )
 
 
@@ -413,40 +461,6 @@ def _pop_flag(flag: str) -> bool:
     return True
 
 
-def _stop_bundled_email_mcp() -> int:
-    """Release the bundled Node executable before Windows uninstall deletes it."""
-    if os.name != "nt" or not getattr(sys, "frozen", False):
-        return 0
-
-    import psutil
-
-    node_path = Path(sys.executable).resolve().parent / "runtime" / "node-runtime" / "node.exe"
-    entry_parts = ("node_modules", "@codefuturist", "email-mcp", "dist", "main.js")
-    stopped = []
-    failed = False
-    for process in psutil.process_iter(["name"]):
-        if (process.info["name"] or "").lower() != "node.exe":
-            continue
-        try:
-            if Path(process.exe()) != node_path:
-                continue
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-        try:
-            args = process.cmdline()
-            # On Windows, npx launches the entry through node_modules\.bin\..
-            if len(args) < 2 or Path(os.path.normcase(os.path.normpath(args[1]))).parts[-5:] != entry_parts:
-                continue
-            process.kill()
-            stopped.append(process)
-        except psutil.NoSuchProcess:
-            continue
-        except psutil.AccessDenied:
-            failed = True
-    _, alive = psutil.wait_procs(stopped, timeout=3)
-    return int(failed or bool(alive))
-
-
 def main() -> None:
     _acquire_windows_app_mutexes()
     try:
@@ -615,10 +629,6 @@ def _dispatch() -> int | None:
 
         install_external_cli_runtime_from_artifacts(cli_agent, artifact_directory)
         return 0
-    if _pop_flag(_DESKTOP_STOP_BUNDLED_EMAIL_MCP):
-        if len(sys.argv) != 1:
-            raise ValueError("bundled email-mcp cleanup does not accept arguments")
-        return _stop_bundled_email_mcp()
     if _pop_flag(_DESKTOP_RESET_EXTERNAL_CLI_CONFIG):
         if len(sys.argv) != 1:
             raise ValueError("external CLI configuration reset does not accept arguments")
