@@ -155,3 +155,29 @@ test('prepending the start of a partially loaded turn preserves its folded heade
   assert.equal(full.rows.at(-1).key, tail.rows.at(-1).key);
   assert.equal(full.rows.at(-1).item.message.id, 'answer');
 });
+
+test('a stopped turn is flagged on its last visible row only', () => {
+  const stoppedUser = message('stopped-user', 'user', 100);
+  stoppedUser.message.inputOutcome = 'stopped';
+  const input = [
+    message('first-user', 'user', 0),
+    message('first-answer', 'assistant', 10),
+    stoppedUser,
+    message('partial-1', 'assistant', 110),
+    message('partial-2', 'assistant', 120),
+    message('next-user', 'user', 200),
+    message('next-answer', 'assistant', 210),
+  ];
+  const stoppedEnds = (rows) => rows.filter((row) => row.stoppedTurnEnd).map((row) => row.key);
+  assert.deepEqual(stoppedEnds(project(input).rows), ['partial-2']);
+  assert.deepEqual(stoppedEnds(project(input.slice(0, 5)).rows), ['partial-2']);
+  // Stopped before any output: the marker closes the user's own message.
+  assert.deepEqual(stoppedEnds(project(input.slice(0, 3)).rows), ['stopped-user']);
+  // Folded work at the end of a stopped turn leaves the flag on a row that is drawn.
+  const folded = longTurn(3).slice(0, -1);
+  folded[0].message.inputOutcome = 'stopped';
+  const foldedRows = project(folded).rows;
+  assert.deepEqual(stoppedEnds(foldedRows), [foldedRows.at(-1).key]);
+  delete stoppedUser.message.inputOutcome;
+  assert.deepEqual(stoppedEnds(project(input).rows), []);
+});

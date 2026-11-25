@@ -5174,6 +5174,7 @@
     "turnStarting": "正在启动…",
     "turnRunning": "任务执行",
     "turnElapsed": "任务用时",
+    "turnStopped": "已停止",
     "workCompleted": "已完成 {{duration}}",
     "workCompletedFallback": "已完成",
     "workCompletedBoth": "已完成 {{thinking}} 次思考，{{tools}} 次工具调用 · {{duration}}",
