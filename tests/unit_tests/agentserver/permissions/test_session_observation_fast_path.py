@@ -138,6 +138,24 @@ async def test_unified_search_keeps_the_fast_path_on_the_skill_branch(installed,
     assert _trusted(env) is trusted
 
 
+@pytest.mark.asyncio
+async def test_skill_search_requires_the_environment_bound_to_the_registered_tool(installed, tmp_path, monkeypatch):
+    env = await installed("capability_search", {"type": ["skill"], "operation": "list"})
+    other = SkillRetrievalToolkit(skill_directories=[], session_scope="session-a", config_base={"symphony": {
+        "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "other")},
+    }})
+    try:
+        assert _trusted(env)
+        with monkeypatch.context() as changed:
+            changed.setattr(env.rail, "_prompt_skillfs", other.environment)
+            assert not _trusted(env)
+            changed.setattr(env.rail, "_source_toolkit", other)
+            assert not _trusted(env)
+        assert _trusted(env)
+    finally:
+        await other.aclose()
+
+
 @pytest.mark.parametrize(("name", "args"), CASES)
 @pytest.mark.parametrize("defect", [
     "missing_owner", "bridge", "session", "cold", "stale", "duplicate_rail", "card", "shadow", "invoke", "delegate",

@@ -15,6 +15,7 @@ from openjiuwen.symphony import SymphonyRuntime
 from openjiuwen.symphony.config import RetrievalConfig
 from openjiuwen.symphony.discovery import (
     CapabilityCandidate,
+    CapabilitySearchTool,
     SkillFS,
     SkillIndexSnapshot,
     SkillPromptBranch,
@@ -107,6 +108,18 @@ def consume_retrieval_prompt_reminder(
 
 def _selection_cards(environment: RetrievalPromptEnvironment | None) -> dict[str, dict[str, str]]:
     return environment.selection_cards() if environment is not None else {}
+
+
+def matches_skill_search_binding(
+    toolkit: SkillRetrievalToolkit,
+    session_scope: str,
+    resolve_tool: Callable[[type[Tool], Callable[..., Any]], Tool | None],
+) -> bool:
+    """Verify the registered search executor belongs to this retrieval session."""
+    tool = resolve_tool(CapabilitySearchTool, CapabilitySearchTool.invoke)
+    return tool is not None and CapabilitySearchTool.is_bound_to(
+        tool, toolkit.runtime.retrieval, toolkit.environment, session_scope,
+    )
 
 
 def _settings_from_profile(profile: Mapping[str, Any] | None) -> RetrievalConfig | None:

@@ -2,6 +2,7 @@
 """Executable identities for the closed builtin observation fast path."""
 
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from types import CodeType, FunctionType
 from typing import Any
@@ -20,7 +21,6 @@ from openjiuwen.harness.rails.context_engineer.context_processor_rail import Con
 from openjiuwen.harness.tools.skills.list_skill import ListSkillTool
 from openjiuwen.harness.tools.goal import GetCurrentGoalTool
 from openjiuwen.harness.tools import compression_recall
-from openjiuwen.symphony.discovery import CapabilitySearchTool
 from jiuwenswarm.common.tool_display import extract_call_goal
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import HeartbeatRuntimeBridge
@@ -95,6 +95,14 @@ def _owned_rail(agent, expected):
     return rails[0]
 
 
+def _resolve_readonly_tool(
+    invocation: ToolInvocation, tool_type: type[Tool], invoke_func: Callable[..., Any],
+) -> Tool | None:
+    """Resolve the concrete registered tool and verify its original executor."""
+    tool = resolve_tool_binding(invocation.ctx.agent, invocation.tool_name, tool_type)
+    return tool if tool is not None and _invoke_matches(tool, invoke_func) else None
+
+
 def _resolve_owned_readonly_tool(
     invocation: ToolInvocation,
     owner_agent: Any,
@@ -104,9 +112,9 @@ def _resolve_owned_readonly_tool(
     invoke_func: Callable[..., Any] = LocalFunction.invoke,
 ) -> tuple[Tool, AgentRail] | None:
     """Resolve the concrete tool, owner rail and unchanged SDK executor."""
-    tool = resolve_tool_binding(invocation.ctx.agent, invocation.tool_name, tool_type)
+    tool = _resolve_readonly_tool(invocation, tool_type, invoke_func)
     rail = _owned_rail(owner_agent, rail_type)
-    if tool is None or rail is None or not _invoke_matches(tool, invoke_func):
+    if tool is None or rail is None:
         return None
     return tool, rail
 
@@ -192,7 +200,9 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
         )
     if name == "capability_search":
         from jiuwenswarm.agents.harness.common.rails.symphony import SymphonyRetrievalRail
-        from jiuwenswarm.agents.harness.common.tools.symphony import SkillRetrievalToolkit
+        from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
+            SkillRetrievalToolkit, matches_skill_search_binding,
+        )
 
         # Expert and MCP searches, including the default scope, use host callbacks and require manual approval here.
         if not is_skill_only_search(invocation.tool_args.get("type")):
@@ -203,17 +213,12 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
         wrapper = rail._source_toolkit
         if type(wrapper) is not SkillRetrievalToolkit or wrapper._session_scope != session_id:
             return False
-        binding = _resolve_owned_readonly_tool(
-            invocation, agent, tool_type=CapabilitySearchTool, rail_type=SymphonyRetrievalRail,
-            invoke_func=CapabilitySearchTool.invoke,
-        )
-        if binding is None:
+        if not matches_skill_search_binding(wrapper, session_id, partial(_resolve_readonly_tool, invocation)):
             return False
-        tool, rail = binding
-        return bool(
-            rail._agent in (agent, callback_agent) and rail._session_scope == session_id
+        return (
+            _owned_rail(agent, SymphonyRetrievalRail) is rail and rail._agent in (agent, callback_agent)
+            and rail._source_toolkit is wrapper and rail._session_scope == session_id
             and rail._prompt_skillfs is wrapper._environment
-            and CapabilitySearchTool.is_bound_to(tool, wrapper.runtime.retrieval, wrapper._environment, session_id)
         )
     if name == "list_skill":
         binding = _resolve_owned_readonly_tool(
