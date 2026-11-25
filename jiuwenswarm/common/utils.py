@@ -1177,6 +1177,8 @@ def ensure_gateway_config(workspace_dir: Path | None = None) -> bool:
     except Exception:  # noqa: BLE001
         logger.warning("Gateway config ensure failed", exc_info=True)
         return False
+
+
 def _merge_tree_keep_dir_metadata(
     src_dir: Path,
     dst_dir: Path,
