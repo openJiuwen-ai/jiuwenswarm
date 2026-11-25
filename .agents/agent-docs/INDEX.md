@@ -53,8 +53,8 @@ generated: true
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
 | [jiuwenswarm/common/e2a](#module-jiuwenswarm-common-e2a) |
 | [jiuwenswarm/common/schema](#module-jiuwenswarm-common-schema) |
-| [jiuwenswarm/enterprise/team](#module-jiuwenswarm-enterprise-team) |
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
+| [jiuwenswarm/enterprise/team](#module-jiuwenswarm-enterprise-team) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
 | [jiuwenswarm/extensions/video_duplex](#module-jiuwenswarm-extensions-video_duplex) |
@@ -488,9 +488,10 @@ generated: true
 | [B_20261112_2025_permission-profile-refresh](bugfix/jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
 | [B_20261119_1416_builtin-extension-discovery](bugfix/jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 | [B_20261120_1735_upsert-empty-temperature](bugfix/jiuwenswarm/common/B_20261120_1735_upsert-empty-temperature.md) | B | models.upsert 将空串 temperature 原样落库，与文档约定的空串转 null 不符 | openjiuwen_ai | 无独立 D：仅统一 upsert 与 replace_all 对空串 temperature 的归一化口径，不改模型配置结构与合并语义；无独立设计。 |
+| [B_20261120_2339_singleton-model-is-default](bugfix/jiuwenswarm/common/B_20261120_2339_singleton-model-is-default.md) | B | models.upsert 对单条 model_name 强制 is_default=true，请求 false 被静默改写 | openjiuwen_ai | 无独立 D：仅调整 is_default 的读取推断规则，不改变写入契约、模型分组结构与选择兜底；无独立设计。 |
 | [B_20261121_0108_pypi-update-version-baseline](bugfix/jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
 | [B_20261124_2201_rea-npx-readiness](bugfix/jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
-| [B_20261120_2339_singleton-model-is-default](bugfix/jiuwenswarm/common/B_20261120_2339_singleton-model-is-default.md) | B | models.upsert 对单条 model_name 强制 is_default=true，请求 false 被静默改写 | openjiuwen_ai | 无独立 D：仅调整 is_default 的读取推断规则，不改变写入契约、模型分组结构与选择兜底；无独立设计。 |
+| [B_20261125_2150_windows-installer-restore-bootstrap](bugfix/scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 
@@ -524,13 +525,6 @@ generated: true
 |---|---|---|---|---|
 | [F_20261116_2021_local-req-method](features/F_20261116_2021_local-req-method.md) | F | ReqMethod 本地维护与 E2A 字符串边界 | mingo007 | 无独立 D：按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。 |
 
-<a id="module-jiuwenswarm-enterprise-team"></a>
-
-## jiuwenswarm/enterprise/team
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 <a id="module-jiuwenswarm-debug_launcher-py"></a>
 
 ## jiuwenswarm/debug_launcher.py
@@ -539,6 +533,14 @@ generated: true
 |---|---|---|---|---|
 | [B_20261120_1958_debug-worker-shutdown-budget](bugfix/jiuwenswarm/B_20261120_1958_debug-worker-shutdown-budget.md) | B | Debug 重启提前终止正常清理中的 Worker | alan_cheng | 无独立 D：用户确认经真实子进程对照验证的局部修复；保留已有生命周期和身份保护，无独立设计文档。 |
 | [S_01_debug-shutdown](specs/jiuwenswarm/debug_launcher/S_01_debug-shutdown.md) | S | Debug 服务最终停止的预算与旧 Worker 选择 | alan_cheng | — |
+
+<a id="module-jiuwenswarm-enterprise-team"></a>
+
+## jiuwenswarm/enterprise/team
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 
 <a id="module-jiuwenswarm-extensions-app_market"></a>
 
@@ -691,6 +693,7 @@ generated: true
 | [B_20261029_0927_missing-supervisor-entry](bugfix/jiuwenswarm/server/B_20261029_0927_missing-supervisor-entry.md) | B | 重启 AgentServer 时缺少 supervisor 启动函数 | xinyang_bali | 无独立 D：用户请求重启时发现当前工作区入口不完整，恢复既有 Front/Worker 启动契约。 |
 | [B_20261031_1042_pr9317-review](bugfix/jiuwenswarm/server/B_20261031_1042_pr9317-review.md) | B | PR 9317 插件模式校验与 Front 遗留启动链清理 | xinyang_bali | 无独立 D：根据 openJiuwen-bot 检视意见清理现有实现，不引入新接口或架构方案，无独立 D。 |
 | [B_20261116_1540_interrupt-intent-contract](bugfix/jiuwenswarm/server/B_20261116_1540_interrupt-intent-contract.md) | B | chat.interrupt 未知 intent 静默假成功：WS/HTTP 双入口统一契约校验 | ZHANGPP_ | 无独立 D：依据联调现场与 PR 检视意见定位，无独立设计文档；修复限定 intent 契约校验范围，并补回归测试。 |
+| [B_20261125_1658_unhandled-known-method-no-chat-fallback](bugfix/jiuwenswarm/server/B_20261125_1658_unhandled-known-method-no-chat-fallback.md) | B | 枚举内未接 handler 的方法落入聊天分支：runtime 两个入口补通用兜底 | mingo007 | 无独立 D：静态审计全部枚举成员的认领层，确认只有 4 个聊天入口方法允许落入 chat 执行器；兜底不维护 175 方法白名单，而是挂在两个入口的收口点上。 |
 
 <a id="module-jiuwenswarm-server-control"></a>
 
@@ -865,6 +868,7 @@ generated: true
 | [F_20261120_1707_multica_acp](features/F_20261120_1707_multica_acp.md) | F | Multica 本地 ACP 运行时接入 | alan_cheng | 无独立 D：DEV-3 的首版接入方案记录在事项讨论中。 |
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 | [B_20261118_1150_memory-frozen-registration](bugfix/scripts/B_20261118_1150_memory-frozen-registration.md) | B | 修复冻结后端中 JiuwenMemory 动态实现漏包 | ToNy_St4rk | 无独立 D：按已确认的发布包故障进行局部打包修复，不改变 Memory 的公共接口或运行时配置契约。 |
+| [B_20261125_2150_windows-installer-restore-bootstrap](bugfix/scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
 <a id="module-tests"></a>
