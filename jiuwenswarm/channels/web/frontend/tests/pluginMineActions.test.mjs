@@ -5,6 +5,7 @@ import test, { after } from 'node:test';
 import { build } from 'esbuild';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { Simulate } from 'react-dom/test-utils';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import { JSDOM } from 'jsdom';
@@ -52,7 +53,12 @@ await build({
           ? 'export const usePluginPackageStore = selector => selector(globalThis.pluginActionState); usePluginPackageStore.getState = () => globalThis.pluginActionState;'
           : path === 'system'
             ? 'export const useSystemPluginStore = selector => selector(globalThis.systemPluginActionState); useSystemPluginStore.getState = () => globalThis.systemPluginActionState;'
-            : 'export const useConnectorStore = selector => selector(globalThis.connectorActionState); useConnectorStore.getState = () => globalThis.connectorActionState;',
+            : 'export const CONNECTOR_ERROR_TOAST_ID = "connector-market-action-error"; export const useConnectorStore = selector => selector(globalThis.connectorActionState); useConnectorStore.getState = () => globalThis.connectorActionState;',
+        loader: 'js',
+      }));
+      builder.onResolve({ filter: /ui\/Toast\/toastStore$/ }, () => ({ path: 'toast', namespace: 'action-toast' }));
+      builder.onLoad({ filter: /.*/, namespace: 'action-toast' }, () => ({
+        contents: 'export const toast = { open: record => { (globalThis.connectorMarketToasts ??= []).push(record); } };',
         loader: 'js',
       }));
       builder.onResolve({ filter: /services\/(pluginPackagesApi|connectorApi|extensionsV2Api)$/ }, ({ path }) => ({
@@ -66,7 +72,9 @@ await build({
       builder.onLoad({ filter: /.*/, namespace: 'action-api' }, ({ path }) => ({
         contents: path === 'extensionsV2Api'
           ? 'export const systemPluginApi = { catalog: (...args) => globalThis.systemPluginActionApi.catalog(...args) };'
-          : `export const ${path} = {};`,
+          : path === 'connectorApi'
+            ? 'export const connectorApi = { list: (...args) => globalThis.connectorMarketApi.list(...args) };'
+            : `export const ${path} = {};`,
         loader: 'js',
       }));
       builder.onResolve({ filter: /\.svg\?react$/ }, ({ path }) => ({ path, namespace: 'action-svg' }));
@@ -100,6 +108,8 @@ after(() => {
   }
   delete globalThis.pluginActionState;
   delete globalThis.connectorActionState;
+  delete globalThis.connectorMarketApi;
+  delete globalThis.connectorMarketToasts;
   delete globalThis.systemPluginActionState;
   delete globalThis.systemPluginActionApi;
   dom.window.close();
@@ -154,6 +164,8 @@ function resetState({ installed = false, connected = false } = {}) {
     setEnabled: async () => ({ ok: true }),
   };
   globalThis.systemPluginActionApi = { catalog: async () => globalThis.systemPluginActionState.mine };
+  globalThis.connectorMarketApi = { list: async () => [] };
+  globalThis.connectorMarketToasts = [];
   return calls;
 }
 
@@ -384,5 +396,33 @@ test('my ready plugin detail can use the installed package', async () => {
     await act(async () => use.click());
     assert.deepEqual(calls.use, [plugin.runtimePackageName]);
     assert.deepEqual(calls.install, []);
+  });
+});
+
+test('mcp marketplace search failure shows an error toast instead of a silent empty result', async () => {
+  await i18next.changeLanguage('zh');
+  const calls = resetState();
+  let listCalls = 0;
+  globalThis.connectorMarketApi.list = async () => {
+    listCalls += 1;
+    throw new Error('Hub unavailable');
+  };
+  await render(MarketplacePage, marketProps(calls, 'mcp'), async host => {
+    const input = host.querySelector('[data-testid="connector-market-search-input"]');
+    assert.ok(input);
+    await act(async () => {
+      Simulate.change(input, { target: { value: 'weather' } });
+    });
+    assert.ok(host.querySelector('[data-testid="connector-market-search-clear"]'));
+    // The marketplace search is debounced by 500 ms before the failing request is issued.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 700)); });
+    assert.equal(listCalls, 1);
+    assert.equal(globalThis.connectorMarketToasts.length, 1);
+    const [record] = globalThis.connectorMarketToasts;
+    assert.equal(record.id, 'connector-market-action-error');
+    assert.equal(record.testId, 'connector-market-toast');
+    assert.equal(record.variant, 'error');
+    assert.match(String(record.content), /连接器广场暂时不可用/);
+    assert.match(String(record.content), /Hub unavailable/);
   });
 });

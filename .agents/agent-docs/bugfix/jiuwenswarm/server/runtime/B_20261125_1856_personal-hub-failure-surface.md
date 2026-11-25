@@ -16,6 +16,7 @@ files:
   - jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json
   - tests/unit_tests/agentserver/mcp/test_mcp_hub_marketplace.py
   - tests/unit_tests/agentserver/mcp/test_command_mcp_handler.py
+  - jiuwenswarm/channels/web/frontend/tests/pluginMineActions.test.mjs
 ---
 
 # 个人版连接器广场 Hub 目录失败被静默吞成空结果
@@ -86,7 +87,10 @@ files:
 - 仅 MCP 搜索路径弹提示；插件搜索路径不在本缺陷范围，行为不变。
 
 顺带修正：`_EmptyHub` 测试桩的过时方法名 `search_mcp` → `search_assets`
-（协议方法名），旧静默 except 连这个 `AttributeError` 都在掩盖。
+（协议方法名），旧静默 except 连这个 `AttributeError` 都在掩盖。前端测试桩
+`tests/pluginMineActions.test.mjs` 同步导出 `CONNECTOR_ERROR_TOAST_ID`、注入
+`connectorApi.list` 与 toast 记录器，恢复被新 import 打断的 `test:plugin-mine-actions`
+构建，并新增「MCP 搜索失败必须弹错误 Toast」的契约回归用例。
 
 ## 兼容性
 
@@ -109,6 +113,8 @@ files:
   `tests/unit_tests/server/runtime/test_equipment_hub_catalog.py` 25 passed；
 - 前端：`npx tsc --noEmit` 零错误；`test:market-visual-contract` /
   `test:pending-connector-flow` / `test:connector-store-uninstall-guard` /
-  `test:connector-store-silent-refresh` 全绿；locale JSON 解析通过；
+  `test:connector-store-silent-refresh` 全绿；`test:plugin-mine-actions`
+  16 passed（含新增「MCP 搜索失败弹错误 Toast 且带后端消息」回归用例）；
+  locale JSON 解析通过；
 - 未完成项：未做真实断网环境下的 UI 手工验证（RPC 级语义已由处理器
   单测覆盖）。
