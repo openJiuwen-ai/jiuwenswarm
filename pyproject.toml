@@ -75,10 +75,10 @@ dependencies = [
     "minio>=7.2.0",
     "uvloop==0.22.1; sys_platform != 'win32'",
     "python-json-logger>=2.0.0",
-    "jiuwenbox @ git+https://gitcode.com/openJiuwen/agent-security.git@552b5801c0698fac259ecb72c0f7d9a3e5f1894b#subdirectory=jiuwenbox",
-    "agent-shield @ git+https://gitcode.com/openJiuwen/agent-security.git@552b5801c0698fac259ecb72c0f7d9a3e5f1894b#subdirectory=agent_shield",
-    "agent-ssas @ git+https://gitcode.com/openJiuwen/agent-security.git@552b5801c0698fac259ecb72c0f7d9a3e5f1894b#subdirectory=agent_ssas",
-    "security-mask @ git+https://gitcode.com/openJiuwen/agent-security.git@552b5801c0698fac259ecb72c0f7d9a3e5f1894b#subdirectory=foundation/security-mask",
+    "jiuwenbox @ git+https://gitcode.com/openJiuwen/agent-security.git@6d7535af77a1beae9a6a7333a8a664d423a05bef#subdirectory=jiuwenbox",
+    "agent-shield @ git+https://gitcode.com/openJiuwen/agent-security.git@6d7535af77a1beae9a6a7333a8a664d423a05bef#subdirectory=agent_shield",
+    "agent-ssas @ git+https://gitcode.com/openJiuwen/agent-security.git@6d7535af77a1beae9a6a7333a8a664d423a05bef#subdirectory=agent_ssas",
+    "security-mask @ git+https://gitcode.com/openJiuwen/agent-security.git@6d7535af77a1beae9a6a7333a8a664d423a05bef#subdirectory=foundation/security-mask",
 ]
 
 [project.optional-dependencies]
