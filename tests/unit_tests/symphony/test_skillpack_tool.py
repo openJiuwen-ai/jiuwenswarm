@@ -977,14 +977,9 @@ def test_local_scope_rejects_external_or_symlinked_flow(local_web_sessions, tmp_
 
 @pytest.mark.parametrize("partition,allowed", [("", True), ("domain", False), ("infra", False)])
 def test_local_scope_uses_only_managed_partition(local_web_sessions, partition, allowed):
-    from jiuwenswarm.common.utils import get_agent_workspace_dir, get_user_workspace_dir
+    from jiuwenswarm.common.utils import get_user_workspace_dir
 
-    if partition:
-        # 非托管分区：任意置于数据根下的同名路径都不得视为托管流
-        flow_root = get_user_workspace_dir() / partition / "agent" / "workspace" / "symphony" / "runtime" / "flow"
-    else:
-        # 托管分区收敛 profile 布局：get_agent_root_dir()/workspace/symphony/runtime/flow
-        flow_root = get_agent_workspace_dir() / "symphony" / "runtime" / "flow"
+    flow_root = get_user_workspace_dir() / partition / "agent" / "workspace" / "symphony" / "runtime" / "flow"
     flow_root.mkdir(parents=True, exist_ok=True)
     identity = CandidateEvidenceScope.resolve("local-b", "", "current_user", None, flow_root=flow_root)
     assert bool(identity.local_workspace) is allowed
@@ -1008,7 +1003,7 @@ async def test_shared_flow_cannot_borrow_other_local_roots_matching_session_ids(
     evidence = source.store.evidence_path().read_bytes()
     await service.close()
     other_root = tmp_path / "other-personal-root"
-    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: other_root)
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: other_root)
     for index in range(3):
         init_session_metadata(session_id=f"shared-session-{index}", channel_id="web")
     restarted = SwarmSymphonyService()
@@ -1043,7 +1038,7 @@ async def test_local_approval_requires_unchanged_host_scope(environment, local_w
         metadata["channel_id"] = "feishu"
         path.write_text(json.dumps(metadata))
     elif change == "root":
-        monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path / "other-personal-root")
+        monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path / "other-personal-root")
         init_session_metadata(session_id="local-b", channel_id="web")
     else:
         setting = "JIUWENSWARM_EDITION" if change == "enterprise" else "JIUWENSWARM_RUNTIME_PROFILE"

@@ -27,7 +27,6 @@ from pathlib import Path
 
 import pytest
 
-import jiuwenswarm.common.paths as _paths
 import jiuwenswarm.common.utils as _utils
 
 
@@ -69,11 +68,10 @@ def _isolate_user_workspace(tmp_path_factory):
             Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml",
             config_dir / "config.yaml",
         )
-        # 路径解析真身在 paths（utils 为门面再导出）：隔离其缓存全局
-        mp.setattr(_paths, "_workspace_base_dir", data)
-        mp.setattr(_paths, "_initialized", False)
+        mp.setattr(_utils, "_workspace_base_dir", data)
+        mp.setattr(_utils, "_initialized", False)
         for name in ("_config_dir", "_workspace_dir", "_root_dir"):
-            mp.setattr(_paths, name, None)
+            mp.setattr(_utils, name, None)
         mp.setenv("JIUWENSWARM_CONFIG_DIR", str(config_dir))
         # A Gateway operation can resolve either package's cached config path.
         for name in ("agent_gateway.common.config", "jiuwenswarm.common.config"):

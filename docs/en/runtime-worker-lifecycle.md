@@ -73,7 +73,7 @@ If both IPC send and close fail, Front retains the original recovery waiters. A 
 
 ## Worker output logs
 
-For both resident and `front_loopback` Workers, stdout inherits the launching process's output, while stderr is appended directly to a separate `runtime-worker-<uuid>.stderr.log` for each launch. Set `JIUWEN_WORKER_LOG_DIR` before starting the application or Supervisor to select its directory. If unset or empty, `common.paths.get_worker_logs_dir()` selects `logs/worker-logs` under the data root. This setting does not change the IPC endpoint.
+For both resident and `front_loopback` Workers, stdout inherits the launching process's output, while stderr is appended directly to a separate `runtime-worker-<uuid>.stderr.log` for each launch. Set `JIUWEN_WORKER_LOG_DIR` before starting the application or Supervisor to select its directory. If unset or empty, it defaults to `worker-logs` under the Worker socket path's parent directory. This setting does not change the IPC endpoint.
 
 Use an absolute path for `JIUWEN_WORKER_LOG_DIR` where possible. Relative paths are resolved against the Supervisor's current working directory.
 

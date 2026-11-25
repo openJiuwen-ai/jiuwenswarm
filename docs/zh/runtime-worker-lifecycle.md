@@ -74,7 +74,7 @@ IPC 发送和关闭同时失败时，Front 仍保留原恢复等待；恢复订�
 
 ## Worker 输出日志
 
-resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<uuid>.stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，通过 `common.paths.get_worker_logs_dir()` 使用数据根下的 `logs/worker-logs`。该设置不改变 IPC 端点位置。
+resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<uuid>.stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，目录为 Worker socket 路径父目录下的 `worker-logs`。该设置不改变 IPC 端点位置。
 
 建议为 `JIUWEN_WORKER_LOG_DIR` 使用绝对路径；相对路径按 Supervisor 当前工作目录解析。
 

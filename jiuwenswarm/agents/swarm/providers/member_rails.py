@@ -63,7 +63,7 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
 from jiuwenswarm.common.cron_session import is_cron_execution_context
-from jiuwenswarm.common.paths import get_personal_context_dir
+from jiuwenswarm.common.utils import get_domain_data_dir
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
@@ -254,7 +254,7 @@ def _build_personal_context_rail(
     """Mount even when disabled so live members observe subsequent switch changes."""
     del params, context
     try:
-        return PersonalContextRail(get_personal_context_dir())
+        return PersonalContextRail(get_domain_data_dir() / ".personal_context")
     except Exception as exc:
         logger.warning(
             "[swarm.personal_context] optional Rail construction failed (%s)",

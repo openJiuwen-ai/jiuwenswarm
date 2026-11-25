@@ -169,11 +169,11 @@ class RuntimeSupervisor:
         self._forwarder = forwarder
         self._ipc_mode = runtime_ipc_mode()
         if self._ipc_mode == FRONT_LOOPBACK and socket_path is None:
-            from jiuwenswarm.common.paths import get_run_dir
+            from jiuwenswarm.common.utils import get_user_workspace_dir
 
             # A log location only; attached mode never resolves a resident
             # socket endpoint, creates socket files or takes its locks.
-            socket_path = str(get_run_dir() / "runtime-attached")
+            socket_path = str(get_user_workspace_dir() / "run" / "runtime-attached")
         self._socket_path = socket_path or default_socket_path()
         self._launch_generation: int | None = None
         self._host = host
@@ -823,7 +823,11 @@ class RuntimeSupervisor:
     async def _connect_resident(self) -> tuple[dict, Any, ProcessIdentity]:
         """Elect and validate a resident Worker while retaining the startup lock."""
         from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
-        from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock
+        from jiuwenswarm.server.supervisor.resident_lifecycle import (
+            force_retire_worker,
+            retire_worker,
+            startup_lock,
+        )
 
         async with self._session_lock:
             self._validated_conn = None
@@ -912,11 +916,30 @@ class RuntimeSupervisor:
                             try:
                                 await retire_worker(conn, hello, self._socket_path,
                                     deadline=time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT, allow_legacy=True)
-                            except Exception:
-                                self._fatal = True
-                                self._fatal_reason = "resident Worker replacement failed"
-                                raise
-                            await conn.close()
+                            except Exception as exc:
+                                if (not isinstance(exc, RuntimeError)
+                                        or "Worker PID identity changed" not in str(exc)
+                                        or hello.get("process_start_ticks") is not None):
+                                    self._fatal = True
+                                    self._fatal_reason = "resident Worker replacement failed"
+                                    raise
+                                # Kernel ticks cannot drift. Reclaim legacy timestamp
+                                # drift only after independent OS peer checks.
+                                reclaimed = await force_retire_worker(
+                                    self._socket_path, hello,
+                                    deadline=time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT,
+                                )
+                                if not reclaimed:
+                                    self._fatal = True
+                                    self._fatal_reason = "resident Worker replacement failed"
+                                    raise
+                                logger.warning(
+                                    "[Supervisor] force-retired stale resident Worker after identity drift",
+                                )
+                            try:
+                                await conn.close()
+                            except (OSError, RuntimeError, asyncio.IncompleteReadError):
+                                pass
                             self._conn = None
                             self._validated_conn = None
                             deadline = time.monotonic() + self._connect_timeout

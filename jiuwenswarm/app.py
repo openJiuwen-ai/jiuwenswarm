@@ -25,12 +25,12 @@ from jiuwenswarm.common.system_plugin_recovery import (
     SystemPluginRecovery,
     begin_system_plugin_recovery_session,
 )
-from jiuwenswarm.common.paths import get_gateway_config_dir
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     cleanup_stale_openjiuwen_descs,
     ensure_gateway_config,
     get_env_file,
+    get_gateway_config_dir,
     prepare_local_gateway_config,
     prepare_runtime_workspace,
 )
@@ -106,9 +106,8 @@ def main() -> None:
         # Early parsing failed - error was already printed
         raise SystemExit(1)
 
-    # gateway 专属配置：config/config-gateway.yaml（get_gateway_config_file），
-    # env 注入 config 目录（gateway 子进程读取 <env>/config-gateway.yaml）。
     gateway_config_dir = get_gateway_config_dir()
+    gateway_config_dir.mkdir(parents=True, exist_ok=True)
 
     python = sys.executable
 

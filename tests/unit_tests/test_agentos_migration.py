@@ -134,7 +134,7 @@ def test_migrate_moves_user_config_and_overwrites_deploy_values(tmp_path: Path) 
     )
 
     assert report["status"] == "migrated"
-    target = _read(gateway_dir / "config-gateway.yaml")
+    target = _read(gateway_dir / "config.yaml")
     assert target["channels"]["feishu"]["apps"][0]["app_id"] == "cli_old"
     assert target["hooks"]["disable_all_hooks"] is True
     assert target["gateway"]["agent_client"]["frontend_endpoint"] == "http://new-vip:8888"
@@ -164,7 +164,7 @@ def test_migrate_forces_agentos_router_even_from_stock_legacy(tmp_path: Path) ->
         gateway_dir=workspace / "infra" / "config",
     )
 
-    target = _read(workspace / "infra" / "config" / "config-gateway.yaml")
+    target = _read(workspace / "infra" / "config" / "config.yaml")
     assert target["gateway"]["agent_client"]["type"] == "agentos_router"
 
 
@@ -179,7 +179,7 @@ def test_migrate_is_idempotent(tmp_path: Path) -> None:
         rendered_template=rendered,
         gateway_dir=gateway_dir,
     )["status"] == "migrated"
-    first = (gateway_dir / "config-gateway.yaml").read_text(encoding="utf-8")
+    first = (gateway_dir / "config.yaml").read_text(encoding="utf-8")
 
     second = migrate(
         workspace=workspace,
@@ -188,7 +188,7 @@ def test_migrate_is_idempotent(tmp_path: Path) -> None:
     )
 
     assert second["status"] == "skipped"
-    assert (gateway_dir / "config-gateway.yaml").read_text(encoding="utf-8") == first
+    assert (gateway_dir / "config.yaml").read_text(encoding="utf-8") == first
 
 
 def test_migrate_overwrites_stock_gateway_config(tmp_path: Path) -> None:
@@ -196,7 +196,7 @@ def test_migrate_overwrites_stock_gateway_config(tmp_path: Path) -> None:
     _write(workspace / "config" / "config.yaml", _legacy_config())
     rendered = _write(tmp_path / "rendered.yaml", _rendered_template())
     gateway_dir = workspace / "infra" / "config"
-    _write(gateway_dir / "config-gateway.yaml", {"gateway": {"agent_client": {"type": "websocket"}}})
+    _write(gateway_dir / "config.yaml", {"gateway": {"agent_client": {"type": "websocket"}}})
 
     report = migrate(
         workspace=workspace,
@@ -205,7 +205,7 @@ def test_migrate_overwrites_stock_gateway_config(tmp_path: Path) -> None:
     )
 
     assert report["status"] == "migrated"
-    assert _read(gateway_dir / "config-gateway.yaml")["gateway"]["agent_client"]["type"] == "agentos_router"
+    assert _read(gateway_dir / "config.yaml")["gateway"]["agent_client"]["type"] == "agentos_router"
 
 
 def test_migrate_dry_run_writes_nothing(tmp_path: Path) -> None:
@@ -240,28 +240,18 @@ def test_is_agentos_gateway_config_tolerates_invalid_shapes(tmp_path: Path) -> N
     assert is_agentos_gateway_config(target) is False
 
 
-def test_migrate_fails_fast_when_gateway_target_is_the_legacy_config(
+def test_migrate_fails_fast_when_gateway_dir_is_shared_config(
     tmp_path: Path,
 ) -> None:
-    # 新契约下 Gateway 配置与 AS 共用 config/ 目录（config-gateway.yaml 与
-    # config.yaml 并存），共享目录本身是安全的；仍需拒绝的是 Gateway 目标
-    # 文件解析到旧共享 config.yaml 的别名形态（软链），避免原地改写 AS 配置。
     workspace = tmp_path / "workspace"
     legacy = _write(workspace / "config" / "config.yaml", _legacy_config())
     rendered = _write(tmp_path / "rendered.yaml", _rendered_template())
-    gateway_dir = workspace / "config"
-    target = gateway_dir / "config-gateway.yaml"
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.symlink_to(legacy)
-    except OSError:
-        pytest.skip("symlink creation unavailable on this host")
 
     with pytest.raises(ValueError, match="legacy shared config"):
         migrate(
             workspace=workspace,
             rendered_template=rendered,
-            gateway_dir=gateway_dir,
+            gateway_dir=workspace / "config",
         )
 
     assert _read(legacy) == _legacy_config()
@@ -286,7 +276,7 @@ def test_migrate_skips_when_legacy_missing(tmp_path: Path) -> None:
 
 def test_refresh_deploy_owned_updates_only_deploy_fields(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    target = _write(workspace / "infra" / "config" / "config-gateway.yaml", _legacy_config())
+    target = _write(workspace / "infra" / "config" / "config.yaml", _legacy_config())
     rendered = _write(tmp_path / "rendered.yaml", _rendered_template())
 
     report = refresh_deploy_owned(
@@ -302,4 +292,4 @@ def test_refresh_deploy_owned_updates_only_deploy_fields(tmp_path: Path) -> None
     assert updated["gateway"]["cron"]["etcd_endpoints"] == ""
     assert updated["channels"]["feishu"]["apps"][0]["app_id"] == "cli_old"
     assert updated["hooks"]["disable_all_hooks"] is True
-    assert list((workspace / "infra" / "config").glob("config-gateway.yaml.bak.*"))
+    assert list((workspace / "infra" / "config").glob("config.yaml.bak.*"))

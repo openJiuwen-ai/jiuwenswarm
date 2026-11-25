@@ -278,6 +278,52 @@ def test_resident_validation_and_reconnect_use_ticks(monkeypatch, restricted_pro
         resident_lifecycle._alive(process, created)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kernel_identity", [False, True])
+async def test_replacement_reclaims_timestamp_drift_but_refuses_changed_ticks(
+    monkeypatch, tmp_path, restricted_process, kernel_identity,
+):
+    from jiuwenswarm.server.supervisor import identity as deployment_identity
+    from jiuwenswarm.server.supervisor import runtime_supervisor
+
+    socket_path = str(tmp_path / "worker")
+    restricted_process.create_time.side_effect = None
+    restricted_process.create_time.return_value = 2.0
+    restricted_process.cmdline = lambda: [
+        sys.executable, "-m", "jiuwenswarm.server.worker.main", "--socket", socket_path,
+    ]
+    monkeypatch.setattr(deployment_identity, "code_identity", lambda: "new-build")
+    for module in (deployment_identity, resident_lifecycle):
+        monkeypatch.setattr(module, "deployment_scope", lambda: "deployment")
+        monkeypatch.setattr(module, "data_scope", lambda: "data")
+    old_hello = {"kind": "hello", "protocol": 2, "pid": 123, "stub": True,
+                 "deployment_scope": "deployment", "data_scope": "data",
+                 "code_identity": "old-build", "process_created": 1.0}
+    if kernel_identity:
+        old_hello["process_start_ticks"] = 4243
+    new_hello = {**old_hello, "code_identity": "new-build", "process_created": 2.0,
+                 "process_start_ticks": 4242}
+    old = SimpleNamespace(recv=AsyncMock(return_value=old_hello), close=AsyncMock())
+    new = SimpleNamespace(recv=AsyncMock(return_value=new_hello), close=AsyncMock())
+    monkeypatch.setattr(runtime_supervisor, "try_connect", AsyncMock(side_effect=[old, new]))
+    force_retire = AsyncMock(return_value=True)
+    monkeypatch.setattr(resident_lifecycle, "force_retire_worker", force_retire)
+    front = RuntimeSupervisor(Readiness(), stub=True, socket_path=socket_path)
+    monkeypatch.setattr(front, "_migrate_legacy_workers", AsyncMock())
+
+    if kernel_identity:
+        with pytest.raises(RuntimeError, match="Worker PID identity changed"):
+            await front._connect_resident()
+        force_retire.assert_not_awaited()
+        assert front._fatal
+    else:
+        hello, process, created = await front._connect_resident()
+        assert hello is new_hello and process is restricted_process
+        assert created == "proc_start_ticks:4242"
+        force_retire.assert_awaited_once()
+    old.close.assert_awaited_once()
+
+
 @pytest.mark.parametrize("reused", [False, True])
 def test_shutdown_rechecks_ticks_before_signalling(monkeypatch, restricted_process, reused):
     front = RuntimeSupervisor(Readiness())

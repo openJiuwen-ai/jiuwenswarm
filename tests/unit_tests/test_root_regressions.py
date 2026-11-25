@@ -34,7 +34,6 @@ import psutil
 import argparse
 import importlib.util
 import runpy
-from jiuwenswarm.common import paths as common_paths
 from jiuwenswarm.common import utils as common_utils
 import subprocess
 import os
@@ -466,11 +465,9 @@ def _prepare_broken_home(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
     monkeypatch.setenv("JIUWENSWARM_HOME", str(tmp_path))
     monkeypatch.setenv("JIUWENSWARM_SKIP_DOTENV", "1")
-    monkeypatch.setattr(common_paths, "_user_home", None, raising=False)
-    monkeypatch.setattr(common_paths, "_workspace_base_dir", None, raising=False)
-    # instances.yaml 为机器级注册表，profile 方案下保持数据根原位（不迁移、
-    # 不建软链）：写入点 <root>/instances.yaml
-    config_dir = tmp_path / ".jiuwenswarm"
+    monkeypatch.setattr(common_utils, "_user_home", None, raising=False)
+    monkeypatch.setattr(common_utils, "_workspace_base_dir", None, raising=False)
+    config_dir = tmp_path / ".jiuwenswarm" / "infra"
     config_dir.mkdir(parents=True)
     (config_dir / "instances.yaml").write_text(
         "instances:\n  alice: [unclosed\n", encoding="utf-8",

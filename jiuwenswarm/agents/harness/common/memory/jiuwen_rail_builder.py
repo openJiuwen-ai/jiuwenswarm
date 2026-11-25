@@ -294,11 +294,9 @@ def _inject_sdk_creds_and_root(
         if isinstance(md_default, dict):
             params = md_default.get("params")
             if isinstance(params, dict) and not params.get("root"):
-                from jiuwenswarm.common.utils import get_agent_workspace_dir
+                from jiuwenswarm.common.utils import get_user_workspace_dir
 
-                # 租户感知 agent 工作空间（未绑定= 默认租户根）；老平铺
-                # <数据根>/agent/workspace 由 _archive_stock_memory_template 识别归档。
-                params["root"] = str(get_agent_workspace_dir())
+                params["root"] = str(Path(get_user_workspace_dir()) / "agent" / "workspace")
     return cfg
 
 
