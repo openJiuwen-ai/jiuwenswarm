@@ -131,10 +131,25 @@ _STATUS_REASONS = dict(
         ),
     )
 )
+# Collection run failures collapse into one of the Core stages below.  The Web
+# channel renders the stage with its own translations, so only the stable
+# identifier travels on the wire.
+_STAGE_BY_REASON = {
+    "config_invalid": "config",
+    "parameter_invalid": "config",
+    "state_invalid": "state",
+    "file_error": "scan",
+    "fetch_error": "fetch",
+    "pipeline_error": "pipeline",
+    "publish_error": "publish",
+    "timeout": "timeout",
+    "unknown": "unknown",
+}
+_EMPTY_DIAGNOSTICS = {"code": "", "stage": ""}
 
 
-def localize_error(error: object, language: str, *, reason: str | None = None) -> str:
-    """Resolve only explicit reason identifiers and stable Core status/code values."""
+def _resolve_error_key(error: object, reason: str | None = None) -> str:
+    """Resolve a stable reason key from an error value, status name or code."""
     if isinstance(error, Mapping):
         code = error.get("code")
         status = error.get("status")
@@ -147,8 +162,29 @@ def localize_error(error: object, language: str, *, reason: str | None = None) -
         match = re.match(r"^\[(\d+)\] ", error)
         code = match.group(1) if match else None
     key = reason or _CODE_REASONS.get(str(code)) or _STATUS_REASONS.get(str(status))
-    if key not in _MESSAGES:
-        key = "unknown"
+    return key if key in _MESSAGES else "unknown"
+
+
+def _resolve_error_code(error: object) -> str:
+    """Return only the stable numeric business code, never the raw reason text."""
+    if isinstance(error, str):
+        match = re.match(r"^\[(\d+)\] ", error)
+        return match.group(1) if match else ""
+    code = error.get("code") if isinstance(error, Mapping) else getattr(error, "code", None)
+    return "" if code is None else str(code)
+
+
+def describe_error(error: object) -> dict[str, str]:
+    """Return the wire-safe business code and failure stage for one error."""
+    if not error:
+        return dict(_EMPTY_DIAGNOSTICS)
+    key = _resolve_error_key(error)
+    return {"code": _resolve_error_code(error), "stage": _STAGE_BY_REASON.get(key, "unknown")}
+
+
+def localize_error(error: object, language: str, *, reason: str | None = None) -> str:
+    """Resolve only explicit reason identifiers and stable Core status/code values."""
+    key = _resolve_error_key(error, reason)
     return _MESSAGES[key][1 if language == "en" else 0]
 
 
@@ -159,6 +195,10 @@ def localize_payload(value: object, language: str) -> object:
     if not isinstance(value, Mapping):
         return value
     result = {}
+    # Collection run records keep ``last_error`` as the localized text the card
+    # already shows, and gain the stable code/stage so the UI can explain where
+    # the run failed instead of only saying "collection failed" (#7008).
+    is_run_record = "run_state" in value
     for key, item in value.items():
         if key == "fetch_service_errors" and isinstance(item, Mapping):
             result[key] = {
@@ -175,6 +215,10 @@ def localize_payload(value: object, language: str) -> object:
             result[key] = localize_error(value, language)
         else:
             result[key] = localize_payload(item, language)
+    if is_run_record:
+        diagnostics = describe_error(value.get("last_error"))
+        result["last_error_code"] = diagnostics["code"]
+        result["last_error_stage"] = diagnostics["stage"]
     return result
 
 

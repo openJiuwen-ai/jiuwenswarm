@@ -73,6 +73,7 @@ generated: true
 | [jiuwenswarm/server/control/store](#module-jiuwenswarm-server-control-store) |
 | [jiuwenswarm/server/ipc](#module-jiuwenswarm-server-ipc) |
 | [jiuwenswarm/server/jiuwenmate](#module-jiuwenswarm-server-jiuwenmate) |
+| [jiuwenswarm/server/personal_context](#module-jiuwenswarm-server-personal_context) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
@@ -361,6 +362,7 @@ generated: true
 | [B_20261103_1112_raw-file-range-seek](bugfix/jiuwenswarm/channels/web/B_20261103_1112_raw-file-range-seek.md) | B | /file-api/raw-file 不支持 Range 请求导致 design 模式视频预览进度条不可快进 | openjiuwen_ai | 无独立 D：根因与修法均为标准 HTTP 单区间 Range 语义（对齐 gateway 既有 serve_file_chunks 实现），无独立设计。 |
 | [B_20261103_1451_hub-default-url-consistency](bugfix/jiuwenswarm/channels/web/B_20261103_1451_hub-default-url-consistency.md) | B | Swarm Skills Hub 默认地址前后端/文档不一致导致回退域名不可达 | openjiuwen_ai | 无独立 D：纯默认值与文档文案对齐修复，无独立设计；后端默认值（hub_client.DEFAULT_HUB_BASE_URL）与 README 已是正确口径。 |
 | [B_20261117_1019_skill-upload-temp-leak](bugfix/jiuwenswarm/server/runtime/skill/B_20261117_1019_skill-upload-temp-leak.md) | B | 技能导入的两阶段上传临时目录永久残留 | mengliang0116 | 无独立 D：两阶段上传缺少文件生命周期归属，属实现缺陷的小范围修复，不引入新的架构设计；接口与生命周期契约记录在本文。 |
+| [B_20261124_1943_personal-context-failure-detail](bugfix/jiuwenswarm/server/B_20261124_1943_personal-context-failure-detail.md) | B | 个人知识空间采集失败只显示「采集失败」，无法定位失败阶段与失败文件 | openjiuwen_ai | 无独立 D：只修采集失败诊断信息的透出与展示，不改变采集调度、存储契约和授权流程；无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend"></a>
 
@@ -729,6 +731,14 @@ generated: true
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
+
+<a id="module-jiuwenswarm-server-personal_context"></a>
+
+## jiuwenswarm/server/personal_context
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1943_personal-context-failure-detail](bugfix/jiuwenswarm/server/B_20261124_1943_personal-context-failure-detail.md) | B | 个人知识空间采集失败只显示「采集失败」，无法定位失败阶段与失败文件 | openjiuwen_ai | 无独立 D：只修采集失败诊断信息的透出与展示，不改变采集调度、存储契约和授权流程；无独立设计。 |
 
 <a id="module-jiuwenswarm-server-runtime"></a>
 

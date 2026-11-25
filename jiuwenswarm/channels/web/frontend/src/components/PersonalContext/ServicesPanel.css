@@ -1,4 +1,4 @@
-﻿/* PersonalContextServicesPanel — 上下文内容子页样式（对齐高保真 04） */
+/* PersonalContextServicesPanel — 上下文内容子页样式（对齐高保真 04） */
 
 .pc-services {
   /* 左右留白已下沉到常驻子块(head/content/error,见下方分组规则);面板自身铺满父容器 */
@@ -466,6 +466,70 @@
   color: var(--color-text-secondary);
   font-size: 12px;
   line-height: 18px;
+}
+
+/* #7008：采集失败的就地诊断面板（阶段 / 错误码 / 明细 / 逐项失败）。 */
+.pc-services__failure {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(242, 48, 48, 0.24);
+  border-radius: 12px;
+  background: rgba(242, 48, 48, 0.04);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.pc-services__failure-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #f23030;
+}
+
+.pc-services__failure-message,
+.pc-services__failure-counts,
+.pc-services__failure-item-ref {
+  color: #4d4d4d;
+  overflow-wrap: anywhere;
+}
+
+.pc-services__failure-counts,
+.pc-services__failure-item-message,
+.pc-services__failure-omitted {
+  color: #808080;
+}
+
+.pc-services__failure-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pc-services__failure-item {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pc-services__failure-item-ref {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-services__failure-item-message {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .pc-services__card-head {
