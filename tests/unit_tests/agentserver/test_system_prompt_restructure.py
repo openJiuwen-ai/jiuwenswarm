@@ -1496,12 +1496,15 @@ async def test_runtime_prompt_skill_dirs_match_active_loader(
     )
     assert prompt.count(loading_label) + prompt.count(discovery_label) == 1
     evidence_guidance = (
-        "目录存在不能证明目标技能已安装或可用，应通过安装管理查询工具核实。"
+        "- 注意：内部技能存储目录中存在技能文件，不代表该技能已安装或当前可用；"
+        "请通过安装管理查询工具核实。"
         if language == "cn" else
-        "Directory existence does not establish installation or availability; "
+        "- Note: Skill files in the internal skill storage directory do not establish "
+        "that the skill is installed or currently available; "
         "verify through the installation-management query tool."
     )
-    assert evidence_guidance in prompt
+    storage_lines = prompt.split(storage_label, 1)[1].splitlines()
+    assert storage_lines[1] == evidence_guidance
     install_guidance = (
         "由安装工具选择目标目录并完成注册"
         if language == "cn" else "The installation tool selects the destination and registers the skill"

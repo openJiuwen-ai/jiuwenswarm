@@ -280,19 +280,21 @@ class RuntimePromptRail(DeepAgentRail):
             return (
                 f"- Agent 内部数据目录：{agent_workspace_dir}\n"
                 f"- JiuwenSwarm 内部技能存储目录：{skills}\n"
+                "- 注意：内部技能存储目录中存在技能文件，不代表该技能已安装或当前可用；"
+                "请通过安装管理查询工具核实。\n"
                 f"- Agent 记忆目录：{memory}\n"
                 f"- Agent 待办目录：{todo}\n"
                 f"- JiuwenSwarm 启动配置目录：{config_dir}\n"
-                "目录存在不能证明目标技能已安装或可用，应通过安装管理查询工具核实。\n"
             )
         return (
             f"- Agent internal data directory: {agent_workspace_dir}\n"
             f"- JiuwenSwarm internal skill storage directory: {skills}\n"
+            "- Note: Skill files in the internal skill storage directory do not establish "
+            "that the skill is installed or currently available; "
+            "verify through the installation-management query tool.\n"
             f"- Agent memory directory: {memory}\n"
             f"- Agent todo directory: {todo}\n"
             f"- JiuwenSwarm startup configuration directory: {config_dir}\n"
-            "Directory existence does not establish installation or availability; "
-            "verify through the installation-management query tool.\n"
         )
 
     @staticmethod
