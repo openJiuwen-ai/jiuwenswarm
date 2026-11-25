@@ -11,6 +11,7 @@ files:
   - jiuwenswarm/server/front/protocol.py
   - jiuwenswarm/server/agent_ws_server.py
   - tests/unit_tests/agentserver/test_front_method_validation.py
+  - tests/unit_tests/common/test_local_req_method.py
 designs: []
 design_note: 依据代码逐跳核实定位，无独立设计文档；修复只在服务端入口补一次 edition 判定，不改企业 handler 与协议枚举。
 ---
@@ -81,6 +82,16 @@ design_note: 依据代码逐跳核实定位，无独立设计文档；修复只�
   `AgentWebSocketServer.dispatch_parsed_request`，确认个人版 `team.create`
   在入口返回 `FORBIDDEN`。
 - 其余用例覆盖 `parse_raw_message` / `rejected_method_wire` 路径。
+
+`tests/unit_tests/common/test_local_req_method.py` 与上面的文件一起运行：
+**623 passed**。
+
+- `test_all_local_methods_roundtrip_through_front_and_worker` 对枚举全部成员
+  调 `parse_raw_message` 并断言得到 `AgentRequest`。闸门加上后，7 个企业方法
+  在个人版下得到的是 `FORBIDDEN` 应答，这 7 条在 CI 上失败。现在这 7 个方法
+  在企业版（`JIUWENSWARM_EDITION=enterprise`）下做往返断言，个人版的拒绝由
+  `test_personal_edition_rejects_enterprise_team_methods` 覆盖。闸门行为没有改。
+- 改用例之前，同一条命令的结果是 616 passed、7 failed，失败的正是这 7 条。
 
 运行环境与仓库的标准环境有出入，结果应以 CI 为准：
 
