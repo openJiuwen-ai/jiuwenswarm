@@ -608,6 +608,31 @@ async def test_run_rewrite_fast_path_projects_model_units_to_output_schema():
 
 
 @pytest.mark.asyncio
+async def test_run_rewrite_fast_path_defaults_only_missing_facts_added(caplog):
+    commit = AsyncMock(return_value=_json_result(_COMPLETED))
+    model = AsyncMock(return_value=SimpleNamespace(
+        content=_json_result({"units": _STRUCTURED_RESULT["units"]})
+    ))
+
+    with caplog.at_level("INFO", logger=fast_path_module.__name__):
+        result = await run_rewrite_fast_path(
+            _query(),
+            prepare_invoke=AsyncMock(return_value=_json_result(_PREPARED)),
+            model_invoke=model,
+            commit_invoke=commit,
+        )
+
+    assert result.status == "completed"
+    assert result.model_output_adjustments == ("facts_added_missing",)
+    assert "facts_added_missing" in caplog.text
+    model.assert_awaited_once()
+    commit.assert_awaited_once_with(
+        context_token=_PREPARED["context_token"],
+        structured_result=_STRUCTURED_RESULT,
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_rewrite_fast_path_canonicalizes_fence_and_known_slot_metadata():
     observed = {
         "units": [
@@ -1000,6 +1025,9 @@ async def test_run_rewrite_fast_path_applies_total_deadline_to_commit():
         "[]",
         "{}",
         _json_result({"units": _STRUCTURED_RESULT["units"], "facts_added": True}),
+        _json_result({"units": _STRUCTURED_RESULT["units"], "facts_added": None}),
+        _json_result({"units": _STRUCTURED_RESULT["units"], "extra": "not allowed"}),
+        _json_result({"units": [{"unit_id": "unit_1", "slots": [{"slot_id": "wrong", "text": "改写"}]}]}),
         _json_result({**_STRUCTURED_RESULT, "extra": "not allowed"}),
         _json_result(
             {
