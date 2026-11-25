@@ -100,3 +100,33 @@ test('transfers queued events across overlapping history restore generations', a
 
   assert.deepEqual(received, ['before replacement', 'during replacement']);
 });
+
+test('releases the gate when a cancelled activation abandons the restore (JW-80)', async () => {
+  // performSessionRestore 挂起闸门后,若二次 canActivate 检查失败,
+  // 必须与元数据加载失败等路径一样调用 release,否则该会话事件永久积压。
+  const received = [];
+  const gate = createSessionEventGate(incoming => received.push(incoming.payload.content));
+  const release = gate.suspend('session-a');
+
+  gate.dispatch(event('chat.delta', 'session-a', { content: 'queued while suspended' }));
+
+  // canActivate 失败:释放闸门(修复后的 App 行为),而不是直接丢弃 release。
+  release();
+  await Promise.resolve();
+
+  assert.deepEqual(received, ['queued while suspended']);
+});
+
+test('keeps events suspended indefinitely when the release is leaked (JW-80 leak symptom)', async () => {
+  const received = [];
+  const gate = createSessionEventGate(incoming => received.push(incoming.payload.content));
+  gate.suspend('session-a');
+
+  gate.dispatch(event('chat.delta', 'session-a', { content: 'first' }));
+  gate.dispatch(event('chat.delta', 'session-a', { content: 'second' }));
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // 泄漏(修复前的 App 行为):depth 永不归零,事件全部积压、永不下发。
+  assert.deepEqual(received, []);
+});
