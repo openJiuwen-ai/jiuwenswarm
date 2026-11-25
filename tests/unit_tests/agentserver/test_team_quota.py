@@ -1352,3 +1352,34 @@ def test_mysql_reserve_counts_extra_teams_before_the_actor_transaction(monkeypat
     assert calls["n"] == 1
     assert seen["thread"] is not None
     assert seen["thread"] is not thread
+
+
+def test_enterprise_no_policy_keeps_template_max_teammates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without policies, enterprise quota keeps the configured team limit."""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"modes": {"team": {"travel": {"max_teammates": 9}}}},
+    )
+    svc = _svc(tmp_path)
+    limits = svc.resolve_limits(_ident())
+    assert limits.max_teams_per_user == DEFAULT_MAX_TEAMS_PER_USER
+    assert limits.max_teammates_per_team == 9
+
+
+def test_personal_no_policy_keeps_template_max_teammates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"modes": {"team": {"travel": {"max_teammates": 9}}}},
+    )
+    svc = _svc(tmp_path)
+    assert svc.resolve_limits(_ident()).max_teammates_per_team == 9
+
+

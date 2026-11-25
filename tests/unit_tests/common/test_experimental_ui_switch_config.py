@@ -16,6 +16,43 @@ SWITCHES = [
 SWITCH_IDS = [flag for flag, _ in SWITCHES]
 
 
+@pytest.mark.parametrize(
+    ("section", "flag"),
+    [("rsi", "rsi_enabled"), ("rea", "rea_enabled")],
+)
+@pytest.mark.parametrize(
+    ("enabled", "expected"),
+    [
+        (False, "false"),
+        ("false", "false"),
+        (0, "false"),
+        ("0", "false"),
+        (True, "true"),
+        ("true", "true"),
+    ],
+)
+def test_panel_exposes_persisted_entry_switch(
+    monkeypatch, section, flag, enabled, expected
+):
+    monkeypatch.setattr(
+        config_service,
+        "_read_raw_config",
+        lambda: {section: {"enabled": enabled}},
+    )
+
+    assert config_service.get_panel()[flag] == expected
+
+
+@pytest.mark.parametrize(
+    ("section", "flag"),
+    [("rsi", "rsi_enabled"), ("rea", "rea_enabled")],
+)
+def test_panel_entry_switch_defaults_on_when_missing(monkeypatch, section, flag):
+    monkeypatch.setattr(config_service, "_read_raw_config", lambda: {})
+
+    assert config_service.get_panel()[flag] == "true"
+
+
 @pytest.mark.parametrize(("flag", "update"), SWITCHES, ids=SWITCH_IDS)
 @pytest.mark.parametrize("enabled", [False, True])
 def test_switch_round_trip_preserves_other_settings(monkeypatch, tmp_path, flag, update, enabled):

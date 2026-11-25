@@ -2489,6 +2489,10 @@
     "placeholderTeamMode": "What can I do for you? Type \"/\" to quickly reference skills",
     "placeholderTeamModeProcessing": "Team mode processing, new messages will run in parallel...",
     "placeholderVoice": "Listening...",
+    "welcomeSuffix": {
+      "work": "makes work easier!",
+      "design": "solves every design problem!"
+    },
     "welcomeLogoAlt": "WorkSwarm logo",
     "welcomeBubbleText": "Hi~ I'm your personal desktop smart buddy.",
     "freeModelsCampaign": {

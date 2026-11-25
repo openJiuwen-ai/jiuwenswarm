@@ -1865,8 +1865,6 @@ class SkillManager:
             raise ValueError(str(exc)) from exc
 
         skill_dir = self._resolve_local_skill_dir(name)
-        if skill_dir is None and not is_enterprise():
-            skill_dir = self._resolve_builtin_catalog_capability_dir(name)
         if skill_dir is None:
             raise SkillRpcError(ERROR_SKILL_NOT_FOUND, f"未找到 skill: {name}")
 
@@ -1890,8 +1888,6 @@ class SkillManager:
             raise ValueError(str(exc)) from exc
 
         skill_dir = self._resolve_local_skill_dir(name)
-        if skill_dir is None and not is_enterprise():
-            skill_dir = self._resolve_builtin_catalog_capability_dir(name)
         if skill_dir is None:
             raise SkillRpcError(ERROR_SKILL_NOT_FOUND, f"未找到 skill: {name}")
         try:
@@ -1918,8 +1914,6 @@ class SkillManager:
             raise ValueError(str(exc)) from exc
 
         skill_dir = self._resolve_local_skill_dir(name)
-        if skill_dir is None and not is_enterprise():
-            skill_dir = self._resolve_builtin_catalog_capability_dir(name)
         if skill_dir is None:
             raise SkillRpcError(ERROR_SKILL_NOT_FOUND, f"未找到 skill: {name}")
 
@@ -7510,15 +7504,6 @@ class SkillManager:
                 if meta is not None:
                     results.append(meta)
 
-        # workswarm-builtin 在执行面仍是一个按需读取的目录型 Skill；这里只把
-        # capabilities 下的成员投影到“我的技能”，便于逐项查看和启停，不把它们
-        # 搬回顶层目录，也不改变 Harness 的单入口发现边界。
-        if not is_enterprise():
-            existing_names = {str(item.get("name") or "") for item in results}
-            for meta in self._scan_builtin_catalog_capabilities(language=language):
-                if str(meta.get("name") or "") not in existing_names:
-                    results.append(meta)
-
         # 2) connected MCP skill dirs (only connected MCPs). skill_installer
         # normalizes all MCP skills to the nested shape mcp/skills/<name>/<skill>/,
         # so each child dir here is one skill (no flat-layout special case).
@@ -7533,63 +7518,6 @@ class SkillManager:
                 if meta is not None:
                     results.append(meta)
 
-        return results
-
-    def _builtin_catalog_capabilities_dir(self) -> Path | None:
-        """返回工作区内置目录 Skill 的 capabilities 根目录。"""
-        catalog = self._skills_dir / _BUILTIN_CATALOG_NAME
-        root = catalog.joinpath(*_BUILTIN_CATALOG_CAPABILITIES)
-        try:
-            if catalog.is_symlink() or root.is_symlink() or not _is_dir_long(root):
-                return None
-            if not root.resolve().is_relative_to(catalog.resolve()):
-                return None
-        except (OSError, RuntimeError):
-            return None
-        return root
-
-    def _resolve_builtin_catalog_capability_dir(self, skill_name: str) -> Path | None:
-        """按目录名定位目录 Skill 内的一个内置能力，不回退 frontmatter 别名。"""
-        root = self._builtin_catalog_capabilities_dir()
-        if root is None:
-            return None
-        try:
-            child = _safe_child_path(root, skill_name, "skill")
-            if child.is_symlink() or not _is_dir_long(child):
-                return None
-            if not child.resolve().is_relative_to(root.resolve()):
-                return None
-        except (OSError, RuntimeError, ValueError):
-            return None
-        return child if self._try_find_skill_file(child) is not None else None
-
-    def _scan_builtin_catalog_capabilities(self, *, language: str) -> list[dict[str, Any]]:
-        """把目录 Skill 的成员投影为已安装内置技能卡片。"""
-        root = self._builtin_catalog_capabilities_dir()
-        if root is None:
-            return []
-        results: list[dict[str, Any]] = []
-        for child in sorted(root.iterdir(), key=lambda path: path.name):
-            if child.name.startswith((".", "_")) or child.is_symlink() or not _is_dir_long(child):
-                continue
-            meta = self._scan_one_skill_dir(child, source_default="builtin", language=language)
-            if meta is None:
-                continue
-            meta.update(
-                {
-                    "name": child.name,
-                    "source": "builtin",
-                    "source_type": "builtin",
-                    "is_builtin": True,
-                    "is_builtin_source": True,
-                    "installed": True,
-                    "enabled": self.get_skill_enabled(child.name),
-                    "proprietary": child.name in _load_proprietary_builtin_names(),
-                    "has_evolutions": False,
-                    "catalog_parent": _BUILTIN_CATALOG_NAME,
-                }
-            )
-            results.append(meta)
         return results
 
     def _scan_one_skill_dir(
@@ -8319,20 +8247,6 @@ class SkillManager:
                 matched = self._skill_dir_get_payload(child, request_name=name)
                 if matched is not None:
                     return matched
-
-        if not is_enterprise():
-            catalog_capability = self._resolve_builtin_catalog_capability_dir(name)
-            if catalog_capability is not None:
-                return catalog_capability, {
-                    "name": name,
-                    "source": "builtin",
-                    "source_type": "builtin",
-                    "display_name": name,
-                    "is_builtin": True,
-                    "is_builtin_source": True,
-                    "proprietary": name in _load_proprietary_builtin_names(),
-                    "installed": True,
-                }
 
         # marketplace 未安装副本（只支持读 workspace 语义，无本地产品版本）
         if _exists_long(self._marketplace_dir):

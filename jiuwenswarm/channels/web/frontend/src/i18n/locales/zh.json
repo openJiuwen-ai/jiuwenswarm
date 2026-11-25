@@ -2489,6 +2489,10 @@
     "placeholderTeamMode": "需要帮你做些什么？输入“/”快速引用技能",
     "placeholderTeamModeProcessing": "集群模式处理中，输入新消息会并行执行...",
     "placeholderVoice": "正在听取语音...",
+    "welcomeSuffix": {
+      "work": "轻松解决工作每个问题！",
+      "design": "轻松解决每个设计问题！"
+    },
     "welcomeLogoAlt": "WorkSwarm 标志",
     "welcomeBubbleText": "HI~我是你的专属桌面智能搭子，随时待命陪你摸鱼解闷~",
     "freeModelsCampaign": {
