@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
+import uuid
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -94,6 +96,18 @@ _ERROR_TEXT: dict[str, tuple[str, str]] = {
     "startup_failed": (
         "External Harness 启动失败",
         "External Harness startup failed",
+    ),
+    "fork_at_message_unsupported": (
+        "三方专家会话不支持从某条消息处复制；请复制整个会话",
+        "A copy of an External Harness session cannot start at a message; copy the whole session",
+    ),
+    "fork_unsupported": (
+        "该三方专家 (provider={provider!r}) 不支持复制其 CLI 会话",
+        "This external expert (provider={provider!r}) cannot fork its CLI session",
+    ),
+    "fork_failed": (
+        "复制 CLI 会话失败: {detail}",
+        "Forking the CLI session failed: {detail}",
     ),
     "input_rejected": (
         "External Harness 已拒绝该输入",
@@ -299,6 +313,145 @@ async def load_persisted_external_harness_binding(
         session_id,
         {"agent_template_name": template_name},
     )
+
+
+def _session_workspace(session_id: str) -> Path:
+    """Return the working folder an External Harness of the session runs in."""
+    project_dir = get_session_metadata(session_id, cache_bust=True).get("project_dir")
+    if isinstance(project_dir, str) and project_dir.strip():
+        return Path(project_dir.strip()).expanduser().resolve(strict=False)
+    return get_default_project_session_workspace_dir(session_id).resolve(strict=False)
+
+
+def _claude_projects_dir() -> Path:
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) / "projects" if config_dir else Path.home() / ".claude" / "projects"
+
+
+def _fork_claude_session(source_session: str, source_cwd: Path, target_cwd: Path) -> str:
+    """Fork a Claude Code session and place the fork where the target's CLI resumes it."""
+    from claude_agent_sdk import fork_session, project_key_for_directory
+
+    forked = fork_session(source_session, directory=str(source_cwd)).session_id
+    source_key = project_key_for_directory(source_cwd)
+    target_key = project_key_for_directory(target_cwd)
+    if source_key != target_key:
+        projects = _claude_projects_dir()
+        written = projects / source_key / f"{forked}.jsonl"
+        if not written.is_file():
+            written = next(projects.glob(f"*/{forked}.jsonl"))
+        target_dir = projects / target_key
+        target_dir.mkdir(parents=True, exist_ok=True)
+        os.replace(written, target_dir / written.name)
+    return forked
+
+
+async def _fork_codex_thread(source_thread: str, codex_bin: str | None, target_cwd: Path) -> str:
+    """Fork a Codex thread through a short-lived App Server."""
+    from openai_codex import AsyncCodex, CodexConfig
+
+    config = CodexConfig(codex_bin=codex_bin, cwd=str(target_cwd), env=dict(os.environ))
+    async with AsyncCodex(config=config) as codex:
+        thread = await codex.thread_fork(source_thread, cwd=str(target_cwd))
+    return str(thread.id)
+
+
+async def fork_external_harness_session(
+    source_session_id: str,
+    target_session_id: str,
+    *,
+    at_message: bool = False,
+) -> bool:
+    """Bind a copy of an External Harness session to a fork of its CLI session.
+
+    The target is bound to the source's expert, and its harness resumes from a
+    fork of the source's CLI session (Claude Code ``fork_session``, Codex
+    ``thread/fork``), placed for the target's working folder; the source's own
+    CLI session is unchanged. A source that has run no turn has no CLI session
+    yet, and the target starts one of its own. Return False when the source is
+    not an External Harness session.
+    """
+    stored = get_session_metadata(source_session_id, cache_bust=True).get("session_runtime_binding")
+    if not isinstance(stored, dict) or stored.get("kind") != _EXTERNAL_HARNESS_KIND:
+        return False
+    if at_message:
+        raise ValueError(_error_text("fork_at_message_unsupported"))
+    agent_template_name = str(stored.get("agent_template_name") or "")
+    provider_name = str(stored.get("provider_name") or "")
+    binding: dict[str, Any] = {
+        "kind": _EXTERNAL_HARNESS_KIND,
+        "agent_template_name": agent_template_name,
+        "provider_name": provider_name,
+    }
+    source_checkpoint = _load_external_harness_checkpoint(
+        session_id=source_session_id,
+        agent_template_name=agent_template_name,
+        provider_name=provider_name,
+    )
+    target_checkpoint: HarnessCheckpoint | None = None
+    if source_checkpoint is not None:
+        data = dict(source_checkpoint.data)
+        target_cwd = _session_workspace(target_session_id)
+        try:
+            if provider_name == "claudecode" and isinstance(data.get("session_id"), str):
+                forked = await asyncio.to_thread(
+                    _fork_claude_session,
+                    data["session_id"],
+                    _session_workspace(source_session_id),
+                    target_cwd,
+                )
+                data["session_id"] = forked
+            elif provider_name == "codex" and isinstance(data.get("thread_id"), str):
+                runtime = await load_persisted_external_harness_binding(source_session_id) or {}
+                config = _merge_host_external_cli_config(
+                    provider_name, _runtime_config(runtime.get("runtime") or {}),
+                )
+                codex_bin = config.get("codex_bin")
+                forked = await _fork_codex_thread(
+                    data["thread_id"],
+                    str(codex_bin) if codex_bin else None,
+                    target_cwd,
+                )
+                data["thread_id"] = forked
+            else:
+                raise ValueError(_error_text("fork_unsupported", provider=provider_name))
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(
+                _error_text("fork_failed", detail=_visible_error(exc, type(exc).__name__))
+            ) from exc
+        data["resumed"] = False
+        target_checkpoint = HarnessCheckpoint(
+            provider=source_checkpoint.provider,
+            schema_version=source_checkpoint.schema_version,
+            agent_id=source_checkpoint.agent_id,
+            host_session_id=target_session_id,
+            checkpoint_id=f"fork-{uuid.uuid4().hex}",
+            sequence=0,
+            data=data,
+            provider_session_id=forked,
+        )
+    with _BINDING_LOCK:
+        update_session_metadata(
+            session_id=target_session_id,
+            session_runtime_binding=binding,
+            **(
+                {
+                    "session_harness_checkpoint": _checkpoint_metadata(
+                        target_checkpoint,
+                        agent_template_name=agent_template_name,
+                        provider_name=provider_name,
+                    )
+                }
+                if target_checkpoint is not None
+                else {}
+            ),
+            touch_last_message_at=False,
+            cache_bust=True,
+            sync_write=True,
+        )
+    return True
 
 
 def _runtime_config(runtime: RuntimeSpec | Mapping[str, Any]) -> dict[str, Any]:

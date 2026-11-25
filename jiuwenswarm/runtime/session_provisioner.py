@@ -1522,9 +1522,26 @@ class RuntimeSessionProvisioner:
                 )
             if provision_input.session_equipment_override is not None:
                 fork_kwargs["session_equipment_override"] = provision_input.session_equipment_override
+            from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
+                fork_external_harness_session,
+            )
+
             fork_result = fork_session(
                 **fork_kwargs,
             )
+            try:
+                # A copy of an External Harness session resumes from a fork
+                # of the source's CLI session, bound to the same expert.
+                await fork_external_harness_session(
+                    source_session_id,
+                    target_session_id,
+                    at_message=has_message_cutoff,
+                )
+            except BaseException:
+                from jiuwenswarm.common.utils import get_agent_sessions_dir
+
+                shutil.rmtree(get_agent_sessions_dir() / target_session_id, ignore_errors=True)
+                raise
 
             agent = self._agent_manager.get_agent_nowait(channel_id)
             deep_agent = None
