@@ -3188,10 +3188,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
         if is_enterprise():
             return None
-        # file-api 端点自行管理安全响应头（_apply_raw_file_security_headers 按声
-        # 明类型决定沙箱 CSP；JSON 端点无需文档沙箱），宿主 blanket 策略不叠加。
-        if self._is_file_api_route():
-            return None
         # Bundled pages and the trusted login callback run top-level with their
         # original origin. All other documents on this origin stay sandboxed,
         # including proxied content and files opened outside an iframe.
