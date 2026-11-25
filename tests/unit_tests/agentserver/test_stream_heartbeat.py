@@ -195,30 +195,43 @@ async def test_business_tracker_preserves_custom_task_factory_and_explicit_conte
         loop.set_task_factory(original)
 
 
-async def test_socket_diagnostics_remain_available_while_writers_wait(tmp_path):
+async def test_socket_diagnostics_remain_available_while_writers_wait(tmp_path, monkeypatch):
     async with _pair("tcp", tmp_path) as (worker, peer):
-        queued = threading.Event()
-        release = threading.Event()
+        caller_loop = asyncio.get_running_loop()
+        queued = asyncio.Event()
+        acquire = worker._write_lock.acquire
+
+        async def observe_acquire():
+            if worker._write_lock.locked():
+                caller_loop.call_soon_threadsafe(queued.set)
+            return await acquire()
+
+        monkeypatch.setattr(worker._write_lock, "acquire", observe_acquire)
 
         @ipc_io
         async def hold_write_lock():
-            async with worker._write_lock:
-                queued.set()
-                while not release.is_set():
-                    await asyncio.sleep(0.001)
+            await worker._write_lock.acquire()
 
-        holder = asyncio.create_task(hold_write_lock())
+        @ipc_io
+        async def release_write_lock():
+            worker._write_lock.release()
+
+        await hold_write_lock()
+        ready = asyncio.create_task(queued.wait())
         senders = []
         try:
-            async with asyncio.timeout(2):
-                while not queued.is_set():
-                    await asyncio.sleep(0.001)
-            senders = [asyncio.create_task(worker.send({"kind": "wire", "index": i})) for i in range(100)]
-            async with asyncio.timeout(2):
-                while not worker._write_waiters:
-                    await asyncio.sleep(0.001)
-            assert worker.diagnostics()["write_lock_seconds"] >= 0
-            release.set()
+            try:
+                senders = [asyncio.create_task(worker.send({"kind": "wire", "index": i})) for i in range(100)]
+                done, _ = await asyncio.wait([ready, *senders], return_when=asyncio.FIRST_COMPLETED)
+                if ready not in done:
+                    # Surface a failed sender instead of timing out on setup.
+                    for sender in done:
+                        sender.result()
+                    pytest.fail("a sender completed before entering the held write lock")
+                assert worker._write_waiters
+                assert worker.diagnostics()["write_lock_seconds"] >= 0
+            finally:
+                await release_write_lock()
             while not all(task.done() for task in senders):
                 worker.diagnostics()
                 await asyncio.sleep(0)
@@ -226,8 +239,8 @@ async def test_socket_diagnostics_remain_available_while_writers_wait(tmp_path):
             assert [(await peer.recv())["index"] for _ in range(100)] == list(range(100))
             assert worker.diagnostics()["write_lock_seconds"] >= 0
         finally:
-            release.set()
-            await asyncio.gather(holder, *senders, return_exceptions=True)
+            ready.cancel()
+            await asyncio.gather(ready, *senders, return_exceptions=True)
 
 @pytest.mark.parametrize("reply", ["matched", "legacy", "stale", "silent", "business"])
 async def test_front_resumes_with_one_bounded_probe_on_real_socket(reply, tmp_path, monkeypatch):

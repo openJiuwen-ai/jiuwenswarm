@@ -28,6 +28,8 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from jiuwenswarm.common.process_identity import ProcessIdentity, process_identity_matches, read_process_identity
+
 logger = logging.getLogger("jiuwenswarm.app")
 
 # A supervised Gateway exits with this code to ask for a respawn (config reload
@@ -157,13 +159,13 @@ def _within_budget(history: deque[float], limit: int, now: float) -> bool:
     return True
 
 
-def _process_create_time(pid: int | None) -> float | None:
+def _process_create_time(pid: int | None) -> ProcessIdentity | None:
     if pid is None:
         return None
     import psutil
 
     try:
-        return psutil.Process(pid).create_time()
+        return read_process_identity(pid, process=psutil.Process(pid))
     except psutil.Error:
         return None
 
@@ -174,7 +176,7 @@ class _Child:
         self.command = list(command)
         self.proc: subprocess.Popen | None = None
         self.started_at = 0.0
-        self.create_time: float | None = None
+        self.create_time: ProcessIdentity | None = None
         self.own_session = False
         self.crash_restarts: deque[float] = deque()
         self.restart_requests: deque[float] = deque()
@@ -237,7 +239,7 @@ def application_shutdown():
             signal.signal(signum, handler)
 
 
-def signal_service_tree(pid: int, *, force: bool = False, expected_created: float | None = None) -> list[Any]:
+def signal_service_tree(pid: int, *, force: bool = False, expected_created: ProcessIdentity | None = None) -> list[Any]:
     """Signal an owned launcher and proven services, retaining Worker branches."""
     import psutil
 
@@ -250,8 +252,13 @@ def signal_service_tree(pid: int, *, force: bool = False, expected_created: floa
         return []
     except psutil.Error as exc:
         raise RuntimeError("Service launcher identity could not be inspected") from exc
-    if expected_created is not None and parent.create_time() != expected_created:
-        raise RuntimeError("Service launcher PID identity changed")
+    try:
+        if expected_created is not None and not process_identity_matches(pid, expected_created, process=parent):
+            raise RuntimeError("Service launcher PID identity changed")
+    except psutil.NoSuchProcess:
+        return []
+    except psutil.Error as exc:
+        raise RuntimeError(f"Service launcher pid={pid} identity could not be inspected: {exc}") from exc
     try:
         children = parent.children(recursive=True)
     except psutil.NoSuchProcess:
@@ -304,7 +311,7 @@ def signal_service_tree(pid: int, *, force: bool = False, expected_created: floa
     return targets
 
 
-def terminate_service_tree(pid: int, *, timeout: float = 10.0, expected_created: float | None = None) -> None:
+def terminate_service_tree(pid: int, *, timeout: float = 10.0, expected_created: ProcessIdentity | None = None) -> None:
     """Observe service exit before the application retires its detached Worker."""
     import psutil
 
@@ -359,7 +366,7 @@ def _reap_lingering_tree(child: _Child) -> None:
 
         try:
             dead = psutil.Process(proc.pid)
-            if dead.create_time() != child.create_time:
+            if not process_identity_matches(proc.pid, child.create_time, process=dead):
                 return  # PID already recycled; those descendants are a stranger's
             descendants = dead.children(recursive=True)
         except psutil.Error:

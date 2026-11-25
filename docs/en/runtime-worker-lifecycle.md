@@ -11,6 +11,8 @@ A resident Worker keeps Runtime loaded across Front restarts for desktop and ord
 
 Endpoints are scoped by installation, Python environment, data directory, and runtime profile. HELLO validates code/build identity, installed dependencies, and process creation time. Changed source, dependencies, or native build instances cannot silently reuse old code. Each wheel or native backend build receives a fresh ID, even with identical inputs. Wheels validate contents at build time; startup reads the artifact manifest and observes installed dependencies. Source checkouts continue content validation.
 
+When a HarmonyOS sandbox denies access to global `/proc/stat`, the Worker and Supervisor can validate process identity using the start counter in `/proc/<pid>/stat`, transmitted separately from the creation timestamp. If neither source is readable, startup fails with a HELLO log containing the PID, stage, and traceback. Cleanup also refuses to terminate an unverified target based on its PID alone.
+
 Successful shutdown requires a successful acknowledgement and observed PID exit. Forced termination, missing acknowledgements, and negative acknowledgements report failure. Install helpers also require this update attempt's successful shutdown receipt before replacing backend files. Legacy peers without acknowledgement support use verified process exit as their compatibility condition.
 
 Instances sharing a data directory retain distinct endpoint and deployment identities through `JIUWENSWARM_RUNTIME_INSTANCE` (preferred) or `HOSTNAME`. Stop commands must retain that instance's environment. Historical Workers owned by another instance are left running.
@@ -71,9 +73,17 @@ If both IPC send and close fail, Front retains the original recovery waiters. A 
 
 ## Worker output logs
 
-Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `<socket-directory>/worker-logs/runtime-worker-*.stderr.log` (by default, `<data-root>/run/worker-logs/`). Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
+For both resident and `front_loopback` Workers, stdout inherits the launching process's output, while stderr is appended directly to a separate `runtime-worker-<UUID>[-<owner>].stderr.log` for each launch. Set `JIUWEN_WORKER_LOG_DIR` before starting the application or Supervisor to select its directory. If unset or empty, it defaults to `worker-logs` under the Worker socket path's parent directory. This setting does not change the IPC endpoint.
+
+Use an absolute path for `JIUWEN_WORKER_LOG_DIR` where possible. Relative paths are resolved against the Supervisor's current working directory.
 
 The Supervisor does not read and relabel individual Worker output lines or create a separate stdout log file. Stderr can contain ordinary INFO records. Diagnose failures using the original log levels, exception tracebacks, and process exit code.
+
+The same directory contains `latest-worker-error.log`, recording the most recent Worker's error diagnostics with its PID, exception type, message, and traceback. Before spawning a new Worker, the Supervisor attempts to remove the previous diagnostic and passes its path through the internal `JIUWEN_WORKER_DIAGNOSTIC_PATH` environment variable, which normally needs no manual configuration. This file is not a permanent per-Worker archive.
+
+Workers using the same log directory share this fixed diagnostic file: starting a new Worker may clear another Worker's diagnostics, and concurrent writes may interleave. Use a separate log directory for each instance when diagnostic isolation is needed. Each launch's separate stderr file remains available for troubleshooting.
+
+The Worker records top-level exceptions, HELLO failures, and ERROR logs, including unhandled asyncio task exceptions. HELLO failure diagnostics are persisted before closing IPC so that the parent can read them when cleanup starts; ordinary ERROR logs retain background writing. Diagnostic write failures do not replace the original exception. When Worker startup fails, the Supervisor reports the diagnostic path and at most the final 16 KiB while reaping the child. Missing or unreadable diagnostics report their unavailability. Ordinary stderr remains in its original file.
 
 Worker stderr reuses the application logging limits: rotate at 20 MiB and retain at most 20 archives. A Worker-owned background thread checks every five seconds, copies the output into archives, and truncates the original file without replacing its descriptor. A resident Worker continues rotation after its Front exits. Archives are named `runtime-worker-<UUID>[-<owner>].stderr_<UTC-date>_<UTC-time>_<nanoseconds>.log`, with a strictly increasing per-Worker suffix and each at most 20 MiB. Chunk boundaries preserve complete UTF-8 characters. Bursts spanning multiple chunks produce multiple archives. Older output is dropped beyond the full archive budget, retaining at most the most recent 400 MiB. The active file can temporarily exceed the threshold between checks.
 

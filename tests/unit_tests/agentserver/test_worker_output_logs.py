@@ -25,6 +25,7 @@ def _isolated_worker_data(tmp_path, monkeypatch):
     from jiuwenswarm.common import utils
 
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "isolated-data"))
+    monkeypatch.delenv("JIUWEN_WORKER_LOG_DIR", raising=False)
     monkeypatch.setattr(utils, "_workspace_base_dir", None)
 
 
@@ -819,6 +820,80 @@ main.main()
         assert b'default rotation completed' in process.stderr_path.read_bytes()
     finally:
         await process.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["resident", "front_loopback"])
+async def test_configured_log_directory_keeps_diagnostics_after_rotation(tmp_path, monkeypatch, transport):
+    script = """
+import asyncio, logging, os, sys
+from jiuwenswarm.server.worker import main, output_logs, stub
+original_start = output_logs.start_worker_log_rotation
+rotation = None
+def start():
+    global rotation
+    rotation = original_start(max_bytes=4096, backup_count=2, interval=0.01)
+    assert rotation is not None
+    return rotation
+output_logs.start_worker_log_rotation = start
+async def serve(*args, **kwargs):
+    os.write(2, b'x' * 5000)
+    deadline = asyncio.get_running_loop().time() + 5
+    while rotation.path.stat().st_size >= 4096 and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    assert rotation.path.stat().st_size < 4096
+    rotation.stop()
+    os.write(2, b'native stderr after configured rotation\\n')
+    logging.getLogger('asyncio').error('error record after configured rotation')
+    raise RuntimeError('original failure after configured rotation')
+stub.serve_stub = serve
+socket_args = ['--socket', 'unused.pipe'] if sys.argv[1] == 'resident' else []
+sys.argv = ['worker', *socket_args, '--stub', *sys.argv[2:]]
+main.main()
+"""
+    directory = tmp_path / "configured logs"
+    directory.mkdir()
+    diagnostic = directory / "latest-worker-error.log"
+    diagnostic.write_text("STALE_DIAGNOSTIC", encoding="utf-8")
+    wrong_diagnostic = tmp_path / "parent-error.log"
+    monkeypatch.setenv("JIUWEN_WORKER_LOG_DIR", str(directory))
+    monkeypatch.setenv("JIUWEN_WORKER_DIAGNOSTIC_PATH", str(wrong_diagnostic))
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", transport)
+    monkeypatch.setattr(
+        process_module, "build_worker_command",
+        lambda *_args, **_kwargs: [sys.executable, "-c", script, transport],
+    )
+    listener = None
+    if transport == "front_loopback":
+        from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
+
+        listener = FrontLoopbackListener()
+    process = process_module.WorkerProcess(
+        str(tmp_path / "other-ipc" / "worker.pipe"), host="127.0.0.1", port=18092, ipc_listener=listener,
+    )
+    try:
+        assert process.stderr_path.parent == directory
+        assert process.diagnostic_path == diagnostic
+        await process.spawn()
+        assert await process.wait(timeout=20) == 1
+        archives = list(directory.glob("*.stderr_*.log"))
+        assert 1 <= len(archives) <= 2
+        assert all(path.stat().st_size <= 4096 for path in archives)
+        stderr = process.stderr_path.read_bytes()
+        assert b"\x00" not in stderr
+        assert b"native stderr after configured rotation" in stderr
+        assert b"original failure after configured rotation" in stderr
+        detail = diagnostic.read_text(encoding="utf-8")
+        assert "STALE_DIAGNOSTIC" not in detail
+        assert "error record after configured rotation" in detail
+        assert "original failure after configured rotation" in detail
+        assert "Traceback" in detail
+        assert not wrong_diagnostic.exists()
+    finally:
+        await process.stop()
+        if listener is not None:
+            await listener.close()
 
 
 def test_rotation_continues_after_resident_front_process_exits(tmp_path):

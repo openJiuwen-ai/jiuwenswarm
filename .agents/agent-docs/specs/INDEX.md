@@ -35,6 +35,7 @@ generated: true
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
+| [jiuwenswarm/instance_manager](#module-jiuwenswarm-instance_manager) |
 | [jiuwenswarm/observability](#module-jiuwenswarm-observability) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin) |
@@ -47,6 +48,8 @@ generated: true
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
+| [jiuwenswarm/server/supervisor](#module-jiuwenswarm-server-supervisor) |
+| [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
 | [scripts](#module-scripts) |
 | [未分类](#module-unclassified) |
 
@@ -131,6 +134,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 
@@ -196,6 +200,7 @@ generated: true
 |---|---|---|---|---|
 | [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 
@@ -231,6 +236,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
+
+<a id="module-jiuwenswarm-instance_manager"></a>
+
+## jiuwenswarm/instance_manager
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 
 <a id="module-jiuwenswarm-observability"></a>
 
@@ -336,6 +349,22 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_01_builtin-catalog](jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
+
+<a id="module-jiuwenswarm-server-supervisor"></a>
+
+## jiuwenswarm/server/supervisor
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
+
+<a id="module-jiuwenswarm-server-worker"></a>
+
+## jiuwenswarm/server/worker
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 
 <a id="module-scripts"></a>
 

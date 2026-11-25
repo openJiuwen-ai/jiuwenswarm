@@ -14,6 +14,8 @@ workspace 准备期间正式 Quit 会取消后续服务启动。完整桌面模�
 
 IPC 端点按安装位置、Python 环境、数据目录和运行配置隔离。Worker HELLO 还携带代码/构建身份、实际安装依赖身份及进程创建时间；版本、依赖或构建改变后不复用旧代码进程。WHL 和原生桌面每次后端构建获得独立构建 ID，即使输入源码相同也会更换 ID。WHL 在构建时写入成品身份，启动读取该身份并检查实际依赖；源码 checkout 继续校验内容。
 
+HarmonyOS 沙箱拒绝读取全局 `/proc/stat` 时，Worker 和 Supervisor 可使用 `/proc/<pid>/stat` 的进程启动计数继续校验身份；它与创建时间戳分开传输。两种来源都不可读时，HELLO 失败日志包含 PID、阶段和异常栈，启动失败；后续清理也不会仅凭 PID 终止未经身份校验的目标。
+
 共享数据目录中的不同服务实例继续通过 `JIUWENSWARM_RUNTIME_INSTANCE`（优先）或 `HOSTNAME` 区分端点和部署身份。停止命令须使用对应实例的相同环境；不得将其他实例的历史 Worker 当成当前实例的进程回收。
 
 最终关闭命令在 AgentServer 尚未执行启动迁移时也检查历史端点，但只自动关闭可验证归属的 Worker；缺少部署身份的旧 Python Worker 仍需显式指定 PID。
@@ -72,9 +74,17 @@ IPC 发送和关闭同时失败时，Front 仍保留原恢复等待；恢复订�
 
 ## Worker 输出日志
 
-resident 与 `front_loopback` 均沿用原始输出路由：stdout 继承启动进程的输出，stderr 直接追加写入 IPC 地址所在目录下的 `worker-logs/runtime-worker-*.stderr.log`（默认位于数据根的 `run/worker-logs/`）。Supervisor 启动日志和运行诊断提供 stderr 文件路径，异常退出的堆栈保留在该文件中。
+resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<UUID>[-<owner>].stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，目录为 Worker socket 路径父目录下的 `worker-logs`。该设置不改变 IPC 端点位置。
+
+建议为 `JIUWEN_WORKER_LOG_DIR` 使用绝对路径；相对路径按 Supervisor 当前工作目录解析。
 
 Supervisor 不再逐行读取并重标 Worker 输出，也不创建独立的 stdout 日志文件。stderr 可以包含正常 INFO 日志，不能据此判定 Worker 发生错误；排障时结合文件中的原始日志级别、异常堆栈与进程退出码。
+
+同一目录下的 `latest-worker-error.log` 保存最近一次 Worker 的错误诊断，包括 PID、异常类型、消息和 traceback。Supervisor 在启动新 Worker 前尝试删除旧诊断，并通过内部环境变量 `JIUWEN_WORKER_DIAGNOSTIC_PATH` 将路径传给子进程，通常无需人工设置该变量。诊断文件不是按 Worker 永久归档的日志。
+
+多个 Worker 使用同一日志目录时，会共享这个固定诊断文件：新 Worker 启动时可能清除其他 Worker 的诊断，并发写入也可能交错。需要隔离诊断时，为各实例指定独立日志目录；每次启动独立的 stderr 文件仍可用于排障。
+
+Worker 将顶层异常、HELLO 失败及 ERROR 日志（包括未处理的 asyncio 任务异常）写入诊断文件。HELLO 失败诊断在关闭 IPC 前落盘，确保父进程开始回收时已可读取；普通 ERROR 日志沿用后台写入。诊断写入失败不会替换原异常。Worker 启动失败后，Supervisor 在回收子进程时记录诊断路径及文件末尾最多 16 KiB 的内容；文件不可读或不存在时记录不可用原因。普通 stderr 仍只保存在原始文件中。
 
 Worker stderr 复用应用日志的大小与保留常量：20 MiB 触发轮转，最多保留 20 份归档。Worker 自己的后台线程每 5 秒检查文件，复制归档后截断原文件，保留原有文件描述符；resident Worker 在 Front 退出后仍继续轮转。归档名为 `runtime-worker-<UUID>[-<owner>].stderr_<UTC日期>_<UTC时间>_<纳秒>.log`，同一 Worker 的后缀递增去重，每份不超过 20 MiB。分块边界保留完整 UTF-8 字符。一次突发超过阈值时拆分归档；超过完整归档预算的旧内容被丢弃，最多保留最近 400 MiB。轮询期间当前文件可暂时超过阈值。
 
