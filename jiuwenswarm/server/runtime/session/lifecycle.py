@@ -629,28 +629,10 @@ def write_guard(session_id: str, generation: int | None = None) -> None:
 
 
 def _proc_start_ticks(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
-    """Read Linux/OpenHarmony's PID-reuse-safe start-time counter.
+    """Keep runtime-owner records compatible with the shared process reader."""
+    from jiuwenswarm.common.process_identity import proc_start_ticks
 
-    ``psutil.Process.create_time()`` converts this counter to wall-clock time
-    by reading the global ``/proc/stat`` boot-time record. That record is not
-    readable from some HarmonyOS app sandboxes, while the per-process stat
-    file is still available.
-    """
-    try:
-        text = (proc_root / str(pid) / "stat").read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return None
-    closing_paren = text.rfind(")")
-    if closing_paren < 0:
-        return None
-    fields = text[closing_paren + 2:].split()
-    # The slice starts at field 3 (state); field 22 is starttime, index 19.
-    if len(fields) <= 19:
-        return None
-    try:
-        return int(fields[19])
-    except ValueError:
-        return None
+    return proc_start_ticks(pid, proc_root=proc_root)
 
 
 def _runtime_owner_record(pid: int) -> dict[str, Any]:

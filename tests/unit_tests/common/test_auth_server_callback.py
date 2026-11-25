@@ -130,11 +130,16 @@ def test_authorize_url_points_at_the_exchange_and_state_carries_the_fingerprint(
     assert request["claimToken"] not in request["authorizeUrl"], "认领凭证不能进地址栏"
 
 
-def test_claimed_code_completes_the_login(service, exchange):
-    exchange.claim_responses = [(202, {"pending": True}), (200, {"code": "auth-code-1"})]
+@pytest.mark.parametrize("wait_for_background_poll", [False, True])
+def test_claimed_code_completes_the_login(service, exchange, wait_for_background_poll):
+    exchange.claim_responses = [(202, {"pending": True})]
     request = service.create_authorization_request()
 
+    if wait_for_background_poll:
+        _wait_for(lambda: exchange.claims)
     assert service.claim(request["state"], request["claimToken"]) is None
+    # Release the authorization code only after observing the pending state.
+    exchange.claim_responses = [(200, {"code": "auth-code-1"})]
     _wait_for(lambda: (service.flow.pending.get(request["state"]) or SimpleNamespace(session_id=None)).session_id)
     session = service.claim(request["state"], request["claimToken"])
     assert session is not None and session.user_id == "openid-1"

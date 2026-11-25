@@ -11,9 +11,15 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass
+from os import SEEK_END
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.common.process_identity import (
+    ProcessIdentity,
+    process_identity_matches,
+    validate_process_identity,
+)
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.supervisor.resident_lifecycle import WorkerShutdownIncomplete
@@ -64,6 +70,7 @@ def _is_server_push(payload: dict[str, Any]) -> bool:
 _HEARTBEAT_INTERVAL = 10.0
 _HEARTBEAT_TIMEOUT = 30.0
 _HELLO_TIMEOUT = 10.0
+_MAX_WORKER_DIAGNOSTIC_BYTES = 16 * 1024
 _RECOVERY_BACKOFF_INITIAL = 30.0
 _RECOVERY_BACKOFF_MAX = 300.0
 _POST_READY_CRASH_WINDOW = 600.0
@@ -122,7 +129,7 @@ _ForwardQueue = asyncio.Queue[tuple[dict[str, Any], _GatewayRoute | None]]
 @dataclass
 class _InflightStream:
     payload: dict[str, Any]
-    worker: tuple[str, int, float]
+    worker: tuple[str, int, ProcessIdentity]
     after: int = 0
     recovery: asyncio.Task[None] | None = None
 
@@ -183,7 +190,7 @@ class RuntimeSupervisor:
         self._process: WorkerProcess | None = None
         self._owns_process = False
         self._worker_pid: int | None = None
-        self._worker_create_time: float | None = None
+        self._worker_create_time: ProcessIdentity | None = None
         self._worker_instance: str | None = None
         self._runtime_loaded = False
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -794,7 +801,26 @@ class RuntimeSupervisor:
         await self._stop_spawned_process()
         self._clear_attached_worker_identity()
 
-    async def _connect_resident(self) -> tuple[dict, Any, float]:
+    @staticmethod
+    def _log_worker_startup_diagnostic(process: WorkerProcess | None) -> None:
+        """Report the failed owned launch without forwarding raw output streams."""
+        path = getattr(process, "diagnostic_path", None)
+        if not isinstance(path, (str, Path)):
+            return
+        if type(getattr(process, "pid", None)) is not int:
+            return
+        path = Path(path)
+        try:
+            with path.open("rb") as stream:
+                size = stream.seek(0, SEEK_END)
+                stream.seek(max(0, size - _MAX_WORKER_DIAGNOSTIC_BYTES))
+                detail = stream.read(_MAX_WORKER_DIAGNOSTIC_BYTES).decode("utf-8", errors="replace")
+        except OSError as exc:
+            logger.warning("[Supervisor] Worker startup diagnostic unavailable path=%s: %s", path, exc)
+            return
+        logger.warning("[Supervisor] Worker startup diagnostic path=%s\n%s", path, detail or "<empty>")
+
+    async def _connect_resident(self) -> tuple[dict, Any, ProcessIdentity]:
         """Elect and validate a resident Worker while retaining the startup lock."""
         from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
         from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock
@@ -905,7 +931,7 @@ class RuntimeSupervisor:
                             self._fatal_reason = str(exc)
                             raise
                         break
-                    except (Exception, asyncio.CancelledError):
+                    except (Exception, asyncio.CancelledError) as exc:
                         self._conn = None
                         self._validated_conn = None
                         try:
@@ -915,7 +941,11 @@ class RuntimeSupervisor:
                             if process is not None:
                                 budget = (5.0 if self._stop_deadline is None else
                                           max(0.0, self._stop_deadline - time.monotonic()))
-                                await process.stop(timeout=budget)
+                                try:
+                                    await process.stop(timeout=budget)
+                                finally:
+                                    if isinstance(exc, Exception):
+                                        self._log_worker_startup_diagnostic(process)
                                 if (self._process is process
                                         and (process.pid is None or process.returncode is not None)):
                                     self._process = None
@@ -952,11 +982,15 @@ class RuntimeSupervisor:
                     )
                 self._conn = accepted.result()
                 return process.launch_identity
-            except BaseException:
+            except BaseException as exc:
                 if self._conn is not None:
                     await self._conn.close()
                     self._conn = None
-                await self._stop_spawned_process()
+                try:
+                    await self._stop_spawned_process()
+                finally:
+                    if isinstance(exc, Exception):
+                        self._log_worker_startup_diagnostic(process)
                 raise
             finally:
                 for task in tasks:
@@ -1002,18 +1036,24 @@ class RuntimeSupervisor:
                 pid = hello.get("pid")
                 if type(pid) is not int or pid <= 0:
                     raise RuntimeError("attached Worker returned an invalid PID")
-                validated_process = psutil.Process(pid)
-                validated_created = validated_process.create_time()
-                if hello.get("process_created") not in (None, validated_created):
-                    raise RuntimeError("attached Worker PID identity changed")
+                try:
+                    validated_process = psutil.Process(pid)
+                    validated_created = validate_process_identity(pid, hello, process=validated_process)
+                except psutil.Error as exc:
+                    raise RuntimeError(f"attached Worker HELLO pid={pid} process identity failed: {exc}") from exc
                 if self._stopping or self._terminating:
                     raise RuntimeError("Worker startup cancelled by supervisor stop")
-            except BaseException:
+            except BaseException as exc:
+                failed_process = self._process
                 self._conn = None
                 try:
                     await conn.close()
                 finally:
-                    await self._stop_spawned_process()
+                    try:
+                        await self._stop_spawned_process()
+                    finally:
+                        if isinstance(exc, Exception):
+                            self._log_worker_startup_diagnostic(failed_process)
                 raise
         else:
             hello, validated_process, validated_created = await self._connect_resident()
@@ -1067,7 +1107,7 @@ class RuntimeSupervisor:
         except Exception:  # noqa: BLE001 - recovery must outlive a broken transport
             logger.debug("[Supervisor] failed IPC close during recovery", exc_info=True)
 
-    def _stream_worker_identity(self) -> tuple[str, int, float] | None:
+    def _stream_worker_identity(self) -> tuple[str, int, ProcessIdentity] | None:
         if (not self._worker_instance or self._worker_pid is None
                 or self._worker_create_time is None):
             return None
@@ -1620,7 +1660,7 @@ class RuntimeSupervisor:
 
         try:
             process = psutil.Process(self._worker_pid)
-            return (process.create_time() != self._worker_create_time
+            return (not process_identity_matches(self._worker_pid, self._worker_create_time, process=process)
                     or process.status() in {psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD})
         except psutil.NoSuchProcess:
             return True
@@ -2001,7 +2041,7 @@ class RuntimeSupervisor:
             return False
         try:
             process = psutil.Process(worker_pid)
-            if process.create_time() != worker_create_time:
+            if not process_identity_matches(worker_pid, worker_create_time, process=process):
                 if self._ignore_reused_attached_pid():
                     return False
                 raise RuntimeError("Worker PID identity changed during final exit")
@@ -2013,7 +2053,7 @@ class RuntimeSupervisor:
             try:
                 process.wait(timeout=max(0.0, grace - time.monotonic()))
             except psutil.TimeoutExpired as exc:
-                if process.create_time() != worker_create_time:
+                if not process_identity_matches(worker_pid, worker_create_time, process=process):
                     if self._ignore_reused_attached_pid():
                         return False
                     raise RuntimeError("Worker PID identity changed during final exit") from exc

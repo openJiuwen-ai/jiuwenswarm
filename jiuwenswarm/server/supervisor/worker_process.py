@@ -186,14 +186,18 @@ class WorkerProcess:
         self.launch_identity: str | None = None
         from jiuwenswarm.common.paths import get_worker_logs_dir
 
-        self._stderr_path = (
-            get_worker_logs_dir()
-            / f"runtime-worker-{uuid.uuid4().hex}.stderr.log"
-        )
+        configured_log_dir = os.environ.get("JIUWEN_WORKER_LOG_DIR")
+        log_dir = Path(configured_log_dir) if configured_log_dir else get_worker_logs_dir()
+        self._stderr_path = log_dir / f"runtime-worker-{uuid.uuid4().hex}.stderr.log"
+        self._diagnostic_path = log_dir / "latest-worker-error.log"
 
     @property
     def stderr_path(self) -> Path:
         return self._stderr_path
+
+    @property
+    def diagnostic_path(self) -> Path:
+        return self._diagnostic_path
 
     @property
     def pid(self) -> int | None:
@@ -232,10 +236,16 @@ class WorkerProcess:
         # process session and also stop on IPC EOF.
         try:
             self._stderr_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                self._diagnostic_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("[Supervisor] previous Worker diagnostic could not be cleared: %s", exc)
+            worker_env = os.environ.copy()
+            worker_env["JIUWEN_WORKER_DIAGNOSTIC_PATH"] = str(self._diagnostic_path)
             with self._stderr_path.open("ab") as stderr:
                 self._proc = subprocess.Popen(
                     command,
-                    env=os.environ.copy(),
+                    env=worker_env,
                     start_new_session=self._ipc_listener is None,
                     stdin=subprocess.PIPE,
                     stderr=stderr,
@@ -253,7 +263,10 @@ class WorkerProcess:
             if self._ipc_listener is not None:
                 raise OSError(exc.errno, f"runtime_ipc=front_loopback stage=launch-pipe errno={exc.errno}") from None
             raise
-        logger.info("[Supervisor] worker pid=%s stderr=%s", self.pid, self._stderr_path)
+        logger.info(
+            "[Supervisor] worker pid=%s stderr=%s diagnostic=%s",
+            self.pid, self._stderr_path, self._diagnostic_path,
+        )
 
     async def wait(self, *, timeout: float | None = None) -> int | None:
         """Return the exit code, or ``None`` when ``timeout`` elapses first."""
