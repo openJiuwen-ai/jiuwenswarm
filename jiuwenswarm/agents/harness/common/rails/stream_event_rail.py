@@ -1178,10 +1178,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             try:
                 if has_pending_step_resume(ctx.session):
                     await self._emit_todo_updated(ctx.session, raw_conv_id)
-                elif isinstance(ctx.inputs.query, str) and is_resume_user_query(ctx.inputs.query):
-                    # Flash can resume a skill checkpoint on a new chat.send,
-                    # without restoring an agent step or fetching history.
-                    await self._emit_todo_updated(ctx.session, raw_conv_id, require_active=True)
+                elif isinstance(ctx.inputs.query, str):
+                    # Adapter prompts wrap the raw user message. Use the same
+                    # text that stale-todo cleanup uses to keep the generation.
+                    run_context = ctx.inputs.run_context
+                    run_extra = run_context.extra if run_context is not None else {}
+                    user_query = run_extra.get("raw_query", ctx.inputs.query)
+                    if isinstance(user_query, str) and is_resume_user_query(user_query):
+                        await self._emit_todo_updated(ctx.session, raw_conv_id, require_active=True)
             except Exception:
                 logger.debug("[StreamEventRail] resume todo.updated emit failed", exc_info=True)
         # Carry session_id through ctx.extra so checkpoints (before_model_call,

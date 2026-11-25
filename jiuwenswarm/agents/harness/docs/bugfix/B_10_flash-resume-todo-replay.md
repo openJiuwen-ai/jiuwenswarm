@@ -26,9 +26,13 @@
    [`before_invoke`](../../common/rails/stream_event_rail.py#L1153) 只在后者存在时补发，
    所以 RelayClaw 开始新轮时清理了旧的任务槽，却收不到当前计划的基线。现在轮首也识别
    短续跑文本，只有当前代存在执行中的计划项或待执行项时才发 `todo.updated`。
-2. [请求预处理](../../../../server/runtime/agent_adapter/stale_todo_cleanup_helpers.py#L36)
+2. 二次检视发现，[适配层](../../../../server/runtime/agent_adapter/interface.py#L2048)
+   将原始文本保留在 `raw_query`，另用 `build_user_prompt` 构建送模型的消息。AgentCore
+   将二者分别放入 `InvokeInputs.run_context.extra["raw_query"]` 与 `InvokeInputs.query`。
+   直接匹配模型消息时，外层 JSON 会让「继续执行」超过短文本的长度限制。
+   [请求预处理](../../../../server/runtime/agent_adapter/stale_todo_cleanup_helpers.py#L36)
    对适用的计划请求用 `is_resume_user_query` 判断是否沿用当前 todo generation token。
-   轮首补发复用同一个谓词，再按当前代筛选执行项。两侧判断若各自演进，可能出现续跑时
+   轮首补发取原文并复用同一个谓词，再按当前代筛选执行项。两侧判断若各自演进，可能出现续跑时
    待办已按旧代隐藏，或保留待办却漏发的情况。仅有持久提醒也不会触发补发。
 3. 子节点的 `task.start` 和 `task.complete` 带父 todo ID 与子流标识，标题描述的是节点。
    在停后续跑时，[`read_research_parent_title`](../../common/tools/deepresearch/todo_progress.py#L347)
@@ -39,8 +43,10 @@
 
 ## 回归证据与适用范围
 
-- [轮首补发测试](../../../../../tests/unit_tests/agentserver/rails/test_stream_rail_step_resume_todo.py#L94)
-  使用已落盘待办验证短续跑文本发快照、已完成计划和普通新任务不发。
+- [轮首补发测试](../../../../../tests/unit_tests/agentserver/rails/test_stream_rail_step_resume_todo.py#L95)
+  使用已落盘待办，同时验证裸文本和经过 `build_user_prompt`、AgentCore 输入归一化的 Web 消息。
+  修正前，Web「继续执行」已有进行中待办时仍未补发。修正后该场景补发快照，已完成计划和普通新任务不发。
+  该用例覆盖输入构造和轮首钩子，尚未连接真实 OfficeAce 网关。
 - [停止续跑父标题测试](../../../../../tests/unit_tests/agentserver/test_deepresearch_stream_tool.py#L4597)
   验证真实父标题先于子节点边界发出，子节点保留自己的子流标识。
 - 使用 JiuwenSwarm `36e0f3089d` 和 RelayClaw `d4da19735a` 做本地事件回放，

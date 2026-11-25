@@ -90,9 +90,10 @@ async def test_before_invoke_emits_todo_updated_only_on_step_resume(monkeypatch,
     ("继续执行", "completed", False),
     ("研究新的主题", "in_progress", False),
 ])
+@pytest.mark.parametrize("wrap_query", [False, True], ids=["plain", "web-envelope"])
 @pytest.mark.asyncio
 async def test_before_invoke_replays_unfinished_todos_for_text_resume(
-    monkeypatch, tmp_path, query, status, expects_replay,
+    monkeypatch, tmp_path, query, status, expects_replay, wrap_query,
 ):
     rail = JiuSwarmStreamEventRail()
     fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
@@ -112,7 +113,20 @@ async def test_before_invoke_replays_unfinished_todos_for_text_resume(
         async def write_stream(self, schema):
             emitted.append(schema)
 
-    await rail.before_invoke(_ctx(SessionWithStream(None), query=query))
+    ctx = _ctx(SessionWithStream(None), query=query)
+    if wrap_query:
+        from openjiuwen.harness.deep_agent import DeepAgent
+
+        from jiuwenswarm.server.runtime.agent_adapter.interface import build_user_prompt
+
+        agent = DeepAgent(AgentCard(agent_id="resume-test", name="resume-test"))
+        ctx.inputs = agent._normalize_inputs({
+            "conversation_id": "conv-1",
+            "query": build_user_prompt(query, files={}, channel="web", language="zh"),
+            "raw_query": query,
+        })
+
+    await rail.before_invoke(ctx)
 
     assert [schema.type for schema in emitted] == (["todo.updated"] if expects_replay else [])
     if expects_replay:
