@@ -1260,3 +1260,63 @@ async def test_external_user_input_question_carries_the_interrupt_id() -> None:
     assert parsed["request_id"] == "ext-q"
     assert parsed["interrupt_id"] == "ext-q"
     assert parsed["kind"] == "ask_user"
+
+
+def _git(folder, *args):
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-C", str(folder), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _repository(folder: Path) -> Path:
+    folder.mkdir(parents=True)
+    _git(folder, "init", "-q", "-b", "main")
+    (folder / "README.md").write_text("fixture\n", encoding="utf-8")
+    _git(folder, "add", "-A")
+    _git(folder, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "first")
+    return folder
+
+
+def test_project_worktree_works_in_a_linked_worktree_of_the_project(tmp_path, monkeypatch):
+    project = _repository(tmp_path / "repo")
+    sessions = tmp_path / "sessions"
+    monkeypatch.setattr(
+        external_harness_helpers,
+        "get_default_project_session_workspace_dir",
+        lambda session_id: sessions / session_id,
+    )
+    # The session's project is bound when its adapter is made; the request asks for a worktree.
+    adapter = SimpleNamespace(_project_dir=str(project))
+    external_harness_helpers._bind_external_workspace(adapter, {"project_worktree": True})
+    folder = external_harness_helpers._external_workspace(adapter, "s1")
+    assert folder == (sessions / "s1").resolve()
+    assert (folder / "README.md").read_text(encoding="utf-8") == "fixture\n"
+    common = Path(folder, _git(folder, "rev-parse", "--git-common-dir")).resolve()
+    assert common == (project / ".git").resolve()
+    # A later start of the same session finds the worktree made.
+    again = SimpleNamespace(_project_dir="")
+    external_harness_helpers._bind_external_workspace(
+        again, {"project_dir": str(project), "project_worktree": True}
+    )
+    assert external_harness_helpers._external_workspace(again, "s1") == folder
+
+
+def test_project_without_worktree_or_git_is_used_as_it_is(tmp_path, monkeypatch):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.setattr(
+        external_harness_helpers,
+        "get_default_project_session_workspace_dir",
+        lambda session_id: tmp_path / "sessions" / session_id,
+    )
+    adapter = SimpleNamespace(_project_dir="")
+    external_harness_helpers._bind_external_workspace(
+        adapter, {"project_dir": str(plain), "project_worktree": True}
+    )
+    assert external_harness_helpers._external_workspace(adapter, "s2") == plain.resolve()
+    repo = _repository(tmp_path / "repo")
+    other = SimpleNamespace(_project_dir="")
+    external_harness_helpers._bind_external_workspace(other, {"project_dir": str(repo)})
+    assert external_harness_helpers._external_workspace(other, "s3") == repo.resolve()

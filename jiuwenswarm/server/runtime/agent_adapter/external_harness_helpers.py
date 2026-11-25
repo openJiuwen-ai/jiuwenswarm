@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import threading
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
@@ -622,8 +623,44 @@ def _visible_error(error: object, fallback: str) -> str:
     return message or fallback
 
 
+def _session_worktree(project: Path, session_id: str) -> Path:
+    """The session's linked Git worktree of ``project``, made on first use.
+
+    The worktree is the session's own workspace folder, checked out detached at
+    the project's ``HEAD``, so that the session's changes and commits stay out
+    of the project's working tree. A project that is not a Git repository is
+    used as it is.
+    """
+    folder = get_default_project_session_workspace_dir(session_id).resolve(strict=False)
+    if (folder / ".git").exists():
+        return folder
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    probe = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "--verify", "HEAD"],
+        capture_output=True, text=True, env=environment, check=False,
+    )
+    if probe.returncode != 0:
+        return project
+    if folder.exists() and any(folder.iterdir()):
+        raise ValueError(f"the session folder {folder} is not empty; it cannot hold a worktree")
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    made = subprocess.run(
+        ["git", "-C", str(project), "worktree", "add", "--detach", str(folder), "HEAD"],
+        capture_output=True, text=True, env=environment, check=False,
+    )
+    if made.returncode != 0:
+        raise ValueError(f"git worktree add failed: {made.stderr.strip()[:500]}")
+    return folder
+
+
 def _bind_external_workspace(adapter: Any, inputs: dict[str, Any]) -> None:
-    """Adopt the conversation project once; an existing session root stays put."""
+    """Adopt the conversation project once; an existing session root stays put.
+
+    A request with ``project_worktree`` asks for the session to work in a
+    linked worktree of its project (``_external_workspace``).
+    """
+    if inputs.get("project_worktree") is True:
+        adapter._project_worktree = True  # pylint: disable=protected-access
     if str(getattr(adapter, "_project_dir", "") or "").strip():
         return
     project_dir = inputs.get("project_dir")
@@ -637,7 +674,10 @@ def _bind_external_workspace(adapter: Any, inputs: dict[str, Any]) -> None:
 def _external_workspace(adapter: Any, session_id: str) -> Path:
     project_dir = str(getattr(adapter, "_project_dir", "") or "").strip()
     if project_dir:
-        return Path(project_dir).expanduser().resolve(strict=False)
+        project = Path(project_dir).expanduser().resolve(strict=False)
+        if getattr(adapter, "_project_worktree", False) is True:
+            return _session_worktree(project, session_id)
+        return project
     return get_default_project_session_workspace_dir(session_id).resolve(strict=False)
 
 
