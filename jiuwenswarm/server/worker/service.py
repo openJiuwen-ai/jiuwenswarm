@@ -349,7 +349,12 @@ async def _send_hello(
     instance: str,
     code_identity_value: str | None = None,
 ) -> None:
-    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+    from jiuwenswarm.server.supervisor.identity import (
+        code_identity,
+        data_scope,
+        deployment_scope,
+        process_start_marker,
+    )
     import psutil
     identity = code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
     await conn.send(
@@ -366,6 +371,7 @@ async def _send_hello(
             "shutdown_ack": True,
             "heartbeat_probe": True,
             "process_created": psutil.Process().create_time(),
+            "process_started": process_start_marker(psutil.Process()),
             "code_identity": identity,
         }
     )
