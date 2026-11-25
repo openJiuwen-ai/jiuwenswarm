@@ -118,6 +118,112 @@ async def test_mode_switch_with_team_observer(
         stream.cancel()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("team_work,tracked,blocked", [
+    (None, True, False),
+    ("round", True, True),
+    ("round", False, True),
+    ("request", False, True),
+])
+async def test_mode_switch_with_observer_attached_after_the_round(
+    mode_session, session_channel, monkeypatch, team_work, tracked, blocked,
+):
+    """A page reloaded after a Team round re-attaches while the leader stream lives on.
+
+    Nothing parks that observer until the next round, so its execution stays
+    RUNNING. It owns no turn and must not refuse the switch; Team work does.
+    """
+    from contextlib import AsyncExitStack, aclosing
+
+    from jiuwenswarm.agents.harness.team import team_manager
+    from jiuwenswarm.runtime.session import RuntimeSessionCoordinator
+    from jiuwenswarm.runtime.session.model import (
+        TEAM_ATTACH_ONLY_PARAM,
+        SessionExecutionState,
+        TeamExecutionDetails,
+        TeamWaiterKind,
+    )
+    from jiuwenswarm.runtime.team_session_lifecycle import TeamSessionLifecycleAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _consume_attach_only_stream
+
+    monkeypatch.setattr(session_history, "append_session_mode_changed", lambda **item: None)
+    coordinator = RuntimeSessionCoordinator()
+    session = await coordinator.register_session("one-session", session_channel)
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    manager.bind_generation("one-session", session.generation)
+    runtime = AgentRuntime(
+        agent_manager=AsyncMock(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+        session_runtime_lifecycle=TeamSessionLifecycleAdapter(coordinator=coordinator, team_manager=manager),
+    )
+    _switch(runtime, session_channel, "team.work.normal", "agent.code.normal")
+    # The round is over; the persistent leader stream is still registered.
+    leader_stream = asyncio.get_running_loop().create_future()
+    manager._stream_tasks["one-session"] = leader_stream
+    attached = asyncio.Event()
+    startup = AsyncExitStack()
+
+    async def signal_attached() -> None:
+        attached.set()
+
+    startup.push_async_callback(signal_attached)
+    request = AgentRequest(
+        request_id="observer",
+        channel_id=session_channel,
+        session_id="one-session",
+        params={"mode": "team", TEAM_ATTACH_ONLY_PARAM: True},
+    )
+
+    async def observe() -> None:
+        events = coordinator.run_team_stream(
+            "one-session",
+            "observer",
+            SessionWorkKind.TEAM_REQUEST,
+            lambda context: _consume_attach_only_stream(
+                request=request,
+                team_manager=manager,
+                startup=startup,
+                generation=context.session.generation,
+            ),
+            details=TeamExecutionDetails(waiter_kind=TeamWaiterKind.PERSISTENT, observation_only=True),
+        )
+        async with aclosing(events):
+            async for _chunk in events:
+                pass
+
+    observer = asyncio.create_task(observe())
+    if tracked:
+        runtime.begin_chat_request("one-session", "observer")
+    try:
+        await asyncio.wait_for(attached.wait(), timeout=2)
+        execution = next(
+            item for item in coordinator.snapshot_session("one-session").executions
+            if item.request_id == "observer"
+        )
+        assert execution.state is SessionExecutionState.RUNNING
+        if team_work == "round":
+            manager.begin_round("one-session", "automation")
+        elif team_work == "request":
+            manager.begin_request("one-session", "automation")
+
+        if blocked:
+            with pytest.raises(SessionModeSwitchError) as busy:
+                _switch(runtime, session_channel, "agent.work.normal", "team.work.normal")
+            assert busy.value.code == "SESSION_BUSY"
+            assert _get_mode(session_channel)["mode"] == "team.work.normal"
+        else:
+            result = _switch(runtime, session_channel, "agent.work.normal", "team.work.normal")
+            assert result["changed"] is True
+            assert _get_mode(session_channel)["mode"] == "agent.work.normal"
+    finally:
+        observer.cancel()
+        await asyncio.gather(observer, return_exceptions=True)
+        leader_stream.cancel()
+        await coordinator.close_session("one-session")
+
+
 def test_mode_set_preserves_project_index_and_blocks_stale_write(mode_session, session_channel, monkeypatch):
     markers = []
     monkeypatch.setattr(session_history, "append_session_mode_changed", lambda **item: markers.append(item))

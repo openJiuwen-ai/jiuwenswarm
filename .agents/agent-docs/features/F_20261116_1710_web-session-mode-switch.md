@@ -281,6 +281,33 @@ Gateway MR !173 的检视继续指出两点：未记录归属者（`user_id` 为
 
 本节之前各表的用例数是当时提交上的结果；现行数字以本节为准。
 
+## 2026-11-26 04:04（Asia/Singapore）续写：页面重载后的 Team 观察订阅不再阻止切换
+
+### 起因
+
+用户报告（2026-11-25）：Team 轮次结束后重载页面，再切到 Agent 一直返回 `SESSION_BUSY`，等待多久都不恢复。
+
+- 页面打开 Team 会话时发送 `chat.send + attach_only` 观察订阅。它在轮次进行中到达时，轮次结束会把它的执行置为 `WAITING_FOR_INPUT`；重载后的新订阅在轮次已结束、Leader 常驻流仍登记时到达，`_consume_attach_only_stream` 只在没有流任务时上报空闲，该执行停在 `RUNNING`，直到下一轮次。
+- `_execution_blocks_mode_switch` 先按状态判断，`RUNNING` 一律视为忙碌，观察订阅的豁免只对 `WAITING_FOR_INPUT` 生效；随后的 `is_session_running` 也把这条 `RUNNING` 执行计入。
+- 日志：`Session mode switch refused as busy: ... reason=execution request=<订阅请求号> kind=team_request state=running`。发出订阅的页面关闭数分钟后，该订阅仍在发送 keepalive，拒绝原因不变。
+- 与“已知遗留”中 2026-11-17 的问题同源：那次修的是待完成请求集合一层，这次是协调器执行状态一层。
+
+### 决定与实现（用户确认，2026-11-25）
+
+- 只改模式切换的忙碌判断，不改上游 Team 订阅代码。
+- `_execution_blocks_mode_switch`：观察订阅不提交输入、不拥有轮次，自身状态不作为依据；它只在所观察的 Team 仍有工作时（`team_session_has_active_work`：活跃轮次、inflight 请求或成员执行中）阻止切换。已结束的执行不参与判断。
+- `_session_mode_switch_busy_reason` 末尾改为只查 `is_team_session_running`：其余 `RUNNING` 执行已在前面的循环中逐条判断，`is_session_running` 会把观察订阅再次计入。归档、删除等使用 `is_session_running` 的路径未改。
+- 未处理：订阅在页面关闭后仍留在服务端（Gateway / 上游行为）；重载后的订阅执行状态本身仍是 `RUNNING`，归档、删除路径是否受影响未核对。
+
+### 实际执行与证据
+
+| 执行日期 / 验证范围 | 实现版本与环境 | 命令 | 实际结果 | 未覆盖项 / 失败原因 |
+| --- | --- | --- | --- | --- |
+| 2026-11-25 新增用例 | 本次修订；Linux / Python 3.12 | `pytest tests/unit_tests/runtime/test_session_mode_switch.py -k attached_after_the_round` | 8 通过（轮次结束后挂接的订阅：允许切换；同时存在活跃轮次或 inflight 请求：拒绝；各含默认 / 项目会话）。去掉修复时 2 例失败，拒绝原因与现场日志相同，其余 6 例通过 | — |
+| 2026-11-25 相关套件 | 同上 | `pytest tests/unit_tests/runtime/test_session_mode_switch.py tests/unit_tests/runtime/test_runtime_service.py tests/unit_tests/agentserver/test_team_helpers.py` | 627 通过 | — |
+| 2026-11-25 其余涉及切换与忙碌判断的用例 | 同上 | `pytest` 运行 `tests/unit_tests` 中引用 `switch_session_mode`、`mode.set`、`SESSION_BUSY`、`has_parked_team_streams`、`is_session_running` 的其余 7 个文件（不含 `process_cli`） | 433 通过，1 跳过 | — |
+| 2026-11-25 真实服务联调 | 本地合并分支（模式切换 + 上下文共享 + 路由相关改动）叠加本次修改；临时数据目录，替身模型与替身路由，无头 Chromium | Team 提示词 → 运行结束 → 重载页面 → 发送被路由到 Agent 的提示词 | 修复前 `mode.set` 返回 `SESSION_BUSY`，提示词未发出；不重载时切换成功。修复后重载场景 `mode.set` 成功，提示词按 Agent 发出，无拒绝日志 | 未在仅含模式切换的分支上启动服务；未用真实模型和带成员的 Team 运行；活跃轮次中的拒绝只有单测覆盖 |
+
 ## 已知遗留
 
 ### 2026-11-17 04:17（Asia/Singapore）：空闲 Team 监听导致误报忙碌

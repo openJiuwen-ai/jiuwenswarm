@@ -3480,7 +3480,11 @@ class AgentRuntime:
                     f"execution request={execution.request_id} kind={execution.work_kind.value} "
                     f"state={execution.state.value}"
                 )
-        if self.is_session_running(session_id):
+        # Every running execution that owns work was named above. What is left
+        # is Team work no execution stands for: the leader, a member or a flow.
+        from jiuwenswarm.agents.harness.team.team_manager import is_team_session_running
+
+        if is_team_session_running(session_id):
             return "team_session_running"
         return None
 
@@ -3488,17 +3492,24 @@ class AgentRuntime:
         self, session_id: str, execution: SessionExecutionSnapshot,
     ) -> bool:
         """Whether one coordinator execution still owns work that mode.set must not interrupt."""
+        if execution.state.terminal:
+            return False
+        # A Team observer only watches the event stream: it submits no input and
+        # owns no turn, so its own state says nothing. One that attaches after a
+        # round ended, while the leader stream is still alive (a page reload),
+        # stays RUNNING until the next round. Only the Team work it watches
+        # holds the Session.
+        if execution.team and execution.team.observation_only:
+            from jiuwenswarm.agents.harness.team.team_manager import team_session_has_active_work
+
+            return team_session_has_active_work(session_id)
         if execution.state in {
             SessionExecutionState.QUEUED,
             SessionExecutionState.RUNNING,
             SessionExecutionState.WAITING_FOR_CONTROL,
         }:
             return True
-        if execution.state is not SessionExecutionState.WAITING_FOR_INPUT:
-            return False
-        # A Team observer, or a request parked on a released Team round, owns no turn.
-        if execution.team and execution.team.observation_only:
-            return False
+        # WAITING_FOR_INPUT: a request parked on a released Team round owns no turn either.
         return not self.has_parked_team_streams(session_id)
 
     def is_session_running(
