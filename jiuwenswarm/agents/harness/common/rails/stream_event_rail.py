@@ -1252,7 +1252,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._rebind_runtime_cwd(replace=False)
 
         self._inject_tool_call_goal_schema(ctx)
-        self._ensure_tool_call_goal_prompt()
+        # 传 ctx：_ensure_tool_call_goal_prompt 依据本轮可见工具集决定
+        # 是否注入团队工具条款（不可见则不引导，避免幽灵调用）。
+        self._ensure_tool_call_goal_prompt(ctx)
 
         if ctx.context is not None:
             await self._fix_incomplete_tool_context(ctx)
@@ -1367,12 +1369,23 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     exc,
                 )
 
-    def _ensure_tool_call_goal_prompt(self) -> None:
+    def _ensure_tool_call_goal_prompt(self, ctx: AgentCallbackContext | None = None) -> None:
         builder = getattr(self._deep_agent, "system_prompt_builder", None)
         if builder is None:
             return
         try:
             from openjiuwen.harness.prompts import PromptSection
+            # 团队条款只在该轮送入 LLM 的工具集里确有团队工具时注入；否则
+            # 会引导模型调用不可见的 spawn_member / send_message 等幽灵工具
+            # （trace 回流里「未声明但被调用」的主要来源之一）。
+            tool_names: set[str] = set()
+            for tool in getattr(getattr(ctx, "inputs", None), "tools", None) or []:
+                name = getattr(tool, "name", None)
+                if isinstance(name, str):
+                    tool_names.add(name)
+            team_tools_present = (not tool_names) or bool(
+                tool_names & {"spawn_member", "spawn_teammate", "send_message", "build_team"}
+            )
             cn_text = (
                 "# 工具 call_goal\n\n"
                 "每次调用工具时，请填写参数 `call_goal`：用一句简短中文说明"
@@ -1380,13 +1393,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "不要只写工具名或裸 URL。"
                 "该字段仅用于界面展示，不影响工具实际执行。\n"
                 "若工具参数里已有 `description`：`call_goal` 必须与 `description` 使用同一句，"
-                "禁止再写一句近义复述（避免同一信息输出两遍）。\n"
-                "团队工具也必须填 `call_goal`，且不能用其它字段代替：\n"
-                "- `spawn_member` / `spawn_teammate`：`call_goal` 写「为何创建该成员」；"
-                "`display_name` 仍是成员展示名，两者都要填。\n"
-                "- `send_message`：`call_goal` 写「这次消息的目的」；"
-                "`summary` 可继续填，但不能省略 `call_goal`。\n"
-                "- `build_team`：`call_goal` 写建队目标；`display_name` 仍是团队名。"
+                "禁止再写一句近义复述（避免同一信息输出两遍）。"
             )
             en_text = (
                 "# Tool call_goal\n\n"
@@ -1394,14 +1401,49 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "(e.g. \"Research openJiuwen official site\", \"Create tic-tac-toe team\"). "
                 "Do not just repeat the tool name or raw URL. UI only; does not affect execution.\n"
                 "If the tool already has a `description` parameter: set `call_goal` to the exact same "
-                "string — do not invent a second near-duplicate phrase.\n"
-                "Team tools must also set `call_goal`; do not substitute other fields:\n"
-                "- `spawn_member` / `spawn_teammate`: `call_goal` = why spawn this member; "
-                "`display_name` remains the member label — fill both.\n"
-                "- `send_message`: `call_goal` = purpose of this message; "
-                "`summary` may still be set, but `call_goal` is required too.\n"
-                "- `build_team`: `call_goal` = team goal; `display_name` remains the team name."
+                "string — do not invent a second near-duplicate phrase."
             )
+            if team_tools_present:
+                # 逐工具门控：只点名本轮真实可见的团队工具。
+                # spawn_member 在两仓均无注册（团队模式真名为 spawn_teammate），
+                # 工具面未知时（ctx 缺失回退）才保留全部原名，维持旧行为。
+                spawn_names = [
+                    t for t in ("spawn_member", "spawn_teammate")
+                    if not tool_names or t in tool_names
+                ]
+                spawn_names_str = " / ".join(f"`{t}`" for t in spawn_names)
+                cn_parts = ["\n团队工具也必须填 `call_goal`，且不能用其它字段代替："]
+                if spawn_names:
+                    cn_parts.append(
+                        f"- {spawn_names_str}：`call_goal` 写「为何创建该成员」；"
+                        "`display_name` 仍是成员展示名，两者都要填。"
+                    )
+                if (not tool_names) or ("send_message" in tool_names):
+                    cn_parts.append(
+                        "- `send_message`：`call_goal` 写「这次消息的目的」；"
+                        "`summary` 可继续填，但不能省略 `call_goal`。"
+                    )
+                if (not tool_names) or ("build_team" in tool_names):
+                    cn_parts.append(
+                        "- `build_team`：`call_goal` 写建队目标；`display_name` 仍是团队名。"
+                    )
+                cn_text += "\n".join(cn_parts)
+                en_parts = ["\nTeam tools must also set `call_goal`; do not substitute other fields:"]
+                if spawn_names:
+                    en_parts.append(
+                        f"- {spawn_names_str}: `call_goal` = why spawn this member; "
+                        "`display_name` remains the member label — fill both."
+                    )
+                if (not tool_names) or ("send_message" in tool_names):
+                    en_parts.append(
+                        "- `send_message`: `call_goal` = purpose of this message; "
+                        "`summary` may still be set, but `call_goal` is required too."
+                    )
+                if (not tool_names) or ("build_team" in tool_names):
+                    en_parts.append(
+                        "- `build_team`: `call_goal` = team goal; `display_name` remains the team name."
+                    )
+                en_text += "\n".join(en_parts)
             builder.add_section(
                 PromptSection(
                     name="tool_call_goal",
