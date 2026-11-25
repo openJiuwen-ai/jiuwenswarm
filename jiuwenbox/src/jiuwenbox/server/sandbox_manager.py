@@ -49,7 +49,9 @@ def _is_daemon_ipc_exec_failure(result: ExecResult) -> bool:
     stderr = result.stderr or ""
     if result.exit_code == 124 and "daemon IPC timeout" in stderr:
         return True
-    return "daemon IPC channel unavailable" in stderr
+    if "daemon IPC channel unavailable" in stderr:
+        return True
+    return "daemon IPC transport failure" in stderr
 
 
 def _is_daemon_ipc_file_op_failure(result: RuntimeFileOpResult) -> bool:
@@ -243,6 +245,9 @@ class SandboxManager:
         self._lock = asyncio.Lock()
         self._sandboxes: dict[str, SandboxRef] = {}
         self._policies: dict[str, SecurityPolicy] = {}
+        # 正在执行的同步命令计数（按沙箱）。空闲回收前会检查它，
+        # 有命令在跑的沙箱不算闲置，不能回收。
+        self._inflight_execs: dict[str, int] = {}
         # 空闲沙箱淘汰: 后台 reaper task 句柄 + stop event。``None`` 表示当前没有
         # reaper 在跑 (idle_timeout 未配置 / 已被禁用 / 服务尚未 startup)。
         self._idle_reaper_task: asyncio.Task | None = None
@@ -547,6 +552,41 @@ class SandboxManager:
             )
             for sid in expired_ids:
                 try:
+                    # 回收前先确认沙箱里没有正在执行的任务：执行中的命令或
+                    # 运行中的后台任务都算"忙"，本轮跳过，等下一轮扫描再判断。
+                    async with self._lock:
+                        ref = self._sandboxes.get(sid)
+                        if ref is None or ref.phase != SandboxPhase.READY:
+                            # 已被并发操作删除/换状态，无需回收。
+                            continue
+                        if self._inflight_execs.get(sid, 0) > 0:
+                            logger.info(
+                                "idle reaper: skip sandbox %s (exec in progress), "
+                                "recheck next cycle",
+                                sid,
+                            )
+                            continue
+                    try:
+                        running_jobs = await self.runtime.list_background_jobs(
+                            sid, running_only=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        # 查不到后台任务状态（例如沙箱守护进程已死）：直接回收。
+                        # 守护进程死了，里面的任务也不可能还在跑。
+                        logger.warning(
+                            "idle reaper: cannot list background jobs for %s, "
+                            "proceeding to delete",
+                            sid,
+                        )
+                        running_jobs = []
+                    if running_jobs:
+                        logger.info(
+                            "idle reaper: skip sandbox %s (%d background job(s) "
+                            "running), recheck next cycle",
+                            sid,
+                            len(running_jobs),
+                        )
+                        continue
                     self.audit.log(
                         AuditEventType.SANDBOX_DELETED,
                         sid,
@@ -617,6 +657,22 @@ class SandboxManager:
         lock and races with the idle reaper).
         """
         ref.last_active_at = datetime.now(timezone.utc)
+
+    async def _finish_exec(self, sandbox_id: str) -> None:
+        """命令执行结束后的收尾：解除"执行中"计数，并刷新活跃时间。
+
+        沙箱在命令执行期间被删除（例如手动删除）时静默忽略——计数与
+        沙箱记录一起消失，无需再处理。
+        """
+        async with self._lock:
+            count = self._inflight_execs.get(sandbox_id, 0)
+            if count <= 1:
+                self._inflight_execs.pop(sandbox_id, None)
+            else:
+                self._inflight_execs[sandbox_id] = count - 1
+            ref = self._sandboxes.get(sandbox_id)
+            if ref is not None and ref.phase == SandboxPhase.READY:
+                self._mark_active(ref)
 
     async def create_sandbox(
         self,
@@ -813,6 +869,10 @@ class SandboxManager:
                     f"Cannot exec in sandbox '{sandbox_id}': state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+            # 命令开始执行：记入"执行中"计数，空闲回收看到它就不会回收这个沙箱。
+            self._inflight_execs[sandbox_id] = (
+                self._inflight_execs.get(sandbox_id, 0) + 1
+            )
 
         # One audit row per exec, emitted **after** the runtime returns so
         # the payload covers both intent (command/workdir) and outcome
@@ -868,6 +928,10 @@ class SandboxManager:
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
             raise
+        finally:
+            # 命令执行结束（无论成败）：解除"执行中"计数并刷新活跃时间，
+            # 避免长命令刚结束、调用方还没发下一步请求就被空闲回收。
+            await self._finish_exec(sandbox_id)
         self.audit.log(
             AuditEventType.EXEC_COMMAND,
             sandbox_id,
@@ -952,7 +1016,10 @@ class SandboxManager:
         job_id: str,
     ) -> BackgroundJobStatus:
         async with self._lock:
-            self._get_sandbox(sandbox_id)
+            ref = self._get_sandbox(sandbox_id)
+            # 查询后台任务也是一次使用：刷新活跃时间，
+            # 让"跑着后台任务、定期来看进度"的沙箱不被判成闲置。
+            self._mark_active(ref)
         return await self.runtime.get_background_job(sandbox_id, job_id)
 
     async def list_background_jobs_in_sandbox(
@@ -962,7 +1029,9 @@ class SandboxManager:
         running_only: bool = False,
     ) -> list[BackgroundJobSummary]:
         async with self._lock:
-            self._get_sandbox(sandbox_id)
+            ref = self._get_sandbox(sandbox_id)
+            # 同上：查询即活跃。
+            self._mark_active(ref)
         return await self.runtime.list_background_jobs(
             sandbox_id,
             running_only=running_only,
