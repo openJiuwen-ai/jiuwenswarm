@@ -32,6 +32,8 @@ interface Window {
   __JIUWEN_DESKTOP_DND__?: boolean;
   pywebview?: {
     api?: {
+      /** MCP Apps：App 内 ui/open-link 经桌面壳开系统浏览器；旧壳没有此方法，调用前需判空。 */
+      open_app_link?: (url: string) => Promise<boolean> | boolean;
       download_file?: (url: string, filename: string) => Promise<DesktopSaveResult> | DesktopSaveResult;
       install_update?: (path: string) => Promise<boolean> | boolean;
       save_data_url?: (dataUrl: string, filename: string) => Promise<DesktopSaveResult> | DesktopSaveResult;

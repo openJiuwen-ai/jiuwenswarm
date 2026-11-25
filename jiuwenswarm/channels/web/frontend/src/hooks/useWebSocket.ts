@@ -3729,6 +3729,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             summary: toolResult.summary,
             skillTree: toolResult.skillTree,
             beamSearch: toolResult.beamSearch,
+            ...(toolResult.mcpApp ? { mcpApp: toolResult.mcpApp } : {}),
             ...(toolResult.timedOut ? { timedOut: true } : {}),
           },
           {

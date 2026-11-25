@@ -3946,5 +3946,14 @@
     "runIdTooltip": "运行 ID：{{id}}",
     "forkFromSession": "分叉自 {{name}}",
     "forkChildSession": "子会话分叉"
+  },
+  "mcpApp": {
+    "loading": "正在加载应用…",
+    "loadFailed": "无法加载应用",
+    "approvalPrompt": "应用请求运行",
+    "allow": "允许",
+    "deny": "拒绝",
+    "allowAlways": "在此应用中始终允许",
+    "readOnlyHint": "服务器将此工具标记为只读（未经验证）。"
   }
 }

@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import webbrowser
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -551,6 +552,21 @@ class _WindowApi:
 
     def close_window(self) -> bool:
         return self._runtime.close_window()
+
+    @staticmethod
+    def open_app_link(url: str) -> bool:
+        """Open an MCP App's ``ui/open-link`` URL in the system browser.
+
+        Only plain http(s) URLs without embedded credentials are accepted.
+        """
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(str(url))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        if parsed.username or parsed.password:
+            return False
+        return bool(webbrowser.open(parsed.geturl()))
 
     def install_update(self, installer_path: str) -> bool:
         return self._runtime.install_update(installer_path)

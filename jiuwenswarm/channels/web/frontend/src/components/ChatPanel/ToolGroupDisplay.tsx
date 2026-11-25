@@ -7,6 +7,7 @@ import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { SkillTreePath } from './SkillTreePath';
 import { BeamSearchTree } from './BeamSearchTree';
 import { classifyToolCall, describeToolCall, type ToolCategory } from './toolCategory';
+import { McpAppView } from './McpAppView';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
@@ -370,6 +371,7 @@ export function ToolGroupDisplay({
     .reverse()
     .find((execution) => execution.result?.beamSearch)
     ?.result?.beamSearch;
+  const mcpAppExecutions = visibleExecutions.filter((execution) => execution.result?.mcpApp);
   const viewedSkillIds = Array.from(new Set([
     ...turnViewedSkillIds,
     ...collectViewedSkillIds(executions),
@@ -447,6 +449,10 @@ export function ToolGroupDisplay({
             );
           })}
         </div>
+
+        {mcpAppExecutions.map((execution) => (
+          <McpAppView key={execution.toolCallId} app={execution.result!.mcpApp!} />
+        ))}
 
         {skillTrees.length > 0 && (
           <SkillTreePath
