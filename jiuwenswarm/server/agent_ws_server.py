@@ -291,6 +291,7 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _workflow_run_meta,
     split_history_record_for_stream,
 )
+from jiuwenswarm.server.edition_gate import enterprise_only_denial
 from jiuwenswarm.server.interrupt_intent import (
     normalized_intent_request,
     reject_interrupt_result_payload,
@@ -3092,13 +3093,13 @@ class AgentWebSocketServer:
                 )
             return
 
-        from jiuwenswarm.server.front.protocol import unsupported_method_wire
+        from jiuwenswarm.server.front.protocol import rejected_method_wire
 
         if isinstance(data, dict):
             method = data.get("method")
             if method is None:
                 method = data.get("req_method")
-            error_wire = unsupported_method_wire(
+            error_wire = rejected_method_wire(
                 method,
                 request_id=data.get("request_id"),
                 channel_id=data.get("channel") or data.get("channel_id"),
@@ -3126,7 +3127,7 @@ class AgentWebSocketServer:
                 )
                 if not isinstance(legacy, dict):
                     raise ValueError("legacy_agent_request missing or not a dict")
-                error_wire = unsupported_method_wire(
+                error_wire = rejected_method_wire(
                     legacy.get("req_method"),
                     request_id=legacy.get("request_id"),
                     channel_id=legacy.get("channel_id"),
@@ -3390,6 +3391,24 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        denial = enterprise_only_denial(request.req_method)
+        if denial is not None:
+            response = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": denial, "code": "FORBIDDEN"},
+                metadata=request.metadata,
+                agent_ref=request.agent_ref,
+            )
+            async with send_lock:
+                await send_wire_payload(
+                    ws,
+                    encode_agent_response_for_wire(
+                        response, response_id=request.request_id
+                    ),
+                )
+            return
         if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
             params = request.params if isinstance(request.params, dict) else {}
             channels = params.get("channels")
