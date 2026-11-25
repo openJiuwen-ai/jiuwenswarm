@@ -704,16 +704,12 @@ export function ExternalCliAgentsSection({
         if (!confirmedMissing) {
           return { enabled: true, useBuiltin: false, cliPath: cliPath.trim() };
         }
-        // 确认失效：落到下方 PATH 扫描，取第一个可用的
+        // 确认失效：落到下方历史回退，取第一个可用的本地路径
       }
-      const probe = EXTERNAL_CLI_AGENT_KINDS.includes(cliAgent)
-        ? await onDetect?.(cliAgent, '', false)
-        : undefined;
-      if (probe?.path && isInstalledStatus(probe)) {
-        return { enabled: true, useBuiltin: false, cliPath: probe.path };
-      }
-      // PATH 上没有可用的：再试路径历史里最近可用的本地路径，最后回退内置——
-      // 关闭再打开不得静默改用内置（#6753 问题二）。
+      // 无显式路径：不再做 PATH 发现（!10678 讨论——集群拉成员依赖 SDK，
+      // PATH 上的裸 CLI 不算数，此探测的 ok 只代表内置 SDK+CLI 就绪），
+      // 历史回退（恢复最近一次本地路径，#6753 问题二）优先，全部失效才回
+      // 退内置；托管路径也不得固化成自定义 cli_path（!10307）。
       const historyPaths = parseExternalCliPathHistories(
         draftValues[externalCliKey(cliAgent, 'path_histories')],
       ).slice().reverse();

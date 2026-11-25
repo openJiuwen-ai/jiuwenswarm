@@ -415,7 +415,10 @@ test('install-now bypasses the no-change short circuit so a deleted built-in CLI
   );
 });
 
-test('Codex installation falls back to built-in only when PATH has no usable executable', async () => {
+test('installation with an empty path commits the built-in CLI regardless of PATH discovery', async () => {
+  // !10678：检测语义改为"内置 SDK+CLI 是否可用"——PATH 上的第三方 CLI 不再
+  // 被自动提交为自定义路径，空路径的一键安装一律落内置（SDK+CLI 由一键安装
+  // 流程安装）。available 翻转模拟"机器上有/没有可用 PATH CLI"，结果不变。
   const initial = {
     external_cli_agent_codex_enabled: 'true',
     external_cli_agent_codex_use_builtin: 'false',
@@ -431,7 +434,7 @@ test('Codex installation falls back to built-in only when PATH has no usable exe
     const install = '[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="codex"]';
     await env.click(install);
     assert.deepEqual(env.commits.at(-1), ['codex', {
-      enabled: true, useBuiltin: false, cliPath: '/local/codex', force: true,
+      enabled: true, useBuiltin: true, cliPath: '', force: true,
     }]);
     available = false;
     await env.click(install);
@@ -595,7 +598,9 @@ test('PATH remains selectable with a saved built-in choice and after changing ex
   }
 });
 
-test('enabling and installing prefer PATH while explicit executable choices survive repair', async () => {
+test('enabling with an empty path falls back to the built-in CLI; explicit choices survive repair', async () => {
+  // !10678：空路径的启用/安装不再探测 PATH 候选（PATH 上的裸 CLI 不能满足
+  // 集群模式的 SDK 需求），历史为空时一律落内置；显式路径的修复保存不变。
   const initial = {
     external_cli_agent_claude_enabled: 'false',
     external_cli_agent_claude_use_builtin: 'false',
@@ -607,11 +612,12 @@ test('enabling and installing prefer PATH while explicit executable choices surv
   }));
   try {
     await env.click('[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]');
-    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: true, useBuiltin: false, cliPath: '/local/claude' }]);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: true, useBuiltin: true, cliPath: '' }]);
     const install = '[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]';
     await env.render({ ...initial, external_cli_agent_claude_enabled: 'true' });
     await env.click(install);
-    assert.deepEqual(env.commits.at(-1)[1], { enabled: true, useBuiltin: false, cliPath: '/local/claude', force: true });
+    assert.deepEqual(env.commits.at(-1)[1], { enabled: true, useBuiltin: true, cliPath: '', force: true });
+    // 显式自定义路径的修复保存保持不变
     await env.render({ ...initial, external_cli_agent_claude_enabled: 'true', external_cli_agent_claude_cli_path: '/custom/claude' });
     await env.click(install);
     assert.equal(env.commits.at(-1)[1].cliPath, '/custom/claude');
