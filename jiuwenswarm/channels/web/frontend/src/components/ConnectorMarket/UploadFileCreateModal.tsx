@@ -31,7 +31,10 @@ function isAcceptedFilename(name: string): boolean {
 function formatFileSize(bytes: number): string {
   if (bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  let i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  // 取整后再判断是否进位：1048575B 按 KB 取一位小数是 1024.0，应显示为 1.0 MB。
+  const rounded = Number((bytes / Math.pow(1024, i)).toFixed(1));
+  if (i < units.length - 1 && rounded >= 1024) i += 1;
   const size = bytes / Math.pow(1024, i);
   return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
