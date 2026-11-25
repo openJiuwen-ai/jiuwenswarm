@@ -70,6 +70,7 @@ try {
     vite.ssrLoadModule('/src/stores/authStore.ts'),
     vite.ssrLoadModule('/src/features/historyRestore.ts'),
     vite.ssrLoadModule('/src/services/webClient.ts'),
+    vite.ssrLoadModule('/src/components/ChatPanel/slashCommands/registry.ts'),
   ]);
 } finally {
   await vite.close();
@@ -77,7 +78,7 @@ try {
 const [
   { ConversationSidebar }, { useWorkspaceStore }, { ChatPanel }, { ToolPanel },
   { useChatStore }, { useSessionStore }, { useAuthStore },
-  { parseHistoryJsonFileToTimelinePreview }, { webClient },
+  { parseHistoryJsonFileToTimelinePreview }, { webClient }, { findSlashCommand },
 ] = modules;
 const i18n = i18next.createInstance();
 await i18n.init({
@@ -185,6 +186,27 @@ async function withChatTools(edition, run) {
 }
 
 for (const edition of ['enterprise', 'personal']) {
+  test(`${edition} welcome shows the free-model campaign and Plan entries only in personal mode`, () =>
+    withChatTools(edition, async ({ render, byId }) => {
+      const personal = edition === 'personal';
+      useAuthStore.setState({ islogin: false });
+      useChatStore.getState().ensureRuntime('new');
+      useSessionStore.getState().ensureRuntime('new');
+      useChatStore.getState().setActiveSessionId('new');
+      await render(createElement(ChatPanel, { promptSuggestionBox, onSendMessage: noop, isProcessing: false }));
+
+      assert.ok(byId('chat-panel-welcome-banner'));
+      assert.equal(Boolean(byId('chat-panel-free-models-claim')), personal);
+      await act(async () => byId('chat-panel-input-attach-trigger').click());
+      assert.ok(byId('chat-panel-input-attach-menu'));
+      assert.equal(Boolean(byId('chat-panel-input-attach-menu-plan')), personal);
+      assert.equal(Boolean(findSlashCommand('PLAN')), personal);
+      assert.ok(findSlashCommand('compact'));
+
+      await act(async () => useAuthStore.setState({ islogin: true }));
+      assert.equal(byId('chat-panel-free-models-claim'), null);
+    }));
+
   test(`${edition} only exposes export and heartbeat in personal edition`, () => withChatTools(edition, async ({ render, byId }) => {
     let exports = 0;
     let heartbeats = 0;
@@ -228,6 +250,7 @@ test('enterprise references merge selected and called skills, restore history an
     restore();
     useChatStore.getState().addMessage(sid, { id: 'duplicate', role: 'user', content: 'again', skills: ['selected-skill'], timestamp });
     const panel = () => createElement(ToolPanel, {
+      webUIPanels: { panels: [], renderPanel: () => null, openRequest: null, consumeOpenRequest: noop },
       sessionId: useChatStore.getState().activeSessionId,
       teamAreaExpanded: false, teamAreaActiveTab: 'planning', teamAreaActiveDetailTab: 'messages',
       singleAgentPanelExpanded: false, singleAgentPanelActiveTab: 'planning',

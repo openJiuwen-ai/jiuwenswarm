@@ -643,6 +643,49 @@ def test_stop_keeps_state_when_process_survives(debug_root: Path):
     assert read_debug_state().pid == 5555
 
 
+@pytest.mark.parametrize("legacy_pid", [None, 7777])
+@pytest.mark.parametrize(
+    ("timeout", "worker_timeout", "expected_front", "expected_worker"),
+    [
+        (None, None, 15.0, 35.0),
+        (1.0, None, 1.0, 1.0),
+        (15.0, None, 15.0, 15.0),
+        (None, 45.0, 15.0, 45.0),
+        (1.0, 45.0, 1.0, 45.0),
+    ],
+)
+def test_stop_uses_separate_phase_budgets(
+    debug_root: Path,
+    *,
+    legacy_pid: int | None,
+    timeout: float | None,
+    worker_timeout: float | None,
+    expected_front: float,
+    expected_worker: float,
+) -> None:
+    """Keep explicit shared timeouts compatible while allowing independent Worker cleanup."""
+    write_debug_state(_state(pid=5555))
+    with (
+        patch.object(debug_launcher, "is_process_alive", side_effect=[True, False]),
+        patch.object(debug_launcher, "_stop_process_tree", return_value=True) as front,
+        patch.object(debug_launcher, "_stop_resident_worker", return_value=True) as worker,
+    ):
+        assert stop_debug_service(timeout, worker_timeout=worker_timeout, legacy_worker_pid=legacy_pid) == 0
+    front.assert_called_once_with(5555, timeout=expected_front)
+    if legacy_pid is None:
+        worker.assert_called_once_with(timeout=expected_worker)
+    else:
+        worker.assert_called_once_with(timeout=expected_worker, legacy_worker_pid=legacy_pid)
+    assert read_debug_state() is None
+
+
+def test_stop_selected_legacy_worker_without_debug_state(debug_root: Path) -> None:
+    """Explicit legacy recovery still works after the debug state has disappeared."""
+    with patch.object(debug_launcher, "_stop_resident_worker", return_value=True) as worker:
+        assert stop_debug_service(legacy_worker_pid=7777) == 0
+    worker.assert_called_once_with(timeout=35.0, legacy_worker_pid=7777)
+
+
 # --------------------------------------------------------------------------
 # Resident runtime worker teardown
 # --------------------------------------------------------------------------
@@ -841,3 +884,36 @@ def test_stop_arg_parsing_default_timeout():
 
     assert _parse_stop_args([]) == DEFAULT_STOP_TIMEOUT
     assert _parse_stop_args(["--timeout", "3.5"]) == 3.5
+
+
+@pytest.mark.parametrize("option", ["--timeout", "--worker-timeout"])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
+def test_stop_rejects_invalid_timeout(option: str, value: str) -> None:
+    """Invalid budgets must fail before any process cleanup is attempted."""
+    with pytest.raises(SystemExit) as error:
+        debug_launcher._parse_stop_options([option, value])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("options", "timeout", "worker_timeout", "legacy_pid"),
+    [
+        ([], None, None, None),
+        (["--timeout", "3.5"], 3.5, None, None),
+        (["--worker-timeout", "45", "--legacy-worker-pid", "7777"], None, 45.0, 7777),
+    ],
+)
+def test_stop_cli_forwards_phase_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+    options: list[str],
+    timeout: float | None,
+    worker_timeout: float | None,
+    legacy_pid: int | None,
+) -> None:
+    """The console entrypoint must preserve omitted versus explicit timeout values."""
+    monkeypatch.setattr(sys, "argv", ["jiuwenswarm-stop", *options])
+    with patch.object(debug_launcher, "stop_debug_service", return_value=0) as stop:
+        with pytest.raises(SystemExit) as error:
+            debug_launcher.main()
+    assert error.value.code == 0
+    stop.assert_called_once_with(timeout, worker_timeout=worker_timeout, legacy_worker_pid=legacy_pid)

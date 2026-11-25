@@ -2,8 +2,9 @@
 import { joinRuntimes } from './clientToolDispatcher';
 import { WPS_PRESENTATION } from './powerPointApp';
 import { powerPointPackageRuntime, workerSandbox } from './powerPointPackageTools';
-import { powerPointReadRuntime } from './powerPointReadTools';
+import { powerPointReadRuntime, selectedSlides } from './powerPointReadTools';
 import { powerPointSlideDeck, powerPointWriteRuntime } from './powerPointWriteTools';
+import { selectionLine } from './selectionLine';
 import { SlideSnapshots } from './slideSnapshots';
 import { rasterizeSvg } from './svgRaster';
 import { startWpsPane } from './wpsPane';
@@ -23,5 +24,8 @@ startWpsPane(WPS_PRESENTATION, WPS_HOST, ({ application, document: presentation,
         sandbox: workerSandbox(() => new Worker(new URL('./ooxmlSandbox.worker.ts', import.meta.url),
           { type: 'module' })),
         rasterize: rasterizeSvg, forgetUndo: () => journals.forget(), insertTakesDeckDesign: true })),
+    // WPS raises this for a slide or shape selected, not for text selected inside a shape.
+    selection: selectionLine(moved => application.ApiEvent?.AddApiEventListener?.('WindowSelectionChange', moved),
+      () => selectedSlides(run)),
   };
 });

@@ -6,12 +6,12 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 
 from tests.unit_tests.server.jiuwenmate.test_resource_assembly import MapCatalog, service, settings, write_skill
 from tests.unit_tests.server.jiuwenmate.test_feishu_group_production_wiring import _agent_websocket_server_type
 from tests.unit_tests.gateway.test_app_web_handlers import FakeWebChannel, FakeChannelManager
-from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from tests.unit_tests.server.jiuwenmate.test_lark_cli_runtime import config, setup_cli
@@ -162,8 +162,7 @@ async def test_restart_removes_unbound_capability_without_publishing_a_draft(tmp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["channel.feishu.bind_agent", "channel.feishu.set_conf"])
-async def test_binding_changes_notify_both_previous_and_new_owner(tmp_path, monkeypatch, method):
+async def test_rebinding_notifies_both_previous_and_new_owner(tmp_path, monkeypatch):
     from agent_gateway.common import config as config_module
 
     channel, cm = FakeWebChannel(), FakeChannelManager()
@@ -183,17 +182,44 @@ async def test_binding_changes_notify_both_previous_and_new_owner(tmp_path, monk
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm,
                                                  agent_client=SimpleNamespace(send_request=send_request)))
     app = config("agent-b")["channels"]["feishu"]["apps"][0]
-    if method == "channel.feishu.bind_agent":
-        await channel.methods["channel.feishu.unbind_agent"](
-            object(), "unbind-1", {"app_id": app["app_id"]}, "session-a",
-        )
-        assert channel.responses[-1]["ok"]
-        params = {**app, "config_id": "colleague-b"}
-    else:
-        params = {"apps": [app]}
-    await channel.methods[method](object(), "bind-2", params, "session-a")
+    await channel.methods["channel.feishu.unbind_agent"](
+        object(), "unbind-1", {"app_id": app["app_id"]}, "session-a",
+    )
+    assert channel.responses[-1]["ok"]
+    await channel.methods["channel.feishu.bind_agent"](
+        object(), "bind-2", {**app, "config_id": "colleague-b"}, "session-a",
+    )
     assert channel.responses[-1]["ok"]
     assert set(forwarded) == {"agent-a", "agent-b"}
+
+
+@pytest.mark.asyncio
+async def test_personal_settings_cannot_change_an_employee_binding(tmp_path, monkeypatch):
+    from agent_gateway.common import config as config_module
+
+    channel, cm = FakeWebChannel(), FakeChannelManager()
+    cm.configs["feishu"] = config()["channels"]["feishu"]
+    path = tmp_path / "config.yaml"
+    config_module.dump_yaml_round_trip(path, config())
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", path)
+    forwarded = []
+
+    async def send_request(envelope):
+        forwarded.append(envelope)
+        return SimpleNamespace(ok=True, payload={})
+
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm,
+                                                 agent_client=SimpleNamespace(send_request=send_request)))
+    employee_app = config("agent-b")["channels"]["feishu"]["apps"][0]
+    await channel.methods["channel.feishu.set_conf"](
+        object(), "settings", {"apps": [employee_app]}, "session-a",
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "CHANNEL_BOUND_TO_EMPLOYEE"
+    saved = config_module.load_yaml_round_trip(path)["channels"]["feishu"]["apps"]
+    assert saved[0]["persistent_agent_id"] == "agent-a"
+    assert forwarded == []
 
 
 @pytest.mark.asyncio
@@ -219,7 +245,7 @@ async def test_personal_channel_changes_never_prepare_persistent_cli(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_saved_secret_rotation_notifies_the_bound_agent(tmp_path, monkeypatch):
+async def test_rebinding_rotates_the_saved_secret_and_notifies_the_bound_agent(tmp_path, monkeypatch):
     from agent_gateway.common import config as config_module
 
     channel, cm = FakeWebChannel(), FakeChannelManager()
@@ -230,6 +256,8 @@ async def test_saved_secret_rotation_notifies_the_bound_agent(tmp_path, monkeypa
     forwarded = []
 
     async def send_request(envelope):
+        if envelope.method == "jiuwenmate.connection.attach":
+            return SimpleNamespace(ok=True, payload={"agent_id": "agent-a"})
         if envelope.method == "jiuwenmate.feishu.prepare":
             forwarded.append(envelope.params["agent_id"])
             saved = config_module.load_yaml_round_trip(path)["channels"]["feishu"]["apps"][0]
@@ -238,8 +266,9 @@ async def test_saved_secret_rotation_notifies_the_bound_agent(tmp_path, monkeypa
 
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm,
                                                  agent_client=SimpleNamespace(send_request=send_request)))
-    await channel.methods["channel.feishu.set_conf"](object(), "rotation",
-        config(secret="new-secret")["channels"]["feishu"], "session-a")
+    await channel.methods["channel.feishu.bind_agent"](object(), "rotation", {
+        "app_id": "app-a", "app_secret": "new-secret", "config_id": "agent-a",
+    }, "session-a")
     assert channel.responses[-1]["ok"]
     assert forwarded == ["agent-a"]
 

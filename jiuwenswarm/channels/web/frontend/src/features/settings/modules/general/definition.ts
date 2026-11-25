@@ -30,5 +30,6 @@ export const generalModule: SettingsModuleDefinition = {
         },
       ],
     },
+    { id: 'display', titleKey: 'settingsPanel.general.display', items: [] },
   ],
 };

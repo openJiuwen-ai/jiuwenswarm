@@ -131,11 +131,10 @@ class BackgroundLogWriter:
             retired = self._retired
             self._retired = set()
             self._handlers.difference_update(retired)
-        for handler in retired:
-            try:
-                handler.close()
-            except Exception as exc:
-                self._report_sink_failure("close", handler, exc)
+        # 退役 handler 不在后台线程 close()：与启动期 uvicorn/logging 重配的
+        # handler 关闭存在锁争用（NFS 上 close 慢，曾致 25s 停顿与探针超时）。
+        # retired 已脱离活跃管线且逐条 flush 过，引用释放后由 GC 关闭即可。
+        del retired
 
 
 class _QueuedHandler(QueueHandler):

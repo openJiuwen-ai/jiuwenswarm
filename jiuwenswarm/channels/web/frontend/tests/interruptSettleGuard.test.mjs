@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   mayProcessingTrueFrameRelight,
   maySnapshotRelightProcessing,
+  shouldReportWorkerInterruption,
 } from '../node_modules/.cache/interrupt-settle/interruptSettleGuard.mjs';
 import { useChatStore } from '../node_modules/.cache/interrupt-settle/chatStore.mjs';
 
@@ -32,6 +33,13 @@ test('synthetic processing(true) guard: frames without event_type are blocked wh
   // event_type; inside the settle window it is a stale-snapshot echo.
   assert.equal(mayProcessingTrueFrameRelight(false, true), false);
   assert.equal(mayProcessingTrueFrameRelight(false, false), true);
+});
+
+test('worker-instance recovery only reports interruption while work is active', () => {
+  assert.equal(shouldReportWorkerInterruption(true, false, false), false);
+  assert.equal(shouldReportWorkerInterruption(true, true, false), true);
+  assert.equal(shouldReportWorkerInterruption(true, false, true), true);
+  assert.equal(shouldReportWorkerInterruption(false, true, true), false);
 });
 
 test('run2 frame sequence: pause ack settles, stale snapshot and synthetic frame stay idle', () => {

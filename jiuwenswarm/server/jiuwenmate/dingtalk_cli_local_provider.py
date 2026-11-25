@@ -235,9 +235,9 @@ class LocalDingTalkCliRuntime:
         self._root = Path(root).resolve()
         self._cache_root = Path(cache_root).resolve() if cache_root is not None else self._root
         if workspace_root is None:
-            from jiuwenswarm.server.jiuwenmate.service import default_data_dir
+            from jiuwenswarm.common.paths import get_jiuwenmate_dir
 
-            workspace_root = default_data_dir() / "workspaces"
+            workspace_root = get_jiuwenmate_dir() / "workspaces"
         self._workspace_root = Path(workspace_root).resolve()
         self._config = config_loader or self._load_config
         self._dws_path = Path(dws_path).expanduser().absolute() if dws_path is not None else None
@@ -2895,11 +2895,11 @@ class LocalDingTalkCliRuntime:
 def create_provider() -> LocalDingTalkCliRuntime:
     """Keep employee OAuth private while program caches survive workspace initialization."""
     from jiuwenswarm.common.utils import get_user_home
-    from jiuwenswarm.server.jiuwenmate.service import default_data_dir
+    from jiuwenswarm.common.paths import get_jiuwenmate_dir
 
     configured_dws = os.environ.get("JIUWENMATE_DWS_BIN", "").strip()
     dws_path = Path(configured_dws).expanduser() if configured_dws else None
-    root = Path(os.environ.get("JIUWENMATE_DINGTALK_CLI_HOME") or default_data_dir() / "dingtalk_cli")
+    root = Path(os.environ.get("JIUWENMATE_DINGTALK_CLI_HOME") or get_jiuwenmate_dir() / "dingtalk_cli")
     home = get_user_home()
     if sys.platform == "darwin":
         cache_root = home / "Library" / "Caches" / "WorkSwarm" / "dingtalk-cli"

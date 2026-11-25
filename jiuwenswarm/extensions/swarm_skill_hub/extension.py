@@ -23,9 +23,9 @@ from jiuwenswarm.extensions.sdk.skill_source import (
     SkillSourceExtension,
     SkillSourceProvider,
     SourceConfig,
-    TrustPolicy,
 )
 
+from .hub_verify import HubTrustPolicy
 from .provider import (
     SWARM_SKILL_HUB_SOURCE_ID,
     SwarmSkillHubProvider,
@@ -100,19 +100,17 @@ def _resolve_endpoint_ref(reference: str | None) -> str | None:
     return resolved or None
 
 
-def trust_policy_from_env() -> TrustPolicy:
+def trust_policy_from_env() -> HubTrustPolicy:
     """从扩展包 config.yaml 构建信任策略（密钥走 secret_ref 引用，不落盘）。"""
-    key_id = str(_config_value("hmac_key_id") or "default").strip()
+    key_id = str(_config_value("hmac_key_id") or "default").strip() or "default"
     secret_ref = str(
         _config_value("hmac_secret_ref") or "env://SKILL_DOWNLOAD_HMAC_SECRET"
     ).strip()
     verification = str(_config_value("verification") or "if-present").strip().lower()
-    if verification not in {"required", "if-present"}:
-        logger.warning("Invalid verification=%s; using if-present", verification)
-        verification = "if-present"
-    return TrustPolicy(
+    return HubTrustPolicy(
         verification=verification,
-        hmac_key_refs={key_id: secret_ref},
+        hmac_key_id=key_id,
+        hmac_secret_ref=secret_ref,
     )
 
 

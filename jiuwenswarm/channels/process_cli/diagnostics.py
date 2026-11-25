@@ -34,7 +34,7 @@ def _diagnostic_path() -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     name = f"{stamp}-{os.getpid()}-{uuid.uuid4().hex[:8]}.log"
     # CLI diagnostics are per-run, host-local dumps grouped under the
-    # system log zone; business logs stay in infra/logs/agent.
+    # system log zone; business logs stay in logs/agent (data root).
     return root.resolve() / "logs" / "process_cli" / name
 
 

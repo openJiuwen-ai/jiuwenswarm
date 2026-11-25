@@ -30,7 +30,7 @@ def verify_gateway_extensions() -> None:
     extension_dir = Path(package.__file__).resolve().parent / "extensions"
     # These built-ins belong to the pinned Gateway dependency. Checking names
     # explicitly prevents an empty/missing directory from passing verification.
-    for name in ("adx", "agentos", "agent_client"):
+    for name in ("adx", "agentos", "runtime_management_extension"):
         root = extension_dir / name
         for filename in ("extension.yaml", "extension.py"):
             if not (root / filename).is_file():
@@ -58,6 +58,7 @@ def verify_gateway_adapter_bundle() -> None:
         "openjiuwen_runtime.foundation.security.link_mtls_config",
         "jiuwenswarm.server.jiuwenmate.agent_mail_local_provider",
         "jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider",
+        "jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers",
     ):
         import_module(module_name)
     verify_gateway_extensions()
@@ -65,15 +66,18 @@ def verify_gateway_adapter_bundle() -> None:
 
 def run_isolated(executable: Path) -> int:
     """Set paths before the frozen entrypoint can import or cache user settings."""
-    executable = executable.resolve()
+    # 仅转绝对路径，不解析软链：源码仓验证时 executable 是 .venv/bin/python
+    # 软链，resolve() 会换成基座解释器，丢失 venv site-packages（editable
+    # 安装的 agent_gateway / jiuwenswarm 将无法导入）。
+    executable = Path(os.path.abspath(executable))
     script = Path(__file__).resolve()
     with TemporaryDirectory(prefix="gateway-bundle-check-") as directory:
         root = Path(directory).resolve()
-        (root / "infra/config").mkdir(parents=True)
+        (root / "config").mkdir(parents=True)
         env = os.environ.copy()
         env["JIUWENSWARM_DATA_DIR"] = str(root)
         env["JIUWENSWARM_HOME"] = str(root)
-        env["AGENTOS_GATEWAY_LOG_DIR"] = str(root / "infra/logs/agent")
+        env["AGENTOS_GATEWAY_LOG_DIR"] = str(root / "logs/agent")
         env.pop("JIUWENSWARM_RUNTIME_WORKSPACE_READY", None)
         result = subprocess.run(
             [str(executable), str(script)],

@@ -12,10 +12,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import logging
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 
@@ -125,10 +125,37 @@ class Workspace:
         return mod.Options(**values)
 
 
+class _CaptureHandler(logging.Handler):
+    """Catch log lines even when pytest log_cli rebinds sys.stdout/stderr."""
+
+    def __init__(self, out: io.StringIO, err: io.StringIO) -> None:
+        super().__init__()
+        self._out = out
+        self._err = err
+        self.setFormatter(logging.Formatter("%(message)s"))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        stream = self._err if record.levelno >= logging.WARNING else self._out
+        stream.write(self.format(record) + "\n")
+
+
 def run_captured(options, runtime):
+    """Run and capture script output without relying on redirect_stdout alone.
+
+    pytest ``log_cli`` suspends/resumes capture around each log record and can
+    overwrite a redirected ``sys.stdout`` mid-call, so only the first line would
+    land in the StringIO. Attach a dedicated handler for the duration instead.
+    """
     out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
+    handler = _CaptureHandler(out, err)
+    saved = list(mod._LOG.handlers)
+    mod._LOG.handlers.clear()
+    mod._LOG.addHandler(handler)
+    try:
         rc = mod.run(options, runtime)
+    finally:
+        mod._LOG.handlers.clear()
+        mod._LOG.handlers.extend(saved)
     return rc, out.getvalue(), err.getvalue()
 
 
@@ -356,25 +383,32 @@ class FlowTests(unittest.TestCase):
         self.assertIn("成功: 0 / 2", out)
         self.assertIn("ValueError: boom", err)
 
-    def test_main_all_with_username_errors(self):
+    def _run_main_captured(self, argv, runtime=None):
         out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
-            rc = mod.main(["--all", "testu02", "-y"], runtime=make_runtime())
+        handler = _CaptureHandler(out, err)
+        saved = list(mod._LOG.handlers)
+        mod._LOG.handlers.clear()
+        mod._LOG.addHandler(handler)
+        try:
+            rc = mod.main(argv, runtime=runtime or make_runtime())
+        finally:
+            mod._LOG.handlers.clear()
+            mod._LOG.handlers.extend(saved)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_main_all_with_username_errors(self):
+        rc, _, err = self._run_main_captured(["--all", "testu02", "-y"])
         self.assertEqual(rc, 1)
-        self.assertIn("--all 不接受用户名参数", err.getvalue())
+        self.assertIn("--all 不接受用户名参数", err)
 
     def test_main_returns_1_for_invalid_cli(self):
-        out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
-            rc = mod.main(["BAD"], runtime=make_runtime())
+        rc, _, err = self._run_main_captured(["BAD"])
         self.assertEqual(rc, 1)
-        self.assertIn("用户名格式无效", err.getvalue())
+        self.assertIn("用户名格式无效", err)
 
-        out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
-            rc = mod.main([], runtime=make_runtime())
+        rc, _, err = self._run_main_captured([])
         self.assertEqual(rc, 1)
-        self.assertIn("未指定用户", err.getvalue())
+        self.assertIn("未指定用户", err)
 
 
 if __name__ == "__main__":

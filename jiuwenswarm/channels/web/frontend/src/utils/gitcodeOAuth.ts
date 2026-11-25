@@ -1,4 +1,7 @@
+import { gatewayFetch } from '../services/gatewayFetch';
 /** SkillHub 托管的 GitCode/GitHub 授权与当前会话凭据。 */
+
+import i18n from '../i18n';
 
 // ── sessionStorage keys ──
 const TOKEN_KEY = 'marketplace_oauth_access_token';
@@ -67,14 +70,14 @@ export function clearHubOAuthSession(): void {
 }
 
 export async function beginHubOAuth(provider: OAuthProvider): Promise<HubOAuthAttempt> {
-  const response = await fetch('/marketplace-oauth/hub/start', {
+  const response = await gatewayFetch('/marketplace-oauth/hub/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ provider }),
   });
   const result = await responseJson(response);
   if (!response.ok || !result?.authorize_url || !result?.flow || !result?.claim)
-    throw new Error('无法启动 Hub 授权，请检查本地服务。');
+    throw new Error(i18n.t('hubOAuth.startFailed'));
   return {
     authorize_url: String(result.authorize_url),
     flow: String(result.flow),
@@ -92,25 +95,25 @@ export async function waitForHubOAuth(
     await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
     if (signal?.aborted) break;
     if (windowClosedAt === undefined && authorizationWindowClosed?.()) windowClosedAt = Date.now();
-    const response = await fetch('/marketplace-oauth/hub/result', {
+    const response = await gatewayFetch('/marketplace-oauth/hub/result', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ flow: attempt.flow, claim: attempt.claim }),
       signal,
     });
     const result = await responseJson(response);
-    if (!response.ok) throw new Error('授权请求已过期，请重新登录。');
+    if (!response.ok) throw new Error(i18n.t('hubOAuth.requestExpired'));
     if (result.status === 'pending') {
       // A closed popup can precede the completed Hub handoff; allow it to settle.
       if (windowClosedAt !== undefined && Date.now() - windowClosedAt >= AUTHORIZATION_CLOSE_GRACE_MS)
-        throw new Error('授权窗口已关闭，请重新登录。');
+        throw new Error(i18n.t('hubOAuth.windowClosed'));
       continue;
     }
     if (result.status !== 'complete' || !result.access_token) {
       const code = typeof result.error === 'string' ? result.error.toLowerCase() : '';
       if (code.includes('session_exchange_failed'))
-        throw new Error('Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。');
-      throw new Error('授权失败，请重试。');
+        throw new Error(i18n.t('hubOAuth.exchangeFailed'));
+      throw new Error(i18n.t('hubOAuth.failed'));
     }
     // The request may resolve after the caller aborted the attempt; never store a cancelled result.
     if (signal?.aborted) throw new DOMException('OAuth cancelled', 'AbortError');

@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileViewer } from './FileViewer';
@@ -188,7 +189,7 @@ export function AgentPanel({ sessionId: _sessionId }: AgentPanelProps) {
     const shouldRebuild = Boolean(options?.rebuildBeforeFetch);
     try {
       if (shouldRebuild) {
-        const rebuildResponse = await fetch('/file-api/rebuild-agent-data', {
+        const rebuildResponse = await gatewayFetch('/file-api/rebuild-agent-data', {
           method: 'POST',
         });
         if (!rebuildResponse.ok) {
@@ -197,7 +198,7 @@ export function AgentPanel({ sessionId: _sessionId }: AgentPanelProps) {
         }
       }
 
-      const res = await fetch('/file-api/file-content?path=agent/workspace/agent-data.json');
+      const res = await gatewayFetch('/file-api/file-content?path=agent/workspace/agent-data.json');
       if (!res.ok) {
         throw new Error('FETCH_FAILED');
       }

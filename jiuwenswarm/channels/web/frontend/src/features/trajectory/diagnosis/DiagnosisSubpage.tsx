@@ -182,7 +182,7 @@ function RecordCards({
   const artifactText = artifactBody === ''
     ? ''
     : `${t('trajectory.diagnosis.artifactFillPrefix')}\n${artifactBody}`;
-  const artifactItems = artifactSuggestionItems(record);
+  const artifactItems = (record.design_suggestion ?? '').trim() === '' ? artifactSuggestionItems(record) : [];
   const outlets = suggestionsState(record.status);
   const showDetails = record.error !== undefined
     || reward !== null

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Keep a short diagnostic tail per application instead of one record per start.
 MAX_STOPPED_INSTANCES_PER_APP = 5
+APP_MARKET_DIRNAME = "app_market"
 
 
 class MarketStorage:
@@ -76,18 +78,91 @@ class MarketStorage:
             logger.error("列出应用清单失败: %s", e)
         return result
 
+    def contains_hub_install(self, path: Path) -> bool:
+        """Identify paths owned by an existing market installation."""
+        path = path.resolve()
+        return any(
+            path.is_relative_to(Path(app.work_dir).resolve())
+            for app in self.list_apps()
+            if app.source == "hub" and app.work_dir
+        )
+
+    def find_local_app(self, entry: Path, owner_id: str) -> AppManifest | None:
+        for app in self.list_apps():
+            if app.source == "local" and app.owner_id == owner_id and app.work_dir:
+                if (Path(app.work_dir) / (app.page_entry_path or "index.html")).resolve() == entry:
+                    return app
+        return None
+
+    def contains_local_app(self, work_dir: Path) -> bool:
+        """Check for a legacy local registration inside the installed work tree."""
+        work_dir = work_dir.resolve()
+        return any(
+            Path(app.work_dir).resolve().is_relative_to(work_dir)
+            for app in self.list_apps()
+            if app.source == "local" and app.work_dir
+        )
+
+    def has_overlapping_work_dir(self, work_dir: Path) -> bool:
+        """Check whether cleanup could affect any remaining registration.
+
+        Both sides are compared as canonical paths, and an unresolvable path
+        counts as a possible overlap so cleanup keeps files it cannot verify.
+        """
+        try:
+            target = Path(work_dir).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return True
+        for app in self.list_apps():
+            if not app.work_dir:
+                continue
+            try:
+                other_dir = Path(app.work_dir).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                return True
+            if other_dir.is_relative_to(target) or target.is_relative_to(other_dir):
+                return True
+        return False
+
     def delete_app(self, app_id: str) -> None:
         """删除应用，同时级联删除其实例记录"""
+        app_dir = self._apps_dir / app_id
+        if app_dir.exists():
+            shutil.rmtree(app_dir)
+        for instance in self.list_instances(app_id):
+            self.delete_instance(instance.instance_id)
+
+    # ── 安装凭据（Hub 来源） ──────────────────────────────
+
+    def install_record_path(self, app_id: str) -> Path:
+        return self._apps_dir / app_id / "install.json"
+
+    def save_install_record(self, app_id: str, record: dict) -> None:
+        """将 Hub 安装凭据与注册清单放在同一目录，原子写入。"""
+        target = self.install_record_path(app_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.parent / f"install-{uuid.uuid4().hex}.tmp"
         try:
-            # 删除应用目录
-            app_dir = self._apps_dir / app_id
-            if app_dir.exists():
-                self._remove_tree(app_dir)
-            # 级联删除该应用的所有实例记录
-            for instance in self.list_instances(app_id):
-                self.delete_instance(instance.instance_id)
-        except Exception as e:
-            logger.error("删除应用失败 app_id=%s: %s", app_id, e)
+            with temporary.open("w", encoding="utf-8") as f:
+                json.dump(record, f, ensure_ascii=False, indent=2)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def load_install_record(self, app_id: str) -> dict | None:
+        path = self.install_record_path(app_id)
+        if not path.is_file():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                value = json.load(f)
+        except (OSError, ValueError) as e:
+            logger.warning("读取安装凭据失败 app_id=%s: %s", app_id, e)
+            return None
+        return value if isinstance(value, dict) else None
+
+    def delete_install_record(self, app_id: str) -> None:
+        self.install_record_path(app_id).unlink(missing_ok=True)
 
     # ── 实例记录 ──────────────────────────────────────────
 
@@ -199,12 +274,3 @@ class MarketStorage:
         excess = stopped if keep_stopped <= 0 else stopped[:-keep_stopped]
         for instance in excess:
             self.delete_instance(instance.instance_id)
-
-    # ── 辅助方法 ──────────────────────────────────────────
-
-    @staticmethod
-    def _remove_tree(path: Path) -> None:
-        """递归删除目录树"""
-        import shutil
-
-        shutil.rmtree(path, ignore_errors=True)

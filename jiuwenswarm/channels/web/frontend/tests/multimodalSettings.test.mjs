@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { MULTIMODAL_CAPABILITIES, multimodalModelOptions, MultimodalSettingsStore } from '../node_modules/.cache/multimodal-settings/features/settings/services/multimodalSettings.js';
+import { MULTIMODAL_CAPABILITIES, multimodalModelOptions, multimodalProviderLabel, MultimodalSettingsStore } from '../node_modules/.cache/multimodal-settings/features/settings/services/multimodalSettings.js';
 import { SettingsSaveQueue } from '../node_modules/.cache/multimodal-settings/features/settings/services/SettingsSaveQueue.js';
 import { FormStore } from '../node_modules/.cache/multimodal-settings/components/form/core/FormStore.js';
 
@@ -223,3 +223,23 @@ test('shortcut notice remains while a write waits and clears when that write sta
   await Promise.all([blocker, write]);
   assert.equal(store.getSnapshot().notice, null);
 });
+
+test('the multimodal list labels a vLLM-Omni row by protocol, not the stored OpenAI provider', () => {
+  assert.equal(
+    multimodalProviderLabel({ provider: 'OpenAI', protocol: 'vllm-omni' }),
+    'vLLM-Omni',
+  );
+  assert.equal(
+    multimodalProviderLabel({ provider: 'OpenAI', protocol: ' vllm-omni ' }),
+    'vLLM-Omni',
+  );
+  assert.equal(
+    multimodalProviderLabel({ provider: 'MiniMax', protocol: 'minimax' }),
+    'MiniMax',
+  );
+  assert.equal(
+    multimodalProviderLabel({ provider: 'OpenAI', protocol: 'openai' }),
+    'OpenAI',
+  );
+});
+

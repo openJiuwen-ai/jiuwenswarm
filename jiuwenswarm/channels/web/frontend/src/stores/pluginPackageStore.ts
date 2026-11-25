@@ -113,7 +113,7 @@ interface PluginPackageState {
   replacementRetries: Record<string, PluginInstallOptions | undefined>;
   cancelReplacement: () => void;
 
-  loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean }) => Promise<void>;
+  loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean; refresh?: boolean }) => Promise<boolean>;
   // 返回是否成功，供详情页在加载失败时保留当前导航状态。
   loadDetail: (id: string) => Promise<boolean>;
   create: (params: {
@@ -188,10 +188,10 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
     const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
-      const freshPackages = await pluginPackagesApi.list(filter);
-      if (requestScope !== catalogScope()) return;
+      const freshPackages = await pluginPackagesApi.list(filter, '', { refresh: options?.refresh === true });
+      if (requestScope !== catalogScope()) return true;
       scheduleCatalogRefresh('pluginPackageStore.ts:' + seqKey, freshPackages.cache, () => { void get().loadList(filter, { silent: true }); }, () => listRequestSeq[seqKey] === mySeq);
-      if (listRequestSeq[seqKey] !== mySeq) return; // 已有更新的同桶调用发起过，这次结果作废
+      if (listRequestSeq[seqKey] !== mySeq) return true; // 已有更新的同桶调用发起过，这次结果作废
       const packages = freshPackages;
       set((state) => {
         // installed/connectionStateMap 是 packages+localPackages 两份列表的并集，合并写入而不是
@@ -211,13 +211,16 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
           connectionStateMap: nextConnectionStateMap,
         };
       });
+      return true;
     } catch (error) {
-      if (listRequestSeq[seqKey] !== mySeq) return;
-      if (silent) return;
-      set({
-        isLoading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (listRequestSeq[seqKey] !== mySeq) return true;
+      if (!silent) {
+        set({
+          isLoading: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return false;
     }
   },
 

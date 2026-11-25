@@ -35,6 +35,7 @@ from jiuwenswarm.server.runtime.session.work_mode import (
 )
 
 from jiuwenswarm.server.runtime.session.session_info import session_type_from_metadata
+from jiuwenswarm.runtime.app_role import APP_ROLE_PROFILE, is_npc_session
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,27 @@ _PENDING_FIELDS: dict[str | tuple[str, str], dict[str, tuple[int, Any]]] = {}
 _WRITE_REVISION = 0
 
 
+# 缓存容量帽:键空间随累计会话数增长,无帽则每会话一条永驻(issue#5240 残余:
+# 受控 census 实测 ≈+2-3 obj/会话,adapter 逐出不删会话目录故无自然回收)。
+# FIFO 逐最旧;miss 只退化为一次 metadata.json 小文件读,无正确性影响。
+_METADATA_CACHE_MAX = 8192
+
+
+def _evict_metadata_cache_locked() -> None:
+    """容量帽驱逐;调用方必须已持有 ``_CACHE_LOCK``(threading.Lock 不可重入)。
+
+    缓存拆成四张同键表,驱逐时同步清 ``_METADATA_CACHE_GENERATIONS`` /
+    ``_CACHE_DISK_STAMPS`` / ``_PENDING_FIELDS``,避免残留半套状态。
+    """
+    if len(_METADATA_CACHE) < _METADATA_CACHE_MAX:
+        return
+    victim = next(iter(_METADATA_CACHE))
+    _METADATA_CACHE.pop(victim, None)
+    _METADATA_CACHE_GENERATIONS.pop(victim, None)
+    _CACHE_DISK_STAMPS.pop(victim, None)
+    _PENDING_FIELDS.pop(victim, None)
+
+
 def _disk_stamp(session_id: str) -> tuple[int, int] | None:
     try:
         stat = (get_agent_sessions_dir() / session_id / "metadata.json").stat()
@@ -109,6 +131,7 @@ def _refresh_written_cache(session_id: str, written: dict[str, Any], options: _M
     stamp = _disk_stamp(session_id)
     cache_key = _metadata_cache_key(session_id)
     with _CACHE_LOCK:
+        _evict_metadata_cache_locked()
         pending = _PENDING_FIELDS.get(cache_key, {})
         if options.write_revision:
             pending = {key: value for key, value in pending.items() if value[0] > options.write_revision}
@@ -331,6 +354,8 @@ def _apply_metadata_defaults_with_inference(
     metadata.setdefault("pinned", False)
     metadata.setdefault("pin_order", 0)
     metadata.setdefault("status", "idle")
+    if is_npc_session(metadata):
+        metadata["npc_session"] = True
 
     changed = False  # 是否有需要写盘的确定性推断
     changed_fields: set[str] = set()
@@ -624,6 +649,7 @@ def _read_metadata(
         with _CACHE_LOCK:
             cache_key = _metadata_cache_key(session_id)
             data.update({field: value[1] for field, value in _PENDING_FIELDS.get(cache_key, {}).items()})
+            _evict_metadata_cache_locked()
             _METADATA_CACHE[cache_key] = data.copy()
             _METADATA_CACHE_GENERATIONS[cache_key] = generation
             _CACHE_DISK_STAMPS[cache_key] = _disk_stamp(session_id)
@@ -765,6 +791,11 @@ def _write_metadata_unfenced(
                     to_write[pinned] = current[pinned]
                 else:
                     to_write.pop(pinned, None)
+        if current:
+            if is_npc_session(current):
+                to_write = {**to_write, "npc_session": True}
+            elif "npc_session" in to_write:
+                to_write = {key: value for key, value in to_write.items() if key != "npc_session"}
         if current is not None and isinstance(
             current.get("session_runtime_binding"),
             dict,
@@ -1056,6 +1087,7 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
     if preserve_pin_fields:
         metadata = _merge_pin_fields_from_disk(session_id, metadata)
     with _CACHE_LOCK:
+        _evict_metadata_cache_locked()
         _WRITE_REVISION += 1
         revision = _WRITE_REVISION
         cache_key = _metadata_cache_key(session_id)
@@ -1104,6 +1136,7 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
         if preserve_pin_fields:
             metadata = _merge_pin_fields_from_disk(session_id, metadata)
             with _CACHE_LOCK:
+                _evict_metadata_cache_locked()
                 _METADATA_CACHE[_metadata_cache_key(session_id)] = metadata.copy()
         # 队列满退化为同步写: 版本检查同样下沉到 _write_metadata_sync 持锁后执行
         try:
@@ -1153,6 +1186,7 @@ def init_session_metadata(
     npc_team: dict[str, Any] | None = None,
     npc_member: dict[str, Any] | None = None,
     npc_member_sessions: dict[str, str] | None = None,
+    npc_session: bool = False,
 ) -> None:
     """初始化会话元数据(同步写,确保创建后立即可读)
 
@@ -1200,6 +1234,8 @@ def init_session_metadata(
     from jiuwenswarm.runtime.app_role import normalize_execution_profile, normalize_npc_team
 
     execution_profile, role_instructions = normalize_execution_profile(execution_profile, role_instructions)
+    if npc_session or execution_profile == APP_ROLE_PROFILE:
+        metadata["npc_session"] = True
     if execution_profile != "default":
         metadata["execution_profile"] = execution_profile
         metadata["role_instructions"] = role_instructions
@@ -1214,6 +1250,31 @@ def init_session_metadata(
             }
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
+    # 配额门禁：metadata.json 落盘前检查（对齐 !7494；覆盖 designer/rename 等
+    # 不经 session.create bootstrap 预检的调用方）。
+    try:
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+            WorkspaceQuotaExceeded as _workspace_quota_exceeded,
+            check_workspace_write,
+            is_workspace_quota_enabled,
+        )
+    except Exception:  # noqa: BLE001
+        _workspace_quota_exceeded = ()  # type: ignore[misc, assignment]
+        check_workspace_write = None  # type: ignore[assignment]
+        is_workspace_quota_enabled = None  # type: ignore[assignment]
+    if callable(is_workspace_quota_enabled) and is_workspace_quota_enabled():
+        try:
+            approx = len(
+                json.dumps(metadata, ensure_ascii=False, default=str).encode("utf-8")
+            )
+            check_workspace_write(additional_bytes=max(64, approx))
+        except _workspace_quota_exceeded:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[workspace.quota] init_session_metadata precheck skipped",
+                exc_info=True,
+            )
     _write_metadata_sync(session_id, metadata)
 
 
@@ -1253,6 +1314,7 @@ def update_session_metadata(
     group_members: list[dict[str, Any]] | None = None,
     conversation_type: str | None = None,
     organization_owner_stopped: bool | None = None,
+    is_paused: bool | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -1264,6 +1326,10 @@ def update_session_metadata(
 
     pinned / pin_order 语义：覆盖式，由 session.pin handler 传入；
     未传(None)时不修改。紧凑重编号由 handler 层统一完成。
+
+    is_paused：覆盖式。Team Stop/pause 成功后写 True，cancel 或续跑恢复后写
+    False；未传(None)时不修改。企业版刷新靠此字段重建暂停看板，不应只依赖
+    Runner 内存态。
 
     touch_last_message_at：是否刷新 ``last_message_at`` 为当前时刻。默认 ``True``
     (消息追加等场景)。纯状态更新(如 ``set_session_pinned`` 的置顶/重编号)应传
@@ -1286,6 +1352,8 @@ def update_session_metadata(
         if conversation_type == "chat" and group_members is not None:
             raise ValueError("a group roster requires group_chat type")
 
+    if is_paused is not None and not isinstance(is_paused, bool):
+        raise ValueError("is_paused must be a boolean")
     metadata = _read_metadata(session_id, cache_bust=cache_bust)
     before = copy.deepcopy(metadata)
 
@@ -1336,6 +1404,7 @@ def update_session_metadata(
             "pin_order": pin_order if pin_order is not None else 0,
             "status": "idle",
             "work_mode": resolved_work_mode,
+            "is_paused": bool(is_paused) if is_paused is not None else False,
         }
         # 首次创建时写入 channel_metadata
         if channel_metadata:
@@ -1445,6 +1514,8 @@ def update_session_metadata(
             metadata["session_harness_checkpoint"] = copy.deepcopy(
                 session_harness_checkpoint
             )
+        if is_paused is not None:
+            metadata["is_paused"] = bool(is_paused)
 
         # 更新最后消息时间(可由 touch_last_message_at=False 关闭,供置顶重编号等
         # 非消息操作复用本函数而不腐蚀 last_message_at 语义)
@@ -1465,7 +1536,7 @@ def update_session_metadata(
         ("organization_owner_stopped", organization_owner_stopped),
         ("accent_color", accent_color), ("pinned", pinned), ("pin_order", pin_order),
         ("moa_enabled", moa_enabled), ("session_harness_checkpoint", session_harness_checkpoint),
-        ("group_members", group_members),
+        ("group_members", group_members), ("is_paused", is_paused),
     )
     changed = _changed_fields(before, metadata) | frozenset(
         name for name, value in explicit_fields if value is not None

@@ -162,11 +162,13 @@ class PermissionApprovalRepository(SQLiteStore):
         approver_agent_id = record.agent_id
         # Business-sharing confirmations retain their dedicated owner-only decision path.
         sharing = any(item.get("approval_ref") for item in intercepted)
+        request_input = record.request_input
+        bot_handoff = request_input.kind == "group_message" and request_input.source.sender_kind == "agent"
+        swarmchat_route = route is not None and route.channel == "swarmchat"
         if not sharing and record.permission_origin is not None:
             origin = record.permission_origin
             principal, route, approver_agent_id = origin.principal_ref, origin.route, origin.agent_id
-        elif (not sharing and record.request_input.kind == "group_message"
-              and record.request_input.source.sender_kind == "agent"):
+        elif not sharing and bot_handoff and not swarmchat_route:
             # A Bot handoff without a verified human root must not be approved by
             # the Bot itself or by an arbitrary member of the current group.
             route = None

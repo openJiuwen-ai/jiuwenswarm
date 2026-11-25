@@ -261,10 +261,16 @@ async def test_group_history_checks_scope_robot_code_instead_of_default_app_or_c
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('scope_app', [None, {
-    'persistent_agent_id': 'employee-1', 'client_id': 'disabled-app', 'client_secret': 'secret', 'enabled': False,
-}])
-async def test_group_history_never_uses_default_app_without_enabled_exact_binding(tmp_path, monkeypatch, scope_app):
+@pytest.mark.parametrize(('scope_app', 'error_code'), [
+    (None, 'DINGTALK_CLI_GROUP_BOT_NOT_PRESENT'),
+    ({
+        'persistent_agent_id': 'employee-1', 'client_id': 'disabled-app',
+        'client_secret': 'secret', 'enabled': False,
+    }, 'DINGTALK_CLI_APP_NOT_CONFIGURED'),
+])
+async def test_group_history_never_uses_default_app_without_enabled_exact_binding(
+    tmp_path, monkeypatch, scope_app, error_code,
+):
     runtime, calls = _online_document_runtime(tmp_path, monkeypatch, [
         {'success': True, 'result': {'bots': [{'robotCode': 'default-app'}]}},
     ])
@@ -278,7 +284,7 @@ async def test_group_history_never_uses_default_app_without_enabled_exact_bindin
             DingTalkCliScope('local', 'employee-1'), conversation_id='cid-known', since='2026-10-30T14:00:00+00:00',
         )
 
-    assert failure.value.code == 'DINGTALK_CLI_GROUP_BOT_NOT_PRESENT'
+    assert failure.value.code == error_code
     assert all(call[0][1:4] != ['chat', 'message', 'list'] for call in calls)
 
 
@@ -1036,7 +1042,7 @@ def test_default_dingtalk_program_cache_is_outside_project_data(tmp_path, monkey
     monkeypatch.setattr(dingtalk_cli_local_provider, '_find_npx', lambda: tmp_path / 'npx')
     monkeypatch.setattr(sys, 'platform', platform)
     monkeypatch.setattr(utils, 'get_user_home', lambda: tmp_path)
-    monkeypatch.setattr(service, 'default_data_dir', lambda: tmp_path / '.jiuwenswarm' / 'jiuwenmate')
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_jiuwenmate_dir", lambda: tmp_path / ".jiuwenswarm" / "jiuwenmate")
     for name in ('LOCALAPPDATA', 'XDG_CACHE_HOME', 'JIUWENMATE_DINGTALK_CLI_HOME', 'JIUWENMATE_DWS_BIN'):
         monkeypatch.delenv(name, raising=False)
     runtime = create_provider()
@@ -1121,9 +1127,9 @@ async def test_online_group_document_creates_directly_in_group_without_sending_u
     assert not any(args[1:3] == ['chat', 'message'] for args in calls)
 
 
-def test_runtime_shares_the_default_application_with_every_employee(tmp_path):
+def test_runtime_shares_the_personal_default_application_with_every_employee(tmp_path):
     config = _config(
-        _app("employee-1", "default-app", "default-secret", is_default=True),
+        _app("", "default-app", "default-secret", is_default=True),
         _app("employee-2", "employee-app", "employee-secret"),
         _app("employee-3", "disabled-app", "disabled-secret", enabled=False),
     )

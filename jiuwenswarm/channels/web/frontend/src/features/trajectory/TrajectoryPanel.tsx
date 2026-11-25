@@ -392,7 +392,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   onSummaryChange,
   onArchiveActionsReady,
 }: TrajectoryPanelProps) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
   const sessionTeamMode = mode === 'team';
   // Swarmflow run summaries (task names) for the workflow lane grouping; runs
@@ -561,6 +561,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     rawExpand: '展开原始 OTel 面板',
     rawResize: '调整原始 OTel 面板高度',
     toolbar: {
+      'goalAssessment.status.running': '评估中',
+      'goalAssessment.status.complete': '完成',
+      'goalAssessment.status.continue': '继续执行',
+      'goalAssessment.status.blocked': '阻塞',
+      'goalAssessment.status.error': '失败',
+      'goalAssessment.status.unknown': '无有效结论',
+      'goalAssessment.label': 'Goal 评估',
+      'goalAssessment.title': 'Goal 评估 · 第 {{attempt}} 轮',
+      'goalAssessment.summary': '独立评估：{{count}} 次调用 · {{tokens}} tokens',
+      'goalAssessment.isolated': '仅用于复核目标，不属于执行 Agent 的对话上下文',
       'toolbar.aria': '轨迹工具栏',
       'toolbar.duration': '时长',
       'toolbar.useActualDuration': '使用实际时长',
@@ -910,9 +920,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         }
         if (signal.aborted || !coordinator.isCurrent(generation)) return false;
         if (page.store_epoch !== seeded.storeEpoch) {
-          throw new Error(chinese
-            ? '轨迹保留清理正在进行，请稍后重试。'
-            : 'Trajectory retention is running; retry shortly.');
+          throw new Error(t('trajectory.retentionRunning'));
         }
         checkpointsRef.current = seeded.checkpoints;
         trajectoryV2ReducerRef.current.seed(seeded.checkpoints.v2Seeds);

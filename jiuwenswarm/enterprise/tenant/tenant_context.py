@@ -2,8 +2,13 @@
 
 """Request-scoped tenant context keyed by ``tenant_key``.
 
-Design surface: ``TenantContext.bind(tenant_key)`` / ``reset()``.
-Internal storage remains ContextVar-based (compatible with async tasks).
+Design surface: ``TenantContext.bind(tenant_key, *, group_id, bot_id, user_id)``
+/ ``reset()``. Internal storage remains ContextVar-based (compatible with
+async tasks).
+
+The plaintext routing triple ``(group_id, bot_id, user_id)`` lives on the same
+envelope so downstream features (workspace quota, etc.) can reuse identity
+without a parallel ContextVar stack.
 """
 
 from __future__ import annotations
@@ -26,6 +31,15 @@ _TENANT_AGENT_ROOT_CV: contextvars.ContextVar[str | None] = contextvars.ContextV
 _TENANT_ROOT_CV: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "tenant_root", default=None
 )
+_TENANT_GROUP_ID_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "tenant_group_id", default=""
+)
+_TENANT_BOT_ID_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "tenant_bot_id", default=""
+)
+_TENANT_USER_ID_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "tenant_user_id", default=""
+)
 
 
 @dataclass(frozen=True)
@@ -34,10 +48,13 @@ class _TenantContextTokens:
     agent_workspace_root: contextvars.Token
     agent_root: contextvars.Token
     tenant_root: contextvars.Token
+    group_id: contextvars.Token
+    bot_id: contextvars.Token
+    user_id: contextvars.Token
 
 
 class TenantContext:
-    """Request-scoped tenant binding (tenant_key + workspace paths)."""
+    """Request-scoped tenant binding (tenant_key + paths + plaintext triple)."""
 
     __slots__ = ("_tokens",)
 
@@ -68,8 +85,32 @@ class TenantContext:
         return Path(bound) if bound else None
 
     @classmethod
-    def bind(cls, tenant_key: str) -> "TenantContext":
-        """Bind ``tenant_key`` and (enterprise) derived workspace paths."""
+    def current_group_id(cls) -> str:
+        return _TENANT_GROUP_ID_CV.get() or ""
+
+    @classmethod
+    def current_bot_id(cls) -> str:
+        return _TENANT_BOT_ID_CV.get() or ""
+
+    @classmethod
+    def current_user_id(cls) -> str:
+        return _TENANT_USER_ID_CV.get() or ""
+
+    @classmethod
+    def current_triple(cls) -> tuple[str, str, str]:
+        """Return bound plaintext ``(group_id, bot_id, user_id)`` (may be empty)."""
+        return (cls.current_group_id(), cls.current_bot_id(), cls.current_user_id())
+
+    @classmethod
+    def bind(
+        cls,
+        tenant_key: str,
+        *,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+        user_id: str | None = None,
+    ) -> "TenantContext":
+        """Bind ``tenant_key``, optional plaintext triple, and (enterprise) paths."""
         from jiuwenswarm.common.utils import (
             get_agent_root_dir,
             get_agent_workspace_dir,
@@ -81,6 +122,9 @@ class TenantContext:
         )
 
         key = str(tenant_key or "").strip() or build_tenant_key()
+        gid = str(group_id or "").strip()
+        bid = str(bot_id or "").strip()
+        uid = str(user_id or "").strip()
 
         if is_enterprise():
             tenant_root = get_multi_tenant_user_workspace_dir(key)
@@ -96,14 +140,21 @@ class TenantContext:
                 ),
                 agent_root=_TENANT_AGENT_ROOT_CV.set(str(agent_root)),
                 tenant_root=_TENANT_ROOT_CV.set(str(tenant_root)),
+                group_id=_TENANT_GROUP_ID_CV.set(gid),
+                bot_id=_TENANT_BOT_ID_CV.set(bid),
+                user_id=_TENANT_USER_ID_CV.set(uid),
             )
         else:
-            # Personal: bind key only; path CVs stay unbound so getters keep develop layout.
+            # Personal: bind key + optional identity; path CVs stay unbound
+            # so getters keep develop layout.
             tokens = _TenantContextTokens(
                 tenant_key=_TENANT_KEY_CV.set(key),
                 agent_workspace_root=_TENANT_AGENT_WORKSPACE_ROOT_CV.set(None),
                 agent_root=_TENANT_AGENT_ROOT_CV.set(None),
                 tenant_root=_TENANT_ROOT_CV.set(None),
+                group_id=_TENANT_GROUP_ID_CV.set(gid),
+                bot_id=_TENANT_BOT_ID_CV.set(bid),
+                user_id=_TENANT_USER_ID_CV.set(uid),
             )
         return cls(tokens)
 
@@ -113,11 +164,23 @@ class TenantContext:
         _TENANT_AGENT_WORKSPACE_ROOT_CV.reset(self._tokens.agent_workspace_root)
         _TENANT_AGENT_ROOT_CV.reset(self._tokens.agent_root)
         _TENANT_ROOT_CV.reset(self._tokens.tenant_root)
+        _TENANT_GROUP_ID_CV.reset(self._tokens.group_id)
+        _TENANT_BOT_ID_CV.reset(self._tokens.bot_id)
+        _TENANT_USER_ID_CV.reset(self._tokens.user_id)
 
     @classmethod
     @contextmanager
-    def scoped(cls, tenant_key: str) -> Iterator["TenantContext"]:
-        ctx = cls.bind(tenant_key)
+    def scoped(
+        cls,
+        tenant_key: str,
+        *,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+        user_id: str | None = None,
+    ) -> Iterator["TenantContext"]:
+        ctx = cls.bind(
+            tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
+        )
         try:
             yield ctx
         finally:
@@ -130,3 +193,6 @@ class TenantContext:
         _TENANT_AGENT_WORKSPACE_ROOT_CV.set(None)
         _TENANT_AGENT_ROOT_CV.set(None)
         _TENANT_ROOT_CV.set(None)
+        _TENANT_GROUP_ID_CV.set("")
+        _TENANT_BOT_ID_CV.set("")
+        _TENANT_USER_ID_CV.set("")

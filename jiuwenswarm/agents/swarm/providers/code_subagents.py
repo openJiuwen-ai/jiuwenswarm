@@ -319,7 +319,7 @@ def build_swarm_cua_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext
     )
     if spec is None:
         return None
-    # Preserve the cua_* factory kwargs baked in by agent-core; only add the
+    # Preserve the CUA factory options; only add the
     # workspace flag.
     spec.factory_kwargs = {**(spec.factory_kwargs or {}), "auto_create_workspace": False}
     return spec

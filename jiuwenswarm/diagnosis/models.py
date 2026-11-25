@@ -311,6 +311,7 @@ class DiagnosisRecord(DiagnosisSummary):
     reward_failure_causes: list[RewardFailureCause] = Field(default_factory=list)
     evolution_judge: list[EvolutionJudge] = Field(default_factory=list)
     artifact_improvement: str | None = None
+    design_suggestion: str | None = None
     ttse_trigger: dict[str, TtseTriggerResult] = Field(default_factory=dict)
     error: DiagnosisError | None = None
     reward: dict[str, Any] | None = None

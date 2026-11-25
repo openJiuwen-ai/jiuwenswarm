@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Check, ChevronDown, ChevronRight, ChevronUp, FileCode2, Folder, LoaderCircle, Search } from 'lucide-react';
 import CollapseAllIcon from '../../assets/collapse-all.svg?react';
 import ExpandAllIcon from '../../assets/expand-all.svg?react';
@@ -260,10 +262,11 @@ function SplitDiff({ file }: { file: GitDiffFile }) {
 }
 
 function FileDiff({ file, viewMode }: { file: GitDiffFile; viewMode: DiffViewMode }) {
-  if (file.is_binary) return <div className="code-review__empty">二进制文件不能显示文本差异。</div>;
+  const { t } = useTranslation();
+  if (file.is_binary) return <div className="code-review__empty">{t('codeMode.reviewPanel.binaryFile')}</div>;
   if (file.is_large_file && file.hunks.length === 0)
-    return <div className="code-review__empty">该文件差异超过 1MB，已跳过内容预览。</div>;
-  if (file.hunks.length === 0) return <div className="code-review__empty">该文件没有可显示的差异内容。</div>;
+    return <div className="code-review__empty">{t('codeMode.reviewPanel.largeFileSkipped')}</div>;
+  if (file.hunks.length === 0) return <div className="code-review__empty">{t('codeMode.reviewPanel.noDiffContent')}</div>;
   return viewMode === 'split' ? <SplitDiff file={file} /> : <UnifiedDiff file={file} />;
 }
 
@@ -292,22 +295,23 @@ const EMPTY_STATS: GitDiffStats = {
   lines_removed: 0,
 };
 
-function getReviewErrorMessage(error: unknown): string {
+function getReviewErrorMessage(error: unknown, t: TFunction): string {
   const webError = error as WebError;
   switch (webError.code) {
     case 'DIFF_HISTORY_EXPIRED':
-      return '该轮差异历史已过期，无法恢复详情。';
+      return t('codeMode.reviewErrors.historyExpired');
     case 'CHANGE_SET_NOT_FOUND':
     case 'TURN_DIFF_NOT_FOUND':
-      return '没有找到该轮代码修改记录。';
+      return t('codeMode.reviewErrors.turnNotFound');
     case 'GIT_TRANSIENT_STATE':
-      return '仓库正在合并或变基，暂时无法加载审核详情。';
+      return t('codeMode.reviewErrors.transientState');
     default:
-      return webError.message || '加载审核结果失败';
+      return webError.message || t('codeMode.reviewErrors.loadFailed');
   }
 }
 
 export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, isProcessing }: CodeReviewPanelProps) {
+  const { t } = useTranslation();
   const [source, setSource] = useState<CodeReviewSource>(
     target?.source === 'working_tree' ? 'working_tree' : 'last_turn',
   );
@@ -356,11 +360,11 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
     } catch (nextError) {
       if (loadSequenceRef.current !== loadSequence) return;
       setTurnDiff(null);
-      setTurnError(getReviewErrorMessage(nextError));
+      setTurnError(getReviewErrorMessage(nextError, t));
     } finally {
       if (loadSequenceRef.current === loadSequence) setTurnLoading(false);
     }
-  }, [project, sessionId, target]);
+  }, [project, sessionId, target, t]);
 
   useEffect(() => {
     loadSequenceRef.current += 1;
@@ -528,15 +532,15 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
       return (
         <div className="code-review-state" data-testid="code-mode-review-state" data-variant="loading">
           <LoaderCircle className="code-mode-spin" size={18} />
-          <span>正在加载审核结果…</span>
+          <span>{t('codeMode.reviewPanel.loadingResults')}</span>
         </div>
       );
     }
     if ((sourceError && files.length === 0) || repoUnavailable || repoTransient) {
       const message =
         sourceError ||
-        (repoUnavailable ? '当前项目不是可用的 Git 仓库，无法查看分支修改。' : null) ||
-        (repoTransient ? '仓库正在执行 Git 操作，处理完成后再查看工作区差异。' : null);
+        (repoUnavailable ? t('codeMode.reviewPanel.repoUnavailable') : null) ||
+        (repoTransient ? t('codeMode.reviewPanel.repoTransient') : null);
       return (
         <div className="code-review-state" data-testid="code-mode-review-state" data-variant="error">
           <FileCode2 size={20} />
@@ -547,7 +551,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
             onClick={reload}
             data-testid="code-mode-review-state-reload"
           >
-            重新加载
+            {t('codeMode.reviewPanel.reload')}
           </button>
         </div>
       );
@@ -556,7 +560,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
       return (
         <div className="code-review-state" data-testid="code-mode-review-state" data-variant="empty">
           <FileCode2 size={20} />
-          <span>{source === 'working_tree' ? '当前分支没有未提交修改。' : '暂无最近一轮代码修改可供审核。'}</span>
+          <span>{source === 'working_tree' ? t('codeMode.reviewPanel.noUncommittedChanges') : t('codeMode.reviewPanel.noRecentChanges')}</span>
         </div>
       );
     }
@@ -564,12 +568,12 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
       <>
         {sourceError ? (
           <div className="code-review__notice" data-testid="code-mode-review-notice">
-            {sourceError}，当前保留上次成功加载的内容。
+            {t('codeMode.reviewPanel.staleContentKept', { error: sourceError })}
           </div>
         ) : null}
         {filesTruncated ? (
           <div className="code-review__notice" role="status" data-testid="code-mode-review-files-truncated-notice">
-            实际变更 {stats.files_changed} 个文件，预览仅显示前 {filesLimit || 50} 个。
+            {t('codeMode.reviewPanel.filesTruncated', { total: stats.files_changed, shown: filesLimit || 50 })}
           </div>
         ) : null}
         <div className="code-review__body" data-testid="code-mode-review-body">
@@ -580,7 +584,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
                 <input
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder="搜索文件"
+                  placeholder={t('codeMode.reviewPanel.searchFiles')}
                   data-testid="code-mode-review-files-search-input"
                 />
               </label>
@@ -626,7 +630,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
                     </button>
                     {expanded && source === 'working_tree' && !detailReady ? (
                       <div className="code-review__empty" data-testid="code-mode-review-file-empty">
-                        {diffWatch.detailError || (diffWatch.detailLoading ? '正在加载文件差异…' : '正在等待文件差异…')}
+                        {diffWatch.detailError || (diffWatch.detailLoading ? t('codeMode.reviewPanel.loadingFileDiff') : t('codeMode.reviewPanel.waitingFileDiff'))}
                       </div>
                     ) : expanded ? (
                       <FileDiff file={file} viewMode={viewMode} />
@@ -644,7 +648,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
   return (
     <section
       className="code-review code-review--embedded"
-      aria-label="审核代码修改"
+      aria-label={t('codeMode.reviewPanel.ariaLabel')}
       data-testid="code-mode-review-panel"
     >
       <div className="code-review__toolbar" data-testid="code-mode-review-toolbar">
@@ -653,7 +657,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
             type="button"
             className="code-review__icon-button"
             onClick={() => setFilePanelOpen((open) => !open)}
-            title="切换文件侧边栏"
+            title={t('codeMode.reviewPanel.toggleFilesSidebar')}
             data-testid="code-mode-review-toggle-files"
           >
             <img src={filePanelOpen ? menuCollapseIcon : menuExpandIcon} width={17} height={17} aria-hidden="true" />
@@ -669,7 +673,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
                   aria-haspopup="menu"
                   data-testid="code-mode-review-source-trigger"
                 >
-                  <span>{source === 'working_tree' ? '分支' : '上一轮'}</span>
+                  <span>{source === 'working_tree' ? t('codeMode.reviewPanel.sourceBranch') : t('codeMode.reviewPanel.sourceLastTurn')}</span>
                   <ChevronDown size={14} />
                 </button>
                 {sourceMenuOpen ? (
@@ -684,7 +688,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
                       data-testid="code-mode-review-source-menu-item"
                       data-variant="last_turn"
                     >
-                      <span>上一轮</span>
+                      <span>{t('codeMode.reviewPanel.sourceLastTurn')}</span>
                       {source === 'last_turn' ? <Check size={15} /> : null}
                     </button>
                     <button
@@ -697,7 +701,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
                       data-testid="code-mode-review-source-menu-item"
                       data-variant="working_tree"
                     >
-                      <span>分支</span>
+                      <span>{t('codeMode.reviewPanel.sourceBranch')}</span>
                       {source === 'working_tree' ? <Check size={15} /> : null}
                     </button>
                   </div>
@@ -705,7 +709,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
               </div>
               <div className="code-review__summary" data-testid="code-mode-review-summary">
                 <span className="code-review__summary-label" data-testid="code-mode-review-summary-files">
-                  {stats.files_changed} 个文件已更改
+                  {t('codeMode.reviewPanel.filesChanged', { n: stats.files_changed })}
                 </span>
                 <span
                   className="code-review__stat code-review__stat--added"
@@ -725,7 +729,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
                     role="status"
                     data-testid="code-mode-review-discarded-status"
                   >
-                    此修改已撤销
+                    {t('codeMode.reviewPanel.changeDiscarded')}
                   </span>
                 ) : null}
               </div>
@@ -748,7 +752,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
                 setExpandedPaths(new Set(files.map((file) => file.file_path)));
               }
             }}
-            data-tooltip={files.length > 0 && expandedPaths.size === files.length ? '全部收起' : '全部展开'}
+            data-tooltip={files.length > 0 && expandedPaths.size === files.length ? t('codeMode.reviewPanel.collapseAll') : t('codeMode.reviewPanel.expandAll')}
             data-testid="code-mode-review-collapse"
             {...tooltipHandlers}
           >
@@ -762,7 +766,7 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
             type="button"
             className="code-review__icon-button"
             onClick={() => setViewMode(viewMode === 'unified' ? 'split' : 'unified')}
-            data-tooltip={viewMode === 'unified' ? '切换到统一差异视图' : '切换到拆分差异视图'}
+            data-tooltip={viewMode === 'unified' ? t('codeMode.reviewPanel.switchToUnified') : t('codeMode.reviewPanel.switchToSplit')}
             data-testid="code-mode-review-view-mode"
             data-variant={viewMode}
             {...tooltipHandlers}
@@ -790,16 +794,16 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
       </div>
       {repoIsParentOfProject ? (
         <div className="code-review__notice" role="status" data-testid="code-mode-review-repo-parent-notice">
-          当前 Git 仓库位于项目目录的上级（{repoRoot}），“分支”变更会统计项目目录之外的文件。
+          {t('codeMode.reviewPanel.repoParentNotice', { repoRoot })}
         </div>
       ) : null}
       {renderReviewBody()}
       <footer className="code-review__footer" data-testid="code-mode-review-footer">
         {source === 'last_turn'
           ? reviewDocument
-            ? `当前展示第 ${reviewDocument.turnIndex} 轮 Agent 修改的历史快照${reviewDocument.status === 'discarded' ? '（已撤销）' : ''}，后续修改不会覆盖该轮差异。`
-            : '上一轮使用固定历史快照，后续修改不会覆盖该轮差异。'
-          : '当前展示工作区相对 HEAD 的修改，文件变化会实时更新。'}
+            ? t('codeMode.reviewPanel.footerSnapshotTurn', { turn: reviewDocument.turnIndex, discarded: reviewDocument.status === 'discarded' ? t('codeMode.reviewPanel.discardedSuffix') : '' })
+            : t('codeMode.reviewPanel.footerSnapshot')
+          : t('codeMode.reviewPanel.footerWorkingTree')}
       </footer>
       {tooltip}
     </section>

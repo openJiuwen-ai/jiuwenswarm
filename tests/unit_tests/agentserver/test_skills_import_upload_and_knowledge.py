@@ -362,7 +362,7 @@ def test_finalize_create_from_knowledge_missing_skill_md_follows_language(
     assert expected in str(exc.value)
 
 
-def test_knowledge_language_falls_back_to_chinese_when_config_unreadable(
+def test_knowledge_language_falls_back_to_english_when_config_unreadable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from jiuwenswarm.server.runtime.skill import skill_manager as sm
@@ -371,7 +371,7 @@ def test_knowledge_language_falls_back_to_chinese_when_config_unreadable(
         raise OSError("config missing")
 
     monkeypatch.setattr("jiuwenswarm.common.config.get_config", _boom)
-    assert sm._knowledge_skill_language() == "zh"
+    assert sm._knowledge_skill_language() == "en"
 
 
 def test_multipart_import_http_local(manager: SkillManager, monkeypatch: pytest.MonkeyPatch) -> None:

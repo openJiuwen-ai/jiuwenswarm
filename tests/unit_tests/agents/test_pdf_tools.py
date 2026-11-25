@@ -300,7 +300,7 @@ async def test_read_pdf_relative_path_matches_permission_primary_workspace(
         _build_minimal_pdf(["Wrong global workspace file"])
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        "jiuwenswarm.common.paths.get_agent_workspace_dir",
         lambda: global_workspace,
     )
     init_cwd(str(workspace), project_root=str(workspace), workspace=str(workspace))

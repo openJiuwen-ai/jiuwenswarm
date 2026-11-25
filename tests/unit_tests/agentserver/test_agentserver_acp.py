@@ -7,6 +7,7 @@ import types
 import pytest
 from openjiuwen.agent_teams.runtime import RunActionKind
 from e2a.wire_codec import parse_agent_server_wire_unary
+from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
 
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
     SymphonyRetrievalCompactProcessorConfig,
@@ -16,7 +17,6 @@ from jiuwenswarm.agents.harness.common.tools.acp_output_tools import (
     AcpOutputRequest,
     get_acp_output_manager,
 )
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.observability.session_delete import trajectory_session_accepts_records
@@ -4684,3 +4684,51 @@ def test_build_context_assemble_rail_returns_context_assemble_rail_instance(monk
     rail = adapter.build_context_assemble_rail_for_test()
 
     assert isinstance(rail, FakeContextAssembleRail)
+
+
+@pytest.mark.parametrize(
+    ("caps", "removed", "registered"),
+    [
+        ({"fs": False, "terminal": False}, set(), set()),
+        ({"fs": False, "terminal": True}, {"bash"}, {
+            "create_terminal", "read_terminal_output", "wait_for_terminal_exit", "release_terminal",
+        }),
+    ],
+)
+def test_acp_tool_selection_keeps_local_fallbacks(caps, removed, registered, tmp_path, monkeypatch):
+    adapter_type = interface_deep_module.JiuWenSwarmDeepAdapter
+    adapter = object.__new__(adapter_type)
+    removals = set()
+    registrations = set()
+    manager = types.SimpleNamespace(
+        list=lambda: [types.SimpleNamespace(name=name) for name in ("read_file", "write_file", "bash")],
+        remove=removals.add,
+        add=lambda card: registrations.add(card.name),
+    )
+    adapter._instance = types.SimpleNamespace(ability_manager=manager)
+    monkeypatch.setattr(adapter, "_tool_owner_id", lambda: "owner")
+    monkeypatch.setattr(adapter, "_register_agent_owned_tool", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_collect_registered_ability_names", lambda: registrations)
+
+    adapter._refresh_acp_runtime_tools(
+        "session", "request", "acp", {"acp_client_capabilities": caps}, str(tmp_path),
+    )
+
+    assert removals == removed
+    assert registrations == registered
+
+
+@pytest.mark.asyncio
+async def test_acp_create_terminal_defaults_to_runtime_cwd(tmp_path, monkeypatch):
+    calls = []
+
+    async def create_terminal(cmd, *, cwd, session_id):
+        calls.append((cmd, cwd, session_id))
+        return {"terminalId": "created"}
+
+    monkeypatch.setattr(acp_output_tools, "create_terminal", create_terminal)
+    tools = acp_output_tools.get_tools(session_id="session", default_cwd=str(tmp_path))
+    create = next(tool for tool in tools if tool.card.name == "create_terminal")
+    await create.invoke({"cmd": "pwd"})
+
+    assert calls == [("pwd", str(tmp_path), "session")]

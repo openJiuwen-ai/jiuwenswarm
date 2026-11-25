@@ -842,6 +842,14 @@ async def _create_design_workspace_once(
             "messages": [],
         }, None, None
     except Exception as exc:  # noqa: BLE001
+        try:
+            from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+                WorkspaceQuotaExceeded as _workspace_quota_exceeded,
+            )
+        except Exception:  # noqa: BLE001
+            _workspace_quota_exceeded = ()  # type: ignore[misc, assignment]
+        if isinstance(exc, _workspace_quota_exceeded):
+            return None, "WORKSPACE_QUOTA_EXCEEDED", "WORKSPACE_QUOTA_EXCEEDED"
         logger.exception("Failed to create design workspace")
         return None, str(exc), "INTERNAL_ERROR"
     finally:
@@ -941,18 +949,29 @@ def _create_design_session(
     existing = _design_sessions(project_id)
     title = _session_title(params.get("title"), f"画布 {len(existing) + 1}")
     session_id = f"design_{uuid.uuid4().hex}"
-    init_session_metadata(
-        session_id=session_id,
-        channel_id=request.channel_id or "web",
-        user_id=str(request.user_id or ""),
-        title=title,
-        mode="designer",
-        project_dir=str(project.project_dir or ""),
-        project_id=project_id,
-        persist_session=True,
-        work_mode=DESIGN_WORK_MODE,
-        agent_group_name=DESIGNER_AGENT_GROUP,
-    )
+    try:
+        init_session_metadata(
+            session_id=session_id,
+            channel_id=request.channel_id or "web",
+            user_id=str(request.user_id or ""),
+            title=title,
+            mode="designer",
+            project_dir=str(project.project_dir or ""),
+            project_id=project_id,
+            persist_session=True,
+            work_mode=DESIGN_WORK_MODE,
+            agent_group_name=DESIGNER_AGENT_GROUP,
+        )
+    except Exception as exc:  # noqa: BLE001
+        try:
+            from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+                WorkspaceQuotaExceeded as _workspace_quota_exceeded,
+            )
+        except Exception:  # noqa: BLE001
+            _workspace_quota_exceeded = ()  # type: ignore[misc, assignment]
+        if isinstance(exc, _workspace_quota_exceeded):
+            return None, "WORKSPACE_QUOTA_EXCEEDED", "WORKSPACE_QUOTA_EXCEEDED"
+        raise
     try:
         graph = normalize_execution_graph(
             {
@@ -1163,8 +1182,12 @@ def _save_graph(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | No
     raw_graph = params.get("graph")
     if not isinstance(raw_graph, dict):
         return None, "graph is required", "BAD_REQUEST"
+    layout_only = params.get("layout_only") is True
     try:
         graph = normalize_execution_graph(raw_graph)
+        if layout_only:
+            saved = _store.save_graph(graph, layout_only=True)
+            return {"graph": dict(saved)}, None, None
         # The server-minted run id must survive client saves: the canvas's
         # in-memory graph predates the first trigger's mint, so its save
         # would wipe team_design_run_id and the next trigger would mint a

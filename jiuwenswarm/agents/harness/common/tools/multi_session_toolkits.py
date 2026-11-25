@@ -38,8 +38,17 @@ from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import get_mcp_tools, track_mcp_search_tools
 from jiuwenswarm.runtime.context import get_current_agent_manager
 from jiuwenswarm.common.host_services import send_runtime_push
+from jiuwenswarm.common.i18n import t
 
 logger = logging.getLogger(__name__)
+
+
+def _t(message_id: str, **params) -> str:
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    return t(message_id, language=resolve_preferred_language(), **params)
 
 
 class Status(str, Enum):
@@ -152,7 +161,10 @@ class MultiSessionToolkit:
                 self._update_session(session_id, Status.COMPLETED, result_str)
                 await self.notify(session_id, Status.COMPLETED, result=result_str)
             except asyncio.TimeoutError:
-                timeout_msg = f"任务超时（超过 {self._task_timeout:.0f} 秒）"
+                timeout_msg = _t(
+                    "tools.multi_session.timeout",
+                    seconds=f"{self._task_timeout:.0f}",
+                )
                 logger.warning(
                     "[MultiSessionToolkit] 协程超时 session_id=%s timeout=%.1fs",
                     session_id,
@@ -162,7 +174,9 @@ class MultiSessionToolkit:
                 await self.notify(session_id, Status.ERROR, error=timeout_msg)
             except asyncio.CancelledError:
                 logger.info("[MultiSessionToolkit] 协程已取消 session_id=%s", session_id)
-                self._update_session(session_id, Status.CANCELLED, "任务已取消")
+                self._update_session(
+                    session_id, Status.CANCELLED, _t("tools.multi_session.cancelled")
+                )
                 await self.notify(session_id, Status.CANCELLED)
                 raise
             except Exception as e:
@@ -218,9 +232,9 @@ class MultiSessionToolkit:
         else:  # ERROR, CANCELLED
             payload_status = "error"
             if status == Status.CANCELLED:
-                message = error or "任务已取消"
+                message = error or _t("tools.multi_session.cancelled")
             else:
-                message = error or "任务执行失败"
+                message = error or _t("tools.multi_session.failed")
 
         payload = {
             "event_type": "chat.session_result",
@@ -266,7 +280,7 @@ class MultiSessionToolkit:
 
         # 检查是否所有任务都已完成，如果是则发送最终汇总
         if self.all_tasks_done():
-            session_result_summary = "后台会话任务均已完成：\n"
+            session_result_summary = _t("tools.multi_session.all_done") + "\n"
             for st in self.sessions:
                 session_result_summary += (f"\nsession_id: {st.session_id}\n"
                                            f"description: {st.description}\nresult: {st.result}\n")
@@ -380,7 +394,7 @@ class MultiSessionToolkit:
                 self._tasks[session_id] = task
                 created.append(session_id)
             except Exception as e:
-                error_msg = f"创建任务失败: {str(e)}"
+                error_msg = _t("tools.multi_session.create_failed", error=e)
                 logger.error(
                     "[MultiSessionToolkit] 创建协程失败 [%d/%d] description=%s error=%s",
                     i + 1,
@@ -390,11 +404,15 @@ class MultiSessionToolkit:
                 )
                 failed.append(f"{task_description[:40]}... - {error_msg}")
 
-        result_msg = f"已创建 {len(created)} 个协程"
+        result_msg = _t("tools.multi_session.created", count=len(created))
         if created:
             result_msg += f": {', '.join(created)}"
         if failed:
-            result_msg += f"\n创建失败 {len(failed)} 个: " + "; ".join(failed)
+            result_msg += "\n" + _t(
+                "tools.multi_session.create_failed_summary",
+                count=len(failed),
+                details="; ".join(failed),
+            )
 
         logger.info(
             "[MultiSessionToolkit] create_new_sessions 完成 成功=%d 失败=%d",
@@ -417,17 +435,17 @@ class MultiSessionToolkit:
                 session_id,
                 list(self._tasks.keys()),
             )
-            return f"未找到 session_id={session_id}"
+            return _t("tools.multi_session.not_found", session_id=session_id)
         if task.done():
             logger.info("[MultiSessionToolkit] cancel_session session_id=%s 已结束，无需取消", session_id)
-            return f"session_id={session_id} 已结束"
+            return _t("tools.multi_session.already_ended", session_id=session_id)
         task.cancel()
         try:
             await asyncio.gather(task, return_exceptions=True)
         except asyncio.CancelledError:
             pass
         logger.info("[MultiSessionToolkit] cancel_session 已取消 session_id=%s", session_id)
-        return f"已取消 session_id={session_id}"
+        return _t("tools.multi_session.cancelled_ok", session_id=session_id)
 
     async def list_all_sessions(self) -> str:
         """List all session tasks with status."""
@@ -437,7 +455,7 @@ class MultiSessionToolkit:
             len(self.sessions),
         )
         if not self.sessions:
-            return "暂无协程"
+            return _t("tools.multi_session.empty")
         lines = []
         for st in self.sessions:
             lines.append(f"{st.session_id} | {st.description} | {st.status.value} | {st.result}")

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useState, type ReactNode } from 'react';
 import { AlertCircle, CheckCircle2, Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import logoIcon from '/logo.svg';
+import officeSuiteIcon from '../../assets/office-addins/suite-office.svg';
+import wpsSuiteIcon from '../../assets/office-addins/suite-wps.png';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import { Button } from '../../components/ui/Button/Button';
 import { ConfirmDialog } from '../../components/ConnectorMarket/ConfirmDialog';
@@ -18,6 +19,7 @@ import {
   installOfficeSuite,
   removeOfficeSuite,
   suiteState,
+  type AppId,
   type AppStatus,
   type SuiteId,
   type SuiteState,
@@ -49,12 +51,16 @@ export function useOfficeSuites() {
   return { suites, setStatus };
 }
 
+// Each suite's card shows its own kinds of documents in its suite's colours.
+const SUITE_ICONS: Record<SuiteId, string> = { office: officeSuiteIcon, wps: wpsSuiteIcon };
+
 // The plaza card's states: installed reads as ready to use; a problem, or no Office app found, as the card error state.
 const CARD_STATE: Record<SuiteState['kind'], McpCardState> = {
   notInstalled: 'idle',
   installed: 'connected',
   needsRepair: 'error',
   notFound: 'error',
+  outdated: 'error',
 };
 
 /** A suite in the plugin plaza. Every action opens the detail page, where installing first explains the certificate prompt. */
@@ -65,7 +71,7 @@ export function OfficeSuiteCard({ suite, status, onOpen }: { suite: SuiteId; sta
     <MarketCard
       title={t(`officeAddins.suites.${suite}.title`)}
       description={t(`officeAddins.suites.${suite}.what`)}
-      iconUrl={logoIcon}
+      iconUrl={SUITE_ICONS[suite]}
       state={CARD_STATE[kind]}
       errorLabel={t(`officeAddins.appStatus.${kind}`)}
       canOpenDetail
@@ -79,6 +85,7 @@ export function OfficeSuiteCard({ suite, status, onOpen }: { suite: SuiteId; sta
 // No app of the suite on this computer leaves nothing to install until one has run once.
 const PRIMARY_ACTION: Record<SuiteState['kind'], 'install' | 'repair' | 'remove' | null> = {
   notFound: null,
+  outdated: null,
   notInstalled: 'install',
   needsRepair: 'repair',
   installed: 'remove',
@@ -91,6 +98,7 @@ const STATUS_LOOK: Record<AppStatus, { tone: string; icon?: ReactNode }> = {
   notInstalled: { tone: 'text-text-muted' },
   needsRepair: { tone: 'text-warn', icon: <AlertCircle size={14} /> },
   notFound: { tone: 'text-text-muted' },
+  outdated: { tone: 'text-warn', icon: <AlertCircle size={14} /> },
 };
 
 function StatusLabel({ status, testId }: { status: AppStatus; testId: string }) {
@@ -106,6 +114,12 @@ function StatusLabel({ status, testId }: { status: AppStatus; testId: string }) 
       {t(`officeAddins.appStatus.${status}`)}
     </span>
   );
+}
+
+function AppLogo({ app, className }: { app: AppId; className: string }) {
+  const Logo = APP_LOGOS[app];
+  if (typeof Logo === 'string') return <img src={Logo} alt="" className={className} data-testid="office-addins-logo" />;
+  return <Logo className={`${className} text-text-muted`} aria-hidden="true" data-testid="office-addins-logo" />;
 }
 
 /** The plugin detail page's layout: back link, heading with the suite's apps as tags, problems, then sections. */
@@ -130,6 +144,7 @@ export function OfficeSuiteDetail({
   const [failed, setFailed] = useState(false);
   const [confirming, setConfirming] = useState<'install' | 'repair' | 'remove' | null>(null);
   const missing = apps.filter((app) => appStatus(status, app) === 'notFound').map((app) => t(`officeAddins.apps.${app}`));
+  const outdated = apps.filter((app) => appStatus(status, app) === 'outdated');
 
   const run = async (request: 'install' | 'remove') => {
     setPending(request);
@@ -197,7 +212,7 @@ export function OfficeSuiteDetail({
           <EntityTagList
             tags={apps.map((app) => ({
               label: t(`officeAddins.apps.${app}`),
-              icon: <img src={APP_LOGOS[app]} alt="" className="h-4 w-4" data-testid="office-addins-logo" />,
+              icon: <AppLogo app={app} className="h-4 w-4" />,
             }))}
           />
         </div>
@@ -241,7 +256,7 @@ export function OfficeSuiteDetail({
                   data-variant={app}
                   data-status={appState}
                 >
-                  <img src={APP_LOGOS[app]} alt="" className="h-5 w-5 shrink-0" data-testid="office-addins-logo" />
+                  <AppLogo app={app} className="h-5 w-5 shrink-0" />
                   <span className="min-w-0 flex-1 text-text">{t(`officeAddins.apps.${app}`)}</span>
                   <StatusLabel status={appState} testId="office-addins-app-status" />
                 </li>
@@ -258,6 +273,16 @@ export function OfficeSuiteDetail({
               {t('officeAddins.appsNotFound', { apps: missing.join(t('officeAddins.listSeparator')) })}
             </p>
           )}
+          {outdated.map((app) => (
+            <p
+              key={app}
+              className="office-addins-detail-width mt-2 flex items-start gap-1.5 text-[12px] leading-5 text-text-muted"
+              data-testid="office-addins-app-outdated"
+            >
+              <Info size={14} className="mt-[3px] shrink-0" aria-hidden="true" />
+              {t('officeAddins.appOutdated', { app: t(`officeAddins.apps.${app}`), version: status.required?.[app] })}
+            </p>
+          ))}
         </DetailSection>
 
         {/* Label and value rows in a small card, as the MCP detail page shows its connection config. */}
@@ -295,7 +320,7 @@ export function OfficeSuiteDetail({
             <h2 id={confirmTitleId} className="text-[15px] font-semibold text-text-strong">
               {t(`officeAddins.confirm.${confirming}`, { name: title })}
             </h2>
-            <p className="text-[13px] leading-5 text-text-muted">{t('officeAddins.confirm.trustNotice')}</p>
+            <p className="text-[13px] leading-5 text-text-muted">{t(`officeAddins.suites.${suite}.installNotice`)}</p>
             <div className="flex justify-end gap-2">
               <Button size="sm" onClick={() => setConfirming(null)} data-testid="office-addins-confirm-cancel">
                 {t('common.cancel')}
@@ -319,7 +344,7 @@ export function OfficeSuiteDetail({
       {confirming === 'remove' && (
         <ConfirmDialog
           title={t('officeAddins.confirm.remove', { name: title })}
-          message={t('officeAddins.confirm.removeNotice')}
+          message={t(`officeAddins.suites.${suite}.removeNotice`)}
           confirmLabel={t('officeAddins.actions.remove')}
           busy={pending === 'remove'}
           onCancel={() => setConfirming(null)}

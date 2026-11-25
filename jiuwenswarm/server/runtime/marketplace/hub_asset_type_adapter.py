@@ -45,6 +45,18 @@ _CONTRACTS: dict[HubAssetKind, HubAssetTypeContract] = {
         local_package_type="mcp",
         accepted_hub_types=frozenset({"agent-mcp"}),
     ),
+    "system_plugin": HubAssetTypeContract(
+        kind="system_plugin",
+        hub_plugin_type="system-plugin",
+        local_package_type="extension",
+        accepted_hub_types=frozenset({"system-plugin"}),
+    ),
+    "app": HubAssetTypeContract(
+        kind="app",
+        hub_plugin_type="app",
+        local_package_type="app",
+        accepted_hub_types=frozenset({"app"}),
+    ),
 }
 
 _KIND_BY_PLUGIN_TYPE = {
@@ -59,6 +71,9 @@ _KIND_BY_ASSET_TYPE: dict[str, HubAssetKind] = {
     "agent_group": "agent_group",
     "agent-plugin": "plugin",
     "agent-mcp": "mcp",
+    "system-plugin": "system_plugin",
+    "system_plugin": "system_plugin",
+    "app": "app",
 }
 
 

@@ -6,7 +6,7 @@
 
 先定义谁接收玩家输入、哪些角色需要发言、各自知道什么，以及输出格式。leader 的 `title` 和 `role_instructions` 描述 leader 本人。成员用稳定的 `name` 标识，`title` 用作署名，`desc` 描述可供 leader 分工的专长，`role_instructions` 描述该成员自己的发言方式。让每个角色输出自己的台词。应用需要结构化数据时，为每个角色分别定义并校验 schema。
 
-应用服务端通过 `WORKSWARM_GATEWAY_API_URL` 连接 Web Gateway，等待 `connection.ack`。用 `WORKSWARM_SOURCE_SESSION` 调用 `session.get_metadata`，将来源会话返回的 `project_id` 和 `work_mode` 填入创建请求。以下使用 code 项目作为示例，实际取值由来源项目决定。
+应用服务端通过 `WORKSWARM_GATEWAY_API_URL` 连接 Web Gateway，等待 `connection.ack`。市场启动应用前会绑定可用项目。将 `WORKSWARM_APP_PROJECT_ID` 与 `WORKSWARM_APP_WORK_MODE` 成对填入创建请求。兼容旧宿主时，显式上下文缺省可用 `WORKSWARM_SOURCE_SESSION` 调用 `session.get_metadata` 并使用返回的两个字段。以下使用 code 项目作为示例，实际取值由绑定项目决定。
 
 ```json
 {

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronUp, LoaderCircle, RefreshCw } from 'lucide-react';
 import { resolveFileIconType } from '../../components/FileIcon';
 import folderIcon from '../../assets/file-icons/folder.svg';
@@ -29,6 +30,7 @@ export function CodeChangesCard({
   onDiscard,
   onRedo,
 }: CodeChangesCardProps) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const files = Object.values(diff.files);
   const visibleFiles = expanded ? files : files.slice(0, 3);
@@ -39,27 +41,27 @@ export function CodeChangesCard({
   };
   const discarded = diff.status === 'discarded';
   const canChangeTurn = isLatest && (diff.status === 'completed' || discarded);
-  const actionLabel = discarded ? '重新应用' : '撤销';
-  const actionTitle = isProcessing ? '当前任务执行中，请停止后再操作' : actionLabel;
+  const actionLabel = discarded ? t('codeMode.changesCard.reapply') : t('codeMode.changesCard.discard');
+  const actionTitle = isProcessing ? t('codeMode.publish.busyProcessing') : actionLabel;
 
   if (files.length === 0) return null;
 
   const primaryFileType = resolveFileIconType(files[0].file_path);
 
   return (
-    <section className={`code-changes-card${discarded ? ' is-discarded' : ''}`} aria-label="已编辑文件" data-testid="code-mode-changes-card" data-variant={discarded ? 'discarded' : 'active'}>
+    <section className={`code-changes-card${discarded ? ' is-discarded' : ''}`} aria-label={t('codeMode.changesCard.ariaLabel')} data-testid="code-mode-changes-card" data-variant={discarded ? 'discarded' : 'active'}>
       <div className="code-changes-card__header" data-testid="code-mode-changes-card-header">
         <span className="code-changes-card__icon" data-variant={primaryFileType}>
           <img src={folderIcon} width={24} height={24} alt="" aria-hidden="true" />
         </span>
         <div className="code-changes-card__heading" data-testid="code-mode-changes-card-heading">
-          <strong data-testid="code-mode-changes-card-title">已编辑文件</strong>
+          <strong data-testid="code-mode-changes-card-title">{t('codeMode.changesCard.title')}</strong>
           <span>
             <b className="code-stat-added" data-testid="code-mode-changes-card-lines-added">+{diff.stats.lines_added}</b>
             <b className="code-stat-removed" data-testid="code-mode-changes-card-lines-removed">-{diff.stats.lines_removed}</b>
           </span>
         </div>
-        <button type="button" className="code-changes-card__refresh" onClick={onRefresh} disabled={refreshing} title="刷新修改历史" data-testid="code-mode-changes-card-refresh">
+        <button type="button" className="code-changes-card__refresh" onClick={onRefresh} disabled={refreshing} title={t('codeMode.changesCard.refreshHistory')} data-testid="code-mode-changes-card-refresh">
           <RefreshCw className={refreshing ? 'code-mode-spin' : undefined} size={15} />
         </button>
         {canChangeTurn ? (
@@ -74,11 +76,11 @@ export function CodeChangesCard({
             data-variant={discarded ? 'redo' : 'discard'}
           >
             {operation ? <LoaderCircle className="code-mode-spin" size={14} /> : null}
-            {operation ? (operation === 'discard' ? '撤销中' : '应用中') : actionLabel}
+            {operation ? (operation === 'discard' ? t('codeMode.changesCard.discarding') : t('codeMode.changesCard.applying')) : actionLabel}
           </button>
         ) : null}
         <button type="button" className="code-changes-card__review" onClick={() => onReview(reviewTarget)} data-testid="code-mode-changes-card-review">
-          审核
+          {t('codeMode.changesCard.review')}
         </button>
       </div>
       {operationError ? (
@@ -97,7 +99,7 @@ export function CodeChangesCard({
       </div>
       {files.length > 3 ? (
         <button type="button" className="code-changes-card__expand" onClick={() => setExpanded(value => !value)} data-testid="code-mode-changes-card-expand">
-          {expanded ? '收起文件' : `显示全部 ${files.length} 个文件`}
+          {expanded ? t('codeMode.changesCard.collapseFiles') : t('codeMode.changesCard.showAllFiles', { n: files.length })}
           {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         </button>
       ) : null}

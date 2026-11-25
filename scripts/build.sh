@@ -29,6 +29,10 @@ if [[ ! -d node_modules ]]; then
     npm install
 fi
 npm run build
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+cd "$PROJECT_ROOT/packages/jiuwenswarm-office-addin"
+npm ci --no-audit --no-fund
+npm run build:desktop
 cd "$PROJECT_ROOT"
 
 DIST_DIR="$WEB_DIR/dist"

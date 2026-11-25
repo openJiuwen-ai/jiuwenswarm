@@ -134,6 +134,28 @@ test('aliases Unicode and Mermaid-conflicting IDs without losing labels or edges
   );
 });
 
+test('renders one arrow per directed pair while preserving the original port mappings', () => {
+  const rawOutput = payload(['task-3', 'task-2', 'task-1'], [
+    { source: 'task-2', target: 'task-3', relation: 'can_feed' },
+    { source: 'task-1', target: 'task-2', relation: 'can_feed', source_output: 'brief', target_input: 'brief' },
+    { source: 'task-2', target: 'task-1', relation: 'can_feed' },
+    { source: 'task-1', target: 'task-3', relation: 'can_feed' },
+    { source: 'task-1', target: 'task-2', relation: 'can_feed', source_output: 'facts', target_input: 'facts' },
+  ]);
+  const original = structuredClone(rawOutput);
+  const result = normalizeToolResultPayload({
+    tool_name: 'symphony_compose_graph',
+    success: true,
+    raw_output: rawOutput,
+  });
+
+  assert.deepEqual(
+    result.mermaid.split('\n').filter(line => line.includes(' --> ')),
+    ['task-1 --> task-2', 'task-1 --> task-3', 'task-2 --> task-1', 'task-2 --> task-3'],
+  );
+  assert.deepEqual(rawOutput, original);
+});
+
 test('falls back when the graph is empty or structurally invalid', () => {
   const invalidGraphs = [
     payload([]),

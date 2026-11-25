@@ -163,10 +163,10 @@ def test_download_file_percent_encodes_non_ascii_url(monkeypatch, tmp_path):
 
     runtime = _runtime()
     target_path = tmp_path / "report.docx"
-    filename = "沐曦集成电路(上海)股份有限公司企业分析报告.docx"
+    filename = "示例企业(xx)股份有限公司分析报告.docx"
     url = (
-        "http://127.0.0.1:19000/api/scenario-config/asset/zhiyanpan/"
-        f"files/muxi/{filename}"
+        "http://127.0.0.1:19000/api/scenario-config/asset/example-tenant/"
+        f"files/example-project/{filename}"
     )
     downloaded = []
 
@@ -185,7 +185,7 @@ def test_download_file_percent_encodes_non_ascii_url(monkeypatch, tmp_path):
 
     assert result == {"ok": True, "cancelled": False}
     assert downloaded[0].isascii()
-    assert "沐" not in downloaded[0]
+    assert filename[0] not in downloaded[0]
     assert unquote(urlsplit(downloaded[0]).path).endswith("/" + filename)
     assert target_path.read_bytes() == b"docx-content"
 

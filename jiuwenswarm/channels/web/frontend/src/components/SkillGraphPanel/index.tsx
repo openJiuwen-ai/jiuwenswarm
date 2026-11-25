@@ -386,6 +386,7 @@ function normalizeGraph(payload: SkillGraphPayload): NormalizedGraph {
 
   asArray(payload.graph?.nodes).forEach((node, index) => {
     const normalized = normalizeNode(node, index, skillsById);
+    if (normalized.type === 'expert' || normalized.id.startsWith('expert:')) return;
     nodeMap.set(normalized.id, normalized);
   });
 
@@ -919,7 +920,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     });
 
     const nodes = graph.nodes.filter((node) => {
-      if (!text) return linkedIds.has(node.id) || graph.edges.length === 0;
+      if (!text) return linkedIds.has(node.id) || graph.edges.length === 0 || (isSkillNode(node) && node.degree === 0);
       return linkedIds.has(node.id) || matchedSkillIds.has(node.id);
     }).map((node) => {
       const previous = previousById.get(node.id);

@@ -302,7 +302,7 @@ async def test_disabled_switch_hides_live_organization_snapshot(restarted_server
 
 async def test_restart_direct_expert_chat_restores_backend_and_reuses_membership(restarted_server, monkeypatch):
     from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+    from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
     from jiuwenswarm.common.schema.message import Message, ReqMethod
     from agent_gateway.message_handler.message_handler import MessageHandler
 
@@ -333,7 +333,11 @@ async def test_restart_direct_expert_chat_restores_backend_and_reuses_membership
     monkeypatch.setattr(
         JiuwenExpertTeamLauncher, "_build_enriched_spec", AsyncMock(return_value=SimpleNamespace(team_name="tech"))
     )
-    monkeypatch.setattr("jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir", lambda name: name)
+    # Package lookup now uses the shared ExpertCatalog (PR 3770), not the
+    # former synchronous extension-package directory resolver.
+    monkeypatch.setattr(JiuwenExpertTeamLauncher, "_locate_group", AsyncMock(side_effect=lambda name: name))
+    monkeypatch.setattr("jiuwenswarm.server.runtime.organization_packages.team_package_availability",
+                        lambda *args, **kwargs: {"available": True})
     monkeypatch.setattr("openjiuwen.agent_teams.experts.load_agent_group_package_bundle", lambda path: object())
     records = []
     monkeypatch.setattr(agent_ws_server, "append_history_record", lambda **kwargs: records.append(kwargs))

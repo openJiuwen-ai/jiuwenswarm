@@ -4,29 +4,41 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import plistlib
 import re
 import shutil
 import socket
 import subprocess
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from functools import partial
 from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
+from jiuwenswarm.channels.desktop import office_addins
 from jiuwenswarm.channels.desktop.office_addins import OfficeAddins, SuiteStatus, certificate
 from jiuwenswarm.channels.desktop.office_addins.certificate import MacTrustStore, Runner, TlsFiles, WindowsTrustStore
 from jiuwenswarm.channels.desktop.office_addins.listener import TlsListener
-from jiuwenswarm.channels.desktop.office_addins.registration import HOSTS, MacRegistration, WindowsRegistration
+from jiuwenswarm.channels.desktop.office_addins.registration import (
+    HOSTS,
+    WPS_MAC_EDITIONS,
+    WPS_WINDOWS_EDITIONS,
+    MacRegistration,
+    WindowsRegistration,
+    WpsRegistration,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 PANE_PACKAGE = ROOT / "packages" / "jiuwenswarm-office-addin"
 APPS = ("powerpoint", "word", "excel")
+WPS_APPS = ("wps-presentation", "wps-writer", "wps-spreadsheet")
+HTTP_ORIGIN = "http://127.0.0.1:5173"
 INSTALLED = SuiteStatus(installed=True, problems=(), apps=dict.fromkeys(APPS, "installed"))
 NOT_INSTALLED = SuiteStatus(installed=False, problems=(), apps=dict.fromkeys(APPS, "not_installed"))
 
@@ -109,6 +121,10 @@ class FakeRegistry:
     def delete(self, key: str, name: str) -> None:
         self.values.pop((key, name), None)
 
+    @staticmethod
+    def office_version() -> str | None:
+        return None
+
 
 def _free_port() -> int:
     with socket.socket() as probe:
@@ -152,6 +168,7 @@ def _mac_addins(
         trust=MacTrustStore(home, runner=keychain),
         registrations=registrations or {app: MacRegistration(home, app) for app in APPS},
         listener=listener,
+        http_origin=HTTP_ORIGIN,
         office_dist=office_dist,
         user_id_file=_user_id_file(home),
     )
@@ -362,6 +379,54 @@ def test_unwritable_sideload_folder_reports_permission_denied(
     assert "permission_denied" in status.problems
 
 
+def test_an_app_older_than_its_manifest_requires_is_left_out_with_the_version_to_update_to(
+    home: Path, office_dist: Path, listeners: list[TlsListener],
+) -> None:
+    applications = home.parent / "Applications"
+    for app, version in {"powerpoint": "16.95.2", "word": "16.76", "excel": "16.104"}.items():
+        info = applications / HOSTS[app].mac_bundle / "Contents" / "Info.plist"
+        info.parent.mkdir(parents=True)
+        info.write_bytes(plistlib.dumps({"CFBundleShortVersionString": version}))
+    registrations = {app: MacRegistration(home, app, applications) for app in APPS}
+    addins = _mac_addins(home, office_dist, listeners, FakeKeychain(), registrations=registrations)
+
+    status = addins.install("office")
+
+    assert status == SuiteStatus(
+        installed=True, problems=(), required={"powerpoint": "16.96"},
+        apps={"powerpoint": "host_outdated", "word": "installed", "excel": "installed"},
+    )
+    assert not _wef_manifest(home).exists()
+
+    # A version that cannot be read is unknown, and installs.
+    (applications / HOSTS["powerpoint"].mac_bundle / "Contents" / "Info.plist").write_bytes(b"not a plist")
+    assert addins.install("office") == INSTALLED
+
+
+def test_windows_leaves_out_the_apps_its_office_build_is_too_old_for(
+    tmp_path: Path, office_dist: Path, listeners: list[TlsListener],
+) -> None:
+    registry = FakeRegistry()
+    data = tmp_path / "data" / "office-addin"
+    listener = TlsListener(_free_port(), partial(SimpleHTTPRequestHandler, directory=str(office_dist.parent)))
+    listeners.append(listener)
+    addins = OfficeAddins(
+        tls=TlsFiles(data / "tls"),
+        trust=WindowsTrustStore(runner=FakeCertutil()),
+        registrations={app: WindowsRegistration(data, registry, app, lambda: "16.0.17928.20114") for app in APPS},
+        listener=listener,
+        http_origin=HTTP_ORIGIN,
+        office_dist=office_dist,
+        user_id_file=data / "user-id",
+    )
+
+    status = addins.install("office")
+
+    assert status.apps == {"powerpoint": "host_outdated", "word": "installed", "excel": "installed"}
+    assert status.required == {"powerpoint": "2504"}
+    assert registry.get(WindowsRegistration.KEY, HOSTS["powerpoint"].addin_id) is None
+
+
 def test_windows_registers_our_manifest_path_under_our_id(
     tmp_path: Path, office_dist: Path, listeners: list[TlsListener],
 ) -> None:
@@ -376,6 +441,7 @@ def test_windows_registers_our_manifest_path_under_our_id(
         trust=WindowsTrustStore(runner=certutil),
         registrations={app: WindowsRegistration(data, registry, app) for app in APPS},
         listener=listener,
+        http_origin=HTTP_ORIGIN,
         office_dist=office_dist,
         user_id_file=tmp_path / "data" / "office-addin" / "user-id",
     )
@@ -428,6 +494,19 @@ def test_remove_keeps_everything_installed_while_the_system_keeps_trusting_the_c
     keychain.accept = True
     assert addins.remove("office") == NOT_INSTALLED
     assert keychain.trusted == {} and not tls.exist()
+
+
+def test_uninstall_cleanup_fails_while_the_system_keeps_trusting_the_certificate(
+    home: Path, office_dist: Path, listeners: list[TlsListener], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keychain = FakeKeychain()
+    _mac_addins(home, office_dist, listeners, keychain).install("office")
+    tls = TlsFiles(home / "data" / "office-addin" / "tls")
+    monkeypatch.setattr(office_addins, "_machine", lambda _workspace: (tls, MacTrustStore(home, runner=keychain), {}))
+
+    keychain.accept = False
+    assert office_addins.remove_all(home / "data") is False
+    assert tls.exist()
 
 
 @pytest.mark.parametrize("damage", ["deleted", "truncated"])
@@ -513,3 +592,156 @@ def test_an_unanswered_trust_prompt_is_reported(
 
     assert status.installed is False
     assert "certificate_untrusted" in status.problems
+
+
+# As WPS for Mac writes it, with another add-in WPS loads.
+WPS_LIST = """<?xml version="1.0" encoding="UTF-8"?>
+<jsplugins>
+    <jspluginonline enable="enable_dev" type="wps" name="排版助手" install="null" url="http://127.0.0.1:3889/typeset/"/>
+  </jsplugins>
+"""
+# An empty list, as WPS writes it.
+WPS_EMPTY_LIST = '<?xml version="1.0" encoding="UTF-8"?>\n<jsplugins/>\n'
+WPS_INSTALLED = SuiteStatus(installed=True, problems=(), apps=dict.fromkeys(WPS_APPS, "installed"))
+
+
+def _wps_list(home: Path, edition: str) -> Path:
+    return home / WPS_MAC_EDITIONS[edition].folder / WPS_MAC_EDITIONS[edition].publish
+
+
+def _wps_addins(
+    home: Path, office_dist: Path, listeners: list[TlsListener], keychain: Runner, editions: Iterable[str],
+) -> OfficeAddins:
+    for edition in editions:
+        (home / WPS_MAC_EDITIONS[edition].folder).mkdir(parents=True)
+    registrations = {app: MacRegistration(home, app) for app in APPS}
+    registrations.update({app: WpsRegistration(home, WPS_MAC_EDITIONS, app) for app in WPS_APPS})
+    return _mac_addins(home, office_dist, listeners, keychain, registrations=registrations)
+
+
+def test_wps_install_and_remove_change_only_our_entries_in_every_edition_and_need_no_certificate(
+    home: Path, office_dist: Path, listeners: list[TlsListener],
+) -> None:
+    keychain = FakeKeychain()
+    addins = _wps_addins(home, office_dist, listeners, keychain, WPS_MAC_EDITIONS)
+    international, domestic = _wps_list(home, "international"), _wps_list(home, "domestic")
+    for publish, text in ((international, WPS_LIST), (domestic, WPS_EMPTY_LIST)):
+        publish.parent.mkdir(parents=True)
+        publish.write_text(text, encoding="utf-8")
+
+    status = addins.install("wps")
+
+    assert status == WPS_INSTALLED
+    for publish in (international, domestic):
+        text = publish.read_text(encoding="utf-8")
+        for app_type in ("wpp", "wps", "et"):
+            entry = (
+                f'<jspluginonline enable="enable_dev" type="{app_type}" name="WorkSwarm" install="null"'
+                f' url="{HTTP_ORIGIN}/office/wps/{app_type}/"/>'
+            )
+            assert text.count(entry) == 1
+    assert "排版助手" in international.read_text(encoding="utf-8")
+    assert keychain.commands == [] and not listeners[0].serving
+    assert addins.status() == {"office": NOT_INSTALLED, "wps": status}
+
+    assert addins.install("office") == INSTALLED
+    assert addins.remove("wps").installed is False
+    assert international.read_text(encoding="utf-8") == WPS_LIST
+    assert domestic.read_text(encoding="utf-8") == '<?xml version="1.0" encoding="UTF-8"?>\n<jsplugins>\n</jsplugins>\n'
+    assert addins.status()["office"] == INSTALLED and keychain.trusted
+
+
+def test_ensure_registered_points_wps_at_the_new_port_without_a_certificate(
+    home: Path, office_dist: Path, listeners: list[TlsListener],
+) -> None:
+    addins = _wps_addins(home, office_dist, listeners, FakeKeychain(), ["domestic"])
+    addins.install("wps")
+    publish = _wps_list(home, "domestic")
+    moved = publish.read_text(encoding="utf-8").replace(HTTP_ORIGIN, "http://127.0.0.1:6173")
+    publish.write_text(moved, encoding="utf-8")
+    # The other edition ran for the first time since the install, so it holds no entry of ours.
+    (home / WPS_MAC_EDITIONS["international"].folder).mkdir()
+    assert addins.status()["wps"] == SuiteStatus(installed=True, problems=("stale_origin",), apps=WPS_INSTALLED.apps)
+
+    addins.ensure_registered()
+
+    assert addins.status()["wps"] == WPS_INSTALLED
+    assert "6173" not in publish.read_text(encoding="utf-8")
+    assert not _wps_list(home, "international").exists()
+
+
+def test_wps_status_does_not_need_the_office_user_id(
+    home: Path, office_dist: Path, listeners: list[TlsListener],
+) -> None:
+    addins = _wps_addins(home, office_dist, listeners, FakeKeychain(), ["domestic"])
+    addins.install("wps")
+    _user_id_file(home).unlink()
+
+    assert addins.status()["wps"] == WPS_INSTALLED
+
+
+def test_a_broken_word_manifest_leaves_wps_status_and_remove_working(
+    home: Path, office_dist: Path, listeners: list[TlsListener],
+) -> None:
+    addins = _wps_addins(home, office_dist, listeners, FakeKeychain(), ["domestic"])
+    addins.install("wps")
+    _wef_manifest(home, "word").parent.mkdir(parents=True)
+    _wef_manifest(home, "word").write_bytes(b"\xff\xfe not utf-8")
+
+    status = addins.status()
+    assert status["wps"] == WPS_INSTALLED
+    assert status["office"].problems == ("permission_denied",)
+    assert addins.remove("wps").installed is False
+    assert "WorkSwarm" not in _wps_list(home, "domestic").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "data", [b'<?xml version="1.0" encoding="UTF-8"?>\n<jsplugins>\xff</jsplugins>', b'<?xml encoding="nope"?>'],
+)
+def test_an_undecodable_wps_list_fails_only_wps_and_office_still_installs_and_removes(
+    home: Path, office_dist: Path, listeners: list[TlsListener], data: bytes,
+) -> None:
+    addins = _wps_addins(home, office_dist, listeners, FakeKeychain(), ["domestic"])
+    _wps_list(home, "domestic").parent.mkdir(parents=True)
+    _wps_list(home, "domestic").write_bytes(data)
+
+    assert addins.install("wps").problems == ("permission_denied",)
+    assert _wps_list(home, "domestic").read_bytes() == data
+    assert addins.status()["office"] == NOT_INSTALLED
+    assert addins.install("office") == INSTALLED
+    assert addins.remove("office") == NOT_INSTALLED
+
+
+def test_windows_offers_wps_and_installs_repairs_and_uninstalls_through_its_list(
+    tmp_path: Path, office_dist: Path, listeners: list[TlsListener], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    appdata = tmp_path / "AppData" / "Roaming"
+    workspace = tmp_path / "data"
+    monkeypatch.setattr(office_addins, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(office_addins, "WinRegistry", FakeRegistry)
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    def this_machine() -> OfficeAddins:
+        listener = TlsListener(_free_port(), partial(SimpleHTTPRequestHandler, directory=str(office_dist.parent)))
+        listeners.append(listener)
+        return OfficeAddins.for_this_machine(workspace, listener, HTTP_ORIGIN, office_dist)
+
+    assert set(this_machine().status()["wps"].apps.values()) == {"host_not_found"}
+
+    publish = appdata / "kingsoft" / "wps" / "jsaddons" / "publish.xml"
+    assert {appdata / edition.folder / edition.publish for edition in WPS_WINDOWS_EDITIONS.values()} == {publish}
+    publish.parent.mkdir(parents=True)
+    publish.write_text(WPS_LIST, encoding="utf-8")
+    addins = this_machine()
+
+    assert addins.install("wps") == WPS_INSTALLED
+    assert publish.read_text(encoding="utf-8").count(f'name="WorkSwarm" install="null" url="{HTTP_ORIGIN}') == 3
+    assert not (workspace / "office-addin" / "tls").exists() and not listeners[-1].serving
+    moved = publish.read_text(encoding="utf-8").replace(HTTP_ORIGIN, "http://127.0.0.1:6173")
+    publish.write_text(moved, encoding="utf-8")
+    assert addins.status()["wps"].problems == ("stale_origin",)
+    addins.ensure_registered()
+    assert addins.status()["wps"] == WPS_INSTALLED
+
+    assert office_addins.remove_all(workspace) is True
+    assert publish.read_text(encoding="utf-8") == WPS_LIST

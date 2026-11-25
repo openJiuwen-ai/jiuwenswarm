@@ -26,6 +26,7 @@ from jiuwenswarm.common.moa_config import flatten_moa_for_config_panel
 from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.team_goal_config import leader_goal_enabled
 from jiuwenswarm.common.utils import get_config_file, get_env_file
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.common.kv_cache_affinity_config import get_affinity_status
@@ -171,6 +172,28 @@ def _bool_text(value: Any, default: bool = False) -> str:
     if value is None:
         return "true" if default else "false"
     return "true" if str(value).strip().lower() in {"true", "1", "yes", "on"} else "false"
+
+
+def _experimental_entry_flags(raw: dict[str, Any]) -> dict[str, str]:
+    """Expose persisted RSI/REA sidebar switches in the browser config payload."""
+    flags: dict[str, str] = {}
+    for key, section_name in (
+        ("rsi_enabled", "rsi"),
+        ("rea_enabled", "rea"),
+    ):
+        section = raw.get(section_name)
+        enabled = section.get("enabled", True) if isinstance(section, dict) else True
+        if isinstance(enabled, bool):
+            flags[key] = "true" if enabled else "false"
+        elif enabled is None:
+            flags[key] = "true"
+        elif isinstance(enabled, (int, float)):
+            flags[key] = "true" if enabled else "false"
+        elif str(enabled).strip().lower() in {"0", "false", "no", "off", ""}:
+            flags[key] = "false"
+        else:
+            flags[key] = "true"
+    return flags
 
 
 def _affinity_enabled(raw: dict[str, Any]) -> bool:
@@ -435,6 +458,7 @@ def get_panel() -> dict[str, Any]:
     payload.update(cua_backend_settings())
     try:
         raw = _read_raw_config()
+        payload.update(_experimental_entry_flags(raw))
         payload.update(flatten_moa_for_config_panel(raw))
         setup_guide_cfg = raw.get("setup_guide") or {}
         payload["setup_guide_enabled"] = _bool_text(
@@ -491,6 +515,9 @@ def get_panel() -> dict[str, Any]:
         payload["swarmflow_enabled"] = _bool_text(
             _nested(raw, _SWARMFLOW_ENABLED_PATH, False)
         )
+        payload["team_leader_goal_enabled"] = (
+            "true" if leader_goal_enabled(_nested(raw, ("modes", "team", "jiuwen_team"), {})) else "false"
+        )
         payload["team_scheduled_dispatch_enabled"] = (
             "true" if str(_nested(raw, _TEAM_DISPATCH_MODE_PATH, "autonomous")).strip() == "scheduled" else "false"
         )
@@ -533,6 +560,8 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("permissions_profile", "full_access")
+        payload.setdefault("rsi_enabled", "true")
+        payload.setdefault("rea_enabled", "true")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
         payload.setdefault("ttse_enabled", "false")
@@ -552,6 +581,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("team_member_messaging_enabled", "false")
         payload.setdefault("team_member_subtasks_enabled", "false")
         payload.setdefault("team_code_todo_reminder_disabled", "false")
+        payload.setdefault("team_leader_goal_enabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("topic_recommendation_enabled", "false")
@@ -574,9 +604,9 @@ async def handle_config_request(request: AgentRequest) -> AgentResponse:
         )
     raw = _read_raw_config()
     if method == ReqMethod.LOCALE_GET_CONF:
-        lang = str(raw.get("preferred_language") or "zh").strip().lower()
-        if lang not in {"zh", "en"}:
-            lang = "zh"
+        from jiuwenswarm.common.i18n import normalize_preferred_language
+
+        lang = normalize_preferred_language(raw.get("preferred_language"))
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,

@@ -83,9 +83,13 @@ class LoopBeat:
         return max(0.0, time.monotonic() - self._last)
 
 
-def heartbeat_reply(beat_age: float | None, *, stall_context: dict[str, Any] | None = None) -> dict[str, Any]:
+def heartbeat_reply(
+    beat_age: float | None, *, stall_context: dict[str, Any] | None = None, probe_id: object = None,
+) -> dict[str, Any]:
     """Build one heartbeat pong. ``loop_beat_age`` is omitted for legacy pongs."""
     reply: dict[str, Any] = {"kind": KIND_HEARTBEAT, "pid": os.getpid()}
+    if isinstance(probe_id, str) and 0 < len(probe_id) <= 64:
+        reply["probe_id"] = probe_id
     if beat_age is not None:
         reply["loop_beat_age"] = round(beat_age, 3)
     if stall_context is not None:

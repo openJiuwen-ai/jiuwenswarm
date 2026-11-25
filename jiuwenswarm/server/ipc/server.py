@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 
 def _restrict_runtime_dir(parent: Path) -> None:
     """Tighten ``~/.jiuwenswarm/run`` when the socket lives there."""
-    from jiuwenswarm.common.utils import get_user_workspace_dir
+    from jiuwenswarm.common.paths import get_run_dir
 
-    run_dir = get_user_workspace_dir() / "run"
+    run_dir = get_run_dir()
     if parent != run_dir:
         return
     try:

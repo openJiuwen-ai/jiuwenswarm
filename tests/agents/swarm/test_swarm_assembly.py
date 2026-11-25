@@ -28,7 +28,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
@@ -88,7 +88,6 @@ from jiuwenswarm.agents.swarm.config_specs import (
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
-from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -911,13 +910,13 @@ def test_swarm_list_skill_composes_member_team_and_global_visibility(
     assert tools.visible_skill_names_for_list_skill(ctx) == {"alpha", "beta"}
 
 
-@pytest.mark.parametrize("extra_expert_source", [False, True])
+@pytest.mark.parametrize("extra_source_kind", [None, "expert", "mcp", "connector", "unknown"])
 def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    extra_expert_source: bool,
+    extra_source_kind: str | None,
 ) -> None:
-    """Use the member inventory when Core can start and skip unsupported configurations."""
+    """Use the member inventory with supported sources, including the legacy connector alias."""
     workspace_root = str(tmp_path / "member-workspace")
     global_skills_dir = tmp_path / "global-skills"
     skill_dir = global_skills_dir / "demo-skill"
@@ -933,8 +932,8 @@ def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
     )
 
     sources = [{"type": "skill", "root": str(tmp_path / "catalog-skills")}]
-    if extra_expert_source:
-        sources.append({"type": "expert", "root": str(tmp_path / "experts")})
+    if extra_source_kind is not None:
+        sources.append({"type": extra_source_kind, "root": str(tmp_path / extra_source_kind)})
     factory = resolve_factory(get_catalog()[registry.SKILL_RETRIEVAL_PROMPT].factory_ref)
     rail = factory(
         {},
@@ -949,7 +948,7 @@ def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
         ),
     )
 
-    if extra_expert_source:
+    if extra_source_kind == "unknown":
         assert rail is None
         return
 
@@ -2032,12 +2031,17 @@ def test_model_anomaly_detection_params_from_execution_guard() -> None:
                 "model_anomaly_detection_rail": {
                     "enabled": True,
                     "tool_loop_compact": {"enabled": True},
+                    "transient_max_retries": 0,
                 }
             }
         }
     )
     assert params["rail_config"]["enabled"] is True
     assert params["rail_config"]["tool_loop_compact"]["enabled"] is True
+    assert params["rail_config"]["transient_max_retries"] == 0
+    rail = member_rails._build_model_anomaly_detection(params, SwarmBuildContext())
+    assert rail is not None
+    assert rail.transient_max_retries == 0
 
 
 def test_team_workspace_report_path_returns_none_without_root() -> None:
@@ -2820,6 +2824,57 @@ def test_leader_deep_agent_spec_forces_enable_task_planning_off(mode: str) -> No
 
 
 @pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.normal", "team.plan.code"])
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_member_spec_selects_event_tool_registration_when_core_supports_it(
+    mode: str,
+    role: str,
+) -> None:
+    """Swarm opts into event registration only on the new Core contract."""
+    spec = build_member_deep_agent_spec({}, mode, role, DeepAgentSpec())
+
+    expected = (
+        registry.TOOL_REGISTRATION_MODE
+        if registry.supports_tool_registration_event()
+        else "legacy"
+    )
+    assert getattr(spec, "tool_registration_mode", "legacy") == expected
+    if expected == registry.TOOL_REGISTRATION_MODE:
+        assert spec.event_tool_types == list(registry.EVENT_TOOL_TYPES)
+
+
+def test_member_spec_event_allowlist_excludes_swarm_owned_tools() -> None:
+    """The first event slice never opts swarm-owned providers into the bridge."""
+    spec = build_member_deep_agent_spec({}, "team", "leader", DeepAgentSpec())
+
+    declared_types = {
+        tool.type for tool in spec.tools or [] if isinstance(tool, BuiltinToolSpec)
+    }
+    assert set(registry.EVENT_TOOL_TYPES).issubset(declared_types)
+    assert not set(spec.event_tool_types or ()) & {
+        tool_type for tool_type in declared_types if tool_type.startswith("swarm.")
+    }
+
+
+def test_member_spec_forwards_team_extension_bus_into_agent_core() -> None:
+    """The live Team build context reaches agent-core's event-mode parts."""
+    bus = object()
+    spec = DeepAgentSpec(
+        tool_registration_mode=registry.TOOL_REGISTRATION_MODE,
+        enable_task_loop=False,
+        enable_sys_operation=False,
+        enable_security_rail=False,
+        rails=[],
+    )
+    context = SwarmBuildContext(extras={"team.extension_bus": bus})
+
+    parts = spec.resolve_parts(context)
+
+    assert parts.config.tool_registration_mode == registry.TOOL_REGISTRATION_MODE
+    assert parts.event_tool_instances is None
+    assert parts.extension_bus is bus
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.normal", "team.plan.code"])
 def test_leader_deep_agent_spec_pins_subagents_empty(mode: str) -> None:
     """Leaders carry no sub-agents: an empty list keeps SubagentRail (task_tool) unmounted."""
     register_swarm_providers()
@@ -3374,6 +3429,8 @@ def test_code_member_builds_declaratively_without_post_processing(
     """
     register_swarm_providers()
     config = get_config()
+    # Exercise native memory independently of the repository default provider.
+    monkeypatch.setitem(config["memory"]["builtin"], "provider", "")
     base = DeepAgentSpec(
         model=TeamModelConfig(
             model_client_config=ModelClientConfig(
@@ -3532,8 +3589,15 @@ def test_build_context_factory_rebuilds_and_shares_processor() -> None:
     assert other.trajectory_span_processor is ctx.trajectory_span_processor
 
 
-def test_enrich_sets_serializable_build_context_seed() -> None:
-    """Enrichment leaves a serializable seed mirroring the live build context."""
+@pytest.mark.asyncio
+async def test_enrich_sets_serializable_build_context_seed(monkeypatch) -> None:
+    """Enrichment and membership preparation keep the seed aligned with the live context."""
+    from jiuwenswarm.agents.harness.common.memory import team_memory_members
+    from jiuwenswarm.agents.swarm.providers.team_memory import build_team_memory
+
+    config = {"memory": {"builtin": {"provider": "jiuwen"}}}
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.assembly.get_config", lambda: config)
+    monkeypatch.setattr(team_memory_members, "_prepare_members", AsyncMock(return_value=False))
     spec = _make_team_spec()
     enrich_team_spec_for_swarm(
         spec,
@@ -3547,8 +3611,15 @@ def test_enrich_sets_serializable_build_context_seed() -> None:
     assert spec.build_context_seed["project_dir"] == "/tmp/proj"
     assert spec.build_context_seed["disable_teammate_worktree"] is False
     assert spec.build_context_seed["team_id"] == spec.team_name
-    # The seed equals what the live context exports.
+    assert not await team_memory_members.prepare_team_memory(
+        spec.build_context, seed=spec.build_context_seed,
+    )
     assert spec.build_context_seed == spec.build_context.to_seed()
+    restored = SwarmBuildContext.from_seed(
+        spec.build_context_seed, config=config, trajectory_span_processor=None,
+    )
+    assert restored.extras["team.memory_members_ready"] is False
+    assert build_team_memory({}, restored) is None
 
 
 @pytest.mark.parametrize(
@@ -3902,3 +3973,84 @@ def test_team_mode_deep_spec_replaces_shared_browser_agent() -> None:
             shared_entries.append(s)
     assert not shared_entries, "shared playwright_official_stdio entry must be removed"
     assert subagent_factories.count(SWARM_BROWSER_AGENT) == 1
+
+
+@pytest.mark.parametrize("mode", ["team.work.normal", "team.code.normal"])
+@pytest.mark.parametrize("configured,expected", [("shared", "main_agent"), (None, "main_agent")])
+@pytest.mark.parametrize("memory_enabled", [False, True, None])
+def test_jiuwen_team_binds_configured_identity_and_replaces_native_memory(
+    monkeypatch, tmp_path, mode, configured, expected, memory_enabled,
+):
+    from jiuwenswarm.agents.swarm.providers import team_memory
+    from jiuwenswarm.common.team_memory_binding import team_memory_key
+
+    config = {"memory": {"builtin": {
+        "provider": "jiuwen", "jiuwen": {"mode": "sdk", "scope_id": "org", "user_id": "user", "agent_id": configured},
+    }}}
+    if memory_enabled is not None:
+        config["modes"] = {
+            "agent": {"memory": {"enabled": memory_enabled}},
+            "code": {"memory": {"enabled": memory_enabled}},
+            "team": {"jiuwen_team": {"memory": {"enabled": memory_enabled}}},
+        }
+        # Team routing must not inherit single-agent memory gates.
+        config["memory"].update(mode="cloud", engine="external")
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.assembly.get_config", lambda: config)
+    from openjiuwen.agent_teams.memory import TeamMemoryConfig
+    spec = _make_team_spec()
+    spec.memory = TeamMemoryConfig(enabled=bool(memory_enabled))
+    enrich_team_spec_for_swarm(spec, session_id="new-chat", mode=mode,
+        project_dir=str(tmp_path))
+    base = spec.build_context
+    assert base.memory_agent_name == expected
+    assert base.memory_team == team_memory_key("org", "", "user")
+    assert not spec.memory.enabled
+    for role in ("leader", "teammate"):
+        names = {rail.type for rail in spec.agents[role].rails}
+        assert registry.TEAM_MEMORY in names
+        assert registry.CODE_CODING_MEMORY not in names
+    seed = base.to_seed()
+    seed["memory_agent_name"] = "old-runtime-agent"
+    restored = SwarmBuildContext.from_seed(seed, config=config, trajectory_span_processor=None)
+    assert restored.memory_team == base.memory_team
+    assert restored.memory_agent_name == expected
+    calls = []
+    def build(*args, **kwargs):
+        calls.append(kwargs)
+        return object()
+    monkeypatch.setattr(team_memory, "build_jiuwen_memory_rail", build)
+    leader = team_memory.build_team_memory({}, base.derive(member_name="leader"))
+    member = team_memory.build_team_memory({}, restored.derive(member_name="replacement"))
+    assert leader is not None and member is not None
+    assert leader[-1] is not member[-1]
+    assert all("agent_name" not in call for call in calls)
+    assert {call["collective_agent"] for call in calls} == {"main_agent"}
+    assert {call["team_binding"]["team"] for call in calls} == {base.memory_team}
+    assert calls[0]["team_binding"]["member"] != calls[1]["team_binding"]["member"]
+    assert team_memory_key("org", "", "user", "experts") != base.memory_team
+    assert team_memory_key("org", "", "other") != base.memory_team
+
+
+def test_jiuwen_team_factory_does_not_fall_back_or_enter_design(monkeypatch, caplog):
+    from jiuwenswarm.agents.swarm.providers import team_memory
+    config = {"memory": {"mode": "local", "engine": "builtin", "builtin": {"provider": "jiuwen"}},
+              "modes": {"agent": {"memory": {"enabled": True}}}}
+    monkeypatch.setattr(team_memory, "build_jiuwen_memory_rail", lambda *args, **kw: None)
+    context = SwarmBuildContext(config=config, mode="team.work.normal", memory_team="bound")
+    assert team_memory.build_team_memory({}, context) is None
+    def unexpected_build(*args, **kwargs):
+        pytest.fail("Non-Jiuwen, design, single-agent or unbound contexts must not build Team memory")
+    monkeypatch.setattr(team_memory, "build_jiuwen_memory_rail", unexpected_build)
+    context.mode = "team.design"
+    assert team_memory.build_team_memory({}, context) is None
+    context.mode = "agent.work.normal"
+    assert team_memory.build_team_memory({}, context) is None
+    context.mode = "team.work.normal"
+    context.memory_team = ""
+    assert team_memory.build_team_memory({}, context) is None
+    assert "missing host-bound team coordinate" in caplog.text
+    caplog.clear()
+    context.memory_team = "bound"
+    config["memory"]["builtin"]["provider"] = ""
+    assert team_memory.build_team_memory({}, context) is None
+    assert not caplog.records, "disabled Team memory must not warn about coordinates"

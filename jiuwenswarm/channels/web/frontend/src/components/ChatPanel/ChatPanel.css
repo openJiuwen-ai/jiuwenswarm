@@ -161,6 +161,17 @@
   display: block;
 }
 
+.chat-panel-header__plugin-action.ant-btn-icon-only {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.chat-panel-header__plugin-action.ant-btn-icon-only svg {
+  width: 18px;
+  height: 18px;
+}
+
 .chat-input-container {
   container-type: inline-size;
   display: flex;
@@ -175,7 +186,7 @@
 .chat-input-container--work-home {
   border: 0;
   border-radius: 24px;
-  background: var(--color-action-secondary);
+  background: var(--color-chat-composer-context-surface);
   box-shadow: var(--effect-chat-composer-shadow);
   padding: 4px 4px 0;
   overflow: visible;
@@ -186,7 +197,7 @@
   position: relative;
   border: 1px solid var(--color-border-default);
   border-radius: 20px;
-  background: var(--color-surface-card);
+  background: var(--color-chat-composer-surface);
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.06);
   overflow: hidden;
   z-index: 2;
@@ -548,7 +559,7 @@
   overflow: hidden;
   border: 1px solid var(--color-border-default);
   border-radius: 4px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-chat-modal-shadow);
 }
 
@@ -1796,7 +1807,7 @@
   padding: 8px;
   border: 1px solid var(--color-border-default);
   border-radius: 10px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
 }
 
@@ -1945,7 +1956,7 @@
   padding: 24px 8px 8px;
   border: 1px solid var(--color-border-default);
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
   box-sizing: border-box;
 }
@@ -3044,7 +3055,7 @@
 .perm-warning-modal {
   width: 420px;
   max-width: calc(100vw - 48px);
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   border: 1px solid var(--color-border-default);
   border-radius: 16px;
   box-shadow: var(--effect-shadow-lg);
@@ -3326,7 +3337,7 @@
   padding: 14px 16px;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-md, 0 4px 12px rgba(0, 0, 0, 0.08));
 }
 
@@ -3457,7 +3468,7 @@
   padding: 8px;
   border: 1px solid var(--color-border-default);
   border-radius: 14px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
   box-sizing: border-box;
 }
@@ -3948,7 +3959,7 @@
   padding: 8px 10px;
   border: 1px solid rgba(var(--color-border-default-rgb), 0.9);
   border-radius: 10px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-chat-menu-shadow);
 }
 
@@ -4037,7 +4048,7 @@
   padding: 6px;
   border: 1px solid rgba(var(--color-border-default-rgb), 0.74);
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-chat-popover-shadow);
 }
 
@@ -4070,6 +4081,20 @@
   width: min(620px, calc(100% - 32px));
   transform: translateX(-50%);
   pointer-events: none;
+}
+
+.chat-input-webui-above {
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--color-surface-muted);
+  overflow-wrap: anywhere;
+}
+
+.chat-input-webui-above > .webui-host-instance {
+  min-width: 0;
 }
 
 .chat-input-local-alert {
@@ -4358,6 +4383,12 @@
   margin-bottom: 24px;
 }
 
+:where(.chat-welcome__composer .chat-input-container--enterprise) {
+  /* Enterprise composers do not use the work-home input card. */
+  position: relative;
+  z-index: 2;
+}
+
 .chat-welcome__banner {
   position: absolute;
   max-width: 100%;
@@ -4487,6 +4518,13 @@
   pointer-events: auto;
   cursor: pointer;
   mix-blend-mode: multiply;
+}
+
+/* 插件吉祥物：沿用蜜蜂的显示区域，按比例完整显示；透明图片不做正片叠底 */
+.chat-welcome__banner--mascot {
+  height: 200px;
+  object-fit: contain;
+  mix-blend-mode: normal;
 }
 
 .chat-welcome__heading {

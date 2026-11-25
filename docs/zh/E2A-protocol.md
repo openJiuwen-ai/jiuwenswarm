@@ -30,6 +30,8 @@
 `aggregator_model_name` 和 `aggregator_alias`，不包含凭据。AgentServer 客户端
 缺失或尚未就绪时，Gateway 返回 `SERVICE_UNAVAILABLE`，不在自身目录中回退执行配置检查。
 
+AgentServer 将 Gateway 注入的顶层 `traceparent` 映射到请求 metadata，经 Worker IPC 透传；顶层真值优先于 channel_context 中的同名值，顶层缺失时保留 channel_context 中的同名值（兼容只写 channel_context 的入口）。Worker 仅在请求执行任务内绑定有效的 W3C 父上下文，并在正常结束、异常和取消时恢复原上下文。缺失或无效输入保留 SDK 原有上下文行为；采集开关与 exporter 配置沿用原有优先级。
+
 ---
 
 ## 2. 易混点：`method` 的两种含义（必读）
@@ -70,6 +72,7 @@
 | `session_id` | string / null | 会话 |
 | `message_id` | string / null | 平台或 A2A 消息 id；语义勿与 `request_id` 混 |
 | `is_stream` | boolean | 是否流式响应 |
+| `traceparent` | string / null | Gateway 注入的 W3C 父上下文；AgentServer 将其归一进请求 metadata，顶层真值优先于 `channel_context` 同名值，顶层缺失时保留 channel 值 |
 
 ### 4.2 `provenance`（`E2AProvenance`）
 
@@ -102,6 +105,8 @@
 | `expected_output_modes` | A2A `acceptedOutputModes` |
 
 AgentServer 的 Gateway WebSocket 入口将显式传入的方法名转换为本服务的 `ReqMethod`；未知或非字符串方法返回终态错误响应，`payload.code` 为 `METHOD_NOT_FOUND`。未传方法的内部请求保持原有处理路径。
+
+`ReqMethod` 由 `jiuwenswarm.common.schema.message` 本地定义，`common.schema.agent` 复用该枚举，不再重导出或运行时扩展 `e2a` 的请求枚举。现有方法名及字符串值保持不变；新增 AgentServer 方法在本仓维护，无需仅为枚举成员更新协议依赖。`Message` 和 `AgentRequest` 保留共享模型字段，使用本地请求方法类型。出站请求通过 `jiuwenswarm.common.e2a.request_wire` 将枚举转为字符串，入站 E2A 与 Worker IPC 再解析为本地枚举；跨仓通信不依赖 Python 枚举对象身份。
 
 **`params` 常用键约定**（可按业务扩展，以下为与 ACP 桥接协作的推荐名）：
 
@@ -487,5 +492,9 @@ Web 仅在用户查看原文时读取内容，本地只保留最多 64 KiB 的�
 ## 会话快照与模型列表的自动恢复
 
 `session.get_metadata` 的运行时快照通过共享 Worker IPC 查询。等待发送超时或连接回收取消发送时，元数据请求仍返回 `runtime.recovery_pending=true`；对应的 `recovery_reason` 分别为 `snapshot_transport_timeout`、`snapshot_transport_cancelled`。这类响应保留持久化元数据中的 `is_processing` 和 `status`，不能把尚未取得快照解释为会话已经空闲。查询等待超时不会取消共享管道写；连接回收仍负责取消和清理发送任务。
+
+替换 Worker 启动时，新聊天请求会等待该 Worker 完成 IPC 握手。等待超时时，请求在分发前返回 `RUNTIME_WARMING`。冷会话的恢复队列已满或排队超时时，返回 `HISTORY_RESTORE_BUSY`。收到这两种错误时，客户端均可稍后重试。历史迁移返回 `HISTORY_RESTORE_LIMIT` 表示超出了恢复预算，对未变化的历史重复同一请求可能再次触及该限制。
+
+Team 聊天在分发前因历史恢复失败时，如果会话内没有其他进行中的团队任务，客户端会先收到 `chat.processing_status`（`is_processing=false`、`is_complete=true`），再收到带恢复错误码的请求错误。如果还有其他团队任务在执行，本次请求仍会返回该错误，会话继续显示处理中。
 
 模型设置页在保持连接且页面可用时，对 `models.list` 返回的 `WORKER_CLOSED`、`WORKER_UNSTABLE`、`RUNTIME_WARMING`、`RUNTIME_FAILED` 和 `SERVICE_UNAVAILABLE` 自动重试：先等待 1、2、4 秒，之后每 10 秒继续查询。`RUNTIME_FAILED` 也可能表示后端正在等待自动恢复，因此不能仅凭该错误码停止观察。成功后更新列表、清除临时错误并恢复添加按钮；断开连接或离开页面会清理重试定时器。该恢复流程不需要手动重新加载入口。

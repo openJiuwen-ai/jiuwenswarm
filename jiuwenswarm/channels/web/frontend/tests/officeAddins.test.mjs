@@ -30,7 +30,7 @@ await esbuild.build({
   platform: 'node',
   format: 'esm',
   outfile: 'node_modules/.cache/office-addins/OfficeSuite.js',
-  loader: { '.css': 'empty', '.svg': 'dataurl' },
+  loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
   plugins: [viteAssets],
   jsx: 'automatic',
   define: { 'import.meta.env.DEV': 'false' },
@@ -185,6 +185,23 @@ test('the detail page shows the suite state by its name, each app with its statu
   }
 });
 
+test('an app older than its add-in requires reads as outdated, with the version to update to under the list', async () => {
+  const status = { ...office(false, [], { powerpoint: 'host_outdated' }), required: { powerpoint: '16.96' } };
+  await withPlaza(desktop(status), async container => {
+    await click(card(container));
+    assert.deepEqual(['word', 'excel', 'powerpoint'].map(id => statusOf(container, id)), ['未安装', '未安装', '版本过低']);
+    assert.match($(detail(container), 'office-addins-app-outdated').textContent, /^PowerPoint 版本过低，升级到 16\.96 或更高版本/);
+    assert.equal($(detail(container), 'office-addins-action').textContent, '安装');
+  });
+  const onlyOutdated = { ...office(false, [], { word: 'host_not_found', excel: 'host_not_found', powerpoint: 'host_outdated' }),
+    required: { powerpoint: '2504' } };
+  await withPlaza(desktop(onlyOutdated), async container => {
+    await click(card(container));
+    assert.equal($(detail(container), 'office-addins-suite-status').textContent, '版本过低');
+    absent($(detail(container), 'office-addins-action'), 'an install action');
+  });
+});
+
 test('install, repair and remove each ask first, then call their route', async () => {
   // The remove confirm is the connector market's dialog, rendered on document.body.
   const installConfirm = ['office-addins-confirm', 'office-addins-confirm-ok', /登录密码/];
@@ -232,5 +249,34 @@ test('host logos are never dimmed in the detail page', async () => {
     for (const logo of logos) {
       assert.doesNotMatch(`${logo.className} ${logo.getAttribute('style') ?? ''}`, /opacity|grayscale|filter/, 'host logos are never dimmed');
     }
+  });
+});
+
+test('the WPS card opens the same detail page with the WPS apps, and installs without a certificate prompt', async () => {
+  const wps = installed => ({
+    installed,
+    problems: [],
+    apps: Object.fromEntries(['wps-writer', 'wps-spreadsheet', 'wps-presentation']
+      .map(app => [app, installed ? 'installed' : 'not_installed'])),
+  });
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    calls.push(`${init.method ?? 'GET'} ${url}`);
+    return json(init.method ? wps(true) : { suites: { office: office(false), wps: wps(false) } });
+  };
+  await withPlaza({ calls, fetch }, async container => {
+    const cards = $$(container, 'connector-market-card');
+    assert.deepEqual(cards.map(element => element.textContent.match(/WorkSwarm for \w+/)[0]),
+      ['WorkSwarm for Office', 'WorkSwarm for WPS']);
+    await click(cards[1]);
+    assert.equal($(container, 'office-addins-title').textContent, 'WorkSwarm for WPS');
+    assert.deepEqual($$(detail(container), 'office-addins-app').map(row => row.textContent),
+      ['WPS 演示未安装', 'WPS 文字未安装', 'WPS 表格未安装']);
+    assert.match($(detail(container), 'office-addins-start').textContent, /重启 WPS.*信任.*打开 WorkSwarm/);
+    await click($(detail(container), 'office-addins-action'));
+    assert.doesNotMatch($(document, 'office-addins-confirm').textContent, /证书|登录密码/);
+    await click($(document, 'office-addins-confirm-ok'));
+    assert.equal(calls.at(-1), 'POST /desktop-api/office-addins/wps/install');
+    assert.equal(statusOf(container, 'wps-presentation'), '已安装');
   });
 });

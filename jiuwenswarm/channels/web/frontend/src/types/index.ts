@@ -20,6 +20,8 @@ export type ModelSelection =
 
 export interface Session {
   type?: 'chat' | 'group_chat';
+  /** Application NPC conversations are read-only in the Swarm chat surface. */
+  npc_session?: boolean;
   session_id: string;
   title: string;
   project_id: string;
@@ -49,6 +51,8 @@ export interface Session {
   is_active?: boolean;
   is_processing?: boolean;
   organization_owner_stopped?: boolean;
+  /** Team runtime parked in Runner pool (RuntimeState.PAUSED); enterprise HTTP refresh source. */
+  is_paused?: boolean;
   queued_session_messages?: Array<{
     message_id: string;
     target_session_id: string;

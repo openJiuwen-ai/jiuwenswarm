@@ -1,12 +1,14 @@
 """Resource identity, retirement, isolation and concurrent construction."""
 import asyncio
 import gc
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
 
+from jiuwenswarm.common import paths
 from jiuwenswarm.runtime.kernel import KernelIdentity, ResourceKernel, ResourceKey, identity_reference
 
 
@@ -602,18 +604,19 @@ async def test_close_cancels_async_factory_on_its_own_event_loop():
 
 
 def test_enterprise_kernel_resources_are_scoped_to_trusted_tenant_root(monkeypatch, tmp_path):
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths, utils
     from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_paths import build_tenant_key
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
     inputs = dict(project_dir="", work_mode="agent", definition=None,
                   capabilities={}, configuration={})
-    with TenantContext.scoped("group::bot::alice"):
+    with TenantContext.scoped(build_tenant_key("group", "bot", "alice")):
         alice = KernelIdentity.for_agent(**inputs)
         assert alice == KernelIdentity.for_agent(**inputs)
-        assert alice.data_dir == str(TenantContext.current_tenant_root().resolve())
-    with TenantContext.scoped("group::bot::bob"):
+        assert alice.data_dir == os.path.normcase(str(TenantContext.current_tenant_root().resolve()))
+    with TenantContext.scoped(build_tenant_key("group", "bot", "bob")):
         bob = KernelIdentity.for_agent(**inputs)
     assert alice != bob
     assert alice.owner != bob.owner
@@ -625,7 +628,7 @@ def test_personal_kernel_identity_keeps_process_root(monkeypatch, tmp_path):
     from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
     inputs = dict(project_dir="", work_mode="agent", definition=None,
                   capabilities={}, configuration={})
     with TenantContext.scoped("first"):
@@ -633,4 +636,4 @@ def test_personal_kernel_identity_keeps_process_root(monkeypatch, tmp_path):
     with TenantContext.scoped("second"):
         second = KernelIdentity.for_agent(**inputs)
     assert first == second
-    assert first.data_dir == str(tmp_path.resolve())
+    assert first.data_dir == os.path.normcase(str(tmp_path.resolve()))

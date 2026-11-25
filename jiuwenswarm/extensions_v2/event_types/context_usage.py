@@ -1,0 +1,142 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Host event that publishes per-turn token usage after a chat round."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from openjiuwen.core.events import (
+    Event,
+    EventHandlerOps,
+    EventNext,
+    ExtensionEventBus,
+    SessionContext,
+)
+
+from jiuwenswarm.extensions_v2.event_types.matching import match_pattern_subset
+from jiuwenswarm.server.runtime.session.model_selection_store import SESSION_MODEL_INFO_KEY, sanitize_model_info
+from jiuwenswarm.server.runtime.session.session_statistics import SESSION_USAGE_INFO_KEY, build_usage_snapshot
+
+logger = logging.getLogger(__name__)
+
+CONTEXT_USAGE_EVENT = "context.usage.updated"
+
+_PENDING: set[asyncio.Task] = set()
+
+
+@dataclass(frozen=True, slots=True)
+class ContextUsageUpdate:
+    """One finished chat round; values come from ``chat.usage_summary``."""
+
+    session_id: str
+    request_id: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cache_tokens: int = 0
+    cache_hit_rate: str | None = None
+    context_window_tokens: int | None = None
+    usage_percent: float | None = None
+    model: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContextUsageOutput:
+    """Receipt returned by the CORE handler when no plugin consumes the event."""
+
+    accepted: bool
+    request_id: str = ""
+
+
+async def context_usage_core(
+    event: Event,
+    ops: EventHandlerOps | None,
+    next_handler: EventNext,
+) -> ContextUsageOutput:
+    """Validate the payload; rendering is a plugin concern."""
+
+    del ops, next_handler
+    update = event.event_input
+    if not isinstance(update, ContextUsageUpdate):
+        raise TypeError(f"{CONTEXT_USAGE_EVENT} requires ContextUsageUpdate")
+    return ContextUsageOutput(accepted=True, request_id=update.request_id)
+
+
+def register_context_usage_events(bus: ExtensionEventBus) -> None:
+    """Register the host event type and its CORE handler."""
+
+    bus.register_event_type(CONTEXT_USAGE_EVENT, match_pattern_subset, context_usage_core)
+
+
+def notify_context_usage(
+    update: ContextUsageUpdate,
+    *,
+    cwd: str | None = None,
+    project_root: str | None = None,
+    model_info: Mapping[str, object] | None = None,
+    context_usage: dict | None = None,
+) -> asyncio.Task | None:
+    """Schedule usage with workspace facts captured at the host call boundary."""
+
+    if not update.session_id:
+        return None
+    from jiuwenswarm.extensions_v2.assembly import get_extension_bus
+
+    bus = get_extension_bus()
+    if bus is None:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    metadata: dict[str, object] = {"project_root": project_root} if project_root is not None else {}
+    if model_info is not None:
+        metadata[SESSION_MODEL_INFO_KEY] = sanitize_model_info(model_info)
+    turn_usage = {
+        "input_tokens": update.input_tokens, "output_tokens": update.output_tokens,
+        "total_tokens": update.total_tokens,
+    }
+    # Match chat.usage_summary's field-presence rule. A missing cache count is
+    # distinct from a reported zero; invalid counters are validated separately.
+    if isinstance(update.input_tokens, (int, float)) and update.input_tokens > 0:
+        turn_usage["cache_tokens"] = update.cache_tokens
+    try:
+        metadata[SESSION_USAGE_INFO_KEY] = build_usage_snapshot(
+            update.session_id,
+            context_usage=context_usage,
+            turn_usage={
+                "request_id": update.request_id, "timestamp": time.time(),
+                "usage": turn_usage,
+            },
+        )
+    except (TypeError, ValueError):
+        # A malformed telemetry observation must not fail a completed chat.
+        logger.debug("[ExtensionsV2] invalid usage observation", exc_info=True)
+    context = SessionContext(
+        session_id=update.session_id,
+        cwd=cwd,
+        metadata=metadata,
+    )
+    task = loop.create_task(_dispatch(bus, update, context))
+    _PENDING.add(task)
+    task.add_done_callback(_PENDING.discard)
+    return task
+
+
+async def _dispatch(
+    bus: ExtensionEventBus,
+    update: ContextUsageUpdate,
+    context: SessionContext,
+) -> None:
+    try:
+        await bus.trigger(
+            Event(CONTEXT_USAGE_EVENT, update),
+            context,
+        )
+    except Exception:  # noqa: BLE001 - telemetry must not break the round
+        logger.debug("[ExtensionsV2] context usage event failed", exc_info=True)

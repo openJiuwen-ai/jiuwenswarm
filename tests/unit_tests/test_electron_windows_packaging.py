@@ -30,7 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_inno_setup_bootstrap_reuses_shared_installer(tmp_path, scenario, expected):
     source = (ROOT / "scripts/build-electron-exe.ps1").read_text(encoding="utf-8")
     start = source.index("$Iscc = Resolve-InnoSetupCompiler")
-    fragment = source[start:source.index('Write-Host "Using ISCC: $Iscc"', start)]
+    # Payload construction has separate helpers and is not part of compiler discovery.
+    fragment = source[start:source.index("$PayloadRoot =", start)]
     assert "Install-InnoSetup7" in fragment
     script = tmp_path / "bootstrap.ps1"
     script.write_text(

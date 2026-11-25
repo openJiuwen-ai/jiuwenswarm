@@ -81,7 +81,8 @@ from jiuwenswarm.server.jiuwenmate.recovery_service import (
     unverified_tool_calls,
 )
 from jiuwenswarm.server.jiuwenmate.scheduled_requests import DEFAULT_SCHEDULE_INTERVAL, ScheduleService
-from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService, default_data_dir
+from jiuwenswarm.common.paths import get_jiuwenmate_dir
+from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SchedulerLimits, SessionScheduler
 
 logger = logging.getLogger(__name__)
@@ -240,6 +241,7 @@ class AgentManager:
         self._clock = clock
         self._external_event_observer = on_event
         self._delivery_service = delivery_service
+        self._swarmchat = None
         self._thinking_notice_sender = thinking_notice_sender
         self._thinking_notices_sent: set[str] = set()
         self._permission_approvals = permission_approvals or PermissionApprovalRepository(sessions.db_path)
@@ -288,6 +290,7 @@ class AgentManager:
             dingtalk_cli_runtime=self.dingtalk_cli_runtime,
             permission_approvals=self._permission_approvals,
             group_sharing=self.group_sharing,
+            swarmchat_service=service,
         )
         self._permission_cleanup_fingerprint = driver.permission_cleanup_fingerprint
         self._scheduler = SessionScheduler(
@@ -358,9 +361,111 @@ class AgentManager:
         if not all(isinstance(value, str) and value for value in (namespace_id, session_id, sender_agent_id)):
             return []
         session = self._sessions.get_session(namespace_id, session_id)
+        if session.conversation.kind == "swarm_group":
+            from jiuwenswarm.server.jiuwenmate.swarmchat.membership import require_membership
+
+            group, _ = require_membership(session.conversation.key, sender_agent_id)
+            return [{"agent_id": item["member_name"], "name": item["display_name"],
+                     "description": item.get("description", "")} for item in group["members"]]
         if session.conversation.kind != "group":
             return []
         return self.group_collaboration_roster(namespace_id, session.conversation.key, sender_agent_id)
+
+    def is_swarmchat_approval_pending(self, approval_id: str) -> bool:
+        approval = self._permission_approvals.get(approval_id)
+        return approval is not None and approval.status == "pending" and approval.expires_at > self._clock()
+
+    async def answer_swarmchat_approval(
+        self, group_id: str, approval_id: str, decision: str, *, tool_call_id: str | None = None,
+    ):
+        from jiuwenswarm.server.jiuwenmate.swarmchat.membership import require_membership
+
+        approval = self._permission_approvals.get(approval_id)
+        if approval is None or approval.route is None or approval.route.target_id != group_id:
+            raise PersistentAgentError("Approval does not belong to this group", code="FORBIDDEN")
+        group, _ = require_membership(group_id, approval.agent_id)
+        record = self._sessions.get_request(approval.namespace_id, approval.request_id).record
+        if record.access.principal_ref != (group["user_id"] or "local"):
+            raise PersistentAgentError("Approval owner mismatch", code="FORBIDDEN")
+        return await self.decide_permission_approval(
+            approval_id, decision=decision, access=record.access,
+            channel="swarmchat", target_id=group_id, approver_agent_id=approval.agent_id, tool_call_id=tool_call_id,
+        )
+
+    async def stop_swarmchat_group(self, group_id: str, *, user_id: str, channel_id: str) -> None:
+        from jiuwenswarm.server.runtime.group_service import GroupService
+
+        group = GroupService(None).owned(group_id, user_id, channel_id)
+        if self._swarmchat is not None:
+            await self._swarmchat.stop(group)
+        for state in self._sessions.pending_requests("local"):
+            route = state.record.route_snapshot
+            if route is not None and route.channel == "swarmchat" and route.target_id == group_id:
+                await self.control_request("local", state.record.request_id,
+                                           reason="cancel", access=state.record.access)
+
+    async def reconcile_swarmchat_requests(self) -> None:
+        from jiuwenswarm.server.jiuwenmate.swarmchat.membership import require_membership
+
+        for state in self._sessions.pending_requests("local"):
+            route = state.record.route_snapshot
+            if route is None or route.channel != "swarmchat":
+                continue
+            try:
+                require_membership(route.target_id, state.record.agent_id)
+                active = self._service.get_colleague("local", state.record.agent_id).enabled
+            except PersistentAgentError:
+                active = False
+            if not active:
+                await self.control_request("local", state.record.request_id,
+                                           reason="cancel", access=state.record.access)
+
+    async def start_swarmchat(self) -> None:
+        """Start the SwarmChat receiver and durable local delivery on the Web runtime."""
+        from jiuwenswarm.server.jiuwenmate.swarmchat.bridge import ColleagueGroupBridge
+        from functools import partial
+        from jiuwenswarm.server.jiuwenmate.swarmchat.delivery import send_delivery
+
+        if self._swarmchat is not None:
+            return
+        if self._delivery_service is None:
+            self._delivery_service = ResultDeliveryService(
+                self._sessions, namespace_id="local", send_delivery=partial(send_delivery, service=self._service),
+                channels=frozenset({"swarmchat"}), mention_roster=self._delivery_mention_roster,
+            )
+            self._delivery_service.set_sharing_guard(self.group_sharing.can_deliver)
+            await self._delivery_service.start()
+        self._swarmchat = ColleagueGroupBridge(self)
+        await self._swarmchat.start()
+        await self.recover("local", channels=frozenset({"swarmchat"}))
+
+    async def accept_swarmchat_message(self, group: dict, member: dict, source) -> None:
+        """Accept an authenticated public mention through the existing request gate."""
+        from jiuwenswarm.server.jiuwenmate.swarmchat.membership import require_membership
+
+        require_membership(group["group_id"], member["id"])
+        try:
+            colleague = self._service.get_colleague("local", member["id"])
+            if not colleague.enabled:
+                raise PersistentAgentError("Colleague is disabled", code="FORBIDDEN")
+            snapshot = self._service.current_snapshot("local", member["id"])
+        except PersistentAgentError:
+            from jiuwenswarm.server.jiuwenmate.swarmchat.delivery import post_unavailable_notice
+
+            await post_unavailable_notice(group, member, source.message_id)
+            return
+        conversation = ConversationRef(kind="swarm_group", channel="swarmchat", key=group["group_id"])
+        session = self._sessions.resolve_session("local", member["id"], conversation, now=self._clock())
+        access = AccessSnapshot(principal_ref=group["user_id"] or "local", startup_scope=snapshot.enabled_features,
+                                source_scope=snapshot.enabled_features, policy_revision="swarmchat-v1")
+        request_input = core.RequestInput(kind="group_message", text=source.text or "[attachment]",
+                                          source=source, reply_target=group["group_id"])
+        await self._scheduler.accept(
+            session, snapshot=snapshot, source_ref=f"swarmchat:{group['group_id']}:{source.message_id}:{member['id']}",
+            access=access, request_input=request_input, received_at=source.received_at,
+            route_snapshot=RequestRouteSnapshot(channel="swarmchat", target_id=group["group_id"],
+                                                source_message_id=source.message_id),
+        )
 
     async def _verify_group_membership(self, access, group):
         return await self.verify_group_membership(access, group)
@@ -380,7 +485,7 @@ class AgentManager:
         approval_channels: frozenset[str] | None = None,
     ) -> AgentManager:
         """Runtime over the same SQLite file as ``PersistentAgentService.create_default``."""
-        db = (Path(data_dir) if data_dir is not None else default_data_dir()) / "agents.sqlite3"
+        db = (Path(data_dir) if data_dir is not None else get_jiuwenmate_dir()) / "agents.sqlite3"
         return cls(service, ExecutionRepository(db), WindowBackendStore(db), BudgetRepository(db), on_event=on_event,
                    approval_channels=approval_channels)
 
@@ -457,6 +562,9 @@ class AgentManager:
 
     async def aclose(self) -> None:
         """Stop every Execution, wait for their streams to end, then stop cleanup and the commit queue."""
+        if self._swarmchat is not None:
+            await self._swarmchat.aclose()
+            self._swarmchat = None
         self._cli_closing = True
         tasks = tuple(self._cli_tasks.values())
         for task in tasks:
@@ -870,6 +978,12 @@ class AgentManager:
             )
 
     def _schedule_permission_notice(self, approval: PermissionApproval) -> None:
+        if approval.route is not None and approval.route.channel == "swarmchat":
+            from jiuwenswarm.server.jiuwenmate.swarmchat.bridge import publish_permission_approval
+
+            task = asyncio.create_task(publish_permission_approval(self, approval))
+            task.add_done_callback(_log_thinking_notice)
+            return
         business_sharing = self._link_sharing_approval(approval)
         route = approval.route
         if route is None or route.channel == "web" or self._thinking_notice_sender is None:

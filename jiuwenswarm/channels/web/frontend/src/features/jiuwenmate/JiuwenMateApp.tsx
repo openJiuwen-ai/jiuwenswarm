@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webClient, webRequest } from '../../services/webClient';
+import { isTransientManagementError, waitForClientContext } from '../../services/extensionsV2Api';
 import { ColleagueDeleteDialog } from './components/ColleagueDeleteDialog';
 import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
 import { WelinkOauthDialog } from './components/WelinkOauthDialog';
@@ -225,7 +226,11 @@ export function JiuwenMateApp({
     setLoadError('');
     try {
       const [colleagues, welinkResult] = await Promise.all([
-        api.loadColleagues(),
+        api.loadColleagues().catch(async (error) => {
+          if (!isTransientManagementError(error) || requestId !== colleagueLoadRequest.current) throw error;
+          if (!(await waitForClientContext()) || requestId !== colleagueLoadRequest.current) throw error;
+          return api.loadColleagues();
+        }),
         webRequest<{
           agent_ids?: string[];
           bindings?: Array<{ config_id?: string; persistent_agent_id?: string; channel_enabled?: boolean }>;
@@ -291,6 +296,7 @@ export function JiuwenMateApp({
 
   useEffect(() => {
     void loadColleagues();
+    return () => { colleagueLoadRequest.current += 1; };
   }, [loadColleagues]);
 
   useEffect(() => {

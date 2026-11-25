@@ -265,7 +265,17 @@ export class FakeWorkbook {
     this.active = this.sheets[0];
   }
 
-  readonly run: ExcelRun = batch => batch(this.context as unknown as Excel.RequestContext);
+  /** Set while the user types in a cell: Excel refuses every request, and holds a run with ``delayForCellEdit``. */
+  cellLeft?: Promise<void>;
+
+  readonly run: ExcelRun = batch => (this.cellLeft
+    ? Promise.reject(Object.assign(new Error('The cell is being edited.'), { code: 'InvalidOperationInCellEditMode' }))
+    : batch(this.context as unknown as Excel.RequestContext));
+
+  readonly delayedRun: ExcelRun = async batch => {
+    await this.cellLeft;
+    return batch(this.context as unknown as Excel.RequestContext);
+  };
 
   sheet(name: string): FakeSheet {
     return this.sheets.find(sheet => sheet.name === name)!;

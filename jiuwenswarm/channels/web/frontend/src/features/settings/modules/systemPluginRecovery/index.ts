@@ -1,0 +1,1 @@
+export { systemPluginRecoveryModule } from './definition';

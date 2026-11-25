@@ -11,6 +11,9 @@ import pytest
 
 from jiuwenswarm.agents.harness.common import session_ops_service
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from tests.unit_tests.test_context_snapshots import stored as snapshot_storage, user
+
+stored = snapshot_storage
 
 
 def router(monkeypatch, child):
@@ -174,3 +177,92 @@ async def test_restore_failure_propagates_and_discards_the_unusable_child(monkey
         assert child.cleanup.await_count == attempt + 1
     if stage == "prefetch":
         restore.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["none", "cutoff", "rewrite", "generation", "checkpoint"])
+async def test_overlapping_cold_builds_share_only_the_same_structural_failure(stored, monkeypatch, change):
+    from openjiuwen.core.context_engine import ContextEngine
+    from jiuwenswarm.server.runtime.session import context_migration as migration
+    from jiuwenswarm.server.runtime.session import context_snapshot as snapshots
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    from jiuwenswarm.server.runtime.session.recovery_budget import LegacyGroupLimit, _assemblies
+
+    child = child_adapter()
+    parent = router(monkeypatch, child)
+    engine = ContextEngine()
+    child._instance = SimpleNamespace(react_agent=SimpleNamespace(
+        context_engine=engine, _config=SimpleNamespace(context_processors=[]),
+    ))
+    monkeypatch.setattr(session_ops_service, "resolve_live_agent_session", lambda *_args: stored.session)
+    monkeypatch.setattr(migration, "_MAX_CONTEXT_BYTES", 512)
+    stored.write([user("large", "x" * 1024),
+                  {"role": "assistant", "event_type": "context.compact_summary"}, user("current")])
+    ready, proceed = asyncio.Event(), asyncio.Event()
+    attempts = []
+    migrate = migration.migrate_history_context
+
+    async def run_migration(**kwargs):
+        attempts.append(kwargs["before_request_id"])
+        ready.set()
+        await proceed.wait()
+        return await migrate(**kwargs)
+
+    monkeypatch.setattr(migration, "migrate_history_context", run_migration)
+
+    follower_cleanup, release_follower = asyncio.Event(), asyncio.Event()
+
+    async def cleanup():
+        if change == "none" and asyncio.current_task() is second:
+            follower_cleanup.set()
+            await release_follower.wait()
+        if change == "rewrite":
+            stored.write([user("small", "repaired"), user("current")])
+        elif change == "generation":
+            with lc.resource_lock("session", stored.sid):
+                value = lc.state("session", stored.sid)
+                value["generation"] = int(value.get("generation", 0)) + 1
+                lc.save_locked("session", stored.sid, value)
+        elif change == "checkpoint":
+            stored.session.update_state({snapshots.SNAPSHOT_KEY: {"file": "new-checkpoint"}})
+            monkeypatch.setattr(snapshots, "restore_checkpoint_context", AsyncMock(return_value=True))
+
+    child.cleanup = AsyncMock(side_effect=cleanup)
+
+    async def build(boundary):
+        return await parent._get_or_create_session_adapter(stored.sid, history_before_request_id=boundary)
+
+    first = asyncio.create_task(build("current"))
+    await asyncio.wait_for(ready.wait(), 3)
+    second = asyncio.create_task(build("other" if change == "cutoff" else "current"))
+    await asyncio.sleep(0)
+    proceed.set()
+    if change == "none":
+        # The third caller overlaps the follower, after the original build exited.
+        await asyncio.wait_for(follower_cleanup.wait(), 3)
+        third = asyncio.create_task(build("current"))
+        await asyncio.sleep(0)
+        release_follower.set()
+        with pytest.raises(LegacyGroupLimit) as chained:
+            await third
+    leader, follower = await asyncio.gather(first, second, return_exceptions=True)
+    assert isinstance(leader, LegacyGroupLimit) and leader.source is not None
+    if change in {"rewrite", "checkpoint"}:
+        assert follower is child
+    else:
+        assert isinstance(follower, LegacyGroupLimit)
+        assert follower.source is not None
+        if change == "none":
+            assert chained.value.source is follower.source is leader.source
+            assert chained.value is not follower and follower is not leader
+        else:
+            assert follower.source != leader.source
+    assert len(attempts) == (2 if change in {"cutoff", "generation"} else 1)
+    assert parent._session_adapter_locks[stored.sid] not in _assemblies
+    if change == "none":
+        # Even an identical serial request gets a fresh attempt; a repaired file can then recover.
+        with pytest.raises(LegacyGroupLimit) as serial:
+            await build("current")
+        assert serial.value.source is not None and len(attempts) == 2
+        stored.write([user("small", "repaired"), user("current")])
+        assert await build("current") is child

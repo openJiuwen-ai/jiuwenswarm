@@ -939,7 +939,7 @@ def _real_deep_reload_model(api_base: str, model_name: str):
 
 
 async def _reload_deep_adapter_config_for_test(
-    previous_config, deep_config_factory, *, live_reload=None,
+    previous_config, deep_config_factory, agent_definition=None, *, live_reload=None,
 ):
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -957,6 +957,7 @@ async def _reload_deep_adapter_config_for_test(
 
     configured_fields = []
     adapter = JiuWenSwarmDeepAdapter()
+    adapter._session_instance_agent_definition = agent_definition
     adapter._instance = MagicMock(spec=interface_module.DeepAgent)
     adapter._instance.react_agent = SimpleNamespace(register_callback=AsyncMock())
     adapter._instance._deep_config = previous_config
@@ -1276,7 +1277,8 @@ async def test_live_reload_preserves_selected_model(live_reload):
 
 
 @pytest.mark.asyncio
-async def test_deep_adapter_reload_omits_unchanged_model_and_system_prompt():
+@pytest.mark.parametrize("agent_name", [None, "custom-agent"])
+async def test_deep_adapter_reload_omits_unchanged_model_and_system_prompt(agent_name):
     from openjiuwen.harness import DeepAgentConfig
 
     def _new_config(model, agent_card, tool_cards, rails):
@@ -1294,11 +1296,15 @@ async def test_deep_adapter_reload_omits_unchanged_model_and_system_prompt():
             system_prompt="identity prompt",
         ),
         _new_config,
+        agent_definition={"name": agent_name} if agent_name else None,
     )
 
     assert configured_fields == [(None, None)]
     assert adapter._instance._deep_config.model is not None
     assert adapter._instance._deep_config.system_prompt == "identity prompt"
+
+    assert adapter._agent_name == (agent_name or "main_agent")
+    assert adapter._instance._deep_config.card.name == adapter._agent_name
 
 
 @pytest.mark.asyncio

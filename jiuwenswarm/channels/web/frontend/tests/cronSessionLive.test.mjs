@@ -38,15 +38,18 @@ function frame(event, payload) {
   return new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
 }
 
-async function fixture(run) {
+// 每个用例一个独立 sid：live_seq 去重表是模块级的，共用 sid 会让相邻用例互相吞帧。
+let fixtureSeq = 0;
+
+async function fixture(run, sid = `__cron__history-live-test-${++fixtureSeq}`) {
   const previousFetch = globalThis.fetch;
   const previousState = useChatStore.getState();
   const received = [];
   const streams = [];
   const requests = [];
-  const off = ['chat.delta', 'chat.final', 'chat.processing_status', 'chat.ask_user_question']
+  const stops = [];
+  const off = ['chat.delta', 'chat.final', 'chat.processing_status', 'chat.ask_user_question', 'chat.error']
     .map(name => webClient.on(name, event => received.push(event)));
-  let stop = () => {};
   globalThis.fetch = async (url, init) => {
     let controller;
     const body = new ReadableStream({ start(value) { controller = value; } });
@@ -59,17 +62,20 @@ async function fixture(run) {
     requests.push({ url, init });
     return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
   };
-  const sid = '__cron__history-live-test';
   useChatStore.getState().ensureRuntime(sid);
   const control = {
     sid, received, streams, requests,
-    async start() { stop = watchCronExecutionSession(sid); await settle(); return streams.at(-1); },
+    async start(options) {
+      stops.push(watchCronExecutionSession(sid, options));
+      await settle();
+      return streams.at(-1);
+    },
     showHistory() { useChatStore.getState().setHistoryPagerMeta(sid, history); },
   };
   try {
     await run(control);
   } finally {
-    stop();
+    stops.forEach(stop => stop());
     streams.forEach(stream => stream.close());
     off.forEach(dispose => dispose());
     globalThis.fetch = previousFetch;
@@ -160,6 +166,36 @@ test('reconnecting a history-backed session continues to forward live frames', (
   assert.equal(control.received.length, 4);
   assert.equal(control.received.at(-1).payload.is_processing, false);
 }));
+
+test('a replayed chat.error settles again but is not injected twice', () => fixture(async control => {
+  const errorFrame = { error: 'cron failed', live_seq: 41 };
+  const first = await control.start({ stopOnSettled: true });
+  first.send('chat.error', errorFrame);
+  await settle();
+  assert.equal(control.received.length, 1);
+  assert.equal(control.requests[0].init.signal.aborted, true);
+
+  const second = await control.start({ stopOnSettled: true });
+  second.send('chat.error', { ...errorFrame, live_replay: true });
+  await settle();
+  assert.equal(control.received.length, 1);
+  assert.equal(control.requests[1].init.signal.aborted, true);
+}, '__cron__replayed-error-test'));
+
+test('a replayed processing=false settles again but is not injected twice', () => fixture(async control => {
+  const idleFrame = { is_processing: false, live_seq: 42 };
+  const first = await control.start({ stopOnSettled: true });
+  first.send('chat.processing_status', idleFrame);
+  await settle();
+  assert.equal(control.received.length, 1);
+  assert.equal(control.requests[0].init.signal.aborted, true);
+
+  const second = await control.start({ stopOnSettled: true });
+  second.send('chat.processing_status', { ...idleFrame, live_replay: true });
+  await settle();
+  assert.equal(control.received.length, 1);
+  assert.equal(control.requests[1].init.signal.aborted, true);
+}, '__cron__replayed-idle-test'));
 
 test('personal WebSocket and non-cron HTTP sessions do not start this listener', () => fixture(async control => {
   window.__JIUWENSWARM_EDITION__ = 'personal';

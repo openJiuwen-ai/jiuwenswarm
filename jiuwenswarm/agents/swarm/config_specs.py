@@ -103,6 +103,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.RESPONSE_PROMPT,
     registry.SYS_OPERATION,
     registry.STREAM_EVENT,
+    registry.WORKSPACE_QUOTA,
     registry.TASK_PLANNING,
     registry.SECURITY,
     registry.MODEL_ANOMALY_DETECTION,
@@ -820,6 +821,10 @@ def build_member_capability_specs(
         rails, tools = _build_team_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
+    from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+    if uses_jiuwen_team_memory(config, mode):
+        rails = [rail for rail in rails if rail.type != registry.CODE_CODING_MEMORY]
+        rails.append(RailSpec(type=registry.TEAM_MEMORY))
     # OpenCode Go models need a member-scoped session header; the rail is a
     # no-op for every other vendor, so mounting it needs no config gate.
     rails.append(RailSpec(type=registry.OPENCODE_SESSION))
@@ -852,7 +857,15 @@ def _subagent_language(mode: str, role: str, config: dict[str, Any]) -> str:
     openjiuwen sub-agent providers stay free of swarm mode/role policy.
     """
     if is_team_plan_mode(mode) and role == "leader":
-        return resolve_language((config or {}).get("preferred_language", "zh"))
+        from jiuwenswarm.common.i18n import to_runtime_language
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
+        mapped = to_runtime_language(resolve_preferred_language())
+        if mapped is None:
+            mapped = to_runtime_language((config or {}).get("preferred_language"))
+        return resolve_language(mapped)
     return "en"
 
 
@@ -1045,7 +1058,7 @@ def build_member_deep_agent_spec(
     merged_rails.extend(rails_specs)
     if disable_code_todo_reminder and _is_code_mode(mode):
         merged_rails = [
-            rail.model_copy(update={"params": {**rail.params, "enable_task_reminders": False}})
+            rail.model_copy(update={"params": {**(rail.params or {}), "enable_task_reminders": False}})
             if rail.type == registry.CODE_TASK_PLANNING else rail
             for rail in merged_rails
         ]
@@ -1073,6 +1086,16 @@ def build_member_deep_agent_spec(
         # Written only when enabled so a disabled switch keeps the base spec
         # byte-identical (a YAML base spec may carry its own value).
         update["progressive_tool"] = ProgressiveToolSpec(enabled=True)
+    # New agent-core routes only the supported core startup providers through
+    # tool.register. Keep the update capability-gated so a rolling upgrade can
+    # construct against an older Core; that combination intentionally retains
+    # the legacy direct-registration path, including all swarm.* providers.
+    if registry.supports_tool_registration_event():
+        update["tool_registration_mode"] = registry.TOOL_REGISTRATION_MODE
+        update["event_tool_types"] = list(registry.EVENT_TOOL_TYPES)
+    if registry.supports_subagent_registration_event():
+        update["subagent_registration_mode"] = registry.SUBAGENT_REGISTRATION_MODE
+        update["event_subagent_types"] = list(registry.EVENT_SUBAGENT_TYPES)
     if role == "leader":
         # Leaders use the team task board (create_task / view_task / update_task).
         # Force off agent-core's enable_task_planning auto-inject path so a YAML

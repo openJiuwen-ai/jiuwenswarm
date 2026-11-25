@@ -135,10 +135,12 @@ if getattr(sys, "frozen", False):
 
 _DESKTOP_RUN_AGENT = "--desktop-run-agent"
 _DESKTOP_RUN_GATEWAY = "--desktop-run-gateway"
+_EXTENSION_RECOVERY_SIDECAR = "--extension-recovery-sidecar"
 _DESKTOP_PREPARE_RUNTIME_WORKSPACE = "--desktop-prepare-runtime-workspace"
 _DESKTOP_INSTALL_EXTERNAL_CLI = "--desktop-install-external-cli"
 _DESKTOP_RESET_EXTERNAL_CLI_CONFIG = "--desktop-reset-external-cli-config"
 _DESKTOP_REMOVE_OFFICE_ADDINS = "--desktop-remove-office-addins"
+_DESKTOP_STOP_BUNDLED_EMAIL_MCP = "--desktop-stop-bundled-email-mcp"
 
 # 子进程 flag 集合，这些模式下需要将错误写入日志文件，
 # 因为 console=False 的 PyInstaller exe 在 Windows 上无法通过 stderr 捕获错误。
@@ -168,10 +170,12 @@ _CHILD_FLAGS = {
     "--desktop-run-web",
     _DESKTOP_RUN_AGENT,
     _DESKTOP_RUN_GATEWAY,
+    _EXTENSION_RECOVERY_SIDECAR,
     _DESKTOP_PREPARE_RUNTIME_WORKSPACE,
     _DESKTOP_INSTALL_EXTERNAL_CLI,
     _DESKTOP_RESET_EXTERNAL_CLI_CONFIG,
     _DESKTOP_REMOVE_OFFICE_ADDINS,
+    _DESKTOP_STOP_BUNDLED_EMAIL_MCP,
     _DESKTOP_INSTALL_UPDATE,
 }
 
@@ -201,6 +205,7 @@ def _should_hold_windows_app_mutex() -> bool:
         and _DESKTOP_INSTALL_EXTERNAL_CLI not in sys.argv
         and _DESKTOP_RESET_EXTERNAL_CLI_CONFIG not in sys.argv
         and _DESKTOP_REMOVE_OFFICE_ADDINS not in sys.argv
+        and _DESKTOP_STOP_BUNDLED_EMAIL_MCP not in sys.argv
     )
 
 
@@ -408,6 +413,40 @@ def _pop_flag(flag: str) -> bool:
     return True
 
 
+def _stop_bundled_email_mcp() -> int:
+    """Release the bundled Node executable before Windows uninstall deletes it."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return 0
+
+    import psutil
+
+    node_path = Path(sys.executable).resolve().parent / "runtime" / "node-runtime" / "node.exe"
+    entry_parts = ("node_modules", "@codefuturist", "email-mcp", "dist", "main.js")
+    stopped = []
+    failed = False
+    for process in psutil.process_iter(["name"]):
+        if (process.info["name"] or "").lower() != "node.exe":
+            continue
+        try:
+            if Path(process.exe()) != node_path:
+                continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        try:
+            args = process.cmdline()
+            # On Windows, npx launches the entry through node_modules\.bin\..
+            if len(args) < 2 or Path(os.path.normcase(os.path.normpath(args[1]))).parts[-5:] != entry_parts:
+                continue
+            process.kill()
+            stopped.append(process)
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.AccessDenied:
+            failed = True
+    _, alive = psutil.wait_procs(stopped, timeout=3)
+    return int(failed or bool(alive))
+
+
 def main() -> None:
     _acquire_windows_app_mutexes()
     try:
@@ -576,6 +615,10 @@ def _dispatch() -> int | None:
 
         install_external_cli_runtime_from_artifacts(cli_agent, artifact_directory)
         return 0
+    if _pop_flag(_DESKTOP_STOP_BUNDLED_EMAIL_MCP):
+        if len(sys.argv) != 1:
+            raise ValueError("bundled email-mcp cleanup does not accept arguments")
+        return _stop_bundled_email_mcp()
     if _pop_flag(_DESKTOP_RESET_EXTERNAL_CLI_CONFIG):
         if len(sys.argv) != 1:
             raise ValueError("external CLI configuration reset does not accept arguments")
@@ -589,8 +632,7 @@ def _dispatch() -> int | None:
         from jiuwenswarm.channels.desktop.office_addins import remove_all
         from jiuwenswarm.common.utils import get_user_workspace_dir
 
-        remove_all(get_user_workspace_dir())
-        return 0
+        return 0 if remove_all(get_user_workspace_dir()) else 1
     if _pop_flag("--desktop-restore-upgrade-config"):
         if len(sys.argv) != 1:
             raise ValueError("upgrade configuration restore does not accept arguments")
@@ -598,6 +640,14 @@ def _dispatch() -> int | None:
 
         restore_legacy_upgrade_config()
         return 0
+    if len(sys.argv) >= 2 and sys.argv[1].lower() == "presentation":
+        from jiuwenswarm.channels.cli.presentation import main as presentation_main
+
+        return presentation_main(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1].lower() == "extension":
+        from jiuwenswarm.channels.cli.extension import main as extension_main
+
+        return extension_main(sys.argv[2:])
     # 已知子命令分发（不检查单实例锁）
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "init":
         sys.argv.pop(1)
@@ -620,6 +670,10 @@ def _dispatch() -> int | None:
         from jiuwenswarm.app import main as app_main
         app_main()
         return None
+    if _pop_flag(_EXTENSION_RECOVERY_SIDECAR):
+        from jiuwenswarm.common.system_plugin_recovery_sidecar import main as recovery_main
+        recovery_main()
+        return None
     if _pop_flag("--desktop-run-web"):
         from jiuwenswarm.channels.web.app_web import main as web_main
         web_main()
@@ -634,7 +688,7 @@ def _dispatch() -> int | None:
         agent_main()
         return None
     if _pop_flag(_DESKTOP_RUN_GATEWAY):
-        from agent_gateway.app_gateway import main as gateway_main
+        from jiuwenswarm.channels.desktop.gateway_entry import main as gateway_main
         gateway_main()
         return None
     if _DESKTOP_INSTALL_UPDATE in sys.argv:

@@ -90,7 +90,11 @@ def bind_control_tenant(request: Any) -> Iterator[str]:
 
     Personal: key is default and path CVs stay unbound (develop layout).
     Enterprise: sessions/history/project reads use the same workspace as chat.
+    Plaintext triple is bound so quota / identity readers can reuse the envelope.
     """
     tenant_key = extract_tenant_key(request)
-    with TenantContext.scoped(tenant_key):
+    group_id, bot_id, user_id = extract_triple(request)
+    with TenantContext.scoped(
+        tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
+    ):
         yield tenant_key

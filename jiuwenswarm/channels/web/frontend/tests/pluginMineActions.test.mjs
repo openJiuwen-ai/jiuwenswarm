@@ -13,6 +13,7 @@ await build({
   entryPoints: [
     'src/components/ConnectorMarket/MarketplacePage.tsx',
     'src/components/ConnectorMarket/PluginDetailPage.tsx',
+    'src/components/ConnectorMarket/SystemPluginDetailPage.tsx',
   ],
   bundle: true,
   packages: 'external',
@@ -30,28 +31,42 @@ await build({
       builder.onResolve({ filter: /^(\.\.\/)+hooks$/ }, () => ({ path: 'hooks', namespace: 'action-exports' }));
       builder.onLoad({ filter: /.*/, namespace: 'action-exports' }, ({ path }) => ({
         contents: path === 'ui'
-          ? ['PageCard', 'EntityHeader', 'DetailPromptChip', 'DetailSection', 'PageToolbarSearch', 'PageHeader', 'CategoryTabs', 'Tabs', 'EmptyState']
-            .map(name => `export { ${name} } from ${JSON.stringify(resolve(`src/components/ui/${name}/${name}.tsx`))};`).join('\n')
+          ? [
+            ...['PageCard', 'EntityHeader', 'DetailPromptChip', 'DetailSection', 'PageToolbarSearch', 'PageHeader', 'CategoryTabs', 'Tabs', 'EmptyState', 'Button', 'Dialog', 'CloseButton', 'MarkdownPane', 'PageToolbar', 'Select']
+              .map(name => `export { ${name} } from ${JSON.stringify(resolve(`src/components/ui/${name}/${name}.tsx`))};`),
+            `export { FilePreviewContent } from ${JSON.stringify(resolve('src/components/ui/FilePreviewPanel/FilePreviewContent.tsx'))};`,
+            `export { FilePreviewPanel } from ${JSON.stringify(resolve('src/components/ui/FilePreviewPanel/FilePreviewPanel.tsx'))};`,
+            `export { FilePreviewTree, findDefaultPreviewFile } from ${JSON.stringify(resolve('src/components/ui/FilePreviewPanel/FilePreviewTree.tsx'))};`,
+            `export { getPreviewFileLabel } from ${JSON.stringify(resolve('src/components/ui/FilePreviewPanel/filePreviewShared.ts'))};`,
+          ].join('\n')
           : `export { useHorizontalScrollEdges } from ${JSON.stringify(resolve('src/hooks/useHorizontalScrollEdges.ts'))};`,
         loader: 'js',
         resolveDir: process.cwd(),
       }));
-      builder.onResolve({ filter: /stores\/(pluginPackageStore|connectorStore)$/ }, ({ path }) => ({
-        path: path.endsWith('pluginPackageStore') ? 'plugin' : 'connector',
+      builder.onResolve({ filter: /stores\/(pluginPackageStore|connectorStore|systemPluginStore)$/ }, ({ path }) => ({
+        path: path.endsWith('pluginPackageStore') ? 'plugin' : path.endsWith('systemPluginStore') ? 'system' : 'connector',
         namespace: 'action-store',
       }));
       builder.onLoad({ filter: /.*/, namespace: 'action-store' }, ({ path }) => ({
         contents: path === 'plugin'
           ? 'export const usePluginPackageStore = selector => selector(globalThis.pluginActionState); usePluginPackageStore.getState = () => globalThis.pluginActionState;'
-          : 'export const useConnectorStore = selector => selector(globalThis.connectorActionState); useConnectorStore.getState = () => globalThis.connectorActionState;',
+          : path === 'system'
+            ? 'export const useSystemPluginStore = selector => selector(globalThis.systemPluginActionState); useSystemPluginStore.getState = () => globalThis.systemPluginActionState;'
+            : 'export const useConnectorStore = selector => selector(globalThis.connectorActionState); useConnectorStore.getState = () => globalThis.connectorActionState;',
         loader: 'js',
       }));
-      builder.onResolve({ filter: /services\/(pluginPackagesApi|connectorApi)$/ }, ({ path }) => ({
-        path: path.endsWith('pluginPackagesApi') ? 'pluginPackagesApi' : 'connectorApi',
+      builder.onResolve({ filter: /services\/(pluginPackagesApi|connectorApi|extensionsV2Api)$/ }, ({ path }) => ({
+        path: path.endsWith('pluginPackagesApi')
+          ? 'pluginPackagesApi'
+          : path.endsWith('extensionsV2Api')
+            ? 'extensionsV2Api'
+            : 'connectorApi',
         namespace: 'action-api',
       }));
       builder.onLoad({ filter: /.*/, namespace: 'action-api' }, ({ path }) => ({
-        contents: `export const ${path} = {};`,
+        contents: path === 'extensionsV2Api'
+          ? 'export const systemPluginApi = { catalog: (...args) => globalThis.systemPluginActionApi.catalog(...args) };'
+          : `export const ${path} = {};`,
         loader: 'js',
       }));
       builder.onResolve({ filter: /\.svg\?react$/ }, ({ path }) => ({ path, namespace: 'action-svg' }));
@@ -85,6 +100,8 @@ after(() => {
   }
   delete globalThis.pluginActionState;
   delete globalThis.connectorActionState;
+  delete globalThis.systemPluginActionState;
+  delete globalThis.systemPluginActionApi;
   dom.window.close();
 });
 
@@ -99,6 +116,7 @@ await i18next.use(initReactI18next).init({
 
 const { MarketplacePage } = await import('../node_modules/.cache/plugin-mine-actions/MarketplacePage.mjs');
 const { PluginDetailPage } = await import('../node_modules/.cache/plugin-mine-actions/PluginDetailPage.mjs');
+const { SystemPluginDetailPage } = await import('../node_modules/.cache/plugin-mine-actions/SystemPluginDetailPage.mjs');
 const plugin = {
   id: 'legacy-plugin', runtimePackageName: 'legacy-plugin', source: 'local',
   displayName: { zh: '本地插件', en: 'Local plugin' },
@@ -108,7 +126,7 @@ const plugin = {
 };
 
 function resetState({ installed = false, connected = false } = {}) {
-  const calls = { install: [], connect: [], use: [], detail: [] };
+  const calls = { install: [], connect: [], use: [], detail: [], systemInstall: [] };
   globalThis.pluginActionState = {
     packages: [plugin], localPackages: [plugin],
     installed: { [plugin.id]: installed },
@@ -127,6 +145,15 @@ function resetState({ installed = false, connected = false } = {}) {
     connectors: [connector], builtinConnectors: [], myConnectors: [connector], busyMap: {},
     connect: async name => { calls.connect.push(name); return null; },
   };
+  globalThis.systemPluginActionState = {
+    catalog: [], mine: [], detailCache: {}, busyIds: {}, loading: false,
+    loadDetail: async () => true,
+    install: async id => { calls.systemInstall.push(id); return { ok: true }; },
+    uninstall: async () => ({ ok: true }),
+    reload: async () => ({ ok: true }),
+    setEnabled: async () => ({ ok: true }),
+  };
+  globalThis.systemPluginActionApi = { catalog: async () => globalThis.systemPluginActionState.mine };
   return calls;
 }
 
@@ -143,12 +170,14 @@ async function render(component, props, check) {
   }
 }
 
-function marketProps(calls, topTab = 'my', myKind = 'plugin') {
+function marketProps(calls, topTab = 'my', myKind = 'plugin', pluginKind = 'agent') {
   return {
-    topTab, myKind,
-    onTopTabChange() {}, onMyKindChange() {},
+    topTab, myKind, pluginKind,
+    onTopTabChange() {}, onMyKindChange() {}, onPluginKindChange() {},
     onOpenConnectorDetail() {}, onCreateManual() {}, onCreateWithSkill() {},
     onCreateWithUpload() {}, onRegisterCustomMcp() {},
+    officeSuites: null, onOpenOfficeSuite() {}, onOpenSystemPluginDetail() {},
+    onRefresh: async () => {}, refreshNonce: 0,
     onOpenPluginDetail: id => { calls.detail.push(id); },
     onUse: payload => { calls.use.push(payload); },
   };
@@ -216,10 +245,115 @@ test('my installed disconnected MCP retains the connect action', async () => {
   });
 });
 
+for (const [surface, props] of [
+  ['my extensions', calls => marketProps(calls)],
+  ['plugin marketplace', calls => marketProps(calls, 'plugin', 'plugin', 'system')],
+]) {
+  test(`${surface} system plugin toggles do not replace the card action with installing copy`, async () => {
+    await i18next.changeLanguage('zh');
+    const calls = resetState();
+    const systemPlugin = {
+      id: 'token-weather', packageId: 'token-weather', version: '1.0.0', installedVersion: '1.0.0',
+      displayName: { zh: 'Token 天气', en: 'Token Weather' },
+      displayDescription: { zh: '系统插件', en: 'System plugin' },
+      tags: [], avatar: null, installed: true, active: true, enabled: true,
+    };
+    globalThis.systemPluginActionState.mine = [systemPlugin];
+    globalThis.systemPluginActionState.catalog = [systemPlugin];
+    globalThis.systemPluginActionState.busyIds = { 'token-weather': true };
+
+    await render(MarketplacePage, props(calls), async host => {
+      assert.ok(host.querySelector('[data-testid="connector-market-system-plugin-enabled"]'));
+      assert.doesNotMatch(host.textContent, /安装中/);
+      assert.equal(host.querySelector('[data-testid="connector-market-card-install"]'), null);
+    });
+  });
+}
+
+test('system plugin marketplace install confirms when another plugin is enabled', async () => {
+  await i18next.changeLanguage('zh');
+  const calls = resetState();
+  globalThis.systemPluginActionState.catalog = [{
+    id: 'target-asset', packageId: 'target-plugin', version: '1.0.0', installedVersion: '',
+    displayName: { zh: '目标插件', en: 'Target plugin' },
+    displayDescription: { zh: '待安装', en: 'Not installed' },
+    tags: [], avatar: null, installed: false, active: false, enabled: true,
+  }];
+  globalThis.systemPluginActionState.mine = [{
+    id: 'active-plugin', packageId: 'active-plugin', version: '1.0.0', installedVersion: '1.0.0',
+    displayName: { zh: '已开启插件', en: 'Enabled plugin' },
+    displayDescription: { zh: '已开启', en: 'Enabled' },
+    tags: [], avatar: null, installed: true, active: true, enabled: true,
+  }];
+
+  await render(MarketplacePage, marketProps(calls, 'plugin', 'plugin', 'system'), async host => {
+    await act(async () => host.querySelector('[data-testid="connector-market-card-install"]').click());
+    assert.deepEqual(calls.systemInstall, []);
+    const dialog = document.querySelector('[data-testid="connector-market-confirm-dialog"]');
+    assert.match(dialog.textContent, /开启多个系统插件/);
+    await act(async () => dialog.querySelector('[data-testid="connector-market-confirm-ok"]').click());
+    assert.deepEqual(calls.systemInstall, ['target-asset']);
+  });
+});
+
+test('system plugin marketplace installs directly when no plugin is enabled', async () => {
+  await i18next.changeLanguage('zh');
+  const calls = resetState();
+  globalThis.systemPluginActionState.catalog = [{
+    id: 'target-asset', packageId: 'target-plugin', version: '1.0.0', installedVersion: '',
+    displayName: { zh: '目标插件', en: 'Target plugin' },
+    displayDescription: { zh: '待安装', en: 'Not installed' },
+    tags: [], avatar: null, installed: false, active: false, enabled: true,
+  }];
+
+  await render(MarketplacePage, marketProps(calls, 'plugin', 'plugin', 'system'), async host => {
+    await act(async () => host.querySelector('[data-testid="connector-market-card-install"]').click());
+    assert.deepEqual(calls.systemInstall, ['target-asset']);
+    assert.equal(document.querySelector('[data-testid="connector-market-confirm-dialog"]'), null);
+  });
+});
+
+test('system plugin marketplace install continues when conflict discovery fails', async () => {
+  const calls = resetState();
+  globalThis.systemPluginActionState.catalog = [{
+    id: 'target-asset', packageId: 'target-plugin', version: '1.0.0', installedVersion: '',
+    displayName: { zh: '目标插件', en: 'Target plugin' },
+    displayDescription: { zh: '待安装', en: 'Not installed' },
+    tags: [], avatar: null, installed: false, active: false, enabled: true,
+  }];
+  globalThis.systemPluginActionApi.catalog = async () => { throw new Error('catalog unavailable'); };
+
+  await render(MarketplacePage, marketProps(calls, 'plugin', 'plugin', 'system'), async host => {
+    await act(async () => host.querySelector('[data-testid="connector-market-card-install"]').click());
+    assert.deepEqual(calls.systemInstall, ['target-asset']);
+    assert.equal(document.querySelector('[data-testid="connector-market-confirm-dialog"]'), null);
+  });
+});
+
+test('system plugin detail install continues when conflict discovery fails', async () => {
+  const calls = resetState();
+  globalThis.systemPluginActionState.detailCache['target-asset'] = {
+    id: 'target-asset', assetId: 'target-asset', packageId: 'target-plugin', version: '1.0.0',
+    versions: ['1.0.0'], installedVersion: '', displayName: { zh: '目标插件', en: 'Target plugin' },
+    displayDescription: { zh: '待安装', en: 'Not installed' }, details: '', readme: '', tags: [],
+    avatar: null, preview: null, events: [], installed: false, active: false, enabled: true,
+    source: 'hub', origin: 'hub',
+  };
+  globalThis.systemPluginActionApi.catalog = async () => { throw new Error('catalog unavailable'); };
+
+  await render(SystemPluginDetailPage, { id: 'target-asset', onBack() {} }, async host => {
+    const install = [...host.querySelectorAll('button')].find(button => button.textContent === '安装');
+    assert.ok(install);
+    await act(async () => install.click());
+    assert.deepEqual(calls.systemInstall, ['target-asset']);
+    assert.equal(host.querySelector('[data-testid="connector-market-system-plugin-detail-error"]'), null);
+  });
+});
+
 for (const fromMy of [true, false]) {
   test(`${fromMy ? 'my' : 'marketplace'} uninstalled plugin detail respects the page action scope`, async () => {
     const calls = resetState();
-    await render(PluginDetailPage, { id: plugin.id, fromMy, onBack() {} }, async host => {
+    await render(PluginDetailPage, { id: plugin.id, fromMy, onBack() {}, onUse() {} }, async host => {
       const install = host.querySelector('[data-testid="connector-market-plugin-detail-install"]');
       const use = host.querySelector('[data-testid="connector-market-plugin-detail-use"]');
       if (fromMy) {
