@@ -104,6 +104,7 @@ import {
   canApplyHistoryCursorBatch,
   prefetchHistoryBatches,
 } from './features/historyPagination';
+import { deleteSessionViewport } from './features/chatTimeline/sessionViewportCache';
 import { isPlanWireMode, resolvePlanWireMode } from './features/planMode/wireMode';
 import { resolveRestoredPlanActive, enforceSwarmflowPlanPrecedence } from './features/planMode/planModeGate';
 import { queueOrAddGoalObjectiveMessage } from './features/goalPendingObjectiveBubble';
@@ -4693,6 +4694,7 @@ function AppContent({
       useHarnessStore.getState().removeRuntime(id);
       useGoalStore.getState().removeRuntime(id);
       usePlanStore.getState().removeRuntime(id);
+      deleteSessionViewport(id);
     }
     useWorkspaceStore.getState().removeSessions([...deleted]);
     if (routeSessionId && deleted.has(routeSessionId)) {
