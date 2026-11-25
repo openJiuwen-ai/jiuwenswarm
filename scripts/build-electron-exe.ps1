@@ -648,6 +648,12 @@ if ($FrontendOnly) {
         throw "Frozen Gateway adapter bundle verification failed. See verifier output above."
     }
 
+    $SwarmResourcesVerifier = Join-Path $ProjectRoot "scripts\verify_swarm_resources_bundle.py"
+    uv run --no-sync python $SwarmResourcesVerifier --executable $FrozenExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Frozen Swarm resources bundle verification failed. See verifier output above."
+    }
+
     $A2UIVerifier = Join-Path $ProjectRoot "scripts\verify_a2ui_bundle.py"
     $VerifyProcess = Start-Process `
         -FilePath $FrozenExe `

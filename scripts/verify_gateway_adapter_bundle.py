@@ -58,6 +58,7 @@ def verify_gateway_adapter_bundle() -> None:
         "openjiuwen_runtime.foundation.security.link_mtls_config",
         "jiuwenswarm.server.jiuwenmate.agent_mail_local_provider",
         "jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider",
+        "jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers",
     ):
         import_module(module_name)
     verify_gateway_extensions()
