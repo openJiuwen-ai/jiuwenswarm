@@ -511,6 +511,10 @@ class TeamManager:
         self._active_rounds: dict[str, _ActiveTeamRound] = {}
         self._stopping_requests: set[str] = set()
         self._request_stop_events: dict[str, asyncio.Event] = {}
+        # Nested teardown windows (a pause request running inside a cron round
+        # handoff, a fenced stop overlapping a pause) each hold one depth
+        # level; waiters wake only when the outermost holder releases.
+        self._request_stop_depths: dict[str, int] = {}
         # session_id → cron team round completion state. Lifetime-coupled to
         # _pending_waiters: set by _try_finish_cron_team_stream, popped by the
         # finisher coroutines once the cron stream ends.
@@ -1456,7 +1460,7 @@ class TeamManager:
                 return
             # The marker keeps a new round from starting while the producer is
             # being handed off, so awaiting it below cannot admit a stale round.
-            self._begin_request_stop(session_id)
+            self.begin_request_stop(session_id)
             task = self.pop_stream_task(session_id, generation=completion.get("generation"))
             if task is not None and not task.done():
                 task.cancel()
@@ -1485,17 +1489,37 @@ class TeamManager:
             # lifecycle lock here would reintroduce an await in the cancel path.
             if self.get_cron_completion(session_id) is completion:
                 self.pop_cron_completion(session_id)
-            self._end_request_stop(session_id)
+            self.end_request_stop(session_id)
 
-    def _begin_request_stop(self, session_id: str) -> None:
+    def begin_request_stop(self, session_id: str) -> None:
+        """Hold new team input until the caller's teardown finishes.
+
+        Refcounted: only teardowns with an explicit owner hold the barrier (a
+        pause request, the cron round handoff, a fenced stop), and two of
+        those windows may overlap. Each holder must pair this call with
+        ``end_request_stop`` in its own scope; stream artifact cleanup sites
+        must not release a holder's depth level.
+        """
+        depth = self._request_stop_depths.get(session_id, 0) + 1
+        self._request_stop_depths[session_id] = depth
         self._stopping_requests.add(session_id)
         self._request_stop_events.setdefault(session_id, asyncio.Event())
 
-    def _end_request_stop(self, session_id: str) -> None:
+    def end_request_stop(self, session_id: str) -> None:
+        """Release one ``begin_request_stop`` hold; the last one wakes waiters."""
+        depth = self._request_stop_depths.get(session_id, 0) - 1
+        if depth > 0:
+            self._request_stop_depths[session_id] = depth
+            return
+        self._request_stop_depths.pop(session_id, None)
         self._stopping_requests.discard(session_id)
         event = self._request_stop_events.pop(session_id, None)
         if event is not None:
             event.set()
+
+    def is_request_stop_pending(self, session_id: str) -> bool:
+        """Return whether a previous producer's teardown still holds admission."""
+        return session_id in self._request_stop_events
 
     async def wait_for_request_stop(self, session_id: str) -> None:
         """Queue new input until the previous producer has finished teardown."""
@@ -3346,6 +3370,31 @@ class TeamManager:
             return False
         return is_team_session_running(session_id)
 
+    async def reseed_member_registry(self, session_id: str) -> bool:
+        """Re-baseline the parked leader's member statuses from the database.
+
+        Core's pause persists PAUSED member statuses while the kernel's
+        volatile runtime keeps the previous cycle's in-memory roster, so a
+        parked team reads busy (``is_team_session_running`` walks the
+        registry) until its next run cycle re-baselines it. This calls the
+        agent's public ``seed_member_registry`` contract — the same one the
+        kernel uses at every run-cycle start — so the busy judgment and the
+        runtime snapshot the page reads agree with the database, without
+        reaching into agent internals.
+
+        Returns:
+            True when a live agent accepted the reseed, False when the
+            session has no agent or the agent lacks the contract.
+        """
+        team_agent = self.get_team_agent(session_id)
+        if team_agent is None:
+            return False
+        reseed = getattr(team_agent, "seed_member_registry", None)
+        if not callable(reseed):
+            return False
+        await reseed()
+        return True
+
     def _has_local_team_runtime(self, session_id: str) -> bool:
         """Return whether the session should use the legacy in-memory TeamAgent path."""
         return self._is_distributed_mode(get_config()) and session_id in self._team_agents
@@ -3960,7 +4009,7 @@ class TeamManager:
                 if any(rid != expected_request_id for rid in inflight):
                     return False
             if expected_request_id:
-                self._begin_request_stop(session_id)
+                self.begin_request_stop(session_id)
             try:
                 has_stream_task = session_id in self._stream_tasks
                 has_local_team_runtime = self._has_local_team_runtime(session_id)
@@ -4034,7 +4083,7 @@ class TeamManager:
 
             finally:
                 if expected_request_id:
-                    self._end_request_stop(session_id)
+                    self.end_request_stop(session_id)
 
         logger.info(
             "[TeamManager] %steam session stopped: session_id=%s stopped=%s",
@@ -4340,6 +4389,7 @@ class TeamManager:
         reason: str = "",
         *,
         generation: int | None = None,
+        expected_request_ids: frozenset[str] | None = None,
     ) -> PauseSessionResult:
         """Pause the current team runtime for this session.
 
@@ -4347,8 +4397,19 @@ class TeamManager:
         tearing down the foreground stream task and parking the Runner-owned
         runtime in paused state so a later `chat.send` can resume it.
 
-        Returns a structured result so interrupt_result can distinguish
-        work_stopped (clear processing / freeze) from resumable (续跑 UI).
+        Args:
+            session_id: The session whose runtime is paused.
+            reason: Log prefix describing the caller's intent.
+            generation: Only pause when the session still runs this
+                in-process generation.
+            expected_request_ids: When set, only pause if the active round is
+                one of these request ids. A round admitted after the caller
+                snapshotted them belongs to a newer message and must not be
+                paused by a stale request.
+
+        Returns:
+            A structured result so interrupt_result can distinguish
+            work_stopped (clear processing / freeze) from resumable (续跑 UI).
         """
         if not self.generation_matches(session_id, generation):
             return PauseSessionResult(
@@ -4396,6 +4457,29 @@ class TeamManager:
                     work_stopped=False,
                     resumable=False,
                     outcome="cancel_preempted",
+                )
+
+            # Round fence: consecutive rounds share one session generation, so
+            # the generation check alone cannot tell the paused round from a
+            # newer one admitted while this request was in flight.
+            active_round = self._active_rounds.get(session_id)
+            if (
+                expected_request_ids is not None
+                and active_round is not None
+                and active_round.request_id not in expected_request_ids
+            ):
+                logger.info(
+                    "[TeamManager] %s pause refused by round fence: session_id=%s "
+                    "active_request_id=%s expected_request_ids=%s",
+                    reason,
+                    session_id,
+                    active_round.request_id,
+                    sorted(expected_request_ids),
+                )
+                return PauseSessionResult(
+                    work_stopped=False,
+                    resumable=False,
+                    outcome="round_fence_refused",
                 )
 
             logger.info(

@@ -29,12 +29,17 @@ class _RecordingTeamManager:
     def __init__(self, *, paused: bool = True) -> None:
         self.reporter: Callable[[str, int, bool], None] | None = None
         self.paused = paused
+        self.reseed_calls: list[str] = []
 
     def set_round_state_reporter(
         self,
         reporter: Callable[[str, int, bool], None] | None,
     ) -> None:
         self.reporter = reporter
+
+    async def reseed_member_registry(self, session_id: str) -> bool:
+        self.reseed_calls.append(session_id)
+        return True
 
     def remove_waiter(
         self,
@@ -51,8 +56,9 @@ class _RecordingTeamManager:
         reason: str = "",
         *,
         generation: int | None = None,
+        expected_request_ids: frozenset[str] | None = None,
     ) -> PauseSessionResult:
-        del session_id, reason, generation
+        del session_id, reason, generation, expected_request_ids
         if self.paused:
             return PauseSessionResult(
                 work_stopped=True,
@@ -164,6 +170,26 @@ async def test_pause_session_returns_result_without_publishing(
     assert result.resumable is paused
     publish.assert_not_awaited()
     test_logger.info("Pause result=%s; completion delivery remains Runtime-owned", paused)
+
+
+@pytest.mark.asyncio
+async def test_pause_completion_reseeds_parked_leader_before_publishing_states() -> None:
+    """The pause publish must re-baseline the parked leader's roster first.
+
+    Core persists PAUSED member statuses on pause while the parked leader
+    keeps the previous cycle's in-memory registry; the busy judgment behind
+    the runtime snapshot stays wrong until the registry is re-read.
+    """
+    manager = _RecordingTeamManager(paused=True)
+    adapter = TeamSessionLifecycleAdapter(
+        coordinator=_RecordingCoordinator(),
+        team_manager=manager,
+    )
+
+    await adapter.publish_pause_completed("session-a", generation=3, channel_id="web")
+
+    assert manager.reseed_calls == ["session-a"]
+    test_logger.info("Pause completion reseeded the parked leader registry first")
 
 
 @pytest.mark.asyncio

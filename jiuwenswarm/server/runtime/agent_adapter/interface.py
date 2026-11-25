@@ -3682,8 +3682,30 @@ class JiuWenSwarm:
 
         if intent in {"pause", "cancel"}:
             if intent == "pause":
+                from jiuwenswarm.runtime.session.model import (
+                    TEAM_PAUSE_FENCE_GENERATION_PARAM,
+                    TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM,
+                )
+
+                # A pause reaching this legacy leg after the Runtime lifecycle
+                # already refused must stay bound to the generation and the
+                # rounds the user paused, never to a newer round. An absent
+                # fence key means the Runtime had no snapshot (no fence info);
+                # an empty list means nothing was live when it snapshotted, so
+                # any active round is newer and the fence must refuse it.
+                fence_params = request.params if isinstance(request.params, dict) else {}
+                fence_generation = fence_params.get(TEAM_PAUSE_FENCE_GENERATION_PARAM)
+                fence_request_ids = fence_params.get(TEAM_PAUSE_FENCE_REQUEST_IDS_PARAM)
+                fenced = isinstance(fence_request_ids, (list, tuple, set, frozenset))
                 pause_result = await team_manager.pause_session_runtime(
-                    session_id, reason=reason
+                    session_id,
+                    reason=reason,
+                    generation=fence_generation if isinstance(fence_generation, int) else None,
+                    expected_request_ids=(
+                        frozenset(str(item) for item in fence_request_ids)
+                        if fenced
+                        else None
+                    ),
                 )
                 if not isinstance(pause_result, PauseSessionResult):
                     # Defensive: older stubs may still return bool.
@@ -3700,17 +3722,27 @@ class JiuWenSwarm:
                             outcome="failed",
                         )
                     )
-                # Runtime retains pure observation subscriptions and broadcasts
-                # completion after the cancelled business response streams exit.
-                await self._session_manager.cancel_session_task(
-                    session_id,
-                    reason,
-                    wait_timeout=5.0,
-                )
+                if not pause_result.work_stopped and fenced:
+                    # The fence refused the pause: a round admitted after the
+                    # snapshot may already own the session, and a session-
+                    # keyed task cancel could kill it. Leave that cleanup to
+                    # the newer round's own lifecycle.
+                    logger.info(
+                        "[JiuWenSwarm] fenced team pause refused, skip session task cancel: "
+                        "session_id=%s reason=%s",
+                        session_id,
+                        reason,
+                    )
+                else:
+                    # Runtime retains pure observation subscriptions and broadcasts
+                    # completion after the cancelled business response streams exit.
+                    await self._session_manager.cancel_session_task(
+                        session_id,
+                        reason,
+                        wait_timeout=5.0,
+                    )
                 if pause_result.resumable:
                     message = "团队已暂停"
-                elif pause_result.outcome == "already_idle":
-                    message = "当前没有可暂停的团队任务"
                 else:
                     message = "当前没有可暂停的团队任务"
                 return self._build_interrupt_result_response(
