@@ -258,6 +258,9 @@ if [ "$FRONTEND_ONLY" = false ]; then
     uv run --no-sync python "$PROJECT_ROOT/scripts/verify_gateway_adapter_bundle.py" \
         --executable "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME"
 
+    uv run --no-sync python "$PROJECT_ROOT/scripts/verify_swarm_resources_bundle.py" \
+        --executable "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME"
+
     # Same GitCode CLI self-check as build-macos.sh.
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gitcode_cli_bundle.py"
 else

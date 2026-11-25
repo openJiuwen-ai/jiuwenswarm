@@ -26,7 +26,6 @@ def test_verifier_resolves_lazy_exports_before_backend_import(monkeypatch, missi
         imports.append(name)
     monkeypatch.setattr(verifier, "import_module", import_module)
     monkeypatch.setattr(verifier, "verify_gateway_extensions", lambda: imports.append("extensions"))
-    monkeypatch.setattr(verifier, "verify_swarm_resources", lambda: imports.append("resources"))
     if missing:
         with pytest.raises(AttributeError):
             verifier.verify_gateway_adapter_bundle()
@@ -36,7 +35,7 @@ def test_verifier_resolves_lazy_exports_before_backend_import(monkeypatch, missi
         assert imports[0] == "jiuwenswarm.server.agent_ws_server"
         assert "agent_gateway.channel_manager.im_platforms.welink.welink_runtime" in imports
         assert "jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers" in imports
-        assert imports[-2:] == ["extensions", "resources"]
+        assert imports[-1] == "extensions"
 
 
 def test_spec_collects_lazy_gateway_adapters():
@@ -62,32 +61,6 @@ def test_verifier_rejects_missing_rea_handler(monkeypatch):
     with pytest.raises(ModuleNotFoundError) as error:
         verifier.verify_gateway_adapter_bundle()
     assert error.value.name == missing
-
-
-@pytest.mark.parametrize("missing", [None, "tools", "catalog"])
-def test_verifier_checks_physical_swarm_resources(tmp_path, monkeypatch, missing):
-    catalog = tmp_path / "catalog"
-    catalog.mkdir()
-    for language in ("en", "zh"):
-        (catalog / f"{language}.yaml").write_text("{}", encoding="utf-8")
-    if missing == "catalog":
-        (catalog / "zh.yaml").unlink()
-    modules = {
-        "jiuwenswarm.agents.harness.common.tools": SimpleNamespace(__all__=["diff_files"]),
-        "jiuwenswarm.agents.harness.common.tools.builtin_tool_registry": SimpleNamespace(
-            discover_builtin_tool_specs=lambda: [] if missing == "tools" else [SimpleNamespace(name="diff_files")],
-        ),
-        "jiuwenswarm.common.i18n.translate": SimpleNamespace(
-            __file__=str(tmp_path / "translate.py"),
-            t=lambda message_id, **params: "Sent 2 files",
-        ),
-    }
-    monkeypatch.setattr(verifier, "import_module", modules.__getitem__)
-    if missing:
-        with pytest.raises(RuntimeError, match="diff_files" if missing == "tools" else "i18n catalog: zh"):
-            verifier.verify_swarm_resources()
-    else:
-        verifier.verify_swarm_resources()
 
 
 @pytest.fixture
