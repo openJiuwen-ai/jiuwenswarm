@@ -16,6 +16,49 @@ from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor import worker_process
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 from jiuwenswarm.server.worker import main as worker_main
+from jiuwenswarm.server.worker.diagnostics import write_worker_failure
+
+
+def test_same_failure_is_written_once(monkeypatch, tmp_path):
+    target = tmp_path / "latest-worker-error.log"
+    monkeypatch.setenv("JIUWEN_WORKER_DIAGNOSTIC_PATH", str(target))
+    failure = RuntimeError("repeated failure probe")
+
+    write_worker_failure(failure)
+    write_worker_failure(failure, path=target)
+
+    assert target.read_text(encoding="utf-8").count("stage=worker failure=RuntimeError:") == 1
+
+
+@pytest.mark.parametrize("scope", ["stage", "target", "exception"])
+def test_distinct_failure_records_are_preserved(tmp_path, scope):
+    target = tmp_path / "latest-worker-error.log"
+    second_target = tmp_path / "other-worker-error.log" if scope == "target" else target
+    failure = RuntimeError("same message probe")
+    second_failure = RuntimeError(str(failure)) if scope == "exception" else failure
+    second_stage = "HELLO" if scope == "stage" else "worker"
+
+    write_worker_failure(failure, path=target)
+    write_worker_failure(second_failure, stage=second_stage, path=second_target)
+
+    texts = [path.read_text(encoding="utf-8") for path in {target, second_target}]
+    assert sum(text.count("failure=RuntimeError: same message probe") for text in texts) == 2
+    if scope == "stage":
+        assert "stage=HELLO" in texts[0] and "stage=worker" in texts[0]
+
+
+def test_failed_diagnostic_write_can_be_retried(tmp_path):
+    blocked = tmp_path / "diagnostic"
+    blocked.write_text("not a directory", encoding="utf-8")
+    target = blocked / "latest-worker-error.log"
+    failure = RuntimeError("retry diagnostic probe")
+
+    write_worker_failure(failure, path=target)
+    blocked.unlink()
+    write_worker_failure(failure, path=target)
+    write_worker_failure(failure, path=target)
+
+    assert target.read_text(encoding="utf-8").count("stage=worker failure=RuntimeError:") == 1
 
 
 @pytest.fixture

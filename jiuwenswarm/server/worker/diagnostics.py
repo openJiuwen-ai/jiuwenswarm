@@ -21,7 +21,7 @@ _last_arm = 0.0
 
 
 def write_worker_failure(exc: BaseException, *, stage: str = "worker", path: Path | None = None) -> None:
-    """Persist a failure before IPC closure lets the parent terminate the child.
+    """Persist a failure once per target and stage before the parent can terminate us.
 
     Args:
         exc: Original exception whose traceback must remain observable.
@@ -32,11 +32,20 @@ def write_worker_failure(exc: BaseException, *, stage: str = "worker", path: Pat
     if not target_value:
         return
     try:
+        recorded = vars(exc).setdefault("_jiuwenswarm_written_diagnostics", set())
+    except Exception:  # noqa: BLE001 - recording must work without exception metadata
+        recorded = set()
+    try:
         target = Path(target_value)
+        record_key = (os.path.normcase(os.path.abspath(target)), stage)
+        if record_key in recorded:
+            return
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as stream:
             stream.write(f"[Worker] pid={os.getpid()} stage={stage} failure={type(exc).__name__}: {exc}\n")
             traceback.print_exception(type(exc), exc, exc.__traceback__, file=stream)
+        # Failed writes remain retryable; different phases retain their own evidence.
+        recorded.add(record_key)
     except Exception:  # noqa: BLE001 - diagnostics must not replace the original failure
         return
 

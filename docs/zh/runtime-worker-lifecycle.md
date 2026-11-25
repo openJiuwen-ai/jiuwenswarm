@@ -66,8 +66,12 @@ IPC 发送和关闭同时失败时，Front 仍保留原恢复等待；恢复订�
 
 resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<uuid>.stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，目录为 Worker socket 路径父目录下的 `worker-logs`。该设置不改变 IPC 端点位置。
 
+建议为 `JIUWEN_WORKER_LOG_DIR` 使用绝对路径；相对路径按 Supervisor 当前工作目录解析。
+
 Supervisor 不再逐行读取并重标 Worker 输出，也不创建独立的 stdout 日志文件。stderr 可以包含正常 INFO 日志，不能据此判定 Worker 发生错误；排障时结合文件中的原始日志级别、异常堆栈与进程退出码。
 
 同一目录下的 `latest-worker-error.log` 保存最近一次 Worker 的错误诊断，包括 PID、异常类型、消息和 traceback。Supervisor 在启动新 Worker 前尝试删除旧诊断，并通过内部环境变量 `JIUWEN_WORKER_DIAGNOSTIC_PATH` 将路径传给子进程，通常无需人工设置该变量。诊断文件不是按 Worker 永久归档的日志。
+
+多个 Worker 使用同一日志目录时，会共享这个固定诊断文件：新 Worker 启动时可能清除其他 Worker 的诊断，并发写入也可能交错。需要隔离诊断时，为各实例指定独立日志目录；每次启动独立的 stderr 文件仍可用于排障。
 
 Worker 将顶层异常、HELLO 失败及 ERROR 日志（包括未处理的 asyncio 任务异常）写入诊断文件。HELLO 失败诊断在关闭 IPC 前落盘，确保父进程开始回收时已可读取；普通 ERROR 日志沿用后台写入。诊断写入失败不会替换原异常。Worker 启动失败后，Supervisor 在回收子进程时记录诊断路径及文件末尾最多 16 KiB 的内容；文件不可读或不存在时记录不可用原因。普通 stderr 仍只保存在原始文件中。

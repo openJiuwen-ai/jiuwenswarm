@@ -140,6 +140,30 @@ Linux CI 对相关 Worker/身份/生命周期调用方的 363 项记录没有失
 `D:/work_space/.codex-temp/harmony-process-identity-ut-20261124/`，包含
 `native-windows-verified.json`、`harmony-controlled/verified.json` 和 `ci-summary.json`。
 
+## 2026-11-25 诊断重复写入评审修复
+
+评审候选为 `725c2b004`。CR-10796-01 指出普通 Worker 和 stub 的异常先在 `_run_worker()` 记录，
+再传播到 `main()` 记录，导致同一异常、相同阶段写入两份 traceback，挤占 Supervisor 读取的最后 16 KiB。
+
+共享诊断工具改为在异常对象上保存已成功写入的目标路径和阶段；同一异常向同一目标、相同阶段只记录一次。
+目标使用绝对路径和平台大小写规范化；不同异常、不同目标或不同阶段仍各自保留记录，写入失败后可以重试。
+不使用全局对象 ID 缓存，避免异常释放后 ID 重用或缓存增长。异常元数据不可用时仍尽力落盘。
+保留内层的即时记录点：后台日志停止失败时会调用 `os._exit()`，无法依赖异常继续传播到 `main()`；
+仅删除内层记录会丢失这一退出路径上的原始故障。
+
+CR-10796-02 和 CR-10796-04 的说明已同步中英文用户文档：任何共享日志目录的 Worker 都会共享固定诊断文件，
+并发写入或启动前清理可能相互影响，需要隔离时应使用独立目录；相对目录按 Supervisor 当前工作目录解析，建议使用绝对路径。
+CR-10796-03 的一次性 HELLO 读取优化本轮未实施。首次身份可能为时间戳，而双方可比较的身份可能为 ticks，
+不能直接用首次结果代替对应来源的校验；保留公共比较入口及已验证的权限不对称、PID 重用语义。
+
+新增 9 项行为用例在修复前为 **4 failed、5 passed**，确认普通 Worker、stub 和共享写入工具中的重复记录，
+同时覆盖硬退出前诊断、不同异常/阶段/目标及写入重试。修复后的 Windows 定向回归为 **85 passed**：
+入口、失败诊断和身份测试共 83 项；真实异常退出 traceback 与 Front/Supervisor 导入隔离共 2 项。
+原异常传播、stub 状态 1、HELLO 关闭前落盘、16 KiB 上限和进程身份规约回归均通过。
+本轮未执行全仓 UT、远端 CodeCheck 或 HarmonyOS 真机验证；此前验证继续限定于各自版本。
+原始报告保存在 `D:/work_space/.codex-temp/harmony-process-identity-review-20261125/` 的
+`dedup-before.xml`、`review-regression.xml` 和 `process-regression.xml`，不提交运行产物。
+
 ## 遗留与重验条件
 
 未连接 HarmonyOS 真机、未构建 HAP；真实模型服务和其他系统 API 的权限仍需用户设备验收。

@@ -65,8 +65,12 @@ If both IPC send and close fail, Front retains the original recovery waiters. A 
 
 For both resident and `front_loopback` Workers, stdout inherits the launching process's output, while stderr is appended directly to a separate `runtime-worker-<uuid>.stderr.log` for each launch. Set `JIUWEN_WORKER_LOG_DIR` before starting the application or Supervisor to select its directory. If unset or empty, it defaults to `worker-logs` under the Worker socket path's parent directory. This setting does not change the IPC endpoint.
 
+Use an absolute path for `JIUWEN_WORKER_LOG_DIR` where possible. Relative paths are resolved against the Supervisor's current working directory.
+
 The Supervisor does not read and relabel individual Worker output lines or create a separate stdout log file. Stderr can contain ordinary INFO records. Diagnose failures using the original log levels, exception tracebacks, and process exit code.
 
 The same directory contains `latest-worker-error.log`, recording the most recent Worker's error diagnostics with its PID, exception type, message, and traceback. Before spawning a new Worker, the Supervisor attempts to remove the previous diagnostic and passes its path through the internal `JIUWEN_WORKER_DIAGNOSTIC_PATH` environment variable, which normally needs no manual configuration. This file is not a permanent per-Worker archive.
+
+Workers using the same log directory share this fixed diagnostic file: starting a new Worker may clear another Worker's diagnostics, and concurrent writes may interleave. Use a separate log directory for each instance when diagnostic isolation is needed. Each launch's separate stderr file remains available for troubleshooting.
 
 The Worker records top-level exceptions, HELLO failures, and ERROR logs, including unhandled asyncio task exceptions. HELLO failure diagnostics are persisted before closing IPC so that the parent can read them when cleanup starts; ordinary ERROR logs retain background writing. Diagnostic write failures do not replace the original exception. When Worker startup fails, the Supervisor reports the diagnostic path and at most the final 16 KiB while reaping the child. Missing or unreadable diagnostics report their unavailability. Ordinary stderr remains in its original file.
