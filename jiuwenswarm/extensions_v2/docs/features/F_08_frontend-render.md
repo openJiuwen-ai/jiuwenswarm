@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-08 前端槽位渲染与复杂面板 |
 | 所属模块 | `jiuwenswarm/channels/web/frontend/src/features/webui/` |
 | 设计依据 | [F_06 渲染服务](F_06_render-service.md)、[F_07 界面项与上行交互](F_07_ui-contributions.md) |
-| 最近一次修订日期 | 2026-11-06 |
+| 最近一次修订日期 | 2026-11-24 |
 | 方案状态 | 新链路已接入生产页面并承接全部 15 个已登记槽位，同时支持会话与全局槽位范围；旧链路与旧 action 组件已删除；真实插件联调与浏览器验收待整批验证 |
 
 ## 1. 问题与目标
@@ -151,7 +151,8 @@ ToolPanel（右侧页签，经空白页签选择）、SettingsPageLayout（设�
 
 ### 3.5 渲染代次、显示确认与失败反馈
 
-- `WebUIInstanceView` 以 `localFrameId` 作为错误边界与 `SchemaRenderer` 的重挂载键：`clear` 后按相同 `revision` 重建时，旧组件树被卸载，节点局部状态和旧错误不会继承。
+- `WebUIInstanceView` 以 `mountKey` 作为错误边界与 `SchemaRenderer` 的重挂载键。rebuild 槽位使用 `localFrameId`，`keep-mounted` 槽位使用实例 `lifetimeId`。`clear` 后按相同 `revision` 重建时仍会换键并卸载旧组件树。
+- `application.menu.main`、`task.function.main` 与 `conversation.panel.right` 使用 `keep-mounted`。同一实例的新帧由 React 按节点协调，继续匹配的组件可以保留本地状态，并按各自的属性规则更新。受控值和初始值的行为见 [S_17](../specs/S_17_webui-component-props.md)。
 - 渲染树按帧对象与代次缓存；显示确认等快照更新不重建未变化的组件树，避免重复执行适配器。
 - `reportDisplayed` 与 `reportRenderFailure` 同时匹配 `revision` 和 `localFrameId`；旧代次迟到的确认或失败被忽略。
 - 新的合法渲染帧会清空上一帧的失败反馈；错误帧只附着错误信息，不触发整树重建。
@@ -167,7 +168,7 @@ ToolPanel（右侧页签，经空白页签选择）、SettingsPageLayout（设�
 3. 规范化：目标字段转驼峰，节点生成路径 key（根 `0`、子节点 `0.0`、Tabs 内容 `0.items.1.children.0`），事件参数补齐为对象，结果与输入隔离并递归冻结。Tabs 隐藏内容共享预算，根组件受槽位约束。
 4. 实例提交：`replace` 帧只接受更大的 `revision`；`clear` 帧删除实例；旧 `error` 帧被忽略，其余错误附着到已有实例，没有实例时创建只显示错误的空实例。
 5. 通知：新实例、删除实例、消费者变化通知范围；实例内容更新只通知该实例；`single` 槽位在内容更新时额外通知范围，宿主据此按 `localFrameId` 重新选择最新实例。
-6. `WebUIHost` 渲染实例列表；`WebUIInstanceView` 订阅的快照变化后按新代次重建或复用组件树。
+6. `WebUIHost` 渲染实例列表；`WebUIInstanceView` 订阅的快照变化后按槽位 `rerender` 策略重建或复用组件树。
 
 ### 4.2 上行
 
@@ -192,7 +193,7 @@ ToolPanel（右侧页签，经空白页签选择）、SettingsPageLayout（设�
 ### 4.4 React 渲染、显示确认与错误隔离
 
 1. `WebUIInstanceView` 用 `useSyncExternalStore` 订阅实例版本，只重建变化实例的视图；组件树按帧与代次缓存。
-2. 实例错误边界以 `localFrameId` 为 key；任一适配器抛错时整棵实例树降级为失败态，不展示部分内容，并把失败反馈写回运行时。
+2. 实例错误边界以 `mountKey` 为 key；任一适配器抛错时整棵实例树降级为失败态，不展示部分内容，并把失败反馈写回运行时。
 3. 渲染提交后，确认组件在 effect 中以 `{ revision, localFrameId }` 上报显示；同一帧的显示确认不会再次执行适配器。
 4. `StrictMode` 的挂载/卸载与宿主重复挂载按消费者句柄独立处理，不泄漏范围所有权。
 
@@ -273,7 +274,7 @@ Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址。基本沙盒为
 - 未知组件在目录校验阶段即失败：要么组装前目录与注册表不匹配，要么实例渲染时缺少适配器，整棵实例树降级，不影响其他实例。
 - 组件没有声明对应事件时不派发；目录或节点未声明该事件时返回 `invalid_action`。
 - 交互请求失败保留当前界面，不自动重试；结果只作为适配器可观察的返回值。
-- `clear` 后按相同 `revision` 重建时，以新的 `localFrameId` 触发重新挂载；旧代次的显示确认与失败反馈被拒绝。
+- `clear` 后按相同 `revision` 重建时，以新的 `localFrameId`（`keep-mounted` 槽位为新的 `lifetimeId`）触发重新挂载；旧代次的显示确认与失败反馈被拒绝。
 - 消费者释放后不再持有其未覆盖的实例；旧交互因实例不存在返回 `inactive`。
 
 ## 7. 实施影响
@@ -298,6 +299,7 @@ Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址。基本沙盒为
 | F-08-V-07 | 内容 `clear` 后重连 | 运行时测试 | 按消费者原实例键重发 `ui.ready`，不变成空实例键 |
 | F-08-V-08 | Iframe 加载、非激活、错误及同源 URL | 组件 JSDOM 回归；浏览器另验证实际交互 | 加载提示不拦截鼠标；错误与非激活时卸载 iframe；相对与绝对同源地址均不开放同源权限 |
 | F-08-V-09 | 已挂载包热重载 | 运行时与传输测试 | 收到 clear 后的 `extensions.v2.installed`，只为该包重发 `ui.ready`，无需浏览器刷新 |
+| F-08-V-10 | 全页槽位连续 replace | `test:webui-renderer` 与 `test:webui-components` | `keep-mounted` 槽位更新 props 但保留适配器本地状态；rebuild 槽位仍按新 `localFrameId` 重建 |
 
 ### 8.2 验证入口
 
@@ -378,3 +380,24 @@ transport、renderer、i18n-locales）通过，Vite 生产打包通过。
 插件列表、添加、关闭和相邻页签回退，空白页签创建与原地转换、空态、长标题、多页签溢出、窄屏、
 会话切换与键盘焦点仍待补充。Panel / Iframe 新增可选 `icon`（白名单图标名）用于页签图标，
 共享组件用例已补充合法与非法取值，前端契约 152 项及两端 `validate_props` 定向校验通过；Vite 构建未执行。
+
+### 2026-11-24 应用范围入口打开当前会话右侧面板
+
+`application.sidebar.footer`、`task.function` 等 application 范围槽位不持有聊天会话。`Button.openPanel`
+在源实例为 application 范围时，改用宿主 `WebUISlotProvider` 提供的当前聊天会话定位同包右侧目标；
+没有当前会话时不导航，目标仍须已渲染且活跃。会话范围源行为不变，目标和 tab 逻辑未新增分支。
+
+验证：`npm run test:webui-components` 375 项、`npm run test:panel-pages` 12 项、
+`npm run test:webui-plugin-panels` 28 项通过。真实浏览器与窄屏未验收。
+
+### 2026-11-24 保留组件树时的页签选择和输入草稿
+
+连续帧会复用同一位置的组件。右侧面板因此出现了两类状态残留：Tabs 的本地选择覆盖了服务端重复下发的选择，Input 在切换字段时沿用了旧草稿。Tabs 现在以显式 `activeKey` 为准，本地选中项失效时回退。独立 Input 在字段定义或事件绑定发生变化时重新初始化，同一字段的普通属性更新保留草稿。详细规则见 [S_17](../specs/S_17_webui-component-props.md)。
+
+WebUI 组件测试在 Node 和 JSDOM 下通过 379 项，其中 3 项经右侧面板宿主验证连续帧、页签回退和草稿隔离。
+
+复查发现独立 Input 会忽略新帧重复下发的值，Select 会保留已经移除的选项。独立 Input 现在按帧同步显式值，输入法组合期间继续保留正在编辑的文本。Select 在未收到显式值时会校验本地选择，保留有效项并为失效的选择使用当前帧的默认值或空值。
+
+本次在 Node 和 JSDOM 下通过 383 项 WebUI 组件测试。新增的 4 项回归覆盖重复赋值、输入法组合期间收帧、单选失效以及多选和自定义标签保留。
+
+风格复查后，Select 的新帧同步与事件校验共用单值规则。应用范围导航用例通过真实按钮验证有会话和无会话的行为。WebUI 组件测试 383 项和契约测试 169 项均通过。

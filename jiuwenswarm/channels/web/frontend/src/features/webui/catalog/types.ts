@@ -53,9 +53,8 @@ export interface WebUISlotRule {
   /** The root must be one of rootComponents; ordinary component trees are rejected. */
   strictRoot?: boolean;
   /**
-   * How a new frame of a mounted instance is applied. The default rebuilds the tree, so uncontrolled
-   * props such as defaultValue take effect; 'keep-mounted' only updates props for the instance's
-   * lifetime, for slots whose content keeps running (the application background, Gateway S_07).
+   * The default remounts the tree for each accepted frame. 'keep-mounted' preserves the tree's
+   * mount key for the instance's lifetime so React can reconcile nodes across frames.
    */
   rerender?: 'rebuild' | 'keep-mounted';
 }

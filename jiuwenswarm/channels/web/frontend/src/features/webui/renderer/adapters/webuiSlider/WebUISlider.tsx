@@ -8,7 +8,10 @@ export function WebUISlider({ node, context, emit, appearance }: WebUIAdapterPro
   const [value, setValue] = useState(p.value ?? p.defaultValue ?? 0);
   useEffect(() => {
     if (p.value !== undefined) setValue(p.value);
-  }, [p.value]);
+  }, [node, p.value]);
+  useEffect(() => {
+    if (p.value === undefined) setValue(p.defaultValue ?? 0);
+  }, [p.value, p.defaultValue]);
   const { token } = theme.useToken();
   const disabled = p.disabled || !context.connected;
   return <Slider data-testid="webui-slider" ariaLabelForHandle={p.ariaLabel} range={false}
