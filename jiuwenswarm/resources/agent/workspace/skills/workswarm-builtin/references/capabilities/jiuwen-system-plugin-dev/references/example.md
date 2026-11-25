@@ -1,9 +1,20 @@
-# 完整系统插件示例
+# 系统插件示例索引
 
-示例在 [assets/package_example/greeting_package/](../assets/package_example/greeting_package/)，用于理解现有事件、系统插件加载和安装验证。
-它面向具备 WebUI 能力的 Swarm，其他宿主或业务按实际契约开发。
+以下示例仅供参考，用于说明事件、Ops 和界面的组合方式。参考片段省略了完整入口、素材、状态管理和测试，不能直接打包交付。
+先按需求选择一项，只读对应说明，再核对目标版本的接口并补齐自己的实现和测试；不要一次读取全部示例。
 
-需要参考时，先按文件索引定位系统插件声明、Handler 或某项测试，再读取对应片段；不默认展开全部示例源码和测试。执行示例测试无需先阅读所有测试实现。
+| 用户需要 | 运行域 | 参考内容 |
+| --- | --- | --- |
+| 上下文用量、执行过程或工具批次 | agentserver | [会话观测](examples/session-observation.md) |
+| Token 状态条、设置开关和详情 | agentserver | [会话观测中的设置联动](examples/session-observation.md#3-token-weather-的设置与详情) |
+| 团队成员、任务状态和依赖图 | agentserver | [团队观测](examples/team-observation.md) |
+| 登录、凭证注入和账号入口 | gateway | [登录与请求处理](examples/gateway-entry.md) |
+| 动态背景、配色和启动动画 | gateway | [背景与开场](examples/application-surfaces.md#1-背景配色和开场) |
+| 桌宠或桌面窗口形态 | gateway | [应用形态](examples/application-surfaces.md#2-桌宠与窗口形态) |
+| 同时改变会话行为和应用外观 | 两个域 | [组合包分工与结构](bundle-development.md#1-按职责拆分成员) |
+
+网页嵌入和权限见 [前端开发说明](frontend-development.md)。需要最小可加载结构或生命周期测试时，再阅读下面保留的问候示例。
+简短片段不代替真实加载、最终 ZIP 和业务效果验证，也不代表目标环境已经具备所列全部能力。
 
 ## 1. 事件与效果
 

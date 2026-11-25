@@ -73,17 +73,29 @@ def build_package(source: Path, output: Path, *, overwrite: bool = False) -> Pat
     if output.exists() and not overwrite:
         raise FileExistsError(f"输出已存在；确认替换时使用 --force：{output}")
 
-    # 使用目标 Core 的实际解析器校验 ID、版本、声明依赖与入口路径；不执行 create_extension。
-    manifest = load_manifest(source, require_domain=True)
+    # Validate bundle membership with Core, without importing plugin entry points.
+    load_manifest(source, require_domain=False)
+    document = json.loads((source / MANIFEST_NAME).read_text(encoding="utf-8"))
+    roots = [source]
+    if document.get("is_bundle") is True:
+        from openjiuwen.core.extension.bundle import dependency_levels, read_bundle_spec
+
+        bundle = read_bundle_spec(source)
+        dependency_levels(bundle)
+        roots = [member.root for member in bundle.members]
     files = package_files(source)
     names = {path.relative_to(source).as_posix() for path in files}
     if MANIFEST_NAME not in names:
         raise ValueError(f"系统插件根目录必须包含 {MANIFEST_NAME}")
-    for extension in manifest.extensions:
-        # 与 ZIP 的路径格式一致，防止入口落在被排除的缓存或环境目录中。
-        entry = Path(extension.module).as_posix()
-        if entry not in names:
-            raise ValueError(f"代码入口未包含在 ZIP 中：{extension.module}")
+    for root in roots:
+        manifest = load_manifest(root, require_domain=True)
+        prefix = root.relative_to(source)
+        if (prefix / MANIFEST_NAME).as_posix() not in names:
+            raise ValueError(f"系统插件声明未包含在 ZIP 中：{prefix}")
+        for extension in manifest.extensions:
+            entry = (prefix / extension.module).as_posix()
+            if entry not in names:
+                raise ValueError(f"代码入口未包含在 ZIP 中：{entry}")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=".extension-package-", suffix=".zip", dir=output.parent)

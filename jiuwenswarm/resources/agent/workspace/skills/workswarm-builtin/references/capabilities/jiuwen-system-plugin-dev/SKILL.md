@@ -22,6 +22,8 @@ description: >-
 | --- | --- |
 | 克隆源码、补充检出目录 | [源码获取与局部阅读第 1 节](references/source-reading.md#1-按域选择并复用稀疏缓存) |
 | 查找事件、Ops、设计依据或相关实现 | [源码获取与局部阅读第 2 节](references/source-reading.md#2-集中搜索再批量读取必要上下文) |
+| 同时涉及 Gateway 和 AgentServer | [组合包开发](references/bundle-development.md) |
+| 开发页面、嵌入网页或判断前端能力 | [前端开发说明](references/frontend-development.md) |
 | 核对系统插件结构、声明或开发约束 | [开发流程](references/package-workflow.md)中对应的小节 |
 | 确认脚本执行入口 | [执行环境说明](references/package-workflow.md#15-复用宿主的执行环境) |
 | 完成实现后一次性测试、打包和加载最终 ZIP | [最终验证脚本](scripts/finalize_package.py) |
@@ -43,10 +45,11 @@ description: >-
 命令示例中的 `SKILL_ROOT` 指本 Skill 所在目录，使用时替换为实际路径。
 
 先确认运行域、实际运行环境及系统插件输出目录，再按运行域选择源码：`agentserver` 域使用 Core 和 Swarm，
-`gateway` 域使用 Core 和独立 Gateway。只有安装入口、跨域协作或用户要求确实涉及另一仓库时，才补充读取该仓库。
+`gateway` 域使用 Core 和独立 Gateway。需求同时需要两域的事件或 Ops 时，分别开发成员，最后交付一个组合包；具体结构见 [组合包开发](references/bundle-development.md)。只有安装入口、跨域协作或用户要求确实涉及另一仓库时，才补充读取该仓库。
 只有需要补充细节时，再查看 [开发流程](references/package-workflow.md#1-确认源码和阅读位置) 的相关小节。
 
 - **已有系统插件：** 用户指定修改某个系统插件，或一轮开发和验收已经结束后又提出修改时，把当前源码完整复制到新的版本目录，在副本上开发。保留原目录和原版本，manifest 中的 `package.id`、`domain`、`display.name` 不变，只按变更类型递增 `package.version`。
+- **跨域需求：** 需求同时需要两域的事件或 Ops 时，分别开发成员，最后交付一个组合包；具体结构见 [组合包开发](references/bundle-development.md)。
 - **新系统插件：** 在用户指定位置或工作区的独立目录创建，不放进平台内置事件目录；未指定内部名称时，按用途选择清晰的英文名称与 ID。
 - **本轮验收调整：** 首次安装后，用户在第 6 节确认循环中提出的修改仍属于当前版本调试，不复制版本目录，不递增版本；修改安装副本并 reload，直到用户确认。
 - **必要信息：** 只询问影响可行性的缺失信息，例如目标宿主不明确、缺少运行依赖，或需求有两种明显不同的业务含义。
@@ -57,7 +60,7 @@ description: >-
 
 - **按域选择：** Core 是两域共同依赖；`agentserver` 域再读取 Swarm，`gateway` 域再读取 Gateway。不要仅为了解完整平台同时获取三个仓库。
 - **已指定目录：** 对本次所需仓库使用用户指定的目录；只获取本次需要且尚未指定的仓库。
-- **固定远端分支：** 未指定源码的仓库，Swarm、Core 和 Gateway 都使用 `develop`。Swarm 使用 [openJiuwen/jiuwenswarm](https://gitcode.com/openJiuwen/jiuwenswarm/tree/develop)，Core 使用 [openJiuwen/agent-core](https://gitcode.com/openJiuwen/agent-core/tree/develop)，Gateway 使用 [openJiuwen/agent-gateway](https://gitcode.com/openJiuwen/agent-gateway/tree/develop)。Swarm 和 Core 优先 GitCode，无法获取时再尝试 GitHub 的同名分支。需要 clone 时，按 [稀疏检出说明](references/source-reading.md#1-按域选择并复用稀疏缓存) 建立并复用“仓库＋固定分支”的阅读缓存，只获取当前所需目录，不先按运行版本查找其他提交或 Tag。
+- **固定远端分支：** 未指定源码的仓库，Swarm 使用 `releases/0.2.10`，Core 使用 `release/v0.1.22`，Gateway 使用 `release/0.1.1`。Swarm 使用 [openJiuwen/jiuwenswarm](https://gitcode.com/openJiuwen/jiuwenswarm/tree/releases/0.2.10)，Core 使用 [openJiuwen/agent-core](https://gitcode.com/openJiuwen/agent-core/tree/release/v0.1.22)，Gateway 使用 [openJiuwen/agent-gateway](https://gitcode.com/openJiuwen/agent-gateway/tree/release/0.1.1)。Swarm 和 Core 优先 GitCode，无法获取时再尝试 GitHub 的同名分支。需要 clone 时，按 [稀疏检出说明](references/source-reading.md#1-按域选择并复用稀疏缓存) 建立并复用“仓库＋固定分支”的阅读缓存，只获取当前所需目录，不先按运行版本查找其他提交或 Tag。
 - **Wheel 回退：** 某个仓库的固定分支无法获取时，可以读取当前运行环境中已安装的对应模块代码。
 - **EXE、DMG 回退：** 某个仓库的固定分支无法获取时，调用提问工具请用户提供该仓库的源码目录或可访问的源码下载地址，等待答复后继续；不搜索安装目录、`_internal` 或二进制内容。
 
@@ -104,7 +107,8 @@ description: >-
 
 ## 2. 判断已有能力能否完成
 
-根据需求搜索事件名、Ops 方法、输入字段或槽位名称，先读取命中片段。
+先查 [示例索引](references/example.md)，选择与需求最接近的场景，只读取对应的简短说明和关键片段。示例仅供参考，不是可直接交付的成品；据此搜索本次还需要的事件、Ops、输入字段或槽位，不从头通读平台实现。
+前端需求按 [前端开发说明](references/frontend-development.md) 核对组件、来源和权限；团队能力还要查 Core 的 `openjiuwen/agent_teams/extensions/`。
 只为确认本次所需的定义、登记、业务触发位置和调用条件继续查阅相关符号；实现前用真实名称说明本次选择：
 
 | 判断 | 需要说明 |
@@ -115,7 +119,7 @@ description: >-
 | 可见效果 | 用户从哪里看到变化，哪项已有业务操作能够触发 |
 | 安装后的验证 | 怎样确认系统插件已激活，怎样验证实际业务效果，是否需要刷新已有页面或重新进入会话 |
 
-已有能力足够时继续开发。缺少必要能力时，向用户说明位置、缺口和影响，先与用户讨论可行范围，不把不存在的事件写进系统插件。
+已有能力足够时继续开发。准备判断能力缺失前，先按 [源码查找说明](references/source-reading.md#3-报告能力缺失前的核对) 补查相关域、公开导出和直接测试；未检出或关键词未命中不等于能力不存在。确认缺少必要能力时，向用户说明位置、缺口和影响，先与用户讨论可行范围，不把不存在的事件写进系统插件。
 
 完成选择后，在系统插件源码根目录保留简短的 `CAPABILITY_CHOICES.md`，记录运行域、采用的事件、Ops、UI 槽位、真实触发入口、
 关键依据位置和验收方式。只记录最终选择，不抄写平台文档。后续复制源码开发新版本时复用这份记录，只更新发生变化的选择。
@@ -135,7 +139,7 @@ description: >-
 
 按需要提供：
 
-- 根目录 `manifest.json`，声明 `schemaVersion`、`package_type`、系统插件 ID、版本、运行域、代码入口和实际依赖。
+- 单域系统插件的根目录 `manifest.json`，声明 `schemaVersion`、`package_type`、系统插件 ID、版本、运行域、代码入口和实际依赖。
 - `create_extension()` 工厂，以及入口对象的 `register(registrar)`。
 - 类型和导入完整的异步 Handler，必要的状态隔离与资源清理。
 - 系统插件自己的测试和使用说明；需要界面时，声明目标宿主支持的 UI contribution。
@@ -177,7 +181,7 @@ description: >-
 
 打包后注意：
 
-- **ZIP 布局：** ZIP 根目录直接包含唯一的 `manifest.json`，不多包一层目录。
+- **ZIP 布局：** ZIP 根目录直接包含一份根 `manifest.json`，不多包一层目录。单域只有本身的声明；组合包的每个成员目录还各有一份声明，按 [组合包开发](references/bundle-development.md) 验证。
 - **版本核对：** 对照第 3 节确认插件身份未因升级改变、版本按规则递增，且最终 ZIP 内 manifest、文件名和 README 一致；本轮 reload 调试按保持版本不变的例外核对。
 - **打包范围：** 脚本校验 Core manifest 与入口路径，排除缓存和开发环境；不执行系统插件代码，不能代替行为测试。
 - **最终产物：** 批处理测试从临时文件名读取的 ZIP 与最终 ZIP 字节相同；用户同意安装时，安装同一份文件。不要只验证源码目录或另行生成的测试 ZIP。
@@ -214,7 +218,7 @@ jiuwenswarm extension install "<最终 ZIP 路径>" --json
 
 - **安装报告：** 不只看命令是否执行，还要检查退出码、总体 `status` 与原始 Report。
 - **当前状态：** 确认系统插件 ID、版本、本次激活记录编号（generation）和实际安装目录；CLI 成功后已再次查询核对。
-- **宿主归属：** 安装时按最终 ZIP 的 `domain` 选择宿主；后续查询、重载和卸载 Gateway 系统插件时使用 `--domain gateway`。
+- **宿主归属：** 单域安装按最终 ZIP 的 `domain` 选择宿主；Gateway 后续操作使用 `--domain gateway`。组合包不设置根 domain，按 [组合包开发的安装说明](references/bundle-development.md#3-安装与验收) 核对当前入口支持情况和全部成员状态。
 - **已有版本：** 首次安装遇到同 ID 的系统插件或安装副本时，先确定更新方式；不自动卸载或覆盖。当前轮已安装的系统插件收到用户修改意见后，从收到意见到用户最终确认期间，禁止执行 uninstall，也禁止再次 install 同 ID ZIP。修改本轮安装报告返回的安装目录副本，再执行 reload；reload 读取安装副本，不读取来源 ZIP。只有用户明确要求删除系统插件时，才可以执行 uninstall。
 - **结果未知：** 超时、断连或报告不明确时不重复安装。CLI 会查询一次当前状态，但不会据此补写原请求成功。
 - **界面更新：** 安装成功后宿主会通知已经就绪的页面重新上报 `ui.ready`。结果中的 `ui_notified: true` 表示通知已送达，页面通常不需要刷新；它不代表用户已经看到了正确效果。`ui_notified: false` 只记录为通知未送达，不启动或查找浏览器补做页面操作；仍按第 6 节由用户确认实际效果。

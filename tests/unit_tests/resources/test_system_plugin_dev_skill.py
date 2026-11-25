@@ -10,7 +10,7 @@ SKILL_ROOT = (
 )
 
 
-def test_system_plugin_source_defaults_use_develop_for_all_repositories():
+def test_system_plugin_source_defaults_use_release_branches():
     content = "\n".join(
         [
             (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8"),
@@ -21,7 +21,10 @@ def test_system_plugin_source_defaults_use_develop_for_all_repositories():
 
     assert "releases/0.2.9.beta3" not in content
     assert "release/v0.1.20.post3" not in content
-    assert "https://gitcode.com/openJiuwen/jiuwenswarm/tree/develop" in content
-    assert "https://gitcode.com/openJiuwen/agent-core/tree/develop" in content
-    assert "https://gitcode.com/openJiuwen/agent-gateway/tree/develop" in content
-    assert content.count("--branch develop") == 3
+    assert "https://gitcode.com/openJiuwen/jiuwenswarm/tree/releases/0.2.10" in content
+    assert "https://gitcode.com/openJiuwen/agent-core/tree/release/v0.1.22" in content
+    assert "https://gitcode.com/openJiuwen/agent-gateway/tree/release/0.1.1" in content
+    for branch in ("releases/0.2.10", "release/v0.1.22", "release/0.1.1"):
+        assert content.count(f"--branch {branch}") == 1
+        assert content.count(f"checkout {branch}") == 1
+    assert "--branch develop" not in content

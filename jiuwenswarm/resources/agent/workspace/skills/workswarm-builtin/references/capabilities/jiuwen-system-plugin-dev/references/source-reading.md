@@ -28,25 +28,25 @@
 Core 示例，按本次需要保留一个或两个模块目录：
 
 ```text
-git clone --filter=blob:none --depth 1 --single-branch --no-tags --no-checkout --branch develop "<Core 仓库 URL>" "<CORE_CACHE>"
+git clone --filter=blob:none --depth 1 --single-branch --no-tags --no-checkout --branch release/v0.1.22 "<Core 仓库 URL>" "<CORE_CACHE>"
 git -C "<CORE_CACHE>" sparse-checkout set --cone openjiuwen/core/events openjiuwen/core/extension
-git -C "<CORE_CACHE>" checkout develop
+git -C "<CORE_CACHE>" checkout release/v0.1.22
 ```
 
 Swarm 示例：
 
 ```text
-git clone --filter=blob:none --depth 1 --single-branch --no-tags --no-checkout --branch develop "<Swarm 仓库 URL>" "<SWARM_CACHE>"
+git clone --filter=blob:none --depth 1 --single-branch --no-tags --no-checkout --branch releases/0.2.10 "<Swarm 仓库 URL>" "<SWARM_CACHE>"
 git -C "<SWARM_CACHE>" sparse-checkout set --cone jiuwenswarm/extensions_v2
-git -C "<SWARM_CACHE>" checkout develop
+git -C "<SWARM_CACHE>" checkout releases/0.2.10
 ```
 
 Gateway 示例：
 
 ```text
-git clone --filter=blob:none --depth 1 --single-branch --no-tags --no-checkout --branch develop "https://gitcode.com/openJiuwen/agent-gateway.git" "<GATEWAY_CACHE>"
+git clone --filter=blob:none --depth 1 --single-branch --no-tags --no-checkout --branch release/0.1.1 "https://gitcode.com/openJiuwen/agent-gateway.git" "<GATEWAY_CACHE>"
 git -C "<GATEWAY_CACHE>" sparse-checkout set --cone agent_gateway/extensions_v2
-git -C "<GATEWAY_CACHE>" checkout develop
+git -C "<GATEWAY_CACHE>" checkout release/0.1.1
 ```
 
 Swarm 和 Core 的 URL 按 GitCode、GitHub 的既定顺序选择；Gateway 使用上面的独立 GitCode 仓库。每条命令成功后再执行下一条。
@@ -85,3 +85,12 @@ rg -n -C 8 -F "<已确认的符号>" "<命中文件>"
 
 命中太多时先缩小目录或关键词，不一次输出全部内容。没有 `rg` 时使用环境已有的搜索工具。
 参考文档也按同样方式处理：先定位标题或关键词，再按行号读取相关段落；工具只能整篇返回时，可用终端或支持范围读取的工具查看所需片段。
+
+## 3. 报告能力缺失前的核对
+
+只补查本次问题相关的位置，不因此展开整个仓库：
+
+- **换用真实名称：** 先从相近示例取得事件、方法、组件和槽位名称，再用名称及业务同义词搜索。UI 能力可能属于 Gateway，不要只查 AgentServer。
+- **确认已检出：** 本地没有命中时，用 `git ls-tree` 核对目录树；只追加缺少的目录。团队事件与 Ops 从 Core 的 `openjiuwen/agent_teams/extensions/`、`openjiuwen/extensions/ops_build_handlers/` 进入。
+- **核对两端：** 前端组件查 Swarm 的 `jiuwenswarm/channels/web/frontend/src/features/webui/` 目录、组件和槽位清单；再查所属域的后端规则及直接测试。需要时才追加这一目录及其适用规则。
+- **分清缺口：** 区分接口不存在、运行版本较旧、权限尚未声明、外部网页拒绝嵌入和环境依赖未准备。说明已查过的位置和具体阻塞，不用一处未命中就断言平台不能做。

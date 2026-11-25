@@ -18,10 +18,11 @@ description: >-
 | 当前需要 | 按需查阅 |
 | --- | --- |
 | 查最新官方资料、定位源码、检查转换所需结构 | [DeepSeek Harness 源码定位与结构检查](references/deepseek-harness-plugin.md) |
-| 映射事件、Ops、UI、开发和验证系统插件 | [转换与开发流程](references/conversion-workflow.md) |
-| 读取三个仓库、编写系统插件及安排测试 | [系统插件开发说明](references/system-plugin-development.md) |
-| 参考可加载的 manifest、入口和真实链路测试 | [系统插件示例](assets/package_example/) |
-| 完成实现后一次性测试、打包和校验最终 ZIP | [最终验证脚本](scripts/finalize_package.py) |
+| 映射原插件行为与目标能力 | [转换与开发流程](references/conversion-workflow.md) |
+| 选择 domain、开发、测试、打包和安装 | [系统插件开发与安装](../jiuwen-system-plugin-dev/SKILL.md)，只读取当前步骤 |
+| 参考相近场景的关键写法 | [系统插件示例索引](../jiuwen-system-plugin-dev/references/example.md) |
+| 嵌入网页、来源隔离和权限 | [前端开发说明](../jiuwen-system-plugin-dev/references/frontend-development.md) |
+| 同时需要两个 domain | [组合包开发](../jiuwen-system-plugin-dev/references/bundle-development.md) |
 
 ## 职责边界
 
@@ -81,71 +82,39 @@ description: >-
 
 ## 3. 判断能否转换
 
-从目标 Swarm、Core 和 Gateway 的实际源码中搜索对应事件、Ops、UI 槽位和管理入口，按 [转换与开发流程](references/conversion-workflow.md) 建立映射表。
+先从 [示例索引](../jiuwen-system-plugin-dev/references/example.md) 选择相近场景的参考片段，再按 [转换与开发流程](references/conversion-workflow.md) 建立映射表；只搜索当前映射尚未确认的事件、Ops、槽位和管理入口。
+
+判断能力缺口前，按 [能力缺口核对](../jiuwen-system-plugin-dev/references/source-reading.md#3-报告能力缺失前的核对) 检查相关域、真实名称、已检出目录和直接测试；涉及网页时，再核对来源隔离和权限。
 
 - **能力齐全：** 说明采用的事件、Ops、Handler 行为、UI 槽位和验收入口，继续开发。
-- **缺少必要能力：** 如果缺口会让核心功能无法运行、无法被真实业务触发，或只能做成与原插件不同的演示，立即停止开发，向用户说明缺少的能力、代码位置和影响。
+- **缺少必要能力：** 如果确认缺口会让核心功能无法运行、无法被真实业务触发，或只能做成与原插件不同的演示，立即停止开发，向用户说明缺少的能力、代码位置和影响。
 - **只有非关键差异：** 如果核心功能可以完整运行，只是动画、布局细节、性能优化或次要体验不能完全一致，使用现有能力完成最佳实现，不需要单独向用户强调这一类差异。
 
 不得新造事件名、伪造 Ops、增加演示按钮或修改平台源码来绕过缺口。
 
 ## 4. 开发 JiuwenSwarm 系统插件
 
-### 4.1 源码和版本
+完成来源分析和能力映射后，按内置的 [系统插件开发 skill](../jiuwen-system-plugin-dev/SKILL.md) 继续开发。
+源码获取、现有执行环境、版本管理、Handler、测试、打包和安装统一沿用该流程，不再维护另一套脚本或示例。
+先读取主流程，再按本次需要打开对应资料，不一次加载全部参考文件。
 
-优先使用用户指定的 `jiuwenswarm`、`agent-core` 和 `agent-gateway` 源码。缺少对应仓库时，按 [转换与开发流程](references/conversion-workflow.md#1-确认目标源码) 获取 `develop` 分支或读取当前运行环境。具体仓库地址、稀疏检出目录和批量阅读方式见 [系统插件开发说明](references/system-plugin-development.md#1-读取目标平台源码)。
+转换时额外保留：
 
-- 新转换的系统插件使用清晰稳定的 `package.id`，未指定版本时从 `0.0.1` 开始。
-- 修改已经转换的系统插件，或一轮开发和验收结束后又提出修改时，复制当前源码形成新版本目录；保持 `package.id`、`domain` 和 `display.name` 不变，按变更类型递增三段数字版本。
-- 首次安装后的界面确认循环中提出的调整仍属于当前版本调试，不复制目录、不递增版本；修改安装副本并 reload。
-- ZIP 使用 `<package_id>-<version>.zip`，manifest、README、源码目录和交付说明中的版本保持一致。
-
-### 4.2 实现要求
-
-在独立目录中开发，不放进平台源码模块。系统插件至少包含：
-
-- 根目录 `manifest.json`，声明真实的 `package.id`、版本、`agentserver` 或 `gateway` 域、入口和依赖。
-- `create_extension()` 工厂和 `register(registrar)`；Handler 使用公开 Registrar、事件和 Ops 接口。
-- 与原插件核心行为对应的状态、错误、取消、资源清理和会话隔离。
-- 需要界面时使用目标版本已有的 UI contribution 和槽位，保持界面美观，并核对目标、会话和活跃实例。
-- README、测试和必要资源；不把 DeepSeek Harness 运行时、Node 环境、虚拟环境或凭据打进 ZIP。
-
-开始实现前，在系统插件源码根目录写入简短的 `CAPABILITY_CHOICES.md`，记录原插件来源和版本、目标 domain、采用的事件、Ops、UI 槽位、真实触发入口及验收方式。实现细节按 [系统插件开发说明](references/system-plugin-development.md#2-开发独立的系统插件) 核对；需要具体结构时读取本 Skill 自带的 [系统插件示例](assets/package_example/)，不依赖其他 Skill 的文件。
+- **来源与映射：** 在 `CAPABILITY_CHOICES.md` 中记录原插件来源、版本、许可证、核心行为及目标事件、Ops、槽位和验收入口。
+- **运行域：** 按实际事件与 Ops 归属选择 `agentserver` 或 `gateway`，不能因为原插件带页面就默认选 Gateway。两个域都需要时，交付一个组合包；成员各自保留 domain，不把根 domain 写成数组或随意选择一个。
+- **前端效果：** 使用 [前端开发说明](../jiuwen-system-plugin-dev/references/frontend-development.md) 核对 Iframe、独立来源、permissions 和内层 iframe；不沿用原平台的原生 webview 限制结论。
+- **交付内容：** 只打入本系统插件需要的实现、说明、测试和资源，不打入 DSH 运行时、Node 环境、虚拟环境或凭据。
 
 ## 5. 测试、打包和安装
 
-不能只测试转换后的内部函数。使用目标 Swarm 现有执行环境，在隔离的临时安装目录中验证：
+使用 [系统插件开发流程第 4 节](../jiuwen-system-plugin-dev/SKILL.md#4-测试并生成最终-zip) 的执行环境和最终验证脚本。
+命令中的 `SKILL_ROOT` 指向 `jiuwen-system-plugin-dev` 的实际目录；读取或执行它的脚本，不复制到本 Skill 中。
 
-- manifest 和入口能被真实加载，Handler 能发布并按预期顺序执行。
-- 触发、未触发、成功、主要失败、取消、重复调用和会话隔离。
-- UI contribution、上行操作、下行渲染和重载；真实页面效果另行由用户确认。
-- 最终 ZIP 根目录直接包含唯一 `manifest.json`，并使用同一份 ZIP 完成最终加载验证。
-
-实现完成后统一运行本 Skill 的最终验证脚本，不在每次小改动后反复启动测试。测试范围只包含本次系统插件自己的测试，不运行 Swarm、Core 或 Gateway 的完整测试集。下文的 `<PYTHON_ENTRY>` 使用当前 Swarm 已有的 Python 或桌面后端执行入口：
-
-```text
-"<PYTHON_ENTRY>" "<SKILL_ROOT>/scripts/finalize_package.py" "<系统插件源码目录>" "<输出 ZIP 路径>" "<系统插件测试目录或文件>"
-```
-
-脚本先生成临时 ZIP，把该 ZIP 路径通过 `JIUWEN_SYSTEM_PLUGIN_ZIP` 交给测试；测试必须从这个 ZIP 安装到隔离宿主并验证真实加载和行为。全部通过后，同一文件才成为最终 ZIP。单独定位打包或测试问题时，再使用 `scripts/build_package.py` 或 `scripts/run_tests.py`。
-
-用户明确要求安装时，通过现有终端调用：
-
-```text
-jiuwenswarm extension install "<最终 ZIP 路径>" --json
-jiuwenswarm extension query "<package_id>" --json
-```
-
-Gateway 域的后续查询、reload 和 uninstall 增加 `--domain gateway`。EXE、DMG 使用环境提供的 `JIUWENSWARM_EXECUTABLE`，不另找系统 Python。
-
-用户明确不安装时，交付源码、README、测试结果和 ZIP。用户没有说明时，完成开发和验证后使用当前提问工具询问是否安装，等待用户答复，不默认安装。
+测试从 `JIUWEN_SYSTEM_PLUGIN_ZIP` 加载同一份最终 ZIP，验证原插件核心行为映射、真实 Handler 链、主要失败和隔离；组合包还要覆盖两个域及协作效果。
+通过后按 [第 5 节](../jiuwen-system-plugin-dev/SKILL.md#5-确认是否安装并核对运行状态) 判断用户安装意愿、选择支持的入口并核对状态。
+组合包的当前 CLI 限制以 [安装说明](../jiuwen-system-plugin-dev/references/bundle-development.md#3-安装与验收) 为准，不拆开安装，也不宣称尚未完成的安装已经成功。
 
 ## 6. 验证实际效果
 
-安装并确认系统插件已激活后，使用原有业务入口验证核心行为。涉及页面效果时，技术验证完成后使用确认卡片询问用户：“你现在看到的实际效果是否符合预期？”
-
-- 用户确认符合预期后，结束验收并交付。
-- 用户在本轮确认循环中提出修改意见时，保持 ID、domain 和版本不变，修改系统插件源码和安装副本，补测试并 reload，再次请用户确认。
-- 用户已经确认或本轮交付结束后再次要求修改，按第 4.1 节复制源码并开发新版本，不覆盖旧版本。
-
-最终说明包含原插件来源和版本、转换映射、系统插件 ID 和版本、源码与 ZIP、测试结果、安装和激活状态、实际业务验证，以及仍存在的必要阻塞。
+沿用 [业务效果与交付流程](../jiuwen-system-plugin-dev/SKILL.md#6-验证业务效果并交付)。涉及页面时，技术验证完成后显示用户确认卡片；本轮修改用 reload，结束后再修改则复制源码开发新版本。
+最终说明补充原插件来源和版本、转换映射，以及核心行为是否已经验证。
