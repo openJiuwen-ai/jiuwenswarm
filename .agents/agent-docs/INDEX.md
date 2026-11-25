@@ -490,6 +490,7 @@ generated: true
 | [B_20261120_1735_upsert-empty-temperature](bugfix/jiuwenswarm/common/B_20261120_1735_upsert-empty-temperature.md) | B | models.upsert 将空串 temperature 原样落库，与文档约定的空串转 null 不符 | openjiuwen_ai | 无独立 D：仅统一 upsert 与 replace_all 对空串 temperature 的归一化口径，不改模型配置结构与合并语义；无独立设计。 |
 | [B_20261121_0108_pypi-update-version-baseline](bugfix/jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
 | [B_20261124_2201_rea-npx-readiness](bugfix/jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
+| [B_20261120_2339_singleton-model-is-default](bugfix/jiuwenswarm/common/B_20261120_2339_singleton-model-is-default.md) | B | models.upsert 对单条 model_name 强制 is_default=true，请求 false 被静默改写 | openjiuwen_ai | 无独立 D：仅调整 is_default 的读取推断规则，不改变写入契约、模型分组结构与选择兜底；无独立设计。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 

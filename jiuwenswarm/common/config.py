@@ -1696,7 +1696,8 @@ def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """为模型条目列表推断 is_default 字段。
 
     规则：
-    - 同 model_name 组内仅一个条目 → is_default = True
+    - 同 model_name 组内仅一个条目 → 未显式声明 is_default 时推断为 True；
+      显式 false 原样保留，调用方可以新增模型而不把它设成该组的默认（#6853）
     - 同 model_name 组内多个条目 → 第一个为 True，其余为 False
     - 已有 is_default 字段且为 True 的条目保留，同组内其余置 False
     """
@@ -1717,7 +1718,12 @@ def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     for name, indices in groups.items():
         if len(indices) == 1:
-            result[indices[0]]["is_default"] = True
+            single = result[indices[0]]
+            # Explicit false is a caller decision, not something to normalise away:
+            # model selection falls back to the first usable entry when a group has
+            # no default (select_default_model_entry).
+            if "is_default" not in single:
+                single["is_default"] = True
             continue
 
         has_explicit = False
