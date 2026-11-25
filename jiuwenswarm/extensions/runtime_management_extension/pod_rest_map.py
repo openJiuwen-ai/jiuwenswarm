@@ -151,6 +151,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("skills.marketplace.toggle", "POST", "/skills/marketplace/{name}/actions/toggle"),
     ("skills.install", "POST", "/skills/install"),
     ("skills.import_local", "POST", "/skills/import-local"),
+    ("skills.import_upload", "POST", "/skills/actions/import-upload"),
     ("skills.online.search", "POST", "/skills/online-search"),
     ("skills.online_search.search", "POST", "/skills/online-search"),
     ("skills.retrieval.status", "GET", "/skills/retrieval/status"),

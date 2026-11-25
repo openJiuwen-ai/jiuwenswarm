@@ -29,6 +29,8 @@ function normalizeContext(raw: Partial<EnterpriseAgentContext> | null | undefine
     jiuwenclaw_id: String(raw?.jiuwenclaw_id || '').trim(),
     jiuwenclaw_name: String(raw?.jiuwenclaw_name || '').trim(),
     agent_name: String(raw?.agent_name || '').trim(),
+    agent_template_id: String(raw?.agent_template_id || '').trim(),
+    allow_local_skill_upload: raw?.allow_local_skill_upload === true,
     group_name: String(raw?.group_name || '').trim(),
   };
 }
@@ -65,6 +67,7 @@ function applyScope(selected: EnterpriseAgentContext): void {
     userId: selected.user_id,
     groupId: selected.group_id,
     botId: selected.bot_id,
+    agentTemplateId: selected.agent_template_id,
   });
 }
 
