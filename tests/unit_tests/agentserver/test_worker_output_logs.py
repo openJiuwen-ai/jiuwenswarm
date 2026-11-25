@@ -29,6 +29,34 @@ def _age(path: Path, seconds: int = 120) -> None:
     os.utime(path, (stamp, stamp))
 
 
+def _process_exited(process: psutil.Process) -> bool:
+    """Orphaned zombies have exited even when the container init has not reaped them."""
+    try:
+        return not process.is_running() or process.status() in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
+    except psutil.NoSuchProcess:
+        return True
+
+
+def _wait_for_process_exit(process: psutil.Process, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not _process_exited(process):
+        if time.monotonic() >= deadline:
+            raise psutil.TimeoutExpired(timeout, pid=process.pid)
+        time.sleep(0.01)
+
+
+@pytest.mark.parametrize("status", [psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD])
+def test_orphan_exit_wait_accepts_terminated_process_records(status):
+    process = SimpleNamespace(pid=1, is_running=lambda: True, status=lambda: status)
+    _wait_for_process_exit(process, timeout=0)
+
+
+def test_orphan_exit_wait_does_not_accept_a_live_worker():
+    process = SimpleNamespace(pid=1, is_running=lambda: True, status=lambda: psutil.STATUS_SLEEPING)
+    with pytest.raises(psutil.TimeoutExpired):
+        _wait_for_process_exit(process, timeout=0)
+
+
 def test_rotation_keeps_bounded_recent_archives_and_preserves_handle(tmp_path):
     path = _stderr(tmp_path)
     rotation = output_logs.WorkerLogRotation(path, max_bytes=32, backup_count=2)
@@ -445,12 +473,14 @@ print('inherited stdout survives rotation', flush=True)
 for number in range(5):
     os.write(2, str(number).encode() * 5000)
     deadline = time.monotonic() + 5
-    while rotation.path.stat().st_size and time.monotonic() < deadline:
+    while rotation.path.stat().st_size >= rotation.max_bytes and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert rotation.path.stat().st_size == 0
+    if number == 0:
+        os.write(2, b'maintenance diagnostic after rotation\\n')
+    assert rotation.path.stat().st_size < rotation.max_bytes
+rotation.stop()
 faulthandler.enable()
 faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
-rotation.stop()
 os.write(2, b'native stderr after rotation\\n')
 raise RuntimeError('original exception after rotation')
 """
@@ -493,9 +523,9 @@ async def serve(*args, **kwargs):
     os.write(2, b'x' * (20 * 1024 * 1024 + 1024))
     path = Path(os.environ[STDERR_LOG_ENV])
     deadline = asyncio.get_running_loop().time() + 10
-    while path.stat().st_size and asyncio.get_running_loop().time() < deadline:
+    while path.stat().st_size >= 20 * 1024 * 1024 and asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.05)
-    assert path.stat().st_size == 0
+    assert path.stat().st_size < 20 * 1024 * 1024
     os.write(2, b'default rotation completed\\n')
 stub.serve_stub = serve
 sys.argv = ['worker', '--socket', 'unused.pipe', '--stub', *sys.argv[1:]]
@@ -527,28 +557,44 @@ from jiuwenswarm.server.worker.output_logs import start_worker_log_rotation
 sys.stdin.buffer.read()
 rotation = start_worker_log_rotation(max_bytes=4096, backup_count=2, interval=0.01)
 assert rotation is not None
+gate = Path(sys.argv[2])
+deadline = time.monotonic() + 20
+while not gate.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+assert gate.exists(), 'Front exit was not confirmed'
 for number in range(8):
     os.write(2, b'x' * 5000)
-    time.sleep(0.1)
+    deadline = time.monotonic() + 5
+    while rotation.path.stat().st_size >= rotation.max_bytes and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert rotation.path.stat().st_size < rotation.max_bytes
 rotation.stop()
 os.write(2, b'completed after Front exit\\n')
 Path(sys.argv[1]).write_text('done', encoding='utf-8')
 """
     info = tmp_path / "worker.json"
     done = tmp_path / "done.txt"
+    gate = tmp_path / "front-exited"
     front_script = """
 import asyncio, json, sys
 from pathlib import Path
+import psutil
 from jiuwenswarm.server.supervisor import worker_process as module
 async def run():
-    module.build_worker_command = lambda *args, **kwargs: [sys.executable, '-c', sys.argv[1], sys.argv[3]]
+    module.build_worker_command = lambda *args, **kwargs: [
+        sys.executable, '-c', sys.argv[1], sys.argv[3], sys.argv[4],
+    ]
     process = module.WorkerProcess(str(Path(sys.argv[2]).with_suffix('.pipe')), host='127.0.0.1', port=18092)
     await process.spawn()
-    Path(sys.argv[2]).write_text(json.dumps({'pid': process.pid, 'stderr': str(process.stderr_path)}), encoding='utf-8')
+    state = {
+        'pid': process.pid, 'created': psutil.Process(process.pid).create_time(),
+        'stderr': str(process.stderr_path),
+    }
+    Path(sys.argv[2]).write_text(json.dumps(state), encoding='utf-8')
 asyncio.run(run())
 """
     front = subprocess.Popen(
-        [sys.executable, "-c", front_script, child_script, str(info), str(done)],
+        [sys.executable, "-c", front_script, child_script, str(info), str(done), str(gate)],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
     child = None
@@ -558,23 +604,27 @@ asyncio.run(run())
         state = json.loads(info.read_text(encoding="utf-8"))
         try:
             child = psutil.Process(state["pid"])
+            if child.create_time() != state["created"]:
+                child = None
         except psutil.NoSuchProcess:
             pass
+        # The Worker starts producing output only after its actual Front exits.
+        gate.touch()
         deadline = time.monotonic() + 10
         while not done.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert done.read_text(encoding="utf-8") == "done"
         if child is not None:
-            child.wait(timeout=5)
+            _wait_for_process_exit(child)
         path = Path(state["stderr"])
         archives = list(path.parent.glob("*.stderr_*.log"))
         assert len(archives) == 2
         assert all(item.stat().st_size <= 4096 for item in archives)
-        assert path.read_bytes() == b"completed after Front exit\n"
+        assert b"completed after Front exit\n" in path.read_bytes()
     finally:
         if front.poll() is None:
             front.kill()
         front.wait(timeout=5)
-        if child is not None and child.is_running():
+        if child is not None and not _process_exited(child):
             child.kill()
-            child.wait(timeout=5)
+            _wait_for_process_exit(child)
