@@ -14,6 +14,14 @@ design_note: 修复既有异步登录测试的时序假设，保持认证接口�
 
 # 登录回调 UT 的后台轮询时序竞态
 
+## 交付落点
+
+测试修复首次随 develop [PR !10796](https://gitcode.com/openJiuwen/jiuwenswarm/merge_requests/10796) 的
+`33aa8caefef28949d79b963cc573e3ced5eed6bc` 提交，实际文件为 `tests/unit_tests/common/test_auth_server_callback.py`。
+0.2.10 由 [PR !10933](https://gitcode.com/openJiuwen/jiuwenswarm/merge_requests/10933) 的首个提交
+`8ed9f7f00f43262a4e654706369388b0a6ce6a26` 移植，目标基线为 `f554e7717`。
+该测试文件确实属于此 PR 的变更，两个调度分支均已在该候选上执行；下文历史 CI 结果仍限定于各自版本。
+
 ## 现象与证据范围
 
 用户提供的 `4f2d69fc-0166-4e9a-8aa6-1ff01b69efa0.zip` 包含 Linux CI 的完整文本日志。

@@ -37,6 +37,15 @@ design_note: 按用户明确修复任务和已有受限系统回退补齐调用�
 
 # HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败
 
+## 交付范围与来源
+
+本记录的 `files` 是故障涉及的实现和回归入口，不是待实施清单。首个 release 候选 `8ed9f7f00` 相对基线 `f554e7717`，
+[PR !10933](https://gitcode.com/openJiuwen/jiuwenswarm/merge_requests/10933) 的首个提交
+`8ed9f7f00f43262a4e654706369388b0a6ce6a26` 共修改 30 个文件：15 个生产文件、6 个测试文件和 9 个文档/索引。
+Worker、Supervisor、`start_services.py` 及本记录列出的四个测试文件均包含在该提交的净差异中。
+完整来源为 develop [PR !10796](https://gitcode.com/openJiuwen/jiuwenswarm/merge_requests/10796) 的 `488612236`，
+两项 UT 的首次提交和 release 移植落点分别见各自故障记录。下文历史证据不自动等同于后续候选验证。
+
 ## 现象与影响
 
 用户提供的 `worker-startup-proc-stat-permission.md` 记录 HarmonyOS 6.1.1 的 Worker 在 loopback 连接后、HELLO 发出前，
@@ -206,6 +215,30 @@ develop `fba1df034` 的完整修复净差异。目标分支已具备统一路径
 
 本轮报告、执行脚本与实进程证据位于 `D:/work_space/.codex-temp/harmony-process-identity-0210-20261125/`：
 `related.xml`、`native-verified.json`、`harmony-controlled/verified.json` 和 `production-comparison.json`。
+
+## 2026-11-25 release PR 评审收尾
+
+本轮基线为 `8ed9f7f00`。行内意见 203761483、203761485 与评论区汇总重复质疑测试和 Worker 改动未交付。
+以该 head 的 GitCode 全量文件接口和本地 `f554e7717..8ed9f7f00` 净差异核对，均为 30 个文件：
+15 个生产文件、6 个测试文件和 9 个文档/索引文件；所质疑的 9 个 Worker/Supervisor/启动器实现与测试均在其中。
+这是评审使用了不完整清单造成的误判。补充本记录的范围说明及两项 UT 的原始提交、release 移植提交和 PR，保留实际交付的文件清单。
+
+对意见 203761484，采纳显式存在性检查：已记录的 ticks 无法读取时，通过 `psutil.pid_exists()` 区分
+已退出与存活但不可读，分别抛 `NoSuchProcess` 和 `AccessDenied`。存在性不代替身份匹配，未验证的目标仍拒绝发信号。
+同时补齐服务树在进程查询后、身份检查期间退出的竞态，`NoSuchProcess` 按已无进程返回，权限未知仍报告失败。
+评审称 Linux 的高层 `psutil.Process(pid)` 完全不探测存在性，这一前提与锁定的 7.2.2 源码不符：
+高层 `_init()` 会调用 `_get_ident()`，不能只依据底层 `_pslinux.Process._init()` 下结论。
+本轮显式检查减少了对构造器副作用的依赖，未将受控模型当作 Linux/HarmonyOS 原生缺陷的实测证明。
+
+新增 7 项回归在修改前为 **3 failed、4 passed**，分别覆盖无身份可读时的退出/未知、owner 状态、服务树竞态，
+以及真实子进程从存活到退出的状态转换。修复后相关回归为 **259 passed、1 skipped**；
+跳过项为 macOS 专用的 psutil 时钟调整回归，当前 Windows 未计为通过。
+Windows resident 与 front_loopback 两组实进程启动、resident 同 Worker 重连及退出清理通过；
+创建时间拒绝回退和双来源拒绝三组受控实验通过。未执行全仓 Linux UT、鸿蒙真机或安装包构建。
+
+原始回归、文件范围快照、psutil 源码核对和进程证据位于
+`D:/work_space/.codex-temp/harmony-process-identity-0210-review-20261125/`：
+`before.xml`、`related.xml`、`scope-before.json`、`psutil-constructor.json`、`native-verified.json` 和 `harmony-controlled/verified.json`。
 
 ## 遗留与重验条件
 

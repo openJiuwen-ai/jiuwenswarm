@@ -63,7 +63,8 @@ def process_identity_matches(
         ticks = proc_start_ticks(pid)
         if ticks is None:
             # Distinguish an exited process from an unobservable live process.
-            psutil.Process(pid)
+            if not psutil.pid_exists(pid):
+                raise psutil.NoSuchProcess(pid)
             raise psutil.AccessDenied(pid=pid, msg=f"cannot verify process identity: /proc/{pid}/stat unavailable")
         return expected == f"{_TICKS_PREFIX}{ticks}"
     if isinstance(expected, bool) or not isinstance(expected, (int, float)) or not math.isfinite(expected):

@@ -255,6 +255,8 @@ def signal_service_tree(pid: int, *, force: bool = False, expected_created: Proc
     try:
         if expected_created is not None and not process_identity_matches(pid, expected_created, process=parent):
             raise RuntimeError("Service launcher PID identity changed")
+    except psutil.NoSuchProcess:
+        return []
     except psutil.Error as exc:
         raise RuntimeError(f"Service launcher pid={pid} identity could not be inspected: {exc}") from exc
     try:

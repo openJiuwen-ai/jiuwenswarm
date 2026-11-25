@@ -2,6 +2,7 @@
 """Restricted /proc/stat must not break Worker identity or PID-reuse checks."""
 
 import os
+import subprocess
 import sys
 import time
 from types import SimpleNamespace
@@ -30,6 +31,7 @@ def restricted_process(monkeypatch):
         wait=Mock(return_value=0), terminate=Mock(), kill=Mock(),
     )
     monkeypatch.setattr(psutil, "Process", lambda pid=None: process)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
     monkeypatch.setattr(identity, "proc_start_ticks", lambda pid: 4242)
     return process
 
@@ -88,6 +90,66 @@ def test_stored_ticks_remain_comparable_after_permissions_change(restricted_proc
     assert identity.process_identity_matches(123, "proc_start_ticks:4242")
     restricted_process.create_time.assert_not_called()
     assert not identity.process_identity_matches(123, "proc_start_ticks:4243")
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_unreadable_ticks_distinguish_exit_from_unknown(monkeypatch, restricted_process, exists):
+    monkeypatch.setattr(identity, "proc_start_ticks", lambda pid: None)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: exists)
+    expected = psutil.AccessDenied if exists else psutil.NoSuchProcess
+
+    with pytest.raises(expected):
+        identity.process_identity_matches(123, "proc_start_ticks:4242")
+
+    restricted_process.create_time.assert_not_called()
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_unreadable_tick_owner_is_failed_only_after_exit(monkeypatch, restricted_process, exists):
+    from jiuwenswarm.agents.swarm import group_route
+
+    monkeypatch.setattr(identity, "proc_start_ticks", lambda pid: None)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: exists)
+    route = {"owner_process": [123, "proc_start_ticks:4242"], "status": "pending", "updated_at": time.time()}
+
+    assert group_route._owner_process_alive(route) is (None if exists else False)
+    result = group_route._effective(route)
+    if exists:
+        assert result is route
+    else:
+        assert result["status"] == "failed" and result["error"] == "owner_process_ended"
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_tick_launcher_exit_during_identity_check_is_not_cleanup_failure(monkeypatch, restricted_process, exists):
+    from jiuwenswarm.common import process_supervision
+
+    monkeypatch.setattr(identity, "proc_start_ticks", lambda pid: None)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: exists)
+    if exists:
+        with pytest.raises(RuntimeError, match="identity could not be inspected"):
+            process_supervision.signal_service_tree(123, expected_created="proc_start_ticks:4242")
+    else:
+        assert process_supervision.signal_service_tree(123, expected_created="proc_start_ticks:4242") == []
+    restricted_process.terminate.assert_not_called()
+    restricted_process.kill.assert_not_called()
+
+
+def test_real_process_with_unreadable_ticks_is_unknown_until_it_exits(monkeypatch):
+    monkeypatch.setattr(identity, "proc_start_ticks", lambda pid: None)
+    executable = getattr(sys, "_base_executable", sys.executable)
+    child = subprocess.Popen([executable, "-c", "import time; time.sleep(60)"])
+    try:
+        assert child.poll() is None
+        with pytest.raises(psutil.AccessDenied):
+            identity.process_identity_matches(child.pid, "proc_start_ticks:4242")
+    finally:
+        if child.poll() is None:
+            child.terminate()
+        child.wait(timeout=5)
+
+    with pytest.raises(psutil.NoSuchProcess):
+        identity.process_identity_matches(child.pid, "proc_start_ticks:4242")
 
 
 @pytest.mark.parametrize("worker_denied", [False, True])

@@ -14,6 +14,14 @@ design_note: 修复既有诊断测试的跨线程前置条件，保持真实传�
 
 # Socket 写锁诊断 UT 的跨线程就绪同步
 
+## 交付落点
+
+测试修复首次随 develop [PR !10796](https://gitcode.com/openJiuwen/jiuwenswarm/merge_requests/10796) 的
+`725c2b004886612f1f64d2bd88189fe9e76b62a5` 提交，实际文件为 `tests/unit_tests/agentserver/test_stream_heartbeat.py`。
+0.2.10 由 [PR !10933](https://gitcode.com/openJiuwen/jiuwenswarm/merge_requests/10933) 的首个提交
+`8ed9f7f00f43262a4e654706369388b0a6ce6a26` 移植，目标基线为 `f554e7717`。
+该文件的跨线程等待同步改动属于此 PR，且已在该候选上执行；下文历史验证继续限定到原提交与实验条件。
+
 ## 现象与报告版本
 
 用户提供的 `75dc7163-c64f-4e32-94ad-895d74b3572c.zip` 测试 PR !10796 的 `33aa8caef`
