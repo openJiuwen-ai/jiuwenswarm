@@ -217,6 +217,71 @@ async def test_background_job_polling_marks_active(tmp_path):
     assert ref.last_active_at > before
 
 
+# ---- 锁外核实窗口的原子收口 ----
+
+
+@pytest.mark.asyncio
+async def test_reaper_survives_exec_started_during_jobs_check(tmp_path):
+    # 后台任务核实发生在锁外（阻塞 IPC）。核实期间开始的命令（锁内
+    # 标记活跃 + 计数）不得被随后的删除动作误杀。
+    manager, runtime = _make_manager(tmp_path, jobs_state=False)
+    ref = _ready_ref("sb")
+    manager._sandboxes["sb"] = ref
+
+    async def jobs_check(sid):
+        async with manager._lock:
+            manager._inflight_execs[sid] = manager._inflight_execs.get(sid, 0) + 1
+            ref.last_active_at = datetime.now(timezone.utc)
+        return False
+
+    runtime.has_running_background_jobs = AsyncMock(side_effect=jobs_check)
+    await _run_reaper(manager, 0.4)
+    assert "sb" in manager._sandboxes
+    runtime.cleanup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_if_idle_guards(tmp_path):
+    manager, runtime = _make_manager(tmp_path)
+    ref = _ready_ref("sb")
+    manager._sandboxes["sb"] = ref
+    cutoff = ref.last_active_at.timestamp() + 1
+
+    # 命令执行中：不删。
+    manager._inflight_execs["sb"] = 1
+    assert await manager._delete_if_idle("sb", cutoff) is False
+    assert "sb" in manager._sandboxes
+
+    # 刚被使用：不删。
+    manager._inflight_execs.pop("sb")
+    ref.last_active_at = datetime.now(timezone.utc)
+    assert await manager._delete_if_idle("sb", cutoff) is False
+    assert "sb" in manager._sandboxes
+
+    # 闲置且无任务：删除并清账。
+    ref.last_active_at = ref.started_at
+    assert await manager._delete_if_idle("sb", cutoff) is True
+    assert "sb" not in manager._sandboxes
+    assert "sb" not in manager._inflight_execs
+    runtime.cleanup.assert_awaited()
+
+
+# ---- 运行时忙判定契约 ----
+
+
+def test_process_runtime_declares_busy_check_contract():
+    # 新 RuntimeAdapter 实现必须显式声明忙判定行为：基类默认 None
+    # （无法确认→回收器按到期回收），静默继承默认值会让有后台任务的
+    # 沙箱被误删。
+    from jiuwenbox.server.runtime.base import RuntimeAdapter
+    from jiuwenbox.server.runtime.process import ProcessRuntime
+
+    assert (
+        ProcessRuntime.has_running_background_jobs
+        is not RuntimeAdapter.has_running_background_jobs
+    )
+
+
 # ---- 守护进程错误匹配 ----
 
 

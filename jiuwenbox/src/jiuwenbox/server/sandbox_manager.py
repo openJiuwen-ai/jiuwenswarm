@@ -593,13 +593,17 @@ class SandboxManager:
                             "(daemon unreachable), deleting",
                             sid,
                         )
+                    # 后台任务核实发生在锁外（阻塞 IPC），核实期间可能有新
+                    # 命令开始。删除前的复核与置 DELETING 同锁原子完成：
+                    # 核实窗口里开始的命令在此被拦下，本轮作废等下一轮。
+                    if not await self._delete_if_idle(sid, cutoff):
+                        continue
                     self.audit.log(
                         AuditEventType.SANDBOX_DELETED,
                         sid,
                         reason="idle_timeout",
                         idle_timeout_seconds=idle_timeout,
                     )
-                    await self.delete_sandbox(sid)
                 except SandboxNotFoundError:
                     # Raced with an external delete; treat as a clean teardown.
                     continue
@@ -864,7 +868,32 @@ class SandboxManager:
             # 该沙箱的"执行中"计数一并清掉：沙箱都删了，计数没有意义，
             # 也避免同 id 重建后被陈旧计数挡住回收。
             self._inflight_execs.pop(sandbox_id, None)
+        await self._teardown_deleted_sandbox(sandbox_id)
 
+    async def _delete_if_idle(self, sandbox_id: str, cutoff: float) -> bool:
+        """回收专用删除：复核"仍是到期闲置候选"与置 DELETING 在同一把锁内完成。
+
+        命令的活跃标记与计数递增都在锁内进行，因此这里锁内复核后立刻置
+        DELETING，两者之间不会再有命令挤进来；反过来，若命令先到，复核
+        会看到计数或新的活跃时间而放弃，等下一轮扫描再判断。
+        复核不通过（命令执行中 / 刚被使用 / 已被并发处理）返回 False，
+        不动沙箱。
+        """
+        async with self._lock:
+            ref = self._sandboxes.get(sandbox_id)
+            if ref is None or ref.phase != SandboxPhase.READY:
+                return False
+            if self._idle_reference_ts(ref) >= cutoff:
+                return False
+            if self._inflight_execs.get(sandbox_id, 0) > 0:
+                return False
+            ref.phase = SandboxPhase.DELETING
+            self._save_state(ref)
+            self._inflight_execs.pop(sandbox_id, None)
+        await self._teardown_deleted_sandbox(sandbox_id)
+        return True
+
+    async def _teardown_deleted_sandbox(self, sandbox_id: str) -> None:
         # Cleanup can wait on processes and namespace teardown. Keep it outside
         # the global state lock so deleting one sandbox does not block unrelated
         # sandbox operations.
