@@ -1,20 +1,20 @@
 # 系统插件示例索引
 
-先按需求选择最接近的一个示例，阅读它的 README、manifest 和下表指定的入口；其余模块只在实现用到时再读。
-不要一次加载全部示例、素材和测试。可以复用已验证的结构，只为本次新增行为补查事件和 Ops。
+以下示例仅供参考，用于说明事件、Ops 和界面的组合方式。参考片段省略了完整入口、素材、状态管理和测试，不能直接打包交付。
+先按需求选择一项，只读对应说明，再核对目标版本的接口并补齐自己的实现和测试；不要一次读取全部示例。
 
-| 用户需要 | 示例与运行域 | 优先读取 | 可参考的能力 |
-| --- | --- | --- | --- |
-| 桌宠、窗口形态、资源导入和设置 | [应用形态](../assets/examples/application-forms/README.md)，gateway | `application_forms/extension.py`，需要资源格式时再读 `RESOURCE_FORMAT.md` | ApplicationSurface、应用形态槽位、资源设置、持久化和音效 |
-| 上下文用量、Agent 执行过程和工具批次 | [上下文驾驶舱](../assets/examples/context-observer/README.md)，agentserver | `context_observer/extension.py`，再按需读 `loop.py`、`dashboard.py` | context.usage.updated、turn.step、tool.call、ops.session、受管页面资源 |
-| 登录、注册、凭证注入和账号入口 | [认证与登录](../assets/examples/login/README.md)，gateway | `manifest.json` 的 client 段、`auth_login_demo/extension.py`、`identity.py` | gateway.request、application.entry、客户端存储和凭证绑定；要求 Swarm >=0.2.10，仅演示自有认证 |
-| 团队成员、任务状态和依赖关系图 | [团队协作](../assets/examples/team-collaboration/README.md)，agentserver | `team_collab_viz/extension.py`、`snapshot.py`；页面问题再读 `web/` | team.monitor_event、ops.team、会话绑定、只读本机页面服务及释放 |
-| 轻量用量状态条、设置开关和详情 | [Token Weather](../assets/examples/token-weather/README.md)，agentserver | `token_weather_glass/extension.py`、`views.py` | 真实用量、显示偏好、动态页面资源；比驾驶舱更适合参考设置与状态条联动 |
-| 动态背景、配色、开场动画和主题导入 | [主题背景](../assets/examples/theme/README.md)，gateway | `workswarm_theme/extension.py`、`media.py`；导入时再读 `schema.py`、`transfer.py` | MediaSurface、application.background/splash、ops.appearance、ops.splash、数据存储 |
-| 一个功能同时改变会话行为和应用外观 | [Harness 工作台](../assets/examples/harness-workbench/README.md)，两个域 | 根 manifest，再按域读 `plugins/` 中的 manifest 与 `extension.py` | 组合包、Harness 选择、首次消息改写、专家准备、会话 UI 和 Gateway 主题 |
+| 用户需要 | 运行域 | 参考内容 |
+| --- | --- | --- |
+| 上下文用量、执行过程或工具批次 | agentserver | [会话观测](examples/session-observation.md) |
+| Token 状态条、设置开关和详情 | agentserver | [会话观测中的设置联动](examples/session-observation.md) |
+| 团队成员、任务状态和依赖图 | agentserver | [团队观测](examples/team-observation.md) |
+| 登录、凭证注入和账号入口 | gateway | [登录与请求处理](examples/gateway-entry.md) |
+| 动态背景、配色和启动动画 | gateway | [背景与开场](examples/application-surfaces.md#1-背景配色和开场) |
+| 桌宠或桌面窗口形态 | gateway | [应用形态](examples/application-surfaces.md#2-桌宠与窗口形态) |
+| 同时改变会话行为和应用外观 | 两个域 | [组合包分工与结构](bundle-development.md) |
 
-六个单域例子分别保留不同业务能力；已有的问候示例用于参考最小真实加载和生命周期测试，见下文。
-涉及网页权限先查 [前端开发说明](frontend-development.md)，同时需要两域时再查 [组合包开发](bundle-development.md)。
+网页嵌入和权限见 [前端开发说明](frontend-development.md)。需要最小可加载结构或生命周期测试时，再阅读下面保留的问候示例。
+简短片段不代替真实加载、最终 ZIP 和业务效果验证，也不代表目标环境已经具备所列全部能力。
 
 ## 1. 事件与效果
 
@@ -78,17 +78,3 @@ jiuwenswarm extension query example.greeting-panel
 - **真实字段：** 示例 Text 使用 `props.value`，系统插件身份来自 `ops.package_metadata`，会话来自 `ops.session_context`。
 - **返回结果：** 保留合法输出和默认动作次数，检查真实 `UiRenderOutput` 状态。
 - **测试与文档：** 按本系统插件实际行为补测试、README 和安装后的验收步骤。
-
-## 5. 示例验证与适用范围
-
-[隔离验证](../assets/examples/test_examples.py) 从打包文件安装到临时 AgentServer 或 Gateway，检查 Handler 发布和实际下行帧。
-Harness 工作台还检查两域共同安装激活，以及选择 Codex 后，新会话首条消息带上对应专家；不启动 Claude Code、Codex 或模型调用。
-组合包整体安装测试要求目标 Gateway 已支持 `sync_container_members`，按目标仓库锁定版本核对依赖，不用旧环境的失败推断平台缺少组合包能力。
-页面传输使用内存记录器，未把协议验证写成真实桌面窗口、摄像头或第三方网页已经验收。
-
-- **主题背景：** 从 2.0.0 示例适配为 2.0.1，使用独立 Gateway 的导入路径。
-- **团队协作：** 从 1.0.0 示例适配为 1.0.1，删除旧位置的展示字段，保留顶层 display。
-- **组合包：** 使用提供的 Harness 工作台 1.0.0 示例，适配为 1.0.1；修正异步专家目录调用，补全内置专家 README，并缩短 persona 文件名以兼容 Windows 路径。
-- **登录示例：** 保留 >=0.2.10 的兼容性要求；隔离测试声明这一目标版本并验证对应实现，不代表较旧发行版可以安装。
-
-只运行当前需要的用例；查看具体断言时再打开测试文件。示例只是参考，开发新系统插件仍需核对目标环境和自己的业务行为。

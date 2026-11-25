@@ -50,5 +50,6 @@ def test_converter_shared_development_resources_are_bundled_together():
         assert (shared / "scripts" / script).is_file()
     for page in ("example.md", "frontend-development.md", "bundle-development.md"):
         assert (shared / "references" / page).is_file()
-    assert (shared / "assets/examples/harness-workbench/manifest.json").is_file()
+    for page in ("session-observation.md", "team-observation.md", "gateway-entry.md", "application-surfaces.md"):
+        assert (shared / "references/examples" / page).is_file()
     assert not (SKILL_ROOT / "scripts").exists()

@@ -1,9 +1,0 @@
-/* 科研终端：对 WorkSwarm 界面的少量补充样式。只使用颜色、边框等不影响布局的属性。 */
-html[data-workswarm-theme="workswarm-theme-research-terminal"] ::selection {
-  background: rgba(23, 184, 147, .24);
-}
-
-html[data-workswarm-theme="workswarm-theme-research-terminal"] .sidebar,
-html[data-workswarm-theme="workswarm-theme-research-terminal"] .conversation-sidebar {
-  border-right-color: rgba(18, 22, 20, .08);
-}

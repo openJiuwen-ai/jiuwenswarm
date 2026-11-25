@@ -20,7 +20,7 @@ description: >-
 | 查最新官方资料、定位源码、检查转换所需结构 | [DeepSeek Harness 源码定位与结构检查](references/deepseek-harness-plugin.md) |
 | 映射原插件行为与目标能力 | [转换与开发流程](references/conversion-workflow.md) |
 | 选择 domain、开发、测试、打包和安装 | [系统插件开发与安装](../jiuwen-system-plugin-dev/SKILL.md)，只读取当前步骤 |
-| 参考相近效果和可运行结构 | [系统插件示例索引](../jiuwen-system-plugin-dev/references/example.md) |
+| 参考相近场景的关键写法 | [系统插件示例索引](../jiuwen-system-plugin-dev/references/example.md) |
 | 嵌入网页、来源隔离和权限 | [前端开发说明](../jiuwen-system-plugin-dev/references/frontend-development.md) |
 | 同时需要两个 domain | [组合包开发](../jiuwen-system-plugin-dev/references/bundle-development.md) |
 
@@ -82,7 +82,7 @@ description: >-
 
 ## 3. 判断能否转换
 
-先从 [示例索引](../jiuwen-system-plugin-dev/references/example.md) 选择相近实现，再按 [转换与开发流程](references/conversion-workflow.md) 建立映射表；只搜索当前映射尚未确认的事件、Ops、槽位和管理入口。
+先从 [示例索引](../jiuwen-system-plugin-dev/references/example.md) 选择相近场景的参考片段，再按 [转换与开发流程](references/conversion-workflow.md) 建立映射表；只搜索当前映射尚未确认的事件、Ops、槽位和管理入口。
 
 判断能力缺口前，按 [能力缺口核对](../jiuwen-system-plugin-dev/references/source-reading.md#3-报告能力缺失前的核对) 检查相关域、真实名称、已检出目录和直接测试；涉及网页时，再核对来源隔离和权限。
 
