@@ -184,6 +184,19 @@ export async function uploadAssetPackage(file: File, deps: AssetTransferDeps = {
   return data.path;
 }
 
+/** 导入单步：对已有服务端包路径直接调 assets.import；kind 缺省时由服务端嗅探。
+ *  Web 两步导入的第二步（upload-temp 换 path 后调用），桌面端本地路径可直接调用。 */
+export async function importAssetFromPath(
+  path: string,
+  kind?: AssetKind,
+  deps: AssetTransferDeps = {},
+): Promise<AssetImportResult> {
+  const request = deps.request ?? webRequest;
+  const query: Record<string, unknown> = { path };
+  if (kind) query.kind = kind;
+  return request<AssetImportResult>('assets.import', query);
+}
+
 /** 上传 + 导入：本地选包 → upload-temp → assets.import；kind 缺省时由服务端嗅探。 */
 export async function importAssetFromFile(
   file: File,
@@ -191,8 +204,5 @@ export async function importAssetFromFile(
   deps: AssetTransferDeps = {},
 ): Promise<AssetImportResult> {
   const path = await uploadAssetPackage(file, deps);
-  const request = deps.request ?? webRequest;
-  const query: Record<string, unknown> = { path };
-  if (kind) query.kind = kind;
-  return request<AssetImportResult>('assets.import', query);
+  return importAssetFromPath(path, kind, deps);
 }

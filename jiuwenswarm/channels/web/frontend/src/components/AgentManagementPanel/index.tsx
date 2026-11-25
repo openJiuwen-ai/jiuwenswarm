@@ -54,6 +54,7 @@ import {
   mergeAgentGroupDetailWithCatalog,
 } from '../../features/agentManagement';
 import { agentAccessDeniedCopyKey } from '../../features/agentManagement/accessDenied';
+import { assetIssueKey, importAssetFromPath } from '../../features/assetTransfer';
 import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
 import { findDefaultDefinitionFile } from './DefinitionFilePreview';
 import './agentManagement.css';
@@ -1256,9 +1257,11 @@ export function AgentManagementPanel({
     setUploadError(null);
     setGroupUploadError(null);
     try {
-      const result = kind === 'group'
-        ? await groupClient.importGroup(path)
-        : await client.importAgentTemplate(path);
+      // Unified import entry (design contract: web two-step import =
+      // upload-temp staged path, then assets.import). An explicit kind skips
+      // server-side sniffing; the unified adapters delegate to the same
+      // package-manager functions the legacy per-kind methods used.
+      const result = await importAssetFromPath(path, kind === 'group' ? 'agent_group' : 'agent_template');
       let installFailed = false;
       let installOutcomeUnknown = false;
       let installErrorMessage = '';
@@ -1313,7 +1316,13 @@ export function AgentManagementPanel({
         showActionNotice(t(kind === 'group' ? 'agentManagement.group.states.uploadSuccess' : 'agentManagement.states.uploadSuccess', { id: result.id }));
       }
     } catch (error) {
-      const message = formatActionError(error, t(kind === 'group' ? 'agentManagement.group.states.uploadError' : 'agentManagement.states.uploadError'));
+      // Import failures carrying an ASSET_* contract code map to precise i18n
+      // guidance (e.g. ASSET_ALREADY_EXISTS tells the user to delete or rename
+      // first); anything else keeps the legacy generic fallback with details.
+      const issueKey = assetIssueKey(error);
+      const message = issueKey === 'assetTransfer.errors.requestFailed'
+        ? formatActionError(error, t(kind === 'group' ? 'agentManagement.group.states.uploadError' : 'agentManagement.states.uploadError'))
+        : t(issueKey);
       if (kind === 'group') setGroupUploadError(message);
       else setUploadError(message);
     }

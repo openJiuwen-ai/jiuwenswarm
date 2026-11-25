@@ -674,9 +674,24 @@ test('group card actions keep uninstall in the detail page and install created g
     panelSource,
     /groupClient\.createGroup\([\s\S]*groupClient\.installGroup\(result\.id\)[\s\S]*loadGroups\('mine'\)/,
   );
-  assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
+  // Upload import goes through the unified assets.import entry (explicit
+  // kind), no longer the legacy per-kind methods; install/rollback unchanged.
+  assert.match(
+    panelSource,
+    /importAssetFromPath\(path, kind === 'group' \? 'agent_group' : 'agent_template'\)[\s\S]*groupClient\.installGroup\(result\.id\)/,
+  );
   assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
-  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{\s*suppressInlineError: true,/);
+  assert.match(
+    panelSource,
+    /importAssetFromPath\(path, kind === 'group'[\s\S]*handleInstall\(result\.id, \{\s*suppressInlineError: true,/,
+  );
+  assert.doesNotMatch(panelSource, /groupClient\.importGroup\(path\)|client\.importAgentTemplate\(path\)/);
+  // Contract-coded import failures show precise guidance copy; uncoded errors
+  // keep the generic uploadError fallback with details.
+  assert.match(
+    panelSource,
+    /const issueKey = assetIssueKey\(error\);[\s\S]*formatActionError\(error, t\(kind === 'group'/,
+  );
 });
 
 test('failed expert upload install rolls back the import and shows the error in the upload dialog', () => {

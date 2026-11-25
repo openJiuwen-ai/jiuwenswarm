@@ -6,6 +6,7 @@ import {
   assetIssueKey,
   exportAssetToLocalFile,
   importAssetFromFile,
+  importAssetFromPath,
   requestAssetExport,
   uploadAssetPackage,
 } from '../node_modules/.cache/asset-transfer/assetTransfer.mjs';
@@ -200,6 +201,23 @@ test('import chain: upload then assets.import with optional kind', async () => {
   assert.deepEqual(sniffed, { kind: 'agent_group', id: 'team-1', pending_connectors: ['crm'] });
   await importAssetFromFile(zipFile(), 'agent_template', { request, fetchImpl });
   assert.deepEqual(calls[1], ['assets.import', { path: '/data/uploads/assets/y.zip', kind: 'agent_template' }]);
+});
+
+test('importAssetFromPath calls assets.import directly with no upload fetch', async () => {
+  const calls = [];
+  const request = async (method, params) => {
+    calls.push([method, params]);
+    return { kind: 'agent_template', id: 'expert-1' };
+  };
+  const fetchImpl = async () => {
+    throw new Error('upload must not be triggered for a staged path');
+  };
+  const explicit = await importAssetFromPath('/data/uploads/assets/z.zip', 'agent_template', { request, fetchImpl });
+  assert.deepEqual(explicit, { kind: 'agent_template', id: 'expert-1' });
+  assert.deepEqual(calls[0], ['assets.import', { path: '/data/uploads/assets/z.zip', kind: 'agent_template' }]);
+  // kind 缺省时不带 kind 字段，由服务端按适配器注册顺序嗅探。
+  await importAssetFromPath('/data/uploads/assets/z.zip', undefined, { request, fetchImpl });
+  assert.deepEqual(calls[1], ['assets.import', { path: '/data/uploads/assets/z.zip' }]);
 });
 
 test('eight contract codes map to i18n keys; unknown codes fall back to requestFailed', () => {
