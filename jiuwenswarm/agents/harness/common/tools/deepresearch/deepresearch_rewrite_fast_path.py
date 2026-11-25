@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import re
 import time
@@ -462,6 +463,10 @@ def _decode_model_result(
         _validate_json_value_bounds(payload, max_text_bytes=_MODEL_JSON_MAX_BYTES)
     except ValueError as limit_error:
         raise ModelOutputError("json_limit") from limit_error
+    if isinstance(payload, dict) and set(payload) == {"units"}:
+        payload["facts_added"] = False
+        adjustments.append("facts_added_missing")
+        logging.getLogger(__name__).info("DeepResearch rewrite adjustment: facts_added_missing")
     if (
         not isinstance(payload, dict)
         or set(payload) != {"units", "facts_added"}

@@ -77,6 +77,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
     deepresearch_todo_path,
     persist_deepresearch_task_update,
     capture_deepresearch_todo_target,
+    read_research_parent_title,
     research_todo_scope,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.usage import (
@@ -3994,13 +3995,10 @@ async def _consume_stream(
         else {}
     )
     existing_state = _deepresearch_router_state_ctx.get()
+    is_stopped_resume = action == "resume" and node == "stopped"
     # 停止续跑:阶段提示来自认领侧按被停止节点的推导,种子取 hint-1,
     # 使首个 resuming 帧恰好推进到 hint(之前的阶段已完成、hint 进行中)。
-    stage_hint = (
-        _deepresearch_stage_hint_ctx.get()
-        if action == "resume" and node == "stopped"
-        else None
-    )
+    stage_hint = _deepresearch_stage_hint_ctx.get() if is_stopped_resume else None
     if existing_state is not None and isinstance(existing_state, RouterState):
         state = existing_state
     elif stage_hint:
@@ -4042,13 +4040,14 @@ async def _consume_stream(
     if todo_path is not None and todo_target is None:
         logger.warning("[deepresearch_stream] skip Todo persistence: no bound Todo owner")
 
-    async def send(payload: dict[str, Any]) -> bool:
+    async def send(payload: dict[str, Any], *, scope_process: bool = True) -> bool:
         safe_payload = _redact_json_value(payload, secrets)
         if not isinstance(safe_payload, dict):
             raise _StreamProtocolInvalid("Gateway payload is not an object")
         if _deepresearch_main_agent_plan_ctx.get() and safe_payload.get("event_type") == "task.update":
             return True
-        safe_payload = _scope_main_agent_process(safe_payload)
+        if scope_process:
+            safe_payload = _scope_main_agent_process(safe_payload)
         if todo_target is not None and safe_payload.get("event_type") == "task.update":
             try:
                 await persist_deepresearch_task_update(
@@ -4078,6 +4077,20 @@ async def _consume_stream(
                 type(exc).__name__,
             )
             return False
+
+    scope = _deepresearch_process_scope_ctx.get()
+    if is_stopped_resume and scope and todo_target is not None:
+        # This boundary describes the outer todo. Keep the SDK's node boundaries nested.
+        owner, _ = scope
+        try:
+            parent_title = await read_research_parent_title(todo_target, owner)
+            if parent_title:
+                await send(
+                    {"event_type": "task.start", "task_id": owner, "task_content": parent_title},
+                    scope_process=False,
+                )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("[deepresearch_stream] parent title unavailable type=%s", type(exc).__name__)
 
     materials_reference = _materials_reference_ctx.get()
     if materials_reference and action == "start":
@@ -4208,7 +4221,7 @@ async def _consume_stream(
                 stage = 2
             elif action == "resume" and node == "user_feedback_processor":
                 stage = 4
-            elif action == "resume" and node == "stopped" and stage_hint:
+            elif is_stopped_resume and stage_hint:
                 # 停止续跑:直接推进到被停止阶段,避免前端进度列表回退到
                 # 第一步"研究主题澄清"转圈误导用户以为从头重跑。
                 stage = stage_hint

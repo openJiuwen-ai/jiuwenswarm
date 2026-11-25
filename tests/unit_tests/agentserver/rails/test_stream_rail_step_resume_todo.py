@@ -12,6 +12,7 @@ covers exactly that case; opening the session by hand still goes through
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -27,6 +28,9 @@ from openjiuwen.core.session.config.base import Config
 from openjiuwen.core.session.internal.agent import AgentSession
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.core.single_agent.rail.base import InvokeInputs
+from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+from openjiuwen.harness.tools.todo import TodoListTool
 
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
@@ -51,12 +55,12 @@ class _FakeSession:
         return None
 
 
-def _ctx(session) -> SimpleNamespace:
+def _ctx(session, query="q") -> SimpleNamespace:
     return SimpleNamespace(
         agent=None,
         session=session,
         extra={},
-        inputs=InvokeInputs(query="q", conversation_id="conv-1"),
+        inputs=InvokeInputs(query=query, conversation_id="conv-1"),
     )
 
 
@@ -79,6 +83,54 @@ async def test_before_invoke_emits_todo_updated_only_on_step_resume(monkeypatch,
     await rail.before_invoke(_ctx(_FakeSession(resume)))
 
     assert emitted == expected
+
+
+@pytest.mark.parametrize(("query", "status", "expects_replay"), [
+    ("继续执行", "in_progress", True),
+    ("继续执行", "completed", False),
+    ("研究新的主题", "in_progress", False),
+])
+@pytest.mark.parametrize("wrap_query", [False, True], ids=["plain", "web-envelope"])
+@pytest.mark.asyncio
+async def test_before_invoke_replays_unfinished_todos_for_text_resume(
+    monkeypatch, tmp_path, query, status, expects_replay, wrap_query,
+):
+    rail = JiuSwarmStreamEventRail()
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    todo_tool = TodoListTool(SimpleNamespace(fs=lambda: fs), str(tmp_path))
+    path = Path(todo_tool.get_file_path("conv-1"))
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '{"plan_id":"P","revision":1,"todos":'
+        '[{"id":"research","content":"研究相关资料","status":"' + status + '"}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rail, "_get_todo_tool", lambda: todo_tool)
+    monkeypatch.setattr(rail, "_rebind_runtime_cwd", lambda **kwargs: None)
+    emitted = []
+
+    class SessionWithStream(_FakeSession):
+        async def write_stream(self, schema):
+            emitted.append(schema)
+
+    ctx = _ctx(SessionWithStream(None), query=query)
+    if wrap_query:
+        from openjiuwen.harness.deep_agent import DeepAgent
+
+        from jiuwenswarm.server.runtime.agent_adapter.interface import build_user_prompt
+
+        agent = DeepAgent(AgentCard(agent_id="resume-test", name="resume-test"))
+        ctx.inputs = agent._normalize_inputs({
+            "conversation_id": "conv-1",
+            "query": build_user_prompt(query, files={}, channel="web", language="zh"),
+            "raw_query": query,
+        })
+
+    await rail.before_invoke(ctx)
+
+    assert [schema.type for schema in emitted] == (["todo.updated"] if expects_replay else [])
+    if expects_replay:
+        assert emitted[0].payload["todos"][0]["content"] == "研究相关资料"
 
 
 @pytest.mark.asyncio
