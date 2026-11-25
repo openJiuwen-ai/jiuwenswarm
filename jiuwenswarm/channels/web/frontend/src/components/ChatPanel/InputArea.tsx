@@ -1355,7 +1355,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (!activeSessionId || teamDispatchToggleDisabled) return;
     useSessionStore.getState().setTeamBootstrapMode(activeSessionId, next ? 'framework' : 'leader');
   };
-  const canUsePlanMenu = supportsPlanMode(mode);
+  const canUsePlanMenu = !enterprise && supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;
   // 永续会话标记：只对真实会话展示（/persist 创建或后端会话列表带 persist_session 的会话），
   // 欢迎页在 session.create 之前没有可展示的持久化状态。

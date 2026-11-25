@@ -1,7 +1,7 @@
 # 右侧工作区插件页签与空白页
 
 建档日期：2026-11-06。
-最近修订：2026-11-20。
+最近修订：2026-11-24。
 
 关联契约：[S_17 WebUI 组件 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、
 [F_08 前端渲染](../../../../../../../../extensions_v2/docs/features/F_08_frontend-render.md)。
@@ -49,8 +49,11 @@
 5. 关闭只从页签列表移除条目，不记录“已关闭”名单；插件仍在发现结果中，因此新的空白页签仍列出它
    （不再显示“已添加”），可随时重新选择。面板挂载期间插件实例仍由槽位消费者持有，重新选择立即显示当前帧。
 6. 页签在切换对话时保留（同一 `panelId` 在目标会话重新出帧后继续显示）；页面刷新后重新收集。
-7. 切换对话时重建发现结果的比较基线。此后只移除在同一会话内从可见变为不可见的插件页签，
-   包括收到 `webui.render.clear` 或卸载的插件。激活的贡献消失时回到原生页签。
+7. 切换对话时重建发现结果的比较基线。发现结果分为可见与偏好隐藏两列：仅被实例级
+   `visible_when` 客户端偏好隐藏的插件页签**停靠**（保留在页签列表、仅摘除激活，页签栏只渲染
+   可见发现结果命中的页签），偏好重新开启后回到原位且不自动选中；只有同时离开两列的贡献
+   （收到 `webui.render.clear` 或卸载）才被永久移除，隐藏期间被清除的贡献同样移除、不复活。
+   激活的贡献消失或被停靠时回到原生页签。
 
 空白页签样式沿用语义主题变量，空态使用共享 `EmptyState`。插件条目在名称右侧显示“添加”或“已添加”，
 让整卡可点击的行为有明确提示。插件较多时列表纵向滚动（页面根容器 `overflow-y: auto`），
@@ -92,6 +95,10 @@ Chromium 使用 6px 原生滚动条并隐藏两端箭头，其他引擎使用标
 - 上一轮 Edge 手工验收覆盖了插件列表的两列卡片、hover 描边、“添加/已添加”提示、连续添加两个插件和
   关闭当前页签回退相邻页签；本轮“加号先建空白页签、选择后原地转换”的交互尚未在真实浏览器验收。
   空态、长标题、多页签溢出、窄屏、会话切换和键盘焦点同样待覆盖。
+- 2026-11-24 行为规则 7 修正：仅被实例级 `visible_when` 客户端偏好隐藏的插件页签停靠而非移除，
+  偏好重新开启后原位恢复且不自动选中（对齐 S_17 §2.4 与 Token Weather 验收记录）；只有同时离开
+  可见与隐藏两列发现结果的贡献才永久移除。此前“只移除从可见变为不可见的页签”的表述把偏好隐藏
+  误当作贡献消失，导致偏好往返后页签被误删。
 - 2026-11-09 页签栏滚动条改为 4px 细条，仅在悬浮或键盘聚焦时显示；滚动条仍走 `::-webkit-scrollbar`，
   非 Chromium 引擎经 `@supports not selector(::-webkit-scrollbar)` 继续隐藏。
 - 2026-11-09 加号位置试了两版后定稿：先试“新增后滚动到末端”，生长动画期间内容宽度一直在变，真实浏览器
@@ -122,7 +129,12 @@ that same tab into the plugin tab in place. Blank and plugin tabs share activati
 closing the active tab selects the nearest visible tab to its right, then to its left, and falls back to the
 native page when neither is available. Choosing an already open plugin closes the blank tab and
 activates the existing one. Tabs survive conversation switches in memory and are re-collected after a
-page reload. Only contributions observed disappearing within the same conversation are removed.
+page reload. Discovery splits into visible and preference-hidden results: a tab whose contribution
+is hidden only by the instance-level `visible_when` client preference stays parked (kept in the tab
+list with its activation dropped, since the tab bar only renders tabs backed by the visible result);
+re-enabling the preference restores it in place without re-selecting it. Only contributions that
+left both results (`webui.render.clear` or unmount) are permanently removed, including ones cleared
+while hidden.
 Native navigation requests, including review and
 file-opening actions, clear plugin selection even when the native tab value is unchanged or the host is
 unmounted; existing tabs remain available, and collapsing the panel preserves selection. Plugins declare nothing new: the manifest slot

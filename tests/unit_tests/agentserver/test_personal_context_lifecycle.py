@@ -103,11 +103,11 @@ async def test_agentserver_constructs_one_host_at_deployment_data_home(
     monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("C:/users/tester")))
     data_home = tmp_path / "agentos-data"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(data_home))
-    monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", data_home)
+    monkeypatch.setattr("jiuwenswarm.common.paths._workspace_base_dir", data_home)
     server = _server(monkeypatch)
 
     assert len(_FakePersonalContextHost.instances) == 1
-    assert _FakePersonalContextHost.instances[0].home == data_home / ".personal_context"
+    assert _FakePersonalContextHost.instances[0].home == data_home / "profile" / ".personal_context"
     assert server._personal_context_host is _FakePersonalContextHost.instances[0]  # pylint: disable=protected-access
 
 

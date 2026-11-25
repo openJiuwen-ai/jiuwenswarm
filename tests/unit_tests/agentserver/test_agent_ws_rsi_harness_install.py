@@ -28,7 +28,7 @@ def test_rsi_context_binds_installer_to_agent_manager(monkeypatch, tmp_path):
     manager = FakeManager()
     monkeypatch.setenv("RSI_PROVIDER_MODE", "mock")
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir",
+        "jiuwenswarm.common.paths.get_user_workspace_dir",
         lambda: tmp_path,
     )
 
@@ -70,6 +70,7 @@ async def test_rsi_request_awaits_async_handler():
 def test_rsi_active_harness_precedes_generic_registry(monkeypatch, tmp_path):
     runtime_path = (
         tmp_path
+        / "profile"
         / "rsi"
         / "tasks"
         / "rsi-task"
@@ -79,7 +80,7 @@ def test_rsi_active_harness_precedes_generic_registry(monkeypatch, tmp_path):
         / "validation_harness"
     )
     runtime_path.mkdir(parents=True)
-    store = RsiHarnessActivationStore(tmp_path / "rsi" / "tasks")
+    store = RsiHarnessActivationStore(tmp_path / "profile" / "rsi" / "tasks")
     store.commit(
         {
             "installation_id": "install-a",
@@ -89,7 +90,7 @@ def test_rsi_active_harness_precedes_generic_registry(monkeypatch, tmp_path):
         }
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir",
+        "jiuwenswarm.common.paths.get_user_workspace_dir",
         lambda: tmp_path,
     )
 
@@ -103,6 +104,10 @@ def test_rsi_initial_refs_are_a_trusted_input_fallback(monkeypatch, tmp_path):
     initial_refs.parent.mkdir(parents=True)
     initial_refs.write_text("version: 1\nharness_refs: {}\n", encoding="utf-8")
     monkeypatch.setattr(
+        "jiuwenswarm.common.paths.get_user_workspace_dir",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
         "jiuwenswarm.common.utils.get_user_workspace_dir",
         lambda: tmp_path,
     )
@@ -113,7 +118,7 @@ def test_rsi_initial_refs_are_a_trusted_input_fallback(monkeypatch, tmp_path):
 
 
 def test_rsi_missing_legacy_registry_uses_native_baseline(monkeypatch, tmp_path):
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.auto_harness.service._HARNESS_PACKAGES_FILE",
         tmp_path / "missing.json",

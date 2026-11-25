@@ -18,7 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from jiuwenswarm.common.utils import get_domain_data_dir
+from jiuwenswarm.common.paths import get_runtime_state_dir
 
 if TYPE_CHECKING:
     from openjiuwen.harness.tools.browser_move.playwright_runtime.config import RuntimeSettings
@@ -70,11 +70,13 @@ def electron_browser_selected() -> bool:
 
 
 def electron_discovery_file_path() -> Path:
-    """Return the discovery file path under the domain zone (cross-pod visible).
+    """Return the discovery file path under the workspace-root runtime_state.
 
-    发现态随会话走，落 domain/runtime_state（与其他会话运行态同区）。
+    发现态是本机 Electron 进程的心跳（pid/CDP endpoint 均为机器本地），
+    随工作空间根隔离（个人版 profile/runtime_state、企业版
+    profile/profile_{tk}/runtime_state），不跨 Pod 共享。
     """
-    return get_domain_data_dir() / "runtime_state" / DISCOVERY_FILE_NAME
+    return get_runtime_state_dir() / DISCOVERY_FILE_NAME
 
 
 def _pid_alive(pid: int) -> bool:

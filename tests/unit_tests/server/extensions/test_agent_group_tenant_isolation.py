@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import jiuwenswarm.common.paths as paths
 import jiuwenswarm.common.utils as utils
 from jiuwenswarm.enterprise.capabilities.experts.request_packages import allows
 from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
@@ -23,14 +24,16 @@ def _ids(cards: list[dict]) -> set[str]:
     return {str(card.get("id") or "") for card in cards}
 
 
-def test_personal_group_root_stays_on_data_root(
+def test_personal_group_root_lands_in_profile(
     extension_workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     del extension_workspace
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    # profile 契约：.agent_teams 挂工作空间根（个人版= profile/.agent_teams），
+    # 不再是数据根平铺——团队数据随共享卷跨 agent server 存活。
     assert catalog._kind_root("agent_groups") == (
-        utils.get_user_workspace_dir() / ".agent_teams" / "agent_groups"
+        paths.get_workspace_root_dir() / ".agent_teams" / "agent_groups"
     )
 
 

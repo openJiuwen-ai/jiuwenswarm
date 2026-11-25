@@ -48,6 +48,10 @@ test('catalog contains the supported components', () => {
   });
   assert.deepEqual(componentCatalog.getSlot('conversation.panel.right').rootComponents, ['Panel', 'Iframe']);
   assert.equal(componentCatalog.getSlot('conversation.panel.right').strictRoot, true);
+  for (const slotId of ['conversation.panel.right', 'application.menu.main', 'task.function.main']) {
+    assert.equal(componentCatalog.getSlot(slotId).rerender, 'keep-mounted', slotId);
+  }
+  assert.equal(componentCatalog.getSlot('conversation.input.above').rerender, undefined);
   assert.deepEqual(componentCatalog.getSlot('application.splash'), {
     id: 'application.splash',
     display: 'single',

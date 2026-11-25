@@ -45,17 +45,24 @@ export function panelNavigation(runtime: WebUIRuntime) {
   return store;
 }
 
-/** The caller supplies a trusted source target; the plugin can only name its own instance. */
-export function requestPanelOpen(runtime: WebUIRuntime, source: WebUINormalizedTarget, instanceKey: string): boolean {
-  if (
-    !source.sessionId ||
-    source.scope === 'application' ||
-    !runtime.getScopeSnapshot(source.sessionId, source.slotId).mounted
-  )
+/**
+ * The caller supplies a trusted source target; the plugin can only name its own instance.
+ *
+ * Application-scope sources (for example `application.sidebar.footer`) do not own a chat
+ * session, so the host supplies the current chat session for the same-package right panel.
+ */
+export function requestPanelOpen(
+  runtime: WebUIRuntime,
+  source: WebUINormalizedTarget,
+  instanceKey: string,
+  hostSessionId?: string | null,
+): boolean {
+  const targetSessionId = source.scope === 'application' ? hostSessionId ?? '' : source.sessionId;
+  if (!targetSessionId || !runtime.getScopeSnapshot(source.sessionId, source.slotId).mounted)
     return false;
   const sourceInstance = runtime.getInstance(webUIInstanceKey(source));
   const target = {
-    sessionId: source.sessionId,
+    sessionId: targetSessionId,
     slotId: 'conversation.panel.right',
     packageId: source.packageId,
     instanceKey,

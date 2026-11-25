@@ -34,15 +34,17 @@ def temp_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # accidentally satisfies the branch).
     (ws / "config").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: ws
+        "jiuwenswarm.common.paths._workspace_base_dir", ws
     )
     # reset cached path resolver so get_workspace_dir picks up the new root.
-    import jiuwenswarm.common.utils as u
-    monkeypatch.setattr(u, "_initialized", False)
-    monkeypatch.setattr(u, "_config_dir", None)
-    monkeypatch.setattr(u, "_workspace_dir", None)
-    monkeypatch.setattr(u, "_root_dir", None)
+    # 路径解析真身在 paths（utils 为门面再导出），缓存全局随之迁移。
+    import jiuwenswarm.common.paths as _paths
+    monkeypatch.setattr(_paths, "_initialized", False)
+    monkeypatch.setattr(_paths, "_config_dir", None)
+    monkeypatch.setattr(_paths, "_workspace_dir", None)
+    monkeypatch.setattr(_paths, "_root_dir", None)
     # non-interactive language prompt.
+    import jiuwenswarm.common.utils as u
     monkeypatch.setattr(u, "_is_interactive", lambda: False)
     monkeypatch.setattr(u, "prompt_preferred_language", lambda: "zh")
     return ws
@@ -56,7 +58,7 @@ def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
     """
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
 
-    mcp_builtins = temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
+    mcp_builtins = temp_workspace / "profile" / "agent" / "workspace" / "mcp" / "mcp_builtins"
     assert mcp_builtins.is_dir(), "mcp_builtins 未解压"
     assert not (mcp_builtins / "index.json").exists()
     assert not (mcp_builtins / "manifest.json").exists()
@@ -81,7 +83,7 @@ def test_list_marketplace_loads_extracted_packages(temp_workspace: Path) -> None
     installed = {
         path.name
         for path in (
-            temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
+            temp_workspace / "profile" / "agent" / "workspace" / "mcp" / "mcp_builtins"
         ).iterdir()
         if path.is_dir() and not path.name.startswith(".")
     }
@@ -96,7 +98,7 @@ def test_list_marketplace_loads_extracted_packages(temp_workspace: Path) -> None
 def test_second_prepare_skips_when_version_matches(temp_workspace: Path) -> None:
     """版本一致时二次调用不应破坏用户在包目录里加的脏文件."""
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
-    mcp_builtins = temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
+    mcp_builtins = temp_workspace / "profile" / "agent" / "workspace" / "mcp" / "mcp_builtins"
     dirty = mcp_builtins / "dirty-survives.txt"
     dirty.write_text("keep", encoding="utf-8")
 
@@ -114,7 +116,7 @@ def test_prepare_workspace_leaves_no_seed_zip_leftover(temp_workspace: Path) -> 
     """
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
 
-    ws_root = temp_workspace / "agent" / "workspace"
+    ws_root = temp_workspace / "profile" / "agent" / "workspace"
     leftovers = list(ws_root.glob("mcp_builtins*.zip"))
     assert not leftovers, f"seed zip leaked to workspace root: {leftovers}"
     # 解压目录仍在。

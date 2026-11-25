@@ -35,7 +35,7 @@ def isolated_context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for key in list(os.environ):
         if key.startswith(transport.ENV_PREFIX):
             monkeypatch.delenv(key)
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setenv("AGENT_SERVER_PORT", "18092")
     monkeypatch.setenv("GATEWAY_PORT", "19001")
 

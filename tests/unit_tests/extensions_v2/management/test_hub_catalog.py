@@ -76,6 +76,68 @@ def test_hub_card_marks_the_matching_package_installed() -> None:
     assert card["displayName"] == {"zh": "Auth", "en": "Auth"}
 
 
+@pytest.mark.parametrize(
+    ("status", "record_enabled", "expected"),
+    [
+        ("standby", True, True),
+        ("standby", False, False),
+        ("failed", True, False),
+    ],
+)
+def test_hub_cards_use_the_record_switch_state(
+    tmp_path: Path,
+    status: str,
+    record_enabled: bool,
+    expected: bool,
+) -> None:
+    package_id = "webui.standby"
+    install_dir = tmp_path / "installed"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    store.upsert(ExtensionInstallRecord(
+        package_id=package_id,
+        version="1.0.0",
+        origin="hub",
+        active=False,
+        enabled=record_enabled,
+        status=status,
+        install_path=str(install_dir / package_id / "1.0.0"),
+    ))
+    state = SimpleNamespace(active=[], installed=[])
+
+    card = hub_card(
+        HubAssetSummary(
+            kind="system_plugin",
+            asset_id="asset-standby",
+            display_name="Standby",
+            short_description="",
+            public_latest_version="1.0.0",
+            icon_uri="",
+            tags=(),
+            package_name=package_id,
+        ),
+        build_state_index(state, store),
+        store,
+    )
+    detail = hub_detail(
+        HubAssetDetail(
+            kind="system_plugin",
+            asset_id="asset-standby",
+            version="1.0.0",
+            display_name="Standby",
+            short_description="",
+            detail_description="",
+            icon_uri="",
+            tags=(),
+            package_name=package_id,
+        ),
+        state,
+        store,
+    )
+
+    assert card["enabled"] is expected
+    assert detail["enabled"] is expected
+
+
 def test_hub_detail_exposes_profile_and_preview() -> None:
     detail = HubAssetDetail(
         kind="system_plugin",

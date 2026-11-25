@@ -6,6 +6,7 @@ import { usePlanStore } from '../../../stores/planStore';
 import { isSessionBusyForPlanToggle } from '../../../features/planMode/planModeGate';
 import { evaluateGoalArm } from '../../../features/goalMode/goalModeGate';
 import { NEW_CONVERSATION_ID } from '../../../multi-session/state/newConversationLifecycle';
+import { isEnterprise } from '../../../edition';
 import { resolvePlanGoalInterlock } from './semantics';
 import { runExtensionCommand } from './extension';
 import type { ExtensionManagementResult } from './extension';
@@ -187,6 +188,7 @@ export function parseSlashLine(raw: string): { name: string; args: string } {
 
 export function findSlashCommand(name: string): SlashCommand | undefined {
   const lower = name.toLowerCase();
+  if (lower === 'plan' && isEnterprise()) return undefined;
   return SLASH_COMMANDS.find((c) => c.name === lower);
 }
 

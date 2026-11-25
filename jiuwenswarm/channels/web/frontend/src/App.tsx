@@ -627,6 +627,7 @@ function AppContent({
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
   const [isJiuwenMate, setIsJiuwenMate] = useState(() => {
+    if (isEnterprise()) return false;
     try {
       return window.localStorage.getItem('jiuwenswarm:jiuwenmate-mode') === 'true';
     } catch {
@@ -634,6 +635,7 @@ function AppContent({
     }
   });
   useEffect(() => {
+    if (isEnterprise()) return;
     try {
       window.localStorage.setItem('jiuwenswarm:jiuwenmate-mode', String(isJiuwenMate));
     } catch {
@@ -946,6 +948,10 @@ function AppContent({
       setSessionId(route.sessionId);
       setActiveNav('chat');
     } else if (route.kind === 'group-chat') {
+      if (isEnterprise()) {
+        navigate({ kind: 'chat-new' }, { replace: true });
+        return;
+      }
       // Group chats live in the JiuwenMate chat view.
       sessionIdRef.current = NEW_CONVERSATION_ID;
       setSessionId(NEW_CONVERSATION_ID);
@@ -2911,6 +2917,30 @@ function AppContent({
     void loadSessionMetadata(routeSessionId);
   }, [clientRequestContext, clientRequestContextReady, isConnected, loadSessionMetadata, routeSessionId]);
 
+  // A segment final can make the UI idle while the request is still running.
+  useEffect(() => {
+    if (!isConnected || !sessionId) return;
+    let refreshTimer: number | undefined;
+    const unsubscribe = webClient.on('chat.processing_status', ({ payload }) => {
+      if (
+        payload.session_id !== sessionId ||
+        payload.is_processing !== false ||
+        typeof payload.runtime_recovery_revision === 'number' ||
+        !historyRefreshQueueRef.current.has(sessionId)
+      ) return;
+      const turnRevision = useChatStore.getState().getRuntime(sessionId)?.turnRevision;
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        if (useChatStore.getState().getRuntime(sessionId)?.turnRevision !== turnRevision) return;
+        setHistoryRecoveryRevision((revision) => revision + 1);
+      }, 500);
+    });
+    return () => {
+      unsubscribe();
+      window.clearTimeout(refreshTimer);
+    };
+  }, [isConnected, sessionId]);
+
   useEffect(() => {
     if (!isConnected || !sessionId) return;
     // A recovered old request must not clear a newer turn's stream buffers.
@@ -2926,7 +2956,6 @@ function AppContent({
     historyRecoveryRevision,
     isConnected,
     isLoadingHistory,
-    isProcessing,
     sessionId,
     setHistoryPagerMeta,
   ]);
@@ -5313,7 +5342,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         onNavItemPointerDownCapture={(key) => {
           if (key === sidebarPeek) peekSurfaceProps.onPointerDownCapture();
         }}
-        onToggleJiuwenMate={() => {
+        onToggleJiuwenMate={isEnterprise() ? undefined : () => {
           setIsJiuwenMate(reenterJiuwenMate({ isJiuwenMate, activeNav }).isJiuwenMate);
         }}
       />

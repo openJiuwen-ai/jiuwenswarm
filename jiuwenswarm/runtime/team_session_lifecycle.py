@@ -45,11 +45,26 @@ class _TeamLifecycleManager(Protocol):
         reason: str = "",
         *,
         generation: int | None = None,
+        expected_request_ids: frozenset[str] | None = None,
     ) -> Any:
         """Pause runtime resources owned by the matching Session generation.
 
         Returns ``PauseSessionResult`` (or a legacy bool from stubs).
         """
+        ...
+
+    def begin_request_stop(
+        self,
+        session_id: str,
+    ) -> None:
+        """Hold new team input until the caller's pause teardown finishes."""
+        ...
+
+    def end_request_stop(
+        self,
+        session_id: str,
+    ) -> None:
+        """Release one ``begin_request_stop`` hold for the session."""
         ...
 
     async def stop_session_runtime(
@@ -79,6 +94,13 @@ class _TeamLifecycleManager(Protocol):
 
     def is_generation_running(self, session_id: str, generation: int) -> bool:
         """Return whether the matching Session generation has active work."""
+        ...
+
+    async def reseed_member_registry(
+        self,
+        session_id: str,
+    ) -> bool:
+        """Re-baseline the parked leader's member statuses from the database."""
         ...
 
 
@@ -146,6 +168,7 @@ class TeamSessionLifecycleAdapter:
         *,
         reason: str,
         channel_id: str | None = None,
+        expected_request_ids: frozenset[str] | None = None,
     ) -> Any:
         """Return structured pause result for the matching Team generation."""
         del channel_id
@@ -153,7 +176,16 @@ class TeamSessionLifecycleAdapter:
             context.session_id,
             reason,
             generation=context.generation,
+            expected_request_ids=expected_request_ids,
         )
+
+    def begin_request_stop(self, session_id: str) -> None:
+        """Hold new team input until the caller's pause teardown finishes."""
+        self._team_manager.begin_request_stop(session_id)
+
+    def end_request_stop(self, session_id: str) -> None:
+        """Release one ``begin_request_stop`` hold for the session."""
+        self._team_manager.end_request_stop(session_id)
 
     async def stop_session(
         self,
@@ -178,6 +210,20 @@ class TeamSessionLifecycleAdapter:
         """Park surviving observers and publish persisted member and session pause states."""
         if generation is not None:
             self._coordinator.mark_session_waiting_for_input(session_id, generation)
+        try:
+            # Core persists PAUSED member statuses on pause while the parked
+            # leader keeps the previous cycle's in-memory roster, so the busy
+            # judgment behind the runtime snapshot would keep reporting
+            # execution until the next run cycle. Re-baseline from the
+            # database now, through the agent's public contract; a failure
+            # here must not block the paused-state publish below.
+            await self._team_manager.reseed_member_registry(session_id)
+        except Exception:
+            logger.warning(
+                "Failed to reseed Team member registry after pause: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
         try:
             await self._publish_paused_members(session_id, channel_id=channel_id)
         except Exception:

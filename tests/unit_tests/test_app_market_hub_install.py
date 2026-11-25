@@ -526,6 +526,8 @@ def test_update_preserves_data_git_and_project_binding(tmp_path):
     manifest.editor_create_token = "token-old"
     manifest.editor_session_ids = ["edit-old"]
     manager.service.storage.save_manifest(app_id, manifest)
+    assert manager.set_app_pinned(app_id, OWNER, True) == {"app_id": app_id, "pinned": True}
+    created_before = manager.service.get_app(app_id).created_at
 
     payload_v2 = _app_zip("2.0.0", "v2")
     port2 = FakePort(payload_v2, version="2.0.0")
@@ -564,6 +566,8 @@ def test_update_preserves_data_git_and_project_binding(tmp_path):
     assert manifest.editor_create_token == "token-old"
     assert manifest.editor_session_ids == ["edit-old"]
     assert manifest.artifact_sha256 == port2.checksum
+    assert manifest.pinned is True, "updating a Hub app must keep the user pin"
+    assert manifest.created_at == created_before, "updates must not reset the registration time"
     assert "v2" in (destination / "assets" / "app.js").read_text(encoding="utf-8")
     assert manager.storage.load_install_record(app_id)["version"] == "2.0.0"
 

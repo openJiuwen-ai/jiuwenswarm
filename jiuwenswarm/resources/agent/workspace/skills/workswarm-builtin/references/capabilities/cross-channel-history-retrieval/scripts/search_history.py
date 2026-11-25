@@ -82,11 +82,22 @@ class Hit:
 def _default_sessions_root() -> Path:
     if _has_jiuwenswarm:
         return get_agent_sessions_dir()
-    # Fallback: check environment variable or use hardcoded path
+    # 脚本安装位置推导：workspace/skills/<skill>/scripts → agent 根 = workspace 的父目录
+    for parent in Path(__file__).resolve().parents:
+        if parent.name == "skills":
+            agent_root = parent.parent.parent
+            if "resources" not in agent_root.parts:
+                return agent_root / "sessions"
+            break
+    # 显式 agent 根环境变量（运行期注入，租户感知）
+    agent_root_env = os.getenv("JIUWENSWARM_AGENT_ROOT", "").strip()
+    if agent_root_env:
+        return Path(agent_root_env).expanduser() / "sessions"
     env_workspace = os.getenv("JIUWENSWARM_DATA_DIR")
     if env_workspace:
-        return Path(env_workspace) / "agent" / "sessions"
-    return Path.home() / ".jiuwenswarm" / "agent" / "sessions"
+        return Path(env_workspace) / "profile" / "agent" / "sessions"
+    home = os.getenv("JIUWENSWARM_HOME", "").strip()
+    return (Path(home) if home else Path.home()) / ".jiuwenswarm" / "profile" / "agent" / "sessions"
 
 
 def _to_float_ts(v: Any, tz: timezone) -> float | None:
@@ -306,7 +317,7 @@ def main() -> int:
         "--sessions-root",
         type=str,
         default="",
-        help="Path to sessions root. Default: ~/.jiuwenswarm/agent/sessions",
+        help="Path to sessions root. Default: ~/.jiuwenswarm/profile/agent/sessions",
     )
     parser.add_argument("--channel", type=str, default="", help="Filter by channel prefix in session_id, e.g. feishu")
     parser.add_argument("--session-id", type=str, default="", help="Exact session_id")

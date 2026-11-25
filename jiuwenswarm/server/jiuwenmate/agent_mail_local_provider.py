@@ -610,7 +610,7 @@ def create_provider() -> LocalAgentMailRuntime | None:
     npx_path = _find_npx()
     if npx_path is None:
         return None
-    from jiuwenswarm.server.jiuwenmate.service import default_data_dir
+    from jiuwenswarm.common.paths import get_jiuwenmate_dir
 
-    root = Path(os.environ.get('JIUWENMATE_AGENT_MAIL_HOME') or default_data_dir() / 'agent_mail')
+    root = Path(os.environ.get('JIUWENMATE_AGENT_MAIL_HOME') or get_jiuwenmate_dir() / 'agent_mail')
     return LocalAgentMailRuntime(root=root, npx_path=npx_path)

@@ -93,6 +93,27 @@ _PENDING_FIELDS: dict[str | tuple[str, str], dict[str, tuple[int, Any]]] = {}
 _WRITE_REVISION = 0
 
 
+# 缓存容量帽:键空间随累计会话数增长,无帽则每会话一条永驻(issue#5240 残余:
+# 受控 census 实测 ≈+2-3 obj/会话,adapter 逐出不删会话目录故无自然回收)。
+# FIFO 逐最旧;miss 只退化为一次 metadata.json 小文件读,无正确性影响。
+_METADATA_CACHE_MAX = 8192
+
+
+def _evict_metadata_cache_locked() -> None:
+    """容量帽驱逐;调用方必须已持有 ``_CACHE_LOCK``(threading.Lock 不可重入)。
+
+    缓存拆成四张同键表,驱逐时同步清 ``_METADATA_CACHE_GENERATIONS`` /
+    ``_CACHE_DISK_STAMPS`` / ``_PENDING_FIELDS``,避免残留半套状态。
+    """
+    if len(_METADATA_CACHE) < _METADATA_CACHE_MAX:
+        return
+    victim = next(iter(_METADATA_CACHE))
+    _METADATA_CACHE.pop(victim, None)
+    _METADATA_CACHE_GENERATIONS.pop(victim, None)
+    _CACHE_DISK_STAMPS.pop(victim, None)
+    _PENDING_FIELDS.pop(victim, None)
+
+
 def _disk_stamp(session_id: str) -> tuple[int, int] | None:
     try:
         stat = (get_agent_sessions_dir() / session_id / "metadata.json").stat()
@@ -110,6 +131,7 @@ def _refresh_written_cache(session_id: str, written: dict[str, Any], options: _M
     stamp = _disk_stamp(session_id)
     cache_key = _metadata_cache_key(session_id)
     with _CACHE_LOCK:
+        _evict_metadata_cache_locked()
         pending = _PENDING_FIELDS.get(cache_key, {})
         if options.write_revision:
             pending = {key: value for key, value in pending.items() if value[0] > options.write_revision}
@@ -627,6 +649,7 @@ def _read_metadata(
         with _CACHE_LOCK:
             cache_key = _metadata_cache_key(session_id)
             data.update({field: value[1] for field, value in _PENDING_FIELDS.get(cache_key, {}).items()})
+            _evict_metadata_cache_locked()
             _METADATA_CACHE[cache_key] = data.copy()
             _METADATA_CACHE_GENERATIONS[cache_key] = generation
             _CACHE_DISK_STAMPS[cache_key] = _disk_stamp(session_id)
@@ -1064,6 +1087,7 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
     if preserve_pin_fields:
         metadata = _merge_pin_fields_from_disk(session_id, metadata)
     with _CACHE_LOCK:
+        _evict_metadata_cache_locked()
         _WRITE_REVISION += 1
         revision = _WRITE_REVISION
         cache_key = _metadata_cache_key(session_id)
@@ -1112,6 +1136,7 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
         if preserve_pin_fields:
             metadata = _merge_pin_fields_from_disk(session_id, metadata)
             with _CACHE_LOCK:
+                _evict_metadata_cache_locked()
                 _METADATA_CACHE[_metadata_cache_key(session_id)] = metadata.copy()
         # 队列满退化为同步写: 版本检查同样下沉到 _write_metadata_sync 持锁后执行
         try:

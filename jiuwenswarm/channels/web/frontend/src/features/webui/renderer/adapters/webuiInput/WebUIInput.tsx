@@ -4,7 +4,22 @@ import type { WebUIAdapterProps } from '../../types.ts';
 import type { LocalizedText } from '../../../catalog/components/localizedText.ts';
 import { useLocalizedText } from '../../useLocalizedText.ts';
 
-export function WebUIInput({ node, context, emit, appearance, fieldControl }: WebUIAdapterProps) {
+export function WebUIInput(props: WebUIAdapterProps) {
+  const { node, fieldControl } = props;
+  // Retained trees reuse positions across frames. Reset standalone drafts when the field changes.
+  const fieldKey = fieldControl?.onChange ? undefined : JSON.stringify([
+    node.props.ariaLabel,
+    node.props.type,
+    node.props.value === undefined ? node.props.defaultValue : undefined,
+    node.events,
+  ], (_key, value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+  });
+  return <InputField key={fieldKey} {...props} />;
+}
+
+function InputField({ node, context, emit, appearance, fieldControl }: WebUIAdapterProps) {
   const p = node.props as Pick<InputProps, 'value' | 'defaultValue' | 'placeholder' | 'disabled' | 'maxLength'
     | 'allowClear' | 'showCount' | 'size' | 'variant' | 'type' | 'readOnly' | 'status' | 'autoComplete'> & { ariaLabel?: LocalizedText };
   const ariaLabel = useLocalizedText(p.ariaLabel);
@@ -18,8 +33,9 @@ export function WebUIInput({ node, context, emit, appearance, fieldControl }: We
   const composing = useRef(false);
   const compositionCommit = useRef<string | null>(null);
   useEffect(() => {
+    // Each accepted frame can confirm or roll back the draft, even with the same value.
     if (!controlled && p.value !== undefined && !composing.current) setValue(String(p.value));
-  }, [p.value, controlled]);
+  }, [node, p.value, controlled]);
   const disabled = p.disabled || !context.connected;
   const emitChange = (next: string, isComposing: boolean) => {
     if (!controlled && node.events['ui.change']) void emit('ui.change', { value: next, isComposing });

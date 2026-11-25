@@ -421,7 +421,9 @@ def _discover_sub_agent_workspaces(session_id: str, add_root: Callable[[Any], No
     """
     from jiuwenswarm.common.utils import get_agent_workspace_dir
 
-    sub_agents_dir = get_agent_workspace_dir() / "sub_agents"
+    from jiuwenswarm.common.paths import get_sub_agents_dir
+
+    sub_agents_dir = get_sub_agents_dir()
     if not sub_agents_dir.is_dir():
         return
     prefix = f"{session_id}_sub_"

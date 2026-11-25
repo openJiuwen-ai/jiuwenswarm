@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from jiuwenswarm.common.utils import get_infra_data_dir
+from jiuwenswarm.common.paths import get_user_workspace_dir
 
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
     redact_reviewable_payload_text,
@@ -256,8 +256,8 @@ def resolve_persistent_audit_root(config: Mapping[str, Any] | None) -> Path | No
     if not raw_root:
         raw_root = os.environ.get(DATA_DIR_ENV_NAME)
     if not raw_root:
-        # 审计落盘为 Pod 本地数据，默认落 infra/
-        return get_infra_data_dir()
+        # 审计落盘为 Pod 本地数据，默认落数据根 permission_audit/（profile 契约：系统态原位）
+        return get_user_workspace_dir()
     return Path(str(raw_root)).expanduser()
 
 
