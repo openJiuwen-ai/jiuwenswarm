@@ -185,6 +185,7 @@
     "serverResourceHint": "Whole-machine CPU and memory usage on the server running the backend, including every process on that machine; it is not WorkSwarm's own usage. A local connection usually targets this computer, but proxies and port forwarding may target a remote server; containers may report host statistics. Updates every 3 seconds. Warns after 3 samples at or above 85% CPU or memory; clears when both are below 75%.",
     "highResourceUsage": "High system usage. Consider stopping unused apps or other tasks.",
     "title": "Apps",
+    "subtitle": "Manage and monitor Swarm apps",
     "myApps": "My Apps",
     "market": "App Plaza",
     "marketLoadFailed": "Failed to load the App Plaza",
@@ -202,6 +203,7 @@
       "loadFailed": "Failed to load AI roles",
       "agent": "Single-role session",
       "team": "Team session",
+      "teamBadge": "Team",
       "leader": "Leader"
     },
     "backToMyApps": "Back to My Apps",
