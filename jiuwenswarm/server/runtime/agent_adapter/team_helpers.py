@@ -2955,7 +2955,10 @@ async def _apply_enterprise_runtime_ready_hooks(
                     team_name=runtime_team_name,
                     max_teammates=max_teammates,
                     on_quota_exceeded=lambda **kwargs: _emit_teammate_quota_notice(
-                        channel_id, session_id, **kwargs
+                        channel_id,
+                        session_id,
+                        language=notice_language,
+                        **kwargs,
                     ),
                 )
                 install_swarmflow_worker_quota_guard()

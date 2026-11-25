@@ -20,7 +20,6 @@ from typing import Any, Callable, TypeAlias
 
 import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
 
-from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.model_error_messages import user_facing_model_error
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 from jiuwenswarm.server.runtime.skill.skillpack import (

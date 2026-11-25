@@ -249,16 +249,20 @@ def whole_team_member_limit(request: Any, config_base: dict[str, Any] | None = N
     return cap, cap
 
 
-def predefined_team_size_user_message(team_size: int, limit: int) -> str:
+def predefined_team_size_user_message(
+    team_size: int, limit: int, *, language: str | None = None
+) -> str:
     """User-facing refusal when a team template/package exceeds the cap.
 
     Unlike ``requested_team_size_user_message`` the size comes from the
     materialized roster (an AgentGroup or a Team skill), not from the user's
     sentence, so the wording must not claim the user asked for it.
     """
-    return (
-        f"无法创建：该团队预设 {int(team_size)} 人（含 Leader），"
-        f"超过该团队最多 {max(int(limit), 0)} 人。"
+    return _t(
+        "enterprise.team.predefined_size_over",
+        language=language,
+        team_size=int(team_size),
+        limit=max(int(limit), 0),
     )
 
 
