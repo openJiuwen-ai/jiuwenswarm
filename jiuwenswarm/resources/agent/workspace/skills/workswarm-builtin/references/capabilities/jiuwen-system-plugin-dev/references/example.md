@@ -6,12 +6,12 @@
 | 用户需要 | 运行域 | 参考内容 |
 | --- | --- | --- |
 | 上下文用量、执行过程或工具批次 | agentserver | [会话观测](examples/session-observation.md) |
-| Token 状态条、设置开关和详情 | agentserver | [会话观测中的设置联动](examples/session-observation.md) |
+| Token 状态条、设置开关和详情 | agentserver | [会话观测中的设置联动](examples/session-observation.md#3-token-weather-的设置与详情) |
 | 团队成员、任务状态和依赖图 | agentserver | [团队观测](examples/team-observation.md) |
 | 登录、凭证注入和账号入口 | gateway | [登录与请求处理](examples/gateway-entry.md) |
 | 动态背景、配色和启动动画 | gateway | [背景与开场](examples/application-surfaces.md#1-背景配色和开场) |
 | 桌宠或桌面窗口形态 | gateway | [应用形态](examples/application-surfaces.md#2-桌宠与窗口形态) |
-| 同时改变会话行为和应用外观 | 两个域 | [组合包分工与结构](bundle-development.md) |
+| 同时改变会话行为和应用外观 | 两个域 | [组合包分工与结构](bundle-development.md#1-按职责拆分成员) |
 
 网页嵌入和权限见 [前端开发说明](frontend-development.md)。需要最小可加载结构或生命周期测试时，再阅读下面保留的问候示例。
 简短片段不代替真实加载、最终 ZIP 和业务效果验证，也不代表目标环境已经具备所列全部能力。
