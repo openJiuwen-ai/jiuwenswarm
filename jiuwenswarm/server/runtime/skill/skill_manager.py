@@ -5519,8 +5519,27 @@ class SkillManager:
     @inventory_mutation
     @_state_transactional
     def _handle_enterprise_skills_uninstall(self, params: dict) -> dict:
-        raw_name = str(params.get("name") or "")
-        raw_origin = str(params.get("origin") or "").strip() or None
+        name_raw = params.get("name")
+        # name=[] / 非字符串曾被 str(...) 或 Gateway 编成 "%5B%5D"，校验失败应在门口拒绝（#169）。
+        if name_raw is not None and not isinstance(name_raw, str):
+            return {
+                "success": False,
+                "error_code": "invalid_params",
+                "error_message": "name must be a string",
+                "detail": "name must be a string",
+            }
+        # origin={} 等假值非字符串曾被 `or ""` 当成缺省，退化成按 name 误删；
+        # 与 handle_skills_web_uninstall 对齐，类型非法直接拒绝。
+        origin_raw = params.get("origin")
+        if origin_raw is not None and not isinstance(origin_raw, str):
+            return {
+                "success": False,
+                "error_code": "invalid_params",
+                "error_message": "origin must be a string",
+                "detail": "origin must be a string",
+            }
+        raw_name = str(name_raw or "").strip()
+        raw_origin = str(origin_raw or "").strip() or None
         installation = (
             self._find_skill_installation(name=raw_name, origin=raw_origin)
             if raw_name
@@ -5590,8 +5609,24 @@ class SkillManager:
 
     def _uninstall_skill_body(self, params: dict) -> dict:
         raw_name = params.get("name", "")
-        if not raw_name:
+        # 先类型后判空：name=[] 等假值非字符串不得落成「缺少参数」。
+        if raw_name is not None and raw_name != "" and not isinstance(raw_name, str):
+            return {
+                "success": False,
+                "error_code": "invalid_params",
+                "error_message": "name must be a string",
+                "detail": "name must be a string",
+            }
+        if not isinstance(raw_name, str) or not raw_name.strip():
             return {"success": False, "detail": "缺少参数: name"}
+        origin_raw = params.get("origin")
+        if origin_raw is not None and not isinstance(origin_raw, str):
+            return {
+                "success": False,
+                "error_code": "invalid_params",
+                "error_message": "origin must be a string",
+                "detail": "origin must be a string",
+            }
         try:
             name = _safe_path_name(raw_name, "skill")
         except ValueError as exc:
@@ -5658,7 +5693,7 @@ class SkillManager:
             if _is_dir_long(mirror_dest):
                 _safe_rmtree(mirror_dest)
 
-        origin = str(params.get("origin") or "").strip() or None
+        origin = str(origin_raw or "").strip() or None
         self._remove_installed_plugin(str(name or raw_name), origin=origin)
         self._remove_local_skill(str(name or raw_name), origin=origin)
         # 卸载时一并清掉该 skill 的 enabled 配置，避免重装同名 skill 时沿用旧的禁用状态。
