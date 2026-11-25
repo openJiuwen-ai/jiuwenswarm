@@ -5,7 +5,7 @@ type: F
 author: default
 author_email: default
 modules: [jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend, jiuwenswarm/extensions/app_market]
-files: [jiuwenswarm/channels/desktop/electron/app_market_windows.cjs, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx]
+files: [jiuwenswarm/channels/desktop/electron/app_market_windows.cjs, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/AppMarketPage.tsx, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/AppMarketAiRoles.tsx, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/AppMarketPanel.css]
 designs: []
 design_note: 用户明确授权初步本地实现，无独立设计文档。
 ---
@@ -89,3 +89,13 @@ Web 复用已有 iframe；Electron 将独立窗口改为 BaseWindow 承载 WebCo
 Electron 本机读数与服务端应用内存分别按各自的请求结果更新。若等两路一起返回，服务端超时会延后本机读数和告警。桌面应用内存采样随市场订阅启停，普通 Web 共用一次服务端资源请求。
 
 Windows 下运行 `npm run test:app-market`，86 项通过。组件测试覆盖服务端采样挂起期间本机告警继续更新、详情页打开失败后成功重试及固定页签定位。Electron IPC 与服务端请求使用替身，未进行真实窗口联调。
+
+## 2026-11-25 页面留白、页签回主页与 AI 角色排版修订
+
+应用市场列表页保留「应用」页头，并补充副标题「Swarm 应用的管理和监控」（参考技能页）。AppMarketPage 继续根据详情与运行页状态控制页头：进入应用详情或打开运行中的应用页面时收起页头，回到列表（包括再次点击「我的应用」）后恢复。AppMarketPanel 通过 onDetailChange 与 onApplicationOpenChange 上报两种页面状态。详情页同步去掉最外层卡片的描边、圆角和底色，内容直接铺在页面上，避免详情与列表之间再套一层框。
+
+「我的应用」页签在已选中时不再空操作：点击会收起运行中的应用面板（Web iframe 与 Electron 视图只隐藏、不关闭，服务继续运行），同时退出展开态和详情；切换到「应用广场」仍按原逻辑收起。
+
+详情页 AI 角色改为按组自适应：列数取组内角色数并封顶 4 列，窄屏由 auto-fit 自动降列，同行卡片等高；team 组增加边框与中性底色容器，角色卡片标签行增加「团队」标记并保留「队长」，agent 组不显示团队标记。
+
+验证：Windows 前端 `npm run test:app-market` 92 项通过（rebase 到 develop 后基线 90 项；新增 2 项覆盖 AI 角色列数/标记与运行页隐藏页头，改写页面页头和页签收起断言）。组件测试只验证行为与内联样式属性，未运行 tsc、ESLint、Prettier，未做真实浏览器像素级布局或 Electron 实机验证。
