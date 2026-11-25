@@ -231,7 +231,7 @@ class TestHandleMcpList:
             "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
             side_effect=_fake,
         ):
-            await _call(server, "handle_mcp_list", 
+            await _call(server, "handle_mcp_list",
                 ws,
                 _make_request(req_method=ReqMethod.MCP_LIST, params={"filter": "bogus"}),
                 send_lock,
@@ -242,6 +242,47 @@ class TestHandleMcpList:
             "refresh": False,
             "query": "",
         }
+
+    @pytest.mark.anyio
+    async def test_list_hub_failure_returns_ok_false(self) -> None:
+        """Hub catalogue failure (JW-83) answers ok=False + MCP_INTERNAL.
+
+        Personal-edition searches with a query bypass the cache; a Hub outage
+        must surface as an error response, not an ok=True local-only subset.
+        """
+        server = SimpleNamespace()
+        ws = _FakeWS()
+        send_lock = asyncio.Lock()
+
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
+            new=AsyncMock(side_effect=ConnectionError("Hub unavailable")),
+        ):
+            await _call(
+                server,
+                "handle_mcp_list",
+                ws,
+                _make_request(
+                    req_method=ReqMethod.MCP_LIST,
+                    params={"filter": "builtin", "query": "weather"},
+                ),
+                send_lock,
+            )
+
+        assert len(ws.sent) == 1
+        wire = json.loads(ws.sent[0])
+        # E2A error frames mark failure via body.status / wire-level ok flag.
+        body = wire.get("body") if isinstance(wire.get("body"), dict) else {}
+        failed = (
+            body.get("status") == "failed"
+            or wire.get("ok") is False
+            or wire.get("status") == "failed"
+        )
+        assert failed
+        payload = _extract_payload(wire)
+        assert payload["type"] == "internal_error"
+        assert "Hub unavailable" in str(payload.get("error"))
+        assert payload.get("code") == "MCP_INTERNAL"
 
 
 class TestHandleMcpShow:
