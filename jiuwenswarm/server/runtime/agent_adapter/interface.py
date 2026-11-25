@@ -2863,6 +2863,16 @@ class JiuWenSwarm:
                 _reload_after_skills = False
             if _reload_after_skills:
                 await self.create_instance()
+                if (
+                    handler_name == "handle_skills_toggle"
+                    and payload.get("success")
+                    and not params.get("dry_run")
+                ):
+                    # create_instance rebuilds only the root instance. Each live
+                    # session keeps its own skill rail and skill baseline; refresh
+                    # them as after an uninstall, so the switch reaches the next
+                    # turn of every open session.
+                    await self._refresh_skill_rails_after_change()
                 await self._reload_team_skill_rails(request.session_id)
             elif handler_name == "handle_skills_uninstall" and payload.get("success"):
                 # 卸载只需轻量刷新 skill rail，不需要全量重建 agent 实例。

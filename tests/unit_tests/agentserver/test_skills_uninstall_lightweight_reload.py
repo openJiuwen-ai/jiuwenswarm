@@ -207,3 +207,55 @@ async def test_refresh_skill_rails_removes_deleted_skill_from_real_skill_use_rai
     assert all("delete_me" not in key for key in skill_rail._skill_cache)
     assert all("delete_me" not in key for key in skill_rail._skill_order)
     assert skill_rail._skills_snapshot_signature == skill_rail._build_skills_snapshot_signature()
+
+
+class _ToggleSkillManager:
+    async def handle_skills_toggle(self, params):
+        return {"success": True, "name": params["name"], "enabled": params["enabled"]}
+
+
+@pytest.mark.asyncio
+async def test_toggle_rebuilds_and_refreshes_live_session_rails(swarm_with_fake_adapter):
+    """A skill switch rebuilds the root instance and also refreshes the live sessions' skill rails."""
+    swarm = swarm_with_fake_adapter
+    adapter = swarm._adapter
+    created = []
+
+    async def _create_instance(*args, **kwargs):
+        created.append(True)
+
+    swarm.create_instance = _create_instance
+    swarm._skill_manager = _ToggleSkillManager()
+    request = AgentRequest(
+        request_id="test-toggle",
+        req_method=ReqMethod.SKILLS_TOGGLE,
+        params={"name": "pptx-generator", "enabled": False},
+    )
+
+    response = await swarm._handle_skills_request(request)
+
+    assert response.ok is True
+    assert created == [True]
+    assert adapter.refresh_called is True
+
+
+@pytest.mark.asyncio
+async def test_toggle_dry_run_does_not_refresh_session_rails(swarm_with_fake_adapter):
+    """A dry-run probe writes no state, so it refreshes no session skill rail."""
+    swarm = swarm_with_fake_adapter
+    adapter = swarm._adapter
+
+    async def _create_instance(*args, **kwargs):
+        return None
+
+    swarm.create_instance = _create_instance
+    swarm._skill_manager = _ToggleSkillManager()
+    request = AgentRequest(
+        request_id="test-toggle-dry",
+        req_method=ReqMethod.SKILLS_TOGGLE,
+        params={"name": "pptx-generator", "enabled": False, "dry_run": True},
+    )
+
+    await swarm._handle_skills_request(request)
+
+    assert adapter.refresh_called is False
