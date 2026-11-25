@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 CONTROL_METHODS = ALL_CONTROL_METHODS
 
+
 _HANDLE_SESSION = None
 _HANDLE_PROJECT = None
 _HANDLE_CONFIG = None

@@ -158,6 +158,9 @@ def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
     from jiuwenswarm.enterprise.config.effective.apply_permissions import (
         apply_enterprise_permissions_to_config,
     )
+    from jiuwenswarm.enterprise.config.effective.apply_react import (
+        apply_enterprise_react_to_config,
+    )
 
     merged, _, _ = apply_enterprise_models_and_mcp(base, loaded)
     # MCP 动态 token 实例凭据：Manager 挂在 Agent 模板 data.custom_config 对象
@@ -165,6 +168,7 @@ def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
     apply_dispatched_credentials(loaded)
     merged = merge_memory_config_into_config(merged)
     merged, _ = apply_enterprise_permissions_to_config(merged, loaded)
+    merged, _ = apply_enterprise_react_to_config(merged, loaded)
     # advanced_config（含 a4p_enabled）→ config.a4p.enabled 等
     merged, _ = apply_enterprise_advanced_config_to_config(merged, loaded)
     return merged

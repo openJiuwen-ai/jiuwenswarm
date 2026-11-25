@@ -1,7 +1,10 @@
 import { createContext, useContext } from 'react';
 import type { ApplicationSurfaceConfig } from './protocol.ts';
 
-export type PresentationDeclaration = Omit<ApplicationSurfaceConfig, 'state'>;
+export type PresentationDeclaration = Omit<ApplicationSurfaceConfig, 'state'> & {
+  autoStart?: boolean;
+  revision?: number;
+};
 export interface PresentationHostPort {
   activate: (declaration: PresentationDeclaration) => Promise<void>;
   update: (declaration: PresentationDeclaration) => void;

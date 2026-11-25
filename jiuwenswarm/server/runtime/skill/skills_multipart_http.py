@@ -17,10 +17,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from e2a.gateway_normalize import e2a_from_agent_fields
 from e2a.models import E2AEnvelope
 from e2a.wire_codec import parse_agent_server_wire_unary
 
+from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
 from jiuwenswarm.common.multipart_form import MultipartParseError
 from jiuwenswarm.common.multipart_form import (
     parse_multipart_form as _parse_multipart_form_common,

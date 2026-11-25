@@ -12,6 +12,7 @@ because agent-core's TaskTool owns its explicit resume / ``cua_result`` handling
 from __future__ import annotations
 
 import inspect
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,7 +27,6 @@ from openjiuwen.harness.image_modality_probe import (
 from openjiuwen.harness.rails.subagent import SubagentRail
 from openjiuwen.harness.schema.deep_agent_spec import SubAgentConfig
 from openjiuwen.harness.subagents.cua_agent import (
-    CUA_AGENT_FACTORY_NAME,
     DEFAULT_CUA_AGENT_DESCRIPTION,
     create_cua_agent,
 )
@@ -73,9 +73,8 @@ def _cua_spec(subagents):
 
 
 @pytest.fixture(autouse=True)
-def legacy_factory_by_default(monkeypatch):
-    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: False)
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: True)
+def repl_available_by_default(monkeypatch):
+    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: True)
 
 
 # ── single-agent (agent mode) path ───────────────────────────────────────
@@ -101,8 +100,9 @@ def test_single_agent_mounts_cua_agent_only_when_explicitly_enabled(
     )
 
     spec = _cua_spec(subagents)
-    assert spec.factory_name == CUA_AGENT_FACTORY_NAME
+    assert spec.factory_name == cua_factory.COMPUTER_USE_FACTORY_NAME
     assert spec.max_iterations == 7
+    assert "永远不要使用 `subprocess`" in spec.system_prompt
     # Shares the parent's filesystem boundary like every other built-in spec.
     assert spec.sys_operation is adapter._sys_operation
     assert spec.workspace == str(tmp_path)
@@ -157,7 +157,7 @@ def test_code_mode_mounts_cua_agent_when_enabled(monkeypatch, tmp_path):
     )
 
     spec = _cua_spec(subagents)
-    assert spec.factory_name == CUA_AGENT_FACTORY_NAME
+    assert spec.factory_name == cua_factory.COMPUTER_USE_FACTORY_NAME
     assert spec.sys_operation is adapter._sys_operation
     # Code mode never lets sub-agents create their own workspace.
     assert spec.factory_kwargs["auto_create_workspace"] is False
@@ -231,12 +231,11 @@ def test_swarm_cua_provider_builds_cua_factory_spec():
     spec = build_swarm_cua_agent({"max_iterations": 11}, ctx)
 
     assert spec is not None
-    assert spec.factory_name == CUA_AGENT_FACTORY_NAME
+    assert spec.factory_name == cua_factory.COMPUTER_USE_FACTORY_NAME
     assert spec.agent_card.name == "cua_agent"
     assert spec.max_iterations == 11
     # agent-core's cua_* kwargs survive; the swarm only adds the workspace flag.
     assert spec.factory_kwargs["auto_create_workspace"] is False
-    assert "cua_capabilities" in spec.factory_kwargs
 
 
 # ── snapshot retention / pause knobs ─────────────────────────────
@@ -427,6 +426,21 @@ def test_desktop_routing_rules_injected_only_when_cua_agent_is_mounted():
     assert "Browser Capability Routing Rules" not in text
     assert "Choosing between browser and desktop" not in text
     assert "桌面能力路由规则" in build_cua_task_prompt("cn")
+
+
+@pytest.mark.parametrize(("language", "fidelity_rule", "unspecified_rule"), [
+    ("cn", "忠实传达用户的指令", "未指定的参数保持未指定"),
+    ("en", "faithfully relay the user's instructions", "Leave unspecified parameters unspecified"),
+])
+def test_parent_task_prompt_preserves_user_intent(mocker, language, fidelity_rule, unspecified_rule):
+    rail = BrowserTaskPromptRail()
+    rail.system_prompt_builder = mocker.Mock(language=language)
+
+    rail._inject_task_tool_section(_rail_agent("cua_agent"))
+
+    section = rail.system_prompt_builder.add_section.call_args.args[0]
+    assert fidelity_rule in section.content[language]
+    assert unspecified_rule in section.content[language]
 
 
 def test_no_routing_rules_without_browser_or_cua():
@@ -658,7 +672,7 @@ def test_no_unavailable_notice_when_cua_is_mounted_or_not_enabled():
 
 
 def test_enabled_cua_is_skipped_when_the_host_has_no_backend(monkeypatch, tmp_path):
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: False)
+    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: False)
     react = {"subagents": {"cua_agent": {"enabled": True}}}
     model = MagicMock()
     for adapter in (_deep_adapter(monkeypatch, tmp_path), _code_adapter(monkeypatch, tmp_path)):
@@ -674,16 +688,12 @@ def test_enabled_cua_is_skipped_when_the_host_has_no_backend(monkeypatch, tmp_pa
     assert "No computer control backend is available" in prompt
 
 
-@pytest.mark.parametrize("legacy_available", [False, True])
 @pytest.mark.parametrize(("language", "guidance"), [("cn", "直接调用同步 SDK 方法"), ("en", "Call SDK methods synchronously")])
-def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, tmp_path, legacy_available, language, guidance):
-    from openjiuwen.harness.tools.cua.rails import CuaProgressRail
+def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, language, guidance):
     from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
 
-    (tmp_path / "__init__.pyi").write_text("class Computer: ...", encoding="utf-8")
-    monkeypatch.setattr(cua_factory, "files", lambda package: tmp_path)
+    sdk_instructions = pytest.importorskip("computer_use_mcp.instructions").DESCRIPTION
     monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: True)
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: legacy_available)
     caller_rail = object()
 
     spec = cua_factory.build_cua_agent_config(
@@ -692,21 +702,29 @@ def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, tmp_path, legacy_
 
     assert spec.rails[0] is caller_rail
     assert any(isinstance(rail, CuaExtensionRail) for rail in spec.rails)
-    assert spec.factory_name == (CUA_AGENT_FACTORY_NAME if legacy_available else None)
-    assert ("list_windows" in spec.system_prompt) is legacy_available
+    assert spec.factory_name == cua_factory.COMPUTER_USE_FACTORY_NAME
+    assert spec.system_prompt.count(sdk_instructions) == 1
+    host_prompt = spec.system_prompt.removesuffix(sdk_instructions)
+    assert "get_window_state" not in host_prompt
     assert guidance in spec.system_prompt
-    assert "class Computer: ..." in spec.system_prompt
-    assert any(isinstance(rail, CuaProgressRail) for rail in spec.rails) is not legacy_available
+    launch_rule = "Never use `subprocess`" if language == "en" else "永远不要使用 `subprocess`"
+    assert host_prompt.count(launch_rule) == 1
+    assert "macOS" not in host_prompt
+    assert 'app.read(view="both")' in host_prompt
+    assert ("无需打印或截取" if language == "cn" else "no need to print or slice") in host_prompt
 
 
 @pytest.mark.asyncio
-async def test_repl_only_subagent_registers_repl_without_legacy_tools_or_sdk_stub(monkeypatch, tmp_path):
+async def test_repl_only_subagent_is_a_computer_use_agent(monkeypatch, tmp_path):
+    from computer_use_agent import ComputerUseAgent
+    from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
+    from openjiuwen.core.runner import Runner
     from openjiuwen.harness import create_deep_agent
 
-    monkeypatch.setattr(cua_factory, "files", lambda package: tmp_path)
-    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: True)
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: False)
-    model = MagicMock()
+    model = Model(
+        model_client_config=ModelClientConfig(client_provider="OpenAI", api_key="offline", api_base="http://127.0.0.1:1/v1"),
+        model_config=ModelRequestConfig(model="offline"),
+    )
     subagents, _ = _deep_adapter(monkeypatch, tmp_path)._build_configured_subagents(
         model, {"subagents": {"cua_agent": {"enabled": True}}}, {},
     )
@@ -715,13 +733,73 @@ async def test_repl_only_subagent_registers_repl_without_legacy_tools_or_sdk_stu
         enable_read_image_multimodal=False, enable_sys_operation=False,
     )
     child = parent.create_subagent("cua_agent", "repl-only-test")
+    sibling = parent.create_subagent("cua_agent", "repl-only-sibling")
     try:
-        await child._ensure_initialized()
-        names = {tool.name for tool in await child.ability_manager.list_tool_info()}
-        assert names == {"cua_repl"}
+        assert isinstance(child, ComputerUseAgent)
+        for agent in (child, sibling):
+            await agent.ensure_initialized()
+            assert {tool.name for tool in await agent.ability_manager.list_tool_info()} == {"cua_repl"}
+        child_tool = child.ability_manager.get("cua_repl")
+        sibling_tool = sibling.ability_manager.get("cua_repl")
+        assert child_tool.id != sibling_tool.id
+        await child.cleanup_task_resources()
+        assert Runner.resource_mgr.get_tool(child_tool.id) is None
+        assert Runner.resource_mgr.get_tool(sibling_tool.id) is not None
     finally:
+        await child.cleanup_task_resources()
+        await sibling.cleanup_task_resources()
         await child.stop()
+        await sibling.stop()
         await parent.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("platform", "cleanup_fails"),
+    [("win32", False), ("win32", True), ("darwin", False), ("linux", False)],
+)
+async def test_repl_owns_windows_activity_banner(monkeypatch, platform, cleanup_fails):
+    from computer_use_mcp import session as sdk_session, windows_banner
+
+    from jiuwenswarm.agents.harness.common.tools import cua_runtime
+
+    monkeypatch.setattr(cua_runtime, "sys", SimpleNamespace(platform=platform, frozen=True))
+    banner = SimpleNamespace(close=AsyncMock())
+    make_banner = MagicMock(return_value=banner)
+    monkeypatch.setattr(windows_banner, "WindowsExecutionBanner", make_banner)
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value={"content": [{"type": "text", "text": "ok"}]}),
+        close=AsyncMock(return_value={
+            "isError": cleanup_fails,
+            "content": [{"type": "text", "text": "Native worker is still running"}],
+        }),
+    )
+    make_session = MagicMock(return_value=session)
+    monkeypatch.setattr(sdk_session, "ExecutionSession", make_session)
+
+    runtime = cua_runtime.ReplRuntime()
+    make_banner.assert_not_called()
+    try:
+        await runtime.execute("print('first')")
+        await runtime.execute("print('second')")
+        if platform == "win32":
+            make_banner.assert_called_once_with(windows_banner.DEFAULT_AGENT_DISPLAY_NAME)
+            make_session.assert_called_once_with(banner=banner)
+        else:
+            make_banner.assert_not_called()
+            make_session.assert_called_once_with(banner=None)
+    finally:
+        if cleanup_fails:
+            with pytest.raises(RuntimeError, match="Native worker is still running"):
+                await runtime.close()
+        else:
+            await runtime.close()
+            await runtime.close()
+    session.close.assert_awaited_once()
+    if platform == "win32":
+        banner.close.assert_awaited_once()
+    else:
+        banner.close.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -744,7 +822,7 @@ async def test_repl_can_retry_after_driver_preparation_fails(monkeypatch, error,
         execute=AsyncMock(return_value={"content": [{"type": "text", "text": "ok"}]}),
         close=AsyncMock(return_value={"isError": False}),
     )
-    monkeypatch.setattr(sdk_session, "ExecutionSession", lambda: session)
+    monkeypatch.setattr(sdk_session, "ExecutionSession", MagicMock(return_value=session))
     runtime = cua_runtime.ReplRuntime()
     tool = CuaReplTool(runtime, "test")
     try:

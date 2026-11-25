@@ -180,6 +180,8 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                 "and loads the context from its earlier child task. "
                 "Results are posted automatically; do not post or submit them twice. "
                 "For a message mentioning only multiple expert teams, the first mentioned team is the Owner. "
+                "An unmentioned message may also be assigned to several expert teams with a named Owner; "
+                "it follows the same rules. "
                 "Only the Owner decides: ordinary conversation uses group_send_message; "
                 "substantive work uses run_team; "
                 "missing requirements use ask_user. A mention alone does not require an organization task. "

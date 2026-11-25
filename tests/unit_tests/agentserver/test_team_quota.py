@@ -342,8 +342,23 @@ def test_disabled_flag_is_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert lease.noop
 
 
-def test_team_create_quota_user_message() -> None:
-    assert team_create_quota_user_message(5) == "创建失败，一个用户最多有5个团队"
+def test_team_create_quota_user_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.common.i18n import t
+    from jiuwenswarm.enterprise.team.quota import org_team_create_quota_user_message
+
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+        lambda: "en",
+    )
+    assert team_create_quota_user_message(5) == t(
+        "enterprise.team.create_user_full", language="en", limit=5
+    )
+    assert t("enterprise.team.create_user_full", language="zh", limit=5) == (
+        "创建失败，一个用户最多有5个团队"
+    )
+    assert org_team_create_quota_user_message(3) == t(
+        "enterprise.team.create_org_full", language="en", limit=3
+    )
 
 
 def test_mark_team_deleted_releases_x_quota(tmp_path: Path) -> None:
@@ -770,14 +785,13 @@ async def test_list_and_create_wait_for_startup_sweep_once(
 ) -> None:
     from jiuwenswarm.common.request_identity import apply_routing_metadata
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods
+    from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.enterprise.team import handlers as team_control
     from jiuwenswarm.enterprise.team import session_cleanup as cleanup
     from jiuwenswarm.enterprise.team.control_store import SqliteTeamControlStore
     from jiuwenswarm.server.context import RequestContext
     from jiuwenswarm.server.transports.ws_sink import WSSink
 
-    ensure_team_control_req_methods()
     control = SqliteTeamControlStore(tmp_path / "team_control.db")
     set_team_control_store(control)
     cleanup.reset_startup_sweep()
@@ -894,9 +908,7 @@ async def test_auto_team_name_generation_failure_releases_x_lease(
     from jiuwenswarm.agents.harness.team.team_name_generator import TeamNameGenerationError
     from jiuwenswarm.common.request_identity import apply_routing_metadata
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods
-
-    ensure_team_control_req_methods()
+    from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.server.context import RequestContext
     from jiuwenswarm.enterprise.team import handlers as team_control
     from jiuwenswarm.enterprise.team.control_store import SqliteTeamControlStore

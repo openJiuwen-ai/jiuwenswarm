@@ -123,6 +123,77 @@ def test_resolve_node_runtime_accepts_bound_npx_path(
     assert resolved_from_cli.node == npx_sibling.resolve()
 
 
+def test_resolve_node_runtime_uses_standard_unix_npx_cli_layout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    prefix = tmp_path / "node-prefix"
+    node = prefix / "bin" / "node"
+    npx = prefix / "bin" / "npx"
+    npx_cli = prefix / "lib" / "node_modules" / "npm" / "bin" / "npx-cli.js"
+    package_json = npx_cli.parent.parent / "package.json"
+    node.parent.mkdir(parents=True)
+    node.write_text("", encoding="utf-8")
+    npx.write_text("", encoding="utf-8")
+    npx_cli.parent.mkdir(parents=True)
+    npx_cli.write_text("", encoding="utf-8")
+    package_json.write_text('{"version": "11.20.0"}', encoding="utf-8")
+    monkeypatch.setattr(rea_setup, "_candidate_node_paths", lambda: [])
+    monkeypatch.setattr(rea_setup, "_node_version", lambda _node: "26.13.0")
+
+    resolved = rea_setup.resolve_node_runtime(node)
+
+    assert resolved is not None
+    assert resolved.npx_cli == npx_cli.resolve()
+    assert resolved.npm_version == "11.20.0"
+
+
+def test_scan_accepts_connected_npx_record_without_npx_cli(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    node = tmp_path / "bin" / "node"
+    npx = tmp_path / "bin" / "npx"
+    node.parent.mkdir(parents=True)
+    node.write_text("", encoding="utf-8")
+    npx.write_text("", encoding="utf-8")
+    runtime = rea_setup.NodeRuntime(
+        node=node,
+        npx=npx,
+        npx_cli=node.parent / "node_modules" / "npm" / "bin" / "npx-cli.js",
+        version="26.13.0",
+    )
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "mcp" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "rea": {
+                        "transport": "stdio",
+                        "command": str(npx),
+                        "args": ["-y", "rea-agents@6.8.0", "mcp"],
+                        "env": {"PATH": str(npx.parent)},
+                        "state": "connected",
+                        "tool_count": 229,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rea_setup, "resolve_node_runtime", lambda *_args: runtime)
+    monkeypatch.setattr(rea_setup, "_installed_rea_version", lambda _runtime: "6.8.0")
+    monkeypatch.setattr(rea_setup, "ensure_rea_skill", lambda *_args: {})
+
+    scan = rea_setup.scan_rea_setup(workspace, include_enhanced=False)
+
+    assert scan["ready"] is True
+    assert scan["base"][2]["ok"] is True
+    assert scan["base"][2]["state"] == "connected"
+
+
 def test_scan_requires_base_rea_mcp(tmp_path: Path, monkeypatch) -> None:
     runtime = _runtime(tmp_path)
     monkeypatch.setattr(rea_setup, "resolve_node_runtime", lambda *_args: runtime)

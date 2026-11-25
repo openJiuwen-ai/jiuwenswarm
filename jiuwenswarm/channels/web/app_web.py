@@ -79,6 +79,11 @@ def _is_loopback_address(value: object) -> bool:
         return False
 
 
+def _is_loopback_name(host: str) -> bool:
+    """Return whether a bind or Host name is this machine only: ``localhost`` or a loopback IP literal."""
+    return host == "localhost" or _is_loopback_address(host)
+
+
 def _get_share_image_export_manager() -> ShareImageExportManager:
     """Forward to the gateway-owned singleton (shared job registry)."""
     from agent_gateway.channel_manager.web.share_image_export import (
@@ -309,6 +314,22 @@ def _guess_text_charset(file_path: Path) -> str:
     return "utf-8"
 
 
+def _declared_mime_type(
+    mime_type: str, file_path: Path, file_name: str | None = None,
+) -> str:
+    """Return the MIME type a raw file response declares, before its charset.
+
+    ``mimetypes.guess_type`` follows the platform table (the Windows registry
+    can override it), while the extension table below is what the response
+    actually declares. Security headers must use this same result: otherwise a
+    platform guess that differs from the declared type would serve an
+    executable document without the sandboxing CSP.
+    """
+    return _TEXTUAL_EXTENSION_MIME_TYPES.get(
+        Path(file_name or file_path.name).suffix.lower(), mime_type
+    )
+
+
 def _text_content_type(
     mime_type: str, file_path: Path, file_name: str | None = None,
 ) -> str:
@@ -319,9 +340,7 @@ def _text_content_type(
     response without ``charset`` is decoded with the browser default instead of
     the artifact's own encoding, so Chinese artifacts render as mojibake.
     """
-    normalized_mime_type = _TEXTUAL_EXTENSION_MIME_TYPES.get(
-        Path(file_name or file_path.name).suffix.lower(), mime_type
-    )
+    normalized_mime_type = _declared_mime_type(mime_type, file_path, file_name)
     if not _is_textual_mime_type(normalized_mime_type):
         return mime_type
     return f"{normalized_mime_type}; charset={_guess_text_charset(file_path)}"
@@ -464,6 +483,9 @@ def _runtime_web_transport() -> str:
 
 def _inject_user_web_runtime_config(document: str) -> str:
     from jiuwenswarm.enterprise import is_enterprise
+    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+        is_workspace_quota_enabled,
+    )
 
     edition = "enterprise" if is_enterprise() else "personal"
     login_auth_simulate = (os.getenv("LOGIN_AUTH_SIMULATE") or "").strip().lower() or "true"
@@ -474,6 +496,10 @@ def _inject_user_web_runtime_config(document: str) -> str:
         .replace("__JIUWEN_WEB_TRANSPORT_VALUE__", _runtime_web_transport())
         .replace("__JIUWEN_LOGIN_AUTH_SIMULATE_VALUE__", login_auth_simulate)
         .replace("__JIUWEN_IFRAME_HOST_ISOLATION_VALUE__", str(edition == "personal").lower())
+        .replace(
+            "__WORKSPACE_QUOTA_ENABLED_VALUE__",
+            "true" if is_workspace_quota_enabled() else "false",
+        )
     )
 
 
@@ -544,6 +570,25 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         "x-jiuwenswarm-original-host",
         "x-original-host",
     }
+    # Raw file responses may carry user or model generated documents. These
+    # types execute script when a browser opens them as a document in this
+    # origin, so they receive a sandboxing CSP in addition to ``nosniff``.
+    _DOCUMENT_MIME_TYPES = frozenset(
+        {
+            "text/html",
+            "application/xhtml+xml",
+            "image/svg+xml",
+            "text/xml",
+            "application/xml",
+        }
+    )
+    # Loopback names are treated as one origin: the Vite dev proxy forwards
+    # ``localhost:5173`` requests with ``changeOrigin`` to the Web server.
+    _LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+    # Same environment key the gateway uses for its own handshake check, so a
+    # single deployment setting covers both hops. The "none" entry only matters
+    # to the gateway: this proxy already allows clients without an Origin.
+    _WS_ALLOWED_ORIGIN_HOSTS_ENV = "JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS"
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
     _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
@@ -930,6 +975,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             conn.close()
 
     def _proxy_websocket_tunnel(self, *, target: str | None = None) -> None:
+        if not self._ws_origin_allowed():
+            self.log_error("proxy ws rejected origin: %s", self.headers.get("Origin"))
+            self.send_error(403, "ws origin not allowed")
+            return
         parsed = urlparse(target or self.ws_target)
         if parsed.scheme not in ("ws", "wss", "http", "https"):
             self.send_error(500, "ws proxy target must be ws/wss/http/https")
@@ -1239,6 +1288,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self._send_desktop_forbidden()
         return True
 
+    def _is_this_machines_page(self) -> bool:
+        """The desktop window by its cookie; without a desktop token, a page this machine opened on a loopback name.
+
+        The Host check keeps out a site that points its own name at 127.0.0.1 (DNS rebinding): the browser
+        still sends that name.
+        """
+        if self.desktop_token:
+            return self._has_desktop_cookie()
+        host = urlparse(f"//{self.headers.get('Host', '')}").hostname or ""
+        return _is_loopback_address(self.client_address[0]) and _is_loopback_name(host)
+
     def _has_desktop_cookie(self) -> bool:
         cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
         return bool(cookie_token) and hmac.compare_digest(
@@ -1246,14 +1306,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         )
 
     def _dispatch_office_addins(self, parsed: ParseResult) -> bool:
-        """``/desktop-api/office-addins``: exists only for the desktop window, answers 404 to anyone else."""
+        """``/desktop-api/office-addins``: exists only for this machine's own page, answers 404 to anyone else."""
         if not parsed.path.startswith(self._OFFICE_ADDINS_PATH):
             return False
         route = parsed.path[len(self._OFFICE_ADDINS_PATH):]
         # A page on another local port shares the cookie; only the desktop window's own page may act.
         same_origin = self.headers.get("Sec-Fetch-Site") == "same-origin"
         addins = self.office_addins
-        if addins is None or not self._has_desktop_cookie():
+        if addins is None or not self._is_this_machines_page():
             self._write_json(404, {"error": "not_found"})
             return True
         match (self.command, route.split("/")):
@@ -1494,6 +1554,91 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
+
+    def _apply_raw_file_security_headers(self, mime_type: str | None) -> None:
+        """Keep a raw file from running as a document in the application origin."""
+        base_type = (mime_type or "").split(";", 1)[0].strip().lower()
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if base_type in self._DOCUMENT_MIME_TYPES:
+            # ``allow-scripts allow-popups`` keep HTML artifacts rendering and
+            # opening windows as before. The missing ``allow-same-origin`` is
+            # the actual protection: it forces an opaque origin, so the
+            # document cannot read application storage or cookies, touch the
+            # parent DOM, or navigate the top-level window. Never add
+            # ``allow-same-origin`` here; that would restore the same-origin
+            # script execution this header exists to stop. Keep this value
+            # aligned with ``HTML_PREVIEW_SANDBOX`` in the frontend. Types
+            # outside ``_DOCUMENT_MIME_TYPES`` (for example PDF) are rendered
+            # by a separate viewer origin and are intentionally not listed.
+            self.send_header(
+                "Content-Security-Policy",
+                "sandbox allow-scripts allow-popups",
+            )
+
+    @classmethod
+    def _allowed_origin_hosts(cls) -> set[str]:
+        """Return Origin hostnames trusted in addition to the request Host.
+
+        A reverse proxy that rewrites ``Host`` to the upstream address (nginx
+        does this by default) would otherwise fail the Host comparison while
+        every other route keeps working. This list mirrors the gateway setting
+        so one env value covers both hops, and falls back to loopback when the
+        variable is unset or empty.
+        """
+        raw = os.getenv(cls._WS_ALLOWED_ORIGIN_HOSTS_ENV) or ""
+        hosts = {item.strip().lower() for item in raw.split(",") if item.strip()}
+        hosts.discard("none")
+        return hosts or set(cls._LOOPBACK_HOSTNAMES)
+
+    def _ws_origin_allowed(self) -> bool:
+        """Return whether a WebSocket handshake may reach the upstream gateway.
+
+        Browsers always attach ``Origin`` to a WebSocket handshake, so a
+        missing header means a non-browser client (TUI/SDK) and stays allowed.
+        ``null`` and cross-origin values are rejected so a page from another
+        site cannot drive the local agent through its WebSocket. An Origin host
+        on the shared allowlist is accepted even when a proxy rewrote ``Host``.
+        """
+        origin = str(self.headers.get("Origin") or "").strip()
+        if not origin:
+            return True
+        if origin.lower() == "null":
+            return False
+        try:
+            parsed_origin = urlparse(origin)
+            origin_hostname = parsed_origin.hostname
+            origin_port = parsed_origin.port
+        except ValueError:
+            return False
+        if parsed_origin.scheme not in ("http", "https") or not origin_hostname:
+            return False
+        if origin_hostname.lower() in self._allowed_origin_hosts():
+            return True
+        outer_host = self._clean_outer_host()
+        if outer_host is None:
+            return False
+        try:
+            parsed_host = urlparse(f"//{outer_host}")
+            host_hostname = parsed_host.hostname
+            host_port = parsed_host.port
+        except ValueError:
+            return False
+        if not host_hostname:
+            return False
+        origin_hostname = origin_hostname.lower().rstrip(".")
+        host_hostname = host_hostname.lower().rstrip(".")
+        if origin_hostname == host_hostname:
+            return origin_port is None or host_port is None or origin_port == host_port
+        # Local Vite dev serves the SPA on a different port than this proxy, so
+        # loopback hostnames are treated as one origin regardless of port.
+        # This is a development convenience, not a security boundary: any other
+        # local web page can reach /ws through it. Shared deployments must keep
+        # the gateway allowlist (JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS) enabled,
+        # and a non-debug build should tighten this to an exact host:port match.
+        return (
+            origin_hostname in self._LOOPBACK_HOSTNAMES
+            and host_hostname in self._LOOPBACK_HOSTNAMES
+        )
 
     @staticmethod
     def _parse_query(query: str) -> dict[str, str]:
@@ -1906,6 +2051,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             file_size = full_path.stat().st_size
             mime_type, _ = mimetypes.guess_type(full_path.name)
+            # The response declares the extension-table type, not necessarily
+            # the platform guess, so security headers must follow the same
+            # value or an executable document could lose its sandbox CSP.
+            declared_mime = _declared_mime_type(
+                mime_type or "application/octet-stream", full_path
+            )
             # Browsers cannot seek media (e.g. the designer video preview
             # timeline) unless the endpoint honors Range requests; answer
             # 206/416 like the gateway ``serve_file_chunks`` implementation.
@@ -1921,6 +2072,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Cache-Control", "no-store")
+                self._apply_raw_file_security_headers(declared_mime)
                 self.end_headers()
                 return
             start, end = byte_range or (0, max(file_size - 1, 0))
@@ -1933,6 +2085,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(content_length))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "no-store")
+            self._apply_raw_file_security_headers(declared_mime)
             if byte_range is not None:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.end_headers()
@@ -2213,6 +2366,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not file_name:
                 file_name = os.path.basename(file_path)
             mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+            # Only an inline document can run script in this origin; attachments
+            # are downloaded, so they keep ``nosniff`` alone.
+            secured_mime = (
+                _declared_mime_type(mime_type, Path(file_path), file_name)
+                if inline
+                else ""
+            )
             byte_range = None
             range_header = self.headers.get("Range")
             if range_header:
@@ -2220,6 +2380,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 if byte_range is None:
                     self.send_response(416)
                     self.send_header("Content-Range", f"bytes */{file_size}")
+                    self._apply_raw_file_security_headers(secured_mime)
                     self.end_headers()
                     return
             start, end = byte_range or (0, max(0, file_size - 1))
@@ -2236,6 +2397,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(file_name, safe='')}",
             )
             self.send_header("Cache-Control", "no-store")
+            self._apply_raw_file_security_headers(secured_mime)
             if byte_range is not None:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.end_headers()
@@ -2293,6 +2455,21 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     value = upstream.headers.get(header_name)
                     if value:
                         self.send_header(header_name, value)
+                # The frontend requests ``inline=1`` so the desktop browser can
+                # render HTML/Markdown instead of saving it. An inline document
+                # from upstream needs the same hardening as the local paths,
+                # otherwise its script would run in this origin. Only an
+                # explicit ``attachment`` disposition makes the browser save the
+                # body; a missing header still renders inline, so every other
+                # response is treated as a document. A missing Content-Type is
+                # hardened too because ``nosniff`` does not prevent sniffing for
+                # top-level navigations.
+                content_type = str(upstream.headers.get("Content-Type") or "")
+                disposition = str(upstream.headers.get("Content-Disposition") or "")
+                inline_document = inline or "attachment" not in disposition.lower()
+                self._apply_raw_file_security_headers(
+                    (content_type or "text/html") if inline_document else ""
+                )
                 self.end_headers()
                 if self.command != "HEAD":
                     shutil.copyfileobj(upstream, self.wfile, length=65536)
@@ -3365,7 +3542,10 @@ def main() -> None:
     ).start()
     server = ThreadingHTTPServer((args.host, args.port), handler)
     office_listener = None
-    if desktop_token:
+    # The add-ins change this machine, so only a server that is this machine's alone offers them: the desktop's, or
+    # one that listens on the loopback only (jiuwenswarm-start and jiuwenswarm-web by default; a deployment for
+    # others listens elsewhere).
+    if desktop_token or _is_loopback_name(args.host):
         from jiuwenswarm.channels.desktop.office_addins import OfficeAddins
         from jiuwenswarm.channels.desktop.office_addins.listener import TlsListener
 

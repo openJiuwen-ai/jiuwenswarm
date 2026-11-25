@@ -131,6 +131,7 @@ def test_recommendation_switches_reload_ui_only():
 
 import asyncio
 import json
+import threading
 
 import pytest
 import yaml
@@ -361,6 +362,61 @@ def _topic_service(tmp_path, *, enabled: bool = False, now: float = 2.0) -> Topi
                                                   context_window_tokens=131072),
         enabled=enabled, now=lambda: now,
     )
+
+
+@pytest.mark.asyncio
+async def test_preparation_reads_the_store_off_the_worker_loop(tmp_path, monkeypatch):
+    """The prepare gate decodes the profile snapshot and the newest manifests.
+
+    Both are SQLite reads that can wait behind a writer, so they belong on the
+    executor rather than on the Runtime Worker's event loop.
+    """
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_service as service_module
+    from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
+        load_latest_history_state,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
+
+    loop_thread = threading.get_ident()
+    reads: list[int] = []
+
+    class _RecordingStore(TopicStarterStore):
+        def query_events(self, *args, **kwargs):
+            reads.append(threading.get_ident())
+            return super().query_events(*args, **kwargs)
+
+    def recording_loader(store):
+        reads.append(threading.get_ident())
+        return load_latest_history_state(store)
+
+    async def prepare_state(_config):
+        return "no_eligible_history"
+
+    service = TopicService(
+        _RecordingStore(tmp_path / "recommendation-loop-thread.db"),
+        generate=None,
+        search_provider_id="test",
+        prepare_state=prepare_state,
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=True,
+        now=lambda: 2.0,
+    )
+    monkeypatch.setattr(service_module, "load_latest_history_state", recording_loader)
+    try:
+        await service.schedule_successor(
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            visit_id="visit-loop-thread",
+        )
+    finally:
+        await service.shutdown()
+
+    assert reads
+    assert loop_thread not in reads
 
 
 @pytest.mark.asyncio
@@ -1617,7 +1673,7 @@ def _ui_event(
 
 def _register_panel(channel, *, service, store, queue) -> None:
     """Register the panel methods against an AgentServer that owns the stub pipeline."""
-    from e2a.agent_compat import e2a_to_agent_request
+    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from e2a.gateway_normalize import e2a_response_to_agent_response
     from e2a.models import E2AResponse
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
@@ -4424,6 +4480,106 @@ async def test_v6_ark_stage_invoker_caps_parallel_provider_calls() -> None:
     ))
     assert peak == limit
     assert inflight == 0
+
+
+def test_candidate_interest_slots_keep_only_the_best_ranked() -> None:
+    """The tail beyond the best-ranked interests only costs a pairwise score."""
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _MAX_INTEREST_CANDIDATES,
+        _top_ranked_interests,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_retrieval import (
+        RankedStarterInterest,
+    )
+
+    interests = [
+        RankedStarterInterest(
+            interest_summary_id=f"interest-{rank}",
+            interest_summary=f"summary {rank}",
+            rank=rank,
+        )
+        for rank in (3, 1, 5, 2, 4, 7, 6, 9, 8)
+    ]
+
+    kept = _top_ranked_interests(interests)
+
+    assert len(kept) == _MAX_INTEREST_CANDIDATES
+    # The highest ranks survive and the released order is preserved.
+    assert [item.rank for item in kept] == [3, 1, 5, 2, 4, 6]
+    assert _top_ranked_interests(interests[:3]) == interests[:3]
+
+
+@pytest.mark.asyncio
+async def test_diversity_batches_carry_only_the_candidates_they_score() -> None:
+    """A pair batch re-sent the whole candidate list; only its pairs decide it."""
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _invoke_batched_diversity_proxy,
+    )
+
+    candidates = [
+        {"candidate_id": f"candidate-{index}", "title": f"title {index}"}
+        for index in range(12)
+    ]
+    sent: list[dict[str, Any]] = []
+
+    async def invoke_stage(_stage: str, _prompt: str, payload: str) -> Any:
+        request = json.loads(payload)
+        sent.append(request)
+        return {
+            "pairwise_scores": [
+                {
+                    "left_candidate_id": pair["left_candidate_id"],
+                    "right_candidate_id": pair["right_candidate_id"],
+                    "reason": "different explanations",
+                    "compatible": True,
+                    "diversity_score_nullable": 0.5,
+                }
+                for pair in request["requested_pairs"]
+            ],
+            "marginal_scores": [
+                {
+                    "candidate_id": candidate_id,
+                    "marginal_diversity_nullable": 0.5,
+                }
+                for candidate_id in request["requested_marginal_candidate_ids"]
+            ],
+        }
+
+    result = await _invoke_batched_diversity_proxy(
+        {"input_snapshot_id": "snapshot", "request_id": "r", "candidates": candidates},
+        invoke_stage=invoke_stage,
+    )
+
+    assert len(sent) > 1
+    assert len(result["pairwise_scores"]) == len(candidates) * (len(candidates) - 1) // 2
+    for request in sent:
+        involved = set(request["requested_marginal_candidate_ids"])
+        for pair in request["requested_pairs"]:
+            involved.add(pair["left_candidate_id"])
+            involved.add(pair["right_candidate_id"])
+        assert {item["candidate_id"] for item in request["candidates"]} == involved
+    # A pair-only batch leaves the candidates it never asked about out entirely.
+    assert any(len(request["candidates"]) < len(candidates) for request in sent)
+
+
+def test_global_pool_target_leaves_five_ordinary_slots_beside_the_news_card() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_selection import (
+        GLOBAL_POOL_TARGET_SIZE,
+        ListSearchConstraints,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+    )
+
+    assert GLOBAL_POOL_TARGET_SIZE == 6
+    assert ListSearchConstraints(
+        context_scope=GLOBAL_NEW_CHAT_SCOPE, leading_cards=1,
+    ).target_size == 5
+    assert ListSearchConstraints(
+        context_scope=GLOBAL_NEW_CHAT_SCOPE,
+    ).target_size == 6
 
 
 @pytest.mark.asyncio

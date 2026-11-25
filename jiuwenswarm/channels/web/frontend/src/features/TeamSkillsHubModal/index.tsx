@@ -200,7 +200,7 @@ export function TeamSkillsHubModal({
           success: boolean;
           cancelled?: boolean;
           detail?: string;
-          skill?: { name: string };
+          skill?: { name: string; display_name?: string };
         }>("skills.teamskillshub.install", withSession({ asset_id: item.asset_id, force: false }));
         if (data.cancelled) return;
         if (!data.success) {
@@ -208,7 +208,9 @@ export function TeamSkillsHubModal({
         }
         const skillName = data.skill?.name || item.name;
         setInstalledNames((prev) => new Set([...prev, skillName]));
-        showMessage("success", t("skills.teamskillshub.messages.installed", { name: skillName }));
+        showMessage("success", t("skills.teamskillshub.messages.installed", {
+          name: item.display_name || item.name || data.skill?.display_name || skillName,
+        }));
         await onInstalled?.(skillName);
       } catch (error) {
         console.error(error);
@@ -230,17 +232,17 @@ export function TeamSkillsHubModal({
       <div className="flex flex-col h-full" data-testid="team-skills-hub-modal" data-variant="embedded">
         <div className="overflow-auto flex-1 min-h-0" data-testid="team-skills-hub-modal-body">
           {message && message.type === "success" && (
-            <div className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", width: "564px", height: "40px" }} data-testid="team-skills-hub-modal-message" data-variant="success">
+            <div className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", maxWidth: "564px", height: "40px" }} data-testid="team-skills-hub-modal-message" data-variant="success">
               <span className="w-4 h-4 rounded-full bg-[var(--color-feedback-success-indicator)] flex items-center justify-center flex-shrink-0">
                 <svg className="w-3 h-3 text-text-inverse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              {message.text.replace("√", "")}
+              <span className="truncate">{message.text.replace("√", "")}</span>
               <button
                 type="button"
                 onClick={() => showMessage("success", "")}
-                className="ml-auto w-6 h-6 flex items-center justify-center hover:bg-card/30 rounded-full "
+                className="ml-auto w-6 h-6 flex-shrink-0 flex items-center justify-center hover:bg-card/30 rounded-full "
                 data-testid="team-skills-hub-modal-message-dismiss"
               >
                 <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -414,17 +416,17 @@ export function TeamSkillsHubModal({
 
         <div className="p-5 overflow-auto flex-1 min-h-0" data-testid="team-skills-hub-modal-body">
           {message && message.type === "success" && (
-            <div className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", width: "564px", height: "40px" }} data-testid="team-skills-hub-modal-message" data-variant="success">
+            <div className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4" style={{ backgroundColor: "var(--color-feedback-success-toast)", maxWidth: "564px", height: "40px" }} data-testid="team-skills-hub-modal-message" data-variant="success">
               <span className="w-4 h-4 rounded-full bg-[var(--color-feedback-success-indicator)] flex items-center justify-center flex-shrink-0">
                 <svg className="w-3 h-3 text-text-inverse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </span>
-              {message.text.replace("√", "")}
+              <span className="truncate">{message.text.replace("√", "")}</span>
               <button
                 type="button"
                 onClick={() => showMessage("success", "")}
-                className="ml-auto w-6 h-6 flex items-center justify-center hover:bg-card/30 rounded-full "
+                className="ml-auto w-6 h-6 flex-shrink-0 flex items-center justify-center hover:bg-card/30 rounded-full "
                 data-testid="team-skills-hub-modal-message-dismiss"
               >
                 <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">

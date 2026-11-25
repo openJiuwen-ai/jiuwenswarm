@@ -785,12 +785,14 @@ async def test_muted_tools_stay_available_outside_public_group_leader(service, m
     assert ctx.extra == {}
 
 
-async def _run_member_tool(service, monkeypatch, *, kind: str, tool_name: str):
+async def _run_member_tool(service, monkeypatch, *, kind: str, tool_name: str, prepare=None):
     from openjiuwen.core.foundation.llm import ToolCall
 
     from jiuwenswarm.agents.swarm import group_execution as policies
 
     group = await make_group(service, kind=kind)
+    if prepare is not None:
+        await prepare(group)
     backend = SimpleNamespace(member_name="advisor", team_name=group["team_name"], is_leader=False)
     monkeypatch.setattr(policies, "get_team_backend", lambda _: backend)
     rail = policies.GroupTaskPolicyRail(SimpleNamespace(session_id=group["group_id"], member_name="advisor"))
@@ -821,15 +823,97 @@ async def test_public_member_send_file_points_to_group_attachments(service, monk
 
     assert ctx.extra["_skip_tool"] is True
     assert "attachments" in ctx.inputs.tool_result["error"]
-    assert "execution_id" in ctx.inputs.tool_msg.content
+    assert "NOT delivered" in ctx.inputs.tool_msg.content
+
+
+@pytest.mark.asyncio
+async def test_reply_claiming_a_file_is_held_until_the_file_is_attached(service, monkeypatch):
+    from openjiuwen.core.foundation.llm import ToolCall
+
+    from jiuwenswarm.agents.swarm import group_execution as policies
+
+    group = await make_group(service)
+    backend = SimpleNamespace(member_name="advisor", team_name=group["team_name"], is_leader=False)
+    monkeypatch.setattr(policies, "get_team_backend", lambda _: backend)
+    rail = policies.GroupTaskPolicyRail(SimpleNamespace(session_id=group["group_id"], member_name="advisor"))
+
+    async def call(name, arguments="{}"):
+        ctx = SimpleNamespace(extra={}, inputs=SimpleNamespace(
+            tool_name=name, tool_call=ToolCall(id="call", type="function", name=name, arguments=arguments),
+        ))
+        await rail.before_tool_call(ctx)
+        return ctx
+
+    assert not (await call("group_send_message", '{"content": "hello"}')).extra.get("_skip_tool")
+    # The same model step sends the file and a text reply saying it was sent.
+    assert (await call("send_file_to_user")).extra["_skip_tool"]
+    held = await call("group_send_message", '{"content": "The file was sent."}')
+    assert held.extra["_skip_tool"] and "not posted" in held.inputs.tool_msg.content
+    attached = await call("group_send_message", '{"content": "See the file.", "attachments": [{"name": "a.md", "path": "/a.md"}]}')
+    assert not attached.extra.get("_skip_tool")
+    # The next model step starts clean.
+    await rail.before_model_call(SimpleNamespace(extra={}, agent=SimpleNamespace(system_prompt_builder=None)))
+    assert not (await call("group_send_message", '{"content": "hello"}')).extra.get("_skip_tool")
+
+
+@pytest.mark.asyncio
+async def test_attachment_without_execution_points_to_starting_a_task(service):
+    from jiuwenswarm.agents.swarm.group_execution import GroupMessageTool
+
+    group = await make_group(service)
+    backend = SimpleNamespace(member_name="advisor", append_group_message=AsyncMock())
+    tool = GroupMessageTool(backend, SimpleNamespace(session_id=group["group_id"]), "Post")
+
+    result = await tool.invoke({"content": "Plan attached.", "attachments": [{"name": "a.md", "path": "/a.md"}]})
+
+    assert not result.success and "start_group_task" in result.error
+    backend.append_group_message.assert_not_awaited()
+    assert ge.GroupExecutions(group["group_id"]).read() == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["write_file", "edit_file"])
+async def test_expert_must_start_a_task_before_writing_files(service, monkeypatch, tool_name):
+    from openjiuwen.core.foundation.llm import ToolCall
+
+    from jiuwenswarm.agents.swarm import group_execution as policies
+
+    group = await make_group(service)
+    backend = SimpleNamespace(member_name="advisor", team_name=group["team_name"], is_leader=False)
+    monkeypatch.setattr(policies, "get_team_backend", lambda _: backend)
+    rail = policies.GroupTaskPolicyRail(SimpleNamespace(session_id=group["group_id"], member_name="advisor"))
+
+    async def call(name):
+        ctx = SimpleNamespace(extra={}, inputs=SimpleNamespace(
+            tool_name=name, tool_call=ToolCall(id="call", type="function", name=name, arguments="{}"),
+        ))
+        await rail.before_tool_call(ctx)
+        return ctx
+
+    blocked = await call(tool_name)
+    assert blocked.extra["_skip_tool"] and "start_group_task" in blocked.inputs.tool_msg.content
+    # Reading never needs a card.
+    assert not (await call("read_file")).extra.get("_skip_tool")
+    started = await policies.GroupTaskTool(backend, SimpleNamespace(session_id=group["group_id"])).invoke(
+        {"run_id": "one", "task": "Write the plan"},
+    )
+    assert started.success
+    assert not (await call(tool_name)).extra.get("_skip_tool")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool_name", ["write_file", "edit_file"])
 async def test_individual_expert_keeps_file_tools(service, monkeypatch, tool_name):
-    ctx = await _run_member_tool(service, monkeypatch, kind="agent_template", tool_name=tool_name)
+    # Unlike a proxy, an expert writes files itself; it only has to start its task first.
+    started = []
 
-    assert ctx.extra == {}
+    async def start(group):
+        records = await ge.GroupExecutions(group["group_id"]).create(["advisor"], "Write", "one", defer_card=True)
+        started.append(records[0]["execution_id"])
+
+    ctx = await _run_member_tool(service, monkeypatch, kind="agent_template", tool_name=tool_name, prepare=start)
+
+    assert started and ctx.extra == {}
 
 
 @pytest.mark.asyncio

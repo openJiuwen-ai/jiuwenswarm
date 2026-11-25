@@ -174,6 +174,10 @@ export interface InstalledSkillDetailViewProps extends SkillDetailCommonProps {
   onBack: () => void;
   onEditSkill: (skillName: string, skillType?: string) => void;
   onUninstall: (pluginName: string) => void;
+  /** 统一资产导出：导出 <id>[-<version>].zip 到本地（assets.export → 短效链接保存） */
+  onExportSkill: (skillName: string, skillType?: string) => void;
+  /** 资产导出进行中（禁用菜单项防重复点击） */
+  exportingSkill: boolean;
   onToggleSkillDisabled: (skillName: string) => void;
   onGoToChat: (skillName: string, skillType?: string, resetAttachmentDrafts?: boolean) => void;
   /** "包含技能"成员：点击进成员详情 */
@@ -385,6 +389,8 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     setSynthesizeTooltip,
     onEditSkill,
     onUninstall,
+    onExportSkill,
+    exportingSkill,
     onToggleSkillDisabled,
     onGoToChat,
     onOpenPackMember,
@@ -481,6 +487,25 @@ export function SkillDetailView(props: SkillDetailViewProps) {
             <>
               <div className="fixed inset-0 z-40" onClick={() => setDetailMenuOpen(false)} />
               <div className="dropdown-menu">
+                {/* 统一资产导出一期仅接入 skill 适配器：skillpack 详情隐藏导出入口，
+                    避免必定返回 ASSET_EXPORT_FORBIDDEN。 */}
+                {selectedSkill.skill_type !== 'skillpack' ? (
+                  <button
+                    onClick={
+                      exportingSkill
+                        ? undefined
+                        : () => {
+                            setDetailMenuOpen(false);
+                            onExportSkill(selectedSkill.name);
+                          }
+                    }
+                    disabled={exportingSkill}
+                    className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                    data-testid="skill-panel-my-detail-menu-export"
+                  >
+                    {t('skills.actions.exportSkill')}
+                  </button>
+                ) : null}
                 <button
                   onClick={
                     selectedSkill.enabled !== false

@@ -14,6 +14,7 @@ generated: true
 
 | 模块 |
 |---|
+| [agent-core/openjiuwen/agent_teams](#module-agent-core-openjiuwen-agent_teams) |
 | [agent_teams](#module-agent_teams) |
 | [agent_teams/workflow](#module-agent_teams-workflow) |
 | [channels/web/frontend](#module-channels-web-frontend) |
@@ -22,6 +23,7 @@ generated: true
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness/common](#module-jiuwenswarm-agents-harness-common) |
 | [jiuwenswarm/agents/harness/team](#module-jiuwenswarm-agents-harness-team) |
+| [jiuwenswarm/agents/swarm](#module-jiuwenswarm-agents-swarm) |
 | [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
 | [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
 | [jiuwenswarm/common](#module-jiuwenswarm-common) |
@@ -34,6 +36,7 @@ generated: true
 | [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
 | [jiuwenswarm/server](#module-jiuwenswarm-server) |
 | [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
+| [jiuwenswarm/server/jiuwenmate](#module-jiuwenswarm-server-jiuwenmate) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
@@ -42,6 +45,16 @@ generated: true
 | [server/runtime/agent_adapter](#module-server-runtime-agent_adapter) |
 | [server/runtime/mcp](#module-server-runtime-mcp) |
 | [server/runtime/session](#module-server-runtime-session) |
+
+<a id="module-agent-core-openjiuwen-agent_teams"></a>
+
+## agent-core/openjiuwen/agent_teams
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261120-1701-swarmchat-auto-reply](proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | SwarmChat 群成员自动判断是否回复设计方案 | draft | weichenhao | messaging | 2026-11-24 |
 
 <a id="module-agent_teams"></a>
 
@@ -116,6 +129,16 @@ generated: true
 |---|---|---|---|---|---|
 | [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
 
+<a id="module-jiuwenswarm-agents-swarm"></a>
+
+## jiuwenswarm/agents/swarm
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261120-1701-swarmchat-auto-reply](proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | SwarmChat 群成员自动判断是否回复设计方案 | draft | weichenhao | messaging | 2026-11-24 |
+
 <a id="module-jiuwenswarm-channels-web-frontend"></a>
 
 ## jiuwenswarm/channels/web/frontend
@@ -124,6 +147,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
+| [D-20261120-1701-swarmchat-auto-reply](proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | SwarmChat 群成员自动判断是否回复设计方案 | draft | weichenhao | messaging | 2026-11-24 |
 | [SDD-0026](proposals/SDD-0026-trajectory-observability-web-ui/design.md) | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | draft | @alan_cheng | observability | 2026-09-15 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
@@ -237,9 +261,25 @@ generated: true
 |---|---|---|---|---|---|
 | [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
 
+<a id="module-jiuwenswarm-server-jiuwenmate"></a>
+
+## jiuwenswarm/server/jiuwenmate
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261120-1701-swarmchat-auto-reply](proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | SwarmChat 群成员自动判断是否回复设计方案 | draft | weichenhao | messaging | 2026-11-24 |
+
 <a id="module-jiuwenswarm-server-runtime"></a>
 
 ## jiuwenswarm/server/runtime
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261120-1701-swarmchat-auto-reply](proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | SwarmChat 群成员自动判断是否回复设计方案 | draft | weichenhao | messaging | 2026-11-24 |
 
 ### 开发中 (active)
 

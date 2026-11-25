@@ -1,3 +1,5 @@
+import i18n from '../../i18n';
+
 export type LocalFilePick = {
   path: string;
   filename: string;
@@ -414,7 +416,7 @@ async function selectLocalFilesViaBackend(
       return {
         ok: false,
         reason: 'unsupported',
-        message: '后端未注册 path.select_files，请重启 jiuwenswarm-start 后再试',
+        message: i18n.t('workspace.selectFilesUnavailable'),
       };
     }
     return {

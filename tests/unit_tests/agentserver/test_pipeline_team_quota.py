@@ -11,7 +11,7 @@ import pytest
 
 from jiuwenswarm.common.request_identity import apply_routing_metadata
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.enterprise.team import handlers as team_control
 from jiuwenswarm.enterprise.team.control_store import SqliteTeamControlStore
@@ -25,11 +25,6 @@ from jiuwenswarm.enterprise.team.quota import (
     team_quota_user_message,
 )
 from jiuwenswarm.server.transports.ws_sink import WSSink
-
-
-@pytest.fixture(autouse=True)
-def _register_team_control_methods():
-    ensure_team_control_req_methods()
 
 
 class _FakeWS:

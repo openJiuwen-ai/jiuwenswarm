@@ -995,7 +995,7 @@ async def test_session_switch_preserves_only_local_organization_runtime(
     )
     monkeypatch.setattr(
         manager,
-        "_find_paused_runner_team_name",
+        "find_paused_runner_team_name",
         AsyncMock(side_effect=lambda session_id: "team-owner" if session_id == "sess-owner" else None),
     )
 
@@ -1051,7 +1051,7 @@ async def test_find_paused_runner_team_name_normalizes_session_and_team_name(
         list_active_teams,
     )
 
-    team_name = await TeamManager._find_paused_runner_team_name("123")
+    team_name = await TeamManager.find_paused_runner_team_name("123")
 
     assert team_name == "team-123"
 
@@ -1067,7 +1067,7 @@ async def test_stop_paused_session_runtime_returns_runner_stop_result(
     finalize_runtime_cleanup = AsyncMock()
     monkeypatch.setattr(
         manager,
-        "_find_paused_runner_team_name",
+        "find_paused_runner_team_name",
         find_paused_runner_team_name,
     )
     monkeypatch.setattr(
@@ -1547,7 +1547,10 @@ async def test_pause_session_runtime_pauses_runner_owned_team_runtime(
 
     paused = await manager.pause_session_runtime("sess-1", reason="interrupt(intent=pause): ")
 
-    assert paused is True
+    assert paused.success is True
+    assert paused.work_stopped is True
+    assert paused.resumable is True
+    assert paused.outcome == "parked"
     assert pause_calls == [("demo-team", "sess-1")]
     assert manager.is_runtime_active("sess-1") is False
     assert manager.is_session_initialized("sess-1") is True
@@ -1628,7 +1631,8 @@ async def test_pause_session_runtime_waits_for_stream_task_graceful_exit(
 
     paused = await manager.pause_session_runtime("sess-1", reason="interrupt(intent=pause): ")
 
-    assert paused is True
+    assert paused.success is True
+    assert paused.outcome == "parked"
     assert stream_exited.is_set()
     assert stream_task.done()
     assert not stream_task.cancelled()
@@ -1683,7 +1687,8 @@ async def test_pause_session_runtime_warns_and_cancels_stream_task_after_grace_t
 
     paused = await manager.pause_session_runtime("sess-1", reason="interrupt(intent=pause): ")
 
-    assert paused is True
+    assert paused.success is True
+    assert paused.outcome == "parked"
     assert stream_cancelled.is_set()
     assert stream_task.cancelled()
     assert manager.has_stream_task("sess-1") is False
@@ -2354,7 +2359,7 @@ async def test_stop_paused_session_runtime_stops_controller_before_runner(
         timeline.append("runner.stop")
         return True
 
-    monkeypatch.setattr(manager, "_find_paused_runner_team_name", fake_find_paused)
+    monkeypatch.setattr(manager, "find_paused_runner_team_name", fake_find_paused)
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.team_manager.Runner.stop_agent_team",
         fake_stop_agent_team,

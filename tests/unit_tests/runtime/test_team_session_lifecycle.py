@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
+from jiuwenswarm.agents.harness.team.team_manager import PauseSessionResult
 from jiuwenswarm.common import host_services
 from jiuwenswarm.runtime import team_session_lifecycle as lifecycle_module
 from jiuwenswarm.runtime.session.model import SessionLifecycleContext
@@ -50,9 +51,19 @@ class _RecordingTeamManager:
         reason: str = "",
         *,
         generation: int | None = None,
-    ) -> bool:
+    ) -> PauseSessionResult:
         del session_id, reason, generation
-        return self.paused
+        if self.paused:
+            return PauseSessionResult(
+                work_stopped=True,
+                resumable=True,
+                outcome="parked",
+            )
+        return PauseSessionResult(
+            work_stopped=False,
+            resumable=False,
+            outcome="failed",
+        )
 
     async def stop_session_runtime(
         self,
@@ -148,7 +159,9 @@ async def test_pause_session_returns_result_without_publishing(
         channel_id="web",
     )
 
-    assert result is paused
+    assert result.success is paused
+    assert result.work_stopped is paused
+    assert result.resumable is paused
     publish.assert_not_awaited()
     test_logger.info("Pause result=%s; completion delivery remains Runtime-owned", paused)
 

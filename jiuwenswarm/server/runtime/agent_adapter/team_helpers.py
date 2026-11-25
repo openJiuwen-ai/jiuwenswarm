@@ -1329,20 +1329,28 @@ def _resolve_channel_id(channel_id: str | None) -> str:
 
 
 def _resolve_request_language(request: Any) -> str:
+    from jiuwenswarm.common.i18n import try_normalize_preferred_language
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
     metadata = getattr(request, "metadata", None)
     params = getattr(request, "params", None)
     sources = []
-    if isinstance(metadata, dict):
-        sources.append(metadata)
     if isinstance(params, dict):
         sources.append(params)
+    if isinstance(metadata, dict):
+        sources.append(metadata)
 
+    # UI language only — never treat preferred_response_language=match as UI.
     for source in sources:
-        for key in ("language", "preferred_language", "preferred_response_language"):
+        for key in ("ui_language", "language", "preferred_language"):
             value = source.get(key)
             if value:
-                return str(value).strip().lower() or "zh"
-    return "zh"
+                mapped = try_normalize_preferred_language(value)
+                if mapped is not None:
+                    return mapped
+    return resolve_preferred_language()
 
 
 def _safe_query_preview(query: Any, limit: int = DEFAULT_PREVIEW_MAX_CHARS) -> str:
@@ -1607,6 +1615,17 @@ def _group_chat_input(request: Any, text: Any) -> dict | None:
     if any(not isinstance(item, dict) for item in attachments):
         raise ValueError("Group attachments must contain JSON objects")
     return payload
+
+
+def _schedule_group_auto_reply(session_id: str, group_input: dict) -> None:
+    """Hand an accepted, unmentioned user message to the group's judge model."""
+    try:
+        from jiuwenswarm.server.runtime.group_auto_reply import schedule
+
+        schedule(session_id, str(group_input["client_message_id"]))
+    except Exception:
+        # The message is already archived; a failed judgement must not fail its acceptance.
+        logger.warning("[TeamHelpers] group auto reply was not scheduled session_id=%s", session_id, exc_info=True)
 
 
 async def _record_group_organization_plan(session_id: str, group_input: dict) -> str | None:
@@ -2890,14 +2909,13 @@ def _redact_teammate_quota_tool_result(parsed: dict[str, Any]) -> dict[str, Any]
         return parsed
     keys = ("result", "raw_output", "summary", "content", "error", "rendered_result")
     blob = "\n".join(str(parsed.get(key) or "") for key in keys)
-    if "TEAM_MEMBER_QUOTA_EXCEEDED" not in blob and "人数已满" not in blob:
+    markers = ("TEAM_MEMBER_QUOTA_EXCEEDED", "人数已满", "Team is full")
+    if not any(marker in blob for marker in markers):
         return parsed
     redacted = dict(parsed)
     for key in keys:
         value = redacted.get(key)
-        if isinstance(value, str) and (
-            "TEAM_MEMBER_QUOTA_EXCEEDED" in value or "人数已满" in value
-        ):
+        if isinstance(value, str) and any(marker in value for marker in markers):
             redacted[key] = "TEAM_MEMBER_QUOTA_EXCEEDED"
     return redacted
 
@@ -3759,6 +3777,12 @@ async def _process_team_message_stream(
     )
     has_execution_context = isinstance(execution_context, TeamExecutionContext)
     run_context = _team_input_run_context(request) if has_execution_context else None
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_context import extract_permission_user_content
+    from jiuwenswarm.common.team_memory_binding import team_memory_user_context
+
+    human_text = extract_permission_user_content(inputs.get("query"))
+    if human_text:
+        run_context = team_memory_user_context(run_context, human_text)
 
     # Attach-only subscription: entering a running Team Session observes the
     # live stream without submitting input. It must short-circuit before the
@@ -4864,6 +4888,7 @@ async def _process_team_message_stream(
                         is_complete=False,
                     )
                     if not group_input["mentions"]:
+                        _schedule_group_auto_reply(session_id, group_input)
                         await _release_team_round(
                             team_manager,
                             session_id,
@@ -5154,6 +5179,7 @@ async def _process_team_message_stream(
                                     "client_message_id",
                                 )
                                 if identity == group_input["client_message_id"]:
+                                    _schedule_group_auto_reply(session_id, group_input)
                                     yield _team_processing_done_chunk(
                                         rid,
                                         channel_id,
@@ -5823,6 +5849,16 @@ async def _consume_stream_with_query(
                         backend = await resolve_group_backend(group)
                         if backend is not None:
                             await sync_group_roster(group, backend)
+                            try:
+                                from jiuwenswarm.server.runtime.group_auto_reply import recover_group
+
+                                # Notifications decided while this runtime was away are delivered now.
+                                await recover_group(session_id)
+                            except Exception:
+                                logger.warning(
+                                    "[TeamHelpers] group auto reply recovery failed session_id=%s",
+                                    session_id, exc_info=True,
+                                )
                     await tm.attach_distributed_hooks_for_runner_runtime(
                         team_name=ready_team_name,
                         session_id=session_id,

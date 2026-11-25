@@ -30,6 +30,8 @@ export interface WebUIAdapterContext {
   /** Trusted frame scope, supplied by the instance view rather than plugin props. */
   sessionId?: string;
   packageId?: string;
+  /** Trusted server render revision; standalone component previews have no lifecycle target. */
+  renderRevision?: number;
   connected: boolean;
   /** Optional state port; each component owns the values it chooses to retain. */
   componentState?: WebUIComponentStateStore;

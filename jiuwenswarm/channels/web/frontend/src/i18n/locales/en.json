@@ -118,12 +118,21 @@
     "processing": "Processing…",
     "retry": "Retry",
     "selectedCount": "{{count}} selected",
+    "noMatches": "No matches",
     "editMenu": {
       "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
       "copy": "Copy",
       "paste": "Paste",
       "selectAll": "Select All"
+    },
+    "pagination": {
+      "total": "{{count}} total",
+      "prev": "Previous",
+      "next": "Next",
+      "pageSize": "Per page",
+      "jumpTo": "Go to",
+      "go": "Go"
     }
   },
   "a2ui": {
@@ -131,7 +140,11 @@
     "unavailable": "The interface cannot be displayed right now. Please try again or regenerate the result.",
     "unavailableTitle": "The interface cannot be displayed right now",
     "retry": "Please try again later or regenerate the result",
-    "unsupportedProtocol": "Unsupported A2UI protocol version: {{version}}"
+    "unsupportedProtocol": "Unsupported A2UI protocol version: {{version}}",
+    "multipleChoice": {
+      "maxSelections": "{{description}} (select up to {{count}})",
+      "searchPlaceholder": "Search options"
+    }
   },
   "webui": {
     "entryLabel": "Application view",
@@ -158,7 +171,9 @@
     "logs": "Logs",
     "update": "Updates",
     "personalContext": "Knowledge",
-    "appMarket": "Apps"
+    "appMarket": "Apps",
+    "workspace": "Workspace",
+    "approvals": "Requests"
   },
   "appMarket": {
     "resourceMemory": "RAM",
@@ -170,7 +185,7 @@
     "serverResourceHint": "Whole-machine CPU and memory usage on the server running the backend, including every process on that machine; it is not WorkSwarm's own usage. A local connection usually targets this computer, but proxies and port forwarding may target a remote server; containers may report host statistics. Updates every 3 seconds. Warns after 3 samples at or above 85% CPU or memory; clears when both are below 75%.",
     "highResourceUsage": "High system usage. Consider stopping unused apps or other tasks.",
     "title": "Apps",
-    "allApps": "All Apps",
+    "myApps": "My Apps",
     "market": "App Plaza",
     "marketLoadFailed": "Failed to load the App Plaza",
     "noMarketApps": "No apps in the App Plaza",
@@ -181,7 +196,15 @@
     "unpinSuccess": "Unpinned {{name}}",
     "pinFailed": "Failed to update pin state",
     "detailLoadFailed": "Failed to load app details",
-    "backToAll": "Back to All Apps",
+    "aiRoles": {
+      "title": "AI Roles",
+      "empty": "No AI roles declared",
+      "loadFailed": "Failed to load AI roles",
+      "agent": "Single-role session",
+      "team": "Team session",
+      "leader": "Leader"
+    },
+    "backToMyApps": "Back to My Apps",
     "backToMarket": "Back to App Plaza",
     "sourceHub": "Hub",
     "sourceLocal": "Local",
@@ -255,6 +278,7 @@
     "stop": "Stop",
     "open": "Open",
     "openRestore": "Open / restore",
+    "viewDetails": "View details",
     "openPreview": "Open app preview",
     "edit": "Edit",
     "editSessionTitle": "Edit {{name}}",
@@ -283,6 +307,11 @@
     "stopSuccess": "App stopped",
     "stopFailed": "Failed to stop",
     "deleteSuccess": "App deleted",
+    "removeKeepFiles": "Remove and keep files",
+    "deleteCleanFiles": "Delete and clean files",
+    "removeKeepSuccess": "Removed from App Market; local files kept",
+    "deleteCleanSuccess": "App deleted and local files cleaned",
+    "deleteCleanConfirm": "Delete “{{name}}” and clean its local files? The project is not affected.",
     "uninstallCleanupWarning": "The app was removed from App Market. Local cleanup was incomplete. Check {{directory}}.",
     "deleteFailed": "Failed to delete",
     "deleteConfirm": "Are you sure you want to delete this app? Running instances will be stopped.",
@@ -298,7 +327,8 @@
       "installed": "Installed",
       "notInstalled": "Not installed",
       "needsRepair": "Needs repair",
-      "notFound": "Not found"
+      "notFound": "Not found",
+      "outdated": "Update needed"
     },
     "sections": {
       "about": "Basic info",
@@ -365,6 +395,7 @@
       "stale_origin": "The add-in still points to an old address. Click Repair to update it."
     },
     "appsNotFound": "Not found on this computer: {{apps}}. Open each once after installing it, then install from here.",
+    "appOutdated": "{{app}} is too old for the add-in. Update it to {{version}} or later, then install from here.",
     "listSeparator": ", ",
     "errors": {
       "actionFailed": "That didn't finish. Try again."
@@ -982,7 +1013,6 @@
       "affinityCapability": "This service supports Ascend KV-Cache affinity",
       "affinityCapabilityDescription": "Only for custom services implementing the agent_hint protocol. This is a manual declaration; connection tests do not verify affinity support.",
       "affinityAutoDisabled": "Model configuration saved. KV-Cache affinity was automatically disabled because a control model no longer supports it. Restart if required.",
-
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
@@ -1344,6 +1374,12 @@
       "preferred_language": {
         "title": "Language",
         "description": "Set the display language for the application interface."
+      },
+      "max_context_size_mb": {
+        "title": "Knowledge capacity (MB)",
+        "description": "After collection, trim over-limit content to 60%.",
+        "placeholder": "10 to 10000, default 50",
+        "invalid": "Enter a whole number from 10 to 10000 MB."
       },
       "chrome_path": {
         "title": "Browser path",
@@ -2012,7 +2048,8 @@
       "showSessions": "Show sessions",
       "hideTasks": "Collapse tasks",
       "showTasks": "Show tasks"
-    }
+    },
+    "retentionRunning": "Trajectory retention is running; retry shortly."
   },
   "teams": {
     "title": "Team Management",
@@ -2498,7 +2535,10 @@
       "providerRefusal": "Topic recommendations are unavailable. Check Settings.",
       "openSettings": "Check settings",
       "trySettings": "Try it",
-      "disabledHintWithCards": "Want topics that understand you better? Turn on topic recommendations in Settings - General."
+      "disabledHintWithCards": "Want topics that understand you better? Turn on topic recommendations in Settings - General.",
+      "newsReport": "News",
+      "recent": "Recent",
+      "openOriginal": "Open original: {{source}}"
     },
     "promptSuggestionBox": {
       "label": "Next: ",
@@ -2611,6 +2651,16 @@
     "skillsAdd": "Add to composer",
     "skillsRemove": "Remove",
     "agent": "Experts",
+    "expertBatchTitle": "Expert team collaboration",
+    "expertBatchExisting": "Added",
+    "expertBatchCreating": "Starting expert teams…",
+    "expertBatchOwner": "Primary expert team",
+    "expertBatchConfirm": "Confirm ({{count}})",
+    "expertBatchUnknownError": "Unknown error",
+    "expertBatchError": "Could not start teams: {{error}}. Retry safely; created teams will be reused.",
+    "expertBatchRequestFailed": "Could not start expert teams. View details",
+    "expertBatchSummary": "Expert teams: {{success}} succeeded, {{failed}} failed",
+    "expertBatchStatus": {"created": "Started", "existing": "Already added; reused", "failed": "Failed"},
     "agentGroup": "Expert Teams",
     "agentToggle": "Choose an installed Expert",
     "agentSearchPlaceholder": "Enter keywords to search",
@@ -2747,7 +2797,36 @@
     "selectTeamMembers": "Select team members",
     "noTeamMembersAvailable": "No team members available",
     "moaReferenceRunning": "Running reference models…",
-    "moaVerifying": "Evaluating task progress…"
+    "moaVerifying": "Evaluating task progress…",
+    "sessionNotReady": "The session is not ready yet. Try again in a moment.",
+    "slash": {
+      "forkFailed": "Failed to fork the session. Try again later.",
+      "compactBusy": "Compaction is already running. Please wait.",
+      "compactNoop": "The context is already optimal — no compaction needed.",
+      "compactDone": "✓ Context compacted: {{after}}K / {{before}}K tokens ({{rate}}% saved)",
+      "compactIncomplete": "Compaction did not finish. Try again later.",
+      "compactFailed": "Compaction failed: network error or request timeout.",
+      "planTeamUnsupported": "Plan mode is only available for single agents, not team sessions.",
+      "goalNone": "This session has no ongoing goal.",
+      "goalCurrent": "Current goal ({{status}}): {{objective}}",
+      "goalStatus": {
+        "active": "In progress",
+        "paused": "Paused",
+        "completed": "Completed",
+        "blocked": "Blocked"
+      },
+      "goalUsage": "Usage: /goal [set <objective>|pause|resume|clear]",
+      "goalNeedSession": "Start a conversation before controlling the ongoing goal.",
+      "goalBusy": "A reply is in progress, so the goal cannot be set. Wait for it to finish.",
+      "goalPlanActive": "Plan mode is active. Exit plan mode before setting a goal.",
+      "goalClearBusy": "The goal is running and cannot be cleared. Pause it or wait for it to finish.",
+      "goalFailed": "The goal command failed. Try again later.",
+      "persistExistingSession": "Persist Session can only be enabled when creating a new session, and it cannot be changed afterwards. Click \"New task\" and then use /persist <task>.",
+      "persistUsage": "Usage: /persist <task>"
+    },
+    "sessionTaskCompleted": "Session task: [{{description}}] completed",
+    "receiving": "Receiving...",
+    "evolutionUnavailableInMode": "The evolution feature is unavailable in {{mode}} mode."
   },
   "autoHarness": {
     "busy": "An Auto-Harness task is already running",
@@ -2910,6 +2989,7 @@
   },
   "sessionSidebar": {
     "newSession": "New session",
+    "comboboxOptions": "{{label}} options",
     "enterpriseContext": {
       "user": "User",
       "userContext": "User context",
@@ -3760,6 +3840,8 @@
       "createdNodes": "Added {{nodes}} nodes ({{files}} files) in this run",
       "updatedNodes": "Updated {{count}} nodes",
       "noNewContent": "No new content",
+      "capacityRemoved": "Capacity maintenance removed {{count}} content files",
+      "capacityIncomplete": "Capacity maintenance is incomplete. Knowledge may still exceed the limit",
       "collectionDisabledHint": "Enable Personal Context and content collection in settings before fetching now.",
       "collectionStoppingHint": "Collection is stopping. Wait until it has stopped and try again.",
       "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
@@ -4033,6 +4115,10 @@
       "install": "Install",
       "installing": "Installing...",
       "uninstall": "Uninstall",
+      "exportSkill": "Export",
+      "exportingSkill": "Exporting {{name}}…",
+      "exportSuccess": "Exported {{name}}",
+      "exportCancelled": "Export cancelled",
       "uninstalling": "Uninstalling...",
       "update": "Update",
       "importLocal": "Import Local Skill",
@@ -4296,7 +4382,7 @@
     "graph": {
       "orchestration": {
         "description": "Enable graph builds to plan skill workflows and expert handoffs. Building the graph uses tokens.",
-        "graphDefinition": "Circles represent skills and diamonds represent experts. Links show possible handoffs between capabilities of the same type.",
+        "graphDefinition": "A skill graph is like a map of skill relationships: each dot represents a skill, and lines between dots show which skills can work together.",
         "saving": "Saving…",
         "saveFailed": "Failed to save the skill orchestration setting. Please try again.",
         "toggleLabel": "Enable skill orchestration",
@@ -4304,19 +4390,17 @@
       },
       "stats": {
         "skillsSuffix": " skills",
-        "expertsSuffix": " experts",
         "edgesSuffix": " links"
       },
-      "searchPlaceholder": "Search skills and experts",
+      "searchPlaceholder": "Search skills and filter graph",
       "minConfidence": "Minimum link strength {{percent}}%",
       "minConfidenceHelp": "Drag the slider to set the minimum link strength; higher values show fewer links.",
       "linkStrength": "Link strength {{percent}}%",
       "buildLogFallback": "Build log",
       "tokenUsage": "{{prompt}} in / {{completion}} out / {{total}} total",
       "required": "Required",
-      "capabilityList": "Capabilities",
-      "noVisibleCapabilities": "No capabilities to display.",
-      "expertLabel": "Expert",
+      "skillList": "Skill List",
+      "noVisibleSkills": "No skills to display.",
       "emptyGraph": "No skill graph yet. Start with an incremental build.",
       "noFilteredGraph": "No skill graph matches the current filters.",
       "degreeSummary": "In {{inDegree}} · Out {{outDegree}}",
@@ -4329,10 +4413,10 @@
       "noOutputs": "No outputs",
       "description": "Description",
       "tasks": "Tasks",
-      "relatedEdges": "Linked capabilities",
-      "noRelatedEdges": "No linked capabilities.",
-      "selectSkillHint": "Select a skill or expert from the list or graph to view its details.",
-      "detailDrawerLabel": "Capability details",
+      "relatedEdges": "Linked skills",
+      "noRelatedEdges": "No linked skills.",
+      "selectSkillHint": "Select a skill from the list or graph to view its description and links.",
+      "detailDrawerLabel": "Skill details",
       "closeDetail": "Close details",
       "zoomIn": "Zoom in",
       "zoomOut": "Zoom out",
@@ -4616,8 +4700,8 @@
     }
   },
   "agent": {
-    "title": "Agent Management",
-    "subtitle": "View agent workspace files and memory content",
+    "title": "Workspace",
+    "subtitle": "View usage, clean deletable files, and preview or download workspace content",
     "root": "Root",
     "workspace": "Workspace",
     "workspaceMeta": "{{directories}} directories, {{files}} files",
@@ -4633,8 +4717,69 @@
     "markdownOnly": "Only Markdown/JSON (.md/.mdx/.json) preview is supported",
     "errors": {
       "refreshFailed": "Refresh failed: unable to rebuild the agent file index. Check the generator script logs.",
-      "loadFailed": "Unable to read the agent file list. Check whether agent/workspace/agent-data.json has been generated."
-    }
+      "loadFailed": "Unable to read the agent file list. Check whether agent/workspace/agent-data.json has been generated.",
+      "deleteFailed": "Delete failed",
+      "downloadFailed": "Download failed"
+    },
+    "binaryPreview": "Binary files have no text preview. Use Download.",
+    "confirmDelete": "Delete \"{{name}}\"? This cannot be undone.",
+    "deletable": "Deletable",
+    "delete": "Delete",
+    "deleteConfirmTitle": "Confirm delete",
+    "dirSelectedHint": "Folder selected. Download as zip, or delete the subtree when allowed.",
+    "download": "Download",
+    "emptyDeletable": "Nothing deletable (cleanup zones are empty)",
+    "filterDeletable": "Deletable only",
+    "meta": {
+      "zone": "Zone",
+      "size": "Size",
+      "mtime": "Modified",
+      "deletable": "Deletable"
+    },
+    "notDeletableReason": "Protected zone — cannot delete",
+    "previewEmpty": "No preview content",
+    "previewTruncated": "Preview truncated. Download for the full file.",
+    "quota": {
+      "title": "Workspace usage",
+      "ok": "OK",
+      "warn": "Near limit",
+      "block": "Full",
+      "unlimited": "Unlimited",
+      "unavailable": "Usage unavailable",
+      "requestExpand": "Request expansion",
+      "expandHint": "Submit an expansion request to the admin plane",
+      "expandIdleHint": "Expansion is not needed while usage is healthy",
+      "expandUnlimitedHint": "Quota is unlimited; expansion is not applicable",
+      "expandSoon": "Expansion requests will connect to admin approval soon. Clean deletable files first, or ask an admin to raise the quota.",
+      "expandTitle": "Request workspace expansion",
+      "expandDialogHint": "Enter the target quota (GiB) and a reason. The new limit takes effect after approval.",
+      "expandLimitLabel": "Target quota (GiB)",
+      "expandReasonLabel": "Reason",
+      "expandApproverLabel": "Approver",
+      "expandApproverPlaceholder": "Select an approver",
+      "expandApproverSearch": "Search by user ID or display name",
+      "expandApproverNoMatch": "No matching approvers",
+      "expandApproverRequired": "Please select an approver",
+      "expandApproverEmpty": "No approvers available. Ask an admin to grant approval permission.",
+      "expandApproverLoadFailed": "Failed to load approvers",
+      "expandSubmit": "Submit request",
+      "expandInvalidLimit": "Enter a valid target quota in GiB",
+      "expandReasonRequired": "Please provide a reason",
+      "expandMustIncrease": "Target quota must be greater than the current limit",
+      "expandFailed": "Failed to submit expansion request",
+      "expandSubmittedTitle": "Request submitted",
+      "expandSubmittedBody": "Your expansion request was submitted. The new quota takes effect after approval. Track progress under <approvals>My Requests</approvals>.",
+      "expandViewApprovals": "View My Requests",
+      "expandSubmitted": "Expansion request submitted. The new quota takes effect after approval — track progress under My Requests in the sidebar.",
+      "expandContextRequired": "Select an Agent context (cluster and bot) before requesting expansion",
+      "openWorkspace": "Open workspace",
+      "chatWarnTitle": "Workspace nearly full",
+      "chatWarnBody": "Over 80% of quota used. Clean session artifacts or request expansion.",
+      "chatBlockTitle": "Workspace full — writes blocked",
+      "chatBlockBody": "Quota exhausted. Clean deletable files or request expansion before sending messages."
+    },
+    "selectEntry": "Select a file or folder on the left to view metadata",
+    "selectEntryHint": "Click an entry to see path, zone, and size. Files can be previewed or downloaded."
   },
   "agentManagement": {
     "title": "Expert Management",
@@ -5282,6 +5427,7 @@
     }
   },
   "network": {
+    "proxyRoutingError": "The request did not reach the backend service (an HTML page was returned with status {{status}}). Check that the backend is running and that the portal API prefix proxy is configured correctly.",
     "wsError": "WebSocket connection error",
     "connectionClosedWithCode": "Connection closed ({{code}})",
     "connectionClosed": "Connection closed",
@@ -5305,6 +5451,7 @@
     "recognitionUnsupported": "Speech recognition is not supported by this browser",
     "recordingUnsupported": "Microphone recording is not supported by this browser",
     "synthesisUnsupported": "Speech synthesis is not supported by this browser",
+    "codeBlockOmitted": "Code block omitted",
     "errors": {
       "noSpeech": "No speech detected",
       "noMic": "No microphone detected",
@@ -5710,7 +5857,9 @@
     "errors": {
       "delete": "Failed to delete conversation",
       "create": "Failed to create conversation",
-      "send": "Failed to send message"
+      "send": "Failed to send message",
+      "quotaExceededTitle": "Workspace is full",
+      "quotaExceeded": "Unable to create a new conversation. Clean deletable files in <space>Workspace</space>, or <expand>request expansion</expand> and try again."
     }
   },
   "subagent": {
@@ -6076,6 +6225,22 @@
       "statusInstalled": "Installed",
       "statusDisabled": "Disabled",
       "statusAvailable": "Not installed",
+      "bundleBadge": "Bundle",
+      "bundleMembers": "{{count}} plugins",
+      "systemPlugins": "System plugins",
+      "systemPluginsHint": "Install the bundle to open each plugin detail.",
+      "memberDomain": "Host: {{domain}}",
+      "memberStatusStandby": "Standby: the same plugin is already active",
+      "memberStatusDisabled": "Disabled",
+      "memberStatusPending": "Loading",
+      "memberStatusFailed": "Load failed",
+      "overall": {
+        "not-installed": "Not installed",
+        "disabled": "Disabled",
+        "partial": "Partially active",
+        "enabled": "Enabled",
+        "failed": "Partially failed"
+      },
       "preview": "Preview",
       "previewHint": "Click to enlarge",
       "ability": "Capabilities",
@@ -6106,6 +6271,24 @@
     }
   },
   "auth": {
+    "startup": {
+      "manager": "[Production identity mode] Depends on the Manager ID authentication service",
+      "simulate": "[Sign-in simulation mode is on] Using default Agent context candidates"
+    },
+    "errors": {
+      "authorizeFailed": "Failed to get the authorization URL",
+      "authorizeMalformed": "The authorization response is incomplete",
+      "authorizeUnavailable": "Unable to get the authorization URL. Try again later.",
+      "loginFailed": "Sign-in failed. Try again.",
+      "statusFailed": "Failed to get the sign-in status",
+      "modelsFailed": "Failed to load the model list",
+      "quotaFailed": "Failed to load the quota"
+    },
+    "manager": {
+      "networkFailed": "Network request failed: {{message}}",
+      "contextFailed": "Failed to load Agent contexts",
+      "switchClusterFailed": "Failed to switch clusters"
+    },
     "huawei": {
       "title": "Sign in with HUAWEI ID",
       "subtitle": "Sign in to use the models your account provides — no API key needed.",
@@ -6580,7 +6763,13 @@
     "forkFromSession": "Forked from session {{name}}",
     "forkChildSession": "Forked child session",
     "executorOrchestration": "[{{name}}'s orchestration · {{workflow}}]",
-    "runFoldDivider": "In progress {{active}} · Finished {{ended}}"
+    "runFoldDivider": "In progress {{active}} · Finished {{ended}}",
+    "sectionResult": "Result",
+    "iterationRound": "Round {{index}}",
+    "iterationDotTitle": "Round {{index}} · {{status}}",
+    "iterationCount": "×{{count}} rounds",
+    "formatToggleFormatted": "Formatted",
+    "formatToggleRaw": "Raw"
   },
   "a4pSettings": {
     "title": "A4P pre-authorization",
@@ -7882,6 +8071,21 @@
       "in_progress": "In progress",
       "blocked": "Waiting",
       "stopped": "Stopped"
+    },
+    "autoReply": {
+      "title": "Auto reply",
+      "hint": "When a message mentions nobody, a judge model decides which members should reply. A mention is always answered by the mentioned member.",
+      "model": "Judge model",
+      "sessionModel": "Follow the group session model",
+      "unavailableModel": "Saved model is unavailable",
+      "modelHint": "A small, fast model lowers cost and waiting time.",
+      "pending": "Deciding who should reply…",
+      "notified": "Auto reply: asked {{names}} to reply",
+      "coordinated": "Auto reply: asked {{owner}} to coordinate {{names}} on one result",
+      "separator": ", ",
+      "none": "Auto reply: no member needs to reply",
+      "failed": "Could not decide who should reply. Mention a member instead.",
+      "stopped": "Stopped before deciding who should reply"
     }
   },
   "webuiFileImport": {
@@ -7894,15 +8098,19 @@
     "holdToSkip": "Hold Space to skip"
   },
   "webuiPresentation": {
+    "autoStartBusy": "An application form is already in use. Close it, then enable the floating plugin again.",
+    "closeOverlay": "Close floating form",
     "enter": "Open {{title}}",
-    "opening": "Opening desktop form…",
-    "desktopRequired": "Application forms require the desktop app",
+    "opening": "Opening application form…",
+    "desktopRequired": "Desktop forms require the desktop app",
     "newConversation": "New conversation",
-    "openFailed": "Unable to open the desktop form. The workspace is still available.",
-    "updateFailed": "Unable to update the desktop form. Check the connection in the workspace.",
+    "openFailed": "Unable to open the application form. The workspace is still available.",
+    "updateFailed": "Unable to update the application form. Check the connection in the workspace.",
     "actionFailed": "The action did not complete. Check the conversation status.",
     "restored": "The desktop form ended and the workspace was restored",
     "errors": {
+      "DESKTOP_REQUIRED": "This form requires the desktop app.",
+      "UNSUPPORTED_ACTION": "This action is unavailable for an in-app form.",
       "DISCONNECTED": "Disconnected. Return to the workspace.",
       "TARGET_INACTIVE": "This conversation is unavailable. Select another one.",
       "CONVERSATION_BUSY": "This conversation is running or awaiting confirmation. Complete the current action first.",
@@ -7947,6 +8155,88 @@
       "forbidden": "Files outside this session directory cannot be accessed",
       "unavailable": "File preview is unavailable for this session",
       "error": "Unable to read this file. Select it again to retry."
+    }
+  },
+  "marketplace": {
+    "cache": {
+      "refreshFailed": "Catalog refresh failed. Previously available items are retained.",
+      "stale": "Showing previously cached content.",
+      "updatedAt": "Last updated: {{time}}"
+    }
+  },
+  "assetPublish": {
+    "errors": {
+      "desktopNotReady": "Desktop browser support is not ready yet. Try again.",
+      "popupBlocked": "The browser blocked the authorization window. Allow new tabs and try again.",
+      "openBrowserFailed": "Could not open the system browser. Try again.",
+      "oauthUnavailable": "OAuth sign-in is unavailable"
+    }
+  },
+  "hubOAuth": {
+    "startFailed": "Could not start Hub authorization. Check the local service.",
+    "requestExpired": "The authorization request expired. Sign in again.",
+    "windowClosed": "The authorization window was closed. Sign in again.",
+    "exchangeFailed": "Hub sign-in could not be exchanged. Authorize again; if it still fails, contact the Hub administrator.",
+    "failed": "Authorization failed. Try again."
+  },
+  "workspace": {
+    "selectFilesUnavailable": "The backend did not register path.select_files. Restart jiuwenswarm-start and try again."
+  },
+  "approvals": {
+    "myTitle": "My requests",
+    "mySubtitle": "View and manage approval requests you submitted",
+    "unavailable": "Requests are unavailable in the current environment",
+    "empty": "No requests yet",
+    "loadFailed": "Failed to load requests",
+    "cancelFailed": "Failed to cancel request",
+    "cancel": "Cancel",
+    "resubmit": "Edit and resubmit",
+    "resubmitTitle": "Resubmit request",
+    "resubmitHint": "Update the request and resubmit. This revises the same request.",
+    "resubmitSubmit": "Resubmit",
+    "resubmitFailed": "Failed to resubmit",
+    "rejectComment": "Rejection comment",
+    "currentQuota": "Current quota",
+    "approvers": "Approvers",
+    "copyLink": "Copy approval link",
+    "copyLinkSuccess": "Approval link copied",
+    "copyLinkFailed": "Failed to copy approval link",
+    "copyOrderNum": "Click to copy order number",
+    "copyOrderNumSuccess": "Order number copied",
+    "copyOrderNumFailed": "Failed to copy order number",
+    "stats": {
+      "total": "Total {{count}}"
+    },
+    "search": {
+      "placeholder": "Search by order number, title, or reason",
+      "noResults": "No matching requests"
+    },
+    "filter": {
+      "reset": "Clear filters"
+    },
+    "table": {
+      "title": "Title",
+      "orderNum": "Order No.",
+      "type": "Type",
+      "summary": "Summary",
+      "requestedQuota": "Requested quota",
+      "approver": "Current approver",
+      "reason": "Reason",
+      "status": "Status",
+      "createdAt": "Submitted",
+      "actions": "Actions"
+    },
+    "status": {
+      "pending": "Pending",
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "cancelled": "Cancelled"
+    },
+    "business": {
+      "workspace_quota_expand": "Workspace expansion"
+    },
+    "summary": {
+      "quotaExpand": "Requested quota {{size}}"
     }
   }
 }

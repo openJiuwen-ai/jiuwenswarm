@@ -15,11 +15,9 @@ from .cua_runtime import desktop_lane
 
 
 REPL_DESCRIPTION = (
-    "Run Python with the synchronous SDK for multi-step desktop workflows. Preloaded: computer "
-    "(Computer/App/Window/Element SDK), print, print_image. Variables persist across calls within this "
-    "task. Use print_image for screenshots and explicitly read "
-    "to verify actions. Use references and coordinates from this tool; inspect a returned "
-    "image before choosing coordinates in a later call. After errors, observe before retrying "
+    "Run synchronous Python with the preloaded computer, print and print_image. Variables persist "
+    "within this desktop task. Reads automatically display the requested text and images. "
+    "Inspect a returned image before choosing coordinates. After errors, observe before retrying "
     "actions that may already have executed."
 )
 

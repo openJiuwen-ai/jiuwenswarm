@@ -287,6 +287,37 @@ def test_missing_declared_component_is_ignored(
     assert getattr(loaded, attribute) is None
 
 
+@pytest.mark.parametrize(
+    "bad_file",
+    [
+        "missing.json",                 # file does not exist
+        "../outside.json",              # path escapes the package root
+    ],
+)
+def test_unusable_token_file_downgrades_credentials_type(tmp_path: Path, bad_file: str) -> None:
+    """A token declaration whose file cannot be loaded must not stay as 'token'.
+
+    Otherwise detect_credential_kind() reports KIND_TOKEN (prompting the user for
+    credentials) while load_token_schema() returns None because the file is gone,
+    leaving an empty required_tokens form that can never be filled in.
+    """
+    package = tmp_path / "example"
+    _write_json(
+        package / "manifest.json",
+        _manifest(
+            "example",
+            {"type": "cli", "file": "cli.json"},
+            credentials={"type": "token", "file": bad_file},
+        ),
+    )
+    _write_json(package / "cli.json", {})
+
+    loaded = load_mcp_package(package)
+
+    assert loaded.credentials_file is None
+    assert loaded.credentials_type == "none"
+
+
 def test_non_png_icon_is_ignored(tmp_path: Path) -> None:
     package = tmp_path / "example"
     _write_json(

@@ -81,3 +81,26 @@ write_env_to_file() {
     done
     success "Generated config file : ${env_file}"
 }
+
+# 写一份过滤后的 env：排除必须由启动环境注入的控制变量，
+# 其余部署变量由 Gateway/AgentServer 共用。
+write_filtered_env_to_file() {
+    local env_file=$1
+    local -n source_array=$2
+    local -n exclude_array=$3
+
+    declare -A excluded=()
+    local key
+    for key in "${exclude_array[@]}"; do
+        excluded["${key}"]=1
+    done
+
+    info "Writing filtered env to file: ${env_file}"
+    > "${env_file}"
+    printf "%s\n" "${!source_array[@]}" | sort | while read -r key; do
+        [ -n "${key}" ] || continue
+        [ -n "${excluded[${key}]:-}" ] && continue
+        echo "${key}=${source_array[${key}]}" >> "${env_file}"
+    done
+    success "Generated filtered env: ${env_file}"
+}

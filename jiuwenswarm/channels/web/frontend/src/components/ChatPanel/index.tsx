@@ -72,6 +72,8 @@ import { isTeamLeaderMember, type TeamMemberIdentity } from '../../utils/teamMem
 import { writeClipboard } from '../../utils/writeClipboard';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import './ChatPanel.css';
+import { WorkspaceQuotaBanner } from '../WorkspacePanel/WorkspaceQuotaBanner';
+import { useWorkspaceQuotaEnabled } from '../../features/workspace/useWorkspaceQuotaEnabled';
 import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
 import { useCodeTurnDiffHistory } from '../../features/code-mode/useCodeTurnDiffHistory';
 import { turnDiffKey } from '../../features/code-mode/turnChangeState';
@@ -292,7 +294,7 @@ function SuggestionCard({
           listedAtLabel ? t('chat.topicStarter.hotListListedAt', { time: listedAtLabel }) : '',
         ].filter(Boolean).join(' · ')
       : [
-          source?.source_kind === 'news_report' ? '资讯' : '近期',
+          source?.source_kind === 'news_report' ? t('chat.topicStarter.newsReport') : t('chat.topicStarter.recent'),
           sourceSite,
           typeof source?.published_at === 'string' ? source.published_at.slice(5, 10).replace('-', '/') : '',
         ].filter(Boolean).join(' · ');
@@ -333,7 +335,7 @@ function SuggestionCard({
               </div>
             </details>
           ) : (
-            <a data-testid="chat-panel-topic-source" data-variant={topic.title} className="chat-suggestion-card__source" href={sourceUrl} target="_blank" rel="noreferrer" aria-label={`打开原文：${sourceBadge}`}>
+            <a data-testid="chat-panel-topic-source" data-variant={topic.title} className="chat-suggestion-card__source" href={sourceUrl} target="_blank" rel="noreferrer" aria-label={t('chat.topicStarter.openOriginal', { source: sourceBadge })}>
               {sourceBadge} <span aria-hidden="true">↗</span>
             </a>
           )}
@@ -1245,6 +1247,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onToggleDiagnosis,
 }: ChatPanelProps) {
   const { t } = useTranslation();
+  const workspaceQuotaEnabled = useWorkspaceQuotaEnabled();
   const workMode = useWorkspaceStore((state) => state.workMode);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
@@ -1420,19 +1423,20 @@ export const ChatPanel = React.memo(function ChatPanel({
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const isAuthorized = useAuthStore((state) => state.islogin);
+  const showFreeModelsCampaign = !isEnterprise() && !isAuthorized;
   const [bubbleVisible, setBubbleVisible] = useState(false);
   const [topicBubbleActive, setTopicBubbleActive] = useState(false);
   const showTopicBubble = topicBubbleActive && recommendationState === 'disabled';
   const [freeModelsPromptDismissed, setFreeModelsPromptDismissed] = useState(false);
   const bubbleHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleBubbleShow = useCallback(() => {
-    if (!isAuthorized && freeModelsPromptDismissed && !showTopicBubble) return;
+    if (showFreeModelsCampaign && freeModelsPromptDismissed && !showTopicBubble) return;
     if (bubbleHideTimerRef.current) {
       clearTimeout(bubbleHideTimerRef.current);
       bubbleHideTimerRef.current = null;
     }
     setBubbleVisible(true);
-  }, [freeModelsPromptDismissed, isAuthorized, showTopicBubble]);
+  }, [freeModelsPromptDismissed, showFreeModelsCampaign, showTopicBubble]);
   const handleBubbleLeave = useCallback(() => {
     if (bubbleHideTimerRef.current) {
       clearTimeout(bubbleHideTimerRef.current);
@@ -2470,6 +2474,7 @@ export const ChatPanel = React.memo(function ChatPanel({
           </div>
         </div>
       )}
+      {workspaceQuotaEnabled ? <WorkspaceQuotaBanner /> : null}
       {hasHarnessProgress && (
         <div
           className="sticky top-0 z-10 px-3 pt-2 bg-bg/95 backdrop-blur-sm"
@@ -2553,7 +2558,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   <>
                     <div
                       ref={bubbleRef}
-                      className={`chat-welcome__banner chat-welcome__banner--bubble${showTopicBubble || !isAuthorized ? ' chat-welcome__banner--bubble--campaign' : ''}${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
+                      className={`chat-welcome__banner chat-welcome__banner--bubble${showTopicBubble || showFreeModelsCampaign ? ' chat-welcome__banner--bubble--campaign' : ''}${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
                       data-testid="chat-panel-welcome-banner-bubble"
                       onMouseEnter={handleBubbleShow}
                       onMouseLeave={handleBubbleLeave}
@@ -2570,7 +2575,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                             {t('chat.topicStarter.trySettings')}
                           </button>
                         </>
-                      ) : isAuthorized ? (
+                      ) : !showFreeModelsCampaign ? (
                         t('chat.welcomeBubbleText')
                       ) : (
                         <>

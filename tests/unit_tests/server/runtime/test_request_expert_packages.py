@@ -54,6 +54,43 @@ def _bind_packages(packages: list[dict], **identity):
     return bind_request_subject(metadata)
 
 
+@pytest.mark.parametrize("kind", ["agent_template", "agent_group", "plugin"])
+@pytest.mark.parametrize(
+    ("verify_env", "verify_experts"),
+    [
+        (None, True),
+        ("", True),
+        ("true", True),
+        ("invalid", True),
+        (" false ", False),
+        ("0", False),
+        ("no", False),
+        ("OFF", False),
+    ],
+)
+def test_expert_clients_use_agentserver_tls_setting(monkeypatch, kind, verify_env, verify_experts) -> None:
+    from jiuwenswarm.server.runtime.extension_package_manager import (
+        _create_package_hub_downloader,
+    )
+    from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
+        create_package_hub_port,
+    )
+
+    base_url = "https://expert-hub.example.test"
+    monkeypatch.setenv("TEAM_SKILLS_HUB_BASE_URL", base_url)
+    if verify_env is None:
+        monkeypatch.delenv("TEAM_SKILLS_HUB_VERIFY_SSL", raising=False)
+    else:
+        monkeypatch.setenv("TEAM_SKILLS_HUB_VERIFY_SSL", verify_env)
+
+    hub_port = create_package_hub_port(kind)
+    downloader = _create_package_hub_downloader(kind)
+    expected = verify_experts or kind == "plugin"
+    assert hub_port.base_url == base_url
+    assert hub_port.transport.verify is expected
+    assert downloader.verify is expected
+
+
 def test_personal_bind_does_not_read_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
 

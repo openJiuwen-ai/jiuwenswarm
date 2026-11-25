@@ -73,6 +73,7 @@ export interface PresentationState {
 }
 export interface ApplicationSurfaceConfig {
   key: string;
+  mode?: 'desktop' | 'overlay';
   src: string;
   resourceUrl: string;
   title: string;
@@ -80,6 +81,11 @@ export interface ApplicationSurfaceConfig {
   height: number;
   config: Record<string, unknown>;
   state: PresentationState;
+}
+export interface PresentationGeometry {
+  mode: 'overlay';
+  bounds: PresentationWorkArea;
+  workArea: PresentationWorkArea;
 }
 export interface PresentationEnvelope {
   generation: string;
@@ -99,14 +105,18 @@ export interface PresentationNativeApi {
   onClosed: (callback: (event: { generation: string; key: string; reason: string }) => void) => () => void;
 }
 export interface PresentationWindowApi {
-  bootstrap: () => Promise<ApplicationSurfaceConfig & { generation: string; initialWorkArea: PresentationWorkArea }>;
+  bootstrap: () => Promise<ApplicationSurfaceConfig & {
+    generation: string; initialWorkArea: PresentationWorkArea; host?: PresentationGeometry;
+  }>;
   ready: (options?: WindowTransitionOptions) => Promise<true | WindowTransition>;
   startTransition: (id: string) => Promise<boolean>;
   finishTransition: (id: string) => Promise<boolean>;
   onTransition: (callback: (transition: WindowTransition) => void) => () => void;
   failed: () => Promise<boolean>;
   request: (request: PresentationRequest) => Promise<boolean>;
-  onUpdate: (callback: (payload: { state?: PresentationState; config?: Record<string, unknown> }) => void) => () => void;
+  onUpdate: (callback: (payload: {
+    state?: PresentationState; config?: Record<string, unknown>; host?: PresentationGeometry;
+  }) => void) => () => void;
   onResult: (callback: (result: PresentationResult) => void) => () => void;
 }
 

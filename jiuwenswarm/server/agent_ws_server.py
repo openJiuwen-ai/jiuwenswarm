@@ -3390,6 +3390,43 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
+            params = request.params if isinstance(request.params, dict) else {}
+            channels = params.get("channels")
+            try:
+                from jiuwenswarm.common.config import apply_channel_config_snapshot
+
+                applied = await asyncio.to_thread(apply_channel_config_snapshot, channels)
+                if applied:
+                    ok, payload = True, {"applied": True}
+                else:
+                    ok, payload = False, {
+                        "applied": False,
+                        "error": "channel snapshot was not applied",
+                        "code": "BAD_REQUEST",
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[AgentServer] channel config sync failed: %s",
+                    type(exc).__name__,
+                )
+                ok, payload = False, {
+                    "applied": False,
+                    "error": "channel config sync failed",
+                    "code": "INTERNAL_ERROR",
+                }
+            response = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=ok,
+                payload=payload,
+                metadata=request.metadata,
+            )
+            async with send_lock:
+                await send_wire_payload(
+                    ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+                )
+            return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_PREPARE:
             params = request.params if isinstance(request.params, dict) else {}
             agent_id = params.get("agent_id")
@@ -3718,6 +3755,12 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.ORG_SNAPSHOT:
                 await self._handle_org_snapshot(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.ORG_EXPERT_TEAMS_ADD:
+                from jiuwenswarm.server.context import build_ws_request_context
+                from jiuwenswarm.server.dispatch import try_dispatch
+
+                await try_dispatch(build_ws_request_context(self, ws, request, send_lock))
                 return
             if request.req_method == ReqMethod.COMMAND_ADD_DIR:
                 await self._handle_command_add_dir(ws, request, send_lock)
@@ -4221,7 +4264,8 @@ class AgentWebSocketServer:
         ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
         """
         params = request.params if isinstance(request.params, dict) else {}
-        if params.get("intent", "cancel") == "cancel" and request.session_id:
+        session_cancel = params.get("intent", "cancel") == "cancel" and bool(request.session_id)
+        if session_cancel:
             # Colleague cancellation is additive: it must never block the existing
             # expert / organization stop below, and groups without colleagues skip it.
             try:
@@ -4238,9 +4282,26 @@ class AgentWebSocketServer:
                     "[AgentWebSocketServer] SwarmChat colleague stop failed; continuing group cancel: session=%s",
                     request.session_id, exc_info=True,
                 )
-        if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
+        organization_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
+        targeted_stop = not organization_stop and self._is_targeted_expert_cancel_request(request)
+        scoped_stop = organization_stop or targeted_stop or bool(str(params.get("target_request_id") or "").strip())
+        if session_cancel and not scoped_stop and not self._is_client_disconnect_cancel_request(request):
+            # Also additive: a whole-group stop withdraws judgements and notifications nobody consumed yet.
+            try:
+                from jiuwenswarm.server.runtime import group_auto_reply
+                from jiuwenswarm.server.runtime.group_service import read_group
+
+                group = read_group(request.session_id)
+                if group is not None:
+                    await group_auto_reply.stop(group)
+            except Exception:
+                logger.warning(
+                    "[AgentWebSocketServer] Group auto-reply stop failed; continuing group cancel: session=%s",
+                    request.session_id, exc_info=True,
+                )
+        if organization_stop:
             resp = await self._cancel_organization(request)
-        elif self._is_targeted_expert_cancel_request(request):
+        elif targeted_stop:
             resp = await self._cancel_targeted_expert(request)
         else:
             from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
@@ -4998,6 +5059,11 @@ class AgentWebSocketServer:
                 error="target Session ownership changed before execution",
             )
 
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language_async,
+        )
+
+        preferred_lang = await resolve_preferred_language_async(stored_user_id or None)
         cross_session = {
             "message_id": record.message_id,
             "source_session_id": record.source_session_id,
@@ -5007,7 +5073,7 @@ class AgentWebSocketServer:
             "chain_id": record.chain_id,
             "parent_message_id": record.parent_message_id,
             "hop_count": record.hop_count,
-            "language": str(get_config().get("preferred_language") or "zh"),
+            "language": preferred_lang,
         }
         params: dict[str, Any] = {
             "query": record.content,
@@ -8269,7 +8335,10 @@ class AgentWebSocketServer:
                     _upsert(
                         active.team_name,
                         state=getattr(getattr(active, "state", None), "value", None) or "running",
-                        display_name=getattr(getattr(active.agent, "card", None), "name", None),
+                        display_name=(
+                            spec_metadata.get("display_name")
+                            or getattr(getattr(active.agent, "card", None), "name", None)
+                        ),
                         leader_id=getattr(backend, "leader_member_name", None),
                         organization_id=organization_id,
                         agent_group_name=spec_metadata.get("agent_group_name"),
@@ -9098,6 +9167,10 @@ class AgentWebSocketServer:
         tree-view buttons are greyed then), or no matching run
         is registered on the controller.
         """
+        from jiuwenswarm.common.i18n import t
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
             classify_swarmflow_control_miss,
             get_background_task_controller,
@@ -9132,7 +9205,12 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=channel_id,
                 ok=False,
-                payload={"error": "工作流控制不可用，发送一条消息唤醒团队后即可使用。"},
+                payload={
+                    "error": t(
+                        "enterprise.team.workflow_unavailable",
+                        language=resolve_preferred_language(),
+                    )
+                },
             )
         else:
             run_id = run_id.strip()
@@ -14156,6 +14234,22 @@ class AgentWebSocketServer:
 
         try:
             params = request.params if isinstance(request.params, dict) else {}
+            from jiuwenswarm.server.handlers.acp_session import (
+                ACP_SESSION_EXTENSION,
+                native_acp_session_response,
+            )
+
+            if request.channel_id == "acp" and isinstance(params.get(ACP_SESSION_EXTENSION), dict):
+                payload = await native_acp_session_response(self._execution_runtime(), request)
+                resp = AgentResponse(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    ok=True, payload=payload,
+                )
+                wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+                async with send_lock:
+                    await send_wire_payload(ws, wire)
+                return
+
             client_capabilities = params.get("clientCapabilities", {})
             logger.info(
                 "[AgentServer] initialize clientCapabilities: %s",

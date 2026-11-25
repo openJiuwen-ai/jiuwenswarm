@@ -6,7 +6,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 
 from tests.unit_tests.server.jiuwenmate.test_resource_assembly import MapCatalog, service, settings, write_skill

@@ -79,6 +79,7 @@ from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_b
 from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import (
     build_jiuwen_memory_rail,
     get_jiuwen_builtin_mode,
+    get_jiuwen_memory_scope,
     is_jiuwen_builtin_memory,
     jiuwen_builtin_config_fingerprint,
 )
@@ -103,6 +104,7 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import MULTIMODAL
 from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
     apply_discovery_metadata,
 )
+from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.coding_memory_paths import (
     resolve_coding_memory_project_name,
@@ -528,6 +530,7 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
     "subagent_resume",
     "read_file",
     "pcs_search",
+    "pcs_read",
     "grep",
     "list_files",
     "glob",
@@ -610,6 +613,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._code_spec_config_snapshot: dict[str, Any] | None = None
         self._coding_memory_config_fingerprint: str | None = None
         self._coding_memory_binding: dict[str, Any] | None = None
+        self._prepared_coding_memory_project: tuple[str, str] | None = None
         self._custom_code_spec_active: bool = False
         self._session_instance_spec: DeepAgentSpec | None = None
         self._session_instance_build_context: BuildContext | None = None
@@ -692,15 +696,26 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         Distinct from prompt/runtime language (always "en" in code mode).
         Returns the normalized language code ("cn"/"en") based on
-        config.yaml preferred_language, so the Language section injected
-        by RuntimePromptRail can instruct the LLM to respond in the
+        preferred_language（企业 memo / 个人 yaml），so the Language section
+        injected by RuntimePromptRail can instruct the LLM to respond in the
         user's chosen language.
         """
-        config_base = self._active_code_config()
-        raw = str(config_base.get("preferred_language", "zh")).strip().lower()
-        if raw == "zh":
-            raw = "cn"
-        return resolve_language(raw)
+        from jiuwenswarm.common.i18n import normalize_preferred_language
+        from jiuwenswarm.common.i18n import to_runtime_language
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
+        if is_enterprise():
+            raw = resolve_preferred_language()
+        else:
+            config_base = self._active_code_config()
+            raw = normalize_preferred_language(
+                config_base.get("preferred_language")
+            )
+        mapped = to_runtime_language(raw)
+        return resolve_language(mapped)
 
     def _resolve_cua_card_language(self) -> str:
         """The cua approval card is read by the user, so it follows the UI
@@ -1270,6 +1285,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 if not initialization.cancelled():
                     initialization.exception()
                 raise
+        await self._prepare_coding_project_memory()
+
         # 修正 .agent_history 写入路径：openjiuwen 文件工具默认将
         # .agent_history 写到 Workspace.root_path（即项目目录），
         # 这里覆写为 agent 系统 workspace，避免污染用户项目目录。
@@ -1726,6 +1743,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             # ToolRetrievalPromptRail 在位。
             self._reconcile_tool_retrieval_rails_after_spec_reload(config_base)
             await self._instance.ensure_initialized()
+            await self._prepare_coding_project_memory()
             await self._sync_tool_retrieval_prompt_rail_for_runtime(config_base)
         except Exception:
             self._config_cache = previous_config_cache
@@ -2288,6 +2306,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         config_base = self._active_code_config()
         jiuwen = self.uses_jiuwen_coding_memory()
         enabled = is_memory_enabled("code", config_base)
+        entry_mode = (getattr(self, "_memory_entry_mode", None)
+                      or getattr(self, "_session_instance_mode", None)
+                      or getattr(self, "_last_mode", None) or "code")
+        if uses_jiuwen_team_memory(config_base, entry_mode):
+            enabled = False
+
         if jiuwen:
             enabled = (enabled and get_memory_mode(config_base) == "local"
                        and is_builtin_memory_allowed(config_base)
@@ -2345,15 +2369,34 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     async def _handle_memory_rail_by_config(self, mode: str):
         """Code hot reload must never mount the Work memory rail."""
+        self._memory_entry_mode = mode
         await self._reconcile_coding_memory()
 
     async def _handle_external_memory_rail_by_config(self):
         """External Work memory is outside the Coding memory route."""
 
+    async def _prepare_coding_project_memory(self) -> None:
+        binding = self._coding_memory_binding
+        if binding is None or not self.uses_jiuwen_coding_memory():
+            return
+        config = self._active_code_config()
+        if get_jiuwen_memory_scope(config)["session"]:
+            return
+        project = resolve_coding_memory_project_name(binding["project_dir"])
+        membership = (binding["provider"], project)
+        if self._prepared_coding_memory_project == membership:
+            return
+
+        from jiuwenswarm.agents.harness.common.memory.team_memory_members import prepare_project_memory
+
+        if await prepare_project_memory(config, project):
+            self._prepared_coding_memory_project = membership
+
     async def _reconcile_coding_memory(self) -> None:
         previous = self._coding_memory_rail
         candidate = self._build_coding_memory_rail()
         if previous is candidate:
+            await self._prepare_coding_project_memory()
             return
         owners = getattr(previous, "attached_agents", ()) if previous is not None else ()
         if previous is not None:
@@ -2363,6 +2406,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 await close()
         if candidate is not None:
             try:
+                await self._prepare_coding_project_memory()
                 await self._instance.register_rail(candidate)
                 for agent in owners:
                     if agent is not self._instance:
@@ -2393,6 +2437,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         确保能检索到 /init 命令创建 JIUWENSWARM.md 的目录（当前工作目录）。
         """
         config_base = self._active_code_config()
+        entry_mode = (getattr(self, "_memory_entry_mode", None)
+                      or getattr(self, "_session_instance_mode", None)
+                      or getattr(self, "_last_mode", None) or "code")
+        if uses_jiuwen_team_memory(config_base, entry_mode):
+            return None
         # 检查 memory 开关
         if not is_memory_enabled("code", config_base):
             logger.info("[JiuwenSwarmCodeAdapter] ProjectMemoryRail disabled by modes.code.memory.enabled")
@@ -2793,6 +2842,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # 不走 SubagentRail 的 subagent_spawn / task_tool 路径。
         # （agent 模式仍由 interface_deep.py 的 _load_custom_subagents 管理）
 
+        logger.debug(
+            "[JiuwenSwarmCodeAdapter] react.subagents resolved specs=%s",
+            [
+                {
+                    "name": getattr(getattr(spec, "agent_card", None), "name", None),
+                    "max_iterations": getattr(spec, "max_iterations", None),
+                }
+                for spec in subagents
+            ],
+        )
         return subagents or None, False
 
     # ─── Rail 生命周期(mode切换) ───────────────────
@@ -2805,8 +2864,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         code.normal / code.plan 等模式：
         - 保留 SubagentRail（主 Agent 通过 subagent_spawn 或 task_tool 派发 explore/plan 子代理）
-        - 保留 ProjectMemoryRail（code 模式始终挂载）
-        - 保留 CodingMemoryRail（code 模式始终挂载）
+        - 单人 Code 的项目与记忆轨按配置挂载；Jiuwen Team 入口不挂载
         - 卸载 TaskPlanningRail、SkillEvolutionRail
         """
         # 卸载非 code 专属 rails
@@ -2836,7 +2894,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     mode,
                 )
 
-        if not is_memory_enabled("code", self._active_code_config()):
+        self._memory_entry_mode = mode
+        config_base = self._active_code_config()
+        if (uses_jiuwen_team_memory(config_base, mode)
+                or not is_memory_enabled("code", config_base)):
             if self._project_memory_rail is not None:
                 await self._instance.unregister_rail(self._project_memory_rail)
                 self._project_memory_rail = None

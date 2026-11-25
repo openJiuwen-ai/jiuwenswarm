@@ -28,15 +28,18 @@ generated: true
 | [jiuwenswarm/channels/tui](#module-jiuwenswarm-channels-tui) |
 | [jiuwenswarm/channels/web](#module-jiuwenswarm-channels-web) |
 | [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
+| [jiuwenswarm/channels/web/frontend/src/components/SkillPanel](#module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel) |
 | [jiuwenswarm/channels/web/frontend/src/components/ui/EntityHeader](#module-jiuwenswarm-channels-web-frontend-src-components-ui-EntityHeader) |
 | [jiuwenswarm/channels/web/frontend/src/features/rsi](#module-jiuwenswarm-channels-web-frontend-src-features-rsi) |
 | [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
 | [jiuwenswarm/channels/web/frontend/src/features/settings/modules/models](#module-jiuwenswarm-channels-web-frontend-src-features-settings-modules-models) |
 | [jiuwenswarm/common](#module-jiuwenswarm-common) |
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
+| [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin) |
+| [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-advanced-daily-report) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-workswarm-app-builder) |
 | [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
 | [jiuwenswarm/server](#module-jiuwenswarm-server) |
@@ -188,6 +191,15 @@ generated: true
 | [B_20261118_1527_session-delete-plan-runtime](jiuwenswarm/channels/web/frontend/B_20261118_1527_session-delete-plan-runtime.md) | B | 侧边栏删除会话漏清 planStore runtime，Plan 模式状态在内存永久残留 | gunner_beat | 无独立 D：会话生命周期清理的一致性补齐，复用 usePlanStore 既有 removeRuntime，无独立设计文档。缺陷检视清单 |
 | [B_20261119_1039_video-memory-submit-pending](jiuwenswarm/channels/web/frontend/B_20261119_1039_video-memory-submit-pending.md) | B | 视频记忆任务 pending 导致提交工具持续执行中 | ToNy_St4rk | 无独立 D：现有工具结果状态的局部修复，无独立设计。 |
 | [B_20261119_1150_chat-terminal-reasoning-close](jiuwenswarm/channels/web/frontend/B_20261119_1150_chat-terminal-reasoning-close.md) | B | 消息出错后思考段不收口，「思考中…」永久转圈直到下次发消息 | gunner_beat | 无独立 D：交互层缺陷修复，复用同文件 chat.processing_status(false) 分支已有的「终态兜底收口」口径（幂等空操作），无独立设计文档。 |
+| [B_20261121_1529_skill-install-toast-display-name-width](jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
+
+<a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
+
+## jiuwenswarm/channels/web/frontend/src/components/SkillPanel
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261121_1529_skill-install-toast-display-name-width](jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-ui-EntityHeader"></a>
 
@@ -234,6 +246,7 @@ generated: true
 | [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 | [B_20261120_1735_upsert-empty-temperature](jiuwenswarm/common/B_20261120_1735_upsert-empty-temperature.md) | B | models.upsert 将空串 temperature 原样落库，与文档约定的空串转 null 不符 | openjiuwen_ai | 无独立 D：仅统一 upsert 与 replace_all 对空串 temperature 的归一化口径，不改模型配置结构与合并语义；无独立设计。 |
 | [B_20261121_0108_pypi-update-version-baseline](jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
+| [B_20261124_2201_rea-npx-readiness](jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 
@@ -242,6 +255,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261117_1727_model-output-token-limit](jiuwenswarm/channels/web/frontend/B_20261117_1727_model-output-token-limit.md) | B | 模型单次最大输出配置修复 | lizhiyuan | 无独立 D：用户在本轮会话确认的模型设置范围调整，未形成独立设计文档。 |
+
+<a id="module-jiuwenswarm-debug_launcher-py"></a>
+
+## jiuwenswarm/debug_launcher.py
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261120_1958_debug-worker-shutdown-budget](jiuwenswarm/B_20261120_1958_debug-worker-shutdown-budget.md) | B | Debug 重启提前终止正常清理中的 Worker | alan_cheng | 无独立 D：用户确认经真实子进程对照验证的局部修复；保留已有生命周期和身份保护，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-extensions-app_market"></a>
 
@@ -254,6 +275,7 @@ generated: true
 | [B_20261105_1130_stale-page-cache-port-reuse](jiuwenswarm/extensions/app_market/stale-page-cache-port-reuse.md) | B | 端口复用后启动新应用显示上一个应用的缓存页面 | kdgmpw | 无独立 D：依据页面容器契约（specs/jiuwenswarm/channels/desktop/S_01_app-market-browser-containers.md 与 specs/jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md）；缓存约束已补入 S_02 不变量与应用开发技能，无独立 D。 |
 | [B_20261105_1459_web-url-host-403](jiuwenswarm/extensions/app_market/web-url-host-403.md) | B | Web 应用入口 403：静态服务未放行应用专属 localhost 主机 | kdgmpw | 无独立 D：依据 S_02_app-market-stop-and-page-lifecycle 的 Web 入口与来源隔离契约；本次修复使实现重新满足既有契约，无独立 D。 |
 | [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
+| [B_20261124_1429_local-app-removal-and-conversion](jiuwenswarm/extensions/app_market/B_20261124_1429_local-app-removal-and-conversion.md) | B | 应用市场本地清理和 Hub 转换的一致性 | kdgmpw | 无独立 D：本次修正应用市场登记、目录归属与转换行为，沿用 S_03 契约和现有项目接口，无独立设计。 |
 
 <a id="module-jiuwenswarm-resources-agent-workspace-skills"></a>
 
@@ -271,6 +293,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261103_1433_npc-session-project](jiuwenswarm/extensions/app_market/npc-session-project.md) | B | 微缩生活岛 NPC 会话归属错误 | kdgmpw | 无独立 D：根据明确的故障修复要求落实既有项目绑定接口，无独立设计。 |
+
+<a id="module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-advanced-daily-report"></a>
+
+## jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261119_1547_daily-report-todo-collection](jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/B_20261119_1547_daily-report-todo-collection.md) | B | 日报技能的待办采集始终为空 | liujiayu75 | 无独立 D：采集路径与现行存储契约不一致导致的实现缺陷；按 workspace todo.json 契约修复，无独立设计。 |
 
 <a id="module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-workswarm-app-builder"></a>
 

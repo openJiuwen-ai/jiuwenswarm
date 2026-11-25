@@ -93,6 +93,13 @@ DESKTOP_BROWSER_PRESERVED_ENV_KEYS = (
     "PLAYWRIGHT_MCP_TARGET_RESOLVER",
     "PLAYWRIGHT_MCP_ENV_JSON",
 )
+# Feature flags injected before process start (e.g. K8s/OCP ConfigMap).
+# ``load_dotenv(override=True)`` must not clobber them with stale defaults from
+# an image/PVC ``~/.jiuwenswarm/config/.env``.
+DEPLOY_PRESERVED_ENV_KEYS = (
+    "WORKSPACE_QUOTA_ENABLED",
+    "TEAM_SKILLS_HUB_BASE_URL",
+)
 ELECTRON_ENV_FLAG = "JIUWENSWARM_ELECTRON"
 
 # Flag set by jiuwenswarm-start when it injects the resolved port group into
@@ -123,6 +130,10 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     over ``AGENT_SERVER_PORT``, so a stale value from .env/shell would bypass
     the remapped agent port. Without the URL, Gateway builds
     ``ws://{host}:{AGENT_SERVER_PORT}`` from the injected port.
+
+    Keys in ``DEPLOY_PRESERVED_ENV_KEYS`` that were already set before loading
+    are restored afterward so deploy-injected feature flags win over .env
+    defaults (e.g. a stale ``WORKSPACE_QUOTA_ENABLED`` in image/PVC ``.env``).
     """
     from dotenv import load_dotenv
 
@@ -135,9 +146,15 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
         if preserve
         else {}
     )
+    # Prefer deploy-injected feature flags over .env defaults when already set.
+    deploy_saved = {
+        k: os.environ[k] for k in DEPLOY_PRESERVED_ENV_KEYS if k in os.environ
+    }
     loaded = load_dotenv(dotenv_path=dotenv_path, override=override)
     if saved:
         os.environ.update(saved)
+    if deploy_saved:
+        os.environ.update(deploy_saved)
     if preserve:
         # Prefer remapped AGENT_SERVER_PORT over any URL from .env/parent env.
         os.environ.pop("AGENT_SERVER_URL", None)
@@ -331,6 +348,7 @@ def load_instance_bootstrap_by_name(name: str) -> Path | None:
 
 __all__ = [
     "CLI_PORTS_ENV_FLAG",
+    "DEPLOY_PRESERVED_ENV_KEYS",
     "DESKTOP_BROWSER_PRESERVED_ENV_KEYS",
     "DESKTOP_PRESERVED_ENV_KEYS",
     "ELECTRON_ENV_FLAG",

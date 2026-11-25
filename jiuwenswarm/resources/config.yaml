@@ -147,10 +147,11 @@ memory:
   #   external — 仅外接记忆（LTM / Mem0 / OpenViking / 插件）
   #   both     — 内置 + 外接并存
   #   none     — 全部关闭
+  # Exception: Jiuwen Team uses provider selection, not this engine gate.
   engine: ${MEMORY_ENGINE:-builtin}
 
   # ------------------------------------------------------------
-  # 内置记忆的 jiuwen 变体（engine ∈ {builtin, both} 且 provider=jiuwen 时生效）
+  # 单人内置记忆的 jiuwen 变体（engine ∈ {builtin, both} 且 provider=jiuwen 时生效）
   # Work 选择 JiuwenMemoryRail；单人 Code 选择 JiuwenMemoryCodingRail。
   # 各自仍受 modes.agent/code.memory.enabled 控制，且 memory.mode 必须为 local。
   # 模板默认使用 jiuwen；core 与 JiuwenMemory 依赖须包含对应接入功能。
@@ -161,6 +162,11 @@ memory:
   # 选中 jiuwen 后编码 Rail 创建失败则清空编码槽位，不回退旧 Rail；ProjectMemoryRail 独立。
   # 配置示例、工具和目录见 docs/zh/编码记忆.md。
   # ------------------------------------------------------------
+  # Jiuwen Team: provider=jiuwen enables team.work/team.code independently of
+  # modes.team.*.memory.enabled, single-agent memory switches and memory.mode/engine.
+  # Same identity shares USER.md; project/team keys isolate facts/conclusions.
+  # SDK reuses one runtime per root;
+  # first runtime config wins until all users release it. HTTP stays remote.
   builtin:
     provider: jiuwen              # jiuwen = agent-memory 文档记忆；空 = 原生 Work/Code 记忆
     jiuwen:
@@ -170,7 +176,7 @@ memory:
       user_id: ${MEMORY_USER_ID:-__default__}     # 数据隔离标识（与 memory.external 共用 env）
       scope_id: ${MEMORY_SCOPE_ID:-__default__}
       session_id: ""               # 记忆 session，原样透传；不自动绑定聊天会话，影子搜索跨 session
-      agent_id: jiuwenswarm        # Work/Code 优先运行 Agent 名称；无名称时以此兜底
+      agent_id: main_agent         # Work/Code/Team 共用；默认兼容旧 main_agent 记忆
       space: ""                    # 只认显式传入，不从 scope_id 猜测
       identity_org: local          # http 模式认证身份 org（对齐 dev 认证器缺省）
       identity_user: developer     # http 模式认证身份 user
@@ -1756,7 +1762,7 @@ modes:
     rails:
     tools:
   code:
-    # 记忆总开关 — 控制编码 Rail（原生或 jiuwen）和 ProjectMemoryRail。
+    # 单人编码记忆总开关 — 控制编码 Rail（原生或 jiuwen）和 ProjectMemoryRail。
     # 关闭后不注册对应记忆工具，也不自动加载项目说明书。
     memory:
       enabled: true
@@ -1965,7 +1971,8 @@ modes:
       # ============================================================
       memory:
         # ---------- 总开关 ----------
-        # 关闭时 TeamMemoryManager 不创建，成员记忆回退到各自独立的 MemoryRail
+        # Jiuwen Team ignores this switch and uses its own Rail, not TeamMemoryManager.
+        # Native route: false skips TeamMemoryManager; existing member rails are retained.
         enabled: false
 
         # ---------- 场景标识 ----------

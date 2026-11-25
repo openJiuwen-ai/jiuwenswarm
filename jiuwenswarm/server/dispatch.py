@@ -29,6 +29,7 @@ from jiuwenswarm.server.handlers.bootstrap import (
 )
 from jiuwenswarm.server.handlers.video_conversation import handle_video_conversation_append
 from jiuwenswarm.server.handlers.hub_catalog import handle_hub_equipment_catalog
+from jiuwenswarm.server.handlers.expert_team_batch import handle_expert_teams_add
 from jiuwenswarm.server.handlers.chat import handle_chat_cancel
 from jiuwenswarm.server.handlers.cron_gateway import handle_cron_gateway_callback
 from jiuwenswarm.server.handlers.a4p import handle_a4p_request
@@ -267,6 +268,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.TEAM_SNAPSHOT: handle_team_snapshot,
     ReqMethod.TEAM_LIST: handle_team_list,
     ReqMethod.ORG_SNAPSHOT: handle_org_snapshot,
+    ReqMethod.ORG_EXPERT_TEAMS_ADD: handle_expert_teams_add,
     ReqMethod.A4P_CONFIG_GET: handle_a4p_request,
     ReqMethod.A4P_CONFIG_UPDATE: handle_a4p_request,
     # 企业版 Gateway→Pod HTTP：授权 complete/reject 等必须进 HANDLERS，
@@ -309,6 +311,9 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.WORKSPACE_PREVIEW: handle_gateway_adapter,
     ReqMethod.WORKSPACE_USAGE: handle_gateway_adapter,
     ReqMethod.WORKSPACE_ENTRIES_DELETE: handle_gateway_adapter,
+    # download 与 tree/preview 等同走 WorkspaceFileAdapter；漏登会导致
+    # Gateway→Pod HTTP 回 HTTP_METHOD_NOT_HANDLED（对齐 !7494）。
+    ReqMethod.WORKSPACE_DOWNLOAD: handle_gateway_adapter,
     # 语言配置在 AgentServer 的 ConfigAdapter。企业版 runtime 客户端会转发到这里。
     ReqMethod.LOCALE_GET_CONF: handle_gateway_adapter,
     ReqMethod.LOCALE_SET_CONF: handle_gateway_adapter,
@@ -392,7 +397,6 @@ def _register_enterprise_team_handlers() -> None:
 
     if not is_enterprise():
         return
-    from jiuwenswarm.common.schema.message import ensure_team_control_req_methods
     from jiuwenswarm.enterprise.team.handlers import (
         handle_team_create,
         handle_team_get,
@@ -403,7 +407,6 @@ def _register_enterprise_team_handlers() -> None:
         handle_team_stop,
     )
 
-    ensure_team_control_req_methods()
     HANDLERS.update({
         ReqMethod.TEAM_CREATE: handle_team_create,
         ReqMethod.TEAM_GET: handle_team_get,

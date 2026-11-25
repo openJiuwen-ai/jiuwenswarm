@@ -7,6 +7,7 @@ from pathlib import Path
 import uuid
 from typing import Any
 
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.sdk import (
     ApplicationPluginExtension,
     ApplicationPluginServices,
@@ -75,12 +76,16 @@ class AppMarketPlugin(ApplicationPluginExtension):
             return WebChannel.connection_user_id(ws) or ""
 
         def routed_request(user_id: str, label: str) -> CoreRequest:
+            from agent_gateway.common.request_method import parse_request_method
             from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
-            async def request(method, payload):
+            async def request(method: ReqMethod, payload: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+                gateway_method = parse_request_method(method.value)
+                if gateway_method is None:
+                    return False, {"code": "METHOD_NOT_FOUND", "error": f"Unknown Gateway method: {method.value}"}
                 return await fetch_agent_unary(
                     agent_client=services.agent_client,
-                    req_method=method,
+                    req_method=gateway_method,
                     params=payload,
                     session_id=None,
                     user_id=user_id or None,
@@ -176,6 +181,19 @@ class AppMarketPlugin(ApplicationPluginExtension):
                 return
             await channel.send_response(ws, req_id, ok=True, payload=result)
 
+        async def handle_ai_roles(ws, req_id, params, session_id):
+            del session_id
+            app_id = params.get("app_id") if isinstance(params, dict) else None
+            if _invalid_app_id(app_id):
+                await channel.send_response(ws, req_id, ok=False, error="app_id is required", code="BAD_REQUEST")
+                return
+            try:
+                groups = await self._manager.get_ai_role_groups(app_id, owner(ws))
+            except AppMarketError as exc:
+                await send_market_error(ws, req_id, exc)
+                return
+            await channel.send_response(ws, req_id, ok=True, payload={"session_groups": groups})
+
         async def handle_start(ws, req_id, params, session_id):  # noqa: ANN001
             del session_id
             params = params if isinstance(params, dict) else {}
@@ -217,18 +235,21 @@ class AppMarketPlugin(ApplicationPluginExtension):
 
         async def handle_delete(ws, req_id, params, session_id):  # noqa: ANN001
             del session_id
-            app_id = params.get("app_id", "") if isinstance(params, dict) else ""
-            if not app_id:
+            params = params if isinstance(params, dict) else {}
+            app_id = params.get("app_id", "")
+            if _invalid_app_id(app_id):
                 await channel.send_response(
                     ws, req_id, ok=False, error="app_id is required", code="BAD_REQUEST"
                 )
                 return
             try:
-                ok = await self._manager.delete_app(app_id, owner(ws))
+                result = await self._manager.delete_app(
+                    app_id, owner(ws), remove_files=params.get("remove_files") is True
+                )
             except AppMarketError as exc:
                 await send_market_error(ws, req_id, exc)
                 return
-            await channel.send_response(ws, req_id, ok=ok, payload={"deleted": ok})
+            await channel.send_response(ws, req_id, ok=bool(result.get("deleted")), payload=result)
 
         async def handle_market_list(ws, req_id, params, session_id):  # noqa: ANN001
             del session_id
@@ -368,7 +389,11 @@ class AppMarketPlugin(ApplicationPluginExtension):
                 return
 
             try:
-                result = await self._manager.convert_to_local(app_id, owner(ws))
+                result = await self._manager.convert_to_local(
+                    app_id,
+                    owner(ws),
+                    project_request=routed_request(owner(ws), "app_market.convert_to_local"),
+                )
             except AppMarketError as exc:
                 await send_market_error(ws, req_id, exc)
                 return
@@ -410,6 +435,7 @@ class AppMarketPlugin(ApplicationPluginExtension):
         channel.register_method("app_market.convert_to_local", handle_convert_to_local)
         channel.register_method("app_market.publish", handle_publish)
         channel.register_method("app_market.list", handle_list)
+        channel.register_method("app_market.ai_roles", handle_ai_roles)
         channel.register_method("app_market.pin", handle_pin)
         channel.register_method("app_market.instances", handle_instances)
         channel.register_method("app_market.resources", handle_resources)

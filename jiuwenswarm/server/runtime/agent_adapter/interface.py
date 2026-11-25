@@ -552,6 +552,65 @@ def _should_record_user_history(params: Any) -> bool:
     return str(params.get("source") or "") != "proactive_recommendation"
 
 
+def _workspace_quota_exceeded_payload(*, stream: bool = False) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "error": "WORKSPACE_QUOTA_EXCEEDED",
+        "code": "WORKSPACE_QUOTA_EXCEEDED",
+        "detail": "WORKSPACE_QUOTA_EXCEEDED",
+    }
+    if stream:
+        payload["event_type"] = "chat.error"
+    return payload
+
+
+async def _enter_workspace_quota_identity(
+    request: AgentRequest,
+) -> tuple[Any, Any] | None:
+    """为本轮 chat 绑定租户根 + 配额身份；未开启配额时返回 None。
+
+    返回 ``(tenant_ctx, quota_tokens)``，须配对 :func:`_exit_workspace_quota_identity`。
+    只绑身份不绑租户根时，用量会落到默认 workspace，满额用户可能被误放行。
+    """
+    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+        bind_quota_identity,
+        is_workspace_quota_enabled,
+    )
+
+    if not is_workspace_quota_enabled():
+        return None
+    from jiuwenswarm.enterprise.capabilities.workspace.policy_reload import (
+        reload_quota_policies_from_gateway_db,
+    )
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_identity import (
+        extract_tenant_key,
+        extract_triple,
+    )
+
+    await reload_quota_policies_from_gateway_db()
+    group_id, bot_id, user_id = extract_triple(request)
+    tenant_ctx = TenantContext.bind(extract_tenant_key(request))
+    quota_tokens = bind_quota_identity(
+        user_id=user_id, group_id=group_id, bot_id=bot_id
+    )
+    return tenant_ctx, quota_tokens
+
+
+def _exit_workspace_quota_identity(
+    state: tuple[Any, Any] | None,
+) -> None:
+    if state is None:
+        return
+    tenant_ctx, quota_tokens = state
+    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+        reset_quota_identity,
+    )
+
+    reset_quota_identity(quota_tokens)
+    if tenant_ctx is not None:
+        tenant_ctx.reset()
+
+
 def _is_ask_user_answer_resume(params: Any) -> bool:
     """问题澄清答案 resume：source=ask_user_interrupt 且带非空 answers 数组。
 
@@ -935,6 +994,15 @@ def _cross_session_marker_from_params(params: Any) -> Any:
     if not isinstance(params, dict):
         return None
     return params.get(SESSION_MESSAGE_INTERNAL_KEY)
+
+
+async def _revoke_template_memory(template: str) -> None:
+    from jiuwenswarm.agents.harness.common.memory.team_memory_members import revoke_expert_template_memory
+
+    try:
+        await revoke_expert_template_memory(template)
+    except Exception:
+        logger.exception("Could not revoke collective memory membership for expert template %s", template)
 
 
 def _web_agent_template_name(params: Any, channel_id: Any) -> str | None:
@@ -2159,7 +2227,14 @@ class JiuWenSwarm:
         channel = request_channel or (
             request.session_id.split('_')[0] if request.session_id else "web"
         )
-        language = config_base.get("preferred_language", "zh")
+        from jiuwenswarm.common.i18n import try_normalize_preferred_language
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
+        # Per-request UI language overrides memo / yaml preferred_language.
+        ui_language = try_normalize_preferred_language(params.get("ui_language"))
+        language = ui_language if ui_language is not None else resolve_preferred_language()
 
         # Get trusted directories from request params (passed by TUI)
         trusted_dirs: list[str] = []
@@ -2649,11 +2724,15 @@ class JiuWenSwarm:
             # Web 的"跳过"：不退出 plan，也不继续修改，直接结束本轮。
             # ``plan_skip`` 是额外键，ConfirmPayload 会忽略它；
             # PlanApprovalInterruptRail 在校验前从原始 dict 读取该标记。
+            from jiuwenswarm.enterprise.config.preferred_language import (
+                resolve_preferred_language as _resolve_pref_lang,
+            )
+
             confirm_payload = {
                 "approved": False,
                 "auto_confirm": False,
                 "feedback": custom_input
-                or plan_skip_feedback(get_config().get("preferred_language")),
+                or plan_skip_feedback(_resolve_pref_lang()),
                 "plan_skip": True,
             }
         elif value in PLAN_REVISE_OPTION_VALUES:
@@ -3500,15 +3579,14 @@ class JiuWenSwarm:
                         metadata=request.metadata,
                     )
             elif method == ReqMethod.AGENT_TEMPLATES_UNINSTALL:
+                runtime_name = package_manager.resolve_equipment_runtime_id("agent_templates", name)
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    runtime_name = package_manager.resolve_equipment_runtime_id(
-                        "agent_templates", name
-                    )
                     await unload_live("agent_templates", runtime_name)
                 payload = package_manager.uninstall_equipment_with_notice(
                     "agent_templates", params
                 )
+                await _revoke_template_memory(runtime_name)
             elif method == ReqMethod.PLUGIN_PACKAGES_UNINSTALL:
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
@@ -3534,14 +3612,13 @@ class JiuWenSwarm:
                 getattr(package_manager, _PACKAGE_ROUTES[method])(params)
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_DELETE:
+                runtime_name = package_manager.resolve_equipment_runtime_id("agent_templates", name)
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    runtime_name = package_manager.resolve_equipment_runtime_id(
-                        "agent_templates", name
-                    )
                     await unload_live("agent_templates", runtime_name)
                 package_manager.delete_agent_template(params)
                 payload = {}
+                await _revoke_template_memory(runtime_name)
             elif method == ReqMethod.PLUGIN_PACKAGES_IMPORT_LOCAL:
                 payload = package_manager.import_plugin_package(params)
             else:
@@ -3661,17 +3738,30 @@ class JiuWenSwarm:
         intent: str,
         success: bool,
         message: str,
+        work_stopped: bool | None = None,
+        resumable: bool | None = None,
+        outcome: str | None = None,
+        has_active_task: bool | None = None,
     ) -> AgentResponse:
+        payload: dict[str, object] = {
+            "event_type": "chat.interrupt_result",
+            "intent": intent,
+            "success": success,
+            "message": message,
+        }
+        if work_stopped is not None:
+            payload["work_stopped"] = work_stopped
+        if resumable is not None:
+            payload["resumable"] = resumable
+        if outcome is not None:
+            payload["outcome"] = outcome
+        if has_active_task is not None:
+            payload["has_active_task"] = has_active_task
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={
-                "event_type": "chat.interrupt_result",
-                "intent": intent,
-                "success": success,
-                "message": message,
-            },
+            payload=payload,
             metadata=request.metadata,
         )
 
@@ -3693,6 +3783,7 @@ class JiuWenSwarm:
           message directly to continue a paused session.
         """
         from jiuwenswarm.agents.harness.team import get_team_manager
+        from jiuwenswarm.agents.harness.team.team_manager import PauseSessionResult
         from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import control_target
 
         voice_round = control_target(request)
@@ -3710,7 +3801,24 @@ class JiuWenSwarm:
 
         if intent in {"pause", "cancel"}:
             if intent == "pause":
-                paused = await team_manager.pause_session_runtime(session_id, reason=reason)
+                pause_result = await team_manager.pause_session_runtime(
+                    session_id, reason=reason
+                )
+                if not isinstance(pause_result, PauseSessionResult):
+                    # Defensive: older stubs may still return bool.
+                    pause_result = (
+                        PauseSessionResult(
+                            work_stopped=True,
+                            resumable=True,
+                            outcome="parked",
+                        )
+                        if pause_result
+                        else PauseSessionResult(
+                            work_stopped=False,
+                            resumable=False,
+                            outcome="failed",
+                        )
+                    )
                 # Runtime retains pure observation subscriptions and broadcasts
                 # completion after the cancelled business response streams exit.
                 await self._session_manager.cancel_session_task(
@@ -3718,38 +3826,52 @@ class JiuWenSwarm:
                     reason,
                     wait_timeout=5.0,
                 )
-                message = "团队已暂停" if paused else "当前没有可暂停的团队任务"
-            else:
-                # 断连兜底（client_disconnect）→ pause_all 保账本（可冷启动续跑）；用户主动终止 → stop_all 落 seal。
-                metadata = request.metadata if isinstance(request.metadata, dict) else {}
-                cancel_source = metadata.get(E2A_INTERNAL_CANCEL_SOURCE_KEY)
-                workflow_disposition = (
-                    "pause"
-                    if cancel_source == E2A_CANCEL_SOURCE_CLIENT_DISCONNECT
-                    else "stop"
+                if pause_result.resumable:
+                    message = "团队已暂停"
+                elif pause_result.outcome == "already_idle":
+                    message = "当前没有可暂停的团队任务"
+                else:
+                    message = "当前没有可暂停的团队任务"
+                return self._build_interrupt_result_response(
+                    request,
+                    intent=intent,
+                    success=pause_result.success,
+                    message=message,
+                    work_stopped=pause_result.work_stopped,
+                    resumable=pause_result.resumable,
+                    outcome=pause_result.outcome,
+                    has_active_task=pause_result.resumable,
                 )
-                cancelled = await team_manager.cancel_session_runtime(
-                    session_id, reason=reason, workflow_disposition=workflow_disposition
-                )
-                if workflow_disposition == "stop":
-                    from jiuwenswarm.enterprise.team.session_live import (
-                        stop_team_session_live,
-                    )
 
-                    await stop_team_session_live(session_id, drop_queued=True)
-                await self._session_manager.cancel_session_task(
-                    session_id,
-                    reason,
-                    wait_timeout=5.0,
+            # 断连兜底（client_disconnect）→ pause_all 保账本（可冷启动续跑）；用户主动终止 → stop_all 落 seal。
+            metadata = request.metadata if isinstance(request.metadata, dict) else {}
+            cancel_source = metadata.get(E2A_INTERNAL_CANCEL_SOURCE_KEY)
+            workflow_disposition = (
+                "pause"
+                if cancel_source == E2A_CANCEL_SOURCE_CLIENT_DISCONNECT
+                else "stop"
+            )
+            cancelled = await team_manager.cancel_session_runtime(
+                session_id, reason=reason, workflow_disposition=workflow_disposition
+            )
+            if workflow_disposition == "stop":
+                from jiuwenswarm.enterprise.team.session_live import (
+                    stop_team_session_live,
                 )
-                message = "团队当前执行已结束" if cancelled else "当前没有可取消的团队任务"
-            success = paused if intent == "pause" else cancelled
-            if voice_round is not None and intent == "cancel" and cancelled:
+
+                await stop_team_session_live(session_id, drop_queued=True)
+            await self._session_manager.cancel_session_task(
+                session_id,
+                reason,
+                wait_timeout=5.0,
+            )
+            message = "团队当前执行已结束" if cancelled else "当前没有可取消的团队任务"
+            if voice_round is not None and cancelled:
                 await voice_round.settle(cancelled=True)
             return self._build_interrupt_result_response(
                 request,
                 intent=intent,
-                success=success,
+                success=bool(cancelled),
                 message=message,
             )
 
@@ -3801,16 +3923,46 @@ class JiuWenSwarm:
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
         from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            bind_preferred_language,
+            bind_preferred_language_memo,
+            current_preferred_language_user_id,
+            framework_language_from_params,
+        )
 
         with bind_request_subject(request.metadata):
-            return await self._process_message(request, schedule_session=True)
+            async with bind_preferred_language(request) as preferred_lang:
+                with bind_preferred_language_memo(
+                    user_id=current_preferred_language_user_id(),
+                    language=framework_language_from_params(
+                        request.params, preferred_lang
+                    ),
+                ):
+                    return await self._process_message(
+                        request, schedule_session=True
+                    )
 
     async def execute_message(self, request: AgentRequest) -> AgentResponse:
         """Execute one request when scheduling is owned by AgentRuntime."""
         from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            bind_preferred_language,
+            bind_preferred_language_memo,
+            current_preferred_language_user_id,
+            framework_language_from_params,
+        )
 
         with bind_request_subject(request.metadata):
-            return await self._process_message(request, schedule_session=False)
+            async with bind_preferred_language(request) as preferred_lang:
+                with bind_preferred_language_memo(
+                    user_id=current_preferred_language_user_id(),
+                    language=framework_language_from_params(
+                        request.params, preferred_lang
+                    ),
+                ):
+                    return await self._process_message(
+                        request, schedule_session=False
+                    )
 
     async def _process_message(
         self,
@@ -4023,24 +4175,43 @@ class JiuWenSwarm:
             )
         # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
-        if _should_record_user_history(request.params):
-            try:
-                await _check_user_input_guard(adapter, request, query)
-            except InputTooLongError:
-                _schedule_feedback_once("error")
-                raise
-            await _run_history_io(
-                append_history_record,
-                session_id=session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="user",
-                content=_history_user_content(request.params, query),
-                timestamp=time.time(),
-                extra=_history_user_extra(request.params),
-                channel_metadata=request.metadata,
-                mode=request.params.get("mode", "unknown"),
+        # 写 history 前 bind 配额身份；满额拒绝本轮对话（§2.3，对齐 origin/dev-stable）。
+        quota_tokens = await _enter_workspace_quota_identity(request)
+        try:
+            if _should_record_user_history(request.params):
+                try:
+                    await _check_user_input_guard(adapter, request, query)
+                except InputTooLongError:
+                    _schedule_feedback_once("error")
+                    raise
+                await _run_history_io(
+                    append_history_record,
+                    session_id=session_id,
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    role="user",
+                    content=_history_user_content(request.params, query),
+                    timestamp=time.time(),
+                    extra=_history_user_extra(request.params),
+                    channel_metadata=request.metadata,
+                    mode=request.params.get("mode", "unknown"),
+                )
+        except Exception as exc:
+            from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+                WorkspaceQuotaExceeded,
             )
+
+            if isinstance(exc, WorkspaceQuotaExceeded):
+                return AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=False,
+                    payload=_workspace_quota_exceeded_payload(),
+                    metadata=request.metadata,
+                )
+            raise
+        finally:
+            _exit_workspace_quota_identity(quota_tokens)
         # 注：ask_user_answer 的落盘在 deliver_control_input 里——ask_user_interrupt
         # resume 走 control-input 路径，不经过本方法。
 
@@ -4608,16 +4779,32 @@ class JiuWenSwarm:
     ) -> AsyncIterator[AgentResponseChunk]:
         """处理流式请求，并带上本次请求的用户身份。"""
         from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            bind_preferred_language,
+            bind_preferred_language_memo,
+            current_preferred_language_user_id,
+            framework_language_from_params,
+        )
 
-        # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
+        # 先预取语言；流式路径不把 ContextVar token 留过 yield（关流可能在另一 Task）。
+        async with bind_preferred_language(request) as preferred_lang:
+            preferred_user_id = current_preferred_language_user_id()
+            framework_lang = framework_language_from_params(
+                request.params, preferred_lang
+            )
+
         stream = self._process_message_stream(request)
         try:
             while True:
                 with bind_request_subject(request.metadata):
-                    try:
-                        chunk = await anext(stream)
-                    except StopAsyncIteration:
-                        return
+                    with bind_preferred_language_memo(
+                        user_id=preferred_user_id,
+                        language=framework_lang,
+                    ):
+                        try:
+                            chunk = await anext(stream)
+                        except StopAsyncIteration:
+                            return
                 yield chunk
         finally:
             await stream.aclose()
@@ -4795,23 +4982,41 @@ class JiuWenSwarm:
         ):
             # Reject before history recording: a rejected message must not be
             # restored into the model context on the next session warmup.
+            quota_tokens = await _enter_workspace_quota_identity(request)
             try:
-                await _check_user_input_guard(adapter, request, query)
-            except InputTooLongError:
-                _schedule_feedback_once("error")
+                try:
+                    await _check_user_input_guard(adapter, request, query)
+                except InputTooLongError:
+                    _schedule_feedback_once("error")
+                    raise
+                await _run_history_io(
+                    append_history_record,
+                    session_id=session_id,
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    role="user",
+                    content=_history_user_content(params_for_history, query),
+                    timestamp=time.time(),
+                    extra=_history_user_extra(params_for_history),
+                    channel_metadata=history_channel_metadata,
+                    mode=params_for_history.get("mode", "unknown"),
+                )
+            except Exception as exc:
+                from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+                    WorkspaceQuotaExceeded,
+                )
+
+                if isinstance(exc, WorkspaceQuotaExceeded):
+                    yield AgentResponseChunk(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        payload=_workspace_quota_exceeded_payload(stream=True),
+                        is_complete=True,
+                    )
+                    return
                 raise
-            await _run_history_io(
-                append_history_record,
-                session_id=session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="user",
-                content=_history_user_content(params_for_history, query),
-                timestamp=time.time(),
-                extra=_history_user_extra(params_for_history),
-                channel_metadata=history_channel_metadata,
-                mode=params_for_history.get("mode", "unknown"),
-            )
+            finally:
+                _exit_workspace_quota_identity(quota_tokens)
         logger.info(
             "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
             request.request_id, request.channel_id, session_id, self._sdk_name,
