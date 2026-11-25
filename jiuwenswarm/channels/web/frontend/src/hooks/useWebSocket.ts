@@ -163,6 +163,7 @@ import {
   restoreRemindersFromInbox,
 } from '../features/longHorizon/reminderState';
 import type { LongHorizonInboxItem } from '../types/longHorizon';
+import { getMcpAppContexts } from '../features/mcpApps/mcpAppContext';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 
@@ -1984,6 +1985,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const chatRequestId = makeClientRequestId('chat');
         activeRequestIdRef.current = chatRequestId;
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
+        // MCP Apps：随本条消息携带目标会话的 App 交互上下文快照
+        // （dev-stable 后端消费缺座为已知限制，前端注入与线路携带完整）。
+        const mcpAppContexts = getMcpAppContexts(sessionId);
+        const requestMetadata = mcpAppContexts.length > 0
+          ? { mcp_app_contexts: mcpAppContexts }
+          : undefined;
         await request('chat.send', {
           session_id: sessionId,
           content,
@@ -1991,6 +1998,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(selectedModel ? { model_name: selectedModel } : {}),
           ...workContext,
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
+          ...(requestMetadata ? { metadata: requestMetadata } : {}),
         }, { requestId: chatRequestId });
         consumePlanEntryMark(sessionId, outgoingMode);
       } catch (error) {

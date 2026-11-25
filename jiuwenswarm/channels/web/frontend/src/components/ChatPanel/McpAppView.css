@@ -56,6 +56,11 @@
   font-size: 12px;
 }
 
+.mcp-app-view__message-confirmation pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .mcp-app-view__approval-actions {
   display: flex;
   flex-shrink: 0;

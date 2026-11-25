@@ -11,6 +11,7 @@ import { McpAppView } from './McpAppView';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
+  sessionId?: string | null;
   notices?: string[];
   showAvatar?: boolean;
   teamLayout?: boolean;
@@ -345,6 +346,7 @@ export { formatDurationPrecise, useNow } from './chatTimelineClock';
 
 export function ToolGroupDisplay({
   executions,
+  sessionId = null,
   notices = [],
   showAvatar = true,
   teamLayout = false,
@@ -451,7 +453,12 @@ export function ToolGroupDisplay({
         </div>
 
         {mcpAppExecutions.map((execution) => (
-          <McpAppView key={execution.toolCallId} app={execution.result!.mcpApp!} />
+          <McpAppView
+            key={execution.toolCallId}
+            app={execution.result!.mcpApp!}
+            sessionId={sessionId}
+            appInstanceId={execution.toolCallId}
+          />
         ))}
 
         {skillTrees.length > 0 && (
