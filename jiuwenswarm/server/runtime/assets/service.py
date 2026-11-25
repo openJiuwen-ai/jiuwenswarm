@@ -37,7 +37,6 @@ from jiuwenswarm.common.safe_archive import (
 from jiuwenswarm.server.runtime.assets.contract import (
     AssetKind,
     build_export_filename,
-    is_illegal_filename,
     parse_export_params,
     parse_import_params,
     parse_stage_local_params,
@@ -53,6 +52,7 @@ from jiuwenswarm.server.runtime.assets.staging import (
     assets_export_root,
     assets_upload_root,
     prune_stale_entries,
+    store_staged_package,
 )
 
 logger = logging.getLogger(__name__)
@@ -197,11 +197,12 @@ def import_asset(params: Any) -> dict[str, Any]:
 def stage_local_asset(params: Any, *, limits: ArchiveLimits = ArchiveLimits()) -> dict[str, Any]:
     """执行 assets.stage_local：把本机绝对路径的资产包复制进受控上传暂存根。
 
-    桌面壳原生选择器/拖拽只给出本机路径，不经 HTTP multipart；本入口按
-    与 upload-temp 相同的防护（仅 .zip、体积上限、每次独立子目录、TTL
-    顺带回收）把本机文件复制进同一暂存根，返回 ``{path}`` 供前端统一调
-    ``assets.import``。信任模型与其替代的旧专家/专家团导入接口一致：
-    只接受本机真实文件，不取 URL，不跟随符号链接。
+    桌面壳原生选择器/拖拽只给出本机路径，不经 HTTP multipart；本入口只做
+    来源侧校验（本机真实文件、非符号链接、绝对路径），文件名/格式/体积
+    防护与暂存落位走 ``staging.store_staged_package``——与 upload-temp
+    同一实现、同一暂存根，返回 ``{path}`` 供前端统一调 ``assets.import``。
+    信任模型与其替代的旧专家/专家团导入接口一致：只接受本机真实文件，
+    不取 URL，不跟随符号链接。
     """
     parsed = parse_stage_local_params(params)
     source = Path(parsed["path"])
@@ -209,28 +210,20 @@ def stage_local_asset(params: Any, *, limits: ArchiveLimits = ArchiveLimits()) -
         raise AssetError(AssetErrorCode.UNSAFE_PATH, "导入路径不得为符号链接")
     if not source.is_file():
         raise AssetError(AssetErrorCode.INVALID_PACKAGE, "本地文件不存在或不可读")
-    filename = source.name
-    if is_illegal_filename(filename):
-        raise AssetError(AssetErrorCode.UNSAFE_PATH, "文件名非法")
-    if not filename.lower().endswith(".zip"):
-        raise AssetError(AssetErrorCode.INVALID_PACKAGE, "资产包仅支持 .zip 格式")
     try:
         size = source.stat().st_size
     except OSError:
         raise AssetError(AssetErrorCode.INVALID_PACKAGE, "本地文件不存在或不可读") from None
-    if size > limits.zip_bytes:
-        raise AssetError(AssetErrorCode.LIMIT_EXCEEDED, "压缩包体积超限")
 
-    upload_root = assets_upload_root()
-    prune_stale_entries(upload_root)
-    upload_dir = upload_root / uuid.uuid4().hex
-    upload_dir.mkdir(parents=True)
-    dest = upload_dir / filename
-    try:
-        shutil.copyfile(source, dest)
-    except OSError:
-        shutil.rmtree(upload_dir, ignore_errors=True)
-        raise AssetError(AssetErrorCode.INVALID_PACKAGE, "本地文件读取失败") from None
+    def _copy(dest: Path) -> None:
+        try:
+            shutil.copyfile(source, dest)
+        except OSError:
+            raise AssetError(AssetErrorCode.INVALID_PACKAGE, "本地文件读取失败") from None
+
+    dest = store_staged_package(
+        filename=source.name, size_bytes=size, write=_copy, limits=limits
+    )
     return {"path": dest.as_posix()}
 
 
