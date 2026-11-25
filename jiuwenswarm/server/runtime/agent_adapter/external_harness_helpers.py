@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -21,6 +22,7 @@ from openjiuwen.harness_protocol import (
     DeliveryMode,
     HarnessCapability,
     HarnessCheckpoint,
+    HarnessInput,
     HarnessState,
     HarnessStateError,
     ResumePolicy,
@@ -880,6 +882,47 @@ async def _with_input_boundaries(
             await closer()
 
 
+_STEER_IMAGES_LEAD = (
+    "The user attached these images to this message. "
+    "They are files on this machine; read them from their paths."
+)
+
+
+async def _steer_images(request: AgentRequest, params: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The steer's uploaded images, checked against the session's uploads off the event loop.
+
+    An image that is not an upload of this session, or cannot be read as an
+    image, raises ``ValueError``; the steer is then not sent.
+    """
+    if not params.get("media_items"):
+        return []
+    from jiuwenswarm.server.runtime.attachments.steer_images import (
+        resolve_steer_image_references,
+    )
+
+    return await asyncio.to_thread(resolve_steer_image_references, params, request.session_id)
+
+
+def _steer_content(query: Any, images: list[dict[str, Any]]) -> HarnessInput:
+    """The provider input of a steer: its prompt and, after it, the paths of its images.
+
+    A new message gives the provider its images as upload paths in the
+    prompt (``files_updated_by_user``); a steer names them in a text block of
+    the same input, with the same records.
+    """
+    if not images:
+        return to_harness_input(query)
+    records = [
+        {key: image.get(key) for key in ("filename", "path", "mime_type", "size_bytes")}
+        for image in images
+    ]
+    listing = json.dumps({"uploaded_images": records}, ensure_ascii=False)
+    return to_harness_input([
+        {"type": "text", "text": str(query or "")},
+        {"type": "text", "text": f"{_STEER_IMAGES_LEAD}\n{listing}"},
+    ])
+
+
 async def steer_external_harness(
     adapter: Any,
     request: AgentRequest,
@@ -909,16 +952,29 @@ async def steer_external_harness(
         return False
     params = request.params if isinstance(request.params, dict) else {}
     query = inputs.get("query")
+    images = await _steer_images(request, params)
+    if io.state is not HarnessState.RUNNING or (
+        getattr(adapter, "_external_harness_boundaries", None) is not boundaries
+    ):
+        # The turn ended while the images were checked.
+        return False
     try:
-        await io.harness.send(to_harness_input(query), mode=DeliveryMode.STEER)
+        await io.harness.send(_steer_content(query, images), mode=DeliveryMode.STEER)
     except HarnessStateError:
         # The turn ended before the provider took the input.
         return False
+    if images:
+        # An image-only steer has no text of its own; the prompt is not the person's words.
+        content = str(params.get("content") or params.get("query") or "")
+    else:
+        content = str(params.get("content") or params.get("query") or query or "")
     boundary: dict[str, Any] = {
         "input_request_id": request.request_id,
-        "content": str(params.get("content") or params.get("query") or query or ""),
+        "content": content,
         "timestamp": time.time() * 1000,
     }
+    if images:
+        boundary["media_items"] = images
     cross_session = params.get(SESSION_MESSAGE_INTERNAL_KEY)
     if isinstance(cross_session, dict):
         boundary.update({

@@ -1,10 +1,12 @@
 """Input steered into a running External Harness turn."""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+from PIL import Image
 import pytest
 
 from openjiuwen.core.session.stream.base import OutputSchema
@@ -14,6 +16,7 @@ from openjiuwen.harness_protocol import (
     HarnessStateError,
     SendReceipt,
 )
+from openjiuwen.harness_providers.inputs import harness_input_text
 from openjiuwen.harness_providers.io_adapter import TURN_LIFECYCLE
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
@@ -23,6 +26,7 @@ from jiuwenswarm.server.runtime.agent_adapter import external_harness_helpers
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.attachments import steer_images
 
 
 def _request(request_id: str, query: str, **params: Any) -> AgentRequest:
@@ -232,6 +236,94 @@ async def test_steer_is_refused_while_the_turn_waits_for_an_answer() -> None:
         await external_harness_helpers.steer_external_harness(
             adapter, _request("r", "x"), {"query": "x"},
         )
+    io.harness.send.assert_not_awaited()
+
+
+@pytest.fixture
+def steer_uploads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    sessions = tmp_path / "sessions"
+    upload_dir = sessions / "steer-session" / "uploads"
+    upload_dir.mkdir(parents=True)
+    monkeypatch.setattr(steer_images, "get_agent_sessions_dir", lambda: sessions)
+    return upload_dir
+
+
+def _image_reference(path: Path) -> dict[str, str]:
+    Image.new("RGB", (32, 16), color="red").save(path, format="PNG")
+    return {"type": "image", "path": str(path), "filename": path.name, "mime_type": "image/png"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["what is on this screenshot", ""])
+async def test_steered_images_reach_the_provider_and_the_input_boundary(
+    steer_uploads: Path, text: str,
+) -> None:
+    io = _RunningIO()
+    io.state = HarnessState.RUNNING
+    adapter = _adapter(io)
+    adapter._external_harness_boundaries = asyncio.Queue()
+    image = _image_reference(steer_uploads / "screen.png")
+
+    accepted = await external_harness_helpers.steer_external_harness(
+        adapter,
+        _request("request-2", text, content=text, media_items=[image]),
+        {"query": f"<prompt>{text}</prompt>"},
+    )
+
+    assert accepted is True
+    sent, = io.harness.send.await_args_list
+    assert sent.kwargs == {"mode": DeliveryMode.STEER}
+    prompt = harness_input_text(sent.args[0])
+    assert prompt.startswith(f"<prompt>{text}</prompt>\n\n")
+    assert str(steer_uploads / "screen.png") in prompt
+    assert '"mime_type": "image/png"' in prompt
+    boundary = adapter._external_harness_boundaries.get_nowait()
+    assert boundary["content"] == text
+    stored, = boundary["media_items"]
+    assert stored["path"] == str(steer_uploads / "screen.png")
+    assert stored["mime_type"] == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_a_steered_image_outside_the_session_uploads_is_not_sent(
+    steer_uploads: Path, tmp_path: Path,
+) -> None:
+    io = _RunningIO()
+    io.state = HarnessState.RUNNING
+    adapter = _adapter(io)
+    adapter._external_harness_boundaries = asyncio.Queue()
+    elsewhere = _image_reference(tmp_path / "elsewhere.png")
+
+    with pytest.raises(ValueError, match="outside the current session uploads"):
+        await external_harness_helpers.steer_external_harness(
+            adapter,
+            _request("request-2", "look", media_items=[elsewhere]),
+            {"query": "look"},
+        )
+    io.harness.send.assert_not_awaited()
+    assert adapter._external_harness_boundaries.empty()
+
+
+@pytest.mark.asyncio
+async def test_a_steer_whose_turn_ends_while_its_images_are_checked_is_declined(
+    steer_uploads: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    io = _RunningIO()
+    io.state = HarnessState.RUNNING
+    adapter = _adapter(io)
+    adapter._external_harness_boundaries = asyncio.Queue()
+    image = _image_reference(steer_uploads / "screen.png")
+    resolve = steer_images.resolve_steer_image_references
+
+    def resolve_while_the_turn_ends(params, session_id):
+        io.state = HarnessState.IDLE
+        return resolve(params, session_id)
+
+    monkeypatch.setattr(steer_images, "resolve_steer_image_references", resolve_while_the_turn_ends)
+
+    assert not await external_harness_helpers.steer_external_harness(
+        adapter, _request("request-2", "look", media_items=[image]), {"query": "look"},
+    )
     io.harness.send.assert_not_awaited()
 
 
