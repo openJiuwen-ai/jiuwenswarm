@@ -27,7 +27,11 @@ from openjiuwen.harness.tools import create_todos_tool
 
 from jiuwenswarm.agents.harness.common.rails import todo_progress_snapshot as snapshot_mod
 from jiuwenswarm.agents.harness.common.rails.todo_progress_rail import TodoProgressRail
-from jiuwenswarm.agents.harness.common.rails.todo_progress_receipt import _HINTS, receipt_suffix
+from jiuwenswarm.agents.harness.common.rails.todo_progress_receipt import (
+    _HINTS,
+    _MISSING_CONTENT_MAX,
+    receipt_suffix,
+)
 from jiuwenswarm.agents.harness.common.rails.todo_progress_snapshot import (
     TodoReceiptChange,
     read_todo_snapshot,
@@ -263,6 +267,26 @@ async def test_post_write_snapshot_unavailable(env, monkeypatch):
     await env.rail.after_tool_call(tctx)
     st = _state(env)
     assert (st.writes_ok, st.change_unknown, st.rail_errors) == (1, 1, 1)
+    assert st.pre_write == {}
+
+
+@pytest.mark.asyncio
+async def test_malformed_pre_write_snapshot_is_reported_not_raised(env, monkeypatch):
+    # 写入前快照缺字段、写入后又读不到时，统计写入前计数出错也记为 rail_error，不抛到 Agent
+    await _begin(env)
+    tctx = _inner_ctx(env, ToolCallInputs(tool_call=SimpleNamespace(id="c1"), tool_name="todo_create",
+                                          tool_args={"tasks": _tasks("pending")}))
+    _state(env).pre_write["c1"] = [{"id": "t1"}]
+    tctx.inputs.execution_started = True
+    tctx.inputs.tool_result = await env.create.invoke({"tasks": _tasks("pending")}, session=env.session)
+
+    def _fail(_path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(snapshot_mod, "_read_text", _fail)
+    await env.rail.after_tool_call(tctx)
+    st = _state(env)
+    assert (st.writes_ok, st.change_unknown, st.rail_errors) == (1, 1, 2)
     assert st.pre_write == {}
 
 
@@ -659,6 +683,32 @@ async def test_restore_before_in_progress_keeps_completed_items_together(env):
         ("t2", "completed"), ("t1", "completed"), ("t3", "in_progress"), ("t4", "pending")]
 
 
+@pytest.mark.asyncio
+async def test_restore_by_append_when_rebuilt_list_has_no_unfinished_items(env):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("completed", "completed", "in_progress")}, "c1")
+    rebuilt = [_item("t2", "task2", "completed"), _item("t3", "task3", "completed")]
+    tctx = await _tool(env, ictx, env.create, "todo_create", {"tasks": rebuilt}, "c2")
+    assert "todo_modify append" in _suffix(tctx)
+    # 照提示用 append 把遗漏的已完成项补到末尾
+    await _tool(env, ictx, env.modify, "todo_modify",
+                {"action": "append", "todos": [_item("t1", "task1", "completed")]}, "c3")
+    listed = await env.list_tool.invoke({}, session=env.session)
+    assert [(t["id"], t["status"]) for t in listed["tasks"]] == [
+        ("t2", "completed"), ("t3", "completed"), ("t1", "completed")]
+
+
+@pytest.mark.parametrize("language", ["cn", "en"])
+def test_missing_hint_keeps_full_content_when_it_fits(language):
+    todos = [TodoItem(id="next", content="Next", status="in_progress")]
+    content = "整理第三方依赖的许可证清单，并逐个核对每个包的版本号、来源仓库与授权方式"
+    assert len(content) > _MISSING_CONTENT_MAX
+    text = receipt_suffix("todo_create", todos, noop=False, language=language,
+                          change=TodoReceiptChange(missing_items=(("done-1", content),)))
+    assert content in text and "…" not in text
+    assert ("显示不全" if language == "cn" else "cut-short") not in text
+
+
 def test_missing_hint_truncates_content_and_respects_cap():
     todos = [TodoItem(id="next", content="Next", status="in_progress")]
     missing = [(f"done-{i}", "很长的已完成工作内容" * 10) for i in range(30)]
@@ -672,6 +722,7 @@ def test_missing_hint_truncates_content_and_respects_cap():
         )
         assert len(text) <= 600
         assert "done-0" in text and "…" in text and ("未列出" if language == "cn" else "not shown") in text
+        assert ("以“…”结尾的内容显示不全" if language == "cn" else "marks cut-short content") in text
         head = "重建后的清单缺少原已完成项：" if language == "cn" else "Completed items missing from the rebuilt list: "
         regressed = "已完成项退回未完成：" if language == "cn" else "Completed items became unfinished: "
         assert text.index(head) < text.index(regressed)

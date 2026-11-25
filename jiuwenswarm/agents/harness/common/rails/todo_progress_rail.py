@@ -289,7 +289,7 @@ class TodoProgressRail(DeepAgentRail):
         receipt_chars = 0
         before = state.pre_write.get(call_id)
         rebuild = inputs.tool_name == "todo_create"
-        completion = CompletionChange.between(before, None, rebuild=rebuild)
+        completion: CompletionChange | None = None
         try:
             if not inputs.execution_started:
                 return  # 被前置钩子拦下（如权限拒绝），工具没有执行，不算写入
@@ -327,6 +327,8 @@ class TodoProgressRail(DeepAgentRail):
             state.pre_write.pop(call_id, None)
             if executed:
                 try:
+                    if completion is None:  # 写入后快照不可用，只记录写入前的计数
+                        completion = CompletionChange.between(before, None, rebuild=rebuild)
                     self._log_write(state, inputs.tool_name, succeeded, change, receipt_chars, completion)
                 except Exception as exc:
                     self._rail_error(state, "after_tool_call", exc)

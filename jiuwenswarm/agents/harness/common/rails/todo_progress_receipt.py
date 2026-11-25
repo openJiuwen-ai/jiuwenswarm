@@ -15,7 +15,7 @@ from jiuwenswarm.agents.harness.common.rails.todo_progress_snapshot import TodoR
 
 _CONTENT_MAX = 80
 _SUFFIX_MAX = 600  # 整条追加文本的字符上限，条目多时省略部分列表行
-_MISSING_CONTENT_MAX = 30  # 遗漏提示中每项内容的字符上限，用于补回和与新清单对照
+_MISSING_CONTENT_MAX = 30  # 遗漏条目全文放不下时每项内容的截断长度
 
 Hint = Literal["noop", "empty", "all_done", "start_next", "advance", "last_item"]
 
@@ -54,8 +54,9 @@ _LABELS = {
            "regressed_tail": "。执行这些条目前请先核实。确需重做才继续，误填则用 todo_modify 修正。",
            "missing_head": "重建后的清单缺少原已完成项：",
            "missing_item": "{id}（{content}）",
-           "missing_tail": ("。这些工作仍属于当前任务时，下一次 todo 调用用 {action} 按原 id、原内容以 completed 状态补回；"
-                            "用户要求删除的、已经以新 id 保留在清单中的不补。"),
+           "missing_tail": ("。这些工作仍属于当前任务时，下一次 todo 调用用 {action} 按原 id、原内容以 completed 状态补回"
+                            "{truncated}；用户要求删除的、已经以新 id 保留在清单中的不补。"),
+           "missing_truncated": "（以“…”结尾的内容显示不全，按原条目全文补回）",
            "missing_insert": "todo_modify insert_before（target_id 为 {target}）",
            "missing_append": "todo_modify append"},
     "en": {"list": "Current todo list:", "hint": "Hint: ",
@@ -66,8 +67,9 @@ _LABELS = {
            "missing_head": "Completed items missing from the rebuilt list: ",
            "missing_item": "{id} ({content})",
            "missing_tail": (". If this work still belongs to the current task, restore it in your next todo call "
-                            "via {action}, keeping the original ids and content with status completed. Skip items "
-                            "the user asked to remove and items already kept under a new id."),
+                            "via {action}, keeping the original ids and content with status completed{truncated}. "
+                            "Skip items the user asked to remove and items already kept under a new id."),
+           "missing_truncated": " (\"…\" marks cut-short content)",
            "missing_insert": "todo_modify insert_before with target_id {target}",
            "missing_append": "todo_modify append"},
 }
@@ -127,16 +129,17 @@ def format_todo_list(todos: list[TodoItem], language: str, budget: int = _SUFFIX
     return "\n".join(head + kept + [labels["more"].format(n=len(open_lines) - len(kept))])
 
 
-def _missing_hint_parts(todos: list[TodoItem], language: str) -> tuple[str, str]:
+def _missing_hint_parts(todos: list[TodoItem], language: str, *, truncated: bool) -> tuple[str, str]:
     """补回位置：插到第一个未完成项之前，使已完成项连在一起、排在当前工作之前；没有未完成项时追加到末尾。"""
     labels = _LABELS[language]
     target = next((t.id for t in todos if t.status in (TodoStatus.PENDING, TodoStatus.IN_PROGRESS)), None)
     action = labels["missing_insert"].format(target=target) if target else labels["missing_append"]
-    return labels["missing_head"], labels["missing_tail"].format(action=action)
+    note = labels["missing_truncated"] if truncated else ""
+    return labels["missing_head"], labels["missing_tail"].format(action=action, truncated=note)
 
 
-def _missing_entry(item_id: str, content: str, language: str) -> str:
-    if len(content) > _MISSING_CONTENT_MAX:
+def _missing_entry(item_id: str, content: str, language: str, *, truncate: bool) -> str:
+    if truncate and len(content) > _MISSING_CONTENT_MAX:
         content = content[: _MISSING_CONTENT_MAX - 1] + "…"
     return _LABELS[language]["missing_item"].format(id=item_id, content=content)
 
@@ -185,18 +188,27 @@ def receipt_suffix(tool_name: str, todos: list[TodoItem], *, noop: bool, languag
         todo.status == TodoStatus.IN_PROGRESS and todo.id in regressed for todo in todos)
     if not missing and not regressed_active and (not create or kind in ("noop", "advance", "last_item")):
         hints.append(_LABELS[lang]["hint"] + _HINTS[lang][kind])
-    parts: list[tuple[str, str, list[str]]] = []
+    # 每条提示：(开头, 结尾, 条目, 放不下时改用的 (结尾, 条目))
+    parts: list[tuple[str, str, list[str], tuple[str, list[str]] | None]] = []
     if missing:
-        parts.append((*_missing_hint_parts(todos, lang), [_missing_entry(i, c, lang) for i, c in missing]))
+        head, tail = _missing_hint_parts(todos, lang, truncated=False)
+        fallback = None
+        if any(len(content) > _MISSING_CONTENT_MAX for _, content in missing):
+            fallback = (_missing_hint_parts(todos, lang, truncated=True)[1],
+                        [_missing_entry(i, c, lang, truncate=True) for i, c in missing])
+        parts.append((head, tail, [_missing_entry(i, c, lang, truncate=False) for i, c in missing], fallback))
     if regressed:
-        parts.append((_LABELS[lang]["regressed_head"], _LABELS[lang]["regressed_tail"], regressed))
-    full_len = sum(len(head + ", ".join(entries) + tail) + 1 for head, tail, entries in parts)
+        parts.append((_LABELS[lang]["regressed_head"], _LABELS[lang]["regressed_tail"], regressed, None))
+    full_len = sum(len(head + ", ".join(entries) + tail) + 1 for head, tail, entries, _ in parts)
     if parts and 2 + _joined_len(hints) + full_len > _SUFFIX_MAX:
         hints = []  # 退回和遗漏条目加上通用提示后列不全时，省略通用的下一步提示，空间留给条目
-    for index, (head, tail, entries) in enumerate(parts):
+    for index, (head, tail, entries, fallback) in enumerate(parts):
         # 为后面的提示预留至少"只注明省略数量"所需的长度，保证每条提示都能出现
-        reserve = sum(_id_hint_min_len(h, t, len(e), lang) + 1 for h, t, e in parts[index + 1:])
+        reserve = sum(_id_hint_min_len(h, t, len(e), lang) + 1 for h, t, e, _ in parts[index + 1:])
         budget = _SUFFIX_MAX - 2 - _joined_len(hints) - (1 if hints else 0) - reserve  # 2 = 两个前导换行
+        if fallback and len(head + ", ".join(entries) + tail) > budget:
+            # 遗漏条目全文放不下时截断内容，并注明截断：原条目已从清单删除，模型会照抄看到的文字补回
+            tail, entries = fallback
         hints.append(_id_hint(head, tail, entries, lang, budget))
     hint = "\n".join(hints)
     if tool_name == "todo_modify":
