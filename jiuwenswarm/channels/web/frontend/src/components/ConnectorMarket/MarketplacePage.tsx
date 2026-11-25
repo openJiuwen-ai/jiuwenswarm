@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { RefreshCw } from 'lucide-react';
 // 深引入而非 ../ui barrel：本组件经 esbuild 独立打包进测试
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
-import { useConnectorStore } from '../../stores/connectorStore';
+import { useConnectorStore, CONNECTOR_ERROR_TOAST_ID } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { useSystemPluginStore } from '../../stores/systemPluginStore';
 import { localizedText } from '../../types/localized';
@@ -283,10 +283,25 @@ export function MarketplacePage({
             useConnectorStore.getState().rememberConnectors(connectors);
           } else setMarketPluginResults(items as PluginPackageSummary[]);
         })
-        .catch(() => {
+        .catch((error) => {
           if (revision !== marketSearchRevisionRef.current) return;
           if (topTab === 'mcp') setMarketConnectorResults([]);
           else setMarketPluginResults([]);
+          // Hub 目录拉取失败不能静默吞成空结果（与"真的没搜到"无法区分）；
+          // 后端 mcp.list 已把失败按 ok=false 上报，这里弹出可重试的提示。
+          if (topTab === 'mcp') {
+            const message = error instanceof Error ? error.message : '';
+            toast.open({
+              id: CONNECTOR_ERROR_TOAST_ID,
+              content: message
+                ? `${t('connectorMarket.errors.hubSearchFailed')}: ${message}`
+                : t('connectorMarket.errors.hubSearchFailed'),
+              variant: 'error',
+              duration: 5,
+              testId: 'connector-market-toast',
+              dataVariant: 'error',
+            });
+          }
         })
         .finally(() => {
           if (revision === marketSearchRevisionRef.current) setMarketSearchLoading(false);

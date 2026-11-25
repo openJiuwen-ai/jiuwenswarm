@@ -6060,7 +6060,8 @@
       "installNetwork": "Failed to download a dependency. Please check your network connection and retry.",
       "installScriptDep": "The CLI install script requires PowerShell. Please enable or restore PowerShell and retry.",
       "cliIncomplete": "The CLI is incomplete or outdated. Please reconnect to retry.",
-      "cliIncompleteNamed": "The CLI is incomplete or outdated. Please run the following command to install or upgrade it, then retry: {{command}}"
+      "cliIncompleteNamed": "The CLI is incomplete or outdated. Please run the following command to install or upgrade it, then retry: {{command}}",
+      "hubSearchFailed": "The connector marketplace is temporarily unavailable. Please retry later."
     },
     "card": {
       "connect": "Connect",
