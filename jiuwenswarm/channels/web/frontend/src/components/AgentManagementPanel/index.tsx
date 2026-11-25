@@ -54,7 +54,7 @@ import {
   mergeAgentGroupDetailWithCatalog,
 } from '../../features/agentManagement';
 import { agentAccessDeniedCopyKey } from '../../features/agentManagement/accessDenied';
-import { assetIssueKey, importAssetFromPath } from '../../features/assetTransfer';
+import { assetIssueKeyForKind, importAssetFromPath } from '../../features/assetTransfer';
 import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
 import { findDefaultDefinitionFile } from './DefinitionFilePreview';
 import './agentManagement.css';
@@ -1321,7 +1321,7 @@ export function AgentManagementPanel({
       // Import failures carrying an ASSET_* contract code map to precise i18n
       // guidance (e.g. ASSET_ALREADY_EXISTS tells the user to delete or rename
       // first); anything else keeps the legacy generic fallback with details.
-      const issueKey = assetIssueKey(error);
+      const issueKey = assetIssueKeyForKind(error, kind);
       const message = issueKey === 'assetTransfer.errors.requestFailed'
         ? formatActionError(error, t(kind === 'group' ? 'agentManagement.group.states.uploadError' : 'agentManagement.states.uploadError'))
         : t(issueKey);

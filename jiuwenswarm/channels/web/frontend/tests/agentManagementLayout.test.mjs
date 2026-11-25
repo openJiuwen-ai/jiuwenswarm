@@ -693,7 +693,7 @@ test('group card actions keep uninstall in the detail page and install created g
   // keep the generic uploadError fallback with details.
   assert.match(
     panelSource,
-    /const issueKey = assetIssueKey\(error\);[\s\S]*formatActionError\(error, t\(kind === 'group'/,
+    /const issueKey = assetIssueKeyForKind\(error, kind\);[\s\S]*formatActionError\(error, t\(kind === 'group'/,
   );
 });
 

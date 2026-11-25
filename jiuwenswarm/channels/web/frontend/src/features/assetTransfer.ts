@@ -77,6 +77,8 @@ const ASSET_ERROR_KEYS = {
 
 export type AssetIssueKey =
   | (typeof ASSET_ERROR_KEYS)[keyof typeof ASSET_ERROR_KEYS]
+  | 'assetTransfer.errors.alreadyExistsAgent'
+  | 'assetTransfer.errors.alreadyExistsGroup'
   | 'assetTransfer.errors.requestFailed';
 
 function readErrorCode(value: unknown): string {
@@ -96,6 +98,19 @@ function readErrorCode(value: unknown): string {
 export function assetIssueKey(value: unknown): AssetIssueKey {
   const normalized = readErrorCode(value).trim().replaceAll('-', '_').toUpperCase();
   return ASSET_ERROR_KEYS[normalized as keyof typeof ASSET_ERROR_KEYS] ?? 'assetTransfer.errors.requestFailed';
+}
+
+/** ALREADY_EXISTS 文案按导入 kind 细化：专家/专家团页签直接点名资产类型，
+ * 比笼统的「资产」更可读；其余错误码与未知 kind 回落 assetIssueKey 通用映射。 */
+export function assetIssueKeyForKind(
+  value: unknown,
+  kind: 'agent' | 'group' | AssetKind,
+): AssetIssueKey {
+  const key = assetIssueKey(value);
+  if (key !== 'assetTransfer.errors.alreadyExists') return key;
+  if (kind === 'group' || kind === 'agent_group') return 'assetTransfer.errors.alreadyExistsGroup';
+  if (kind === 'agent' || kind === 'agent_template') return 'assetTransfer.errors.alreadyExistsAgent';
+  return key;
 }
 
 /** assets.export：取短效下载信息，不触发保存（供自定义下载流程复用）。 */

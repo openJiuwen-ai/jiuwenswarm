@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import {
   AssetTransferError,
   assetIssueKey,
+  assetIssueKeyForKind,
   exportAssetToLocalFile,
   importAssetFromFile,
   importAssetFromPath,
@@ -262,4 +263,21 @@ test('eight contract codes map to i18n keys; unknown codes fall back to requestF
     assetIssueKey({ payload: { error: 'exists', code: 'ASSET_ALREADY_EXISTS' } }),
     'assetTransfer.errors.alreadyExists',
   );
+});
+
+test('assetIssueKeyForKind narrows the duplicate-id copy per tab kind', () => {
+  const dup = { payload: { error: 'exists', code: 'ASSET_ALREADY_EXISTS' } };
+  // 专家/专家团页签（'agent'|'group' 与契约 kind 两种写法都识别）
+  assert.equal(assetIssueKeyForKind(dup, 'agent'), 'assetTransfer.errors.alreadyExistsAgent');
+  assert.equal(assetIssueKeyForKind(dup, 'agent_template'), 'assetTransfer.errors.alreadyExistsAgent');
+  assert.equal(assetIssueKeyForKind(dup, 'group'), 'assetTransfer.errors.alreadyExistsGroup');
+  assert.equal(assetIssueKeyForKind(dup, 'agent_group'), 'assetTransfer.errors.alreadyExistsGroup');
+  // 其余错误码不受 kind 影响
+  assert.equal(
+    assetIssueKeyForKind({ payload: { code: 'ASSET_UNSAFE_PATH' } }, 'group'),
+    'assetTransfer.errors.unsafePath',
+  );
+  // 未知 kind（如 skill）回落通用文案
+  assert.equal(assetIssueKeyForKind(dup, 'skill'), 'assetTransfer.errors.alreadyExists');
+  assert.equal(assetIssueKeyForKind(undefined, 'agent'), 'assetTransfer.errors.requestFailed');
 });
