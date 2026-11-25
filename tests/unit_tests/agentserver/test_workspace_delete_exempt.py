@@ -2,8 +2,9 @@
 
 """工作空间内删除豁免（workspace_delete_exempt）单元测试。
 
-用例基于 tmp_path 平台无关路径；Windows 盘符/MSYS 语义的断言以 skipif 隔离，
-保证在 Linux/macOS CI 上同样可执行。
+审计语义：只接受**单一简单命令**（拒绝复合结构/间接执行器），操作数仅接受
+可静态解析的**绝对路径**且严格落在信任目录内（zone 根本身拒绝）。
+用例基于 tmp_path 平台无关路径；Windows 盘符/MSYS 语义断言以 skipif 隔离。
 """
 from __future__ import annotations
 
@@ -66,7 +67,7 @@ def _base_config(zone: Path) -> dict:
 
 @pytest.fixture()
 def exempt_env(monkeypatch, tmp_path):
-    """返回 (zones, make_inp)；zone 为 tmp_path 下目录，immutable roots 指向独立目录。"""
+    """返回 (zone, outside, make_inp)；immutable roots 指向独立目录（非 zone 父级）。"""
     from jiuwenswarm.agents.harness.common.rails.interrupt import workspace_delete_exempt as mod
     from openjiuwen.harness.security.permission_engine.core import PermissionEngine
 
@@ -96,16 +97,39 @@ def test_in_workspace_rm_absolute_approved(exempt_env):
     assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is True
 
 
-def test_relative_rm_inside_approved(exempt_env):
+def test_relative_rm_rejected_persistent_cwd(exempt_env):
+    """bash 工具 cwd 跨调用持久保留，静态审计无法得知实际 cwd——相对路径一律拒绝。"""
     zone, _outside, make_inp = exempt_env
     inp = make_inp("rm tset.txt")
-    assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is True
+    assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False
 
 
-def test_compound_rm_with_echo_inside_approved(exempt_env):
+def test_compound_command_rejected(exempt_env):
+    """复合结构整体拒绝（嵌套 shell/管道/内联代码静态不可证）。"""
     zone, _outside, make_inp = exempt_env
-    inp = make_inp("echo hi && rm tset.txt")
-    assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is True
+    for command in (
+        "echo hi && rm tset.txt",
+        "rm tset.txt && echo hi",
+        "rm a.txt; rm b.txt",
+        'bash -c "cd elsewhere && rm x.txt"',
+        'powershell -Command "Set-Location elsewhere; Remove-Item x.txt"',
+        f'Get-ChildItem "{zone}" | Remove-Item',
+        "find . -name '*.log' -delete",
+    ):
+        inp = make_inp(command)
+        assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False, command
+
+
+def test_indirect_exec_rejected(exempt_env):
+    zone, _outside, make_inp = exempt_env
+    for command in (
+        "bash script.sh",
+        "xargs rm -f tset.txt",
+        "eval 'rm tset.txt'",
+        "find . -name '*.log' -delete",
+    ):
+        inp = make_inp(command)
+        assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False, command
 
 
 def test_out_of_workspace_rm_kept(exempt_env):
@@ -116,8 +140,9 @@ def test_out_of_workspace_rm_kept(exempt_env):
 
 def test_variable_operand_rejected(exempt_env):
     zone, _outside, make_inp = exempt_env
-    inp = make_inp("rm $TARGET")
-    assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False
+    for command in ("rm $TARGET", "rm ${TARGET}", "rm !VAR!.txt"):
+        inp = make_inp(command)
+        assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False, command
 
 
 def test_glob_operand_rejected(exempt_env):
@@ -126,9 +151,16 @@ def test_glob_operand_rejected(exempt_env):
     assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False
 
 
+def test_powershell_array_rejected(exempt_env):
+    """PowerShell 逗号数组可同时删区外文件。"""
+    zone, outside, make_inp = exempt_env
+    inp = make_inp(f'Remove-Item -Path "{zone / "a.txt"}",{outside / "b.txt"}')
+    assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False
+
+
 def test_parent_escape_rejected(exempt_env):
     zone, _outside, make_inp = exempt_env
-    inp = make_inp("rm " + os.path.join("..", "..", "outside.txt"))
+    inp = make_inp('rm "' + os.path.join("..", "..", "outside.txt") + '"')
     assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False
 
 
@@ -138,15 +170,10 @@ def test_chmod_compound_rejected(exempt_env):
     assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False
 
 
-def test_cd_outside_then_relative_rejected(exempt_env):
-    zone, outside, make_inp = exempt_env
-    inp = make_inp(f'cd "{outside}" && rm tset.txt')
-    assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False
-
-
-def test_pushd_breaks_cwd_tracking(exempt_env):
-    zone, outside, make_inp = exempt_env
-    inp = make_inp(f'pushd "{outside}" && popd && rm tset.txt')
+def test_zone_root_rejected(exempt_env):
+    """等于 zone 根本身的目标拒绝（rm -rf <工作空间根> 不放行）。"""
+    zone, _outside, make_inp = exempt_env
+    inp = make_inp(f'rm -rf "{zone}"')
     assert asyncio.run(maybe_approve_in_workspace_delete(inp, zones=[zone])) is False
 
 
@@ -191,15 +218,16 @@ def test_delete_operands_confined_unit(tmp_path):
     zone.mkdir()
     outside = tmp_path / "other"
     outside.mkdir()
-    # 相对路径按 cwd（=zones[0]）解析：落在 zone 内 → True
-    assert delete_operands_confined('rm "t.txt"', [zone]) is True
-    assert delete_operands_confined("rm t.txt", []) is False
+    assert delete_operands_confined('rm "t.txt"', []) is False
     assert delete_operands_confined("rm $X", [zone]) is False
-    # 区外绝对路径 → False
+    assert delete_operands_confined("rm *.log", [zone]) is False
+    # 相对路径拒绝（持久 cwd 不可证）
+    assert delete_operands_confined("rm t.txt", [zone]) is False
+    # 区外/根目录拒绝
     assert delete_operands_confined(f'rm "{outside / "x.txt"}"', [zone]) is False
-    assert delete_operands_confined("echo ok && rm t.txt", [zone]) is True
-    # 多 zones：任一命中即可
-    assert delete_operands_confined('rm "t.txt"', [tmp_path / "ws2", zone]) is True
+    assert delete_operands_confined(f'rm -rf "{zone}"', [zone]) is False
+    # 简单命令：绝对路径严格子路径 → True
+    assert delete_operands_confined(f'rm "{zone / "t.txt"}"', [zone]) is True
 
 
 @pytest.mark.skipif(os.name != "nt", reason="MSYS 盘符映射仅 Windows git-bash 语义")
@@ -260,8 +288,22 @@ def _hook_input(rail, command: str):
 def test_scene_hook_end_to_end(tmp_path, monkeypatch):
     """rail 级集成：真实 build_permission_rail + trusted_dirs 注入 + 真实场景钩子。
 
-    上下文为 channel_id-only（无 principal，对应记忆门控等非受限会话）——豁免生效。
+    桌面普通会话不设置 TOOL_PERMISSION_CONTEXT → 豁免生效（绝对路径目标）。
     """
+    rail, zone = _build_rail(tmp_path, monkeypatch)
+    hook = rail._host.permission_scene_hook
+
+    inside = asyncio.run(hook(_hook_input(rail, f'rm "{zone / "tset.txt"}"')))
+    assert inside is not None and inside[0] == "approve"
+    outside = asyncio.run(hook(_hook_input(rail, f'rm "{tmp_path / "outside" / "x.txt"}"')))
+    assert outside is None
+    variable = asyncio.run(hook(_hook_input(rail, "rm $TARGET")))
+    assert variable is None
+
+
+def test_scene_hook_with_context_never_exempt(tmp_path, monkeypatch):
+    """设置了 TOOL_PERMISSION_CONTEXT 的会话（数字分身/owner_scopes/记忆门控）
+    一律不豁免——避免删除命令绕过 owner 级 deny 等硬限制（fail-closed）。"""
     from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
         PermissionContext,
         TOOL_PERMISSION_CONTEXT,
@@ -272,35 +314,14 @@ def test_scene_hook_end_to_end(tmp_path, monkeypatch):
 
     token = TOOL_PERMISSION_CONTEXT.set(PermissionContext(channel_id="desktop"))
     try:
-        inside = asyncio.run(hook(_hook_input(rail, f'rm "{zone / "tset.txt"}"')))
-        assert inside is not None and inside[0] == "approve"
-        outside = asyncio.run(
-            hook(_hook_input(rail, f'rm "{tmp_path / "outside" / "x.txt"}"'))
-        )
-        assert outside is None
-        variable = asyncio.run(hook(_hook_input(rail, "rm $TARGET")))
-        assert variable is None
+        outcome = asyncio.run(hook(_hook_input(rail, f'rm "{zone / "tset.txt"}"')))
+        assert outcome is None
     finally:
         TOOL_PERMISSION_CONTEXT.reset(token)
 
 
-def test_scene_hook_exempts_without_permission_context(tmp_path, monkeypatch):
-    """桌面普通会话不设置 TOOL_PERMISSION_CONTEXT（仅数字分身/记忆门控设置）。
-
-    回归：豁免分支曾排在 perm_ctx 早退之后导致生产环境永不生效。
-    """
-    rail, zone = _build_rail(tmp_path, monkeypatch)
-    hook = rail._host.permission_scene_hook
-
-    outcome = asyncio.run(hook(_hook_input(rail, 'rm -f tset.txt && echo "deleted"')))
-    assert outcome is not None and outcome[0] == "approve"
-
-
 def test_scene_hook_owner_principal_never_exempt(tmp_path, monkeypatch):
-    """owner_scopes 场景（有 principal_user_id）不得被删除豁免绕过。
-
-    回归：豁免分支曾位于 owner_scopes 判定之前，owner 级 deny 会被区内 rm 绕过。
-    """
+    """owner_scopes 场景（有 principal_user_id）不得被删除豁免绕过。"""
     from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
         PermissionContext,
         TOOL_PERMISSION_CONTEXT,
@@ -319,25 +340,47 @@ def test_scene_hook_owner_principal_never_exempt(tmp_path, monkeypatch):
         TOOL_PERMISSION_CONTEXT.reset(token)
 
 
-def test_scene_hook_avatar_scene_never_exempt(tmp_path, monkeypatch):
-    """数字分身场景不豁免（交互限制硬性优先）。"""
-    from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
-        PermissionContext,
-        TOOL_PERMISSION_CONTEXT,
-    )
+def test_production_config_floor(tmp_path, monkeypatch):
+    """用生产 resources/config.yaml 的 permissions 段跑重放链路（检视建议 6）。"""
+    import yaml
 
-    rail, zone = _build_rail(tmp_path, monkeypatch)
-    hook = rail._host.permission_scene_hook
+    from jiuwenswarm.agents.harness.common.rails.interrupt import workspace_delete_exempt as mod
+    from openjiuwen.harness.security.permission_engine.core import PermissionEngine
 
-    token = TOOL_PERMISSION_CONTEXT.set(
-        PermissionContext(channel_id="desktop", group_digital_avatar=True)
+    repo_config = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "resources" / "config.yaml"
+    permissions = (yaml.safe_load(repo_config.read_text(encoding="utf-8")) or {}).get(
+        "permissions", {}
     )
-    try:
-        try:
-            outcome = asyncio.run(hook(_hook_input(rail, f'rm "{zone / "tset.txt"}"')))
-        except Exception:
-            # 数字分身链路运行时依赖缺失时异常回落引擎，同样不产生豁免放行
-            outcome = None
-        assert outcome is None or outcome[0] in ("reject",)
-    finally:
-        TOOL_PERMISSION_CONTEXT.reset(token)
+    assert permissions.get("enabled") is True
+    assert any(
+        rule.get("id") == "shell_delete_files" for rule in permissions.get("rules", [])
+    )
+    assert permissions.get("in_workspace_delete_exempt", {}).get("enabled") is True
+
+    config_root = tmp_path / "config_root"
+    config_root.mkdir()
+    monkeypatch.setattr(mod, "_immutable_control_roots", lambda: [str(config_root)])
+    zone = tmp_path / "ws"
+    zone.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    def make_inp(command: str):
+        engine = PermissionEngine(config=permissions, workspace_root=None)
+        return SimpleNamespace(
+            user_input=None,
+            normalized_tool_name="bash",
+            tool_args={"command": command, "timeout": 30},
+            engine=engine,
+        )
+
+    approved = asyncio.run(
+        maybe_approve_in_workspace_delete(make_inp(f'rm "{zone / "t.txt"}"'), zones=[zone])
+    )
+    assert approved is True
+    kept = asyncio.run(
+        maybe_approve_in_workspace_delete(
+            make_inp(f'rm "{outside / "t.txt"}"'), zones=[zone]
+        )
+    )
+    assert kept is False

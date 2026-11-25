@@ -6,10 +6,11 @@
 弹卡；路径层把 rm 目标归类为 write 轴（区内本就放行），无法表达"删除"的内外
 差异。本模块在宿主场景钩子里对删除类命令做二次复核：
 
-1. 宽松操作数审计（:func:`delete_operands_confined`）：逐段解析命令，删除家族
-   段（与 ``shell_delete_files`` pattern 同族）的所有操作数必须**可静态解析且
-   落在工作空间/信任目录内**；含变量、通配、无法解析的 cd/pushd 之后的相对
-   路径等一律不豁免（fail-closed）。
+1. 严格操作数审计（:func:`delete_operands_confined`）：只接受**单一简单命令**
+   ——出现任何复合结构（``&&``/``||``/管道/括号/换行）或间接执行器
+   （bash/sh/powershell/eval/xargs/find 等）直接拒绝；删除家族段的操作数必须
+   为**可静态解析的绝对路径**且严格落在工作空间/信任目录内（zone 根本身拒绝）；
+   变量、通配、PowerShell 数组等不可静态解析的 token 一律不豁免（fail-closed）。
 2. 临时引擎重放：把待豁免规则从配置中摘除后构造临时
    ``PermissionEngine``（强制 ``file_guard.defaults.write=ask`` 并关闭
    strict merge / defer_unmatched），重放同一条命令——仅当结果为 ALLOW
@@ -41,11 +42,18 @@ _DELETE_FAMILY_RE = re.compile(
     r"(?i)(?:^|[;&|()\r\n])\s*[\"']?(?:[^\s\"';&|()]*[\\/])?"
     r"(?:rm|remove-item|ri|del|erase|rd|rmdir|unlink)(?:\.exe)?[\"']?(?=[ \t]|$|/)"
 )
-_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|\r\n&()]")
+# 复合结构：出现即拒绝（不尝试解析——审计只背书能被完整证明的单一简单命令）
+_COMPOUND_RE = re.compile(r"&&|\|\||[;|\r\n&()]")
+# 间接执行器/无法静态追踪删除语义的命令：出现即拒绝
+_INDIRECT_EXEC = frozenset({
+    "bash", "sh", "dash", "zsh", "fish", "csh", "tcsh", "cmd",
+    "powershell", "pwsh", "eval", "exec", "source", "xargs", "find",
+})
 _MSYS_PATH_RE = re.compile(r"^/([A-Za-z])/(.+)$")
 _CMD_SWITCH_RE = re.compile(r"^/[A-Za-z]{1,2}$")
-# 展开不了/展开后语义不定的 token：环境变量、通配、反引号、花括号扩展
-_UNRESOLVABLE_RE = re.compile(r"[$%*?\[\]`{}]")
+# 展开不了/展开后语义不定的 token：环境变量、通配、反引号、花括号扩展、
+# PowerShell 数组（逗号）、历史/子表达式（! @）、~+/~- 定位符
+_UNRESOLVABLE_RE = re.compile(r"[$%*?\[\]`{}!,@]|~[+\-]")
 _REDIRECT_TOKENS = frozenset({">", "<", ">>", "2>", "&>", "1>", "2>&1"})
 
 
@@ -103,7 +111,9 @@ def _to_path_token(token: str) -> str:
     return token
 
 
-def _is_inside(path: Path, zones: list[Path]) -> bool:
+def _is_strictly_inside(path: Path, zones: list[Path]) -> bool:
+    """仅当 ``path`` 是某个 zone 的**严格子路径**时为 True；等于 zone 根本身不算
+    （``rm -rf <工作空间根>`` 这类整目录删除不放行）。"""
     try:
         resolved = os.path.normcase(os.path.normpath(str(path.resolve(strict=False))))
     except (OSError, RuntimeError, ValueError):
@@ -115,74 +125,59 @@ def _is_inside(path: Path, zones: list[Path]) -> bool:
             )
         except (OSError, RuntimeError, ValueError):
             continue
-        if resolved == zone_text or resolved.startswith(zone_text + os.sep):
+        if resolved == zone_text:
+            return False
+        if resolved.startswith(zone_text + os.sep):
             return True
     return False
 
 
 def delete_operands_confined(command: str, zones: list[Path]) -> bool:
-    """宽松审计：删除家族段的全部操作数必须可静态解析且落在 ``zones`` 内。
+    """严格审计：只接受**能被完整证明**的单一简单删除命令。
 
-    ``zones`` 为空、任何操作数含变量/通配、或 cd/pushd 之后 cwd 不可跟踪时，
-    一律返回 False（fail-closed）。非删除段不在此审计（由引擎规则覆盖）。
+    拒绝（全部 fail-closed）：
+    - 任何复合结构（``&&``/``||``/``;``/管道/括号/换行）——嵌套 shell、解释器
+      内联代码（``bash -c``/``powershell -Command``）、管道入删除命令等形态
+      静态不可证；
+    - 间接执行器/删除语义无法静态追踪的命令（bash/sh/cmd/powershell/eval/
+      xargs/find 等）；
+    - 操作数含变量/通配/PowerShell 数组（逗号）等不可静态解析的 token；
+    - 相对路径操作数——bash 工具的 cwd 在调用间持久保留，静态审计无法得知
+      实际 cwd（只接受绝对路径）；
+    - 等于 zone 根本身的目标（整目录删除不放行）。
+
+    通过以上闸门的操作数必须全部是**可解析且严格落在 zones 内**的绝对路径。
     """
     zone_paths = [Path(zone) for zone in zones]
     if not zone_paths:
         return False
-    cwd: Path | None = zone_paths[0]
-    for raw_segment in _SEGMENT_SPLIT_RE.split(command):
-        segment = raw_segment.strip()
-        if not segment:
+    if _COMPOUND_RE.search(command):
+        return False
+    try:
+        tokens = shlex.split(command.strip(), posix=False)
+    except ValueError:
+        tokens = command.strip().split()
+    if not tokens:
+        return False
+    if _cmd_base(tokens[0]) not in _DELETE_FAMILY:
+        return False
+    if _cmd_base(tokens[0]) in _INDIRECT_EXEC:
+        return False
+    for token in tokens[1:]:
+        stripped = _strip_quotes(token)
+        if not stripped or stripped in _REDIRECT_TOKENS:
             continue
-        try:
-            tokens = shlex.split(segment, posix=False)
-        except ValueError:
-            tokens = segment.split()
-        if not tokens:
+        if stripped.startswith("-") or stripped.startswith(">") or stripped.startswith("<"):
             continue
-        base = _cmd_base(tokens[0])
-        if base == "cd":
-            operand = next(
-                (
-                    _to_path_token(token)
-                    for token in tokens[1:]
-                    if _strip_quotes(token) and not _strip_quotes(token).startswith("-")
-                ),
-                None,
-            )
-            if operand is None or _UNRESOLVABLE_RE.search(operand):
-                cwd = None
-                continue
-            candidate = Path(operand)
-            if not candidate.is_absolute() and cwd is not None:
-                candidate = cwd / candidate
-            try:
-                cwd = candidate.resolve(strict=False)
-            except (OSError, RuntimeError):
-                cwd = None
+        if _CMD_SWITCH_RE.match(stripped):
             continue
-        if base in {"pushd", "popd"}:
-            cwd = None
-            continue
-        if base not in _DELETE_FAMILY:
-            continue
-        for token in tokens[1:]:
-            stripped = _strip_quotes(token)
-            if not stripped or stripped in _REDIRECT_TOKENS:
-                continue
-            if stripped.startswith("-") or stripped.startswith(">") or stripped.startswith("<"):
-                continue
-            if _CMD_SWITCH_RE.match(stripped):
-                continue
-            if _UNRESOLVABLE_RE.search(stripped):
-                return False
-            candidate = Path(_to_path_token(stripped))
-            if not candidate.is_absolute():
-                if cwd is None:
-                    return False
-                candidate = cwd / candidate
-            if not _is_inside(candidate, zone_paths):
-                return False
+        if _UNRESOLVABLE_RE.search(stripped):
+            return False
+        candidate = Path(_to_path_token(stripped))
+        if not candidate.is_absolute():
+            return False
+        if not _is_strictly_inside(candidate, zone_paths):
+            return False
     return True
 
 
