@@ -72,6 +72,12 @@ resident Worker 的 IPC 暂时断开时，Front 保留已提交流式请求的�
 
 IPC 发送和关闭同时失败时，Front 仍保留原恢复等待；恢复订阅失败后退役该连接，再续接所有保留的请求。服务停止时，即使 IPC 关闭抛错，等待者和后台任务也会清理。
 
+## 进程身份
+
+IPC protocol 2 的 HELLO 必须携带有效的创建时间或进程启动计数，两个字段都缺失或为空时拒绝握手。仅 protocol 1 保留省略创建字段的兼容行为，并仍须通过操作系统归属校验。时间戳与启动计数保留不同单位，bool 和非正数均不是有效身份。
+
+debug 服务状态和新的钉钉 OAuth PID 记录保存操作系统进程身份，受限系统可使用启动计数。身份不可读时保留未知状态：debug 停止拒绝发送信号，OAuth 取消报告清理未完成，并保留 pending 状态及凭据。旧时间戳记录在身份仍可验证时继续兼容。
+
 ## Worker 输出日志
 
 resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<UUID>[-<owner>].stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，通过 `common.paths.get_worker_logs_dir()` 使用数据根下的 `logs/worker-logs`。该设置不改变 IPC 端点位置。

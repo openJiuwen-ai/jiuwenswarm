@@ -11,6 +11,7 @@ modules:
   - jiuwenswarm/server/runtime/session
   - jiuwenswarm/agents/swarm
   - jiuwenswarm/instance_manager
+  - jiuwenswarm/server/jiuwenmate
 files:
   - jiuwenswarm/common/process_identity.py
   - jiuwenswarm/common/process_supervision.py
@@ -23,6 +24,10 @@ files:
   - jiuwenswarm/server/supervisor/resident_lifecycle.py
   - jiuwenswarm/server/supervisor/shutdown.py
   - jiuwenswarm/server/runtime/session/lifecycle.py
+  - jiuwenswarm/debug_launcher.py
+  - jiuwenswarm/server/jiuwenmate/dingtalk_cli_local_provider.py
+  - pyproject.toml
+  - uv.lock
   - jiuwenswarm/agents/swarm/group_route.py
   - jiuwenswarm/start_services.py
   - jiuwenswarm/instance_manager/status.py
@@ -208,7 +213,36 @@ Windows / Python 3.11.15 定向回归 **199 passed**，覆盖输出日志轮转�
 该实验在 Windows 注入权限错误与模拟 start counter，不代表 HarmonyOS 真机验收；未执行全仓 UT 或远端 CodeCheck。
 
 本轮报告在 `D:/work_space/.codex-temp/harmony-process-identity-develop-conflicts-20261125/`：
-`merge-regression.xml`、`native-verified.json` 和 `harmony-controlled-verified.json`，运行产物不提交。
+`merge-verified.xml`、`native-verified.json` 和 `harmony-controlled-verified.json`，运行产物不提交。
+
+## 2026-11-25 按附件收紧协议与补齐未知状态
+
+用户明确采用 `worker-process-identity-changes.md` 的协议要求。本节替代此前不区分协议版本的缺字段兼容：
+protocol 2 HELLO 必须有创建时间或 start ticks，protocol 1 继续兼容缺少身份字段的旧消息；
+两种字段始终分开提供，不可读者为 null，创建时间要求有限正数，ticks 要求正整数，bool 不接受。
+公共模块继续放在 `common`，内部保留浮点时间或带类型字符串，维持既有持久化与调用方兼容。
+
+补齐规约检视发现的三个遗留路径：debug 状态持久化 OS 身份，权限不足返回未知并拒绝启动/停止、保留状态，
+发送信号和强制结束前重验；钉钉 OAuth 新 PID 文件同时保存 PID 与身份，兼容旧纯 PID 文件，
+权限不足时不假定退出，状态查询保留 pending，取消/断开受控失败并保留凭据；runtime owner 补齐 OSError 处理，
+可读 ticks 继续验证，两个来源均不可验证时按既有未知状态/生命周期错误处理，保留旧 owner 格式。
+
+Harmony extra 增加 a4p、openjiuwen-e2a 和当前 develop 的 agent-gateway，依赖声明与主依赖的固定版本/提交一致。
+附件的 openjiuwen-agent-gateway 是旧分支包名，本分支使用主干已有的 agent-gateway；uv.lock 同步后全部既有包版本与来源不变。
+附件来自 0.2.9 工作区，日志默认目录按当前 develop 的 `common.paths.get_worker_logs_dir()` 保留在数据根 `logs/worker-logs`，
+并保留显式 JIUWEN_WORKER_LOG_DIR、共享诊断文件、stderr 追加句柄与日志轮转；不回退主干路径和日志维护能力。
+
+Windows / Python 3.11.15 完整定向回归 **607 passed、10 skipped**，覆盖身份、旧 owner、debug、钉钉授权、
+resident/front_loopback、停机 deadline、诊断、日志轮转、进程监督、导入隔离与真实异常退出。
+上轮规约审计的原始 12 项复现全部通过。原生 Windows resident/loopback 两组、权限拒绝受控实验三组均通过，
+确认请求完成、resident 同 PID 重连、最终进程/IPC/端口/锁清理；另以真实 Windows 子进程验证 debug 身份持久化、
+停止返回 0、目标退出及状态文件清理，独立 Worker 验证由前两组承担。
+
+钉钉旧测试中的 29 项 Windows 路径断言失败已在未修改的候选 9ae141643 上复现，修正为 Path.parts 校验。
+CLI 阶段测试补齐明确的身份模拟；认证清理测试先计算真实依赖指纹再进入认证观察窗口，不延长认证/停机超时。
+依赖验证执行 uv lock --locked --offline，通过且固定依赖未变化；未运行本地静态检查、全仓 UT 或 HarmonyOS 真机验收。
+报告在 `D:/work_space/.codex-temp/harmony-attachment-align-20261125/` 的 `final-regression.xml`、
+`original-probes.xml`、`native-verified.json`、`harmony-controlled/verified.json`、`native-debug-verified.json`。
 
 ## 遗留与重验条件
 

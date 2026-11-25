@@ -54,6 +54,7 @@ from typing import Any
 import yaml
 
 from jiuwenswarm.common.utils import get_config_file
+from jiuwenswarm.common.process_identity import ProcessIdentity, process_identity_matches, read_process_identity
 from jiuwenswarm.instance_manager import is_process_alive, stop_process_by_pid
 
 # Package source root: <repo>/jiuwenswarm in source mode.
@@ -124,6 +125,8 @@ class DebugState:
         log_file: Absolute path of the redirected stdout/stderr log.
         command: Argv of the spawned process, kept for PID-reuse verification.
         cwd: Working directory the process was spawned in.
+        process_identity: Verified creation time or tagged kernel start ticks.
+        process_identity: Verified creation time or tagged kernel start ticks.
     """
 
     pid: int
@@ -131,12 +134,14 @@ class DebugState:
     log_file: str
     command: list[str]
     cwd: str
+    process_identity: ProcessIdentity | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation of this state."""
         return {
             "pid": self.pid,
             "started_at": self.started_at,
+            "process_identity": self.process_identity,
             "log_file": self.log_file,
             "command": list(self.command),
             "cwd": self.cwd,
@@ -166,6 +171,7 @@ class DebugState:
             log_file=str(data.get("log_file") or ""),
             command=command,
             cwd=str(data.get("cwd") or ""),
+            process_identity=data.get("process_identity"),
         )
 
 
@@ -257,40 +263,44 @@ def clear_debug_state() -> bool:
     return True
 
 
-def is_debug_service_alive(state: DebugState) -> bool:
+def _debug_process_identity(state: DebugState) -> ProcessIdentity | None:
+    """Return the verified birth identity, preserving legacy spawn timestamps."""
+    import psutil
+
+    expected = getattr(state, "process_identity", None)
+    if expected is not None:
+        return expected if process_identity_matches(state.pid, expected) else None
+    observed = read_process_identity(state.pid)
+    if state.started_at <= 0 or isinstance(observed, str):
+        raise psutil.AccessDenied(state.pid, msg="legacy debug state has no comparable process identity")
+    return observed if abs(observed - state.started_at) <= 10.0 else None
+
+
+def is_debug_service_alive(state: DebugState) -> bool | None:
     """Check whether the recorded PID is still the process we started.
 
     A bare liveness check is not enough: the OS recycles PIDs, so a stale state
     file could point at an unrelated process that ``jiuwenswarm-stop`` would
-    then happily kill. When psutil is available we additionally require the
-    process creation time to match the recorded ``started_at``.
+    then kill. New records retain a verified OS birth identity. Legacy records
+    require a comparable creation timestamp near the recorded ``started_at``.
 
     Args:
         state: Recorded debug service state.
 
     Returns:
-        True when the process is alive and plausibly the one we spawned.
+        True for a matching live process, False for exit/reuse, None when unknown.
     """
     if not is_process_alive(state.pid):
         return False
-    if state.started_at <= 0:
-        return True
+    import psutil
 
     try:
-        import psutil
-    except ImportError:  # pragma: no cover - psutil is a hard dependency
-        return True
-
-    try:
-        proc = psutil.Process(state.pid)
-        create_time = proc.create_time()
-    except Exception:
-        # Access denied / vanished: fall back to the liveness result.
-        return True
-
-    # Spawn timestamp is taken right after Popen returns, so it trails the
-    # kernel's create_time by milliseconds; allow a generous window.
-    return abs(create_time - state.started_at) <= 10.0
+        return _debug_process_identity(state) is not None
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.Error, OSError) as exc:
+        logging.warning("[debug] Process identity cannot be verified pid=%s: %s", state.pid, exc)
+        return None
 
 
 def _resolve_npm_command(args: list[str]) -> list[str] | None:
@@ -445,7 +455,11 @@ def _check_no_running_debug_service() -> int | None:
     if state is None:
         return None
 
-    if is_debug_service_alive(state):
+    alive = is_debug_service_alive(state)
+    if alive is None:
+        logging.error("[debug] Cannot verify the recorded service; keeping its state and refusing another start.")
+        return 1
+    if alive:
         logging.info(
             f"[debug] ERROR: a debug service is already running (PID={state.pid})."
         )
@@ -506,12 +520,20 @@ def _spawn_background_service(log_path: Path) -> DebugState | None:
         logging.info(f"[debug] ERROR: failed to spawn background service: {exc}")
         return None
 
+    import psutil
+
+    try:
+        identity = read_process_identity(proc.pid)
+    except (psutil.Error, OSError) as exc:
+        logging.warning("[debug] Spawned service identity cannot be recorded pid=%s: %s", proc.pid, exc)
+        identity = None
     return DebugState(
         pid=proc.pid,
         started_at=time.time(),
         log_file=str(log_path),
         command=cmd,
         cwd=str(REPO_ROOT),
+        process_identity=identity,
     )
 
 
@@ -754,6 +776,7 @@ def _stop_process_tree(
     timeout: float = DEFAULT_STOP_TIMEOUT,
     *,
     assume_group_leader: bool = False,
+    expected_created: ProcessIdentity | None = None,
 ) -> bool:
     """Stop the background service together with every process it spawned.
 
@@ -776,11 +799,23 @@ def _stop_process_tree(
     Returns:
         True when nothing from the tree is left running.
     """
+    if expected_created is not None:
+        import psutil
+
+        try:
+            if not process_identity_matches(pid, expected_created):
+                logging.error("[debug] Service PID identity changed; refusing process tree cleanup.")
+                return False
+        except psutil.NoSuchProcess:
+            return True
+        except (psutil.Error, OSError) as exc:
+            logging.error("[debug] Service process identity could not be verified: %s", exc)
+            return False
     if platform.system().lower() == "windows":
         from jiuwenswarm.common.process_supervision import terminate_service_tree
 
         try:
-            terminate_service_tree(pid, timeout=timeout)
+            terminate_service_tree(pid, timeout=timeout, expected_created=expected_created)
         except (OSError, RuntimeError) as exc:
             logging.error("[debug] Service tree cleanup incomplete: %s", exc)
             return False
@@ -821,6 +856,12 @@ def _stop_process_tree(
     logging.info(
         f"[debug] Process group {pgid} did not exit within {timeout}s; sending SIGKILL."
     )
+    if expected_created is not None:
+        try:
+            if not process_identity_matches(pid, expected_created):
+                return False
+        except (psutil.Error, OSError):
+            return False
     try:
         os.killpg(pgid, signal.SIGKILL)
     except OSError:
@@ -901,7 +942,11 @@ def stop_debug_service(
         )
         return 0
 
-    if not is_debug_service_alive(state):
+    alive = is_debug_service_alive(state)
+    if alive is None:
+        logging.error("[debug] Cannot verify the recorded service; stop refused and state retained.")
+        return 1
+    if not alive:
         logging.info(
             f"[debug] Debug service (PID={state.pid}) is no longer running; "
             "stopping its remaining Worker."
@@ -913,7 +958,17 @@ def stop_debug_service(
         return 0
 
     logging.info(f"[debug] Stopping debug service (PID={state.pid})...")
-    stopped = _stop_process_tree(state.pid, timeout=front_timeout)
+    import psutil
+
+    try:
+        identity = _debug_process_identity(state)
+    except (psutil.Error, OSError) as exc:
+        logging.error("[debug] Service identity changed before shutdown: %s", exc)
+        return 1
+    if identity is None:
+        logging.error("[debug] Service PID identity changed before shutdown; stop refused.")
+        return 1
+    stopped = _stop_process_tree(state.pid, timeout=front_timeout, expected_created=identity)
     if not stopped or is_process_alive(state.pid):
         logging.info(f"[debug] ERROR: failed to stop debug service (PID={state.pid}).")
         logging.info("[debug] Kill it manually, then rerun 'jiuwenswarm-stop'.")
