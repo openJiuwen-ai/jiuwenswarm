@@ -1062,20 +1062,20 @@ if (-not $InnoSupportsLongPaths) {
         Measure-Object -Maximum
     $MaxPayloadRelativePath = $LongestSourcePath.Maximum - $PayloadRoot.TrimEnd('\').Length - 1
     $IsccArguments += "/DMaxPayloadRelativePath=$MaxPayloadRelativePath"
-}
-if (-not $InnoSupportsLongPaths -and $LongestSourcePath.Maximum -gt 249) {
-    $UsedDrives = [System.IO.DriveInfo]::GetDrives().Name
-    $DriveName = 90..68 | ForEach-Object { "$([char]$_):\" } |
-        Where-Object { $_ -notin $UsedDrives } | Select-Object -First 1
-    if (-not $DriveName) {
-        throw 'Inno Setup needs a shorter checkout path or a free drive letter.'
+    if ($LongestSourcePath.Maximum -gt 249) {
+        $UsedDrives = [System.IO.DriveInfo]::GetDrives().Name
+        $DriveName = 90..68 | ForEach-Object { "$([char]$_):\" } |
+            Where-Object { $_ -notin $UsedDrives } | Select-Object -First 1
+        if (-not $DriveName) {
+            throw 'Inno Setup needs a shorter checkout path or a free drive letter.'
+        }
+        $InnoDrive = $DriveName.TrimEnd('\')
+        & subst.exe $InnoDrive $ProjectRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not map a short Inno Setup path for $ProjectRoot."
+        }
+        $InnoRoot = $DriveName
     }
-    $InnoDrive = $DriveName.TrimEnd('\')
-    & subst.exe $InnoDrive $ProjectRoot
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not map a short Inno Setup path for $ProjectRoot."
-    }
-    $InnoRoot = $DriveName
 }
 try {
     $IsccArguments += Join-Path $InnoRoot 'scripts\installer-electron.iss'

@@ -347,9 +347,7 @@ begin
   end;
 
   BackendPath := ExpandConstant('{app}\resources\backend\{#BackendExecutableName}');
-  Startup.Size := 68; // Size of 32-bit STARTUPINFOW.
-  Startup.Flags := 1; // STARTF_USESHOWWINDOW
-  Startup.ShowWindow := SW_HIDE;
+  InitializeHiddenCliStartup(Startup);
   if not CliCreateProcess(BackendPath, '"' + BackendPath + '" --desktop-stop-bundled-email-mcp',
     0, 0, False, $08000000, 0, 0, Startup, Child) then
   begin
