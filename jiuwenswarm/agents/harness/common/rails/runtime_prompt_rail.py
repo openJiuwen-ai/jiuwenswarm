@@ -24,14 +24,17 @@ from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentKind,
 )
-
 from openjiuwen.harness.rails.base import DeepAgentRail
+
 from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
     SystemPromptPriority,
 )
 from jiuwenswarm.agents.harness.common.prompt.shell_environment import (
     build_shell_environment_prompt,
     get_shell_capabilities,
+)
+from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+    current_multimodal_image_files,
 )
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
@@ -137,6 +140,31 @@ class RuntimePromptRail(DeepAgentRail):
         self._request_metadata: dict[str, Any] = {}
         self._a4p_authorizer_available: bool = False
         self._a4p_preauthorization_active: bool | None = None
+        self._turn_image_files: list[dict[str, Any]] | None = None
+        self._turn_binding_token: Any = None
+
+    def bind_turn_image_files(self, image_files: list[dict[str, Any]]) -> Any:
+        self._turn_image_files = list(image_files or [])
+        self._turn_binding_token = token = object()
+        return token
+
+    def restore_turn_image_files(self, token: Any) -> None:
+        if token is None or token is not self._turn_binding_token:
+            return
+        self._turn_binding_token = None
+        self._turn_image_files = None
+
+    def inherit_turn_image_files(
+        self, image_files: list[dict[str, Any]] | None,
+    ) -> None:
+        self._turn_image_files = (
+            list(image_files) if image_files is not None else None
+        )
+
+    def _current_turn_image_files(self) -> list[dict[str, Any]]:
+        if self._turn_image_files is not None:
+            return self._turn_image_files
+        return current_multimodal_image_files()
 
     def init(self, agent) -> None:
         """从 agent 获取 system_prompt_builder 引用。"""
@@ -191,6 +219,7 @@ class RuntimePromptRail(DeepAgentRail):
                 project_root=self._execution_project_root,
                 workspace=self._execution_workspace,
             )
+        rail.inherit_turn_image_files(self._turn_image_files)
         return rail
 
     def uninit(self, agent) -> None:
@@ -1043,11 +1072,8 @@ class RuntimePromptRail(DeepAgentRail):
             kind=PromptAttachmentKind.RUNTIME,
             priority=95,
         )
-        from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-            current_multimodal_image_files,
-        )
 
-        if current_multimodal_image_files():
+        if self._current_turn_image_files():
             await self._clear_prompt_attachment(ctx, section="runtime.current_media")
         else:
             media_content = (

@@ -118,6 +118,7 @@ async def test_config_save_refreshes_persistent_models_without_starting_a_runtim
     adapter._service = service
     server = SimpleNamespace(
         _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()),
+        schedule_image_modality_warmup=Mock(),
         _jiuwenmate_web=adapter,
     )
     models.window = 131072
@@ -138,6 +139,7 @@ async def test_model_reload_does_not_create_persistent_data_for_personal_agents(
     monkeypatch.setattr("jiuwenswarm.server.jiuwenmate.service.default_data_dir", lambda: tmp_path / "absent")
     server = SimpleNamespace(
         _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()),
+        schedule_image_modality_warmup=Mock(),
         _jiuwenmate_web=JiuwenMateWebAdapter(),
     )
 
@@ -155,6 +157,7 @@ async def test_model_reload_reports_persistent_failure_separately_from_save():
     adapter.refresh_models = AsyncMock(return_value=False)
     server = SimpleNamespace(
         _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()),
+        schedule_image_modality_warmup=Mock(),
         _jiuwenmate_web=adapter,
     )
 
@@ -184,6 +187,7 @@ async def test_model_reload_opens_an_existing_persistent_store_once(tmp_path, mo
     adapter = JiuwenMateWebAdapter(service_factory=service_factory)
     server = SimpleNamespace(
         _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()),
+        schedule_image_modality_warmup=Mock(),
         _jiuwenmate_web=adapter,
     )
     models.window = 131072
@@ -288,6 +292,7 @@ async def test_proxied_model_save_notifies_persistent_agents_with_the_saved_conf
     adapter._service = service
     server = SimpleNamespace(
         _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()), _jiuwenmate_web=adapter,
+        schedule_image_modality_warmup=Mock(),
     )
     saved = model_payload(131072)
     monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: saved)
@@ -333,3 +338,43 @@ async def test_partial_persistent_reload_does_not_retry_or_restart_the_gateway()
     assert await scope["_on_config_saved"]({"models.defaults"}, config_payload=model_payload(131072)) is False
     assert client.send_request.await_count == 1
     restart.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_save_refreshes_image_modality_cache() -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    server = SimpleNamespace(
+        _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()),
+        _jiuwenmate_web=JiuwenMateWebAdapter(),
+        schedule_image_modality_warmup=Mock(),
+    )
+
+    applied = await AgentWebSocketServer._reload_after_config_save(
+        server, {"models.defaults"}, reload_options={"reload_scopes": ["model"]},
+    )
+
+    assert applied is True
+    server.schedule_image_modality_warmup.assert_called_once_with(
+        reason="model config change", reset_cache=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scopes", [["permissions"], ["search"]])
+async def test_non_model_save_skips_image_modality_refresh(scopes) -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    server = SimpleNamespace(
+        _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()),
+        _jiuwenmate_web=JiuwenMateWebAdapter(),
+        schedule_image_modality_warmup=Mock(),
+    )
+
+    reload_options = {"reload_scopes": scopes} if scopes else None
+    applied = await AgentWebSocketServer._reload_after_config_save(
+        server, {"permissions_enabled"}, reload_options=reload_options,
+    )
+
+    assert applied is True
+    server.schedule_image_modality_warmup.assert_not_called()
