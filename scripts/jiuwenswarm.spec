@@ -342,6 +342,7 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "websockets",
     # The extension loader opens extension.py from disk in frozen builds.
     *collect_submodules("jiuwenswarm.extensions.app_market"),
+    "jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers",
     "loguru",
     "dotenv",
     "webview",
