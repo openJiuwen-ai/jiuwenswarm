@@ -1265,6 +1265,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       params?: Record<string, unknown>,
       requestOptions?: WebRequestOptions
     ): Promise<T> => {
+      if (method === 'chat.send') {
+        // MCP Apps：chat.send 的全部构造点在此汇合——按目标会话注入 App
+        // 交互上下文快照（metadata.mcp_app_contexts，后端消费缺座为已知
+        // 限制；已携带时不覆盖）。send 路径与 App 确认流路径统一在此生效。
+        const wireSession = String(params?.session_id ?? '');
+        const contexts = getMcpAppContexts(wireSession);
+        if (contexts.length > 0) {
+          const existing = params?.metadata;
+          const base = existing && typeof existing === 'object' && !Array.isArray(existing)
+            ? existing as Record<string, unknown>
+            : {};
+          if (!('mcp_app_contexts' in base)) {
+            params = { ...(params ?? {}), metadata: { ...base, mcp_app_contexts: contexts } };
+          }
+        }
+      }
       return webClient.request<T>(method, params, requestOptions);
     },
     []
@@ -1985,12 +2001,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const chatRequestId = makeClientRequestId('chat');
         activeRequestIdRef.current = chatRequestId;
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
-        // MCP Apps：随本条消息携带目标会话的 App 交互上下文快照
-        // （dev-stable 后端消费缺座为已知限制，前端注入与线路携带完整）。
-        const mcpAppContexts = getMcpAppContexts(sessionId);
-        const requestMetadata = mcpAppContexts.length > 0
-          ? { mcp_app_contexts: mcpAppContexts }
-          : undefined;
         await request('chat.send', {
           session_id: sessionId,
           content,
@@ -1998,7 +2008,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(selectedModel ? { model_name: selectedModel } : {}),
           ...workContext,
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
-          ...(requestMetadata ? { metadata: requestMetadata } : {}),
         }, { requestId: chatRequestId });
         consumePlanEntryMark(sessionId, outgoingMode);
       } catch (error) {
