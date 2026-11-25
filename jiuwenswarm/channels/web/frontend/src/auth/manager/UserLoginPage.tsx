@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import logoIcon from '/logo.svg';
+import { useWorkSwarmLogo } from '../../features/webui/react/appearanceBrand';
 import { Button } from '../../components/ui/Button/Button';
 import { clearActiveUserCluster, clearManagerTokens, getManagerAccessToken, getManagerRefreshToken } from './authSession';
 import {
@@ -13,6 +13,7 @@ import './userLogin.css';
 
 export function UserLoginPage() {
   const { i18n, t } = useTranslation();
+  const logo = useWorkSwarmLogo(true);
   const isZh = i18n.language.startsWith('zh');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -126,7 +127,7 @@ export function UserLoginPage() {
           </Button>
         </div>
         <div className="user-login-title">
-          <img src={logoIcon} alt="JiuwenSwarm" />
+          <img src={logo.src} onError={logo.onError} alt="WorkSwarm" />
           <h1>{t('userLogin.title')}</h1>
         </div>
         <label htmlFor="user-login-username">{t('userLogin.username')}</label>

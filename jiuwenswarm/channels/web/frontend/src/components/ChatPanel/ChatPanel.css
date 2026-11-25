@@ -4520,6 +4520,13 @@
   mix-blend-mode: multiply;
 }
 
+/* 插件吉祥物：沿用蜜蜂的显示区域，按比例完整显示；透明图片不做正片叠底 */
+.chat-welcome__banner--mascot {
+  height: 200px;
+  object-fit: contain;
+  mix-blend-mode: normal;
+}
+
 .chat-welcome__heading {
   font-size: 32px;
   font-weight: 600;

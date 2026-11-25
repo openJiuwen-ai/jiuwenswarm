@@ -1,4 +1,4 @@
-"""The Web UI server answers the startup splash hint locally (Gateway F_12, S_09 section 4)."""
+"""The Web UI server answers the startup gate hint locally (Gateway F_12, F_16, S_09 section 4)."""
 
 from __future__ import annotations
 
@@ -61,8 +61,34 @@ def test_the_hint_uses_the_gateway_configuration(tmp_path, monkeypatch):
     assert install_dir != tmp_path / "custom"
 
 
+def test_the_appearance_hint_follows_the_gateway_rules(tmp_path, monkeypatch):
+    config = GatewayExtensionConfig(install_dir=tmp_path / "pkgs", data_dir=tmp_path / "data")
+    monkeypatch.setattr("agent_gateway.extensions_v2.splash_hint.load_gateway_config", lambda: config)
+    assert app_web._appearance_providers() is False
+    # A splash, a mention in other text, an AgentServer package and a malformed declaration do not count.
+    _install(config.install_dir, "test.splash", [_slot("application.splash")])
+    _install(config.install_dir, "test.mention", [_slot("application.background", title="application.appearance")])
+    _install(config.install_dir, "test.agent", [_slot("application.appearance")], domain="agentserver")
+    _install(config.install_dir, "test.invalid", [_slot("application.appearance", splash={"skippable": True})])
+    assert app_web._appearance_providers() is False
+    _install(config.install_dir, "test.logo", [_slot("application.appearance")])
+    assert app_web._appearance_providers() is True
+    monkeypatch.setattr("agent_gateway.extensions_v2.splash_hint.load_gateway_config",
+                        lambda: GatewayExtensionConfig(enabled=False, install_dir=config.install_dir))
+    assert app_web._appearance_providers() is False
+
+
+def test_an_unreadable_install_counts_as_no_appearance(monkeypatch):
+    def broken(config=None):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr("agent_gateway.extensions_v2.splash_hint.installed_appearance_providers", broken)
+    assert app_web._appearance_providers() is False
+
+
 def test_hint_is_served_by_the_web_server(tmp_path, monkeypatch):
     monkeypatch.setattr(app_web, "_splash_candidates", lambda: True)
+    monkeypatch.setattr(app_web, "_appearance_providers", lambda: False)
 
     class _Handler(_SpaStaticHandler):
         def log_message(self, format: str, *args) -> None:  # noqa: A002 - base signature
@@ -77,7 +103,7 @@ def test_hint_is_served_by_the_web_server(tmp_path, monkeypatch):
         conn.request("GET", app_web.SPLASH_HINT_PATH)
         response = conn.getresponse()
         assert response.status == 200
-        assert json.loads(response.read()) == {"candidates": True}
+        assert json.loads(response.read()) == {"candidates": True, "appearance": False}
         conn.close()
     finally:
         server.shutdown()

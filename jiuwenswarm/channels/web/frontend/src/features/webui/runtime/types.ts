@@ -3,7 +3,7 @@
  * Runtime 管理实例状态、revision、挂载所有权、当前帧校验与显示反馈，不依赖 React。
  */
 
-import type { WebUIAppearanceFrame } from '../appearance/appearance.ts';
+import type { WebUIAppearanceSnapshot } from '../appearance/appearance.ts';
 import type { WebUICatalog } from '../catalog/types.ts';
 import type { WebUIInteractionIntent, WebUIInteractionResult } from '../contracts/interaction.ts';
 import type { WebUINormalizedRenderFrame, WebUINormalizedTarget } from '../contracts/normalized.ts';
@@ -60,7 +60,12 @@ export interface WebUIMountOptions {
   packageId?: string;
   readyPayload?: Readonly<Record<string, unknown>>;
   readyOnce?: boolean;
-  onReadySettled?: (receipt: WebUIDispatchReceipt | null) => void;
+  /**
+   * Called right before a ready notification is sent; `onReadySettled` always follows. `packageId` names the
+   * package a targeted ready goes to (after a package change), and is undefined for the consumer's own ready.
+   */
+  onReadyStart?: (packageId?: string) => void;
+  onReadySettled?: (receipt: WebUIDispatchReceipt | null, packageId?: string) => void;
 }
 
 export interface WebUIMountHandle {
@@ -121,8 +126,13 @@ export interface WebUIRuntime {
   resetRequestContext(): void;
   refreshContributions(): Promise<void>;
   getConnectionState(): WebUIConnectionState;
-  /** Current appearance contribution of the Gateway connection (S_08); null when none. */
-  getAppearance(): WebUIAppearanceFrame | null;
+  /** Current appearance snapshot of the Gateway connection (S_08); null when none was received. */
+  getAppearance(): WebUIAppearanceSnapshot | null;
+  /**
+   * Keep accepted snapshots back until the returned release is called, then publish the latest one.
+   * Used while appearance providers answer a ready, so their submissions show at once.
+   */
+  holdAppearance(): () => void;
   /** Report a host lifecycle close of the exact render revision; null when stale or not sent. */
   notifyClosed(instanceKey: string, reason: string, expectedRevision?: number, presentationId?: number): Promise<WebUIDispatchReceipt | null>;
   subscribeAppearance(listener: () => void): () => void;
