@@ -28,6 +28,9 @@ sys.modules.setdefault(bootstrap_module.__name__, bootstrap_module)
 
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler, _format_ws_diagnostics
 
+#: Sandbox that raw-file and inline-download responses add for document types.
+DOCUMENT_SANDBOX = "sandbox allow-scripts allow-popups"
+
 
 def test_format_ws_diagnostics_forwards_parts_and_fields():
     assert _format_ws_diagnostics({"client": "127.0.0.1"}, reason="peer closed") == (
@@ -400,7 +403,8 @@ def test_inline_verified_download_sandboxes_documents(
         finally:
             connection.close()
         # An attachment is downloaded instead of rendered, so it keeps
-        # ``nosniff`` but does not need the sandbox CSP.
+        # ``nosniff`` but does not need the document sandbox. The host-wide
+        # embeddable policy (``_host_document_policy``) still applies.
         connection = HTTPConnection("127.0.0.1", server.server_port)
         connection.request("GET", f"/file-api/download?token={quote(token)}")
         response = connection.getresponse()
@@ -408,7 +412,7 @@ def test_inline_verified_download_sandboxes_documents(
             assert response.status == 200
             assert response.headers["Content-Disposition"].startswith("attachment;")
             assert response.headers["X-Content-Type-Options"] == "nosniff"
-            assert "Content-Security-Policy" not in response.headers
+            assert DOCUMENT_SANDBOX not in (response.headers.get_all("Content-Security-Policy") or [])
             response.read()
         finally:
             connection.close()
@@ -488,7 +492,8 @@ def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path):
         status, headers, _ = request("GET", png_path)
         assert status == 200
         assert headers["X-Content-Type-Options"] == "nosniff"
-        assert "Content-Security-Policy" not in headers
+        # Images are not documents: no document sandbox, only the host-wide policy.
+        assert DOCUMENT_SANDBOX not in (headers.get_all("Content-Security-Policy") or [])
     finally:
         server.shutdown()
         thread.join()
