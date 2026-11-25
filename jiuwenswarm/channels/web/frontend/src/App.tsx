@@ -627,6 +627,7 @@ function AppContent({
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
   const [isJiuwenMate, setIsJiuwenMate] = useState(() => {
+    if (isEnterprise()) return false;
     try {
       return window.localStorage.getItem('jiuwenswarm:jiuwenmate-mode') === 'true';
     } catch {
@@ -634,6 +635,7 @@ function AppContent({
     }
   });
   useEffect(() => {
+    if (isEnterprise()) return;
     try {
       window.localStorage.setItem('jiuwenswarm:jiuwenmate-mode', String(isJiuwenMate));
     } catch {
@@ -946,6 +948,10 @@ function AppContent({
       setSessionId(route.sessionId);
       setActiveNav('chat');
     } else if (route.kind === 'group-chat') {
+      if (isEnterprise()) {
+        navigate({ kind: 'chat-new' }, { replace: true });
+        return;
+      }
       // Group chats live in the JiuwenMate chat view.
       sessionIdRef.current = NEW_CONVERSATION_ID;
       setSessionId(NEW_CONVERSATION_ID);
@@ -5313,7 +5319,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         onNavItemPointerDownCapture={(key) => {
           if (key === sidebarPeek) peekSurfaceProps.onPointerDownCapture();
         }}
-        onToggleJiuwenMate={() => {
+        onToggleJiuwenMate={isEnterprise() ? undefined : () => {
           setIsJiuwenMate(reenterJiuwenMate({ isJiuwenMate, activeNav }).isJiuwenMate);
         }}
       />

@@ -1423,19 +1423,20 @@ export const ChatPanel = React.memo(function ChatPanel({
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const isAuthorized = useAuthStore((state) => state.islogin);
+  const showFreeModelsCampaign = !isEnterprise() && !isAuthorized;
   const [bubbleVisible, setBubbleVisible] = useState(false);
   const [topicBubbleActive, setTopicBubbleActive] = useState(false);
   const showTopicBubble = topicBubbleActive && recommendationState === 'disabled';
   const [freeModelsPromptDismissed, setFreeModelsPromptDismissed] = useState(false);
   const bubbleHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleBubbleShow = useCallback(() => {
-    if (!isAuthorized && freeModelsPromptDismissed && !showTopicBubble) return;
+    if (showFreeModelsCampaign && freeModelsPromptDismissed && !showTopicBubble) return;
     if (bubbleHideTimerRef.current) {
       clearTimeout(bubbleHideTimerRef.current);
       bubbleHideTimerRef.current = null;
     }
     setBubbleVisible(true);
-  }, [freeModelsPromptDismissed, isAuthorized, showTopicBubble]);
+  }, [freeModelsPromptDismissed, showFreeModelsCampaign, showTopicBubble]);
   const handleBubbleLeave = useCallback(() => {
     if (bubbleHideTimerRef.current) {
       clearTimeout(bubbleHideTimerRef.current);
@@ -2557,7 +2558,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   <>
                     <div
                       ref={bubbleRef}
-                      className={`chat-welcome__banner chat-welcome__banner--bubble${showTopicBubble || !isAuthorized ? ' chat-welcome__banner--bubble--campaign' : ''}${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
+                      className={`chat-welcome__banner chat-welcome__banner--bubble${showTopicBubble || showFreeModelsCampaign ? ' chat-welcome__banner--bubble--campaign' : ''}${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
                       data-testid="chat-panel-welcome-banner-bubble"
                       onMouseEnter={handleBubbleShow}
                       onMouseLeave={handleBubbleLeave}
@@ -2574,7 +2575,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                             {t('chat.topicStarter.trySettings')}
                           </button>
                         </>
-                      ) : isAuthorized ? (
+                      ) : !showFreeModelsCampaign ? (
                         t('chat.welcomeBubbleText')
                       ) : (
                         <>
