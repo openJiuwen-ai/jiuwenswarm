@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { CircleAlert, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useOptionalWebUIAppContext } from '../../../webui/react/WebUIProvider';
-import { chatRoutePath } from '../../../../multi-session/routing/route';
+import { appRoutePath } from '../../../../multi-session/routing/route';
 import './SystemPluginRecoverySettings.css';
 
 const RECOVERY_ROUTE = '/system-plugin-recovery';
+const RECOVERY_ROUTE_PATH = appRoutePath(RECOVERY_ROUTE);
 const MAX_ENDPOINT_ATTEMPTS = 10;
 const ENDPOINT_RETRY_DELAY_MS = 500;
 const RECOVERY_HEIGHT_MESSAGE = 'jiuwenswarm.system-plugin-recovery.height';
@@ -30,27 +31,27 @@ type RecoveryMessage = {
   centerY?: unknown;
 };
 
+type EndpointState = 'loading' | 'ready' | 'unavailable' | 'authenticationRequired';
+
 function recoveryPageUrl(value: unknown, locale: string): string | null {
   if (typeof value !== 'string') return null;
   try {
-    const url = new URL(value);
-    if (url.protocol !== 'http:') return null;
-    if (url.hostname !== '127.0.0.1') return null;
-    if (!url.port) return null;
-    if (url.pathname !== RECOVERY_ROUTE) return null;
+    const url = new URL(value, `${window.location.origin}${RECOVERY_ROUTE_PATH}/`);
+    if (url.username || url.password || url.hash) return null;
+    const directSidecar = url.protocol === 'http:'
+      && url.hostname === '127.0.0.1'
+      && Boolean(url.port)
+      && url.pathname === RECOVERY_ROUTE;
+    const sameOriginProxy = url.origin === window.location.origin
+      && url.pathname === `${RECOVERY_ROUTE_PATH}/proxy`;
+    if (!directSidecar && !sameOriginProxy) return null;
+    if (sameOriginProxy) url.search = '';
     url.searchParams.set('locale', locale);
-    url.searchParams.set('parent_origin', window.location.origin);
+    if (directSidecar) url.searchParams.set('parent_origin', window.location.origin);
     return url.toString();
   } catch {
     return null;
   }
-}
-
-function navigateToRecoveryRoute(): void {
-  const routePath = chatRoutePath({ kind: 'system-plugin-recovery' });
-  if (window.location.pathname === routePath) return;
-  window.history.pushState(null, '', routePath);
-  window.dispatchEvent(new PopStateEvent('popstate'));
 }
 
 function recoveryMessage(value: unknown): RecoveryMessage | null {
@@ -71,8 +72,7 @@ export function SystemPluginRecoverySettings() {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [frameHeight, setFrameHeight] = useState(INITIAL_FRAME_HEIGHT);
-  const [loading, setLoading] = useState(true);
-  const [unavailable, setUnavailable] = useState(false);
+  const [endpointState, setEndpointState] = useState<EndpointState>('loading');
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
   const [restoreLabel, setRestoreLabel] = useState('');
   const [pageTitle, setPageTitle] = useState('');
@@ -119,18 +119,20 @@ export function SystemPluginRecoverySettings() {
   }, [url, runtime]);
 
   useEffect(() => {
-    navigateToRecoveryRoute();
-    const routePath = chatRoutePath({ kind: 'system-plugin-recovery' });
-    if (window.location.pathname !== routePath) return undefined;
-
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const loadEndpoint = async (attempt: number) => {
       try {
-        const response = await fetch(`${routePath}/endpoint`, {
+        const response = await fetch(`${RECOVERY_ROUTE_PATH}/endpoint`, {
           cache: 'no-store',
           credentials: 'same-origin',
         });
+        if (cancelled) return;
+        if (response.status === 401 || response.status === 403) {
+          setUrl(null);
+          setEndpointState(response.status === 401 ? 'authenticationRequired' : 'unavailable');
+          return;
+        }
         const payload = response.ok ? await response.json() as { url?: unknown } : null;
         const pageUrl = recoveryPageUrl(payload?.url, i18n.language);
         if (!pageUrl) throw new Error('recovery sidecar endpoint is unavailable');
@@ -143,7 +145,7 @@ export function SystemPluginRecoverySettings() {
           setDialogOpen(false);
           setRestoring(false);
           setUrl(pageUrl);
-          setLoading(false);
+          setEndpointState('ready');
         }
       } catch {
         if (cancelled) return;
@@ -151,8 +153,8 @@ export function SystemPluginRecoverySettings() {
           retryTimer = setTimeout(() => void loadEndpoint(attempt + 1), ENDPOINT_RETRY_DELAY_MS);
           return;
         }
-        setLoading(false);
-        setUnavailable(true);
+        setUrl(null);
+        setEndpointState('unavailable');
       }
     };
 
@@ -198,6 +200,16 @@ export function SystemPluginRecoverySettings() {
 
   return (
     <section className="system-plugin-recovery" data-testid="settings-system-plugin-recovery">
+      <div className="system-plugin-recovery__standalone">
+        <a
+          href={RECOVERY_ROUTE_PATH}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="settings-system-plugin-recovery-open-standalone"
+        >
+          {t('settingsPanel.systemPluginRecovery.openStandalone')}
+        </a>
+      </div>
       {url ? (
         <>
           <div className="system-plugin-recovery__actions" data-testid="settings-system-plugin-recovery-actions">
@@ -232,15 +244,15 @@ export function SystemPluginRecoverySettings() {
             title={t('settingsPanel.categories.systemPluginRecovery')}
           />
         </>
-      ) : loading ? (
+      ) : endpointState === 'loading' ? (
         <div className="system-plugin-recovery__loading" role="status" data-testid="system-plugin-recovery-loading">
           <Loader2 aria-hidden="true" size={16} />
           {t('common.loading')}
         </div>
-      ) : unavailable ? (
+      ) : endpointState !== 'ready' ? (
         <div className="system-plugin-recovery__notice" role="alert" data-testid="system-plugin-recovery-unavailable">
           <CircleAlert aria-hidden="true" size={16} />
-          {t('settingsPanel.systemPluginRecovery.unavailable')}
+          {t(`settingsPanel.systemPluginRecovery.${endpointState}`)}
         </div>
       ) : null}
     </section>

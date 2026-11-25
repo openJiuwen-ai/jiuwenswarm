@@ -2,6 +2,7 @@
 
 """Exercise the emergency HTTP entry points without opening a listening socket."""
 
+import base64
 import io
 import json
 from types import SimpleNamespace
@@ -18,12 +19,12 @@ _AUTHORITY = f"127.0.0.1:{_PORT}"
 _TOKEN = "test-only-token"
 
 
-def _request(handler_type, server, method, target, headers, body=b""):
+def _request(handler_type, server, method, target, headers, body=b"", client_address="127.0.0.1"):
     lines = [f"{method} {target} HTTP/1.0", *headers, f"Content-Length: {len(body)}", "", ""]
     raw = "\r\n".join(lines).encode("ascii") + body
     output = io.BytesIO()
     connection = SimpleNamespace(makefile=lambda *args: io.BytesIO(raw), sendall=output.write)
-    handler_type(connection, ("127.0.0.1", 49152), server)
+    handler_type(connection, (client_address, 49152), server)
     head, payload = output.getvalue().split(b"\r\n\r\n", 1)
     return int(head.split(b" ", 2)[1]), head, payload
 
@@ -125,11 +126,10 @@ def test_web_discovery_accepts_the_browser_default_port_origin(monkeypatch):
 
 @pytest.mark.parametrize("headers, expected", [
     ([], 403),
-    ([f"Host: attacker.example:{_PORT}"], 403),
     ([f"Host: {_AUTHORITY}", f"Host: {_AUTHORITY}"], 403),
-    (["Host: 127.0.0.1:1"], 403),
     ([f"Host: {_AUTHORITY}", "Origin: https://attacker.example"], 403),
     ([f"Host: {_AUTHORITY}", "Origin: null"], 403),
+    ([f"Host: {_AUTHORITY}", "Sec-Fetch-Site: cross-site"], 403),
     ([f"Host: {_AUTHORITY}"], 200),
     ([f"Host: {_AUTHORITY}", f"Origin: http://{_AUTHORITY}"], 200),
 ])
@@ -150,3 +150,89 @@ def test_web_discovery_checks_authority_before_reading_private_endpoint(monkeypa
     else:
         endpoint.assert_not_called()
         assert b"test-only" not in payload
+
+
+@pytest.mark.parametrize("prefix", ["", "/portal"])
+def test_web_recovery_redirects_legacy_url_to_standalone_mount(monkeypatch, prefix):
+    discover = Mock()
+    monkeypatch.setattr(system_plugin_recovery.SystemPluginRecovery, "endpoint", discover)
+    monkeypatch.setattr(_SpaStaticHandler, "log_message", lambda *args: None)
+    server = SimpleNamespace(server_address=("127.0.0.1", _PORT))
+    status, head, body = _request(
+        _SpaStaticHandler, server, "GET", f"{prefix}/system-plugin-recovery?locale=en&token=discarded",
+        [f"Host: {_AUTHORITY}"],
+    )
+
+    assert status == 308
+    assert b"Location: ./system-plugin-recovery/?locale=en" in head
+    assert b"discarded" not in head
+    assert not body
+    discover.assert_not_called()
+
+
+@pytest.mark.parametrize("route", ["/", "/endpoint", "/proxy", "/api/history", "/api/preview", "/api/restore"])
+def test_web_remote_recovery_denies_requests_by_default(monkeypatch, route):
+    endpoint = Mock(return_value="http://127.0.0.1:19634/system-plugin-recovery?token=test-only")
+    monkeypatch.setattr(system_plugin_recovery, "SystemPluginRecovery", lambda: SimpleNamespace(endpoint=endpoint))
+    monkeypatch.delenv("JIUWENSWARM_REMOTE_RECOVERY_PASSWORD", raising=False)
+    monkeypatch.setattr(_SpaStaticHandler, "log_message", lambda *args: None)
+    server = SimpleNamespace(server_address=("127.0.0.1", _PORT))
+    method = "POST" if route == "/api/restore" else "GET"
+    status, head, payload = _request(
+        _SpaStaticHandler, server, method, f"/system-plugin-recovery{route}",
+        ["Host: app.example", "Origin: https://app.example", "X-Forwarded-Proto: https"],
+    )
+
+    assert status == 403
+    assert b"WWW-Authenticate" not in head
+    assert b"test-only" not in payload
+    endpoint.assert_not_called()
+
+
+@pytest.mark.parametrize("route,scheme,peer,proto,authorized,status,challenge", [
+    ("/", "https", "127.0.0.1", ["https"], False, 401, True),
+    ("/endpoint", "https", "127.0.0.1", ["https"], False, 401, False),
+    ("/endpoint", "http", "127.0.0.1", [], True, 403, False),
+    ("/endpoint", "http", "203.0.113.9", ["https"], True, 403, False),
+    ("/endpoint", "http", "127.0.0.1", ["https", "https"], True, 403, False),
+])
+def test_web_remote_recovery_challenges_only_standalone_over_trusted_https(
+    monkeypatch, route, scheme, peer, proto, authorized, status, challenge,
+):
+    endpoint = Mock(return_value="http://127.0.0.1:19634/system-plugin-recovery?token=test-only")
+    monkeypatch.setattr(system_plugin_recovery, "SystemPluginRecovery", lambda: SimpleNamespace(endpoint=endpoint))
+    monkeypatch.setenv("JIUWENSWARM_REMOTE_RECOVERY_PASSWORD", "test-password")
+    monkeypatch.setattr(_SpaStaticHandler, "log_message", lambda *args: None)
+    server = SimpleNamespace(server_address=("127.0.0.1", _PORT))
+    credentials = base64.b64encode(b"recovery:test-password" if authorized else b"recovery:wrong").decode("ascii")
+    headers = [
+        "Host: app.example", f"Origin: {scheme}://app.example",
+        *(f"X-Forwarded-Proto: {value}" for value in proto),
+        f"Authorization: Basic {credentials}",
+    ]
+    actual, head, payload = _request(
+        _SpaStaticHandler, server, "GET", f"/system-plugin-recovery{route}", headers, client_address=peer,
+    )
+
+    assert actual == status
+    assert (b"WWW-Authenticate: Basic " in head) is challenge
+    assert b"test-only" not in payload
+    endpoint.assert_not_called()
+
+
+def test_web_discovery_rejects_a_registered_non_loopback_target(monkeypatch):
+    endpoint = Mock(return_value="http://attacker.example:19634/system-plugin-recovery?token=test-only")
+    monkeypatch.setattr(system_plugin_recovery, "SystemPluginRecovery", lambda: SimpleNamespace(endpoint=endpoint))
+    monkeypatch.setattr("jiuwenswarm.enterprise.is_enterprise", lambda: False)
+    monkeypatch.setattr(_SpaStaticHandler, "log_message", lambda *args: None)
+    server = SimpleNamespace(server_address=("127.0.0.1", _PORT))
+    status, _, payload = _request(
+        _SpaStaticHandler,
+        server,
+        "GET",
+        "/system-plugin-recovery/endpoint",
+        [f"Host: {_AUTHORITY}"],
+    )
+
+    assert status == 503
+    assert json.loads(payload) == {"error": "recovery_unavailable"}

@@ -966,6 +966,8 @@
     "systemPluginRecovery": {
       "description": "查看最近 50 条系统插件状态记录。每次应用启动及成功的安装、卸载、启用、禁用和还原操作都会记录。",
       "restartNote": "还原会保留当前已安装的系统插件，恢复所选时刻的系统插件启用状态，并自动重启后台服务。",
+      "openStandalone": "在新标签页打开独立恢复页",
+      "authenticationRequired": "请在独立恢复页输入管理员凭据。",
       "unavailable": "系统插件还原服务暂不可用。"
     },
     "dialog": {

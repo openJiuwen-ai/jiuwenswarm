@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import base64
 import http.client
+import json
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
 from jiuwenswarm.common import system_plugin_recovery
+from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+from jiuwenswarm.common.system_plugin_recovery_sidecar import _RecoveryServer
 
 UPLOAD_PATH = "/extension-uploads/" + "a" * 32 + "/theme.zip"
 DOWNLOAD_PATH = "/extension-downloads/" + "b" * 32
@@ -76,6 +80,19 @@ def _proxy(upstream_port: int, directory: Path, *, remote: bool = False) -> Iter
         yield port
 
 
+@contextmanager
+def _recovery_sidecar(recovery: SystemPluginRecovery, token: str) -> Iterator[int]:
+    server = _RecoveryServer(("127.0.0.1", 0), recovery, token)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield int(server.server_port)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_import_bodies_are_streamed_to_the_gateway(tmp_path):
     seen: list[dict] = []
     first_bytes = threading.Event()
@@ -125,26 +142,115 @@ def test_remote_clients_can_import_and_export(tmp_path):
     assert seen == [{"method": "PUT", "path": UPLOAD_PATH, "body": body}, {"method": "GET", "path": DOWNLOAD_PATH}]
 
 
-def test_recovery_endpoint_is_available_only_to_loopback_clients(tmp_path, monkeypatch):
-    class _Recovery:
-        def endpoint(self):
-            return "http://127.0.0.1:12345/system-plugin-recovery?token=private-token"
+def test_standalone_recovery_restores_and_requests_a_restart_without_spa_or_gateway(tmp_path, monkeypatch):
+    # An empty frontend directory and a deliberately unavailable Gateway.
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    installed = tmp_path / "plugins"
+    recovery_data = tmp_path / "recovery"
+    recovery = SystemPluginRecovery(installed, recovery_data)
+    now = 100.0
+    monkeypatch.setattr(system_plugin_recovery.time, "time", lambda: now)
+    monkeypatch.delenv(system_plugin_recovery._RESTART_SIGNAL_PATH_ENV, raising=False)
+    monkeypatch.setattr(system_plugin_recovery, "SystemPluginRecovery", lambda: recovery)
+    monkeypatch.setenv("JIUWENSWARM_REMOTE_RECOVERY_PASSWORD", "test-password")
+    record_id = recovery.begin_session("test-session")["id"]
+    package = installed / "demo.late" / "1.0.0"
+    package.mkdir(parents=True)
+    manifest = package / "manifest.json"
+    manifest.write_text(json.dumps({
+        "package_type": "extension",
+        "schemaVersion": 1,
+        "package": {"id": "demo.late", "version": "1.0.0", "domain": "agentserver"},
+        "enable": True,
+    }), encoding="utf-8")
 
-    monkeypatch.setattr(system_plugin_recovery, "SystemPluginRecovery", _Recovery)
-    with _proxy(1, tmp_path) as port:
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        connection.request("GET", "/system-plugin-recovery/endpoint")
-        response = connection.getresponse()
-        body = response.read()
-        connection.close()
-    assert response.status == 200
-    assert b"private-token" in body
+    token = "private-token"
+    credentials = base64.b64encode(b"recovery:test-password").decode("ascii")
+    headers = {"Host": "app.example", "X-Forwarded-Proto": "https", "Authorization": f"Basic {credentials}"}
+    mount = "/portal/system-plugin-recovery"
 
-    with _proxy(1, tmp_path, remote=True) as port:
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        connection.request("GET", "/system-plugin-recovery/endpoint")
-        response = connection.getresponse()
-        body = response.read()
-        connection.close()
-    assert response.status == 403
-    assert b"private-token" not in body
+    with _recovery_sidecar(recovery, token) as sidecar_port:
+        local_url = f"http://127.0.0.1:{sidecar_port}/system-plugin-recovery?token={token}"
+        recovery.publish_endpoint(local_url, "test-session")
+        with _proxy(1, frontend) as port, closing(http.client.HTTPConnection("127.0.0.1", port, timeout=10)) as connection:
+            connection.request("GET", f"{mount}/endpoint")
+            response = connection.getresponse()
+            assert response.status == 200
+            assert json.loads(response.read()) == {"url": local_url}
+
+            connection.request("GET", f"{mount}/endpoint", headers=headers)
+            response = connection.getresponse()
+            assert response.status == 200
+            assert json.loads(response.read()) == {"url": "./proxy"}
+
+            connection.request(
+                "GET", f"{mount}/?locale=en&parent_origin=https%3A%2F%2Fignored.example&proxy_base=%2Fignored",
+                headers=headers,
+            )
+            response = connection.getresponse()
+            page = response.read()
+            assert response.status == 200
+            assert response.getheader("Content-Type", "").startswith("text/html")
+            assert response.getheader("Cache-Control") == "no-store"
+            policy = response.getheader("Content-Security-Policy", "")
+            assert "allow-same-origin" in policy
+            assert "frame-ancestors 'self'" in policy
+            assert b'<button id="restore" type="button">' in page
+            assert b'id="confirm-restore"' in page
+            assert b'<html lang="en">' in page
+            assert b"const parentOrigin = false" in page
+            assert b'const token = "";' in page
+            assert b"window.location.pathname" in page
+            assert token.encode() not in page
+            assert b"ignored.example" not in page
+            assert b"/ignored" not in page
+
+            connection.request("GET", f"{mount}/proxy", headers=headers)
+            response = connection.getresponse()
+            assert response.status == 200
+            embedded = response.read()
+            assert b"const parentOrigin = true" in embedded
+            assert token.encode() not in embedded
+
+            connection.request("GET", f"{mount}/api/history", headers=headers)
+            response = connection.getresponse()
+            history = json.loads(response.read())
+            assert response.status == 200
+            assert [record["id"] for record in history["records"]] == [record_id]
+
+            connection.request("GET", f"{mount}/api/preview?record_id={record_id}", headers=headers)
+            response = connection.getresponse()
+            assert response.status == 200
+            assert json.loads(response.read()) == {
+                "packages": [{"package_id": "demo.late", "version": "1.0.0", "enabled": False}],
+            }
+            assert json.loads(manifest.read_text(encoding="utf-8"))["enable"] is True
+
+            body = json.dumps({"record_id": record_id}).encode("utf-8")
+            restore_headers = {**headers, "Content-Type": "application/json"}
+            connection.request(
+                "POST", f"{mount}/api/restore",
+                headers={**restore_headers, "Origin": "https://foreign.example"},
+            )
+            response = connection.getresponse()
+            assert response.status == 403
+            response.read()
+            assert json.loads(manifest.read_text(encoding="utf-8"))["enable"] is True
+            assert not recovery.restart_path.exists()
+
+            connection.request(
+                "POST", f"{mount}/api/restore", body=body,
+                headers={**restore_headers, "Origin": "https://app.example"},
+            )
+            response = connection.getresponse()
+            restored = json.loads(response.read())
+            assert response.status == 200
+            assert restored["record"]["action"] == "restore"
+            assert restored["restart_requested"] is True
+
+    assert json.loads(manifest.read_text(encoding="utf-8"))["enable"] is False
+    assert recovery.consume_backend_restart("test-session") is False
+    now += system_plugin_recovery._RESTART_DELAY_SECONDS
+    assert recovery.consume_backend_restart("test-session") is True
+    assert recovery.consume_backend_restart("test-session") is False
