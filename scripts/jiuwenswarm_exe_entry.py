@@ -617,6 +617,13 @@ def _dispatch() -> int | None:
     # frozen exe (console=False) 主进程的 sys.stdout/stderr 可能为 None
     if getattr(sys, "frozen", False):
         _ensure_stdio()
+    if RESTORE_CONFIG_FLAG in sys.argv[1:]:
+        if len(sys.argv) != 2:
+            raise ValueError("upgrade configuration restore does not accept arguments")
+        from jiuwenswarm.common.windows_upgrade_config import restore_legacy_upgrade_config
+
+        restore_legacy_upgrade_config()
+        return 0
     # doctor 必须在业务模块 import 和单实例锁之前运行。模块本身只依赖 stdlib，
     # 因而即使某个 Native 扩展无法加载，仍能生成结构化诊断结果。
     if len(sys.argv) >= 2 and sys.argv[1] in {"--doctor", "--doctor-worker"}:
@@ -652,13 +659,6 @@ def _dispatch() -> int | None:
         from jiuwenswarm.common.utils import get_user_workspace_dir
 
         return 0 if remove_all(get_user_workspace_dir()) else 1
-    if RESTORE_CONFIG_FLAG in sys.argv[1:]:
-        if len(sys.argv) != 2:
-            raise ValueError("upgrade configuration restore does not accept arguments")
-        from jiuwenswarm.common.windows_upgrade_config import restore_legacy_upgrade_config
-
-        restore_legacy_upgrade_config()
-        return 0
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "presentation":
         from jiuwenswarm.channels.cli.presentation import main as presentation_main
 
