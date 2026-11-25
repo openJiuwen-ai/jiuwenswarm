@@ -89,6 +89,44 @@ def test_safety_relay_merge_present() -> None:
     assert "同卷软删除回退" in text
 
 
+def test_deletion_scope_disambiguation_present() -> None:
+    """「整理」边界：删除规范里的「整理/归档」仅指用户文件，内部目录整理属内部操作。"""
+    cn = build_prompt_snapshot(assemble("cn"), language="cn")
+    text_cn = {s.name: s.text for s in cn.sections}["deletion_protocol"]
+    assert "仅指移动用户的文件" in text_cn
+    assert "Agent 内部数据目录的整理属于内部操作" in text_cn
+
+    en = build_prompt_snapshot(assemble("en"), language="en")
+    text_en = {s.name: s.text for s in en.sections}["deletion_protocol"]
+    assert "refers only to moving the user's files" in text_en
+    assert "internal data directories" in text_en
+
+
+def test_response_language_field_note_removed() -> None:
+    """语言字段说明已删：语言口径只看运行时语言；JSON 示例字段本身保留。"""
+    for language in LANGUAGES:
+        snapshot = build_prompt_snapshot(assemble(language), language=language)
+        text = {s.name: s.text for s in snapshot.sections}["response"]
+        assert '"preferred_response_language"' in text
+        assert "用户期望的回复语言" not in text
+        assert "The user's preferred response language" not in text
+
+
+def test_final_reply_restate_disambiguation_present() -> None:
+    """520「完整复述」与思考纪律「严禁复述上下文」作用域消歧，且不引用段号。"""
+    cn = build_prompt_snapshot(assemble("cn"), language="cn")
+    text_cn = {s.name: s.text for s in cn.sections}["final_visible_reply"]
+    assert "与「思考纪律」一节不冲突" in text_cn
+    assert "reasoning_content" in text_cn
+    assert "410" not in text_cn
+
+    en = build_prompt_snapshot(assemble("en"), language="en")
+    text_en = {s.name: s.text for s in en.sections}["final_visible_reply"]
+    assert '"Thinking discipline" section' in text_en
+    assert "reasoning_content" in text_en
+    assert " 410" not in text_en
+
+
 def test_thinking_discipline_three_contradictions_applied() -> None:
     # 410：三矛盾修正（修复.md ①-⑤）已落地——「写文件轮」限定为「终稿落盘轮」、
     # 无条件句改条件触发句、病句修正、错别字修正；「严禁誊写产物」硬规则仍在（⑤ 重复保留）。

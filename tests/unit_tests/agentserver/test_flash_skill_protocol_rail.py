@@ -23,6 +23,7 @@ import pytest
 
 from jiuwenswarm.agents.harness.flash.rails.flash_skill_protocol_rail import (
     FlashSkillProtocolRail,
+    _fix_todo_status_discipline,
     _rewrite_todo_names,
 )
 
@@ -204,3 +205,67 @@ async def test_before_model_call_strips_todo_rules_when_disabled() -> None:
     assert "todo_create" not in section.content["cn"]
     assert "todo_modify" not in section.content["cn"]
     assert "3. **严格顺序**" in section.content["cn"]
+
+
+# ── 4. todo 状态纪律消歧（冲突清单 4/5）─────────────────────────────
+def _protocol_text(language: str) -> str:
+    from jiuwenswarm.agents.harness.common.rails.skill_protocol_prompt_rail import (
+        _build_skill_protocol_section_text,
+    )
+
+    return _build_skill_protocol_section_text(language)
+
+
+def test_fix_discipline_removes_batch_update_line() -> None:
+    """4：删掉「可批量统一更新」——与 430「立即更新、不积攒」及工具描述对齐。"""
+    cn, cn_complete = _fix_todo_status_discipline(_protocol_text("cn"), "cn")
+    en, en_complete = _fix_todo_status_discipline(_protocol_text("en"), "en")
+
+    assert cn_complete and en_complete
+    assert "统一批量更新" not in cn
+    assert "back-to-back and update statuses" not in en
+    # 其余状态纪律保留。
+    assert "判定粒度" in cn
+    assert "Judge each step on its own" in en
+
+
+def test_fix_discipline_expands_sole_round_exception() -> None:
+    """5：例外清单补「放弃/跳过/取消且本轮无可搭便车工作工具」。"""
+    cn, _ = _fix_todo_status_discipline(_protocol_text("cn"), "cn")
+    en, _ = _fix_todo_status_discipline(_protocol_text("en"), "en")
+
+    assert "唯一例外" not in cn
+    assert "放弃、跳过或取消任务" in cn
+    assert "状态正确性优先" in cn
+    # 测试依赖的保留串（关 nudge 用例同款）不得丢。
+    assert "纯文本最终回复的前一轮" in cn
+    assert "第 9 条的用户打断" in cn
+
+    assert "The ONLY exception" not in en
+    assert "abandoning, skipping or cancelling work" in en
+    assert "the turn immediately before the plain-text final reply" in en
+
+
+def test_fix_discipline_best_effort_on_missing_anchors() -> None:
+    """锚点缺失时原样返回、不阻断后续工具名改写。"""
+    text = "先 todo_create，再 todo_modify 改它"
+    fixed, complete = _fix_todo_status_discipline(text, "cn")
+    assert fixed == text
+    assert complete is False
+
+
+@pytest.mark.asyncio
+async def test_before_model_call_applies_discipline_fix_then_renames() -> None:
+    """端到端：真实协议正文经 rail 后，批量句消失、例外补齐、工具名统一。"""
+    agent = _FakeAgent([
+        _sec("skill_execution_rules", 730, {"cn": _protocol_text("cn")}),
+    ])
+    rail = FlashSkillProtocolRail()
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+
+    text = agent.system_prompt_builder.get_section("skill_execution_rules").content["cn"]
+    assert "统一批量更新" not in text
+    assert "放弃、跳过或取消任务" in text
+    assert "todo_modify" not in text
+    assert 'todo(action="modify")' in text

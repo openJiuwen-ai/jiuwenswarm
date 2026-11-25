@@ -14,9 +14,11 @@ flash 技能域接管成功后，执行规范正文被拆成 730 ``skill_executi
 同时改写这两个段名，确保任一装配路径都不漏。
 
 本 rail 在 common rail 注入之后、审计之前，对上述段正文做**带守卫的定向改写**：
-只替换 todo 工具名，不动其余规范（技能加载 / 步骤声明 / 闸门 / 忠实 / 错误处理 /
-用户打断等规则逐字保留）。改写带守卫——旧工具名缺失即放弃改写、保留原段，避免上游
-改文案时静默失效。不设幂等 flag（源段每轮重注入，须每轮重写）。
+一是把 todo 工具名替换为 flash 统一 ``todo(action=…)``；二是对 todo 状态纪律做两处冲突消歧
+（删掉与「立即更新、不积攒」矛盾的「可批量统一更新」句；把「todo_modify 不可独占一轮」
+的例外清单补上「放弃/跳过/取消且本轮无可搭便车工作工具」），其余规范（技能加载 / 步骤声明 /
+闸门 / 忠实 / 错误处理 / 用户打断等）逐字保留。改写带守卫——锚点缺失即放弃该处改写、
+保留原段，避免上游改文案时静默失效。不设幂等 flag（源段每轮重注入，须每轮重写）。
 
 优先级：只改正文、不动 priority，与 FlashSectionOrderRail（迁号/剥除）正交。
 """
@@ -63,6 +65,85 @@ def _rewrite_todo_names(text: str) -> str | None:
     rewritten = rewritten.replace("todo_modify", 'todo(action="modify")')
     rewritten = rewritten.replace("todo_create", 'todo(action="create")')
     return rewritten
+
+
+# ── todo 状态纪律消歧（冲突清单 4/5）────────────────────────────────────────
+# 4) 删「可批量统一更新」：与 430「状态变化时立即更新，不积攒」及 todo 工具描述矛盾；
+# 5) 例外清单补「放弃/跳过/取消且本轮无可搭便车工作工具」：否则「禁止 todo_modify 独占
+#    一轮」与「必须立即标 cancelled」在用户放弃场景互斥（多交付物加速通道要求的逐个串行，
+#    由新文本末句「其它段若明确要求逐个串行推进，按该段执行」兜底）。
+# 两处均以原文为锚点做替换；上游改文案时函数原样返回，由调用方告警漂移。
+_BATCH_UPDATE_LINE = {
+    "cn": "   - 可在连续推进多个任务后用一次 `todo_modify` 统一批量更新状态。\n",
+    "en": (
+        "   - You may run several tasks back-to-back and update statuses in a single "
+        "batched `todo_modify`.\n"
+    ),
+}
+
+_SOLE_ROUND_OLD = {
+    "cn": (
+        "   - 唯一例外：纯文本最终回复的前一轮。若仍有 `in_progress`，这一轮必须单独调 "
+        "`todo_modify`，不要在这一轮写给用户的正文。"
+    ),
+    "en": (
+        "   - The ONLY exception: the turn immediately before the plain-text final reply. "
+        "If any item is still `in_progress`, that turn MUST call `todo_modify` alone and must "
+        "not contain the user-facing answer."
+    ),
+}
+
+_SOLE_ROUND_NEW = {
+    "cn": (
+        "   - 例外（`todo_modify` 可独占一轮）：① 纯文本最终回复的前一轮——若仍有 "
+        "`in_progress`，这一轮必须单独调 `todo_modify`，不要在这一轮写给用户的正文；"
+        "② 放弃、跳过或取消任务且本轮没有可搭便车的工作工具时（如用户说「不生成 PPT 了」，"
+        "或第 9 条的用户打断）——必须立即用 `todo_modify` 标为 `cancelled`，允许独占一轮。"
+        "搭便车是省轮次的效率约束，状态正确性优先；其它段若明确要求逐个串行推进，按该段执行。"
+    ),
+    "en": (
+        "   - Exceptions (a standalone `todo_modify` round is allowed): (1) the turn immediately "
+        "before the plain-text final reply — if any item is still `in_progress`, that turn MUST "
+        "call `todo_modify` alone and must not contain the user-facing answer; (2) abandoning, "
+        "skipping or cancelling work when no work tool is available to piggyback on in that round "
+        "(e.g. the user says not to generate the PPT, or the user-interruption cases in rule 9) — "
+        "you **must** mark it `cancelled` right away, and a standalone round is allowed. "
+        "Piggybacking is an efficiency constraint to save rounds; status correctness takes "
+        "precedence. If another section explicitly requires strictly serial steps, follow that "
+        "section."
+    ),
+}
+
+# 规则 2 的存在标记：仅用于区分「真协议正文」与合成文本，决定锚点漂移是否告警。
+_RULE2_MARKERS = ("2. **必须使用 todo**", "2. **Use todo (mandatory)**")
+
+
+def _has_todo_rule2(text: str) -> bool:
+    return any(marker in text for marker in _RULE2_MARKERS)
+
+
+def _fix_todo_status_discipline(text: str, language: str) -> tuple[str, bool]:
+    """对 730 正文做 todo 状态纪律消歧，返回 ``(new_text, anchors_complete)``。
+
+    best-effort：锚点缺失时不改动该处（不抛错、不阻断后续工具名改写）。``anchors_complete``
+    为 True 表示两处锚点都已命中，供调用方区分「正常改写」与「上游漂移」。
+    """
+    complete = True
+
+    batch = _BATCH_UPDATE_LINE.get(language)
+    if batch and batch in text:
+        text = text.replace(batch, "")
+    else:
+        complete = False
+
+    old = _SOLE_ROUND_OLD.get(language)
+    new = _SOLE_ROUND_NEW.get(language)
+    if old and new and old in text:
+        text = text.replace(old, new)
+    else:
+        complete = False
+
+    return text, complete
 
 
 def _strip_todo_rules(text: str, language: str) -> str | None:
@@ -125,6 +206,7 @@ class FlashSkillProtocolRail(DeepAgentRail):
         super().__init__()
         self._system_prompt_builder: Any = None
         self._warned_guard_miss = False
+        self._warned_discipline_miss = False
         self._disabled_tools_provider = disabled_tools_provider
 
     def _todo_disabled(self) -> bool:
@@ -172,11 +254,25 @@ class FlashSkillProtocolRail(DeepAgentRail):
                 # 待办被禁用时：删掉「必须使用待办」整条并中和规则 9 残留待办引用，
                 # 而非只改工具名（评审 #2）。守卫未命中返回 None → 保留原段。
                 new_text = _strip_todo_rules(text, lang_key)
+                fallback_text = text
             else:
-                new_text = _rewrite_todo_names(text)
+                # 先做状态纪律消歧（仍按上游 ``todo_modify`` 措辞替换），再统一工具名。
+                fixed_text, discipline_complete = _fix_todo_status_discipline(text, lang_key)
+                if (_has_todo_rule2(text) and not discipline_complete
+                        and not self._warned_discipline_miss):
+                    # 上游改了状态纪律措辞：保留原句、不改坏，只告警一次提示重新对齐。
+                    self._warned_discipline_miss = True
+                    logger.warning(
+                        "[FlashSkillProtocolRail] %s 的 todo 状态纪律锚点未命中（上游文案已变）"
+                        "——保留原句，需重新对齐「删批量更新 / 补放弃例外」两处改写",
+                        name,
+                    )
+                new_text = _rewrite_todo_names(fixed_text)
+                fallback_text = fixed_text
             if new_text is None:
                 guard_miss = True
-                rewritten_content[lang] = text
+                # 工具名守卫未命中时保留「消歧后的正文」，不回退掉已生效的纪律修正。
+                rewritten_content[lang] = fallback_text
             else:
                 rewritten_content[lang] = new_text
                 changed = changed or (new_text != text)
@@ -200,4 +296,9 @@ class FlashSkillProtocolRail(DeepAgentRail):
         ))
 
 
-__all__ = ["FlashSkillProtocolRail", "_rewrite_todo_names", "_REWRITE_TARGET_SECTIONS"]
+__all__ = [
+    "FlashSkillProtocolRail",
+    "_rewrite_todo_names",
+    "_fix_todo_status_discipline",
+    "_REWRITE_TARGET_SECTIONS",
+]

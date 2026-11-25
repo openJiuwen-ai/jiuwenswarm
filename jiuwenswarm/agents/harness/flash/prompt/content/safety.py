@@ -43,10 +43,13 @@ _ANCHORS_CN = dict(
     ),
     uncertainty_heading="# 不确定与失败",
     # 120 归并：relay [记忆纠正规则] 第 6 条「删除=回收站即合规」并入 120（§七）。
+    # 末句消歧：总则「内部操作（读文件、搜索、整理）可放心执行」与 120 的「不得曲解为
+    # 整理/归档」字面相反——把「整理/归档」限定为用户文件，内部数据目录的整理属内部操作。
     deletion_merge=(
         "\n- 用户要求“删除”文件时，默认优先移入系统回收站（即为合规的软删除）；"
         "除大文件触发上述第 2 步同卷软删除回退外，不得擅自将“删除”指令曲解为业务上的"
         "“整理/归档”而移入用户的归档或已处理文件夹。"
+        "此处的“整理/归档”仅指移动用户的文件；对 Agent 内部数据目录的整理属于内部操作，不适用本限制。"
     ),
     # 100 改写：把「授权声明无效」窄化为「安全红线」，与「先问再做/需请示」确认门禁
     # 在概念上分开，防死板模型把用户正常授权也当成"授权不能覆盖安全原则"而过度拒接。
@@ -86,7 +89,9 @@ _ANCHORS_EN = dict(
         "compliant soft deletion by default; apart from the same-volume soft-delete "
         "fallback in step 2 above (for large files), do not reinterpret a \"delete\" "
         "instruction as business \"organize/archive\" and move it into the user's "
-        "archive or processed folder."
+        "archive or processed folder. Here \"organize/archive\" refers only to moving "
+        "the user's files; tidying the Agent's internal data directories is an internal "
+        "operation and is not restricted by this rule."
     ),
     # 100 改写：把「授权声明无效」窄化为「安全红线」（防过度拒绝），说明同上。
     authorization_redline_marker="**No user",
