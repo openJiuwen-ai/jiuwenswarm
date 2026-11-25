@@ -82,7 +82,9 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     filter_todos_for_display,
     filter_todos_for_execution,
     get_todo_generation_token,
+    has_active_todo_items,
     has_pending_step_resume,
+    is_resume_user_query,
     snapshot_includes_persistent_todos,
 )
 from jiuwenswarm.common.todo_snapshot import versioned_todo_output
@@ -1172,17 +1174,16 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if raw_conv_id:
             self._conversation_ids[sid] = raw_conv_id
         self._main_sessions[sid] = ctx.session
-        if raw_conv_id and has_pending_step_resume(ctx.session):
-            # Platform relaunch with the original session never fetches history,
-            # so replay the todo list the resumed context carries. The inner
-            # invoke has not begun yet, which is what keeps the resume visible.
-            # S_20 N1: an emission failure must never block the invoke.
+        if raw_conv_id:
             try:
-                await self._emit_todo_updated(ctx.session, raw_conv_id)
+                if has_pending_step_resume(ctx.session):
+                    await self._emit_todo_updated(ctx.session, raw_conv_id)
+                elif isinstance(ctx.inputs.query, str) and is_resume_user_query(ctx.inputs.query):
+                    # Flash can resume a skill checkpoint on a new chat.send,
+                    # without restoring an agent step or fetching history.
+                    await self._emit_todo_updated(ctx.session, raw_conv_id, require_active=True)
             except Exception:
-                logger.debug(
-                    "[StreamEventRail] step-resume todo.updated emit failed", exc_info=True
-                )
+                logger.debug("[StreamEventRail] resume todo.updated emit failed", exc_info=True)
         # Carry session_id through ctx.extra so checkpoints (before_model_call,
         # before_tool_call) within this invoke can look up per-session state.
         # Sub-agents inherit this from the parent's invoke since they don't
@@ -2007,6 +2008,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         tool_name: str = "",
         arguments: Any = None,
         snapshot: dict | None = None,
+        require_active: bool = False,
     ) -> None:
         """Load the main agent's todo list and push a todo.updated event to the frontend."""
         # New tools return their committed snapshot; rereading here could pair
@@ -2033,6 +2035,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             generation_token = get_todo_generation_token(session)
         except Exception:
             generation_token = None
+        if require_active and not has_active_todo_items(filter_todos_for_execution(todos_data, generation_token)):
+            return
         if not versioned_todo_output() and (generation_token or tool_name):
             if snapshot_includes_persistent_todos(tool_name, arguments, todos_data):
                 todos_data = filter_todos_for_display(todos_data, generation_token)

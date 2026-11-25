@@ -344,6 +344,24 @@ async def capture_deepresearch_todo_target(todo_path: Path, *, tool=None, sessio
                               strict_stages=False, write_scope=scope)
 
 
+async def read_research_parent_title(target: ResearchTodoTarget, owner: str) -> str:
+    """Read the active parent title from the same plan captured for this run."""
+    from openjiuwen.harness.tools.todo_store import read_snapshot
+
+    if not owner.startswith("todo:"):
+        return ""
+    tool, session_id = target.tool, target.session_id
+    snapshot = await read_snapshot(tool.fs, os.path.abspath(tool.get_file_path(session_id)))
+    if not snapshot.read_authoritative or not snapshot.exists or snapshot.plan_id != target.plan_id:
+        return ""
+    todo_id = owner.removeprefix("todo:")
+    for item in snapshot.todos:
+        if item["id"] == todo_id and item.get("status") == "in_progress":
+            content = item.get("content")
+            return content.strip() if isinstance(content, str) else ""
+    return ""
+
+
 async def persist_deepresearch_task_update(
     payload: dict[str, Any], *, todo_path: Path, target=None,
 ) -> bool:
