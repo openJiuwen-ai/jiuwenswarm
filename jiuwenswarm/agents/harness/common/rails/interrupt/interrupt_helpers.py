@@ -550,12 +550,20 @@ def build_permission_rail(
 
             # 工作空间内删除豁免：命令层内置规则（shell_delete_files）路径盲，区内 rm
             # 同样弹卡；路径层把 rm 目标归入 write 轴（区内本就放行），无法表达删除的
-            # 内外差异。普通桌面会话不设置 TOOL_PERMISSION_CONTEXT（仅数字分身/记忆
-            # 门控场景设置），因此该分支必须放在 perm_ctx 早退之前；豁免不依赖上下文，
-            # 但让位给数字分身场景限制。
+            # 内外差异。豁免仅对**不受 owner/数字分身限制**的会话生效——普通桌面会话
+            # 不设置 TOOL_PERMISSION_CONTEXT（场景为 None），记忆门控场景有上下文但
+            # 无 principal_user_id；数字分身与 owner_scopes 是硬限制，其会话一律走
+            # 原判定链，防止删除命令绕过 owner 级 deny（权限放大）。
+            exempt_scene = getattr(perm_ctx, "scene", None) if perm_ctx is not None else None
+            exempt_principal = (
+                str(getattr(perm_ctx, "principal_user_id", "") or "").strip()
+                if perm_ctx is not None
+                else ""
+            )
             if (
                 inp.user_input is None
-                and getattr(perm_ctx, "scene", None) != "group_digital_avatar"
+                and exempt_scene != "group_digital_avatar"
+                and not exempt_principal
                 and await maybe_approve_in_workspace_delete(
                     inp,
                     zones=[Path(zone) for zone in runtime_trusted_dirs_state],

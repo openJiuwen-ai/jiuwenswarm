@@ -11,10 +11,10 @@
    落在工作空间/信任目录内**；含变量、通配、无法解析的 cd/pushd 之后的相对
    路径等一律不豁免（fail-closed）。
 2. 临时引擎重放：把待豁免规则从配置中摘除后构造临时
-   ``PermissionEngine``（强制 ``file_guard.defaults.write=ask``），重放同一条
-   命令——仅当结果为 ALLOW/UNDETERMINED（其余规则均不拦截、目标全部落在
-   可写区）才放行；chmod、敏感文件读取等任何其他 ASK 规则命中时重放结果为
-   ASK，自动回落原判定链。
+   ``PermissionEngine``（强制 ``file_guard.defaults.write=ask`` 并关闭
+   strict merge / defer_unmatched），重放同一条命令——仅当结果为 ALLOW
+   （无任何其他规则拦截）才放行；chmod、敏感文件读取等任何其他 ASK 规则
+   命中时重放结果为 ASK，自动回落原判定链。
 
 任何一步不确定都不豁免，回落后由原链路弹卡，行为与现状完全一致。
 """
@@ -69,10 +69,11 @@ def in_workspace_delete_exempt_enabled(knob: dict[str, Any] | None = None) -> bo
 
 def exempt_rule_ids(knob: dict[str, Any] | None = None) -> set[str]:
     effective = knob if knob is not None else _read_knob()
-    rules = effective.get("rules") or ["shell_delete_files"]
-    if not isinstance(rules, list):
+    rules = effective.get("rules")
+    if rules is None or not isinstance(rules, list):
         return {"shell_delete_files"}
-    return {str(rule) for rule in rules}
+    # 显式空列表 = 不豁免任何规则（诚实语义，不回落默认）
+    return {str(rule) for rule in rules if str(rule).strip()}
 
 
 def _strip_quotes(token: str) -> str:
@@ -93,9 +94,12 @@ def _cmd_base(token: str) -> str:
 def _to_path_token(token: str) -> str:
     token = _strip_quotes(token)
     token = os.path.expanduser(token)
-    msys = _MSYS_PATH_RE.match(token)
-    if msys:
-        token = msys.group(1).upper() + ":/" + msys.group(2)
+    if os.name == "nt":
+        # MSYS/git-bash 盘符映射是 Windows 专属语义；POSIX 上 /c/x 是真实存在的
+        # 绝对路径，不得改写（否则区外绝对路径会被降级成相对路径误判为区内）。
+        msys = _MSYS_PATH_RE.match(token)
+        if msys:
+            token = msys.group(1).upper() + ":/" + msys.group(2)
     return token
 
 
@@ -191,6 +195,10 @@ def _strip_exempt_rules(config: dict[str, Any], rule_ids: set[str]) -> dict[str,
             for rule in rules
             if not (isinstance(rule, dict) and str(rule.get("id") or "") in rule_ids)
         ]
+    # 重放确定性：关闭 strict merge / defer_unmatched，未命中命令回落工具基线，
+    # 使重放结果不含 UNDETERMINED 形态（放行条件可收敛为仅 ALLOW）。
+    stripped["strict_tool_command_merge"] = False
+    stripped["defer_unmatched"] = False
     file_guard = stripped.get("file_guard")
     if not isinstance(file_guard, dict):
         file_guard = {}
@@ -240,7 +248,10 @@ async def maybe_approve_in_workspace_delete(
     base_config = getattr(engine, "config", None)
     if not isinstance(base_config, dict):
         return False
-    stripped = _strip_exempt_rules(base_config, exempt_rule_ids(knob))
+    rule_ids = exempt_rule_ids(knob)
+    if not rule_ids:
+        return False
+    stripped = _strip_exempt_rules(base_config, rule_ids)
     try:
         temp_engine = PermissionEngine(
             config=stripped,
@@ -262,7 +273,9 @@ async def maybe_approve_in_workspace_delete(
             exc_info=True,
         )
         return False
-    if result.permission in (PermissionLevel.ALLOW, PermissionLevel.UNDETERMINED):
+    # 重放已强制关闭 strict merge / defer_unmatched：未命中命令回落工具基线，
+    # 结果为确定性 ALLOW/ASK/DENY——仅 ALLOW 视为可豁免（不放行任何"未定"形态）。
+    if result.permission == PermissionLevel.ALLOW:
         logger.info(
             "[WorkspaceDeleteExempt] approved in-workspace delete: tool=%s replay=%s rule=%s command=%s",
             inp.normalized_tool_name,
