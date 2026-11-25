@@ -65,3 +65,34 @@ def _strip_relay_duplicates(content: str) -> str | None:
             return None
 
     return (content[:ws_idx] + content[mc_idx:]).rstrip()
+
+
+# ── relay [记忆纠正规则] 第 6 条：删除=回收站 —— 120 已完整覆盖 ────────────────
+# 120 删除规范含「大文件同卷软删除回退」例外，relay 第 6 条是缺例外的简版；两版并存时
+# 模型可能只按简版执行，故删 relay 侧副本。按「行首编号 + 关键短语」定位，编号漂移也能命中。
+_MEMORY_RULE6_MARKER = "移入回收站即为合规的软删除"
+_MEMORY_RULE6_LINE = re.compile(r"^[ \t]*\d+[.、][ \t]*")
+
+
+def _strip_memory_rule6(text: str) -> tuple[str, bool]:
+    """删 ``[记忆纠正规则]`` 的删除=回收站一条，返回 ``(new_text, hit)``。"""
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if _MEMORY_RULE6_MARKER in line and _MEMORY_RULE6_LINE.match(line):
+            del lines[index]
+            return "\n".join(lines), True
+    return text, False
+
+
+def _rewrite_memory_tool_names(text: str, replacements) -> tuple[str, bool]:
+    """把 relay 块里的旧记忆工具名改写为统一入口，返回 ``(new_text, hit)``。
+
+    映射表由调用方注入（取 ``memory_names.MEMORY_NAME_REPLACEMENTS``，与
+    FlashMemoryRail 共用同一份）；best-effort：没有旧名即原样返回，不阻断其它改写。
+    """
+    hit = False
+    for old, new in replacements or ():
+        if old in text:
+            text = text.replace(old, new)
+            hit = True
+    return text, hit

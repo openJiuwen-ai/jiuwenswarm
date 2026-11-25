@@ -11,14 +11,16 @@ relay TS 层（RelayClawAgentService.ts buildRequest）把产品内容包经 ``s
   挪走），消除此前两个段同号拼进最终提示词的问题；
 - **位置收口**：relay 产品包恒在静态段（0xx–7xx）之后、动态段（1000+）之前渲染。
 
-同时剥除段内与 flash 域 rail 重复的 ``[文件输出约束]``（220 已接管）一块，并保留
-``[记忆纠正规则]``（六条）——记忆域已回退 deep 原样（stock 五件套工具 + 巨石记忆段），
-640 归并撤销，故该块不再剥除、原样保留（其旧工具名 read_memory / edit_memory /
-write_memory 与 stock MemoryRail 五件套一致）。
+同时剥除段内与 flash 域 rail 重复的部分：
 
-剥除机制：按锚点 ``[文件输出约束]`` 定位；其后若紧跟 ``[记忆纠正规则]``，只剥中间的
-``[文件输出约束]`` 块、保留 ``[记忆纠正规则]`` 及其后内容；``[文件输出约束]`` 锚点缺失
-即**整体回退**（用原内容重加），不盲切——上游改文案后静默丢内容（带守卫原则）。
+- ``[文件输出约束]``（220 已接管）——按锚点剥除；
+- ``[记忆纠正规则]`` 的第 6 条（删除=回收站）——120 已完整覆盖且含大文件回退例外，删 relay 简版；
+- ``[记忆纠正规则]`` 里的旧记忆工具名（read_memory / edit_memory / write_memory）——按
+  ``prompt.content.memory_names.MEMORY_NAME_REPLACEMENTS``（与 FlashMemoryRail 共用）改写为
+  统一入口 ``memory(mode=…)``。
+
+剥除机制：``[文件输出约束]`` 按锚点定位，锚点缺失即**整体回退**（用原内容重加），不盲切；
+其余改写均为独立锚点的 best-effort，锚点缺失只跳过该项、不影响其它项（带守卫原则）。
 
 安全性说明：RuntimePromptRail 每轮 ``before_model_call`` 都重新注入
 ``request_system_prompt``（``add_section`` 按名覆盖于 110），故本 rail **不设幂等
@@ -37,9 +39,14 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.flash.prompt.content.memory_names import (
+    MEMORY_NAME_REPLACEMENTS,
+)
 from jiuwenswarm.agents.harness.flash.prompt.content.relay import (
     _PRIO_REQUEST,
     _SECTION_REQUEST,
+    _rewrite_memory_tool_names,
+    _strip_memory_rule6,
     _strip_relay_duplicates,
 )
 
@@ -47,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 
 class FlashRelayMergeRail(DeepAgentRail):
-    """剥除 relay 注入的 [文件输出约束] 重复块（220 归并的 relay 侧收口）。"""
+    """剥除 relay 注入的重复块（220 / 120 的 relay 侧收口）。"""
 
     # request_system_prompt 由 RuntimePromptRail（priority 5）每轮注入；本 rail 需在
     # 其后每轮重新剥除，故取 < 5 的优先级。与 FlashToolGuideRail / FlashPressureRail
@@ -117,6 +124,12 @@ class FlashRelayMergeRail(DeepAgentRail):
                     "[FlashRelayMergeRail] relay 去重剥除命中守卫（锚点缺失），原样重加到段号 %s",
                     _PRIO_REQUEST,
                 )
+
+        # 以下两步各自独立锚点、best-effort：某一项没命中只跳过该项，不影响其它项。
+        # 删除=回收站：120 已覆盖（含大文件回退例外），删 relay 简版。
+        stripped, _ = _strip_memory_rule6(stripped)
+        # 旧记忆工具名 → 统一入口（映射表与 FlashMemoryRail 共用同一常量）。
+        stripped, _ = _rewrite_memory_tool_names(stripped, MEMORY_NAME_REPLACEMENTS)
 
         builder.remove_section(_SECTION_REQUEST)
         builder.add_section(PromptSection(

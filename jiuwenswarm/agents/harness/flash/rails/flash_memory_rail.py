@@ -22,6 +22,7 @@ from openjiuwen.core.memory.lite.memory_tool_context import MemoryToolContext
 from openjiuwen.harness.prompts.sections.memory import build_memory_section
 from openjiuwen.harness.rails import MemoryRail
 
+from ..prompt.content.memory_names import MEMORY_NAME_REPLACEMENTS
 from ..tools.flash_memory_tool import FlashMemoryTool
 
 logger = logging.getLogger(__name__)
@@ -30,14 +31,8 @@ logger = logging.getLogger(__name__)
 class FlashMemoryRail(MemoryRail):
     """flash 统一 memory 工具面（MemoryRail 子类，单卡 mode 分发）。"""
 
-    # stock 记忆文案中的五件套工具名 → 统一入口形式
-    _MEMORY_NAME_REPLACEMENTS = (
-        ("memory_search", "memory(mode=search)"),
-        ("memory_get", "memory(mode=read)"),
-        ("read_memory", "memory(mode=read)"),
-        ("write_memory", "memory(mode=write)"),
-        ("edit_memory", "memory(mode=edit)"),
-    )
+    # stock 记忆文案中的五件套工具名 → 统一入口形式（表在 content 层，与 relay 去重共用）
+    _MEMORY_NAME_REPLACEMENTS = MEMORY_NAME_REPLACEMENTS
 
     # 内容松绑：deep 原样正文里的「每轮强制检索」→「任务开始检索一次」。
     # 整块改写：标题、前置强制句、禁止跳过句、每轮第一步句四处一起改，
