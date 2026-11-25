@@ -26,6 +26,17 @@ test('does not match a name that is only a prefix of a longer word', () => {
   assert.deepEqual(findReferencedAssets('看 @狐狸。', [asset('狐狸')]).length, 1);
 });
 
+test('does not match a name embedded in an email address', () => {
+  assert.deepEqual(findReferencedAssets('把报价发到 team@fox.com 谢谢', [asset('fox')]), []);
+  assert.equal(
+    withAssetReferenceNote('把报价发到 team@fox.com 谢谢', [asset('fox', 'C:\\a\\fox.png')]),
+    '把报价发到 team@fox.com 谢谢',
+  );
+  assert.deepEqual(findReferencedAssets('mail fox@example.com', [asset('fox')]), []);
+  // 中文紧挨着 @ 时不加空格也能引用，左边界只拦 ASCII 邮箱形态
+  assert.deepEqual(findReferencedAssets('用@狐狸。画一张图', [asset('狐狸')]).length, 1);
+});
+
 test('no @ or no assets leaves the text untouched', () => {
   assert.equal(withAssetReferenceNote('plain text', [asset('fox')]), 'plain text');
   assert.equal(withAssetReferenceNote('hi @fox', []), 'hi @fox');
