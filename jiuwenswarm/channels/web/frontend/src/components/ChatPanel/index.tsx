@@ -49,11 +49,10 @@ import { ContextCompressionLines } from './MessageItem';
 import { activeMoaPhase, MoaProgress } from './MoaProgress';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { WebUIHost, type WebUIStyleOverrides } from '../../features/webui';
+import { WelcomeHeading, WelcomeMascot } from './WelcomeBrand';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
-import beeFlyingIcon from '../../assets/bee-flying.webp';
-import beeStaticIcon from '../../assets/bee-static.png';
 import homeBanner from '../../assets/home-banner.svg';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import loadSendIcon from '../../assets/load-send.svg';
@@ -822,22 +821,6 @@ function getTeamMessageIdentity(message: Message): string {
   ].join(':');
 }
 
-function WelcomeHeading() {
-  const { i18n } = useTranslation();
-  const workMode = useWorkspaceStore((state) => state.workMode);
-  const isZh = i18n.language.startsWith('zh');
-  const suffix = workMode === 'design'
-    ? (isZh ? '轻松解决每个设计问题！' : 'solves every design problem!')
-    : (isZh ? '轻松解决工作每个问题！' : 'makes work easier!');
-
-  return (
-    <>
-      <span className="chat-welcome__heading-highlight">WorkSwarm</span>
-      <span>{suffix}</span>
-    </>
-  );
-}
-
 function GroupCreateWelcomeHeading() {
   const { t } = useTranslation();
 
@@ -1135,52 +1118,7 @@ function scrollToBottom(el: HTMLDivElement): void {
   el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
 }
 
-const BEE_ANIMATION_DURATION = 4536;
 const WELCOME_BUBBLE_HIDE_DELAY = 3000;
-
-function BeeBanner({
-  className,
-  altText,
-  onTrigger,
-  onLeave,
-}: {
-  className: string;
-  altText: string;
-  onTrigger: () => void;
-  onLeave: () => void;
-}) {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const handleMouseEnter = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-    }
-    setIsPlaying(true);
-    onTrigger();
-    timerRef.current = setTimeout(() => {
-      setIsPlaying(false);
-      timerRef.current = null;
-    }, BEE_ANIMATION_DURATION);
-  }, [onTrigger]);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  return (
-    <img
-      className={className}
-      src={isPlaying ? beeFlyingIcon : beeStaticIcon}
-      alt={altText}
-      data-testid="chat-panel-welcome-banner"
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={onLeave}
-    />
-  );
-}
 
 /**
  * The chat surface stays mounted while the user inspects trajectory data.
@@ -2551,7 +2489,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 />
               )}
               <h2 className="chat-welcome__heading" data-testid="chat-panel-welcome-heading">
-                {isGroupCreateWelcome ? <GroupCreateWelcomeHeading /> : <WelcomeHeading />}
+                {isGroupCreateWelcome ? <GroupCreateWelcomeHeading /> : <WelcomeHeading workMode={workMode} />}
               </h2>
               <div className="chat-welcome__composer" data-testid="chat-panel-welcome-composer">
                 {!isGroupCreateWelcome && (
@@ -2606,7 +2544,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                         </>
                       )}
                     </div>
-                    <BeeBanner
+                    <WelcomeMascot
                       className="chat-welcome__banner chat-welcome__banner--bee"
                       altText={t('chat.welcomeLogoAlt')}
                       onTrigger={() => {

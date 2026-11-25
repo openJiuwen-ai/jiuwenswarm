@@ -15,6 +15,16 @@ export type { WebUIEntryHostProps } from './react/WebUIEntryHost.tsx';
 export { WebUIBackgroundHost } from './react/WebUIBackgroundHost.tsx';
 export type { WebUIBackgroundHostProps } from './react/WebUIBackgroundHost.tsx';
 export { WebUIAppearanceHost } from './react/WebUIAppearanceHost.tsx';
+export {
+  DEFAULT_BRAND_LOGO,
+  DEFAULT_BRAND_NAME,
+  useAppearancePart,
+  useBrandIdentity,
+  useBrandImage,
+} from './react/appearanceBrand.tsx';
+export { localizedText, welcomeSuffix } from './appearance/appearance.ts';
+export { parseColor, readableHighlight } from './appearance/derive.ts';
+export type { WebUIHighlightScope, WebUIIdentity, WebUIMascot, WebUIWelcome } from './appearance/appearance.ts';
 export { WebUISplashGate } from './react/WebUISplashGate.tsx';
 export type { WebUISplashGateProps } from './react/WebUISplashGate.tsx';
 export type { WebUIAppearanceHostProps } from './react/WebUIAppearanceHost.tsx';
