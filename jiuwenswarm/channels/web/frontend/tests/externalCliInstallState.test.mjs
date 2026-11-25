@@ -696,6 +696,8 @@ test('a confirmed miss on the persisted path auto-disables the agent', async () 
     status: available ? 'warning' : 'missing',
     path: available ? (cliPath || '/local/codex') : '',
     version: available ? '0.163.0' : '',
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: available ? '0.163.0' : '',
   }), { persistedValues: initial });
   try {
     await env.click('[data-testid="settings-panel-external-cli-agent-detect-btn"][data-variant="codex"]');
@@ -723,6 +725,8 @@ test('switching to a local path keeps the built-in CLI path in the dropdown', as
     status: 'ok',
     path: path || BUILTIN,
     builtin_path: BUILTIN,
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: '0.171.0',
   });
   const env = await mountCliSection(initial, onDetect);
   try {
