@@ -674,8 +674,14 @@ test('group card actions keep uninstall in the detail page and install created g
     panelSource,
     /groupClient\.createGroup\([\s\S]*groupClient\.installGroup\(result\.id\)[\s\S]*loadGroups\('mine'\)/,
   );
-  // Upload import goes through the unified assets.import entry (explicit
-  // kind), no longer the legacy per-kind methods; install/rollback unchanged.
+  // Staged (browser) uploads go through the unified assets.import entry with
+  // an explicit kind; desktop native picks pass local absolute paths that the
+  // unified entry rejects (staging-root only), so they keep the legacy
+  // per-kind import until the shell-side staging bridge lands. Install and
+  // rollback are shared by both channels and unchanged.
+  assert.match(panelSource, /source: 'staged' \| 'local' = 'staged'/);
+  assert.match(panelSource, /const result = source === 'local'/);
+  assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*client\.importAgentTemplate\(path\)/);
   assert.match(
     panelSource,
     /importAssetFromPath\(path, kind === 'group' \? 'agent_group' : 'agent_template'\)[\s\S]*groupClient\.installGroup\(result\.id\)/,
@@ -685,7 +691,9 @@ test('group card actions keep uninstall in the detail page and install created g
     panelSource,
     /importAssetFromPath\(path, kind === 'group'[\s\S]*handleInstall\(result\.id, \{\s*suppressInlineError: true,/,
   );
-  assert.doesNotMatch(panelSource, /groupClient\.importGroup\(path\)|client\.importAgentTemplate\(path\)/);
+  // The dialog tags each channel: staged upload-temp path vs desktop local path.
+  assert.match(groupUploadSource, /onConfirm\(stagedPath, kind, 'staged'\)/);
+  assert.match(groupUploadSource, /onConfirm\(filePick\.path, kind, 'local'\)/);
   // Contract-coded import failures show precise guidance copy; uncoded errors
   // keep the generic uploadError fallback with details.
   assert.match(
@@ -1045,7 +1053,7 @@ test('Expert Team upload dialog wires the browser file channel through unified u
   assert.match(groupUploadSource, /data-testid="agent-management-group-upload-browser-file-input"/);
   assert.match(
     groupUploadSource,
-    /const stagedPath = await uploadAssetPackage\(browserFile\);\s*\n\s*await onConfirm\(stagedPath, kind\);/,
+    /const stagedPath = await uploadAssetPackage\(browserFile\);\s*\n\s*await onConfirm\(stagedPath, kind, 'staged'\);/,
   );
   assert.match(groupUploadSource, /if \(desktopReady\) \{[\s\S]*?acceptPick\(pickFromDroppedFile\(file\)\);[\s\S]*?acceptBrowserFile\(file\);/);
   assert.match(groupUploadSource, /setPickerError\(t\(assetIssueKey\(error\)\)\);/);

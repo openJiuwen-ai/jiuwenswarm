@@ -20,7 +20,7 @@ type AgentGroupUploadDialogProps = {
   initialKind?: 'agent' | 'group';
   error?: string | null;
   onCancel: () => void;
-  onConfirm: (path: string, kind: 'agent' | 'group') => void | Promise<void>;
+  onConfirm: (path: string, kind: 'agent' | 'group', source: 'staged' | 'local') => void | Promise<void>;
 };
 
 const DROP_ACCEPT_WINDOW_MS = 1200;
@@ -205,9 +205,9 @@ export function DefinitionUploadDialog({
         // 纯浏览器环境：HTTP multipart 上传到受控暂存目录换取服务端路径，
         // 再交给父组件既有的 import + install + 回滚链（与桌面路径同一入口）。
         const stagedPath = await uploadAssetPackage(browserFile);
-        await onConfirm(stagedPath, kind);
+        await onConfirm(stagedPath, kind, 'staged');
       } else {
-        await onConfirm(filePick.path, kind);
+        await onConfirm(filePick.path, kind, 'local');
       }
     } catch (error) {
       // 上传阶段失败就地展示（服务端契约码 → i18n）；导入阶段失败仍由父组件经 error 属性回传。
