@@ -3995,13 +3995,10 @@ async def _consume_stream(
         else {}
     )
     existing_state = _deepresearch_router_state_ctx.get()
+    is_stopped_resume = action == "resume" and node == "stopped"
     # 停止续跑:阶段提示来自认领侧按被停止节点的推导,种子取 hint-1,
     # 使首个 resuming 帧恰好推进到 hint(之前的阶段已完成、hint 进行中)。
-    stage_hint = (
-        _deepresearch_stage_hint_ctx.get()
-        if action == "resume" and node == "stopped"
-        else None
-    )
+    stage_hint = _deepresearch_stage_hint_ctx.get() if is_stopped_resume else None
     if existing_state is not None and isinstance(existing_state, RouterState):
         state = existing_state
     elif stage_hint:
@@ -4082,7 +4079,7 @@ async def _consume_stream(
             return False
 
     scope = _deepresearch_process_scope_ctx.get()
-    if action == "resume" and node == "stopped" and scope and todo_target is not None:
+    if is_stopped_resume and scope and todo_target is not None:
         # This boundary describes the outer todo. Keep the SDK's node boundaries nested.
         owner, _ = scope
         try:
@@ -4224,7 +4221,7 @@ async def _consume_stream(
                 stage = 2
             elif action == "resume" and node == "user_feedback_processor":
                 stage = 4
-            elif action == "resume" and node == "stopped" and stage_hint:
+            elif is_stopped_resume and stage_hint:
                 # 停止续跑:直接推进到被停止阶段,避免前端进度列表回退到
                 # 第一步"研究主题澄清"转圈误导用户以为从头重跑。
                 stage = stage_hint
