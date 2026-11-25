@@ -2,6 +2,10 @@ from jiuwenswarm.extensions.sdk.agent_server_client import AgentServerClientExte
 from jiuwenswarm.extensions.sdk.base import BaseExtension
 from jiuwenswarm.extensions.sdk.config_provider import ConfigProviderExtension
 from jiuwenswarm.extensions.sdk.crypto_utility import CryptoUtility
+from jiuwenswarm.extensions.sdk.outbound_stream import (
+    OutboundStreamExtension,
+    StreamMapContext,
+)
 from jiuwenswarm.extensions.sdk.path_provider import PathProviderExtension
 from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
 from jiuwenswarm.extensions.sdk.skill_source import (
@@ -30,6 +34,8 @@ __all__ = [
     "AgentServerClientExtension",
     "CryptoUtility",
     "ThirdAgentExtension",
+    "OutboundStreamExtension",
+    "StreamMapContext",
     "ArtifactDescriptor",
     "ArtifactRef",
     "DownloadPolicy",

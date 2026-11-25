@@ -36,6 +36,8 @@ class ExtensionRegistry:
         self._third_agent: ThirdAgentExtension | None = None
         self._telemetry_provider: TelemetryProviderExtension | None = None
         self._skill_source_extensions: dict[str, SkillSourceExtension] = {}
+        #: 出站事件流扩展：name -> OutboundStreamExtension（用户实现映射）。
+        self._outbound_stream_extensions: dict[str, Any] = {}
         self.callback_framework = callback_framework
         self._config = ExtensionConfig(config=config, logger=logger)
         self._extension_local_tool_entries: list[ExtensionLocalToolEntry] = []
@@ -68,6 +70,8 @@ class ExtensionRegistry:
 
     @classmethod
     def reset_instance(cls) -> None:
+        if cls._instance is not None:
+            cls._instance.clear_outbound_stream_extensions()
         cls._instance = None
 
     @classmethod
@@ -138,6 +142,31 @@ class ExtensionRegistry:
 
     def list_skill_source_extensions(self) -> list[SkillSourceExtension]:
         return [self._skill_source_extensions[key] for key in sorted(self._skill_source_extensions)]
+
+    def register_outbound_stream_extension(self, name: str, extension: Any) -> None:
+        """登记一个出站事件流扩展（用户实现：把 E2A 事件映射成自己的协议）。
+
+        名字由 ``config.yaml`` 的 ``outbound_stream.channels`` 引用；
+        同名重复注册直接报错，避免配置命中歧义。
+        """
+        n = str(name or "").strip()
+        if not n:
+            raise ValueError("outbound stream extension name must be non-empty")
+        if n in self._outbound_stream_extensions:
+            raise ValueError(f"duplicate outbound stream extension: {n}")
+        self._outbound_stream_extensions[n] = extension
+
+    def get_outbound_stream_extension(self, name: str) -> Any | None:
+        """按名字取出出站事件流扩展；未注册时返回 ``None``。"""
+        return self._outbound_stream_extensions.get(str(name or "").strip())
+
+    def list_outbound_stream_extensions(self) -> list[str]:
+        """已登记的出站事件流扩展名（诊断 / 测试用）。"""
+        return sorted(self._outbound_stream_extensions)
+
+    def clear_outbound_stream_extensions(self) -> None:
+        """清空已登记的出站事件流扩展（测试 / 进程重启用）。"""
+        self._outbound_stream_extensions.clear()
 
     def get_agent_server_client_extension(self) -> AgentServerClientExtension | None:
         return self._agent_server_client

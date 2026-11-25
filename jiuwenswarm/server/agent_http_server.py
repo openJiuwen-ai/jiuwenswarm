@@ -710,6 +710,10 @@ class AgentHTTPServer:
                 item = await sink.queue.get()
                 if item is STREAM_DONE:
                     break
+                if isinstance(item, dict) and item.get("type") == "raw":
+                    # raw 帧：扩展自定义协议（如 AG-UI）。只发 data 行，不带 event 名。
+                    yield {"data": json.dumps(item.get("data"), ensure_ascii=False)}
+                    continue
                 yield {
                     "id": item.get("request_id") or request_id,
                     "event": _frame_event_name(item),

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import sys
 import time
@@ -26,6 +27,7 @@ from jiuwenswarm.common.ws_diagnostics import (
 )
 from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
 from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+from jiuwenswarm.extensions.sdk.outbound_stream import StreamMapContext
 from jiuwenswarm.perf.collector import get_perf_collector
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.dispatch import dispatch_with_context
@@ -43,6 +45,12 @@ from jiuwenswarm.server.request_summary_log import (
 )
 from jiuwenswarm.server.runtime.swarm_skill_session import SwarmSkillSessionError
 from jiuwenswarm.server.runtime.team_binding_store import TeamSessionBindingError
+from jiuwenswarm.server.transports.intercept import (
+    InterceptingSink,
+    detect_transport,
+    resolve_channel_id,
+    resolve_outbound_stream,
+)
 from jiuwenswarm.server.ws_send import send_wire_payload
 
 logger = logging.getLogger(__name__)
@@ -186,7 +194,36 @@ async def dispatch_parsed_request(
     _error_class = "none"
     _emit_summary = True
     log_bind = bind_log_session(getattr(request, "session_id", None))
+    outbound_sink: InterceptingSink | None = None
     try:
+        # 出站事件流扩展：按 channel 配置选择；未命中时 ctx.sink 保持原对象，全链路零变化。
+        # 这一步（含配置读取 / sink 类型识别 / 扩展 on_open）的任何异常都降级为原生，
+        # 不能让它逃出外层 try——否则会跳过错误回包与监控状态统计。
+        try:
+            extension = resolve_outbound_stream(request)
+            if extension is not None:
+                map_ctx = StreamMapContext(
+                    transport=detect_transport(ctx.sink),
+                    channel_id=resolve_channel_id(request),
+                    request_id=request.request_id or "",
+                    session_id=request.session_id,
+                    connection_id=ctx.connection_id,
+                    request=request,
+                )
+                extension.on_open(map_ctx)
+                outbound_sink = InterceptingSink(ctx.sink, extension, map_ctx)
+                # RequestContext 是 frozen dataclass：替换 sink 只能生成新 ctx。
+                ctx = dataclasses.replace(ctx, sink=outbound_sink)
+        except Exception:  # noqa: BLE001 - 扩展接入失败只降级，不阻断请求
+            logger.warning(
+                "[OutboundStream] setup failed; fallback to native channel=%s request_id=%s",
+                getattr(request, "channel_id", ""),
+                getattr(request, "request_id", ""),
+                exc_info=True,
+            )
+            extension = None
+            outbound_sink = None
+
         if await _consume_runtime_approval_reply(ctx, request):
             # DLL 审批应答不是真实对话轮次（工具仍在进程内等待），不出汇总行。
             _emit_summary = False
@@ -361,3 +398,15 @@ async def dispatch_parsed_request(
                 error_class=_error_class,
             )
         unbind_log_session(*log_bind)
+        # 扩展收尾放在最后且自行兜底：第三方 on_close 的异常不得跳过上面的汇总/解绑，
+        # 更不能掩盖 CancelledError（S_02 不变量 7）。
+        if outbound_sink is not None:
+            try:
+                outbound_sink.close()
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[OutboundStream] on_close failed channel=%s request_id=%s",
+                    getattr(request, "channel_id", ""),
+                    getattr(request, "request_id", ""),
+                    exc_info=True,
+                )

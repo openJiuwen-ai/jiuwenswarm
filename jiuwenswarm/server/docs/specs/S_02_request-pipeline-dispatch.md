@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / request-pipeline-dispatch |
 | 关联模块 | jiuwenswarm/server/{dispatch.py, pipeline.py, context.py, wire_parse.py, wire_truncate.py, ws_send.py, handlers/, transports/} |
-| 最近一次修订日期 | 2026-11-18 |
-| 关联 feature | 暂无 |
+| 最近一次修订日期 | 2026-11-25 |
+| 关联 feature | F_01_outbound-event-stream-hook.md |
 
 ## 范围 / 边界
 
@@ -20,6 +20,8 @@
 - `pipeline.dispatch_parsed_request` 通用流水线的处理顺序、hook 点、错误处理契约（CancelledError 必须重抛）。
 - 默认路径 fallback（`handlers._default._handle_stream / _handle_unary`）：HANDLERS 未命中的请求 → openjiuwen Runner.invoke。
 - Sink 三大家族（`ResponseSink` 基类 + `WSSink` / `UnaryHTTPSink` / `SSESink`）契约。
+- 出站事件流扩展（`transports/intercept.py`）：按 `outbound_stream.channels` 选择用户扩展，
+  在 sink 外层做 E2A → 自定义协议的映射（含 raw 帧与失败隔离）。
 - PushRegistry（`transports/push_registry.py`）的推送订阅管理与异常注销语义（Gateway WS 用 `_GatewayWSPushSink` 例外）。
 - wire_truncate 字节预算常量（history / team_history / workflow_snapshot）。
 
@@ -40,10 +42,11 @@
 5. **connection_id 跨请求稳定**：WS = `str(id(ws))`；HTTP = 常量 `HTTP_CONNECTION_ID`。取每请求唯一值会让 ACP 客户端能力、session.switch 切换锁退化为零互斥。
 6. **SERVICE_MEMBERS 是唯一通道**：业务层 handler 只能经 `ctx.services.<公有名>` 访问，AgentWebSocketServer 上的受保护属性名（`_xxx`）不在清单里就不可见不可写；越界 `AttributeError`。
 7. **CancelledError 必须重抛**：`dispatch_parsed_request` 的 except 分支里 `asyncio.CancelledError` 不能吞；吞掉会让 `asyncio.gather` 拿不到 CancelledError → `task.cancelled()` 为 False → chat cancel 链断裂。
-8. **Sink 基类四方法全实现**：`ResponseSink` 要求 `send_unary / send_chunk / send_error / send_wire`。新增传输类型必须继承它，不要搞平行类。
-9. **Gateway WS 推送不注销**：`agent_ws_server._GatewayWSPushSink` 把 WSSink 的异常吃在内部、返回 False，PushRegistry 因此不会注销。**不要把裸 WSSink 塞进 PushRegistry 给 Gateway WS**。
-10. **wire_truncate 是字节预算单一真相源**：`wire_truncate.py` 的 `_HISTORY_WIRE_* / _TEAM_HISTORY_* / _WORKFLOW_SNAPSHOT_*` 常量在 handler 里被 import 使用；预算改了先改这里，不要硬编码。
-11. **默认路径 fallback 不绕过 HANDLERS**：`dispatch_parsed_request` 里 `dispatch_with_context` 必须先于 fallback 调用；新增 handler 逻辑先登记 HANDLERS。
+8. **Sink 基类五方法全实现**：`ResponseSink` 要求 `send_unary / send_chunk / send_error / send_wire / send_raw`。新增传输类型必须继承它，不要搞平行类。`send_raw` 是不装 E2A 信封的逃生口：WS 写 JSON 文本、SSE 入队 raw 标记、一元 HTTP 返回 `False`。
+9. **出站事件流扩展不混协议**：一旦扩展模式已向客户端发出过改造帧（含 raw），后续 `map_frame` 失败只能终止本轮（`on_error` 提供的帧或空），**不得**回落成 E2A 原帧；尚未发出改造帧时允许回落原生。
+10. **Gateway WS 推送不注销**：`agent_ws_server._GatewayWSPushSink` 把 WSSink 的异常吃在内部、返回 False，PushRegistry 因此不会注销。**不要把裸 WSSink 塞进 PushRegistry 给 Gateway WS**。
+11. **wire_truncate 是字节预算单一真相源**：`wire_truncate.py` 的 `_HISTORY_WIRE_* / _TEAM_HISTORY_* / _WORKFLOW_SNAPSHOT_*` 常量在 handler 里被 import 使用；预算改了先改这里，不要硬编码。
+12. **默认路径 fallback 不绕过 HANDLERS**：`dispatch_parsed_request` 里 `dispatch_with_context` 必须先于 fallback 调用；新增 handler 逻辑先登记 HANDLERS。
 
 ## 接口契约
 
@@ -141,9 +144,13 @@ class ResponseSink:
     async def send_chunk(self, chunk: Any, *, sequence: int, response_id: str | None = None) -> bool: ...
     async def send_error(self, request_id: str, message: str, *, code: str, channel_id: str = "") -> bool: ...
     async def send_wire(self, wire: dict[str, Any]) -> bool: ...
+    async def send_raw(self, data: Any) -> bool: ...   # 出站事件流扩展：不装 E2A 信封
 ```
 
 三大家族：WSSink（WebSocket 二进制推送，最终调 send_wire_payload）/ UnaryHTTPSink（HTTP 单次，HTTP status code 回写）/ SSESink（HTTP SSE 推送，按 session 过滤，有 budget 截断）。
+`send_raw` 语义：WS 把 `data` 序列化为 JSON 文本直发；SSE 入队 `{"type": "raw", "data": ...}`，由 `_pump_sse` 只发 `data:` 行；一元 HTTP 无流语义，返回 `False`。
+`send_raw` 的 `data` 必须可 JSON 序列化：序列化在 sink 内部完成、处于扩展失败隔离之外，因此 `InterceptingSink._validate` 在发送前探测（含 `data` 字段存在性），不可序列化按"扩展返回非法"降级，不允许异常漏到传输层。
+WS 增量背压（`chat.delta` / `chat.reasoning` 的 32KiB 积压闸门）在 `WSSink.send_wire` 内按 `body.event_type` 判定，扩展改写后的帧同样经过；`send_raw` 无法判别语义，无条件过闸门。
 
 ## 数据结构
 
@@ -154,6 +161,8 @@ class ResponseSink:
 | RequestContext frozen dataclass | context.py | WS _connection_handler / HTTP _make_ctx | 所有 handler | 单请求 |
 | SERVICE_MEMBERS dict | context.py 模块级 | 一次性手工维护 | AgentServerServices.__getattr__ | 进程级 |
 | PushRegistry | transports/push_registry.py 单例 | AgentWebSocketServer 连接注册 / SSE endpoint 注册 | send_push / gateway_push.build_server_push_wire | 进程级 |
+| 出站流扩展表 | extensions/registry.py `_outbound_stream_extensions` | 扩展启动时 `register_outbound_stream_extension` | `resolve_outbound_stream` | 进程级 |
+| InterceptingSink | transports/intercept.py | pipeline 按请求构造 | handler 的 `ctx.sink` 调用 | 单请求 |
 | wire_truncate 常量 | wire_truncate.py 模块级 | 一次性手工维护 | session_history / workflow_snapshot handler | 进程级 |
 
 ## 执行路径 / 装配关系
@@ -175,15 +184,19 @@ server/__init__.py import
 [HTTP] routes 路由 → server.invoke_unary() → _make_ctx() → pipeline.dispatch_parsed_request
 
   1. bind_log_session(session_id)
-  2. acp_client_capabilities → metadata（非 initialize 的 acp 信封）
-  3. BEFORE_CHAT_REQUEST hook（ExtensionRegistry.trigger）
-  4. dispatch_with_context(ctx, request) → HANDLERS[req_method].resolve_fn(is_stream)(ctx, *args, **kwargs) → True
+  2. 出站事件流扩展：resolve_outbound_stream(request)（仅流式 chat.* 请求）
+      命中 → extension.on_open(ctx) → ctx = replace(ctx, sink=InterceptingSink(...))
+      未命中 → ctx.sink 保持原对象（零行为变化）
+  3. acp_client_capabilities → metadata（非 initialize 的 acp 信封）
+  4. BEFORE_CHAT_REQUEST hook（ExtensionRegistry.trigger）
+  5. dispatch_with_context(ctx, request) → HANDLERS[req_method].resolve_fn(is_stream)(ctx, *args, **kwargs) → True
      ↓ False
-  5. _ensure_auto_team_binding_for_chat(ctx, request)
-  6. 默认路径: _handle_stream(ctx, request) 或 _handle_unary(ctx, request)
+  6. _ensure_auto_team_binding_for_chat(ctx, request)
+  7. 默认路径: _handle_stream(ctx, request) 或 _handle_unary(ctx, request)
      ↓ openjiuwen Runner.invoke
      ↓ 响应生成
-  7. ctx.sink.send_wire(wire) → transports.push_registry / gateway_push.wire
+  8. ctx.sink.send_wire(wire) → [InterceptingSink.map_frame] → transports / gateway_push.wire
+  9. finally: outbound_sink.close()（通知扩展 on_close，含取消路径）
 
 CancelledError → 必须重抛（chat cancel 链依赖）
 WebSocketConnectionClosed → 记 info 并放弃回包
@@ -213,13 +226,17 @@ AgentWebSocketServer.send_push(msg)
 | WS / HTTP sink 不一致 | 同一个 handler 输出在两种传输下不同 | 用户体验差 + 难复现 | handler 双路径一致性 |
 | permissions.* 动态注册 + 重复 | _register_permissions_methods RuntimeError | 进程启动崩溃 | 防双注册 |
 | CancelledError 被 except Exception 吞 | task.cancelled()=False → chat cancel 链断裂 | 用户取消不了任务 | dispatch.CancelledError 重抛 |
+| 扩展模式中途失败 | 已发过改造帧 → 发 `on_error` 帧后停流 | 回落原生会把两种协议混给客户端 | test_outbound_stream_hook：failure after engagement |
+| 扩展把一元响应也映射 | 只有流式 chat.* 请求会包装 sink | session.create/history 被扩展丢掉 → 渠道不可用 | resolve 只认 is_stream + chat.* |
+| 扩展 raw 帧 `data` 不可序列化 | `_validate` 提前探测，按"返回非法"降级（未 engaged 回落原生 / 已 engaged 终止） | 若放到 sink 内 `json.dumps` 才抛错，会击穿请求或让 SSE 无声中断 | test_outbound_stream_hook：non-serializable raw before/after engagement |
 
 ## 修改检查单
 
 - **加 HANDLERS 条目** → 加 ReqMethod 枚举值 → 写 handler（async def ctx → None）→ 注册 HANDLERS（fn / args / kwargs / 可选 stream_fn）→ 如果有 RESTful 入口同步 agent_http_routes.py → tests/unit_tests/server/test_dispatch.py → 对应 handler 测试。
 - **改 HandlerSpec.fn/args/kwargs** → 同步 HANDLERS 条目 → 确认没有重复注册 → 跑 dispatch 测试。
 - **改 wire_truncate 常量** → 所有 import 了 `_HISTORY_WIRE_* / _TEAM_HISTORY_* / _WORKFLOW_SNAPSHOT_*` 的 handler 重审截断逻辑 → 跑 history.get / team.history.get / team.snapshot 大 payload 测试。
-- **改 sink 基类** → 同步 WSSink / UnaryHTTPSink / SSESink 三实现 → 所有 send_wire 调用点不摸具体 sink 类型 → 跑 handler 双路径一致性测试。
+- **改 sink 基类** → 同步 WSSink / UnaryHTTPSink / SSESink 三实现（含 `send_raw`）→ 所有 send_wire 调用点不摸具体 sink 类型 → 跑 handler 双路径一致性测试。
+- **改出站事件流扩展（intercept.py / sdk/outbound_stream.py）** → 保持"未命中零变化""已进入扩展模式不混协议""on_close 在取消路径也调用" → 跑 `tests/transport/test_outbound_stream_hook.py`。
 - **改 PushRegistry 注销语义** → 确认 Gateway WS 的 _GatewayWSPushSink 异常吞噬仍在 → 跑 server 重启推送测试。
 - **改 RequestContext 字段 / AgentServerServices 门面** → SERVICE_MEMBERS 同步 → 所有 handler 的 `ctx.services.xxx` 调用是否越界 → 加新能力不要绕门面直摸 server._xxx。
 - **改 pipeline.dispatch_parsed_request 顺序** → hook 点位置确认 → CancelledError 分支不被意外覆盖 → 跑 chat.send cancel 测试。
