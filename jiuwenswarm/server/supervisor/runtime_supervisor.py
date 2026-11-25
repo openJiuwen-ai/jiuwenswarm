@@ -797,7 +797,11 @@ class RuntimeSupervisor:
     async def _connect_resident(self) -> tuple[dict, Any, float]:
         """Elect and validate a resident Worker while retaining the startup lock."""
         from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
-        from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock
+        from jiuwenswarm.server.supervisor.resident_lifecycle import (
+            force_retire_worker,
+            retire_worker,
+            startup_lock,
+        )
 
         async with self._session_lock:
             self._validated_conn = None
@@ -886,11 +890,30 @@ class RuntimeSupervisor:
                             try:
                                 await retire_worker(conn, hello, self._socket_path,
                                     deadline=time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT, allow_legacy=True)
-                            except Exception:
-                                self._fatal = True
-                                self._fatal_reason = "resident Worker replacement failed"
-                                raise
-                            await conn.close()
+                            except Exception as exc:
+                                if (not isinstance(exc, RuntimeError)
+                                        or "Worker PID identity changed" not in str(exc)):
+                                    self._fatal = True
+                                    self._fatal_reason = "resident Worker replacement failed"
+                                    raise
+                                # create_time drifted between builds; reclaim the
+                                # verified leftover Worker instead of wedging the
+                                # runtime on a stale resident from the old version.
+                                reclaimed = await force_retire_worker(
+                                    self._socket_path, hello,
+                                    deadline=time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT,
+                                )
+                                if not reclaimed:
+                                    self._fatal = True
+                                    self._fatal_reason = "resident Worker replacement failed"
+                                    raise
+                                logger.warning(
+                                    "[Supervisor] force-retired stale resident Worker after identity drift",
+                                )
+                            try:
+                                await conn.close()
+                            except (OSError, RuntimeError, asyncio.IncompleteReadError):
+                                pass
                             self._conn = None
                             self._validated_conn = None
                             deadline = time.monotonic() + self._connect_timeout
