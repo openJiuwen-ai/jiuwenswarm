@@ -257,7 +257,9 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
     protocol,
     vendor_selection: vendorSelection,
     model_name: model.model_name,
-    model_input_mode: preset ? 'options' : 'manual',
+    // A custom endpoint keeps the dropdown: the model list is fetched from the
+    // user's own api_base and manual entry stays available as a fallback.
+    model_input_mode: vendorSelection ? 'options' : 'manual',
     api_key: model.api_key,
     api_base: model.api_base,
     reasoning_level: vendorSelection === CUSTOM_VENDOR_SELECTION ? '' : (model.reasoning_level ?? ''),
@@ -288,7 +290,7 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
       ...draft, kv_cache_affinity: false,
       vendor_selection: selection,
       model_name: '',
-      model_input_mode: 'manual',
+      model_input_mode: 'options',
       api_key: '',
       api_base: '',
       reasoning_level: '',

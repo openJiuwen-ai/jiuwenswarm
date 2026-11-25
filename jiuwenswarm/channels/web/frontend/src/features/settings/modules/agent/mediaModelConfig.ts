@@ -49,18 +49,21 @@ export function createMediaModelDraft(
   const normalizedContextWindowTokens = normalizeContextWindowTokens(contextWindowTokens);
   const hasProviderIdentity = Boolean(vendorKey.trim() && isModelPlan(plan.trim()));
   const hasLegacyConfig = [apiBase, apiKey, modelName, provider].some((value) => value.trim());
+  const vendorSelection = hasProviderIdentity
+    ? vendorSelectionKey(plan.trim() as ModelPlan, vendorKey.trim())
+    : hasLegacyConfig
+      ? CUSTOM_VENDOR_SELECTION
+      : '';
 
   return {
-    vendor_selection: hasProviderIdentity
-      ? vendorSelectionKey(plan.trim() as ModelPlan, vendorKey.trim())
-      : hasLegacyConfig
-        ? CUSTOM_VENDOR_SELECTION
-        : '',
+    vendor_selection: vendorSelection,
     protocol: 'openai',
     api_base: apiBase,
     api_key: apiKey,
     model_name: modelName,
-    model_input_mode: hasProviderIdentity ? 'options' : 'manual',
+    // Custom endpoints keep the dropdown: their model list is fetched from the
+    // user's own api_base and manual entry stays available as a fallback.
+    model_input_mode: vendorSelection ? 'options' : 'manual',
     provider,
     endpoint_profile: endpointProfile,
     vendor_key: vendorKey,
