@@ -1731,7 +1731,7 @@ async def warmup_session_context(
 
         bind_context_checkpoint(context_engine, live_session)
     existing_context = context_engine.get_context(session_id=session_id)
-    if existing_context is not None and not refresh_existing:
+    if existing_context is not None and existing_context.get_messages() and not refresh_existing:
         # 内存上下文已存在（进程未重启 / 已 warmup / rewind 重建过）
         return True
 
@@ -1756,7 +1756,9 @@ async def warmup_session_context(
 
     async with admit_context_recovery(session_id):
         existing_context = context_engine.get_context(session_id=session_id)
-        if existing_context is not None and not refresh_existing:
+        # Initialization may publish an empty SDK context before disk recovery.
+        # Its existence alone does not mean the saved conversation was restored.
+        if existing_context is not None and existing_context.get_messages() and not refresh_existing:
             return True
         # Another owner may have published a checkpoint while this request waited.
         if callable(get_state) and await restore_checkpoint_context(

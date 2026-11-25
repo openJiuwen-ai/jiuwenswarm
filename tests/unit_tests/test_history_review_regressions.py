@@ -28,6 +28,26 @@ def _agent(engine):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("concurrent", [False, True])
+async def test_initialized_empty_context_still_restores_durable_history(stored, monkeypatch, concurrent):
+    from jiuwenswarm.agents.harness.common import session_ops_service as service
+
+    stored.write([user("old", "PREVIOUS INPUT"), {
+        "role": "assistant", "event_type": "chat.final", "request_id": "old", "content": "PREVIOUS ANSWER",
+    }])
+    engine = ContextEngine()
+    await engine.create_context(session=stored.session, history_messages=[])
+    monkeypatch.setattr(service, "resolve_live_agent_session", lambda *_args: stored.session)
+
+    async def restore():
+        return await service.warmup_session_context(deep_agent=_agent(engine), session_id=stored.sid)
+
+    assert all(await asyncio.gather(*(restore() for _ in range(2 if concurrent else 1))))
+    messages = engine.get_context(session_id=stored.sid).get_messages()
+    assert [message.content for message in messages] == ["PREVIOUS INPUT", "PREVIOUS ANSWER"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("interrupted", [False, True])
 async def test_restarted_unbound_session_can_commit_restored_owner(stored, monkeypatch, interrupted):
     from jiuwenswarm.runtime import context_checkpointer as checkpoint
