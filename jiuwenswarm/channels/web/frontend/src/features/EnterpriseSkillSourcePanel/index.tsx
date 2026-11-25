@@ -17,6 +17,7 @@ import {
   sourceSkillIdentity,
   isEnterpriseSourceSkillInstalled,
   resolveSourceInstalledLocalSkill,
+  skillPresentationName,
   type LocalSkillOriginRef,
 } from './installMetadata';
 
@@ -366,7 +367,7 @@ export function EnterpriseSkillSourcePanel({
           success: boolean;
           error_code?: string;
           error_message?: string;
-          skill?: { name: string; display_name?: string };
+          skill?: { name: string; display_name?: string; market_display_name?: string };
         }>(
           'skills.source.install',
           withSession({
@@ -387,7 +388,11 @@ export function EnterpriseSkillSourcePanel({
         }
         const skillName = data.skill?.name || item.name;
         showToast('success', t('skills.source.messages.installed', {
-          name: item.display_name || data.skill?.display_name || skillName,
+          name: skillPresentationName({
+            name: skillName,
+            display_name: item.display_name || data.skill?.display_name,
+            market_display_name: data.skill?.market_display_name,
+          }),
         }));
         await onInstalled?.(skillName);
         // 安装后刷新已装状态缓存，保证卡片徽章与下次挂载读取的缓存一致

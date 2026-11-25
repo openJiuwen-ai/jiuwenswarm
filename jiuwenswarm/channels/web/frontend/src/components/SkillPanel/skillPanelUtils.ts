@@ -109,6 +109,8 @@ export function normalizeSkillItem<T extends SkillItem>(raw: T): T {
   };
 }
 
+export { skillPresentationName as getSkillPresentationName } from '../../utils/skillPresentationName';
+
 /** 技能列表/广场卡片上的「来源」文案。
  *
  * 优先级：企业安装类型（prebuilt/user/builtin）> 明确的市场 source >

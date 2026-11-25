@@ -32,6 +32,7 @@ import { resolveMarketplaceInstalledLocalName } from '../../utils/skillNetUrl';
 import { isEnterprise } from '../../edition';
 import {
   formatSkillVersionLabel,
+  getSkillPresentationName,
   isAdminManagedSkill,
   resolveSkillFileReference,
   shouldShowEnableSwitch,
@@ -395,7 +396,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     onGoToChat,
     onOpenPackMember,
   } = props;
-  const skillDisplayName = selectedSkill.display_name || selectedSkill.name;
+  const skillDisplayName = getSkillPresentationName(selectedSkill);
   const uninstallPluginName = installedSkillMap.get(selectedSkill.name)?.plugin_name || selectedSkill.name;
   const uninstalling = actionTarget === `uninstall:${uninstallPluginName}`;
   // 当前详情技能是否为技能包（接口标记 skillpack，或技能名与所属插件名一致）

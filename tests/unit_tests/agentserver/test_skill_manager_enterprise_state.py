@@ -585,6 +585,101 @@ def test_web_uninstall_rejects_non_string_origin_without_name_fallback(tmp_path:
     assert [row["name"] for row in manager.list_skill_installations()] == ["user-skill"]
 
 
+def test_skills_list_promotes_market_display_name_for_source_install(
+    tmp_path: Path,
+) -> None:
+    """企业技能源安装只落 market_display_name 时，skills.list 仍应返回广场中文名。"""
+    workspace = tmp_path / "tenant"
+    manager = SkillManager(workspace_dir=str(workspace), service_id="svc", agent_id="agent")
+    _write_skill(workspace, "primary-school-tutoring-team")
+    manager.record_skill_installation(
+        name="primary-school-tutoring-team",
+        source_type="user",
+        origin="swarmskillhub:asset-primary",
+        source="swarmskillhub",
+        source_id="swarmskillhub",
+        skill_id="asset-primary",
+        version_id="v1",
+        version="1.0.0",
+        market_display_name="小学生课程辅导团队",
+    )
+
+    record = manager.list_skill_installations()[0]
+    assert record["display_name"] == "小学生课程辅导团队"
+    assert record["market_display_name"] == "小学生课程辅导团队"
+
+    payload = asyncio.run(manager.handle_skills_list({}))
+    listed = next(
+        item
+        for item in payload["skills"]
+        if item.get("name") == "primary-school-tutoring-team"
+    )
+    assert listed["market_display_name"] == "小学生课程辅导团队"
+    assert listed["display_name"] == "小学生课程辅导团队"
+
+    detail = asyncio.run(
+        manager.handle_skills_get({"name": "primary-school-tutoring-team"})
+    )
+    assert detail["display_name"] == "小学生课程辅导团队"
+    assert detail["market_display_name"] == "小学生课程辅导团队"
+
+
+def test_hub_local_display_name_wins_over_market_on_list(tmp_path: Path) -> None:
+    """单机 Hub 的 local_skills.display_name 优先于账本 market_display_name。"""
+    workspace = tmp_path / "tenant"
+    manager = SkillManager(workspace_dir=str(workspace), service_id="svc", agent_id="agent")
+    _write_skill(workspace, "dev-coder")
+    manager._add_local_skill(
+        {
+            "name": "dev-coder",
+            "display_name": "AI辅助研发-编码开发",
+            "source": "teamskillshub",
+            "origin": "teamskillshub:dev-coder",
+        }
+    )
+    manager.record_skill_installation(
+        name="dev-coder",
+        source_type="user",
+        origin="teamskillshub:dev-coder",
+        source="teamskillshub",
+        market_display_name="广场别名不应覆盖Hub名",
+    )
+
+    payload = asyncio.run(manager.handle_skills_list({}))
+    listed = next(item for item in payload["skills"] if item.get("name") == "dev-coder")
+    assert listed["display_name"] == "AI辅助研发-编码开发"
+
+
+def test_record_keeps_non_slug_display_name_when_market_updates(
+    tmp_path: Path,
+) -> None:
+    """账本已有非 slug 的 display_name 时，再次带 market 更新不得覆盖。"""
+    workspace = tmp_path / "tenant"
+    manager = SkillManager(workspace_dir=str(workspace), service_id="svc", agent_id="agent")
+    _write_skill(workspace, "dev-coder")
+    manager.record_skill_installation(
+        name="dev-coder",
+        source_type="user",
+        origin="teamskillshub:dev-coder",
+        source="teamskillshub",
+        market_display_name="广场初装名",
+    )
+    plugins = manager._state["installed_plugins"]
+    plugins[0]["display_name"] = "AI辅助研发-编码开发"
+    manager._save_state()
+
+    manager.record_skill_installation(
+        name="dev-coder",
+        source_type="user",
+        origin="teamskillshub:dev-coder",
+        source="teamskillshub",
+        market_display_name="广场更新别名",
+    )
+    record = manager.list_skill_installations()[0]
+    assert record["display_name"] == "AI辅助研发-编码开发"
+    assert record["market_display_name"] == "广场更新别名"
+
+
 def test_source_install_rejects_string_force_before_fetch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

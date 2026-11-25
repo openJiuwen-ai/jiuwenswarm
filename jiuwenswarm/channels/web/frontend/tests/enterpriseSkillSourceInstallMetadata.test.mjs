@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   isEnterpriseSourceSkillInstalled,
   resolveSourceInstalledLocalSkill,
+  skillPresentationName,
 } from '../node_modules/.cache/enterprise-skill-source-install/installMetadata.mjs';
 
 const SOURCE_ID = 'swarmskillhub';
@@ -84,6 +85,28 @@ test('企业源 origin 精确匹配：同名无关，按 source_id:skill_id 判�
       false,
     ),
     true,
+  );
+});
+
+test('我的技能展示名优先用广场 market_display_name，避免英文 slug', () => {
+  assert.equal(
+    skillPresentationName({
+      name: 'primary-school-tutoring-team',
+      display_name: 'primary-school-tutoring-team',
+      market_display_name: '小学生课程辅导团队',
+    }),
+    '小学生课程辅导团队',
+  );
+  assert.equal(
+    skillPresentationName({
+      name: 'primary-school-tutoring-team',
+      display_name: '小学生课程辅导团队',
+    }),
+    '小学生课程辅导团队',
+  );
+  assert.equal(
+    skillPresentationName({ name: 'primary-school-tutoring-team' }),
+    'primary-school-tutoring-team',
   );
 });
 
