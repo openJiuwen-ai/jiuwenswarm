@@ -115,6 +115,7 @@ from jiuwenswarm.server.handlers.session import (
 from jiuwenswarm.server.handlers.assets import (
     handle_assets_export,
     handle_assets_import,
+    handle_assets_stage_local,
 )
 from jiuwenswarm.server.handlers.session_assets import handle_session_assets_request
 from jiuwenswarm.server.handlers.team import (
@@ -237,6 +238,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     # WS 入口在 agent_adapter/interface.py，两条入口共用编排层与错误收敛。
     ReqMethod.ASSETS_EXPORT: handle_assets_export,
     ReqMethod.ASSETS_IMPORT: handle_assets_import,
+    ReqMethod.ASSETS_STAGE_LOCAL: handle_assets_stage_local,
     # 企业版 HTTP：与 WS ``_handle_lifecycle_request`` 同契约，否则
     # Gateway mapped 路由南向落到 agentserver 时 HANDLERS 缺项 → HTTP_METHOD_NOT_HANDLED。
     ReqMethod.SESSION_ARCHIVE: handle_session_archive,

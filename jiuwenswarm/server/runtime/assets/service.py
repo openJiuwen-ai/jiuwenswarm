@@ -6,7 +6,10 @@
   返回 ``{download_url, filename, size_bytes, sha256}``；
 - 导入：path 必须来自 ``/file-api/assets/upload-temp`` 的受控暂存 →
   安全解包 → 缺省 kind 时按适配器注册顺序嗅探 → 分发导入 → 返回
-  ``{kind, id, pending_connectors?}``。
+  ``{kind, id, pending_connectors?}``；
+- 桌面暂存：``assets.stage_local`` 把桌面壳给出的本机绝对路径复制进
+  与 upload-temp 相同的受控暂存根（同防护），返回 ``{path}``，前端
+  两通道统一走 ``assets.import``。
 
 本层向上抛出的异常由入口 handler 收敛：``AssetError`` 透传、带 ``.code``
 的内部异常（SafeArchiveError 等）查表映射、无内部码的 ``ValueError``
@@ -27,14 +30,17 @@ from jiuwenswarm.common.file_download_token import (
     build_file_download_info,
 )
 from jiuwenswarm.common.safe_archive import (
+    ArchiveLimits,
     extract_archive_safely,
     pack_directory_single_root,
 )
 from jiuwenswarm.server.runtime.assets.contract import (
     AssetKind,
     build_export_filename,
+    is_illegal_filename,
     parse_export_params,
     parse_import_params,
+    parse_stage_local_params,
     sanitize_export_stem,
     validate_asset_id,
 )
@@ -186,6 +192,46 @@ def import_asset(params: Any) -> dict[str, Any]:
         return payload
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def stage_local_asset(params: Any, *, limits: ArchiveLimits = ArchiveLimits()) -> dict[str, Any]:
+    """执行 assets.stage_local：把本机绝对路径的资产包复制进受控上传暂存根。
+
+    桌面壳原生选择器/拖拽只给出本机路径，不经 HTTP multipart；本入口按
+    与 upload-temp 相同的防护（仅 .zip、体积上限、每次独立子目录、TTL
+    顺带回收）把本机文件复制进同一暂存根，返回 ``{path}`` 供前端统一调
+    ``assets.import``。信任模型与其替代的旧专家/专家团导入接口一致：
+    只接受本机真实文件，不取 URL，不跟随符号链接。
+    """
+    parsed = parse_stage_local_params(params)
+    source = Path(parsed["path"])
+    if source.is_symlink():
+        raise AssetError(AssetErrorCode.UNSAFE_PATH, "导入路径不得为符号链接")
+    if not source.is_file():
+        raise AssetError(AssetErrorCode.INVALID_PACKAGE, "本地文件不存在或不可读")
+    filename = source.name
+    if is_illegal_filename(filename):
+        raise AssetError(AssetErrorCode.UNSAFE_PATH, "文件名非法")
+    if not filename.lower().endswith(".zip"):
+        raise AssetError(AssetErrorCode.INVALID_PACKAGE, "资产包仅支持 .zip 格式")
+    try:
+        size = source.stat().st_size
+    except OSError:
+        raise AssetError(AssetErrorCode.INVALID_PACKAGE, "本地文件不存在或不可读") from None
+    if size > limits.zip_bytes:
+        raise AssetError(AssetErrorCode.LIMIT_EXCEEDED, "压缩包体积超限")
+
+    upload_root = assets_upload_root()
+    prune_stale_entries(upload_root)
+    upload_dir = upload_root / uuid.uuid4().hex
+    upload_dir.mkdir(parents=True)
+    dest = upload_dir / filename
+    try:
+        shutil.copyfile(source, dest)
+    except OSError:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        raise AssetError(AssetErrorCode.INVALID_PACKAGE, "本地文件读取失败") from None
+    return {"path": dest.as_posix()}
 
 
 def _resolve_upload_path(raw_path: Path) -> Path:

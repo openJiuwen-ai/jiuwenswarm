@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.safe_archive import SafeArchiveError
+from jiuwenswarm.common.safe_archive import ArchiveLimits, SafeArchiveError
 from jiuwenswarm.server.runtime.assets import registry, service
 from jiuwenswarm.server.runtime.assets.contract import AssetKind
 from jiuwenswarm.server.runtime.assets.errors import AssetError, AssetErrorCode
@@ -509,6 +509,97 @@ def test_import_conflict_propagates(workspace, isolated_registry):
     with pytest.raises(AssetError) as excinfo:
         service.import_asset({"path": str(zip_path)})
     assert excinfo.value.code == AssetErrorCode.ALREADY_EXISTS
+
+
+# --------------------------------------------------------------- stage_local
+
+
+def test_stage_local_happy_path(workspace, tmp_path):
+    source = tmp_path / "pack.zip"
+    source.write_bytes(b"zip-bytes")
+
+    payload = service.stage_local_asset({"path": str(source)})
+
+    staged = Path(payload["path"])
+    assert staged.name == "pack.zip"
+    assert staged.is_file()
+    assert staged.read_bytes() == b"zip-bytes"
+    assert staged.is_relative_to(assets_upload_root())
+    # 每次上传独立子目录，同名不冲突
+    again = service.stage_local_asset({"path": str(source)})
+    assert again["path"] != payload["path"]
+
+
+def test_stage_local_rejects_bad_params(workspace):
+    for params in ({}, {"path": ""}, {"path": "pack.zip"}, {"path": "/tmp/../pack.zip"}):
+        with pytest.raises(ValueError):
+            service.stage_local_asset(params)
+
+
+def test_stage_local_rejects_symlink_and_missing(workspace, tmp_path):
+    real = tmp_path / "real.zip"
+    real.write_bytes(b"x")
+    link = tmp_path / "link.zip"
+    link.symlink_to(real)
+    with pytest.raises(AssetError) as excinfo:
+        service.stage_local_asset({"path": str(link)})
+    assert excinfo.value.code == AssetErrorCode.UNSAFE_PATH
+    with pytest.raises(AssetError) as excinfo:
+        service.stage_local_asset({"path": str(tmp_path / "gone.zip")})
+    assert excinfo.value.code == AssetErrorCode.INVALID_PACKAGE
+
+
+def test_stage_local_rejects_non_zip_and_reserved_name(workspace, tmp_path):
+    tar = tmp_path / "pack.tar"
+    tar.write_bytes(b"x")
+    with pytest.raises(AssetError) as excinfo:
+        service.stage_local_asset({"path": str(tar)})
+    assert excinfo.value.code == AssetErrorCode.INVALID_PACKAGE
+    reserved = tmp_path / "con.zip"
+    reserved.write_bytes(b"x")
+    with pytest.raises(AssetError) as excinfo:
+        service.stage_local_asset({"path": str(reserved)})
+    assert excinfo.value.code == AssetErrorCode.UNSAFE_PATH
+
+
+def test_stage_local_rejects_oversize(workspace, tmp_path):
+    source = tmp_path / "big.zip"
+    source.write_bytes(b"x" * 64)
+    with pytest.raises(AssetError) as excinfo:
+        service.stage_local_asset(
+            {"path": str(source)}, limits=ArchiveLimits(zip_bytes=32)
+        )
+    assert excinfo.value.code == AssetErrorCode.LIMIT_EXCEEDED
+
+
+def test_stage_local_prunes_stale_entries(workspace, tmp_path):
+    stale_dir = assets_upload_root() / "stale"
+    stale_dir.mkdir(parents=True)
+    stale = stale_dir / "old.zip"
+    stale.write_bytes(b"old")
+    old = time.time() - STAGING_TTL_SECONDS - 60
+    os.utime(stale, (old, old))
+    os.utime(stale_dir, (old, old))
+    source = tmp_path / "pack.zip"
+    source.write_bytes(b"x")
+
+    service.stage_local_asset({"path": str(source)})
+
+    assert not stale_dir.exists()
+
+
+def test_stage_local_then_import_roundtrip(workspace, isolated_registry, tmp_path):
+    # stage_local 返回的暂存路径可被 assets.import 直接消费（契约两端同构）
+    source = tmp_path / "expert.zip"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("my-expert/expert.json", '{"name": "demo"}')
+    isolated_registry.register_asset_adapter(_FakeAdapter())
+
+    staged = service.stage_local_asset({"path": str(source)})
+    payload = service.import_asset(staged)
+
+    assert payload["kind"] == "agent_template"
+    assert payload["id"] == "my-expert"
 
 
 # ------------------------------------------------------------------- handler

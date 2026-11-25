@@ -7,7 +7,9 @@
   ``<id>`` 必须与压缩包顶层目录名严格一致，不含路径分隔符或特殊字符；
 - ``assets.export`` 入参 ``{kind, local_id, version?}``（``items?``
   协议层预留批量导出），出参 ``{download_url, filename, size_bytes, sha256}``；
-  ``assets.import`` 入参 ``{path, kind?}``，出参 ``{kind, id, pending_connectors?}``。
+  ``assets.import`` 入参 ``{path, kind?}``，出参 ``{kind, id, pending_connectors?}``；
+  ``assets.stage_local`` 入参 ``{path}``（桌面壳给出的本机绝对路径），出参
+  ``{path}``（受控上传暂存根内路径，供 ``assets.import`` 使用）。
 
 本模块只依赖标准库：入口 handler、各 kind 适配器与前端契约测试共享同一份
 定义，且不引入循环依赖。解析失败一律抛 ``ValueError``，由入口层收敛为
@@ -18,7 +20,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -168,6 +170,42 @@ def _validate_import_path(path: str) -> None:
         raise ValueError(
             f"assets.import path must not contain '..' segments: {path!r}"
         )
+
+
+def is_illegal_filename(filename: Any) -> bool:
+    """暂存落盘文件名合法性：须为非空常规名，不含路径分隔符或 NUL，非 Windows 保留名。"""
+    if not isinstance(filename, str) or filename in {"", ".", ".."}:
+        return True
+    if any(char in filename for char in "/\\:\x00"):
+        return True
+    return PureWindowsPath(filename).is_reserved()
+
+
+def parse_stage_local_params(params: Any) -> dict[str, str]:
+    """校验并归一化 ``assets.stage_local`` 入参，返回 ``{path}``。
+
+    ``path`` 是桌面壳原生选择器/拖拽给出的本机绝对路径。与
+    :func:`parse_import_params` 不同，这里允许反斜杠（Windows 本机路径的
+    正常形态）；契约层挡控制字符、``..`` 段与相对路径——相对路径按服务
+    进程 CWD 解析会指向不可预期位置，一律拒绝。文件真实存在性、symlink
+    与体量判定由服务层在复制前收敛（分层防御同 ``assets.import``）。
+    """
+    if not isinstance(params, dict):
+        raise ValueError("assets.stage_local params must be an object")
+    raw_path = params.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("assets.stage_local requires a non-empty path")
+    path = raw_path.strip()
+    if any(ord(ch) < 32 for ch in path):
+        raise ValueError(f"assets.stage_local path contains unsafe characters: {path!r}")
+    pure = PurePath(path)
+    if ".." in pure.parts:
+        raise ValueError(
+            f"assets.stage_local path must not contain '..' segments: {path!r}"
+        )
+    if not pure.is_absolute():
+        raise ValueError(f"assets.stage_local path must be absolute: {path!r}")
+    return {"path": path}
 
 
 def parse_import_params(params: Any) -> dict[str, Any]:

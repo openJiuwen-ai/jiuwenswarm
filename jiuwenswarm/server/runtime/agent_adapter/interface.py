@@ -2927,9 +2927,13 @@ class JiuWenSwarm:
         )
 
     async def _handle_assets_package_request(self, request: AgentRequest) -> AgentResponse | None:
-        """Handle unified asset transfer requests (assets.export / assets.import);
-        None means not one of them."""
-        if request.req_method not in (ReqMethod.ASSETS_EXPORT, ReqMethod.ASSETS_IMPORT):
+        """Handle unified asset transfer requests (assets.export / assets.import /
+        assets.stage_local); None means not one of them."""
+        if request.req_method not in (
+            ReqMethod.ASSETS_EXPORT,
+            ReqMethod.ASSETS_IMPORT,
+            ReqMethod.ASSETS_STAGE_LOCAL,
+        ):
             return None
         from jiuwenswarm.server.runtime.assets import service
         from jiuwenswarm.server.runtime.assets.errors import converge_error_payload
@@ -2945,8 +2949,10 @@ class JiuWenSwarm:
                     session_id=str(request.session_id or ""),
                     user_id=str(request.user_id or ""),
                 )
-            else:
+            elif request.req_method == ReqMethod.ASSETS_IMPORT:
                 payload = await asyncio.to_thread(service.import_asset, params)
+            else:
+                payload = await asyncio.to_thread(service.stage_local_asset, params)
         except Exception as exc:  # noqa: BLE001 入口统一收敛，异常不出栈
             err_payload = converge_error_payload(exc)
             log = logger.error if err_payload.get("code") == "INTERNAL_ERROR" else logger.warning

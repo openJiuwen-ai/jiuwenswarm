@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""assets.export / assets.import 入口 handler（dispatch.HANDLERS 表，HTTP 北向）。
+"""assets.export / assets.import / assets.stage_local 入口 handler（dispatch.HANDLERS 表，HTTP 北向）。
 
 只做请求解包、调用编排层、错误收敛与响应回写，不含业务逻辑。错误
 收敛由 ``errors.converge_error_payload`` 统一实现（AssetError 透传 →
@@ -75,3 +75,14 @@ async def handle_assets_import(ctx: RequestContext) -> None:
         await _finish(ctx, "assets.import", False, converge_error_payload(exc))
         return
     await _finish(ctx, "assets.import", True, payload)
+
+
+async def handle_assets_stage_local(ctx: RequestContext) -> None:
+    """assets.stage_local：桌面本机路径资产包复制入受控暂存，换取可导入路径。"""
+    request = ctx.request
+    try:
+        payload = await asyncio.to_thread(service.stage_local_asset, request.params or {})
+    except Exception as exc:  # noqa: BLE001 入口统一收敛，异常不出栈
+        await _finish(ctx, "assets.stage_local", False, converge_error_payload(exc))
+        return
+    await _finish(ctx, "assets.stage_local", True, payload)

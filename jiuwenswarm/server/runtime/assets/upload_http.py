@@ -18,12 +18,11 @@ from __future__ import annotations
 import logging
 import shutil
 import uuid
-from pathlib import PureWindowsPath
 from typing import Any
 
 from jiuwenswarm.common.multipart_form import MultipartParseError, parse_multipart_form
 from jiuwenswarm.common.safe_archive import ArchiveLimits
-from jiuwenswarm.server.runtime.assets.contract import normalize_asset_kind
+from jiuwenswarm.server.runtime.assets.contract import is_illegal_filename, normalize_asset_kind
 from jiuwenswarm.server.runtime.assets.errors import (
     AssetErrorCode,
     asset_http_error_body,
@@ -45,13 +44,6 @@ def _reject(code: str, message: str) -> tuple[int, dict[str, Any]]:
     return asset_http_error_status(code), asset_http_error_body(code, message)
 
 
-def _is_illegal_filename(filename: Any) -> bool:
-    """上传文件名合法性：须为非空常规名，不含路径分隔符或 NUL，非 Windows 保留名。"""
-    if not isinstance(filename, str) or filename in {"", ".", ".."}:
-        return True
-    if any(char in filename for char in "/\\:\x00"):
-        return True
-    return PureWindowsPath(filename).is_reserved()
 
 
 def handle_assets_upload_temp_http(
@@ -80,7 +72,7 @@ def handle_assets_upload_temp_http(
         ):
             return _reject(AssetErrorCode.INVALID_PACKAGE, "缺少 file 字段")
         filename = file_field.get("filename")
-        if _is_illegal_filename(filename):
+        if is_illegal_filename(filename):
             return _reject(AssetErrorCode.UNSAFE_PATH, "文件名非法")
         if not filename.lower().endswith(".zip"):
             return _reject(AssetErrorCode.INVALID_PACKAGE, "资产包仅支持 .zip 格式")
@@ -98,7 +90,9 @@ def handle_assets_upload_temp_http(
         except OSError:
             shutil.rmtree(upload_dir, ignore_errors=True)
             raise
-        return 200, {"path": str(dest)}
+        # as_posix：Windows 服务端的暂存路径也统一正斜杠形态，契约层
+        # （parse_import_params）按反斜杠非法拒绝，POSIX 上两者等价。
+        return 200, {"path": dest.as_posix()}
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         logger.exception("[assets_upload_http] temporary upload failed: %s", exc)
         return 500, asset_http_error_body("INTERNAL_ERROR", str(exc))
