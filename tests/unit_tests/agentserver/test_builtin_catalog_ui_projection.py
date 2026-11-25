@@ -1,4 +1,4 @@
-"""Builtin catalog capabilities are projected coherently in the skills UI."""
+"""Builtin catalog capabilities stay behind the single catalog entry."""
 
 from __future__ import annotations
 
@@ -6,7 +6,11 @@ import json
 
 import pytest
 
-from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.server.runtime.skill.skill_manager import (
+    ERROR_SKILL_NOT_FOUND,
+    SkillManager,
+    SkillRpcError,
+)
 
 
 def _write_skill(path, name: str, body: str) -> None:
@@ -41,7 +45,7 @@ def _manager_with_catalog(tmp_path) -> SkillManager:
 
 
 @pytest.mark.asyncio
-async def test_catalog_capability_is_listed_as_installed_builtin(tmp_path, monkeypatch):
+async def test_catalog_capability_is_not_projected_into_skills_list(tmp_path, monkeypatch):
     manager = _manager_with_catalog(tmp_path)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.skill.skill_manager.get_builtin_skills_dir",
@@ -49,34 +53,24 @@ async def test_catalog_capability_is_listed_as_installed_builtin(tmp_path, monke
     )
 
     payload = await manager.handle_skills_list({})
-    skills = {item["name"]: item for item in payload["skills"]}
+    builtin = [item for item in payload["skills"] if item["source"] == "builtin"]
 
-    capability = skills["jiuwen-system-plugin-dev"]
-    assert capability["installed"] is True
-    assert capability["source"] == "builtin"
-    assert capability["source_type"] == "builtin"
-    assert capability["is_builtin"] is True
-    assert capability["catalog_parent"] == "workswarm-builtin"
+    assert [item["name"] for item in builtin] == ["workswarm-builtin"]
 
 
 @pytest.mark.asyncio
-async def test_catalog_capability_detail_versions_and_files_use_leaf_directory(tmp_path):
+async def test_catalog_capability_is_not_a_direct_skill_endpoint(tmp_path):
     manager = _manager_with_catalog(tmp_path)
 
-    detail = await manager.handle_skills_get({"name": "jiuwen-system-plugin-dev"})
-    versions = await manager.handle_skills_versions_list(
-        {"name": "jiuwen-system-plugin-dev"}
+    requests = (
+        (manager.handle_skills_get, {"name": "jiuwen-system-plugin-dev"}),
+        (manager.handle_skills_versions_list, {"name": "jiuwen-system-plugin-dev"}),
+        (manager.handle_skills_files_list, {"name": "jiuwen-system-plugin-dev"}),
     )
-    files = await manager.handle_skills_files_list(
-        {"name": "jiuwen-system-plugin-dev"}
-    )
-
-    assert detail["name"] == "jiuwen-system-plugin-dev"
-    assert detail["is_builtin"] is True
-    assert detail["source_type"] == "builtin"
-    assert "SYSTEM_PLUGIN_GUIDE" in detail["content"]
-    assert versions["versions"] == []
-    assert any(item["path"] == "SKILL.md" for item in files["files"])
+    for handler, params in requests:
+        with pytest.raises(SkillRpcError) as exc_info:
+            await handler(params)
+        assert exc_info.value.code == ERROR_SKILL_NOT_FOUND
 
 
 @pytest.mark.asyncio
