@@ -442,7 +442,7 @@ class UserTurn:
             return {}
         from jiuwenswarm.common.i18n import try_normalize_preferred_language
 
-        ui_lang = try_normalize_preferred_language(self.language) or "zh"
+        ui_lang = try_normalize_preferred_language(self.language) or "en"
         if ui_lang == "en":
             directive = (
                 f'For this task, prefer tools or skills from the enabled MCP "{name}"; '

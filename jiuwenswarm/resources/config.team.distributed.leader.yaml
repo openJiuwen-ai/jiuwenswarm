@@ -1,5 +1,5 @@
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
-preferred_language: zh
+preferred_language: en
 
 # 日志目录：~/.jiuwenswarm/agent/.logs/
 # gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总（不含 gateway 日志）。

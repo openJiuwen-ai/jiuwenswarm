@@ -420,9 +420,11 @@ class SwarmSymphonyService:
         if candidate_skill_ids is not None and (capability_type != "skill" or candidate_ids is not None):
             return {"success": False, "detail": "candidate_skill_ids is a Skill-only alias for candidate_ids"}
         candidate_ids = normalize_candidate_ids(candidate_ids if candidate_ids is not None else candidate_skill_ids)
-        language = _resolve_orchestration_language(
-            get_config().get("preferred_language", "zh")
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
         )
+
+        language = _resolve_orchestration_language(resolve_preferred_language())
         config = load_symphony_config()
         requested_mode = str(mode or config.orchestration.plan.mode).strip()
         try:

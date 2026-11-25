@@ -2852,6 +2852,13 @@ async def _apply_enterprise_runtime_ready_hooks(
                 team_id = ""
             max_teammates = 0
             from jiuwenswarm.enterprise.edition import is_enterprise
+            from jiuwenswarm.enterprise.config.preferred_language import (
+                resolve_preferred_language,
+            )
+
+            # Capture while still under request bind; deferred exceed callbacks
+            # may run after memo reset and would otherwise fall back to yaml.
+            notice_language = resolve_preferred_language()
 
             # Personal edition keeps its historical guard behavior. The owner
             # fallback and platform member cap are enterprise-only.
@@ -2918,7 +2925,10 @@ async def _apply_enterprise_runtime_ready_hooks(
                 team_id=team_id,
                 owner=owner,
                 on_quota_exceeded=lambda **kwargs: _emit_teammate_quota_notice(
-                    channel_id, session_id, **kwargs
+                    channel_id,
+                    session_id,
+                    language=notice_language,
+                    **kwargs,
                 ),
             )
             # Swarmflow workers are created outside TeamBackend.spawn_member,
@@ -3018,6 +3028,7 @@ def _emit_teammate_quota_notice(
     used: int,
     limit: int,
     member_name: str = "",
+    language: str | None = None,
     **_kwargs: Any,
 ) -> None:
     """Show one user-facing teammate-quota notice per round."""
@@ -3027,7 +3038,7 @@ def _emit_teammate_quota_notice(
     claim = getattr(tm, "claim_teammate_quota_notice", None)
     if callable(claim) and not claim(session_id):
         return
-    content = teammate_quota_user_message(limit)
+    content = teammate_quota_user_message(limit, language=language)
     event = {
         "event_type": "chat.notice",
         "notice_type": "team_teammate_quota",

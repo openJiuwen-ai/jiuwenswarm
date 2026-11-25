@@ -282,31 +282,45 @@ def teammate_spawn_key(team_id: str, member_name: str) -> str:
     return f"team:{_clean(team_id)}:member:{_clean(member_name)}"
 
 
-def _t(message_id: str, **params: Any) -> str:
+def _t(message_id: str, *, language: str | None = None, **params: Any) -> str:
     from jiuwenswarm.common.i18n import t
     from jiuwenswarm.enterprise.config.preferred_language import (
         resolve_preferred_language,
     )
 
-    return t(message_id, language=resolve_preferred_language(), **params)
+    return t(
+        message_id,
+        language=language if language is not None else resolve_preferred_language(),
+        **params,
+    )
 
 
-def team_create_quota_user_message(limit: int) -> str:
+def team_create_quota_user_message(limit: int, *, language: str | None = None) -> str:
     """User-facing X-quota failure. ``limit`` is max teams per user."""
-    return _t("enterprise.team.create_user_full", limit=max(int(limit), 0))
+    return _t(
+        "enterprise.team.create_user_full",
+        language=language,
+        limit=max(int(limit), 0),
+    )
 
 
-def org_team_create_quota_user_message(limit: int) -> str:
+def org_team_create_quota_user_message(limit: int, *, language: str | None = None) -> str:
     """User-facing Z-quota failure. ``limit`` is max teams in the organization."""
-    return _t("enterprise.team.create_org_full", limit=max(int(limit), 0))
+    return _t(
+        "enterprise.team.create_org_full",
+        language=language,
+        limit=max(int(limit), 0),
+    )
 
 
-def team_quota_user_message(exc: TeamQuotaExceeded) -> str:
+def team_quota_user_message(
+    exc: TeamQuotaExceeded, *, language: str | None = None
+) -> str:
     """Localized sentence for a create-time quota block. Other kinds stay internal."""
     if exc.kind == KIND_ORG_TEAM_CREATE:
-        return org_team_create_quota_user_message(exc.limit)
+        return org_team_create_quota_user_message(exc.limit, language=language)
     if exc.kind == KIND_TEAM_CREATE:
-        return team_create_quota_user_message(exc.limit)
+        return team_create_quota_user_message(exc.limit, language=language)
     return str(exc)
 
 

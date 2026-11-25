@@ -11,15 +11,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.common.config import get_config
-
 _PHRASE_PUNCT = " .。;；,，"
 
 
 def current_content_language() -> str:
-    """``en`` when preferred_language is English, otherwise ``zh`` (the product default)."""
-    lang = str(get_config().get("preferred_language") or "zh").strip().lower()
-    return "en" if lang == "en" else "zh"
+    """``en`` when preferred_language is English, otherwise ``zh``."""
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    return "en" if resolve_preferred_language() == "en" else "zh"
 
 
 def authoring_language_rule(lang: str) -> str:

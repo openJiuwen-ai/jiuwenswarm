@@ -505,21 +505,21 @@ def _detect_installation_mode() -> bool:
 def _resolve_preferred_language(
     config_yaml_dest: Path, explicit: Optional[str]
 ) -> str:
-    """确定初始化使用的语言：显式参数优先，否则读已复制的 config，默认 zh。"""
+    """确定初始化使用的语言：显式参数优先，否则读已复制的 config，默认 en。"""
     if explicit is not None:
         lang = str(explicit).strip().lower()
-        return lang if lang in ("zh", "en") else "zh"
+        return lang if lang in ("zh", "en") else "en"
     if config_yaml_dest.exists():
         try:
             rt = YAML()
             with open(config_yaml_dest, "r", encoding="utf-8") as f:
                 data = rt.load(f) or {}
-            lang = str(data.get("preferred_language") or "zh").strip().lower()
+            lang = str(data.get("preferred_language") or "en").strip().lower()
             if lang in ("zh", "en"):
                 return lang
         except Exception as e:
             logger.error(f"Failed to load config.yaml: {e}")
-    return "zh"
+    return "en"
 
 
 def _uses_jiuwen_memory(config_path: Path) -> bool:

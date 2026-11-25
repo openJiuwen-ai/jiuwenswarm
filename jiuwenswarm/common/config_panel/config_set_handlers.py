@@ -1498,7 +1498,7 @@ def apply_config_payload(
     canonical_config: dict[str, str] | None = None
     available_model_providers = [provider.value for provider in ProviderType]
     raw = get_config_raw()
-    preferred_lang = raw.get("preferred_language", "zh")
+    preferred_lang = raw.get("preferred_language", "en")
 
     pending_permission_profile: str | None = None
     if "permissions_profile" in params:
@@ -1536,7 +1536,7 @@ def apply_config_payload(
             env_updates[env_key] = str(val).strip()
 
     raw = get_config_raw()
-    preferred_lang = raw.get("preferred_language", "zh")
+    preferred_lang = raw.get("preferred_language", "en")
 
     if "agents" in params or "team" in params:
         try:
