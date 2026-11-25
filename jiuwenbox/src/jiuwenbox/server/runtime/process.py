@@ -799,18 +799,24 @@ class ProcessRuntime(RuntimeAdapter):
         self,
         sandbox_id: str,
         job: BackgroundJob,
-    ) -> None:
+    ) -> bool:
+        """向守护进程核实一条后台任务的状态；返回是否核实成功。
+
+        核实失败（守护进程不可达/响应异常）时不改动本地记录并返回
+        False，调用方据此区分"确认过的状态"与"无法确认的陈旧记录"。
+        """
         socket_path = self._control_socket_host_path(sandbox_id)
         if socket_path is None or not self._daemon_ipc_available(sandbox_id):
-            return
+            return False
         try:
             response = self._bg_status_via_daemon_blocking(
                 _DaemonBgStatusCall(socket_path=socket_path, job_id=job.job_id),
             )
         except (OSError, ValueError):
             # ``OSError`` already covers ``ConnectionError`` and ``socket.timeout`` (G.ERR.09).
-            return
+            return False
         self._apply_bg_status_response(job, response)
+        return True
 
     def _job_status(self, job: BackgroundJob) -> BackgroundJobStatus:
         running = job.exit_code is None
@@ -4132,6 +4138,32 @@ class ProcessRuntime(RuntimeAdapter):
             summaries = [item for item in summaries if item.running]
         summaries.sort(key=lambda item: item.started_at, reverse=True)
         return summaries
+
+    async def has_running_background_jobs(self, sandbox_id: str) -> bool | None:
+        """确认沙箱内是否有正在运行的后台任务（语义见 RuntimeAdapter 基类）。
+
+        只把"向守护进程核实过、确实还在跑"的任务算作运行中；守护进程
+        不可达时本地记录可能是陈旧的（进程死了记录还停在运行中），
+        此时返回 None 交由调用方处置，不冒充"确认没有"。
+        """
+        jobs = list(self._background_jobs_for_sandbox(sandbox_id).values())
+        if not jobs:
+            return False
+        loop = asyncio.get_running_loop()
+        running_confirmed = False
+        for job in jobs:
+            synced = await loop.run_in_executor(
+                None,
+                self._sync_background_job_blocking,
+                sandbox_id,
+                job,
+            )
+            # 核实之后再看：守护进程的答复可能刚把这条记录置为已结束。
+            if job.exit_code is None:
+                if not synced:
+                    return None
+                running_confirmed = True
+        return running_confirmed
 
     async def kill_background_job(
         self,

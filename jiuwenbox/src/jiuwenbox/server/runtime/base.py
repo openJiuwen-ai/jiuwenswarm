@@ -118,6 +118,15 @@ class RuntimeAdapter(abc.ABC):
     ) -> list[BackgroundJobSummary]:
         ...
 
+    async def has_running_background_jobs(self, sandbox_id: str) -> bool | None:
+        """确认沙箱内是否有正在运行的后台任务。
+
+        返回 True = 确认有任务在运行；False = 确认没有（含没有任务记录）；
+        None = 状态无法确认（守护进程不可达，任务记录可能是陈旧的）。
+        默认实现返回 None，由调用方决定如何处理无法确认的沙箱。
+        """
+        return None
+
     @abc.abstractmethod
     async def kill_background_job(
         self,
