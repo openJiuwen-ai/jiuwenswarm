@@ -3890,6 +3890,39 @@ class AgentWebSocketServer:
                                 wire=wire,
                             )
                         )
+                    # 桌面发起、手机作答的 AskUser 跨进程桥接：非 xiaoyi 请求且请求
+                    # metadata 带小艺逻辑会话时，把该事件载荷写入共享镜像文件，供
+                    # 网关 xiaoyi 通道在收到手机回包时补登记 pending。best-effort：
+                    # 异常隔离、不阻塞出站流。
+                    if (
+                        not is_xiaoyi_request
+                        and isinstance(chunk_payload, dict)
+                        and chunk_payload.get("event_type")
+                        == "chat.ask_user_question"
+                    ):
+                        _mirror_meta = (
+                            request.metadata
+                            if isinstance(request.metadata, dict)
+                            else {}
+                        )
+                        _mirror_conv = str(
+                            _mirror_meta.get("xiaoyi_conversation_id") or ""
+                        ).strip()
+                        if _mirror_conv:
+                            try:
+                                from jiuwenswarm.common.ask_user_mirror import (
+                                    write_ask_user_mirror,
+                                )
+
+                                write_ask_user_mirror(
+                                    _mirror_conv, dict(chunk_payload)
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "[AgentWebSocketServer] ask_user 镜像登记"
+                                    "写入失败（不影响出站）",
+                                    exc_info=True,
+                                )
                     # 诊断：全量打印 chunk 载荷（E2A 帧内容排查，经桌面端 stderr 转发进 app.log）。
                     # chat.reasoning/chat.delta 是高频增量帧：只打印 is_complete=True 的
                     # （增量帧全部 is_complete=False，即不打印，避免淹没其它帧）；

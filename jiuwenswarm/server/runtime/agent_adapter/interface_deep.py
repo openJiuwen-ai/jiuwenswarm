@@ -9314,6 +9314,12 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 request.session_id,
                 require_pure_ask_user=False,
             )
+            if not cancelled:
+                _cancel_sid = self._resolve_interrupt_session_id(
+                    request.session_id
+                )
+                if self._is_deep_agent_executing_for_session(_cancel_sid):
+                    await self._abort_shared_agent_if_safe(_cancel_sid, "cancel")
         elif isinstance(new_input, str) and new_input.strip():
             await self._clear_pending_interaction_interrupt(request.session_id)
         if intent in ("cancel", "supplement"):
