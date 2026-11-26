@@ -179,6 +179,27 @@ async def test_preparation_seeds_policy_and_later_turns_update(
 
 
 @pytest.mark.asyncio
+async def test_preparation_skips_execution_policy_for_app_role_code_team(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(policy, "get_session_metadata", lambda session_id: {
+        "work_mode": "code",
+        "mode": "team.code.normal",
+        "execution_profile": "app_role",
+        "npc_team": {"members": [{"name": "villager"}]},
+    })
+    spec = SimpleNamespace(build_context=None)
+
+    await policy.prepare_session_execution("npc-session", spec, None)
+    await policy.prepare_session_execution("npc-session", spec, {"independent_git_identity": False})
+
+    with pytest.raises(ValueError, match="not supported by app_role teams"):
+        await policy.prepare_session_execution("npc-session", spec, {"independent_git_identity": True})
+    with pytest.raises(ValueError, match="not supported by app_role teams"):
+        await policy.prepare_session_execution("npc-session", spec, {"environment": {"MODE": "code"}})
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("requested", ["true", [1]])
 async def test_preparation_rejects_non_object_settings_before_reading_them(
     monkeypatch: pytest.MonkeyPatch, requested: object,
