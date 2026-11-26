@@ -3062,6 +3062,7 @@
   },
   "channels": {
     "fetchFailed": "Fetch failed",
+    "configLoadFailed": "Failed to load configuration",
     "retry": "Retry",
     "hideValue": "Hide value",
     "showValue": "Show value",
