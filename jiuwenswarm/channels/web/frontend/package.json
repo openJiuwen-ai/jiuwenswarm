@@ -23,6 +23,8 @@
     "test:skill-detail-description": "node --test tests/skillDetailDescription.test.mjs",
     "test:skillpack-install": "esbuild src/components/SkillPanel/skillPackInstall.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/skillpack-install/skillPackInstall.mjs && node --test tests/skillPackInstall.test.mjs",
     "test:skill-upload-errors": "esbuild src/components/SkillPanel/skillUploadErrors.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/skill-upload-errors/skillUploadErrors.mjs && node --test tests/skillUploadErrors.test.mjs",
+    "test:skill-panel-races": "esbuild src/components/SkillPanel/skillPanelGuards.ts src/components/SkillPanel/skillRebuildWait.ts --bundle --packages=external --platform=node --format=esm --out-extension:.js=.mjs --outdir=node_modules/.cache/skill-panel-races && node --test tests/skillPanelGuards.test.mjs tests/skillRebuildWait.test.mjs",
+    "test:agent-definition-detail": "node scripts/test-agent-definition-detail.mjs",
     "test:office-addins": "node --test tests/officeAddins.test.mjs",
     "test:application-presentation": "esbuild tests/fixtures/applicationPresentation.ts --bundle --packages=external --platform=node --format=esm --define:import.meta.env={} --outfile=node_modules/.cache/application-presentation/protocol.mjs && node --test tests/applicationPresentation.test.mjs tests/presentationTransitions.test.mjs tests/presentationOverlay.test.mjs tests/presentationStart.test.mjs",
     "test:update-panel": "esbuild src/components/UpdatePanel/index.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/update-panel/index.mjs && node --test tests/updatePanel.test.mjs",
