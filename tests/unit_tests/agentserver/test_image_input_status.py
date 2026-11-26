@@ -130,11 +130,14 @@ def test_english_notice_and_prompt_agree(monkeypatch, status, wording, vision_to
     assert wording in context["toolHint"]
     assert "尚未确认" not in notice["content"]
     assert "尚未确认" not in context["toolHint"]
+    assert ". This image was not sent" in context["toolHint"]
     if vision_tool_available:
         assert "image_reading(" in context["toolHint"]
+        assert ". Please call the configured image-understanding tool" in context["toolHint"]
         assert "An image understanding tool is used instead." in notice["content"]
     else:
         assert "do not guess image contents" in context["toolHint"]
+        assert ". No vision model tool is configured" in context["toolHint"]
         assert "No vision model tool is configured" in notice["content"]
 
 

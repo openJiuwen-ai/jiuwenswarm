@@ -183,11 +183,9 @@ def _image_tool_hint(
     else:
         tool_hint = _IMAGE_TOOL_HINT_UNAVAILABLE.get(language, _IMAGE_TOOL_HINT_UNAVAILABLE["cn"])
     not_native = _IMAGE_NOT_NATIVE_INPUT.get(language, _IMAGE_NOT_NATIVE_INPUT["cn"])
-    return (
-        image_input_status_message(image_input_status, language=language)
-        + not_native
-        + tool_hint
-    )
+    status_msg = image_input_status_message(image_input_status, language=language)
+    sep = " " if language == "en" else ""
+    return sep.join([status_msg, not_native, tool_hint])
 
 
 def prepare_image_tool_inputs(
