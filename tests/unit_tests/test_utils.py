@@ -540,7 +540,8 @@ def test_merge_tree_never_touches_metadata_of_preexisting_dirs(
     """增量合并不得 chmod/utime 已存在的目标目录（共享卷属主不同会 EPERM）。
 
     场景回放：PVC 上的 workspace/memory 由另一 uid 的历史部署创建，
-    本次启动只应补缺失文件，不得对已存在目录做 copystat。
+    本次启动只应补缺失文件，不得对已存在目录做 copystat。已存在的目标
+    根目录同样不得触碰——issue 现网报错里 EPERM 正是落在工作区根目录上。
     """
     src = tmp_path / "src"
     (src / "memory").mkdir(parents=True)
@@ -558,7 +559,7 @@ def test_merge_tree_never_touches_metadata_of_preexisting_dirs(
     def spying_copystat(src_, dst_):
         target = Path(dst_)
         copystat_targets.append(target)
-        if target == preexisting_dir:
+        if target in (dst, preexisting_dir):
             raise PermissionError(errno.EPERM, "Operation not permitted")
         real_copystat(src_, dst_)
 
@@ -566,6 +567,7 @@ def test_merge_tree_never_touches_metadata_of_preexisting_dirs(
 
     utils._merge_tree_keep_dir_metadata(src, dst)
 
+    assert dst not in copystat_targets
     assert preexisting_dir not in copystat_targets
     assert (preexisting_dir / "user-notes.md").read_text(encoding="utf-8") == "keep-me"
     assert (preexisting_dir / "MEMORY.md").read_text(encoding="utf-8") == "template-memory"
@@ -620,6 +622,35 @@ def test_merge_tree_still_raises_on_real_copy_failures(
         utils._merge_tree_keep_dir_metadata(src, dst)
 
 
+def test_merge_tree_aggregates_traversal_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """模板目录不可遍历（EACCES/IO 错误）须聚合报错。
+
+    os.walk 默认吞掉 scandir 失败并静默跳过该目录；若不收集，模板不可读
+    时会产出缺文件却报"工作区已就绪"的不完整工作区，问题延迟到运行期
+    才以间接现象暴露。
+    """
+    src = tmp_path / "src"
+    (src / "memory").mkdir(parents=True)
+    (src / "memory" / "MEMORY.md").write_text("m", encoding="utf-8")
+
+    dst = tmp_path / "dst"
+
+    real_scandir = os.scandir
+
+    def failing_scandir(path):
+        if Path(path).name == "memory":
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", failing_scandir)
+
+    with pytest.raises(shutil.Error):
+        utils._merge_tree_keep_dir_metadata(src, dst)
+
+
 def test_merge_tree_applies_ignore_patterns(tmp_path: Path) -> None:
     """ignore 语义与 copytree 对齐：命中模式的文件/目录不落盘。"""
     src = tmp_path / "src"
@@ -664,12 +695,27 @@ def test_prepare_workspace_rerun_tolerates_foreign_owned_dirs(
     }
     real_copystat = shutil.copystat
 
-    def denying_copystat(src_, dst_):
+    def denying_copystat(src_, dst_, **kwargs):
         if Path(dst_) in foreign_dirs:
             raise PermissionError(errno.EPERM, "Operation not permitted")
-        real_copystat(src_, dst_)
+        real_copystat(src_, dst_, **kwargs)
 
     monkeypatch.setattr(shutil, "copystat", denying_copystat)
+
+    # 证明播种路径确实执行：模板增量合并必须被调用到，否则本用例对
+    # 已存在目录的 EPERM 模拟全部空转（幂等重跑本就不产生任何 copystat）。
+    merge_targets: list[Path] = []
+    real_merge = utils._merge_tree_keep_dir_metadata
+
+    def spying_merge(src_dir, dst_dir, ignore=None):
+        merge_targets.append(Path(dst_dir))
+        return real_merge(src_dir, dst_dir, ignore=ignore)
+
+    monkeypatch.setattr(utils, "_merge_tree_keep_dir_metadata", spying_merge)
+
+    # 回放现网条件：infra 为 emptyDir，新 Pod 上 config/config.yaml 不存在，
+    # 二次调用仍完整走首装播种路径。
+    (workspace_dir / "config" / "config.yaml").unlink()
 
     # 修复前：copytree 对已存在目录 copystat → EPERM → 启动失败。
     utils.prepare_workspace(
@@ -678,6 +724,7 @@ def test_prepare_workspace_rerun_tolerates_foreign_owned_dirs(
         workspace_dir=workspace_dir,
     )
 
+    assert (workspace_dir / "agent" / "workspace") in merge_targets
     assert user_notes.read_text(encoding="utf-8") == "keep-me"
     assert (
         workspace_dir / "agent" / "workspace" / "AGENT.md"

@@ -1199,7 +1199,8 @@ def _merge_tree_keep_dir_metadata(
     - newly created directories get template metadata on a best-effort basis;
     - missing files are copied with ``shutil.copyfile``; file metadata is
       best-effort and never fails the merge;
-    - genuine copy failures are aggregated into ``shutil.Error`` the same way
+    - genuine copy failures — including unreadable source directories hit
+      during traversal — are aggregated into ``shutil.Error`` the same way
       ``copytree`` does.
 
     Args:
@@ -1211,9 +1212,24 @@ def _merge_tree_keep_dir_metadata(
     """
     errors: list[tuple[str, str, str]] = []
     src_root = str(src_dir)
+
+    def _record_walk_error(err: OSError) -> None:
+        # os.walk silently skips directories it cannot list (onerror=None).
+        # A template directory that fails to enumerate would otherwise yield
+        # an incomplete workspace reported as ready, so aggregate the failure
+        # into the same shutil.Error as genuine copy failures.
+        failed = err.filename or src_root
+        try:
+            counterpart = dst_dir / os.path.relpath(failed, src_root)
+        except ValueError:
+            counterpart = dst_dir
+        errors.append((failed, str(counterpart), str(err)))
+
     # followlinks mirrors copytree(symlinks=False), which descends into
     # symlinked directories and copies their content as real entries.
-    for current_dir, dir_names, file_names in os.walk(src_root, followlinks=True):
+    for current_dir, dir_names, file_names in os.walk(
+        src_root, followlinks=True, onerror=_record_walk_error,
+    ):
         ignored = ignore(current_dir, dir_names + file_names) if ignore else set()
         dir_names[:] = [name for name in dir_names if name not in ignored]
         relative = os.path.relpath(current_dir, src_root)
