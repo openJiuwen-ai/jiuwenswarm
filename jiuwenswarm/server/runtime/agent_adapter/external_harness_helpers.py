@@ -870,6 +870,9 @@ async def _with_input_boundaries(
             next_output = None
             yield "output", chunk
     finally:
+        taken = None
+        if next_boundary is not None and next_boundary.done() and not next_boundary.cancelled():
+            taken = next_boundary.result()
         for pending in (next_output, next_boundary):
             if pending is not None and not pending.done():
                 pending.cancel()
@@ -877,9 +880,64 @@ async def _with_input_boundaries(
                     await pending
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+        if taken is not None:
+            # A steered input taken from the queue but not yielded stays first in it.
+            rest = [boundaries.get_nowait() for _ in range(boundaries.qsize())]
+            for boundary in (taken, *rest):
+                boundaries.put_nowait(boundary)
         closer = getattr(iterator, "aclose", None)
         if callable(closer):
             await closer()
+
+
+# How long a steer that finds its turn ended waits for the provider to leave
+# RUNNING, so that its request starts the next turn.
+_TURN_RELEASE_WAIT_S = 1.0
+_TURN_RELEASE_POLL_S = 0.01
+
+
+def _steer_lock(adapter: Any) -> asyncio.Lock:
+    """The lock that orders a steer's send with the end of the turn's stream.
+
+    A steer holds it from its last check of the turn's queue until its
+    boundary is on it; the stream takes it to close the queue.
+    """
+    lock = getattr(adapter, "_external_harness_steer_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        adapter._external_harness_steer_lock = lock  # pylint: disable=protected-access
+    return lock
+
+
+async def _declined_at_turn_end(io: Any) -> bool:
+    """Decline a steer whose turn has ended, once the provider has released it.
+
+    The request then takes the path of a new message, which starts the next
+    turn only when the provider is no longer RUNNING.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TURN_RELEASE_WAIT_S
+    while io.state is HarnessState.RUNNING and loop.time() < deadline:
+        await asyncio.sleep(_TURN_RELEASE_POLL_S)
+    return False
+
+
+async def _close_steer_intake(
+    adapter: Any,
+    boundaries: asyncio.Queue[dict[str, Any]],
+    merged: AsyncIterator[tuple[str, Any]],
+) -> list[dict[str, Any]]:
+    """Stop the turn taking steers; return the steered inputs it has not shown.
+
+    A steer that was sending while the turn ended has its boundary on the
+    queue once the lock is free. A later steer finds the queue closed and
+    becomes the next turn.
+    """
+    async with _steer_lock(adapter):
+        if getattr(adapter, "_external_harness_boundaries", None) is boundaries:
+            adapter._external_harness_boundaries = None  # pylint: disable=protected-access
+    await merged.aclose()
+    return [boundaries.get_nowait() for _ in range(boundaries.qsize())]
 
 
 _STEER_IMAGES_LEAD = (
@@ -935,11 +993,9 @@ async def steer_external_harness(
     does for a turn of Swarm's own agent. Return False, before sending, when
     there is no running turn whose stream this adapter projects or the
     provider does not steer; the input then takes the path of a new message.
+    A steer that finds the turn ended waits until the provider has released
+    it first, so that this path starts the next turn.
     """
-    from agent_gateway.common.session_message import (
-        SESSION_MESSAGE_INTERNAL_KEY,
-        SESSION_MESSAGE_ORIGIN,
-    )
     from jiuwenswarm.runtime.session_input import SessionInputRejectedError
 
     io = getattr(adapter, "_external_harness", None)
@@ -948,21 +1004,45 @@ async def steer_external_harness(
         return False
     if io.has_pending_interrupt():
         raise SessionInputRejectedError(_error_text("waiting_for_interaction"))
-    if boundaries is None or io.delivery_mode(immediate=True) is not DeliveryMode.STEER:
+    if io.delivery_mode(immediate=True) is not DeliveryMode.STEER:
         return False
+    if boundaries is None:
+        return await _declined_at_turn_end(io)
     params = request.params if isinstance(request.params, dict) else {}
     query = inputs.get("query")
     images = await _steer_images(request, params)
-    if io.state is not HarnessState.RUNNING or (
-        getattr(adapter, "_external_harness_boundaries", None) is not boundaries
-    ):
-        # The turn ended while the images were checked.
-        return False
-    try:
-        await io.harness.send(_steer_content(query, images), mode=DeliveryMode.STEER)
-    except HarnessStateError:
-        # The turn ended before the provider took the input.
-        return False
+    async with _steer_lock(adapter):
+        if io.state is not HarnessState.RUNNING or (
+            getattr(adapter, "_external_harness_boundaries", None) is not boundaries
+        ):
+            # The turn ended while the images were checked.
+            ended = True
+        else:
+            try:
+                await io.harness.send(_steer_content(query, images), mode=DeliveryMode.STEER)
+            except HarnessStateError:
+                # The turn ended before the provider took the input.
+                ended = True
+            else:
+                boundaries.put_nowait(_steer_boundary(request, params, query, images))
+                ended = False
+    if ended:
+        return await _declined_at_turn_end(io)
+    return True
+
+
+def _steer_boundary(
+    request: AgentRequest,
+    params: Mapping[str, Any],
+    query: Any,
+    images: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The input boundary of a steer the provider took."""
+    from agent_gateway.common.session_message import (
+        SESSION_MESSAGE_INTERNAL_KEY,
+        SESSION_MESSAGE_ORIGIN,
+    )
+
     if images:
         # An image-only steer has no text of its own; the prompt is not the person's words.
         content = str(params.get("content") or params.get("query") or "")
@@ -982,8 +1062,7 @@ async def steer_external_harness(
             "session_message_id": cross_session.get("message_id"),
             "cross_session": {**cross_session, "content": boundary["content"]},
         })
-    boundaries.put_nowait(boundary)
-    return True
+    return boundary
 
 
 
@@ -1284,23 +1363,32 @@ async def process_external_harness_stream(
             complete=False,
         )
 
+    def input_received(boundary: dict[str, Any]) -> AgentResponseChunk:
+        return _response_chunk(
+            request,
+            {"event_type": "chat.input_received", **boundary},
+            complete=False,
+        )
+
+    merged = _with_input_boundaries(
+        stream_turn_output(
+            io,
+            receipt_turn_id,
+            resume=resume,
+        ),
+        boundaries,
+    )
     try:
-        async for source, chunk in _with_input_boundaries(
-            stream_turn_output(
-                io,
-                receipt_turn_id,
-                resume=resume,
-            ),
-            boundaries,
-        ):
+        async for source, chunk in merged:
             if source == "input":
                 pending_input_ids.append(chunk["input_request_id"])
-                yield _response_chunk(
-                    request,
-                    {"event_type": "chat.input_received", **chunk},
-                    complete=False,
-                )
+                yield input_received(chunk)
                 continue
+            if chunk.type in (TURN_LIFECYCLE, INTERACTION):
+                # The provider took these steers as the turn ended or asked;
+                # they are shown, not answered by this turn's output.
+                for boundary in await _close_steer_intake(adapter, boundaries, merged):
+                    yield input_received(boundary)
             if chunk.type == TURN_LIFECYCLE:
                 payload = chunk.payload if isinstance(chunk.payload, dict) else {}
                 kind = str(payload.get("kind") or "")

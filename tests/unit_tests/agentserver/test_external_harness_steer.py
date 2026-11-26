@@ -177,6 +177,108 @@ async def test_steered_input_answered_only_by_the_final_opens_its_phase() -> Non
     ]
 
 
+async def _spin(times: int = 20) -> None:
+    for _ in range(times):
+        await asyncio.sleep(0)
+
+
+def _finished(index: int, final_output: str) -> OutputSchema:
+    return OutputSchema(
+        type=TURN_LIFECYCLE, index=index,
+        payload={"turn_id": "turn-1", "kind": "finished", "final_output": final_output},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_steer_that_arrives_as_the_turn_ends_becomes_the_next_turn(monkeypatch) -> None:
+    # The stream has read the turn's end and saves its checkpoint; the
+    # provider has not yet left RUNNING. A steer now is not sent into the
+    # ended turn: it is declined once the provider is idle, so its request
+    # starts the next turn.
+    io = _RunningIO()
+    adapter = _adapter(io)
+    payloads: list[dict[str, Any]] = []
+    saving = asyncio.Event()
+    saved = asyncio.Event()
+
+    async def slow_checkpoint(*_args: Any) -> None:
+        saving.set()
+        await saved.wait()
+
+    monkeypatch.setattr(external_harness_helpers, "_persist_external_harness_checkpoint", slow_checkpoint)
+
+    async def consume() -> None:
+        async for chunk in external_harness_helpers.process_external_harness_stream(
+            adapter, _request("request-1", "first"), {"query": "first"},
+        ):
+            payloads.append(chunk.payload)
+
+    consumer = asyncio.create_task(consume())
+    await _wait_streaming(adapter)
+    await io.queue.put(OutputSchema(type=TURN_LIFECYCLE, index=0, payload={"turn_id": "turn-1", "kind": "started"}))
+    await io.queue.put(_finished(1, "first answer"))
+    await asyncio.wait_for(saving.wait(), timeout=5)
+    assert io.state is HarnessState.RUNNING
+
+    steer = asyncio.create_task(external_harness_helpers.steer_external_harness(
+        adapter, _request("request-2", "one more thing"), {"query": "one more thing"},
+    ))
+    await _spin()
+    io.state = HarnessState.IDLE
+    accepted = await asyncio.wait_for(steer, timeout=5)
+    saved.set()
+    await asyncio.wait_for(consumer, timeout=5)
+
+    assert accepted is False
+    io.harness.send.assert_not_awaited()
+    assert io.state is HarnessState.IDLE
+    assert [payload["event_type"] for payload in payloads] == ["chat.final"]
+
+
+@pytest.mark.asyncio
+async def test_a_steer_the_provider_takes_as_the_turn_ends_is_shown_before_the_final() -> None:
+    # The provider takes the steer while the stream reads the turn's end.
+    # The stream shows it before the final instead of dropping it.
+    io = _RunningIO()
+    adapter = _adapter(io)
+    payloads: list[dict[str, Any]] = []
+    sending = asyncio.Event()
+    sent = asyncio.Event()
+
+    async def slow_send(*_args: Any, **_kwargs: Any) -> SendReceipt:
+        sending.set()
+        await sent.wait()
+        return SendReceipt(message_id="message-2", turn_id="turn-1", accepted_mode=DeliveryMode.STEER)
+
+    io.harness.send.side_effect = slow_send
+
+    async def consume() -> None:
+        async for chunk in external_harness_helpers.process_external_harness_stream(
+            adapter, _request("request-1", "first"), {"query": "first"},
+        ):
+            payloads.append(chunk.payload)
+
+    consumer = asyncio.create_task(consume())
+    await _wait_streaming(adapter)
+    await io.queue.put(OutputSchema(type=TURN_LIFECYCLE, index=0, payload={"turn_id": "turn-1", "kind": "started"}))
+    await _spin()
+    steer = asyncio.create_task(external_harness_helpers.steer_external_harness(
+        adapter, _request("request-2", "one more thing"), {"query": "one more thing"},
+    ))
+    await asyncio.wait_for(sending.wait(), timeout=5)
+    await io.queue.put(_finished(1, "first answer"))
+    await _spin()
+    sent.set()
+    accepted = await asyncio.wait_for(steer, timeout=5)
+    await asyncio.wait_for(consumer, timeout=5)
+
+    assert accepted is True
+    assert [payload["event_type"] for payload in payloads] == ["chat.input_received", "chat.final"]
+    assert payloads[0]["input_request_id"] == "request-2"
+    assert payloads[0]["content"] == "one more thing"
+    assert adapter._external_harness_boundaries is None
+
+
 @pytest.mark.asyncio
 async def test_steer_is_declined_without_a_running_streamed_turn() -> None:
     idle = _RunningIO()
