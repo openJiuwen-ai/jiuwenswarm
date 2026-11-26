@@ -147,6 +147,30 @@ def apply_enterprise_models_and_mcp(
     return merged, models_applied, mcp_applied
 
 
+def _merge_swarmflow_policy(config_base: dict, policy: dict) -> dict:
+    """把 Swarmflow 企业策略写入 ``modes.team.jiuwen_team.swarmflow``。
+
+    深拷贝后写入，保留本地 ``config.yaml`` 已配置而企业策略未覆盖的键。
+    """
+    import copy
+
+    merged = copy.deepcopy(config_base)
+    modes = merged.get("modes")
+    modes_cfg = dict(modes) if isinstance(modes, dict) else {}
+    team = modes_cfg.get("team")
+    team_cfg = dict(team) if isinstance(team, dict) else {}
+    jiuwen_team = team_cfg.get("jiuwen_team")
+    jiuwen_team_cfg = dict(jiuwen_team) if isinstance(jiuwen_team, dict) else {}
+    existing = jiuwen_team_cfg.get("swarmflow")
+    swarmflow_cfg = dict(existing) if isinstance(existing, dict) else {}
+    swarmflow_cfg.update(policy)
+    jiuwen_team_cfg["swarmflow"] = swarmflow_cfg
+    team_cfg["jiuwen_team"] = jiuwen_team_cfg
+    modes_cfg["team"] = team_cfg
+    merged["modes"] = modes_cfg
+    return merged
+
+
 def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
     from jiuwenswarm.agents.harness.common.memory.config import (
         merge_memory_config_into_config,
@@ -171,6 +195,10 @@ def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
     merged, _ = apply_enterprise_react_to_config(merged, loaded)
     # advanced_config（含 a4p_enabled）→ config.a4p.enabled 等
     merged, _ = apply_enterprise_advanced_config_to_config(merged, loaded)
+    # expert_package_template.swarmflow → config.modes.team.jiuwen_team.swarmflow.*
+    swarmflow_policy = getattr(loaded, "swarmflow", None)
+    if isinstance(swarmflow_policy, dict) and swarmflow_policy:
+        merged = _merge_swarmflow_policy(merged, swarmflow_policy)
     return merged
 
 
