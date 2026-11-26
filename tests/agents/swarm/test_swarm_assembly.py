@@ -210,6 +210,7 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.CONTEXT_OVERFLOW_RECOVERY,
         registry.TEAM_ADMISSION,
         registry.PERSONAL_CONTEXT,
+        registry.OFFICE_ACE_USER_PROFILE,
         registry.PLUGIN_RAILS,
         registry.SKILL_RETRIEVAL_PROMPT,
         registry.SYMPHONY_ORCHESTRATION_PROMPT,
@@ -558,7 +559,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 25
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 26
     # core.team.skill_use is always appended for Leader+Teammate same track (M2).
     assert TEAM_SKILL_USE in rail_names
     assert rail_names == expected | {TEAM_SKILL_USE}
