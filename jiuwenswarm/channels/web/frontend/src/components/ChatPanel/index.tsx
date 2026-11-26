@@ -1358,7 +1358,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
     ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
   const shouldShowShareExport = !isEnterprise() && Boolean(onExportShare);
-  const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
+  const shouldShowHumanShare = !isEnterprise() && mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const isAuthorized = useAuthStore((state) => state.islogin);
   const showFreeModelsCampaign = !isEnterprise() && !isAuthorized;
@@ -2421,7 +2421,9 @@ export const ChatPanel = React.memo(function ChatPanel({
           <HarnessProgressBar />
         </div>
       )}
-      {humanShareOpen && <HumanSharePanel commands={teamHumanShareCommands} onClose={() => setHumanShareOpen(false)} />}
+      {shouldShowHumanShare && humanShareOpen && (
+        <HumanSharePanel commands={teamHumanShareCommands} onClose={() => setHumanShareOpen(false)} />
+      )}
       <div
         ref={scrollContainerRef}
         className="chat-scroll flex-1 overflow-y-auto"

@@ -262,12 +262,12 @@ test('package change subscription coexists with client capability validation and
     onPackagesChanged: (ids) => calls.push(['changed', ids]),
   });
   client.emit('client.declarations', { packages: [] });
-  client.emit('extensions.v2.installed', { package_ids: ['pkg.new'] });
+  client.emit('extensions.v2.installed', { package_ids: ['pkg.transport-coexist'] });
   client.emit('client.operation', { operation: 'example' });
   client.emit('webui.render', { revision: 1 });
   assert.deepEqual(calls, [
     ['configure', { packages: [] }],
-    ['changed', ['pkg.new']],
+    ['changed', ['pkg.transport-coexist']],
     ['operation', { operation: 'example' }],
   ]);
   off();

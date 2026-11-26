@@ -12,7 +12,7 @@ files: [jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/
 
 # Coding 文档记忆接入
 
-最近一次修订日期：2026-11-24。
+最近一次修订日期：2026-11-26。
 
 ## 单人 Coding 配置与选择
 
@@ -124,6 +124,8 @@ Jiuwen 编码 Rail 创建或重建失败时清空编码槽位，不保留旧实�
 SDK 装配保留视频/音频模型与获准媒体目录的透传；首次装配在配置允许时绑定当前用户／租户的稳定 sessions 父目录，Work/Code/Team 的创建顺序不影响后续会话视频导入。Work 重建指纹包含配置中的记忆身份和媒体配置，目录授权绑定同一身份；部署者显式配置的目录授权保留。创建新会话不新增授权配置，共享 Runtime 仍采用首份配置；权限与模型变化不因此获得热更新能力。媒体授权范围及门禁见同目录 S_01_multimodal-tool-loading。启动看门狗前，仅归档受管文档根中未修改的默认 MEMORY.md 模板，保留用户编辑内容与自定义根目录文件。
 
 ## Team 扩展
+
+`attach_only` 是被动事件订阅，不调整宿主的记忆 Rail；真实输入仍按原规则移除入口的普通记忆 Rail。同一 DeepAdapter 的内置记忆配置协调必须串行覆盖判断、注册、清理和注销，避免请求与配置刷新重复释放同一对象；不同 Adapter 独立协调。回归与故障依据见 [Team 记忆 Rail 并发卸载修复](../../../../../bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md)。
 
 team.work、team.code 仅按 memory.builtin.provider=jiuwen 选择并启用新团队记忆，不受 modes.team.*.memory.enabled、modes.agent/code.memory.enabled 或 memory.mode/engine 控制；旧开关关闭或未配置时仍挂载 Team Rail。SDK/HTTP 参数及宿主团队坐标仍须有效；缺少团队坐标时记录告警并跳过 Rail，初始化失败不回退旧记忆。team.design 和 provider 为空时保持原生路线；单人 Work/Code 的开关和门禁不变。
 

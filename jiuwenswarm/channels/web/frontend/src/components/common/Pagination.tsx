@@ -52,7 +52,10 @@ export function Pagination({
   };
 
   return (
-    <div className={`flex items-center justify-end gap-3 text-sm text-text-muted flex-shrink-0 ${className}`}>
+    <div
+      className={`flex items-center justify-end gap-3 text-sm text-text-muted flex-shrink-0 ${className}`}
+      data-testid="common-pagination"
+    >
       {total != null && <span>{t("common.pagination.total", { count: total })}</span>}
       {pageSize !== undefined && onPageSizeChange && (
         <label className="flex items-center gap-1.5">
@@ -79,6 +82,7 @@ export function Pagination({
         disabled={page <= 1}
         aria-label={t("common.pagination.prev")}
         className="px-3 py-1 rounded-md border border-border hover:bg-secondary/50 disabled:text-text-muted disabled:cursor-not-allowed"
+        data-testid="common-pagination-prev"
       >
         ‹
       </button>
@@ -91,6 +95,7 @@ export function Pagination({
         disabled={page >= totalPages}
         aria-label={t("common.pagination.next")}
         className="px-3 py-1 rounded-md border border-border hover:bg-secondary/50 disabled:text-text-muted disabled:cursor-not-allowed"
+        data-testid="common-pagination-next"
       >
         ›
       </button>

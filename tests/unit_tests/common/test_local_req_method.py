@@ -27,6 +27,7 @@ from jiuwenswarm.common.e2a.request_wire import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import Message, ReqMethod
+from jiuwenswarm.server.edition_gate import ENTERPRISE_ONLY_METHODS
 from jiuwenswarm.server.front.protocol import parse_raw_message
 from jiuwenswarm.server.ipc.protocol import dump_agent_request, load_agent_request
 
@@ -90,7 +91,12 @@ def test_request_models_keep_shared_fields_with_local_method_type(local, protoco
 
 
 @pytest.mark.parametrize("method", list(ReqMethod), ids=lambda method: method.value)
-def test_all_local_methods_roundtrip_through_front_and_worker(method):
+def test_all_local_methods_roundtrip_through_front_and_worker(method, monkeypatch):
+    # Enterprise-only methods pass the front boundary only in an enterprise
+    # build; the personal-edition refusal is covered by
+    # test_front_method_validation.py.
+    if method.value in ENTERPRISE_ONLY_METHODS:
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     envelope = e2a_from_agent_fields(
         request_id="local-method", channel_id="tui", session_id="session",
         req_method=method, params={"content": "hello"}, user_id="owner",

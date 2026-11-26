@@ -110,6 +110,65 @@ async def test_uninstall_rejects_skill_name_path_traversal(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_uninstall_rejects_non_string_name_array(tmp_path):
+    """name=[] 必须 invalid_params，不得当成功或误删（#169）。"""
+    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    skill_dir = tmp_path / "workspace" / "skills" / "sds-contract-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: sds-contract-skill\ndescription: demo\n---\nbody\n",
+        encoding="utf-8",
+    )
+    manager.record_skill_installation(
+        name="sds-contract-skill",
+        source_type="user",
+        origin="sds-fixture:sds-contract-skill",
+        entity_dir="sds-contract-skill",
+    )
+
+    result = await manager.handle_skills_uninstall(
+        {"name": [], "origin": "sds-fixture:sds-contract-skill"}
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_params"
+    assert skill_dir.exists()
+    assert [row["name"] for row in manager.list_skill_installations()] == [
+        "sds-contract-skill"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_uninstall_rejects_non_string_origin_object(tmp_path):
+    """origin={} 必须 invalid_params，不得退化成按 name 误删。"""
+    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    skill_dir = tmp_path / "workspace" / "skills" / "sds-contract-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: sds-contract-skill\ndescription: demo\n---\nbody\n",
+        encoding="utf-8",
+    )
+    manager.record_skill_installation(
+        name="sds-contract-skill",
+        source_type="user",
+        origin="sds-fixture:sds-contract-skill",
+        entity_dir="sds-contract-skill",
+    )
+
+    result = await manager.handle_skills_uninstall(
+        {"name": "sds-contract-skill", "origin": {}}
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_params"
+    assert "origin must be a string" in result["error_message"]
+    assert skill_dir.exists()
+    assert [row["name"] for row in manager.list_skill_installations()] == [
+        "sds-contract-skill"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_clawhub_download_rejects_zip_slip_archive(tmp_path, monkeypatch):
     manager = SkillManagerHarness(workspace_dir=str(tmp_path / "workspace"))
     await manager.handle_skills_clawhub_set_token({"token": "test-token"})

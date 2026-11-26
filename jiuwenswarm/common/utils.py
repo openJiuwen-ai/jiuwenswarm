@@ -59,6 +59,7 @@ from e2a.logging_config import (
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_exception import format_log_exception
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
+from jiuwenswarm.common.windows_upgrade_config import is_windows_installer_restore
 from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.common.paths import (
     logger,
@@ -3331,7 +3332,9 @@ from jiuwenswarm.enterprise.tenant.tenant_paths import (  # noqa: E402
     seed_tenant_agent_workspace,
 )
 
-# 分区迁移先于 setup_logger 等目录创建行为执行：
-# 旧平铺数据优先整体搬迁，而非退化为逐文件吸收
-migrate_profile_data_root_layout()
-setup_logger()
+# Setup reports restore failures itself. Application logs may live behind
+# a Windows junction that the installer process is not permitted to traverse.
+if not is_windows_installer_restore():
+    # Migrate the legacy layout before logging creates any new directories.
+    migrate_profile_data_root_layout()
+    setup_logger()
