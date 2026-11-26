@@ -403,16 +403,38 @@ class TestCliDriverAuthUrlDomain:
         assert r.needs_user_action is True
         assert r.auth_url == "https://meeting.tencent.com/auth?code=abc"
 
-    def test_domain_step_reports_early_failure(self, tmp_path: Path) -> None:
-        """A non-zero exit before any URL is a failed step, not a pending flow."""
-        script = tmp_path / "fail_login.py"
-        script.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+    def test_url_printed_just_before_exit_is_captured(self, tmp_path: Path) -> None:
+        """The drain thread is joined after the exit, so the final line is kept."""
+        script = tmp_path / "print_and_exit.py"
+        script.write_text(
+            "print('open https://meeting.tencent.com/auth?code=xyz', flush=True)\n",
+            encoding="utf-8",
+        )
         cmd = f'"{Path(sys.executable).as_posix()}" "{script.as_posix()}"'
         drv = CliDriver("tmeet", _mk_tmeet_manifest(), _FakeRunner({}))
-        r = drv._start_auth_proc(0, cmd, "meeting.tencent.com", fail_on_early_exit=True)
-        assert r.succeeded is False
-        assert r.needs_user_action is False
-        assert "rc=3" in r.error
+        r = drv._start_auth_proc(0, cmd, "meeting.tencent.com")
+        assert r.auth_url == "https://meeting.tencent.com/auth?code=xyz"
+
+    def test_domain_step_waits_past_the_default_window(self, tmp_path: Path, monkeypatch) -> None:
+        """A slow first run still gets its URL: domain steps use the longer window."""
+        script = tmp_path / "slow_login.py"
+        script.write_text(
+            "import time\ntime.sleep(0.6)\n"
+            "print('open https://meeting.tencent.com/auth?code=slow', flush=True)\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+        cmd = f'"{Path(sys.executable).as_posix()}" "{script.as_posix()}"'
+        manifest = _mk_tmeet_manifest()
+        manifest.auth_steps[0]["command"] = {"win32": cmd, "linux": cmd, "darwin": cmd}
+        monkeypatch.setattr(cli_driver, "_AUTH_URL_WAIT_S", 0.1)
+        monkeypatch.setattr(cli_driver, "_AUTH_URL_WAIT_DOMAIN_S", 3.0)
+        drv = CliDriver("tmeet", manifest, _FakeRunner({}))
+        try:
+            r = drv.auth_step(0)
+        finally:
+            cli_driver.cancel_pending_auth_proc("tmeet")
+        assert r.auth_url == "https://meeting.tencent.com/auth?code=slow"
 
     def test_silent_login_returns_within_the_url_wait(self, tmp_path: Path, monkeypatch) -> None:
         """A silent login must not block past _AUTH_URL_WAIT_S."""
@@ -423,7 +445,7 @@ class TestCliDriverAuthUrlDomain:
         drv = CliDriver("tmeet", _mk_tmeet_manifest(), _FakeRunner({}))
         started = time.monotonic()
         try:
-            r = drv._start_auth_proc(0, cmd, "meeting.tencent.com", fail_on_early_exit=True)
+            r = drv._start_auth_proc(0, cmd, "meeting.tencent.com")
         finally:
             cli_driver.cancel_pending_auth_proc("tmeet")
         assert time.monotonic() - started < 5

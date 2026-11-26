@@ -660,6 +660,8 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
             f"(server spawn or handshake never completed)"
         )
         logger.warning("[mcp-config] probe for '%s' timed out: %s", n, reason)
+        # The cancelled add may have cached a half-open instance / child.
+        await discard_probed_mcp(n)
         return False, reason
     except Exception as exc:  # noqa: BLE001
         return False, str(exc) or repr(exc)

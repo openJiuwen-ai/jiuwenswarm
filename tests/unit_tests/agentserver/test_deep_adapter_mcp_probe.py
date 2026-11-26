@@ -23,7 +23,6 @@ The full spawn/handshake path lives in the integration layer (openjiuwen's
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -81,18 +80,24 @@ async def test_probe_empty_name_returns_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_probe_times_out_a_stalled_connect(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A stalled connect fails at the stall bound instead of holding install."""
+    """A stalled connect fails at the stall bound and is discarded."""
     import asyncio
 
     from openjiuwen.core.runner import Runner
 
-    async def _stall(cfg, *, tag=None):
-        await asyncio.sleep(30)
+    discarded: list[str] = []
+
+    class _Mgr:
+        async def add_mcp_server(self, cfg, *, tag=None):
+            await asyncio.sleep(30)
+
+        async def remove_mcp_server(self, *, server_name, ignore_exception=False):
+            discarded.append(server_name)
 
     monkeypatch.setattr("jiuwenswarm.common.mcp_config._PROBE_STALL_TIMEOUT_S", 0.05)
     # Hand-swap the descriptor: monkeypatch would restore the resolved manager.
     original = Runner.__dict__["resource_mgr"]
-    Runner.resource_mgr = SimpleNamespace(add_mcp_server=_stall)
+    Runner.resource_mgr = _Mgr()
     try:
         entry = {
             "name": "slow",
@@ -111,6 +116,7 @@ async def test_probe_times_out_a_stalled_connect(monkeypatch: pytest.MonkeyPatch
         Runner.resource_mgr = original
     assert ok is False
     assert "stalled" in reason
+    assert discarded == ["slow"]
 
 
 @pytest.mark.asyncio
