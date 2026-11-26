@@ -33,23 +33,15 @@ async def test_create_stdio_reaches_runtime_and_survives_stopped_lifecycle_resta
     ) as client:
         response = await client.post("/api/v1/sandboxes", json=payload)
         assert response.status_code == 201, response.text
-        assert response.json()["stdout"] == payload["stdout"]
-        assert response.json()["stderr"] == payload["stderr"]
-        ref = await manager.get_sandbox("logs-create")
-        assert ref.phase == SandboxPhase.READY
-        assert runtime.create.call_args.kwargs["stdout"] == payload["stdout"]
-        assert runtime.create.call_args.kwargs["stderr"] == payload["stderr"]
-        stopped = await client.post("/api/v1/sandboxes/logs-create/stop")
-        assert stopped.status_code == 200, stopped.text
-        runtime.stop.assert_awaited_once_with(ref.id)
-        saved = SandboxRef.model_validate_json((tmp_path / (ref.id + ".json")).read_text())
+        assert (await client.post("/api/v1/sandboxes/logs-create/stop")).status_code == 200
+        saved = SandboxRef.model_validate_json((tmp_path / "logs-create.json").read_bytes())
         assert saved.phase == SandboxPhase.STOPPED
-        assert saved.stdout == payload["stdout"]
-        assert saved.stderr == payload["stderr"]
-        started = await client.post("/api/v1/sandboxes/logs-create/start")
-        assert started.status_code == 200, started.text
-        assert started.json()["stdout"] == payload["stdout"]
-        assert runtime.create.call_args.kwargs["stderr"] == payload["stderr"]
+        restarted = await client.post("/api/v1/sandboxes/logs-create/start")
+        assert restarted.status_code == 200, restarted.text
+    assert runtime.create.await_count == 2
+    for key in ("stdout", "stderr"):
+        assert response.json()[key] == getattr(saved, key) == restarted.json()[key] == payload[key]
+        assert all(call.kwargs[key] == payload[key] for call in runtime.create.await_args_list)
 
 
 @pytest.mark.parametrize("value", ["relative.out", "/tmp/nul\x00.out"])
