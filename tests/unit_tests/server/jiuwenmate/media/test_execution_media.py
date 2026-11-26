@@ -1,7 +1,7 @@
 """Execution media permissions apply independently of channel attachments."""
 import asyncio
 import pytest
-from jiuwenswarm.server.jiuwenmate.media_runtime import ExecutionMediaScope, run_media_stage
+from jiuwenswarm.server.jiuwenmate.media.execution_media import ExecutionMediaScope, run_media_stage
 
 @pytest.mark.asyncio
 async def test_current_output_allowed_but_other_session_and_private_cache_denied(tmp_path):
@@ -41,13 +41,13 @@ async def test_handle_abort_cancels_and_joins_media_preparation():
 @pytest.mark.parametrize('enabled',[True,False])
 def test_vision_uses_saved_catalogue_instead_of_stale_environment(monkeypatch,enabled):
     from jiuwenswarm.common.multimodal_store import MultimodalStore
-    from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_config_from_env
+    from jiuwenswarm.server.jiuwenmate.media.vision_runtime import resolve_vision_config
     state={'tools':{'vision':{'enabled':enabled,'model_id':'model'}},'models':[
         {'model_id':'model','connection':{'api_key':'saved-key','api_base':'https://example.invalid/v1','model_name':'saved-model'}}]}
     monkeypatch.setattr(MultimodalStore,'load_catalogue_locked',staticmethod(lambda path:({},state)))
     monkeypatch.setenv('VISION_ENABLED','true');monkeypatch.setenv('VISION_API_KEY','stale-key')
     monkeypatch.setenv('VISION_MODEL','stale-model');monkeypatch.setenv('VISION_BASE_URL','https://stale.invalid')
-    config=vision_config_from_env()
+    config=resolve_vision_config()
     if enabled:assert (config.model,config.api_key,config.base_url)==('saved-model','saved-key','https://example.invalid/v1')
     else:assert config is None
 
@@ -129,7 +129,7 @@ async def test_output_directory_symlink_does_not_expand_access_to_session_drafts
 def test_broken_saved_catalogue_does_not_fall_back_to_legacy_credentials(monkeypatch):
     from jiuwenswarm.common.multimodal_models import MultimodalError
     from jiuwenswarm.common.multimodal_store import MultimodalStore
-    from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_config_from_env
+    from jiuwenswarm.server.jiuwenmate.media.vision_runtime import resolve_vision_config
 
     def broken(path):
         raise MultimodalError('MM_CONFIG_READ_FAILED')
@@ -140,4 +140,4 @@ def test_broken_saved_catalogue_does_not_fall_back_to_legacy_credentials(monkeyp
     monkeypatch.setenv('VISION_MODEL', 'legacy-model')
     monkeypatch.setenv('VISION_BASE_URL', 'https://legacy.invalid')
     with pytest.raises(MultimodalError):
-        vision_config_from_env()
+        resolve_vision_config()

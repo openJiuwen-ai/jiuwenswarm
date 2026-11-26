@@ -41,7 +41,7 @@ def test_file_outside_the_welink_cache_is_left_alone(tmp_path: Path):
 
 
 def test_vision_path_accepts_the_workspace_relative_image(tmp_path: Path):
-    from jiuwenswarm.server.jiuwenmate.vision_runtime import resolve_office_image
+    from jiuwenswarm.server.jiuwenmate.media.vision_runtime import resolve_office_image
 
     office = tmp_path / "office"
     image = office / "incoming" / "mid" / "shore.jpg"
@@ -52,7 +52,7 @@ def test_vision_path_accepts_the_workspace_relative_image(tmp_path: Path):
 
 
 def test_vision_path_rejects_escape_and_non_images(tmp_path: Path):
-    from jiuwenswarm.server.jiuwenmate.vision_runtime import resolve_office_image
+    from jiuwenswarm.server.jiuwenmate.media.vision_runtime import resolve_office_image
 
     office = tmp_path / "office"
     office.mkdir()
@@ -97,7 +97,7 @@ def test_vision_tools_join_the_colleague_when_configured(tmp_path: Path, monkeyp
 
 
 def test_vision_tools_stay_off_without_the_vision_slot(tmp_path: Path, monkeypatch):
-    from jiuwenswarm.server.jiuwenmate.vision_runtime import office_vision_tools, vision_guidance
+    from jiuwenswarm.server.jiuwenmate.media.vision_runtime import office_vision_tools, vision_guidance
 
     monkeypatch.delenv("VISION_ENABLED", raising=False)
     monkeypatch.delenv("VISION_API_KEY", raising=False)
@@ -110,7 +110,7 @@ def test_vision_tools_stay_off_without_the_vision_slot(tmp_path: Path, monkeypat
 
 @pytest.mark.parametrize('first, second', [('msg:1', 'msg_1'), ('a' * 80 + 'x', 'a' * 80 + 'y')])
 async def test_colliding_display_ids_cannot_read_another_messages_image(tmp_path, first, second):
-    from jiuwenswarm.server.jiuwenmate.media_runtime import ExecutionMediaScope
+    from jiuwenswarm.server.jiuwenmate.media.execution_media import ExecutionMediaScope
     from jiuwenswarm.server.jiuwenmate.welink_inbound import place_welink_media, welink_media_directory
 
     cache = tmp_path / 'welink' / 'incoming'

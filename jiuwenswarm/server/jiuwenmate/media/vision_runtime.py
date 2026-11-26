@@ -23,7 +23,7 @@ _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _TRUE = {"1", "true", "yes", "on"}
 
 
-def vision_config_from_env() -> VisionModelConfig | None:
+def resolve_vision_config() -> VisionModelConfig | None:
     """Resolve the unified saved vision slot; support env-only legacy workspaces."""
     from jiuwenswarm.common.config import config_write_lock
     from jiuwenswarm.common.multimodal_store import MultimodalStore
@@ -68,7 +68,7 @@ def vision_config_from_env() -> VisionModelConfig | None:
 
 def vision_guidance() -> str:
     """Tell this Invocation how to look at a saved group image."""
-    if vision_config_from_env() is None:
+    if resolve_vision_config() is None:
         return ""
     return (
         "## 图片\n\n"
@@ -80,7 +80,7 @@ def vision_guidance() -> str:
 
 def office_vision_tools(office: Path, *, language: str = "cn", agent_id: str | None = None, image_scope=None) -> list[Tool]:
     """Build path-checked vision tools, or nothing when the vision slot is off."""
-    config = vision_config_from_env()
+    config = resolve_vision_config()
     if config is None:
         return []
     try:

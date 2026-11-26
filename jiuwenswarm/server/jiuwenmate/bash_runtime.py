@@ -450,10 +450,10 @@ def build_bash_tool(params: dict[str, Any], context):
                 raise PersistentAgentError(f"duplicate tool name: {card.name}", code="INVALID_CONFIG")
             names.add(card.name)
             selected.append(child)
-    from jiuwenswarm.server.jiuwenmate.vision_runtime import office_vision_tools
+    from jiuwenswarm.server.jiuwenmate.media.vision_runtime import office_vision_tools
 
     office = session_workspace.parent.parent
-    from jiuwenswarm.server.jiuwenmate.media_runtime import SCOPE_KEY
+    from jiuwenswarm.server.jiuwenmate.media.execution_media import SCOPE_KEY
 
     for child in office_vision_tools(office, language=getattr(context, "language", "cn"), agent_id=execution.agent_id,
                                     image_scope=context.extras.get(SCOPE_KEY)):

@@ -76,7 +76,8 @@ _VISION_MODEL_PLACEHOLDERS = {"", "your-vision-model-name", "your-model-name"}
 def _vision_backend_configured() -> dict[str, Any]:
     """Fast check: dedicated vision slot switched on and configured (no network).
 
-    Aligned with jiuwenmate.vision_runtime.vision_config_from_env:
+    Environment-only check; HyperAgent uses the unified catalogue through
+    jiuwenmate.media.vision_runtime.resolve_vision_config.
     VISION_ENABLED must be explicitly true, a chat API key is never reused,
     and .env-template placeholders count as unconfigured.
     """

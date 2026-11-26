@@ -7,7 +7,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from jiuwenswarm.server.jiuwenmate import feishu_inbound_media as media
+from jiuwenswarm.server.jiuwenmate.media import feishu_inbound_media as media
 
 
 def message(kind="post", content=None, **updates):
@@ -86,7 +86,7 @@ async def test_invalid_or_oversized_images_leave_no_files(tmp_path, data, limit)
 @pytest.mark.asyncio
 async def test_vision_tool_uses_scoped_reference_and_refuses_office_files(tmp_path):
     from openjiuwen.harness.tools.multimodal.vision import VisualQuestionAnsweringTool
-    from jiuwenswarm.server.jiuwenmate.vision_runtime import _OfficeImageTool
+    from jiuwenswarm.server.jiuwenmate.media.vision_runtime import _OfficeImageTool
     current = message("image", {"image_key": "img_one"})
     def serve(request):
         if "/resources/" in request.url.path:
@@ -162,10 +162,10 @@ async def test_cancel_during_download_cleans_private_directory(tmp_path):
 async def test_preparation_reports_missing_model_or_wrong_agent_binding(tmp_path, monkeypatch, configured, namespace, expected):
     from types import SimpleNamespace
     from jiuwenswarm.common import config as config_module
-    from jiuwenswarm.server.jiuwenmate import vision_runtime
+    from jiuwenswarm.server.jiuwenmate.media import vision_runtime
     monkeypatch.setattr(config_module, "get_config", lambda: {"channels": {"feishu": {"apps": [
         {"app_id": "app", "persistent_agent_id": "agent", "app_secret": "test-secret"}]}}})
-    monkeypatch.setattr(vision_runtime, "vision_config_from_env", lambda: object() if configured else None)
+    monkeypatch.setattr(vision_runtime, "resolve_vision_config", lambda: object() if configured else None)
     inputs = SimpleNamespace(kind="group_message", trigger_message_id="om_test",
                              attachment_refs=("feishu:attachment:om_test:img_one",))
     record = SimpleNamespace(namespace_id=namespace, agent_id="agent", session_id="session", request_id="request", request_input=inputs,
@@ -264,7 +264,7 @@ async def test_slow_vision_service_returns_a_bounded_failure(tmp_path, monkeypat
     import asyncio
     from types import SimpleNamespace
     from openjiuwen.harness.tools.multimodal.vision import VisualQuestionAnsweringTool
-    from jiuwenswarm.server.jiuwenmate.vision_runtime import _OfficeImageTool
+    from jiuwenswarm.server.jiuwenmate.media.vision_runtime import _OfficeImageTool
     monkeypatch.setenv("VISION_REQUEST_TIMEOUT_SECONDS", "0.01")
     async def resolve(reference): return str(tmp_path / "test.png")
     base = VisualQuestionAnsweringTool()

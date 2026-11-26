@@ -969,7 +969,7 @@ async def test_a_genuinely_orphaned_dispatch_is_still_reported_not_running(host)
 async def test_scheduler_stop_during_image_download_cleans_cache_and_never_enters_core(host, monkeypatch, tmp_path, reason, expected):
     import json
     import httpx
-    from jiuwenswarm.server.jiuwenmate import feishu_inbound_media as media
+    from jiuwenswarm.server.jiuwenmate.media import feishu_inbound_media as media
 
     started, cleaned = asyncio.Event(), asyncio.Event()
     cache = tmp_path / 'private-media'
@@ -1018,7 +1018,7 @@ async def test_scheduler_stop_during_image_download_cleans_cache_and_never_enter
 
 async def test_welink_execution_keeps_only_its_received_message_media(host):
     from jiuwenswarm.server.jiuwenmate.execution_models import RequestRouteSnapshot
-    from jiuwenswarm.server.jiuwenmate.media_runtime import SCOPE_KEY
+    from jiuwenswarm.server.jiuwenmate.media.execution_media import SCOPE_KEY
     from jiuwenswarm.server.jiuwenmate.welink_inbound import welink_media_directory
 
     session = host.session(conversation='welink-media')

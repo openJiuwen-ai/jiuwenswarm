@@ -5,7 +5,7 @@ type: F
 author: huanghongyun
 author_email: huanghongyun1@huawei.com
 modules: [jiuwenswarm/server/jiuwenmate]
-files: [jiuwenswarm/server/jiuwenmate/media_runtime.py, jiuwenswarm/server/jiuwenmate/welink_inbound.py, jiuwenswarm/server/jiuwenmate/feishu_inbound_media.py, jiuwenswarm/server/jiuwenmate/vision_runtime.py, jiuwenswarm/server/jiuwenmate/execution_driver.py, jiuwenswarm/server/jiuwenmate/bash_runtime.py, tests/unit_tests/server/jiuwenmate/test_feishu_inbound_media.py]
+files: [jiuwenswarm/server/jiuwenmate/media/execution_media.py, jiuwenswarm/server/jiuwenmate/welink_inbound.py, jiuwenswarm/server/jiuwenmate/media/feishu_inbound_media.py, jiuwenswarm/server/jiuwenmate/media/vision_runtime.py, jiuwenswarm/server/jiuwenmate/execution_driver.py, jiuwenswarm/server/jiuwenmate/bash_runtime.py, tests/unit_tests/server/jiuwenmate/media/test_feishu_inbound_media.py]
 designs: [D-20261123-2128-feishu-group-media]
 ---
 
@@ -109,3 +109,11 @@ ExecutionHandle 记录准备阶段子任务；现有 scheduler.abort 在 stop/ca
 本轮真实浏览器覆盖页面→AI 同事→视觉工具→真实模型→页面回答；飞书只读资源回放不等于重新发送人工群消息的完整入口/回帖验收。本轮未切换旧试点机器人到候选，未在飞书重新发送消息；没有将旧版已通过的真实群回帖当作当前候选的复验结果。其他渠道的新下载、音视频、跨平台发布 wheel、多模态调用的独立预算计量仍未实现。
 
 最终检视发现 WeLink 旧目录把标点替换并截断消息 ID，会使不同消息共用目录。已将复制和执行范围查询统一改为完整消息 ID 的 SHA-256 目录，并用标点碰撞、共同长前缀两例先复现覆盖旧文件、再验证隔离。既有旧格式 WeLink 附件路径不自动授权到新范围；部署前仍在执行或等待权限确认的旧媒体任务需要重新发送消息。普通新消息的下载、路径改写与视觉读取保持贯通。
+
+## 2026-11-26 媒体模块命名与目录整理
+
+按用户确认的命名建议，将图片相关实现集中到 `jiuwenmate/media/` 子包：`media_runtime.py` 改为 `media/execution_media.py`，`vision_runtime.py` 和 `feishu_inbound_media.py` 一并移入。`vision_config_from_env()` 改为 `resolve_vision_config()`，表明其优先读取统一配置、兼容旧环境变量的实际职责。包初始化文件仅声明用途，不做全局注册或集中重导出。
+
+执行驱动、Bash 工具装配及 WeLink 消息接入仍在原目录，因为它们还承担非媒体业务；不为三个实现文件增加多层空目录。两个本特性新增测试文件同步归入 `tests/unit_tests/server/jiuwenmate/media/`，执行范围测试改名为 `test_execution_media.py`。所有代码导入、测试替换目标及当前文档路径一并更新；不修改媒体引用、配置键、缓存目录或持久化格式。旧源码导入路径不保留兼容壳，内部消费者统一迁移。
+
+本轮定向回归 83 passed（9.51 秒）；完整 AI 同事回归 2047 passed、1 skipped（98.64 秒）。`uv build --wheel --out-dir /tmp/media-reorganization-dist` 成功构建 workswarm-0.2.9b5；独立检查 wheel 内含新 media 子包的四个 Python 文件，且不含三个旧平铺模块。没有重跑真实模型或人工飞书群场景，本轮不改变其行为；旧验收脚本若硬编码了原源码路径，需要改用新导入路径。

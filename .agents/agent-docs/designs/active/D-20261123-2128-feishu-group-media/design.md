@@ -28,7 +28,7 @@ files: []
 
 ## 最小改动
 
-当前网关记录了附件引用，[执行入口](../../../../../jiuwenswarm/server/jiuwenmate/execution_driver.py)会在任务开始时刷新触发消息，但图片引用不能直接用于识图。AI 同事已有[图片问答与 OCR 工具](../../../../../jiuwenswarm/server/jiuwenmate/vision_runtime.py)，且在[执行时挂载](../../../../../jiuwenswarm/server/jiuwenmate/bash_runtime.py)。首发补齐从飞书引用到视觉工具可读输入的环节，沿用现有模型回复和飞书回帖流程。
+当前网关记录了附件引用，[执行入口](../../../../../jiuwenswarm/server/jiuwenmate/execution_driver.py)会在任务开始时刷新触发消息，但图片引用不能直接用于识图。AI 同事已有[图片问答与 OCR 工具](../../../../../jiuwenswarm/server/jiuwenmate/media/vision_runtime.py)，且在[执行时挂载](../../../../../jiuwenswarm/server/jiuwenmate/bash_runtime.py)。首发补齐从飞书引用到视觉工具可读输入的环节，沿用现有模型回复和飞书回帖流程。
 
 1. **解析原消息。** 在刷新触发消息、确认可读后，使用当前同事绑定的飞书机器人身份，按应用、群和消息 ID 获取原消息。仅接受独立图片或富文本图片节点的 image key，并与已登记附件匹配。按帖子顺序编号，同一 key 只下载一次。可参考[现有飞书资源下载与来源校验](../../../../../jiuwenswarm/server/jiuwenmate/cli_group_sharing.py)。
 2. **准备图片。** 在下载时限制字节数和耗时，校验实际图片格式及解码像素数。文件写入本次执行专属的临时目录，以系统生成的名称原子落盘。视觉调用前复核消息仍可读，将工具可访问的入站图片限制到本次执行；当前工具以整个办公空间为路径边界，仅新建子目录不足以隔离其他群的图片。任务结束、失败或取消时清理文件，异常退出后的残留按期限回收。

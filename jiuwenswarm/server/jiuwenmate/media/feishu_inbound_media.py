@@ -216,12 +216,12 @@ async def prepare_feishu_images(record, session_workspace: Path) -> FeishuInboun
         return None
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import configured_feishu_bindings
-    from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_config_from_env
+    from jiuwenswarm.server.jiuwenmate.media.vision_runtime import resolve_vision_config
 
     config = get_config()
     matches = [b for b in configured_feishu_bindings(config) if
                (b.app_id, b.namespace_id, b.agent_id) == (route.app_id, record.namespace_id, record.agent_id)]
-    vision_available = vision_config_from_env() is not None
+    vision_available = resolve_vision_config() is not None
     identity = json.dumps([record.namespace_id, record.agent_id, record.session_id, record.request_id, route.app_id])
     private_root = session_workspace.parents[3].parent / "media-cache"
     manifest = private_root / "feishu-sources" / (hashlib.sha256(identity.encode()).hexdigest() + ".json")

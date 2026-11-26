@@ -50,7 +50,7 @@ from jiuwenswarm.server.jiuwenmate.bash_runtime import (
     bind_bash_runtime, close_bash_runtime, shell_environment_guidance,
 )
 from jiuwenswarm.server.jiuwenmate.dropped_stream_retry import install_dropped_stream_retry
-from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_guidance
+from jiuwenswarm.server.jiuwenmate.media.vision_runtime import vision_guidance
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailRuntimeService
 from jiuwenswarm.server.jiuwenmate.agent_mail_tool import prepare_agent_mail_invocation
@@ -269,7 +269,7 @@ class ExecutionDriver:
                 record.namespace_id, record.agent_id, record.session_id
             )
             office = self._workspaces.path(record.namespace_id, record.agent_id)
-            from jiuwenswarm.server.jiuwenmate.media_runtime import ExecutionMediaScope
+            from jiuwenswarm.server.jiuwenmate.media.execution_media import ExecutionMediaScope
             inbound_directory = None
             route = record.route_snapshot
             if route is not None and route.channel == "welink" and route.source_message_id:
@@ -392,7 +392,7 @@ class ExecutionDriver:
                 ports=ports,
                 system_prompt_addendum="\n\n".join(addenda),
             )
-            from jiuwenswarm.server.jiuwenmate.media_runtime import SCOPE_KEY as MEDIA_SCOPE_KEY
+            from jiuwenswarm.server.jiuwenmate.media.execution_media import SCOPE_KEY as MEDIA_SCOPE_KEY
             context.extras[MEDIA_SCOPE_KEY] = execution_media
             spec = await self._prepare_runtime_spec(spec, context, record)
             if self._sessions is not None:
@@ -428,9 +428,9 @@ class ExecutionDriver:
                     "text": trigger.text or ("[附件消息]" if trigger.attachment_refs else "[群消息正文为空]"),
                     "attachment_refs": trigger.attachment_refs})
                 from dataclasses import replace
-                from jiuwenswarm.server.jiuwenmate.feishu_inbound_media import prepare_feishu_images, SCOPE_KEY
+                from jiuwenswarm.server.jiuwenmate.media.feishu_inbound_media import prepare_feishu_images, SCOPE_KEY
 
-                from jiuwenswarm.server.jiuwenmate.media_runtime import run_media_stage
+                from jiuwenswarm.server.jiuwenmate.media.execution_media import run_media_stage
                 try:
                     inbound_images = await run_media_stage(
                         prepare_feishu_images(replace(record, request_input=inputs), session_workspace), handle)
