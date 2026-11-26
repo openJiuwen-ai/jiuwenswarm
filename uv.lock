@@ -19,11 +19,11 @@ resolution-markers = [
 
 [manifest]
 overrides = [
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
+    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
     { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
     { name = "openjiuwen-runtime-foundation", specifier = "==0.1.2b1" },
 ]
@@ -3338,9 +3338,9 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "beautifulsoup4" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/98/29/5e46d8d7aa6c66c73809c0018a435b3271d01fa0f54f8215d634a6a92051/markdownify-1.2.4.tar.gz", hash = "sha256:3837f5eb4caa627473451f9ebb91e00d0f12120fc64d64246bea23934244bd01" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/29/5e46d8d7aa6c66c73809c0018a435b3271d01fa0f54f8215d634a6a92051/markdownify-1.2.4.tar.gz", hash = "sha256:3837f5eb4caa627473451f9ebb91e00d0f12120fc64d64246bea23934244bd01", size = 19301, upload-time = "2026-11-18T18:17:09.378Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/37/9905803c2df99e10c69df1b0ecaad16a559d51cec20e2929006975d1bedc/markdownify-1.2.4-py3-none-any.whl", hash = "sha256:e0375484fdd2bb007e86779fe34c59673d0011b14f8299953aaf0bf092269220" },
+    { url = "https://files.pythonhosted.org/packages/df/37/9905803c2df99e10c69df1b0ecaad16a559d51cec20e2929006975d1bedc/markdownify-1.2.4-py3-none-any.whl", hash = "sha256:e0375484fdd2bb007e86779fe34c59673d0011b14f8299953aaf0bf092269220", size = 15852, upload-time = "2026-11-18T18:17:08.216Z" },
 ]
 
 [[package]]
@@ -4131,7 +4131,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.21"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd#31171fb02eb0a03c717b6f558291df274becd1dd" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681#1b066729e6159aa149fe9bdc2c31ec1778e2a681" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -6013,9 +6013,9 @@ wheels = [
 name = "pyxlsb"
 version = "1.0.10"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/3f/13/eebaeb7a40b062d1c6f7f91d09e73d30a69e33e4baa7cbe4b7658548b1cd/pyxlsb-1.0.10.tar.gz", hash = "sha256:8062d1ea8626d3f1980e8b1cfe91a4483747449242ecb61013bc2df85435f685" }
+sdist = { url = "https://files.pythonhosted.org/packages/3f/13/eebaeb7a40b062d1c6f7f91d09e73d30a69e33e4baa7cbe4b7658548b1cd/pyxlsb-1.0.10.tar.gz", hash = "sha256:8062d1ea8626d3f1980e8b1cfe91a4483747449242ecb61013bc2df85435f685", size = 22424, upload-time = "2022-10-14T19:17:47.308Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/92/345823838ae367c59b63e03aef9c331f485370f9df6d049256a61a28f06d/pyxlsb-1.0.10-py2.py3-none-any.whl", hash = "sha256:87c122a9a622e35ca5e741d2e541201d28af00fb46bec492cfa9586890b120b4" },
+    { url = "https://files.pythonhosted.org/packages/7e/92/345823838ae367c59b63e03aef9c331f485370f9df6d049256a61a28f06d/pyxlsb-1.0.10-py2.py3-none-any.whl", hash = "sha256:87c122a9a622e35ca5e741d2e541201d28af00fb46bec492cfa9586890b120b4", size = 23849, upload-time = "2022-10-14T19:17:46.079Z" },
 ]
 
 [[package]]
@@ -7694,12 +7694,12 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=31171fb02eb0a03c717b6f558291df274becd1dd" },
+    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
     { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=c0e29a0fa0e1026934589b68564ac67c38a4c4e3" },
     { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
     { name = "openjiuwen-e2a", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
@@ -7892,9 +7892,9 @@ wheels = [
 name = "xlrd"
 version = "2.0.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/07/5a/377161c2d3538d1990d7af382c79f3b2372e880b65de21b01b1a2b78691e/xlrd-2.0.2.tar.gz", hash = "sha256:08b5e25de58f21ce71dc7db3b3b8106c1fa776f3024c54e45b45b374e89234c9" }
+sdist = { url = "https://files.pythonhosted.org/packages/07/5a/377161c2d3538d1990d7af382c79f3b2372e880b65de21b01b1a2b78691e/xlrd-2.0.2.tar.gz", hash = "sha256:08b5e25de58f21ce71dc7db3b3b8106c1fa776f3024c54e45b45b374e89234c9", size = 100167, upload-time = "2025-06-14T08:46:39.039Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1a/62/c8d562e7766786ba6587d09c5a8ba9f718ed3fa8af7f4553e8f91c36f302/xlrd-2.0.2-py2.py3-none-any.whl", hash = "sha256:ea762c3d29f4cca48d82df517b6d89fbce4db3107f9d78713e48cd321d5c9aa9" },
+    { url = "https://files.pythonhosted.org/packages/1a/62/c8d562e7766786ba6587d09c5a8ba9f718ed3fa8af7f4553e8f91c36f302/xlrd-2.0.2-py2.py3-none-any.whl", hash = "sha256:ea762c3d29f4cca48d82df517b6d89fbce4db3107f9d78713e48cd321d5c9aa9", size = 96555, upload-time = "2025-06-14T08:46:37.766Z" },
 ]
 
 [[package]]
