@@ -305,6 +305,20 @@ async def test_tools_search_does_not_mark_retrieved():
 
 
 @pytest.mark.asyncio
+async def test_tools_search_then_direct_answer_still_warns(monkeypatch):
+    """查 schema（tools_search）后直接作答带年份断言 → 仍告警（tools_search 不是真检索）。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("2028年世界杯冠军是谁？")
+    await rail.on_user_message(ctx)
+    await rail.after_tool_call(_tool_ctx("tools_search", ctx.extra))
+    assert ctx.extra["_fpo_retrieved"] is False  # tools_search 不算检索
+
+    calls = _capture(monkeypatch)
+    await rail.after_model_call(_model_ctx("2028年世界杯冠军是巴西队。", ctx.extra))
+    assert len(calls) == 1  # 零真检索 + 带年份断言 → 仍告警
+
+
+@pytest.mark.asyncio
 async def test_steering_does_not_clear_observation():
     """steering 消息（source != query）不清掉原观测窗口。"""
     rail = FactPremiseObservationRail()
