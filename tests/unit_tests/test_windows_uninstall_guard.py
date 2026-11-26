@@ -36,6 +36,15 @@ def exe_entry():
     return module
 
 
+def test_mixed_restore_arguments_cannot_dispatch_init(exe_entry, monkeypatch):
+    init_main = Mock()
+    monkeypatch.setitem(sys.modules, "jiuwenswarm.init_workspace", SimpleNamespace(main=init_main))
+    monkeypatch.setattr(sys, "argv", ["workswarm.exe", "init", "--force", "--desktop-restore-upgrade-config"])
+    with pytest.raises(ValueError, match="restore does not accept arguments"):
+        exe_entry._dispatch()
+    init_main.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "arguments, expected_on_windows",
     [
@@ -101,9 +110,10 @@ def test_uninstall_email_mcp_cleanup(exe_entry, monkeypatch, tmp_path, outcome):
 @pytest.mark.skipif(os.name != "nt", reason="Windows frozen cleanup entry")
 def test_cleanup_dispatch_runs_before_workspace_initialization(monkeypatch):
     original_import = builtins.__import__
+    bootstrap_modules = {"jiuwenswarm.common._build_config", "jiuwenswarm.common.windows_upgrade_config"}
 
     def reject_application_import(name, *args, **kwargs):
-        if name.startswith("jiuwenswarm") and name != "jiuwenswarm.common._build_config":
+        if name.startswith("jiuwenswarm") and name not in bootstrap_modules:
             pytest.fail(f"Cleanup imported application initialization: {name}")
         return original_import(name, *args, **kwargs)
 

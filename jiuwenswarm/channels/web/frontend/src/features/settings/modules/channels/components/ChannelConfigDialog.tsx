@@ -108,6 +108,17 @@ export function ChannelConfigDialog({
       icon={<ChannelLogo channelId={activeChannelId} label={label} variant="dialog" />}
       loading={controller.loading}
       submitting={controller.saving}
+      status={
+        controller.error ? (
+          <div
+            className="settings-channels-panel__dialog-status"
+            role="alert"
+            data-testid="settings-channels-panel-channel-config-status"
+          >
+            {controller.error}
+          </div>
+        ) : null
+      }
       confirmDisabled={!isConnected}
       confirmLabel={controller.saving ? t('common.saving') : t('common.save')}
       cancelLabel={t('common.cancel')}

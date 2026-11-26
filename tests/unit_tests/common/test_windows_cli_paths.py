@@ -313,6 +313,40 @@ def test_upgrade_snapshot_rejects_invalid_ciphertext():
     assert error.value.winerror != 0
 
 
+def _run_frozen_restore(data):
+    entry = ROOT / "scripts" / "jiuwenswarm_exe_entry.py"
+    # Run in a fresh interpreter so the config import cannot reuse an initialized logger.
+    probe = """
+import runpy, sys
+import pywintypes  # The source interpreter uses the venv layout before emulating frozen mode.
+from pathlib import Path
+entry = sys.argv[1]
+sys.argv = [entry, "--desktop-restore-upgrade-config"]
+sys.frozen = True
+def guard(event, args):
+    if event == "import" and args[0] == "jiuwenswarm.common.windows_cli_paths":
+        raise AssertionError("restore initialized the npm runtime")
+    if event == "os.mkdir" and Path(args[0]).name in {".logs", "logs"}:
+        raise OSError(448, "restore touched an application log directory", args[0])
+sys.addaudithook(guard)
+runpy.run_path(entry, run_name="__main__")
+"""
+    env = {**os.environ, "JIUWENSWARM_DATA_DIR": str(data), "PYTHONPATH": str(ROOT)}
+    result = subprocess.run([sys.executable, "-c", probe, str(entry)], cwd=ROOT, env=env,
+                            capture_output=True, text=True, errors="replace", timeout=60)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Setup child process")
+def test_frozen_restore_skips_app_bootstrap_and_log_directories(tmp_path):
+    marker = tmp_path / "agent" / "existing-session"
+    marker.parent.mkdir()
+    marker.write_bytes(b"legacy")
+    _run_frozen_restore(tmp_path)
+    assert marker.read_bytes() == b"legacy"
+    assert not (tmp_path / "profile" / "agent" / marker.name).exists()
+
+
 @pytest.mark.parametrize("concurrent_change", [False, True])
 def test_legacy_uninstaller_config_reset_is_recovered_without_overwriting_changes(tmp_path, preservation_runner, monkeypatch, concurrent_change):
     from jiuwenswarm.common import config, utils, windows_upgrade_config
@@ -345,7 +379,7 @@ def test_legacy_uninstaller_config_reset_is_recovered_without_overwriting_change
         assert config_file.read_bytes() == before
         assert pending.is_file()
     else:
-        windows_upgrade_config.restore_legacy_upgrade_config()
+        _run_frozen_restore(data)
         assert config.load_yaml_round_trip(config_file) == original
         assert "# preserve user comments" in config_file.read_text(encoding="utf-8")
         assert not pending.exists()

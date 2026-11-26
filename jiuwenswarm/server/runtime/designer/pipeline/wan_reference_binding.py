@@ -1,12 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Wan reference-mode predicates (scene specs + character specs).
+"""Wan reference-mode scene-specs detection for clip prompts.
 
 Alibaba Wan R2V maps ``reference_urls`` order → ``character1``, ``character2``, …
 (each person ref = one subject). Every clip, including the first of a setting:
 
   On-screen character spec sheets first (character1…), then the scene specs last
-  as the room. No composed image and no scene-spec as first_frame.
-  Prior-clip last frames are not attached.
+  as the environment. No composed image and no scene-spec as first_frame.
+  Prior-clip last frames are not attached. The image-number binding itself is
+  rendered from the attached files by ``reference_binding``.
 """
 
 from __future__ import annotations

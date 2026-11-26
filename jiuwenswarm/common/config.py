@@ -301,6 +301,36 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     return {}
 
 
+_CONFIG_WARMED = threading.Event()
+
+
+def warm_up_config() -> None:
+    """Import the Symphony layer and build the config once, off the request path.
+
+    The first ``get_config`` imports ``openjiuwen.symphony`` (tens of seconds on a
+    cold cache) and runs the Symphony validation. Startup calls this in a daemon
+    thread so the import overlaps service construction instead of blocking the
+    event loop when the first settings request arrives.
+    """
+    if _CONFIG_WARMED.is_set():
+        return
+    started = time.monotonic()
+    try:
+        from jiuwenswarm.common import symphony_config  # noqa: F401 - warm the heavy import
+
+        get_config()
+    except Exception:  # noqa: BLE001 - a broken config must not stop warm-up retries elsewhere
+        logger.warning("[Config] warm-up failed", exc_info=True)
+    finally:
+        _CONFIG_WARMED.set()
+        logger.info("[Config] warm-up finished in %.2fs", time.monotonic() - started)
+
+
+def start_config_warm_up() -> None:
+    """Start the one-shot config warm-up in a daemon thread."""
+    threading.Thread(target=warm_up_config, name="config-warmup", daemon=True).start()
+
+
 def get_config():
     """读取并解析 config.yaml（锁保护 + 跨进程降级重试）。"""
     config_base = _read_with_retry(get_config_file())
@@ -4077,7 +4107,8 @@ def migrate_config_from_template(
         _migrate_legacy_agent_submode_memory(user_data)
         _migrate_legacy_kv_cache_affinity_config(user_data)
         legacy_symphony_migrated = _migrate_legacy_symphony_config(user_data, template_data, user_config_path)
-        # team_observability / agent_observability -> observability.{team,agent}
+        # team_observability / agent_observability（以及旧的两个 team/agent 开关）
+        # -> observability.enabled
         # 必须在 _deep_merge 之前执行：合并会先按模板塞入默认的 observability 段，
         # 旧段里用户改过的 exporter / endpoint 等就会被模板默认值挡住。
         legacy_observability_migrated = migrate_legacy_observability_config(user_data)

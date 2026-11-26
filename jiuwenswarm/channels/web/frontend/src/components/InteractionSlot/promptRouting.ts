@@ -88,7 +88,7 @@ export function normalizeAuthOption(value: string): string {
 // 不在此列：它们只出现在 InlineQuestionCard 的旧卡上。
 const ALLOW_ONCE_LABELS = new Set([
   '本次允许', '接收', '接受', '激活', '批准', '开始执行',
-  'allow_once', 'approve', 'accept', 'proceed',
+  'allow_once', 'approve', 'accept', 'proceed', 'activate',
 ]);
 // 'allow_always' 是技能演进审批接口下发的 value（与旧有的 'always_allow' 别名并存）。
 // 「永久记住」为权限中断写盘选项；「总是允许」为产品常用别名。

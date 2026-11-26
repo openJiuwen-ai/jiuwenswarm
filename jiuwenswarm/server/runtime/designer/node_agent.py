@@ -17,6 +17,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     DESIGNER_AGENT_GROUP_NAME,
     NODE_ROLE_CLIP,
     NODE_ROLE_COMPOSE,
+    NODE_ROLE_STORYBOARD,
     AssetRef,
     DesignerExecutionGraph,
     DesignerGraphNode,
@@ -1100,12 +1101,9 @@ class DesignerGraphToolkit:
         self.raise_media_error()
         _ = first_frame
         from jiuwenswarm.server.runtime.designer.handlers.clip import (
-            _looks_like_contaminated_prompt,
-            build_clip_prompt,
-            attach_order_clause,
-            collect_clip_reference_images,
+            attachable_slots,
+            collect_clip_reference_slots,
             connected_payload_clause,
-            edge_image_flow,
             edge_text_inputs,
             edge_video_inputs,
             first_connected_video_file,
@@ -1114,6 +1112,10 @@ class DesignerGraphToolkit:
             video_duration_seconds,
         )
         from jiuwenswarm.common.schema.designer_graph import node_clip_index
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+            ClipReferenceError,
+            reindex_slots,
+        )
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
             scrub_restated_speech,
             stamp_speech_onto_next_clips,
@@ -1134,93 +1136,39 @@ class DesignerGraphToolkit:
             pass
         node["config"] = cfg
 
-        # Gated same-scene last-frame chain before prompt so Wan binding matches attach order.
+        # Collect references before composing so image bindings follow attach order.
         clip_index = node_clip_index(node)
-        refs = collect_clip_reference_images(
-            self.ctx, clip_index, node=node
+        try:
+            slots = attachable_slots(collect_clip_reference_slots(self.ctx, clip_index, node=node))
+        except ClipReferenceError as exc:
+            self.fail_media(exc)
+            raise
+        ref_files = [str(slot.path) for slot in slots]
+
+        from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+            resolve_user_origin_prompt,
         )
-        image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
-        ref_paths = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
-        ref_files = [str(p) for p in ref_paths]
+        from jiuwenswarm.server.runtime.designer.pipeline.shot_consistency_contract import (
+            merge_storyboard_consistency,
+        )
 
-        # Agent writes P2 (continuation). Structured prompt is fallback / lock scaffold.
-        structured = ""
-        try:
-            structured = str(build_clip_prompt(self.ctx.graph, node, self.ctx) or "").strip()
-        except Exception:  # noqa: BLE001
-            logger.debug("build_clip_prompt failed in call_video_model", exc_info=True)
-        agent_text = str(prompt or "").strip()
-        prior_p1 = str(cfg.get("previous_clip_action") or cfg.get("previous_clip_wan_prompt") or "").strip()
-        meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
-        user_prompt = str(graph.get("description") or meta.get("user_prompt") or "")
-        try:
-            from jiuwenswarm.server.runtime.designer.pipeline.shot_consistency_contract import (
-                merge_storyboard_consistency,
-                prompt_violates_consistency,
-            )
-
-            cfg, _ = merge_storyboard_consistency(cfg, graph=graph)
-            node["config"] = cfg
-        except Exception:  # noqa: BLE001
-            pass
-        if agent_text:
-            try:
-                from jiuwenswarm.server.runtime.designer.pipeline.clip_scope import (
-                    looks_like_full_story_restatement,
-                    looks_like_prior_copy,
-                )
-                from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
-                    narrative_from_wan_prompt,
-                )
-                from jiuwenswarm.server.runtime.designer.pipeline.clip_prompt_handoff import (
-                    agent_replays_finished_events,
-                )
-
-                body = narrative_from_wan_prompt(agent_text, limit=2500) or agent_text
-                if looks_like_full_story_restatement(body, user_prompt):
-                    agent_text = ""
-                elif prior_p1 and looks_like_prior_copy(
-                    body, str(cfg.get("previous_clip_wan_prompt") or prior_p1)
-                ):
-                    agent_text = ""
-                elif agent_replays_finished_events(
-                    body,
-                    already_done=[str(x) for x in (cfg.get("already_done") or []) if str(x)],
-                    this_action=str(cfg.get("clip_action") or ""),
-                ):
-                    agent_text = ""
-                elif prompt_violates_consistency(body, cfg=cfg):
-                    agent_text = ""
-            except Exception:  # noqa: BLE001
-                pass
-        if (
-            prior_p1
-            and agent_text
-            and agent_text[:180].casefold() == prior_p1[:180].casefold()
-        ):
-            agent_text = ""
-        if (
-            agent_text
-            and not _looks_like_contaminated_prompt(agent_text)
-            and len(agent_text) >= 40
-        ):
-            text = agent_text
-        elif structured:
-            text = structured
-        else:
-            text = agent_text or str(
-                (node.get("config") or {}).get("prompt")
-                or graph_prompt(self.ctx.graph, node)
-                or ""
-            )
-        clause = attach_order_clause(ref_paths, edge_image_flow(self.ctx, node))
+        cfg, _ = merge_storyboard_consistency(cfg, graph=graph)
+        node["config"] = cfg
+        prompt = resolve_user_origin_prompt(cfg) or prompt
+        # The tool argument is authored prose. Do not reject it using semantic heuristics.
+        if not isinstance(prompt, str) or not prompt.strip():
+            return "call_video_model error: prompt required"
+        text = prompt.strip()
         payload = connected_payload_clause(
-            edge_text_inputs(self.ctx, node),
+            edge_text_inputs(
+                self.ctx,
+                node,
+                exclude_roles=frozenset({NODE_ROLE_STORYBOARD}),
+            ),
             edge_video_inputs(self.ctx, node),
         )
-        extra = "\n\n".join(part for part in (clause, payload) if part)
-        if extra and extra not in text:
-            text = f"{text.rstrip()}\n\n{extra}".strip()
+        if payload and payload not in text:
+            text = f"{text.rstrip()}\n\n{payload}".strip()
         if not text:
             return "call_video_model error: prompt required"
         try:
@@ -1252,13 +1200,9 @@ class DesignerGraphToolkit:
         from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import (
             apply_wan_call_locks,
         )
-        from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
-            resolve_user_origin_prompt,
-        )
 
         meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
-        # Clip calls are rewritten to the short image-binding form. Speech and
-        # score stay on cfg and are spoken as positive lines, not lock essays.
+        # Preserve the authored body; the call contract binds actual attachments.
         from jiuwenswarm.server.runtime.designer.pipeline.wan_prompt_hygiene import (
             apply_regenerate_packet,
         )
@@ -1274,11 +1218,17 @@ class DesignerGraphToolkit:
             prompt=text,
             reference_paths=ref_files,
         )
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            video_generation_overrides,
+        )
+
+        overrides = video_generation_overrides(cfg, graph, ref_files)
         text = apply_wan_call_locks(
             text,
             cfg=cfg,
             graph=graph,
             clip_index=clip_index,
+            slots=reindex_slots(slots, overrides["reference_images"] or []),
         )
         cfg["prompt"] = text
         want_audio, _model_override = resolve_video_audio_request(cfg, meta)
@@ -1317,15 +1267,6 @@ class DesignerGraphToolkit:
             from jiuwenswarm.server.runtime.designer.media_settings import video_settings
 
             video = video_settings(graph)
-            from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
-                video_generation_overrides,
-            )
-
-            overrides = video_generation_overrides(
-                cfg,
-                graph,
-                [str(p) for p in (ref_files or [])],
-            )
             result = await generate_clip_video(
                 prompt=text,
                 save_dir=str(self._media_save_dir()),
@@ -1868,9 +1809,11 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                 "call_video_model",
                 (
                     "Generate a clip via the configured video model. "
-                    "Positive story form only: The scene is as in Image N. "
-                    "<Name> from Image k, wearing <clothing>, <placement>. State this "
+                    "Positive story form only: "
+                    "<Name>, wearing <clothing>, <placement> in the scene. State this "
                     "shot's action verbatim — never glue it onto an auxiliary verb. "
+                    "Image numbers are added by the system from the attached files; "
+                    "do not write which image is the scene or a character. "
                     "Name only on_screen / partial cast; omit exited cast until returned. "
                     "Same-setting continue cue only — do not paste prior Wan text. "
                     "Speaker says: \"<this shot's line>\". One camera move. One look phrase. "
@@ -1884,8 +1827,9 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                             "type": "string",
                             "description": (
                                 "Concise positive story-form prompt. Present cast only "
-                                "from Image k with clothing, placement, action; scene as "
-                                "in Image N; this shot's line. No forbid / do-not / "
+                                "by name with clothing, placement, action; this shot's "
+                                "line. The image-number binding is appended by the system. "
+                                "No forbid / do-not / "
                                 "examples. " + video_tool_hint
                             ),
                         },

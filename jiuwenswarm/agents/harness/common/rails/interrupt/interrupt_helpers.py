@@ -989,9 +989,6 @@ def build_permission_rail(
                     auto_reviewer = AutoReviewer(
                         client=IsolatedModelReviewerClient(
                             model=reviewer_model,
-                            display_language_getter=lambda: get_config().get(
-                                "preferred_language", "zh"
-                            ),
                         ),
                         timeout_ms=auto_options["reviewer_timeout_ms"],
                         reviewer_output_format=auto_options["reviewer_output_format"],

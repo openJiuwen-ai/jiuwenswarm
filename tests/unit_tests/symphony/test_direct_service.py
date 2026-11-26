@@ -385,8 +385,8 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
         "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.get_config",
-        lambda: {"preferred_language": "zh"},
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
     )
     monkeypatch.setattr(
         "jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills",
@@ -442,7 +442,10 @@ async def test_skill_compose_uses_public_core_plan(monkeypatch, tmp_path, mode):
     service = SwarmSymphonyService()
     monkeypatch.setattr(service, "_runtime_for", lambda *_: runtime)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
+    )
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_: set())
     monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config", lambda *_: config)
     compose = next(tool for tool in SymphonyToolkit(service, llm_config_provider=lambda: None).get_tools()
@@ -548,7 +551,10 @@ async def test_expert_compose_uses_live_catalog_and_shares_the_web_graph(monkeyp
     })
     monkeypatch.setattr(JiuwenExpertCatalog, "list_expert_packages", list_packages)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
+    )
     monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config", lambda *_: config)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_: set())
     model = HandoffModel(confidences=[0.95])
@@ -646,8 +652,8 @@ async def test_service_plan_uses_request_selected_model_instead_of_default(
         "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.get_config",
-        lambda: {"preferred_language": "zh"},
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
     )
 
     result = await service.plan("compose", llm_config=selected)
@@ -688,8 +694,8 @@ async def test_service_plan_keeps_host_default_for_stale_graph_refresh(
         "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.get_config",
-        lambda: {"preferred_language": "zh"},
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
     )
 
     progress = object()
@@ -736,8 +742,8 @@ async def test_service_rebuilds_stale_graph_before_planning(monkeypatch, tmp_pat
         "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.get_config",
-        lambda: {"preferred_language": "en"},
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "en",
     )
     monkeypatch.setattr(
         "jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_kwargs: set()
@@ -788,8 +794,8 @@ async def test_service_promotes_graph_preparing_before_planning(
         "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.get_config",
-        lambda: {"preferred_language": "zh"},
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
     )
 
     result = await service.plan("write", capability_type="skill")
@@ -829,8 +835,8 @@ async def test_service_rejects_non_dict_planned_graph(
         "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.get_config",
-        lambda: {"preferred_language": "zh"},
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
     )
 
     result = await service.plan("compose")

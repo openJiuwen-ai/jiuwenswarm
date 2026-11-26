@@ -296,7 +296,7 @@ TTSE is independent of Skill-body evolution and is controlled by `react.ttse` (a
 
 | Setting | Path | Default | Description |
 |---------|------|---------|-------------|
-| **Enable TTSE** | `react.ttse.enabled` | `false` | Mount `TTSERail` (Host skips if agent-core lacks it); also auto-acquires `observability.agent` for trajectory capture |
+| **Enable TTSE** | `react.ttse.enabled` | `false` | Mount `TTSERail` (Host skips if agent-core lacks it); also auto-acquires the observability provider for trajectory capture |
 | **Induce** | `react.ttse.evolve_enabled` | `true` | Induce FACT/TIP from trajectories |
 | **Inject** | `react.ttse.inject_enabled` | `true` | Inject system-prompt guidance |
 | **Auto-dream** | `react.ttse.dream_enabled` | `true` | Silent bank hygiene |
@@ -630,6 +630,29 @@ A: No. Tool Security Guardrails corresponds to `permissions.enabled`, which defa
 A: The system automatically detects and hot-reloads the file after saving (most settings take effect immediately; a few require a process restart). If changes do not apply after a long time, check the YAML format or re-save via the Web configuration panel to trigger a refresh.
 
 ---
+
+## Observability and trajectory configuration
+
+The template enables `observability.enabled` by default. An explicitly configured
+`observability` mapping also defaults to enabled when the field is omitted. An
+absent, null or non-mapping section is disabled at runtime, so a minimal config
+does not start an exporter by itself. UI and evolution capture still work without
+this section; explicit debug force retains its separate export intent.
+
+`observability.enabled` controls export for Agent, Team and Code in the same
+AgentServer process. After editing `config.yaml`, the next request through any
+of these modes refreshes all Swarm export demands, including an idle mode's
+demand. Turning it off preserves capture needed by evolution or plugins.
+Explicit debug force and externally initialized providers retain their own
+export intent.
+
+The SQLite writer is enabled when either `trajectory_ui.enabled` or
+`trajectory_ui.diagnosis_enabled` is true. Disable both to stop new writes on
+the next request, including writes previously enabled by another mode. Existing
+files remain available on disk and queued records may drain during shutdown.
+Re-enabling the switch starts the writer again. Saving the file alone does not
+synchronously stop an idle process's provider or writer. Code shares the Agent
+lifecycle; it does not introduce a separate observability switch.
 
 ## Keeping sessions and SQLite trajectories indefinitely
 

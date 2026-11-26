@@ -29,6 +29,19 @@ async function setup(bindings = [http, websocket], options = {}) {
   return { host, storage, async set(value) { assert.equal(host.acceptOperation(operation(value)), true); await Promise.resolve(); } };
 }
 
+test('a suspended connection has no usable declarations but is awaiting them', async () => {
+  const app = await setup([]);
+  assert.equal(app.host.hasUsableDeclarations(), true);
+  assert.equal(app.host.isAwaitingDeclarations(), false);
+  app.host.suspendConnection();
+  assert.equal(app.host.hasUsableDeclarations(), false);
+  assert.equal(app.host.hasDeclarations(), false);
+  assert.equal(app.host.isAwaitingDeclarations(), true);
+  app.host.configure(declarations([], 'gateway-one'));
+  assert.equal(app.host.hasUsableDeclarations(), true);
+  assert.equal(app.host.isAwaitingDeclarations(), false);
+});
+
 test('localStorage isolates packages and Gateway identities and deletes the execution-time value', async () => {
   const app = await setup([]);
   await app.set({ credential: 'one', revision: 3 });

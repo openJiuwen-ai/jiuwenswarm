@@ -295,7 +295,7 @@ async def test_public_complete_stop_during_unverified_hello_does_not_terminate_p
         connection = await connect_with_retry(path, timeout=15)
         hello = await asyncio.wait_for(connection.recv(), 5)
         legacy = {key: value for key, value in hello.items() if key not in {
-            "deployment_scope", "process_created",
+            "deployment_scope", "process_created", "process_started",
         }}
         legacy["protocol"] = protocol
 

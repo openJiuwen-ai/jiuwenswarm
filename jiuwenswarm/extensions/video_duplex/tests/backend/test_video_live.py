@@ -3363,7 +3363,8 @@ async def test_joyai_structured_independent_delegate_reaches_shared_service(
         ("match", "en", "en"),
         ("match", "zh", "zh-CN"),
         ("match", "zh-CN", "zh-CN"),
-        ("match", "", "zh-CN"),
+        # Empty preferred_language falls through _yaml_or_en → en.
+        ("match", "", "en"),
         ("invalid", "en", "en"),
     ],
 )
@@ -3374,6 +3375,10 @@ def test_tool_language_uses_app_language_only_for_match(
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config",
         lambda: {"preferred_language": app_language},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+        lambda: app_language if app_language else "en",
     )
     assert settings.tool_language() == expected
 
