@@ -1115,14 +1115,15 @@ def _move_if_absent(old: Path, new: Path) -> None:
     if new.exists():
         _migrate_absorb(old, new)
         return
-    new.parent.mkdir(parents=True, exist_ok=True)
     try:
+        new.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(old), str(new))
     except FileNotFoundError:
         pass
     except OSError as exc:
-        # 尽力而为：整树剪切失败（如源侧文件被残留进程占用）仅告警，
-        # 幂等迁移下次启动重试，不让单点失败中断整轮布局迁移
+        # 尽力而为：目标父目录创建失败或整树剪切失败（如源侧文件被残留
+        # 进程占用）仅告警，幂等迁移下次启动重试，不让单点失败中断整轮
+        # 布局迁移（与 _migrate_absorb_file 的降级形态一致）
         logger.warning("[Migration] failed to move %s -> %s: %s", old, new, exc)
 
 
