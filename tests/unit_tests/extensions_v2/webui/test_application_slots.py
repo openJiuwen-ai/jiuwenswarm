@@ -142,7 +142,7 @@ def test_session_slot_still_requires_a_chat_id() -> None:
 
 
 @pytest.mark.parametrize("slot_id", ["application.menu", "application.menu.main", "task.function", "task.function.main"])
-def test_task_slots_require_a_connection_instead_of_a_chat(slot_id: str) -> None:
+def test_navigation_slots_require_a_connection_instead_of_a_chat(slot_id: str) -> None:
     target = RenderTarget("", slot_id, "webui.workbench-v2", "task-inspector", connection_id="socket-a")
     assert target.resolved_scope == "application"
     assert validate_target(target).ok
@@ -153,7 +153,7 @@ def test_task_slots_require_a_connection_instead_of_a_chat(slot_id: str) -> None
 
 
 @pytest.mark.asyncio
-async def test_application_menu_compatibility_and_session_scope_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_application_menu_compatibility_and_session_scope_rejection() -> None:
     from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, Event, ExtensionEventBus
     from jiuwenswarm.extensions_v2.webui.models import UiActionInput
     from jiuwenswarm.extensions_v2.webui.schema import apply_slot_scope
