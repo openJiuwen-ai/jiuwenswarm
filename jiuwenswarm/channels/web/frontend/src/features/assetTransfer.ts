@@ -203,8 +203,9 @@ export async function uploadAssetPackage(file: File, deps: AssetTransferDeps = {
  *  换回与 upload-temp 同构的暂存路径（防护一致：仅 .zip、体积上限、TTL 回收），
  *  调用方随后统一走 assets.import。
  *  仅 WS 入口：服务端有意不声明 REST 路由（webHttpClient ROUTES 亦有意无
- *  此条目）。调用前提 desktopReady 依赖桌面壳桥接（pywebview），浏览器部署
- *  （含企业版默认 HTTP 传输）恒为 false，不会触达本函数。 */
+ *  此条目，取舍依据链见该处注释）。调用前提 desktopReady 由桌面壳 pywebview
+ *  桥决定（见 useDesktopLocalFilePickerReady），纯浏览器部署恒为 false；
+ *  桌面壳传输方式由 app_web._runtime_web_transport 注入，个人版默认 websocket。 */
 export async function stageLocalAssetPackage(path: string, deps: AssetTransferDeps = {}): Promise<string> {
   const request = deps.request ?? webRequest;
   const result = await request<{ path?: string }>('assets.stage_local', { path });
