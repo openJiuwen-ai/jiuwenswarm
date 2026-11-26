@@ -28,6 +28,9 @@ export function stripUploadDocumentBlocks(content: string): string {
     // keeps ordinary query text containing the marker intact.
     .replace(/(?:^|\r?\n)【上传文档】(?:\r?\n|$)[\s\S]*$/u, '')
     .replace(/(?:^|\r?\n)【上传文档[:：][^\r\n]*(?:\r?\n|$)[\s\S]*$/u, '')
+    // `_auto_title` collapses newlines to spaces before persist; also cover
+    // already-written bad titles: `【上传文档】 @...` or `query 【上传文档】 @...`.
+    .replace(/(?:^|\s)【上传文档】\s+@[\s\S]*$/u, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

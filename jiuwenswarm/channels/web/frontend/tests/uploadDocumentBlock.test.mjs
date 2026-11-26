@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   stripUploadDocumentBlocks,
+  toDisplaySessionTitle,
   toUploadDocumentHints,
   withUploadDocumentBlock,
 } from '../node_modules/.cache/upload-document-block/utils/documentMessage.js';
@@ -80,6 +81,26 @@ test('stripUploadDocumentBlocks removes a legacy block with a named marker', () 
   const content = '总结这份文档\n【上传文档：需求.pdf】\n/uploads/需求.pdf';
 
   assert.equal(stripUploadDocumentBlocks(content), '总结这份文档');
+});
+
+test('stripUploadDocumentBlocks removes a collapsed auto-title upload block', () => {
+  assert.equal(stripUploadDocumentBlocks('【上传文档】 @/.../todo.json'), '');
+  assert.equal(
+    stripUploadDocumentBlocks('总结这份文档 【上传文档】 @/uploads/spec.txt'),
+    '总结这份文档',
+  );
+});
+
+test('toDisplaySessionTitle strips collapsed bad titles for the sidebar', () => {
+  assert.equal(toDisplaySessionTitle('【上传文档】 @/.../todo.json'), '');
+  assert.equal(
+    toDisplaySessionTitle('总结\n【上传文档】\n@/uploads/spec.txt'),
+    '总结',
+  );
+  assert.equal(
+    toDisplaySessionTitle('总结 【上传文档】 @/uploads/spec.txt'),
+    '总结',
+  );
 });
 
 test('toUploadDocumentHints keeps only document records with a filename', () => {
