@@ -75,13 +75,16 @@ _REQUIRED_SKILL_KEY = "required_skill"
 # name here does not register the tool; an input list without it is unchanged.
 _PINNED_SCHEMA_TOOL_NAME = "recall_compressed_context"
 _EAGER_DEEPRESEARCH_BINDINGS_KEY = "__eager_deepresearch_bindings__"
-_DEEPRESEARCH_CONTEXT_TOOLS = frozenset({
+_DEEPRESEARCH_DIRECT_CONTEXT_TOOLS = frozenset({
     "deepresearch_execute",
     "deepresearch_stream",
+    "deepresearch_register_report",
+})
+_DEEPRESEARCH_CONTEXT_TOOLS = _DEEPRESEARCH_DIRECT_CONTEXT_TOOLS | {
     "deepresearch_prepare_rewrite",
     "deepresearch_commit_rewrite",
     "deepresearch_generate_rewrite_html",
-})
+}
 _OFFICE_CLAW_SCHEDULE_THREAD_PIN_TOOLS = frozenset(
     {
         "office_claw_register_scheduled_task",
@@ -807,7 +810,7 @@ class ProgressiveToolRail(DeepAgentRail):
         if tool_name and await self._skill_gate_blocks_direct_call(ctx, tool_name):
             self._reject_tool_not_available(ctx, tool_name)
             return
-        if tool_name not in {"deepresearch_execute", "deepresearch_stream"}:
+        if tool_name not in _DEEPRESEARCH_DIRECT_CONTEXT_TOOLS:
             return
         manager = self._bind_deepresearch_context(tool_name)
         manager.__enter__()
@@ -829,7 +832,7 @@ class ProgressiveToolRail(DeepAgentRail):
             or getattr(tool_call, "name", "")
             or ""
         ).strip()
-        if tool_name in {"deepresearch_execute", "deepresearch_stream"}:
+        if tool_name in _DEEPRESEARCH_DIRECT_CONTEXT_TOOLS:
             tool_call_id = str(getattr(tool_call, "id", "") or id(inputs))
             bindings = ctx.extra.get(_EAGER_DEEPRESEARCH_BINDINGS_KEY, {})
             manager = bindings.pop(tool_call_id, None) if isinstance(bindings, dict) else None

@@ -29,6 +29,7 @@ def get_deepresearch_tools() -> list[Any]:
         deepresearch_commit_rewrite,
         deepresearch_generate_rewrite_html,
         deepresearch_prepare_rewrite,
+        deepresearch_register_report,
     )
 
     return [
@@ -37,6 +38,7 @@ def get_deepresearch_tools() -> list[Any]:
         deepresearch_prepare_rewrite,
         deepresearch_commit_rewrite,
         deepresearch_generate_rewrite_html,
+        deepresearch_register_report,
     ]
 
 __all__ = [
