@@ -10,6 +10,9 @@ import os
 import sys
 from pathlib import Path
 
+from jiuwenswarm.common.process_identity import process_start_marker as process_start_marker
+from jiuwenswarm.common.process_identity import validate_process_identity
+
 
 class WorkerIdentityError(RuntimeError):
     """Deployment identity needs correction before an explicit recovery."""
@@ -150,6 +153,15 @@ def read_launch_payload() -> dict:
         return payload
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise RuntimeError("Invalid Worker parent identity") from exc
+
+
+def hello_matches_process(hello: dict, process) -> bool:
+    """Check HELLO using shared birth-identity rules, including protocol 2."""
+    try:
+        validate_process_identity(process.pid, hello, process=process)
+    except RuntimeError:
+        return False
+    return True
 
 
 def data_scope() -> str:

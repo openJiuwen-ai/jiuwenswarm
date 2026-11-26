@@ -80,6 +80,8 @@ debug 服务状态和新的钉钉 OAuth PID 记录保存操作系统进程身份
 
 debug 服务身份不可验证时，显式指定的 `--legacy-worker-pid` 仍可进入 Worker 独立归属校验及清理流程；不向未知身份的 Front 发送信号，保留 debug 状态，并以非零退出码报告服务整体停止尚未确认。OAuth 超时清理在二次校验或退出等待中失败时，状态查询返回 `authorization_cleanup_failed`，保留 pending 记录及凭据，不写入 `expired` 退出标记；后续查询继续校验进程状态。
 
+develop 还发送可选的 `process_started` 原生启动标记，用于兼容观察方之间的时钟修正差异。该字段不可读时为空，不影响有效 ticks 的握手；它不能替代 protocol 2 必须声明的创建时间或 ticks，也不放宽旧时间戳的身份匹配。双方都有可读 ticks 时仍优先使用 ticks。
+
 ## Worker 输出日志
 
 resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<UUID>[-<owner>].stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，使用当前 Worker socket 路径父目录下的 `worker-logs`。自定义 socket 路径时，默认日志目录随之变化；`front_loopback` 同样按传入的 socket 路径选择默认日志目录。该设置不改变 IPC 端点位置。

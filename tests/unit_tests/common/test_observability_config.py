@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Unified ``observability`` section and the legacy two-section migration."""
+"""Unified ``observability`` section and the legacy shape migrations."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import yaml
 from jiuwenswarm.common import observability_config
 from jiuwenswarm.common.config import migrate_config_from_template
 from jiuwenswarm.common.observability_config import (
-    is_observability_scope_enabled,
+    is_observability_enabled,
     migrate_legacy_observability_config,
     observability_export_settings,
     resolve_observability_section,
@@ -54,17 +54,19 @@ def _legacy_config(*, team: dict | None = None, agent: dict | None = None) -> di
 @pytest.fixture(autouse=True)
 def reset_legacy_warning():
     observability_config._legacy_warning_emitted = False
+    observability_config._scope_warning_emitted = False
     yield
     observability_config._legacy_warning_emitted = False
+    observability_config._scope_warning_emitted = False
 
 
 class TestMigrateLegacyObservabilityConfig:
     @staticmethod
-    def test_no_legacy_sections_is_a_no_op():
-        config = {"observability": {"team": {"enabled": True}}}
+    def test_canonical_config_is_a_no_op():
+        config = {"observability": {"enabled": True, "exporter": "file"}}
 
         assert migrate_legacy_observability_config(config) is False
-        assert config == {"observability": {"team": {"enabled": True}}}
+        assert config == {"observability": {"enabled": True, "exporter": "file"}}
 
     @staticmethod
     def test_untouched_legacy_defaults_fold_into_one_section():
@@ -79,8 +81,9 @@ class TestMigrateLegacyObservabilityConfig:
         assert "agent_observability" not in config
         assert config["other"] == {"kept": True}
         section = config["observability"]
-        assert section["team"] == {"enabled": True}
-        assert section["agent"] == {"enabled": False}
+        assert section["enabled"] is True  # team was on, so the switch is on
+        assert "team" not in section
+        assert "agent" not in section
         assert section["exporter"] == "file"
         assert section["endpoint"] == "http://localhost:4317"
         # Each section kept its own shipped default; the new template decides.
@@ -101,10 +104,9 @@ class TestMigrateLegacyObservabilityConfig:
         migrate_legacy_observability_config(config)
 
         section = config["observability"]
+        assert section["enabled"] is True
         assert section["exporter"] == "otlp_grpc"
         assert section["endpoint"] == "http://jaeger:4317"
-        assert section["team"] == {"enabled": True}
-        assert section["agent"] == {"enabled": True}
 
     @staticmethod
     def test_conflicting_edits_prefer_the_enabled_section(caplog):
@@ -117,6 +119,7 @@ class TestMigrateLegacyObservabilityConfig:
             migrate_legacy_observability_config(config)
 
         assert config["observability"]["endpoint"] == "http://b:4317"
+        assert config["observability"]["enabled"] is True
         assert "endpoint differs" in caplog.text
 
     @staticmethod
@@ -129,6 +132,7 @@ class TestMigrateLegacyObservabilityConfig:
         migrate_legacy_observability_config(config)
 
         assert config["observability"]["service_name"] == "team-svc"
+        assert config["observability"]["enabled"] is True
 
     @staticmethod
     def test_single_legacy_section_migrates_alone():
@@ -136,7 +140,7 @@ class TestMigrateLegacyObservabilityConfig:
 
         migrate_legacy_observability_config(config)
 
-        assert config["observability"] == {"agent": {"enabled": True}, "exporter": "otlp_http"}
+        assert config["observability"] == {"enabled": True, "exporter": "otlp_http"}
 
     @staticmethod
     def test_canonical_values_win_and_legacy_only_fills_gaps():
@@ -148,7 +152,7 @@ class TestMigrateLegacyObservabilityConfig:
         migrate_legacy_observability_config(config)
 
         assert config["observability"] == {
-            "team": {"enabled": True},
+            "enabled": True,  # the canonical scope switch beats the legacy flag
             "exporter": "console",
             "sample_rate": 0.5,
         }
@@ -160,7 +164,6 @@ class TestMigrateLegacyObservabilityConfig:
 
         assert migrate_legacy_observability_config(config) is True
         assert config == {"observability": {}}
-
 
     @staticmethod
     def test_conflict_warning_never_logs_values(caplog):
@@ -178,16 +181,87 @@ class TestMigrateLegacyObservabilityConfig:
         assert config["observability"]["langfuse_secret_key"] == "sk-team-secret"
 
 
+class TestScopeSwitchFold:
+    """The retired ``observability.team`` / ``observability.agent`` switches."""
+
+    @staticmethod
+    def test_both_false_is_the_only_false():
+        config = {
+            "observability": {"team": {"enabled": False}, "agent": {"enabled": False}},
+        }
+
+        assert migrate_legacy_observability_config(config) is True
+        assert config["observability"] == {"enabled": False}
+
+    @staticmethod
+    def test_either_true_wins():
+        config = {
+            "observability": {"team": {"enabled": True}, "agent": {"enabled": False}},
+        }
+        assert migrate_legacy_observability_config(config) is True
+        assert config["observability"] == {"enabled": True}
+
+        config = {
+            "observability": {"team": {"enabled": False}, "agent": {"enabled": True}},
+        }
+        assert migrate_legacy_observability_config(config) is True
+        assert config["observability"] == {"enabled": True}
+
+    @staticmethod
+    def test_absent_side_counts_as_false():
+        config = {"observability": {"team": {"enabled": False}}}
+
+        assert migrate_legacy_observability_config(config) is True
+        assert config["observability"] == {"enabled": False}
+
+    @staticmethod
+    def test_existing_enabled_wins_over_scope_switches():
+        config = {
+            "observability": {"enabled": False, "team": {"enabled": True}},
+        }
+
+        assert migrate_legacy_observability_config(config) is True
+        assert config["observability"] == {"enabled": False}
+
+    @staticmethod
+    def test_switch_block_without_enabled_key_reads_false():
+        config = {"observability": {"team": {}}}
+
+        assert migrate_legacy_observability_config(config) is True
+        assert config["observability"] == {"enabled": False}
+
+    @staticmethod
+    def test_section_without_switches_is_untouched():
+        config = {"observability": {"exporter": "file"}}
+
+        assert migrate_legacy_observability_config(config) is False
+        assert config == {"observability": {"exporter": "file"}}
+
+
 class TestResolveObservabilitySection:
     @staticmethod
     def test_canonical_section_is_returned_as_is():
-        config = {"observability": {"agent": {"enabled": True}, "exporter": "otlp_grpc"}}
+        config = {"observability": {"enabled": True, "exporter": "otlp_grpc"}}
 
         section = resolve_observability_section(config)
 
-        assert is_observability_scope_enabled(section, "agent") is True
-        assert is_observability_scope_enabled(section, "team") is False
+        assert is_observability_enabled(section) is True
         assert observability_export_settings(section) == {"exporter": "otlp_grpc"}
+
+    @staticmethod
+    def test_scope_switches_are_folded_at_read_time(caplog):
+        config = {"observability": {"team": {"enabled": False}, "agent": {"enabled": False}}}
+
+        with caplog.at_level("WARNING"):
+            section = resolve_observability_section(config)
+            resolve_observability_section(config)
+
+        assert section == {"enabled": False}
+        assert config == {"observability": {"team": {"enabled": False}, "agent": {"enabled": False}}}
+        assert caplog.text.count("folded") == 1
+        # Pure scope-switch configs never carried the older top-level sections.
+        assert "deprecated" not in caplog.text
+        assert observability_config._legacy_warning_emitted is False
 
     @staticmethod
     def test_legacy_config_is_read_without_mutating_it(caplog):
@@ -197,7 +271,7 @@ class TestResolveObservabilitySection:
             section = resolve_observability_section(config)
             resolve_observability_section(config)
 
-        assert is_observability_scope_enabled(section, "team") is True
+        assert is_observability_enabled(section) is True
         assert observability_export_settings(section) == {"exporter": "otlp_grpc"}
         assert "team_observability" in config
         assert "observability" not in config
@@ -215,23 +289,34 @@ class TestResolveObservabilitySection:
                 section = resolve_observability_section(config)
 
         assert section["endpoint"] == "http://a:4317"
+        assert section["enabled"] is True
         assert caplog.text.count("endpoint differs") == 1
 
     @staticmethod
     def test_canonical_config_never_logs_deprecation(caplog):
         with caplog.at_level("WARNING"):
-            resolve_observability_section({"observability": {"agent": {"enabled": True}}})
+            resolve_observability_section({"observability": {"enabled": False}})
 
         assert "deprecated" not in caplog.text
+        assert "folded" not in caplog.text
         assert observability_config._legacy_warning_emitted is False
+        assert observability_config._scope_warning_emitted is False
 
     @staticmethod
-    def test_missing_section_resolves_to_disabled():
-        section = resolve_observability_section({})
+    @pytest.mark.parametrize("config", [{}, {"observability": None}, {"observability": False}, {"observability": []}])
+    def test_missing_or_invalid_section_does_not_enable_export(config):
+        section = resolve_observability_section(config)
 
-        assert section == {}
-        assert is_observability_scope_enabled(section, "team") is False
-        assert is_observability_scope_enabled(section, "agent") is False
+        assert section == {"enabled": False}
+        assert is_observability_enabled(section) is False
+
+    @staticmethod
+    @pytest.mark.parametrize("configured", [{}, {"exporter": "file"}])
+    def test_configured_section_without_switch_keeps_default_on(configured):
+        section = resolve_observability_section({"observability": configured})
+
+        assert section == configured
+        assert is_observability_enabled(section) is True
 
 
 class TestTemplateMigration:
@@ -259,8 +344,10 @@ class TestTemplateMigration:
         assert "team_observability" not in migrated
         assert "agent_observability" not in migrated
         section = migrated["observability"]
-        assert section["team"]["enabled"] is False
-        assert section["agent"]["enabled"] is True
+        # team was off but agent was on: the merged switch keeps tracing on.
+        assert section["enabled"] is True
+        assert "team" not in section
+        assert "agent" not in section
         assert section["exporter"] == "otlp_grpc"
         assert section["endpoint"] == "http://jaeger:4317"
         # Fields the operator never set come from the new template.
@@ -279,3 +366,12 @@ class TestTemplateMigration:
 
         assert migrate_config_from_template(template_path, user_config_path) is False
         assert user_config_path.read_text(encoding="utf-8") == first
+
+    @staticmethod
+    def test_template_ships_the_single_switch():
+        template = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+        section = template["observability"]
+
+        assert section["enabled"] is True
+        assert "team" not in section
+        assert "agent" not in section

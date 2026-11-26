@@ -79,6 +79,8 @@ Debug service state and new DingTalk OAuth PID records retain an OS process iden
 
 When debug service identity cannot be verified, an explicit `--legacy-worker-pid` can still enter independent Worker ownership validation and cleanup. No signal is sent to the unverified Front, debug state is retained, and a nonzero exit code reports that overall service shutdown remains unconfirmed. If OAuth timeout cleanup fails during identity revalidation or exit waiting, status queries return `authorization_cleanup_failed`, retain pending records and credentials, and do not write an `expired` exit marker. Later queries continue to check the process state.
 
+develop also sends the optional native `process_started` marker to tolerate clock-correction differences between observers. If that API is unavailable, the marker is null and valid ticks remain usable. It cannot replace the creation time or ticks required by protocol 2, or relax legacy timestamp identity checks. Comparable ticks still take priority.
+
 ## Worker output logs
 
 For both resident and `front_loopback` Workers, stdout inherits the launching process's output, while stderr is appended directly to a separate `runtime-worker-<UUID>[-<owner>].stderr.log` for each launch. Set `JIUWEN_WORKER_LOG_DIR` before starting the application or Supervisor to select its directory. If unset or empty, logs use `worker-logs` under the parent of the current Worker's socket path. A custom socket path therefore changes the default log directory; `front_loopback` also uses the supplied socket path to select this default. This setting does not change the IPC endpoint.

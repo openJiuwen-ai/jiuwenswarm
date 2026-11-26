@@ -74,13 +74,38 @@ def process_identity_matches(
     return observed == expected if tolerance == 0 else abs(observed - expected) < tolerance
 
 
+def process_start_marker(process: psutil.Process) -> float | None:
+    """Read psutil's native start marker, or None when access is restricted.
+
+    Compare this source only with ``process_started``; do not convert or copy
+    it into the creation timestamp or integer kernel-counter fields.
+    """
+    try:
+        if psutil.LINUX or psutil.OSX or psutil.NETBSD:
+            native = getattr(process, "_proc", None)
+            if callable(getattr(native, "create_time", None)):
+                try:
+                    return float(native.create_time(monotonic=True))
+                except TypeError:
+                    pass  # Older psutil does not accept the monotonic keyword.
+        return float(process.create_time())
+    except (psutil.Error, OSError, NotImplementedError):
+        return None
+
+
 def process_identity_fields(pid: int) -> dict[str, float | int | None]:
     """Build additive HELLO fields, retaining the legacy timestamp's units."""
     identity = read_process_identity(pid)
+    try:
+        started = process_start_marker(psutil.Process(pid))
+    except (psutil.Error, OSError):
+        started = None
     if isinstance(identity, str):
-        return {"process_created": None, "process_start_ticks": int(identity[len(_TICKS_PREFIX):])}
+        return {"process_created": None, "process_start_ticks": int(identity[len(_TICKS_PREFIX):]),
+                "process_started": started}
     # A peer may have stricter permissions than this process.
-    return {"process_created": identity, "process_start_ticks": proc_start_ticks(pid)}
+    return {"process_created": identity, "process_start_ticks": proc_start_ticks(pid),
+            "process_started": started}
 
 
 def validate_process_identity(
@@ -89,6 +114,7 @@ def validate_process_identity(
     """Validate HELLO identity fields and retain the identity actually checked."""
     identity = read_process_identity(pid, process=process)
     created, ticks = hello.get("process_created"), hello.get("process_start_ticks")
+    started = hello.get("process_started")
     if hello.get("protocol") == 2 and created is None and ticks is None:
         raise RuntimeError("Worker protocol 2 HELLO requires a process identity")
     if created is not None:
@@ -97,6 +123,12 @@ def validate_process_identity(
             raise RuntimeError("Worker returned an invalid process creation time")
         if not math.isfinite(created) or created <= 0:
             raise RuntimeError("Worker returned an invalid process creation time")
+    if started is not None:
+        invalid_type = isinstance(started, bool) or not isinstance(started, (int, float))
+        if invalid_type:
+            raise RuntimeError("Worker returned an invalid process start marker")
+        if not math.isfinite(started) or started < 0:
+            raise RuntimeError("Worker returned an invalid process start marker")
     if ticks is not None:
         if type(ticks) is not int or ticks <= 0:
             raise RuntimeError("Worker returned invalid process start ticks")
@@ -112,6 +144,18 @@ def validate_process_identity(
                 raise RuntimeError("Worker PID identity changed")
             # Retain the stable counter even if create_time is readable now.
             return tick_identity
+    if started is not None:
+        observed_process = process if process is not None else psutil.Process(pid)
+        observed_marker = process_start_marker(observed_process)
+        if observed_marker is None:
+            if created is None or isinstance(identity, str):
+                raise psutil.AccessDenied(pid=pid, msg="cannot verify the Worker process start marker")
+            # The optional API must not block a verifiable creation timestamp.
+        else:
+            if started != observed_marker:
+                raise RuntimeError("Worker PID identity changed")
+            # Retain this observer's OS birth identity for lifecycle checks.
+            return identity
     if created is not None and not process_identity_matches(pid, created, process=process):
         raise RuntimeError("Worker PID identity changed")
     # Protocol 1 Workers omitted birth fields; retain their OS-validated identity.

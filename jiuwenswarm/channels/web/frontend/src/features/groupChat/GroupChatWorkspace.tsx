@@ -23,6 +23,8 @@ import { MemberPicker } from './MemberPicker';
 import { createAgentGroupManagementClient } from '../agentManagement/groupClient';
 import type { AgentGroupCatalogItem } from '../agentManagement/types';
 import { ExecutionCard } from './ExecutionCard';
+import { useWebUIPanels } from '../webui';
+import { webUIPluginPanelIcon } from '../webui/react/webuiPanelIcon';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
@@ -41,6 +43,8 @@ function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: Gr
     }]} onPreview={() => onPreview(file)} />
   </div>;
 }
+
+type GroupPanel = 'members' | 'files' | `plugin:${string}`;
 
 /** One open group conversation with its member and file panels; the group list lives in the chat sidebar. */
 export function GroupChatWorkspace({ groupId, directory, onBack }: {
@@ -71,7 +75,12 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const [fileError, setFileError] = useState('');
   const [refreshError, setRefreshError] = useState('');
   const [addingMembers, setAddingMembers] = useState(false);
-  const [panel, setPanel] = useState<'members' | 'files' | null>('members');
+  const [panel, setPanel] = useState<GroupPanel | null>('members');
+  // The group id is the session id, so plugins contribute through the regular right-panel slot.
+  const pluginPanels = useWebUIPanels({ slotId: 'conversation.panel.right', sessionId: group ? groupId : null });
+  const pluginPanel = panel?.startsWith('plugin:')
+    ? pluginPanels.panels.find((item) => `plugin:${item.panelId}` === panel) ?? null : null;
+  const sidePanel = panel?.startsWith('plugin:') && !pluginPanel ? null : panel;
   const [preview, setPreview] = useState<GroupFile | null>(null);
   const [panelWidth, setPanelWidth] = useState(400);
   const panelResizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
@@ -537,6 +546,13 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
           <button type="button" className="group-chat-icon-button" aria-label={t('groupChat.files')} aria-pressed={!preview && panel === 'files'}
             title={t('groupChat.files')} onClick={() => { setPreview(null); setPanel(panel === 'files' && !preview ? null : 'files'); }}
             data-testid="group-chat-toggle-files"><Folder size={18} /></button>
+          {pluginPanels.panels.map((item) => {
+            const key: GroupPanel = `plugin:${item.panelId}`;
+            return <button type="button" className="group-chat-icon-button" key={item.key} aria-label={item.title}
+              aria-pressed={!preview && sidePanel === key} title={item.title}
+              onClick={() => { setPreview(null); setPanel(sidePanel === key && !preview ? null : key); }}
+              data-testid="group-chat-toggle-plugin" data-variant={item.panelId}>{webUIPluginPanelIcon(item)}</button>;
+          })}
           <button type="button" className="group-chat-icon-button" aria-label={t('groupChat.settings')} aria-pressed={!preview && panel === 'members'}
             title={t('groupChat.settings')} onClick={() => { setPreview(null); setPanel(panel === 'members' && !preview ? null : 'members'); }}
             data-testid="group-chat-toggle-members"><Settings size={18} /></button>
@@ -682,7 +698,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       </div>
     </div> : <div className="group-chat-empty" data-testid="group-chat-unavailable">{t('groupChat.unavailable')}</div>}
     </div>
-    {group && (preview || panel) && (
+    {group && (preview || sidePanel) && (
       <div
         className="resize-divider resize-divider--workspace touch-none select-none"
         role="separator"
@@ -697,10 +713,15 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
     {group && preview && <aside className="group-chat-panel is-preview" data-testid="group-chat-panel" data-variant="preview" style={{ width: panelWidth, flexShrink: 0 }}>
       <GroupFilePreviewPanel file={preview} onBack={() => setPreview(null)} />
     </aside>}
-    {group && panel && !preview && <aside className="group-chat-panel" data-testid="group-chat-panel" data-variant={panel} style={{ width: panelWidth, flexShrink: 0 }}>
+    {group && sidePanel && !preview && <aside className={`group-chat-panel${pluginPanel ? ' is-plugin' : ''}`} data-testid="group-chat-panel" data-variant={pluginPanel ? 'plugin' : sidePanel} style={{ width: panelWidth, flexShrink: 0 }}>
       <button type="button" className="group-chat-icon-button group-chat-panel-close" aria-label={t('common.close')}
         onClick={() => setPanel(null)} data-testid="group-chat-panel-close"><X size={18} /></button>
-      {panel === 'files' ? <>
+      {pluginPanel ? <>
+        <header><h2>{pluginPanel.title}</h2></header>
+        <div className="group-chat-plugin-body" data-testid="group-chat-plugin-body">
+          {pluginPanels.renderPanel(pluginPanel.key)}
+        </div>
+      </> : sidePanel === 'files' ? <>
         <header><h2>{t('groupChat.files')}</h2></header>
         <div className="group-chat-file-list" data-testid="group-chat-file-list">
           {!files.size && <p className="group-chat-muted" data-testid="group-chat-no-files">{t('groupChat.noFiles')}</p>}

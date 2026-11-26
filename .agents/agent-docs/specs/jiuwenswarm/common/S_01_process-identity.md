@@ -13,6 +13,7 @@ modules:
   - jiuwenswarm/server/jiuwenmate
 files:
   - jiuwenswarm/common/process_identity.py
+  - jiuwenswarm/server/supervisor/identity.py
   - jiuwenswarm/server/supervisor/resident_lifecycle.py
   - jiuwenswarm/server/supervisor/runtime_supervisor.py
   - jiuwenswarm/server/worker/service.py
@@ -54,6 +55,12 @@ Supervisor 优先使用双方可读取的 ticks，再兼容时间戳；校验得
 protocol 2 HELLO 必须至少提供一个有效身份字段；两个字段都缺失或为空时拒绝握手。
 仅 protocol 1 允许省略创建字段，并继续执行旧部署、用户、可执行文件等校验、保存本地 OS 身份。
 创建时间必须为有限正数，ticks 必须为正整数，bool 均不是有效身份；本次不升级 IPC 版本。
+
+develop 的可选 `process_started` 保存平台原生的稳定启动标记，不与时间戳或 ticks 换算、混放。
+其读取受限时发送 null，不得因此中断仍有有效 ticks 的 HELLO；它也不能替代 protocol 2 必须声明的
+`process_created` / `process_start_ticks`。双方有可比较 ticks 时仍以 ticks 为准；否则可用同字段的精确
+标记比较兼容观察方 psutil 时钟修正差异，并保留本地 OS 出生身份供后续检查。
+未声明稳定标记的旧时间戳仍须通过原有身份比较，不增加通用时间容差以放行无法确认的 PID。
 
 实例 PID 文件的 `started_at` 保持数值展示时间；新增的 `process_identity` 字段保存受限系统上的身份凭据。
 群 owner 兼容旧数值与稳定 psutil hash；回退记录使用带类型的内核计数。
