@@ -8,8 +8,12 @@ Admission uses Team quota leases (MySQL/SQLite). Roster count is the fallback.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 import re
+import threading
+import uuid
 import types
 from typing import Any
 
@@ -18,24 +22,45 @@ from agent_gateway.enterprise.team.quota_policy import DEFAULT_MAX_TEAMMATES, re
 logger = logging.getLogger(__name__)
 
 TEAM_MEMBER_QUOTA_EXCEEDED = "TEAM_MEMBER_QUOTA_EXCEEDED"
+TEAM_MEMBER_QUOTA_UNAVAILABLE = "TEAM_MEMBER_QUOTA_UNAVAILABLE"
+
+
+def _t(message_id: str, **params: Any) -> str:
+    from jiuwenswarm.common.i18n import t
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    return t(message_id, language=resolve_preferred_language(), **params)
 
 
 def teammate_quota_user_message(limit: int) -> str:
     """User-facing spawn failure. ``limit`` is whole-team size including the leader."""
-    return (
-        f"人数已满：该团队最多{max(int(limit), 0)}人（含 Leader），无法再添加队员"
-    )
+    return _t("enterprise.team.teammate_full", limit=max(int(limit), 0))
 
 
 def teammate_quota_fail_reason(limit: int) -> str:
     return f"{TEAM_MEMBER_QUOTA_EXCEEDED}: {teammate_quota_user_message(limit)}"
 
 
+def teammate_quota_unavailable_reason() -> str:
+    """Failure when admission cannot be evaluated (deadlock/timeout/outage).
+
+    A transient DB failure is not evidence that the team is full; claiming
+    "人数已满" would be false. Tell the user to retry instead.
+    """
+    return (
+        f"{TEAM_MEMBER_QUOTA_UNAVAILABLE}: "
+        "成员配额校验暂时不可用，本次未创建成员，请稍后重试"
+    )
+
+
 def requested_team_size_user_message(requested: int, limit: int) -> str:
     """User-facing refusal when the original sentence already exceeds the cap."""
-    return (
-        f"无法创建：你要求的是 {int(requested)} 人团队，"
-        f"该团队最多 {max(int(limit), 0)} 人（含 Leader）。"
+    return _t(
+        "enterprise.team.requested_size_over",
+        requested=int(requested),
+        limit=max(int(limit), 0),
     )
 
 
@@ -70,6 +95,8 @@ def _pattern(*parts: str) -> str:
 
 
 _INCLUDING_LEADER = (
+    re.compile(_pattern(_COUNT_EDGE, _COUNT, r"\s*人(?:的)?[^，。；;、\s]{0,12}团队")),
+    re.compile(_pattern(_COUNT_EDGE, _COUNT, r"\s*个人(?:的)?[^，。；;、\s]{0,12}团队")),
     re.compile(_pattern(_COUNT_EDGE, _COUNT, r"\s*人团队")),
     re.compile(_pattern(_COUNT_EDGE, _COUNT, r"\s*个人的团队")),
     re.compile(_pattern(_COUNT_EDGE, _COUNT, r"\s*个成员")),
@@ -161,10 +188,7 @@ def enterprise_recruit_constraint(query: str) -> str:
     if size is None:
         return ""
     recruit = max(size - 1, 0)
-    return (
-        f"【团队人数约束】本次含组长共 {size} 人，再招募 {recruit} 名队员。"
-        "侧边成员列表不含组长，不要因为列表里没有组长而再多招募一人。"
-    )
+    return _t("enterprise.team.recruit_constraint", size=size, recruit=recruit)
 
 
 def requested_team_size_over_limit(
@@ -187,16 +211,141 @@ def requested_team_size_over_limit(
 
 
 def whole_team_member_limit(request: Any, config_base: dict[str, Any] | None = None) -> tuple[int, int]:
-    """``(limit, default)`` using the same per-user cap as teammate spawn."""
+    """``(limit, default)`` using the same per-user cap as teammate spawn.
+
+    When the caller identity cannot be resolved, enterprise must not let a
+    template's legacy ``max_teammates`` widen the platform default; the quota
+    policy is the only source of truth there.
+    """
+    from jiuwenswarm.enterprise.edition import is_enterprise
     from jiuwenswarm.enterprise.team.handlers import request_identity
     from jiuwenswarm.enterprise.team.quota import get_team_quota_service
 
     identity = request_identity(request)
     if str(getattr(identity, "user_id", "") or "").strip():
         limits = get_team_quota_service().resolve_limits(identity)
-        return int(limits.max_teammates_per_team), int(limits.default_teammates)
+        limit = int(limits.max_teammates_per_team)
+        if is_enterprise() and limit <= 0:
+            # A malformed policy row must not disable admission.
+            limit = DEFAULT_MAX_TEAMMATES
+        return limit, int(limits.default_teammates)
+    if is_enterprise():
+        return DEFAULT_MAX_TEAMMATES, DEFAULT_MAX_TEAMMATES
     cap = int(resolve_max_teammates(config_base if isinstance(config_base, dict) else None, None))
     return cap, cap
+
+
+def predefined_team_size_user_message(team_size: int, limit: int) -> str:
+    """User-facing refusal when a team template/package exceeds the cap.
+
+    Unlike ``requested_team_size_user_message`` the size comes from the
+    materialized roster (an AgentGroup or a Team skill), not from the user's
+    sentence, so the wording must not claim the user asked for it.
+    """
+    return (
+        f"无法创建：该团队预设 {int(team_size)} 人（含 Leader），"
+        f"超过该团队最多 {max(int(limit), 0)} 人。"
+    )
+
+
+def count_predefined_quota_members(members: Any) -> int:
+    """Count predefined members that occupy a teammate quota slot.
+
+    The Leader is registered separately by ``build_team`` and must not be
+    counted twice. Dicts from raw team configs and spec objects from an
+    AgentGroup assembly are both accepted.
+    """
+    total = 0
+    for member in members or []:
+        if isinstance(member, dict):
+            role = member.get("role_type") or member.get("role")
+            name = member.get("member_name")
+            if name is None:
+                name = member.get("name")
+        else:
+            role = getattr(member, "role_type", None)
+            name = getattr(member, "member_name", None)
+        if name is not None and not str(name).strip():
+            continue
+        role_value = getattr(role, "value", role)
+        if str(role_value or "").strip().lower() == "leader":
+            continue
+        total += 1
+    return total
+
+
+def session_owner_identity(session_id: str) -> Any | None:
+    """Resolve the owning user from session metadata for background team builds.
+
+    Expert/Skill teams materialize outside a chat round, so there is no
+    request contextvar to read. The session metadata written when the user
+    started the Team keeps the owner identity.
+    """
+    from jiuwenswarm.enterprise.team.control_store import OwnerIdentity
+
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        metadata = get_session_metadata(sid, cache_bust=True) or {}
+    except Exception:  # noqa: BLE001
+        logger.debug("[MemberLimits] session metadata read failed: %s", sid, exc_info=True)
+        return None
+    channel_metadata = metadata.get("channel_metadata") or {}
+    routing = (
+        channel_metadata.get("routing") if isinstance(channel_metadata, dict) else {}
+    ) or {}
+    candidate = OwnerIdentity(
+        user_id=str(metadata.get("user_id") or "").strip(),
+        group_id=str(routing.get("group_id") or "").strip(),
+        bot_id=str(routing.get("bot_id") or "").strip(),
+    )
+    return candidate if candidate.user_id else None
+
+
+async def resolve_session_member_limit(session_id: str) -> tuple[int, Any | None]:
+    """``(whole-team member cap, owner)`` for a team materialized off the chat path.
+
+    Falls back to the platform default cap when the owner cannot be resolved
+    in enterprise so the guard never silently disappears; personal edition
+    keeps the config-derived cap through ``whole_team_member_limit`` semantics.
+    """
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from jiuwenswarm.enterprise.team.quota import (
+        get_team_quota_service,
+        team_quota_enabled,
+    )
+
+    if not is_enterprise() or not team_quota_enabled():
+        return 0, None
+    owner = session_owner_identity(session_id)
+    if owner is None:
+        logger.warning(
+            "[MemberLimits] owner unresolved for team build; using default cap: session=%s",
+            session_id,
+        )
+        return DEFAULT_MAX_TEAMMATES, None
+    try:
+        from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+
+        limits = await run_team_store(get_team_quota_service().resolve_limits, owner)
+        limit = int(limits.max_teammates_per_team)
+        if limit <= 0:
+            # Enterprise quota always has a platform default; a zero/malformed
+            # policy must not silently turn the guard off.
+            limit = DEFAULT_MAX_TEAMMATES
+        return limit, owner
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[MemberLimits] member limit resolve failed; using default cap: session=%s",
+            session_id,
+            exc_info=True,
+        )
+        return DEFAULT_MAX_TEAMMATES, owner
 
 
 _GUARD_ATTR = "_jiuwen_teammate_limit_attached"
@@ -211,6 +360,143 @@ async def quota_member_names(backend: Any) -> list[str]:
     return [member.member_name for member in members if member.role != "host_managed"]
 
 
+_SWARMFLOW_QUOTA_LOCK = threading.RLock()
+_SWARMFLOW_QUOTA: dict[str, dict[str, Any]] = {}
+_SWARMFLOW_GUARD_ATTR = "_jiuwen_swarmflow_quota_guard"
+
+
+def register_swarmflow_worker_quota(
+    *,
+    session_id: str,
+    team_name: str,
+    max_teammates: int,
+    on_quota_exceeded: Any = None,
+) -> None:
+    """Bind the team's whole-team cap to swarmflow worker admission.
+
+    Swarmflow workers are ephemeral executors created by ``TeamWorkerBackend``;
+    they never call ``TeamBackend.spawn_member``, so the normal teammate guard
+    cannot see them. Registering the cap here lets the backend guard reject
+    workers beyond ``max_teammates - 1`` (the leader is not a worker).
+    """
+    from jiuwenswarm.enterprise.team.quota import teammate_spawn_slots
+
+    worker_limit = teammate_spawn_slots(max_teammates)
+    entry = {
+        "worker_limit": max(int(worker_limit), 0),
+        "team_limit": max(int(max_teammates), 0),
+        "on_quota_exceeded": on_quota_exceeded,
+    }
+    keys = [str(k or "").strip() for k in (session_id, team_name)]
+    with _SWARMFLOW_QUOTA_LOCK:
+        for key in keys:
+            if key:
+                _SWARMFLOW_QUOTA[key] = entry
+
+
+def clear_swarmflow_worker_quota(*, session_id: str = "", team_name: str = "") -> None:
+    keys = [str(k or "").strip() for k in (session_id, team_name)]
+    with _SWARMFLOW_QUOTA_LOCK:
+        for key in keys:
+            if key:
+                _SWARMFLOW_QUOTA.pop(key, None)
+
+
+def _swarmflow_quota_for(session_id: str, team_name: str) -> dict[str, Any] | None:
+    with _SWARMFLOW_QUOTA_LOCK:
+        for key in (str(session_id or "").strip(), str(team_name or "").strip()):
+            if key and key in _SWARMFLOW_QUOTA:
+                return _SWARMFLOW_QUOTA[key]
+    return None
+
+
+def claim_swarmflow_worker_slot(backend: Any, call_key: str = "") -> tuple[bool, int, int]:
+    """Claim one worker slot for a swarmflow run.
+
+    Returns ``(allowed, used, team_limit)``. A repeated ``call_key`` (engine
+    retry of the same call) is idempotent and does not consume another slot.
+    """
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from jiuwenswarm.enterprise.team.quota import team_quota_enabled
+
+    if not is_enterprise() or not team_quota_enabled():
+        return True, 0, 0
+    entry = _swarmflow_quota_for(
+        str(getattr(backend, "_session_id", "") or ""),
+        str(getattr(backend, "_team_name", "") or ""),
+    )
+    if entry is None:
+        return True, 0, 0
+    seen = getattr(backend, "_jiuwen_swarmflow_quota_seen", None)
+    if seen is None:
+        seen = set()
+        setattr(backend, "_jiuwen_swarmflow_quota_seen", seen)
+    key = str(call_key or "").strip()
+    if key and key in seen:
+        return True, len(seen), int(entry["team_limit"])
+    limit = int(entry["worker_limit"])
+    if len(seen) >= limit:
+        callback = entry.get("on_quota_exceeded")
+        if callable(callback):
+            try:
+                callback(
+                    used=len(seen) + 1,
+                    limit=int(entry["team_limit"]),
+                    member_name=key,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("[MemberLimits] swarmflow quota notice failed", exc_info=True)
+        return False, len(seen) + 1, int(entry["team_limit"])
+    seen.add(key or f"worker-{len(seen)}")
+    return True, len(seen), int(entry["team_limit"])
+
+
+def install_swarmflow_worker_quota_guard() -> bool:
+    """Wrap ``TeamWorkerBackend.run`` once so swarmflow workers hit the quota.
+
+    The current openjiuwen backend has no public worker-admission hook, so the
+    shared ``run`` choke point is wrapped once per process. Revisit this shim
+    if agent-core exposes a first-class quota callback.
+    """
+    try:
+        from openjiuwen.agent_teams.workflow.backends.team_worker_backend import (
+            TeamWorkerBackend,
+        )
+        from openjiuwen.agent_teams.workflow.engine.errors import BackendError
+    except Exception:  # noqa: BLE001 - older openjiuwen has no swarmflow backend
+        return False
+    original = getattr(TeamWorkerBackend, "run", None)
+    if not callable(original):
+        return False
+    if getattr(original, _SWARMFLOW_GUARD_ATTR, False):
+        return True
+
+    async def _guarded_run(
+        self: Any,
+        prompt: str,
+        opts: dict,
+        schema_json: Any,
+        *,
+        call_key: str | None = None,
+    ):
+        # Each invocation owns one active slot, including concurrent retries.
+        slot_key = uuid.uuid4().hex
+        allowed, _used, team_limit = claim_swarmflow_worker_slot(self, slot_key)
+        if not allowed:
+            raise BackendError(teammate_quota_fail_reason(team_limit), retryable=False)
+        try:
+            return await original(self, prompt, opts, schema_json, call_key=call_key)
+        finally:
+            seen = getattr(self, "_jiuwen_swarmflow_quota_seen", None)
+            if seen is not None:
+                seen.discard(slot_key)
+
+    setattr(_guarded_run, _SWARMFLOW_GUARD_ATTR, True)
+    TeamWorkerBackend.run = _guarded_run
+    logger.info("[MemberLimits] swarmflow worker quota guard installed")
+    return True
+
+
 async def count_non_leader_members(backend: Any) -> int:
     """Count runtime slots excluding the leader and host-managed identities."""
     leader_name = str(getattr(backend, "leader_member_name", "") or "")
@@ -221,6 +507,104 @@ async def count_non_leader_members(backend: Any) -> int:
 async def count_team_members(backend: Any) -> int:
     """Count runtime slots including the leader, excluding host-managed identities."""
     return len(await quota_member_names(backend))
+
+
+_RETRYABLE_DB_CODES = frozenset({1205, 1213})
+_RESERVE_RETRY_ATTEMPTS = 3
+_RESERVE_RETRY_BASE_DELAY = 0.05
+_SPAWN_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _db_error_codes(exc: BaseException) -> set[int]:
+    """Integer error codes carried by an exception and its causes.
+
+    SQLAlchemy wraps the driver error, so 1213/1205 may live on ``orig``,
+    ``__cause__`` or ``__context__`` rather than on ``exc.args``.
+    """
+    codes: set[int] = set()
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        args = getattr(current, "args", ())
+        if args and isinstance(args[0], int):
+            codes.add(args[0])
+        for attr in ("orig", "__cause__", "__context__"):
+            nested = getattr(current, attr, None)
+            if isinstance(nested, BaseException):
+                stack.append(nested)
+    return codes
+
+
+def _is_retryable_db_error(exc: BaseException) -> bool:
+    """InnoDB deadlock (1213) / lock-wait timeout (1205) are safe to retry."""
+    return bool(_db_error_codes(exc) & _RETRYABLE_DB_CODES)
+
+
+def _team_spawn_lock(team_id: str) -> asyncio.Lock:
+    """Per-team admission lock for this process.
+
+    It only removes same-process contention on the lease row; the shared DB
+    lease remains the cross-process source of truth.
+    """
+    lock = _SPAWN_LOCKS.get(team_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SPAWN_LOCKS[team_id] = lock
+    return lock
+
+
+def _teammate_quota_fails_closed(svc: Any) -> bool:
+    """Whether an unevaluable admission must be refused instead of guessed.
+
+    Personal edition and the SQLite single-process store keep the historical
+    roster fallback. Enterprise shared-store quota fails closed so a deadlock
+    cannot turn into an over-quota team.
+    """
+    try:
+        from jiuwenswarm.enterprise.edition import is_enterprise
+        from jiuwenswarm.enterprise.team.quota import team_quota_enabled
+
+        if not is_enterprise() or not team_quota_enabled():
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        use_shared = getattr(svc, "use_shared_store", None)
+        return bool(use_shared()) if callable(use_shared) else True
+    except Exception:  # noqa: BLE001
+        # Enterprise quota is enabled but the store could not be classified;
+        # refusing is safer than guessing a member count.
+        return True
+
+
+async def _reserve_teammate_spawn_with_retry(svc: Any, **kwargs: Any) -> Any:
+    """Reserve a spawn slot, retrying transient InnoDB lock conflicts."""
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+
+    for attempt in range(_RESERVE_RETRY_ATTEMPTS):
+        try:
+            return await run_team_store(svc.reserve_teammate_spawn, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if (
+                not _is_retryable_db_error(exc)
+                or attempt + 1 >= _RESERVE_RETRY_ATTEMPTS
+            ):
+                raise
+            delay = _RESERVE_RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(
+                0, _RESERVE_RETRY_BASE_DELAY
+            )
+            logger.warning(
+                "[MemberLimits] quota reserve lock conflict; retry %s/%s in %.3fs",
+                attempt + 1,
+                _RESERVE_RETRY_ATTEMPTS - 1,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    raise AssertionError("reserve retry loop exhausted without a result")
 
 
 def attach_teammate_limit_guard(
@@ -279,46 +663,58 @@ def attach_teammate_limit_guard(
             from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
             svc = get_team_quota_service()
-            try:
-                lease = await run_team_store(
-                    svc.reserve_teammate_spawn,
-                    team_id=tid,
-                    member_name=str(member_name),
-                    owner=owner,
-                    leader_member_name=leader_name,
-                )
-            except TeamQuotaExceeded as exc:
-                reason = teammate_quota_fail_reason(exc.limit)
-                logger.warning("[MemberLimits] %s", reason)
-                if callable(on_quota_exceeded):
-                    try:
-                        on_quota_exceeded(
-                            used=exc.used,
-                            limit=exc.limit,
-                            member_name=str(member_name),
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.debug("[MemberLimits] quota notice callback failed", exc_info=True)
-                return MemberOpResult.fail(reason)
-            except Exception:  # noqa: BLE001
-                logger.warning("[MemberLimits] quota reserve failed; falling back to roster count", exc_info=True)
-                lease = None
-            else:
+            # Same-process spawns for one team hit the lease transaction one at
+            # a time; the shared lease still enforces the cap across processes.
+            async with _team_spawn_lock(tid):
                 try:
-                    result = await original(member_name, *args, **kwargs)
-                except Exception:
-                    await run_team_store(svc.release_lease, lease)
-                    raise
-                if not getattr(result, "ok", True):
-                    await run_team_store(svc.release_lease, lease)
+                    lease = await _reserve_teammate_spawn_with_retry(
+                        svc,
+                        team_id=tid,
+                        member_name=str(member_name),
+                        owner=owner,
+                        leader_member_name=leader_name,
+                    )
+                except TeamQuotaExceeded as exc:
+                    reason = teammate_quota_fail_reason(exc.limit)
+                    logger.warning("[MemberLimits] %s", reason)
+                    if callable(on_quota_exceeded):
+                        try:
+                            on_quota_exceeded(
+                                used=exc.used,
+                                limit=exc.limit,
+                                member_name=str(member_name),
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.debug("[MemberLimits] quota notice callback failed", exc_info=True)
+                    return MemberOpResult.fail(reason)
+                except Exception:  # noqa: BLE001
+                    if _teammate_quota_fails_closed(svc):
+                        logger.warning(
+                            "[MemberLimits] quota reserve unavailable; refusing spawn: "
+                            "team=%s member=%s",
+                            tid,
+                            member_name,
+                            exc_info=True,
+                        )
+                        return MemberOpResult.fail(teammate_quota_unavailable_reason())
+                    logger.warning("[MemberLimits] quota reserve failed; falling back to roster count", exc_info=True)
+                    lease = None
+                else:
+                    try:
+                        result = await original(member_name, *args, **kwargs)
+                    except Exception:
+                        await run_team_store(svc.release_lease, lease)
+                        raise
+                    if not getattr(result, "ok", True):
+                        await run_team_store(svc.release_lease, lease)
+                        return result
+                    await run_team_store(
+                        svc.commit_lease,
+                        lease,
+                        team_id=tid,
+                        member_name=str(member_name),
+                    )
                     return result
-                await run_team_store(
-                    svc.commit_lease,
-                    lease,
-                    team_id=tid,
-                    member_name=str(member_name),
-                )
-                return result
         limit = roster_limit
         if limit <= 0:
             try:

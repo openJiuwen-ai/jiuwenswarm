@@ -19,7 +19,7 @@ import type {
 } from '../contracts/normalized.ts';
 import { createProtocolPipeline } from '../protocol/process.ts';
 import { createRestoreReconnectTracker } from './restoreReconnect.ts';
-import { readAppearanceFrame, type WebUIAppearanceFrame } from '../appearance/appearance.ts';
+import { readAppearanceFrame, type WebUIAppearanceSnapshot } from '../appearance/appearance.ts';
 import type { WebUIProtocol } from '../protocol/process.ts';
 import type { WebUIConnectionState, WebUIDispatchReceipt, WebUITransportHandlers } from '../transport/types.ts';
 import type {
@@ -80,9 +80,12 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   let ownerCounter = 0;
   let version = 0;
   let connectionState: WebUIConnectionState = transport.getConnectionState();
-  // Appearance follows the connection: revisions restart with each connection, and a contribution
+  // Appearance follows the connection: revisions restart with each connection, and a snapshot
   // kept through a disconnect is dropped if no provider re-applies it after the reconnect readies.
-  let appearance: WebUIAppearanceFrame | null = null;
+  // `appearance` is what consumers see; `latestAppearance` waits there while holds are active.
+  let appearance: WebUIAppearanceSnapshot | null = null;
+  let latestAppearance: WebUIAppearanceSnapshot | null = null;
+  let appearanceHolds = 0;
   let appearanceRevision = 0;
   let appearanceStale = false;
   const appearanceListeners = new Set<Listener>();
@@ -362,7 +365,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       }
       appearanceRevision = frame.revision;
       appearanceStale = false;
-      setAppearance(frame.appearance ? frame : null);
+      setAppearance(frame);
     },
     onConnectionStateChange(state) {
       if (disposed || state === connectionState) {
@@ -373,7 +376,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       if (state === 'connected' && restoreReconnect.onConnect()) clearRestoredPluginState();
       if (state !== 'connected') {
         appearanceRevision = 0;
-        appearanceStale = appearance !== null;
+        appearanceStale = latestAppearance !== null;
         nodeBindings.clear();
         for (const owner of owners.values()) {
           if (owner.scope === 'application') {
@@ -384,6 +387,13 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       refreshConnectedFlag();
       notifyAll();
       if (state === 'connected') {
+        // The host may have restarted while this page stayed open: target revisions then
+        // restart at 1, so comparing them with records from the previous process would
+        // drop every new frame until a page reload. Accept the replayed frames again;
+        // the kept snapshots stay visible until the host replaces them.
+        for (const record of records.values()) {
+          record.lastRenderRevision = -1;
+        }
         clearedRevisions.clear();
         void reportReadyAfterReconnect().then(() => {
           if (!disposed && appearanceStale && connectionState === 'connected') {
@@ -417,26 +427,44 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     void reportReadyAfterReconnect();
   }
 
-  async function notifyClosed(instanceKey: string, reason: string): Promise<WebUIDispatchReceipt | null> {
+  async function notifyClosed(instanceKey: string, reason: string, expectedRevision?: number, presentationId?: number): Promise<WebUIDispatchReceipt | null> {
     const record = records.get(instanceKey);
-    if (disposed || !record || connectionState !== 'connected') {
+    if (disposed || !record || connectionState !== 'connected'
+      || (expectedRevision !== undefined && record.snapshot.revision !== expectedRevision)) {
       return null;
     }
     try {
       return await transport.dispatch({
         event: 'ui.closed',
         target: { ...record.target, scope: 'application' },
-        payload: { reason, revision: record.snapshot.revision },
+        payload: { reason, revision: record.snapshot.revision,
+          ...(presentationId === undefined ? {} : { presentation_id: presentationId }) },
       });
     } catch {
       return null;
     }
   }
 
-  function setAppearance(next: WebUIAppearanceFrame | null): void {
-    if (next === appearance) return;
-    appearance = next;
+  function setAppearance(next: WebUIAppearanceSnapshot | null): void {
+    latestAppearance = next;
+    if (appearanceHolds === 0) publishAppearance();
+  }
+
+  function publishAppearance(): void {
+    if (latestAppearance === appearance) return;
+    appearance = latestAppearance;
     for (const listener of [...appearanceListeners]) listener();
+  }
+
+  function holdAppearance(): () => void {
+    appearanceHolds += 1;
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      appearanceHolds -= 1;
+      if (appearanceHolds === 0 && !disposed) publishAppearance();
+    };
   }
 
   async function sendReady(owner: MountedOwner, instanceKey: string, packageId?: string): Promise<void> {
@@ -447,6 +475,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       return;
     }
     owner.readySent = true;
+    owner.onReadyStart?.(packageId);
     try {
       const receipt = await transport.dispatch({
         event: 'ui.ready',
@@ -459,10 +488,10 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         },
         payload: owner.readyPayload ? { ...owner.readyPayload } : {},
       });
-      owner.onReadySettled?.(receipt);
+      owner.onReadySettled?.(receipt, packageId);
     } catch {
       // Ready failures do not affect mounting; reconnect retries the request.
-      owner.onReadySettled?.(null);
+      owner.onReadySettled?.(null, packageId);
     }
   }
 
@@ -848,6 +877,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     refreshContributions,
     getConnectionState: () => connectionState,
     getAppearance: () => appearance,
+    holdAppearance,
     notifyClosed,
     subscribeAppearance: (listener) => {
       appearanceListeners.add(listener);

@@ -53,22 +53,22 @@ PR 面向 `develop`，遵循 `.gitcode/` 模板，说明问题、变更与测试
 
 排查某个 session 的行为（轨迹、工具调用、团队状态）时直接到这些位置取数，不要在源码或家目录里反复搜索。
 
-- **数据根 `<root>`**：环境变量 `JIUWENSWARM_DATA_DIR`；未设置时为 `JIUWENSWARM_HOME`（默认用户家目录）下的 `.jiuwenswarm`。取值函数集中在 `jiuwenswarm/common/utils.py`（`get_user_workspace_dir()` / `get_agent_root_dir()` / `get_agent_sessions_dir()` / `get_runtime_state_path()` 等），新增路径一律走这些函数。
-- **会话轨迹** `<root>/agent/sessions/<session_id>/`：
+- **数据根 `<root>`**：环境变量 `JIUWENSWARM_DATA_DIR`；未设置时为 `JIUWENSWARM_HOME`（默认用户家目录）下的 `.jiuwenswarm`。数据按所有权分层：**用户业务数据收敛到 `<root>/profile/`（统一用户数据目录，企业版挂共享卷 PVC/NFS，跨 agent server 共活）**，系统数据（IPC/锁/config/缓存/本机安装物/登录态）保持数据根原位（企业版不挂私有卷：数据根本身为 Pod 本地存储，仅 profile/ 经共享卷挂载；系统态随 Pod 生命周期，不共享）。取值函数集中在 `jiuwenswarm/common/utils.py`（`get_user_workspace_dir()` / `get_profile_data_dir()` / `get_workspace_root_dir()` / `get_agent_root_dir()` / `get_agent_sessions_dir()` / `get_runtime_state_path()` 等），新增路径一律走这些函数——**用户业务数据走 `get_profile_data_dir()`（zone 级：.trace/application_plugins）或 `get_workspace_root_dir()`（工作空间根，agent 子树与 .agent_teams/.agent_history/runtime_state 隔离数据）派生（落共享卷），系统数据保持数据根原位**。归类铁律：登录态 `auth/` 属系统态（机器域凭据副本，"每台机器一把"），不因"用户登录产生"归业务。
+- **会话轨迹** `<root>/profile/agent/sessions/<session_id>/`（企业版租户在 `<root>/profile/profile_{tk}/agent/sessions/`）：
   - `metadata.json`：`mode`、`team_name`、`session_team_dispatch_mode`（autonomous / scheduled）、`model_selection`、`work_mode` 等会话级事实。
   - `history.jsonl`：每行一条事件。`chat.tool_call` 带 `tool_call.arguments` 与 `reasoning_content`；`chat.tool_result` 的 `rendered_result` 就是模型实际看到的工具返回文本；另有 `team.task`（看板事件）、`context.usage`、`chat.final`。
-  - 归档会话在 `<root>/agent/sessions_archived/`。
-- **会话运行态** `<root>/config/runtime_state/<session_id>.yaml`（当前模型、可用模型、语言、git 上下文），同目录 `<session_id>.<digest>.skill-retrieval.json` 是 skill 检索预算快照。
-- **团队数据** `<root>/.agent_teams/`：
+  - 归档会话在 `<root>/profile/agent/sessions_archived/`。
+- **会话运行态** `<root>/profile/runtime_state/<session_id>.yaml`（企业版租户在 `<root>/profile/profile_{tk}/runtime_state/`，随工作空间/租户隔离；当前模型、可用模型、语言、git 上下文；自 config/ 迁出），同目录 `<session_id>.<digest>.skill-retrieval.json` 是 skill 检索预算快照。
+- **团队数据** `<root>/profile/.agent_teams/`（企业版租户在 `<root>/profile/profile_{tk}/.agent_teams/`，按租户隔离）：
   - `team.db`：所有团队的成员名册、任务、消息（SQLite，由 agent-core `openjiuwen.agent_teams` 维护）。
-  - `<team_name>/`（web 会话默认 `jiuwen_team_<session_id>`）：`sessions/<session_id>/tasks/task-*.md` 任务正文；`team-workspace/prompts/` 是 `build_team` 时物化的全部系统提示词与工具描述（`system/`、`tool/<domain>/`、`tool/fragments/`、`tool/tool.param.<lang>.md`），**不按 dispatch_mode 过滤**，成员可用文件工具读到；`team-workspace/artifacts/` 交付物；`workspaces/<member>_workspace/` 成员私有工作区。
-- **日志** `<root>/agent/.logs/`：`agent_server.log`（agents / server）、`gateway.log`、`full.log`（汇总）、`context_usage.jsonl`，按时间轮转为 `*_YYYYMMDD_HHMMSS.log`；openjiuwen core 的日志在 `<root>/logs/jiuwen.log` 与 `jiuwen_details.log`。gateway 日志目录可由 `AGENTOS_GATEWAY_LOG_DIR` 单独指定。
-- **观测轨迹库**（`trajectory_ui.enabled` 开启时）：`<root>/.trace/` 下每 session 一个 SQLite，路径解析见 `jiuwenswarm/observability/config.py`。
+  - `<team_name>/`（web 会话默认 `jiuwen_team_<session_id>`）：`sessions/<session_id>/tasks/task-*.md` 任务正文；`team-workspace/prompts/` 是 `build_team` 时物化的全部系统提示词与工具描述（`infra/`、`tool/<domain>/`、`tool/fragments/`、`tool/tool.param.<lang>.md`），**不按 dispatch_mode 过滤**，成员可用文件工具读到；`team-workspace/artifacts/` 交付物；`workspaces/<member>_workspace/` 成员私有工作区。
+- **日志**（数据根 `logs/` 下，按组件分子目录；企业版容器打印 stdout 由客户采集留存，文件副本随 Pod 本地存储（随 Pod 生命周期，企业版由客户从 stdout 采集留存））：业务日志 `<root>/logs/agent/`：`agent_server.log`（agents / server）、`gateway.log`、`full.log`（汇总）、`context_usage.jsonl`；core 日志 `<root>/logs/core/jiuwen.log` 与 `jiuwen_details.log`；CLI 诊断 `<root>/logs/process_cli/`。gateway 日志目录可由 `AGENTOS_GATEWAY_LOG_DIR` 单独指定。
+- **观测轨迹库**（`trajectory_ui.enabled` 开启时）：`<root>/.trace/sessions/` 下每 session 一个 SQLite（+WAL/SHM，文件名 = 会话 ID 哈希；SQLite WAL 不上共享卷 → 留在数据根 Pod 本地存储，不迁移），路径解析见 `jiuwenswarm/observability/config.py`。
 
 快速定位一个 session 的全部落点：
 
 ```bash
-grep -rl "<session_id>" "<root>/agent/sessions" "<root>/config/runtime_state" "<root>/agent/.logs"
+grep -rl "<session_id>" "<root>/profile/agent/sessions" "<root>/profile/runtime_state" "<root>/logs/agent"
 ```
 
 ## 配置与智能体协作

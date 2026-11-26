@@ -5,7 +5,7 @@
  * 一次性收集所有页答案后提交；确认后前端合成「问题澄清」卡注入对话流。
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -88,6 +88,7 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
   const [page, setPage] = useState(0);
   const [reached, setReached] = useState(0);
   const [states, setStates] = useState<Record<number, PageState>>({});
+  const statesRef = useRef<Record<number, PageState>>({});
   const [submitting, setSubmitting] = useState(false);
   const [submittingAction, setSubmittingAction] = useState<string | null>(null);
 
@@ -116,7 +117,11 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
 
   const patch = useCallback(
     (updater: (prev: PageState) => PageState) => {
-      setStates((prev) => ({ ...prev, [page]: updater(prev[page] ?? emptyPage()) }));
+      setStates((prev) => {
+        const next = { ...prev, [page]: updater(prev[page] ?? emptyPage()) };
+        statesRef.current = next;
+        return next;
+      });
     },
     [page],
   );
@@ -133,7 +138,15 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
             skippedNoSelection: false,
           };
         }
-        return { ...prev, selected: [label], customActive: false, skippedNoSelection: false };
+        // 选中预定义选项后，清掉自定义输入及其激活态，避免旧 custom_input
+        // 与新的 selected_options 同时提交，导致后端拿到混合答案。
+        return {
+          ...prev,
+          selected: [label],
+          custom: '',
+          customActive: false,
+          skippedNoSelection: false,
+        };
       });
     },
     [submitting, isMulti, patch],
@@ -149,8 +162,12 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
     [patch],
   );
 
-  /** 当前页是否选了 Other 却未填写自定义内容（禁止前进/提交，避免空答触发 thinking）。 */
-  const incompleteCustom = st.customActive && !st.custom.trim();
+  /**
+   * 当前页是否选了 Other 却未填写自定义内容（禁止前进/提交，避免空答触发 thinking）。
+   * 已经选中预定义选项时不再视为“自定义未完成”，否则残留的 customActive 会误禁用确认按钮。
+   */
+  const incompleteCustom =
+    st.customActive && st.selected.length === 0 && !st.custom.trim();
 
   /** 把某页状态转为一个 UserAnswer。 */
   const answerFor = useCallback(
@@ -164,11 +181,16 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
         return { question: q?.question, selected_options: [], custom_input: SKIPPED_ANSWER_TEXT };
       }
       // Other 已激活但未输入：不得回落成第一个普通选项（#2330）。
-      if (s.customActive && !customText) {
+      // 已选中预定义选项时优先使用 selected_options，不能被残留的 customActive 抢走。
+      if (s.customActive && s.selected.length === 0 && !customText) {
         return { question: q?.question, selected_options: [], custom_input: '' };
       }
       const answer: UserAnswer = { question: q?.question, selected_options: [...s.selected] };
-      if (customText) answer.custom_input = customText;
+      // 多选：选项与补充说明可以共存；单选：仅在没有预定义选项时提交 custom_input，
+      // 避免残留的 custom 与 selected_options 混用。
+      if (customText && (q?.multi_select || s.selected.length === 0)) {
+        answer.custom_input = customText;
+      }
       // 兜底：既无选择也无输入、且不是显式跳过时，默认第一个普通选项（避免后端拿到空答案）。
       // 该分支对应「点确定/下一步但什么都没选」这种情况，维持原有行为，不在本次改动范围内。
       if (answer.selected_options.length === 0 && !customText) {
@@ -220,13 +242,14 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
     (withEcho: boolean, overrides?: Record<number, PageState>, forcedTextByIdx?: Record<number, string>) => {
       if (submitting) return;
       setSubmitting(true);
+      const nextStates = overrides ?? statesRef.current;
       if (withEcho && echoAnswer) {
         const sid = useChatStore.getState().activeSessionId;
         if (sid) {
           const message: Message = {
             id: `qa-summary-${pending.request_id || Date.now()}`,
             role: 'assistant',
-            content: buildQaSummaryContent(buildSummary(overrides)),
+            content: buildQaSummaryContent(buildSummary(nextStates)),
             timestamp: new Date().toISOString(),
           };
           addMessage(sid, message);
@@ -234,7 +257,7 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
       }
       void onSubmit(
         pending.request_id,
-        buildAnswers(overrides, forcedTextByIdx),
+        buildAnswers(nextStates, forcedTextByIdx),
         pending.source,
       ).finally(() => setSubmitting(false));
     },

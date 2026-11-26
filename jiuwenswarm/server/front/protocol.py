@@ -16,14 +16,15 @@ from e2a.wire_codec import (
     encode_json_parse_error_wire,
 )
 
-from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.gateway_normalize import (
+from e2a.gateway_normalize import (
     E2A_FALLBACK_FAILED_KEY,
     E2A_INTERNAL_CONTEXT_KEY,
     E2A_LEGACY_AGENT_REQUEST_KEY,
 )
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.edition_gate import enterprise_only_denial
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,27 @@ def unsupported_method_wire(
         channel_id=channel_id if isinstance(channel_id, str) else "web",
         ok=False,
         payload={"error": f"unknown method: {method}", "code": "METHOD_NOT_FOUND"},
+    )
+    return encode_agent_response_for_wire(response, response_id=response.request_id)
+
+
+def rejected_method_wire(
+    method: Any, *, request_id: Any, channel_id: Any,
+) -> dict[str, Any] | None:
+    """Return a wire error when a method is unknown or blocked by the edition."""
+    error_wire = unsupported_method_wire(
+        method, request_id=request_id, channel_id=channel_id
+    )
+    if error_wire is not None:
+        return error_wire
+    denial = enterprise_only_denial(method)
+    if denial is None:
+        return None
+    response = AgentResponse(
+        request_id=request_id if isinstance(request_id, str) else "",
+        channel_id=channel_id if isinstance(channel_id, str) else "web",
+        ok=False,
+        payload={"error": denial, "code": "FORBIDDEN"},
     )
     return encode_agent_response_for_wire(response, response_id=response.request_id)
 
@@ -120,7 +142,7 @@ def parse_raw_message(raw: str | bytes) -> AgentRequest | dict[str, Any]:
         method = data["req_method"]
     request_id = legacy.get("request_id") if legacy is not None else env.request_id
     channel_id = legacy.get("channel_id", "web") if legacy is not None else env.channel
-    error_wire = unsupported_method_wire(method, request_id=request_id, channel_id=channel_id)
+    error_wire = rejected_method_wire(method, request_id=request_id, channel_id=channel_id)
     if error_wire is not None:
         return error_wire
 

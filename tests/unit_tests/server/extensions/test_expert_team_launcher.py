@@ -23,6 +23,18 @@ def isolate_organization_identity_store(monkeypatch, tmp_path):
     )
 
 
+@pytest.fixture(autouse=True)
+def bypass_enterprise_package_allowlist(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages.allows",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages.require_allowed",
+        lambda *args, **kwargs: None,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["org_summary_background", "org_expert_background"])
 async def test_only_summary_errors_notify_organization_runtime(monkeypatch, source):
@@ -537,6 +549,145 @@ async def test_launch_with_owner_uses_shared_db_for_task_and_message_managers(
         }
     ]
     assert runtime.pause_calls == [(launched.team_id, "sess-1")]
+
+
+@pytest.mark.asyncio
+async def test_launch_refuses_expert_roster_over_member_quota(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.enterprise.team import member_limits
+
+    shared_db = _FakeDb("/tmp/org-owner.db")
+    runtime = _FakeRuntime(shared_db)
+    runtime.entries["owner-team"] = _FakeAgent("owner-team", shared_db)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    class _PackageSpec:
+        def __init__(self, team_name: str, member_count: int) -> None:
+            self.team_name = team_name
+            self.metadata = {"capabilities": []}
+            self.storage = None
+            self.leader = SimpleNamespace(display_name="Leader", desc="leader")
+            self.predefined_members = [
+                SimpleNamespace(member_name=f"expert-{index}")
+                for index in range(member_count)
+            ]
+
+    async def _fake_build(**kwargs):
+        return _PackageSpec(kwargs["team_id"], 6)
+
+    async def _fake_limit(_session_id: str):
+        return 5, object()
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", _fake_build)
+    monkeypatch.setattr(member_limits, "resolve_session_member_limit", _fake_limit)
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.edition.is_enterprise", lambda: True
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.quota.team_quota_enabled", lambda: True
+    )
+
+    with pytest.raises(ValueError, match="该团队预设 7 人"):
+        await launcher.launch(
+            organization_id="org-1",
+            agent_group_name="sample-expert-group",
+            session_id="sess-1",
+            share_db_from_team_id="owner-team",
+        )
+
+    # Refused before activation, so there is nothing to roll back.
+    assert runtime.activate_calls == []
+    assert runtime.stop_calls == []
+
+
+@pytest.mark.asyncio
+async def test_launch_refuses_oversized_roster_without_donor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.enterprise.team import member_limits
+
+    runtime = _FakeRuntime(_FakeDb())
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    class _PackageSpec:
+        def __init__(self, team_name: str, member_count: int) -> None:
+            self.team_name = team_name
+            self.metadata = {"capabilities": []}
+            self.storage = None
+            self.leader = SimpleNamespace(display_name="Leader", desc="leader")
+            self.predefined_members = [
+                SimpleNamespace(member_name=f"expert-{index}")
+                for index in range(member_count)
+            ]
+
+    async def _fake_build(**kwargs):
+        return _PackageSpec(kwargs["team_id"], 6)
+
+    async def _fake_limit(_session_id: str):
+        return 5, object()
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", _fake_build)
+    monkeypatch.setattr(member_limits, "resolve_session_member_limit", _fake_limit)
+    monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: True)
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.quota.team_quota_enabled", lambda: True
+    )
+
+    with pytest.raises(ValueError, match="该团队预设 7 人"):
+        await launcher.launch(
+            organization_id="org-1",
+            agent_group_name="sample-expert-group",
+            session_id="sess-1",
+        )
+
+    # Standalone expert Teams must be checked before activation too.
+    assert runtime.activate_calls == []
+    assert runtime.stop_calls == []
+
+
+def test_attach_expert_member_guard_uses_runtime_team_id(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.team.expert_org import launcher as launcher_module
+
+    captured: dict[str, object] = {}
+
+    def _attach(_agent, **kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.member_limits.attach_teammate_limit_guard",
+        _attach,
+    )
+
+    owner = SimpleNamespace(user_id="user1")
+
+    launcher_module._attach_expert_member_guard(
+        object(), team_id="team-1", limit=5, owner=owner
+    )
+
+    assert captured == {"max_teammates": 5, "team_id": "team-1", "owner": owner}
+
+
+def test_attach_expert_member_guard_uses_roster_without_owner(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.team.expert_org import launcher as launcher_module
+
+    captured: dict[str, object] = {}
+
+    def _attach(_agent, **kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.member_limits.attach_teammate_limit_guard",
+        _attach,
+    )
+
+    launcher_module._attach_expert_member_guard(
+        object(), team_id="team-1", limit=5, owner=None
+    )
+
+    assert captured == {"max_teammates": 5, "team_id": "", "owner": None}
 
 
 @pytest.mark.asyncio
@@ -1135,10 +1286,16 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failed", [False, True])
 @pytest.mark.parametrize("source", ["org_expert_direct", "org_expert_background"])
-async def test_cleanup_push_failure_preserves_turn_result_and_unregisters(monkeypatch, failed, source):
+@pytest.mark.parametrize("diagnostic_failure", [False, True])
+async def test_cleanup_push_failure_preserves_turn_result_and_unregisters(monkeypatch, failed, source, diagnostic_failure):
     from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
     from jiuwenswarm.server.runtime.organization_execution import active_turns
+    if diagnostic_failure:
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.team.expert_org.turn_diagnostics.OrganizationTurnDiagnostics.stop",
+            AsyncMock(side_effect=RuntimeError("diagnostic cleanup failed")),
+        )
 
     async def stream(inputs, session):
         if failed:

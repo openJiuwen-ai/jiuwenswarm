@@ -118,12 +118,21 @@
     "processing": "处理中…",
     "retry": "重试",
     "selectedCount": "已选 {{count}} 个",
+    "noMatches": "没有匹配项",
     "editMenu": {
       "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
       "copy": "复制",
       "paste": "粘贴",
       "selectAll": "全选"
+    },
+    "pagination": {
+      "total": "共 {{count}} 个",
+      "prev": "上一页",
+      "next": "下一页",
+      "pageSize": "每页",
+      "jumpTo": "跳至",
+      "go": "确定"
     }
   },
   "a2ui": {
@@ -131,7 +140,11 @@
     "unavailable": "界面内容暂时无法显示，请稍后重试或重新生成结果。",
     "unavailableTitle": "界面内容暂时无法显示",
     "retry": "请稍后重试或重新生成结果",
-    "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}"
+    "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}",
+    "multipleChoice": {
+      "maxSelections": "{{description}}（最多选 {{count}} 项）",
+      "searchPlaceholder": "搜索选项"
+    }
   },
   "webui": {
     "entryLabel": "应用界面",
@@ -151,34 +164,64 @@
     "sessions": "会话",
     "cron": "定时任务",
     "skills": "技能",
+    "rea": "逆向工程",
     "connectorMarket": "扩展",
     "more": "更多",
     "settings": "设置",
     "logs": "日志",
     "update": "更新",
     "personalContext": "知识",
-    "appMarket": "应用"
+    "appMarket": "应用",
+    "workspace": "空间",
+    "approvals": "申请"
   },
   "appMarket": {
-    "pageResources": "页面",
-    "serviceResources": "服务",
     "resourceMemory": "内存",
-    "sharedProcess": "共享进程",
-    "webPageUnavailable": "浏览器页面占用不可获取",
-    "pageResourceHint": "每 3 秒更新应用市场主页面进程的 CPU 和驻留内存估算；CPU 按整机容量计。合计按进程去重，不含 GPU、子框架、主程序和 AI 会话。共享进程无法精确分摊。— 表示采样中或暂不可用。",
-    "localMachineResources": "本机",
-    "localServiceResources": "服务端（本地连接）",
-    "serverResources": "服务器",
-    "systemResourceHint": "每 3 秒更新整机 CPU 与物理内存占用，包含所有应用和操作系统。可获取时排除可回收内存，各系统估算口径可能不同。CPU 或内存连续 3 次达到 85% 时提醒，两项均低于 75% 时解除。",
-    "serverResourceHint": "统计后端服务所在机器，不是浏览器所在电脑。本地连接通常指向本机，但代理、端口转发可能指向远程服务器；容器可能返回宿主机指标。每 3 秒更新，CPU 或内存连续 3 次达到 85% 时提醒，两项均低于 75% 时解除。",
+    "cardMemory": "内存 {{size}}",
+    "localMachineResources": "本机总资源",
+    "localServiceResources": "本机总资源",
+    "serverResources": "服务器总资源",
+    "systemResourceHint": "每 3 秒更新本机整机 CPU 与物理内存占用，包含操作系统和其他所有程序，不是 WorkSwarm 单独占用。可获取时排除可回收内存，各系统估算口径可能不同。CPU 或内存连续 3 次达到 85% 时提醒，两项均低于 75% 时解除。",
+    "serverResourceHint": "统计运行后端服务的整台服务器 CPU 与内存占用，包含该机器上的所有进程，不是 WorkSwarm 单独占用。本地连接通常指向本机，但代理、端口转发可能指向远程服务器；容器可能返回宿主机指标。每 3 秒更新，CPU 或内存连续 3 次达到 85% 时提醒，两项均低于 75% 时解除。",
     "highResourceUsage": "整机资源占用偏高，建议停止暂时不用的应用或其他任务。",
-    "serviceResourceHint": "每 3 秒更新应用市场后端服务进程树的 CPU 和驻留内存估算；CPU 按整机容量计。数据属于服务所在机器，不含浏览器页面、主程序和 AI 会话。— 表示采样中或暂不可用。",
     "title": "应用",
-    "allApps": "全部应用",
-    "running": "运行中",
-    "market": "市场",
-    "marketLoadFailed": "加载应用市场失败",
-    "noMarketApps": "市场暂无应用",
+    "subtitle": "Swarm 应用的管理和监控",
+    "myApps": "我的应用",
+    "market": "应用广场",
+    "marketLoadFailed": "加载应用广场失败",
+    "noMarketApps": "应用广场暂无应用",
+    "moreActions": "更多操作：{{name}}",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "pinSuccess": "已将 {{name}} 置顶",
+    "unpinSuccess": "已取消 {{name}} 的置顶",
+    "pinFailed": "设置置顶失败",
+    "detailLoadFailed": "加载应用详情失败",
+    "aiRoles": {
+      "title": "AI 角色",
+      "empty": "尚未声明 AI 角色",
+      "loadFailed": "加载 AI 角色失败",
+      "agent": "单角色会话",
+      "team": "团队会话",
+      "teamBadge": "团队",
+      "leader": "队长"
+    },
+    "backToMyApps": "返回我的应用",
+    "backToMarket": "返回应用广场",
+    "sourceHub": "Hub",
+    "sourceLocal": "本地",
+    "yes": "是",
+    "no": "否",
+    "detail": {
+      "source": "来源",
+      "version": "版本",
+      "status": "状态",
+      "directory": "应用目录",
+      "packageSize": "包大小",
+      "sourceSize": "源文件大小",
+      "permissions": "权限",
+      "serverScript": "包含服务脚本"
+    },
     "install": "安装",
     "update": "更新",
     "installed": "已安装",
@@ -187,7 +230,7 @@
     "updateConfirm": "更新 {{name}} 到 v{{version}}{{size}}？将停止正在运行的实例，备份当前完整工作目录（含本地编辑），并将 data/ 和 Git 仓库复制到新版本。",
     "installServerWarning": "该应用包含 scripts/app_server.py，将在本机启动服务进程。",
     "installPermissions": "声明权限：{{list}}",
-    "installProjectNote": "该应用运行期需要项目上下文，将使用应用自己的项目。",
+    "installProjectNote": "安装时会为应用创建或绑定项目，供运行和编辑会话使用。",
     "installDirPrompt": "选择安装目录（留空使用默认目录）：",
     "installDirLabel": "安装目录（服务端路径）",
     "installDirHint": "目录位于运行后端服务的机器；最终会安装到该目录下的应用名子目录。",
@@ -201,6 +244,7 @@
     "updateSuccess": "已更新 {{name}}",
     "updateBackupSuccess": "已更新 {{name}}。旧工作目录备份在 {{path}}",
     "runDisabled": "当前部署禁止运行 Hub 应用随包携带的服务器脚本。",
+    "projectUnavailable": "无法为应用绑定可用项目，请检查项目后重试。",
     "alreadyInstalled": "该版本已安装",
     "alreadyLatest": "已是最新版本",
     "installCancelling": "正在取消安装…",
@@ -236,12 +280,14 @@
     "stop": "停止",
     "open": "打开",
     "openRestore": "打开／恢复应用",
+    "viewDetails": "查看详情",
     "openPreview": "打开应用预览",
     "edit": "编辑",
     "editSessionTitle": "编辑 {{name}}",
     "reloadPreview": "重新加载应用预览",
     "reloadFailed": "重新加载应用预览失败",
-    "editPrompt": "帮我修改应用“{{name}}”，源码入口：{{entryPath}}\n请保留应用已有的数据和存档。我要修改的内容是：",
+    "editPrompt": "帮我修改应用“{{name}}”（v{{version}}）。\n应用简介：{{description}}\n源码入口：{{entryPath}}\n\n请先阅读现有代码和数据，保留已有的数据与存档。建议按以下步骤进行：\n1. 说明当前实现、入口文件和关键数据；\n2. 按我的需求做最小修改并自测；\n3. 需要发布新版本时提醒我。\n我要修改的内容是：",
+    "noDescription": "暂无简介",
     "expandPane": "展开应用面板",
     "restorePane": "恢复分栏",
     "hidePane": "收起应用面板",
@@ -256,7 +302,6 @@
     "loading": "加载中...",
     "empty": "加载失败",
     "noApps": "暂无应用",
-    "noInstances": "暂无运行中的应用",
     "startSuccess": "应用已启动",
     "openFailed": "打开应用失败",
     "desktopUpdateRequired": "请使用更新后的桌面端重启，以使用内置浏览器",
@@ -264,6 +309,11 @@
     "stopSuccess": "应用已停止",
     "stopFailed": "停止失败",
     "deleteSuccess": "应用已删除",
+    "removeKeepFiles": "下架并保留文件",
+    "deleteCleanFiles": "删除并清理文件",
+    "removeKeepSuccess": "已下架，本地文件已保留",
+    "deleteCleanSuccess": "应用已删除并清理本地文件",
+    "deleteCleanConfirm": "删除应用“{{name}}”并清理本地文件？项目不受影响。",
     "uninstallCleanupWarning": "应用已从市场移除。本地文件未能完全清理，请检查目录 {{directory}}。",
     "deleteFailed": "删除失败",
     "deleteConfirm": "确定要删除此应用吗？相关实例将被停止。",
@@ -279,7 +329,8 @@
       "installed": "已安装",
       "notInstalled": "未安装",
       "needsRepair": "需修复",
-      "notFound": "未检测到"
+      "notFound": "未检测到",
+      "outdated": "版本过低"
     },
     "sections": {
       "about": "基本信息",
@@ -346,6 +397,7 @@
       "stale_origin": "加载项还指向旧的地址。点「修复」更新。"
     },
     "appsNotFound": "未检测到 {{apps}}。装好并打开一次后，回到这里安装。",
+    "appOutdated": "{{app}} 版本过低，升级到 {{version}} 或更高版本后，回到这里安装。",
     "listSeparator": "、",
     "errors": {
       "actionFailed": "操作没有完成，请重试。"
@@ -963,7 +1015,6 @@
       "affinityCapability": "此服务支持 Ascend KV-Cache 算力亲和",
       "affinityCapabilityDescription": "仅适用于已适配 agent_hint 协议的自定义服务。此项是人工声明，普通连通性测试不验证亲和能力。",
       "affinityAutoDisabled": "模型配置已保存；控制模型不再支持算力亲和，已自动关闭。若提示需要重启，请重启后使用。",
-
       "customModels": "自定义模型",
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
@@ -1235,6 +1286,7 @@
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "rsi": "RSI 递归自我改进",
+      "rea": "逆向工程",
       "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
       "teamOrganization": "Swarm Organization",
@@ -1324,6 +1376,12 @@
       "preferred_language": {
         "title": "Language",
         "description": "设置应用程序界面的显示语言。"
+      },
+      "max_context_size_mb": {
+        "title": "知识容量上限（MB）",
+        "description": "采集后超限时，回收至上限的60%。",
+        "placeholder": "10 至 10000，默认 50",
+        "invalid": "请输入 10 至 10000 之间的整数 MB。"
       },
       "chrome_path": {
         "title": "浏览器路径",
@@ -1542,6 +1600,10 @@
       "rsi_enabled": {
         "title": "启用 RSI",
         "description": "显示侧边栏「RSI」入口，可创建并查看 Harness 优化和产物优化（论文、程序）的 RSI 任务；关闭后隐藏该入口。"
+      },
+      "rea_enabled": {
+        "title": "启用逆向",
+        "description": "显示侧边栏「逆向」入口，可安装并配置 REA 逆向工程能力；关闭后隐藏该入口。"
       },
       "cua_agent_enabled": {
         "title": "启用电脑操控",
@@ -1988,7 +2050,8 @@
       "showSessions": "展开会话栏",
       "hideTasks": "收起任务栏",
       "showTasks": "展开任务栏"
-    }
+    },
+    "retentionRunning": "轨迹保留清理正在进行，请稍后重试。"
   },
   "teams": {
     "title": "团队管理",
@@ -2259,6 +2322,7 @@
         "WAITING_SOURCES": "等待成果",
         "CLAIMED": "已认领",
         "IN_PROGRESS": "进行中",
+        "OWNER_STOPPED": "已停止",
         "COMPLETED": "已完成",
         "FAILED": "失败"
       },
@@ -2272,6 +2336,7 @@
       "displayName": "名称",
       "description": "描述",
       "ownerTeam": "主团",
+      "summaryTeam": "汇总团队",
       "teams": "团队",
       "leadTeam": "Team",
       "leadMember": "Leader",
@@ -2306,6 +2371,22 @@
     "pickTitle": "选择素材",
     "referHint": "输入框里输入 @ 引用",
     "reference": "已引用"
+  },
+  "assetTransfer": {
+    "errors": {
+      "notFound": "资产或指定版本不存在",
+      "exportForbidden": "未安装或受限的资产不可导出",
+      "invalidPackage": "资产包无效：缺少清单文件或包结构不合法",
+      "unsafePath": "资产包包含符号链接或非法路径，已拒绝",
+      "credentialDetected": "资产文件中检测到明文敏感凭证，请清理后重试",
+      "limitExceeded": "文件数量、单文件或压缩包体积超出限制",
+      "alreadyExists": "同 id 资产已存在，不支持覆盖，请先删除或改名",
+      "builtinReadOnly": "与系统内置资产冲突，不可覆盖",
+      "uploadFailed": "文件上传失败，请重试",
+      "downloadFailed": "导出包下载失败，请重新导出或稍后重试",
+      "saveFailed": "文件保存失败，请重试",
+      "requestFailed": "请求失败，请重试"
+    }
   },
   "artifacts": {
     "title": "所有产物",
@@ -2369,6 +2450,8 @@
     }
   },
   "chat": {
+    "npcSessionLabel": "NPC",
+    "npcSessionReadOnly": "这是应用的 NPC 会话。请在应用内继续对话。",
     "recordingInProgress": "正在录音，点击停止后转写。",
     "toolResultLabel": "工具结果",
     "duplexControls": {
@@ -2407,6 +2490,10 @@
     "placeholderTeamMode": "需要帮你做些什么？输入“/”快速引用技能",
     "placeholderTeamModeProcessing": "集群模式处理中，输入新消息会并行执行...",
     "placeholderVoice": "正在听取语音...",
+    "welcomeSuffix": {
+      "work": "轻松解决工作每个问题！",
+      "design": "轻松解决每个设计问题！"
+    },
     "welcomeLogoAlt": "WorkSwarm 标志",
     "welcomeBubbleText": "HI~我是你的专属桌面智能搭子，随时待命陪你摸鱼解闷~",
     "freeModelsCampaign": {
@@ -2454,7 +2541,10 @@
       "providerRefusal": "话题推荐暂不可用，请前往设置检查。",
       "openSettings": "去设置看看",
       "trySettings": "去试试",
-      "disabledHintWithCards": "想让话题更懂你，可以去设置-常规里打开。"
+      "disabledHintWithCards": "想让话题更懂你，可以去设置-常规里打开。",
+      "newsReport": "资讯",
+      "recent": "近期",
+      "openOriginal": "打开原文：{{source}}"
     },
     "promptSuggestionBox": {
       "label": "下一步：",
@@ -2567,6 +2657,16 @@
     "skillsAdd": "添加到输入栏",
     "skillsRemove": "移除",
     "agent": "专家",
+    "expertBatchTitle": "专家团协作",
+    "expertBatchExisting": "已加入",
+    "expertBatchCreating": "正在拉起专家团…",
+    "expertBatchOwner": "主专家团",
+    "expertBatchConfirm": "确定（{{count}}）",
+    "expertBatchUnknownError": "未知错误",
+    "expertBatchError": "拉起失败：{{error}}。可重试，已创建的团队会复用。",
+    "expertBatchRequestFailed": "专家团拉起失败，点击查看",
+    "expertBatchSummary": "专家团：成功 {{success}}，失败 {{failed}}",
+    "expertBatchStatus": {"created": "已拉起", "existing": "已加入，复用现有团队", "failed": "拉起失败"},
     "agentGroup": "专家团",
     "agentToggle": "选择已安装专家",
     "agentSearchPlaceholder": "请输入关键词搜索",
@@ -2703,7 +2803,36 @@
     "selectTeamMembers": "选择团队成员",
     "noTeamMembersAvailable": "暂无可选择的团队成员",
     "moaReferenceRunning": "正在运行参考模型…",
-    "moaVerifying": "正在评估任务执行进展…"
+    "moaVerifying": "正在评估任务执行进展…",
+    "sessionNotReady": "会话未就绪，请稍后重试",
+    "slash": {
+      "forkFailed": "分叉会话失败，请稍后再试。",
+      "compactBusy": "压缩已在进行中，请稍候。",
+      "compactNoop": "上下文已是最优，无需压缩。",
+      "compactDone": "✓ 上下文已压缩：{{after}}K / {{before}}K tokens（节省 {{rate}}%）",
+      "compactIncomplete": "压缩未完成，请稍后再试。",
+      "compactFailed": "压缩失败：网络异常或请求超时。",
+      "planTeamUnsupported": "计划模式仅对单 agent 开放，集群会话不支持。",
+      "goalNone": "当前会话没有持续目标。",
+      "goalCurrent": "当前目标（{{status}}）：{{objective}}",
+      "goalStatus": {
+        "active": "进行中",
+        "paused": "已暂停",
+        "completed": "已完成",
+        "blocked": "已阻塞"
+      },
+      "goalUsage": "用法：/goal [set <目标>|pause|resume|clear]",
+      "goalNeedSession": "请先开始一个对话再控制持续目标。",
+      "goalBusy": "对话进行中，暂时无法设置目标，请等待执行结束。",
+      "goalPlanActive": "计划模式正在进行，请先退出计划模式再设置目标。",
+      "goalClearBusy": "目标正在执行中，暂时无法清除，请先暂停或等待执行结束。",
+      "goalFailed": "目标命令执行失败，请稍后再试。",
+      "persistExistingSession": "Persist Session 只能在创建新会话时开启，并且创建后不可更改。请点击“新建任务”后再使用 /persist <任务>。",
+      "persistUsage": "用法：/persist <任务>"
+    },
+    "sessionTaskCompleted": "会话任务：【{{description}}】已完成",
+    "receiving": "正在接收中...",
+    "evolutionUnavailableInMode": "{{mode}} 模式下演进功能不可用。"
   },
   "autoHarness": {
     "busy": "当前已有 Auto-Harness 任务在运行",
@@ -2737,7 +2866,17 @@
     "contextCompression": "上下文窗口",
     "memoryUsage": "内存占用",
     "poweredBy": "Powered by openJiuwen",
-    "fileNotPreviewable": "此文件类型不支持预览"
+    "fileNotPreviewable": "此文件类型不支持预览",
+    "plugins": {
+      "title": "新标签页",
+      "description": "选择要在此面板中打开的插件页签。",
+      "empty": "暂时没有可用的插件",
+      "added": "已添加",
+      "add": "新标签页",
+      "addTab": "添加",
+      "draftTab": "新标签页",
+      "closeTab": "关闭插件页签"
+    }
   },
   "todoList": {
     "title": "任务列表",
@@ -2856,6 +2995,7 @@
   },
   "sessionSidebar": {
     "newSession": "新会话",
+    "comboboxOptions": "{{label}}选项",
     "enterpriseContext": {
       "user": "用户",
       "userContext": "用户上下文",
@@ -3703,10 +3843,25 @@
       "createdNodes": "本次新增 {{nodes}} 个节点（{{files}} 个文件）",
       "updatedNodes": "已更新 {{count}} 个节点",
       "noNewContent": "无新增内容",
+      "capacityRemoved": "容量维护已回收 {{count}} 个正文文件",
+      "capacityIncomplete": "容量维护未完成，知识库可能仍超出上限",
       "collectionDisabledHint": "请先在上下文设置中开启总开关和内容采集，再立即采集。",
       "collectionStoppingHint": "正在停止采集，请等待停止完成后重试。",
       "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
+      "failureStage": {
+        "scan": "失败阶段：目录扫描",
+        "fetch": "失败阶段：数据抓取",
+        "pipeline": "失败阶段：内容处理（切分与向量化）",
+        "publish": "失败阶段：写入索引",
+        "config": "失败阶段：配置校验",
+        "state": "失败阶段：状态检查",
+        "timeout": "失败阶段：执行超时",
+        "unknown": "失败阶段：未知"
+      },
+      "failureCode": "错误码 {{code}}",
+      "failureCounts": "扫描 {{total}} 项 · 成功 {{completed}} 项 · 失败 {{failed}} 项",
+      "failureOmitted": "另有 {{count}} 条失败项未展示，可查看运行日志了解详情",
       "stateWaiting": "等待采集",
       "stateStopped": "已停止",
       "stateStopping": "正在停止",
@@ -3976,6 +4131,10 @@
       "install": "安装",
       "installing": "安装中...",
       "uninstall": "卸载",
+      "exportSkill": "导出",
+      "exportingSkill": "正在导出 {{name}}…",
+      "exportSuccess": "已导出 {{name}}",
+      "exportCancelled": "已取消导出",
       "uninstalling": "卸载中...",
       "update": "更新",
       "importLocal": "导入本地技能",
@@ -4238,7 +4397,7 @@
     },
     "graph": {
       "orchestration": {
-        "description": "开启后，会为已安装的技能构建技能图谱（消耗Token），并在执行任务时基于图谱自动选择、组合和编排技能，提高任务执行效率；关闭后将不再进行技能编排，已构建的技能图谱不会删除。",
+        "description": "开启后可构建编排图谱（消耗 Token），用于规划技能工作流和专家之间的产物交接。",
         "graphDefinition": "技能图谱就像一张技能关系地图：每个点代表一个技能，点之间的线表示它们可以配合使用。",
         "saving": "正在保存…",
         "saveFailed": "技能编排开关保存失败，请稍后重试。",
@@ -4547,6 +4706,8 @@
       "skillNetInstallFailedHint": "SkillNet 安装失败，请检查 skill URL 或依赖",
       "importFailed": "导入失败",
       "importFailedHint": "导入失败，请检查路径或权限",
+      "localSkillUploadDisabled": "当前 Agent 配置模板未开启「上传本地Skill」。",
+      "localSkillUploadUnavailable": "无法确认当前 Agent 配置，请稍后重试。",
       "knowledgeSkillExists": "技能「{{name}}」已存在，请更换名称或先卸载后再试",
       "knowledgeSkillExistsGeneric": "同名技能已存在，请更换名称或先卸载后再试",
       "uploadFailed": "文件上传失败，请重试",
@@ -4557,10 +4718,10 @@
     }
   },
   "agent": {
-    "title": "智能体管理",
-    "subtitle": "查看智能体工作区文件与记忆内容",
+    "title": "工作空间管理",
+    "subtitle": "查看用量、清理可删文件，并预览或下载工作空间内容",
     "root": "根目录",
-    "workspace": "工作区",
+    "workspace": "工作空间",
     "workspaceMeta": "{{directories}} 个目录，{{files}} 个文件",
     "directoryCount": "{{count}} 个目录",
     "fileCount": "{{count}} 个文件",
@@ -4574,8 +4735,69 @@
     "markdownOnly": "仅支持 Markdown/JSON（.md/.mdx/.json）预览",
     "errors": {
       "refreshFailed": "刷新失败：无法重建 agent 文件索引，请检查生成脚本日志。",
-      "loadFailed": "无法读取 agent 文件列表，请检查 agent/workspace/agent-data.json 是否已生成。"
-    }
+      "loadFailed": "无法读取 agent 文件列表，请检查 agent/workspace/agent-data.json 是否已生成。",
+      "deleteFailed": "删除失败",
+      "downloadFailed": "下载失败"
+    },
+    "binaryPreview": "二进制文件不展示正文，请使用下载。",
+    "confirmDelete": "确认删除「{{name}}」？此操作不可恢复。",
+    "deletable": "可删",
+    "delete": "删除",
+    "deleteConfirmTitle": "删除确认",
+    "dirSelectedHint": "已选中目录。可下载为 zip，或在可删时删除整棵子树。",
+    "download": "下载",
+    "emptyDeletable": "暂无可删除内容（清理区为空）",
+    "filterDeletable": "仅可删除",
+    "meta": {
+      "zone": "分区",
+      "size": "大小",
+      "mtime": "修改时间",
+      "deletable": "可删除"
+    },
+    "notDeletableReason": "该 zone 受保护，不可删除",
+    "previewEmpty": "暂无预览内容",
+    "previewTruncated": "内容已截断，完整文件请下载。",
+    "quota": {
+      "title": "工作空间用量",
+      "ok": "正常",
+      "warn": "接近上限",
+      "block": "已满额",
+      "unlimited": "无限制",
+      "unavailable": "暂无法读取用量",
+      "requestExpand": "申请扩容",
+      "expandHint": "向管理面提交扩容申请",
+      "expandIdleHint": "用量正常时无需扩容",
+      "expandUnlimitedHint": "当前为无限制配额，无需扩容",
+      "expandSoon": "扩容申请将对接管理面审批（即将上线）。当前请先清理可删文件，或联系管理员调整配额。",
+      "expandTitle": "申请工作区扩容",
+      "expandDialogHint": "请填写目标配额（GiB）与申请说明。审批通过后配额才会生效。",
+      "expandLimitLabel": "目标配额（GiB）",
+      "expandReasonLabel": "申请说明",
+      "expandApproverLabel": "审批人",
+      "expandApproverPlaceholder": "请选择审批人",
+      "expandApproverSearch": "搜索用户 ID 或显示名",
+      "expandApproverNoMatch": "没有匹配的审批人",
+      "expandApproverRequired": "请选择审批人",
+      "expandApproverEmpty": "暂无可选审批人，请联系管理员配置审批权限",
+      "expandApproverLoadFailed": "加载审批人列表失败",
+      "expandSubmit": "提交申请",
+      "expandInvalidLimit": "请输入有效的目标配额（GiB）",
+      "expandReasonRequired": "请填写申请说明",
+      "expandMustIncrease": "目标配额必须大于当前生效配额",
+      "expandFailed": "提交扩容申请失败",
+      "expandSubmittedTitle": "申请已提交",
+      "expandSubmittedBody": "扩容申请已提交，审批通过后配额将自动生效。可在<approvals>我的申请</approvals>查看进度。",
+      "expandViewApprovals": "查看我的申请",
+      "expandSubmitted": "扩容申请已提交。审批通过后配额将自动生效，可在侧栏「我的申请」查看进度。",
+      "expandContextRequired": "请先选择 Agent 上下文（集群与 Bot）后再申请扩容",
+      "openWorkspace": "打开工作空间",
+      "chatWarnTitle": "工作空间即将用尽",
+      "chatWarnBody": "已超过 80% 配额，建议清理会话产物或申请扩容。",
+      "chatBlockTitle": "工作空间已满，无法继续写入",
+      "chatBlockBody": "已用尽配额。请清理可删文件或申请扩容后再发送消息。"
+    },
+    "selectEntry": "选择左侧文件或目录查看元信息",
+    "selectEntryHint": "点击左侧条目查看路径、zone、大小等信息；文件可预览与下载"
   },
   "agentManagement": {
     "title": "专家管理",
@@ -5223,6 +5445,7 @@
     }
   },
   "network": {
+    "proxyRoutingError": "接口未命中后端服务（返回了 HTML 页面，状态码 {{status}}）。请检查后端服务是否启动，以及统一门户接口前缀代理是否配置正确。",
     "wsError": "WebSocket 连接异常",
     "connectionClosedWithCode": "连接已关闭 ({{code}})",
     "connectionClosed": "连接已关闭",
@@ -5246,6 +5469,7 @@
     "recognitionUnsupported": "浏览器不支持语音识别",
     "recordingUnsupported": "浏览器不支持麦克风录音",
     "synthesisUnsupported": "浏览器不支持语音合成",
+    "codeBlockOmitted": "代码块已省略",
     "errors": {
       "noSpeech": "未检测到语音",
       "noMic": "未检测到麦克风",
@@ -5630,7 +5854,8 @@
         "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。",
         "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。",
         "archiveSessionFinalizing": "会话正在收尾，请稍后重试归档。",
-        "removeSessionFinalizing": "会话正在收尾，请稍后重试移除。"
+        "removeSessionFinalizing": "会话正在收尾，请稍后重试移除。",
+        "pinCronNoIdentity": "该定时任务会话缺少任务标识，置顶后将无法在侧边栏找到，已取消置顶"
       },
       "cancel": "取消",
       "confirm": "确定"
@@ -5651,7 +5876,9 @@
     "errors": {
       "delete": "删除对话失败",
       "create": "创建对话失败",
-      "send": "发送消息失败"
+      "send": "发送消息失败",
+      "quotaExceededTitle": "工作空间已满",
+      "quotaExceeded": "无法创建新对话。请先到「<space>空间</space>」清理可删除文件，或<expand>申请扩容</expand>后再试。"
     }
   },
   "subagent": {
@@ -5802,6 +6029,11 @@
       "mcp": "搜索连接器",
       "my": "搜索我的扩展"
     },
+    "sources": {
+      "tabsLabel": "连接器目录来源",
+      "noSources": "暂无可用连接器源",
+      "loadFailed": "加载连接器源失败"
+    },
     "statusFilter": {
       "all": "全部",
       "pending": "待安装/连接",
@@ -5856,6 +6088,8 @@
       "use": "使用",
       "useNotWired": "该功能尚未接入，请在会话输入框的\"+\"面板里选用",
       "install": "安装",
+      "update": "更新",
+      "updateNotSupportedYet": "连接器升级功能尚未接入，暂不可用",
       "installing": "安装中",
       "connecting": "连接中",
       "disconnecting": "解绑中",
@@ -6009,6 +6243,22 @@
       "statusInstalled": "已安装",
       "statusDisabled": "已禁用",
       "statusAvailable": "未安装",
+      "bundleBadge": "组合包",
+      "bundleMembers": "{{count}} 个子插件",
+      "systemPlugins": "系统插件",
+      "systemPluginsHint": "组合包安装成功后可查看各子插件详情。",
+      "memberDomain": "宿主：{{domain}}",
+      "memberStatusStandby": "待启用：同名插件已生效",
+      "memberStatusDisabled": "已停用",
+      "memberStatusPending": "加载中",
+      "memberStatusFailed": "加载失败",
+      "overall": {
+        "not-installed": "未安装",
+        "disabled": "已禁用",
+        "partial": "部分生效",
+        "enabled": "已启用",
+        "failed": "部分失败"
+      },
       "preview": "预览",
       "previewHint": "点击查看大图",
       "ability": "能力介绍",
@@ -6039,6 +6289,24 @@
     }
   },
   "auth": {
+    "startup": {
+      "manager": "【正式身份认证模式，依赖manager ID认证服务】",
+      "simulate": "【登录认证模拟调试模式已开启】使用默认 Agent 上下文候选值"
+    },
+    "errors": {
+      "authorizeFailed": "获取授权地址失败",
+      "authorizeMalformed": "授权地址返回不完整",
+      "authorizeUnavailable": "无法获取授权地址，请稍后重试",
+      "loginFailed": "登录失败，请重试",
+      "statusFailed": "获取登录状态失败",
+      "modelsFailed": "获取模型列表失败",
+      "quotaFailed": "获取额度失败"
+    },
+    "manager": {
+      "networkFailed": "网络请求失败：{{message}}",
+      "contextFailed": "加载 Agent 上下文失败",
+      "switchClusterFailed": "切换集群失败"
+    },
     "huawei": {
       "title": "登录华为账号",
       "subtitle": "登录后即可使用账号提供的模型，无需配置 API Key。",
@@ -6513,12 +6781,292 @@
     "forkFromSession": "从会话 {{name}} 分叉",
     "forkChildSession": "分叉产生的子会话",
     "executorOrchestration": "【{{name}} 的编排 · {{workflow}}】",
-    "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}"
+    "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}",
+    "sectionResult": "结果",
+    "iterationRound": "第{{index}}轮",
+    "iterationDotTitle": "第{{index}}轮 · {{status}}",
+    "iterationCount": "×{{count}}轮",
+    "formatToggleFormatted": "格式化",
+    "formatToggleRaw": "原始"
   },
   "a4pSettings": {
     "title": "A4P 预授权",
     "enableTitle": "启用 A4P 预授权",
     "description": "允许批量预授权当前会话和定时任务所需的权限。开启后，定时任务运行时也接入权限审批。仅在“默认权限”模式下生效。"
+  },
+  "reaSetup": {
+    "pageTitle": "逆向工程",
+    "pageSubtitle": "完成环境配置后，在任务中调用 REA MCP 使用逆向能力。",
+    "emptyTitle": "您还没有安装逆向工程环境",
+    "installOneClick": "一键安装",
+    "preparingEnvironment": "正在准备逆向工程环境",
+    "progressHint": "首次配置约需 3–5 分钟，完成后可随时查看详情。",
+    "enhancedProgressHint": "增强能力配置预计需要 {{range}}，完成后可随时查看详情。",
+    "enhancedEstimateFallback": "30–40 分钟",
+    "cancelInstall": "取消安装",
+    "installingComponents": "正在安装工具链组件",
+    "componentCountHint": "共 {{count}} 个组件，可执行组件会按依赖关系并行安装。",
+    "completedCount": "已完成 {{completed}} / {{total}} 项",
+    "progressMetrics": {
+      "completed": "已完成",
+      "items": "项",
+      "remaining": "预计剩余",
+      "minutes": "分钟",
+      "seconds": "秒"
+    },
+    "estimating": "正在估算剩余时间",
+    "installProgress": "安装进度",
+    "installComponents": "安装组件",
+    "environmentTitle": "环境配置",
+    "baseGroup": "基础环境",
+    "enhancedGroup": "增强能力",
+    "enhancedGroupOptional": "增强能力（可选）",
+    "continueInstall": "继续安装",
+    "goUse": "去调用",
+    "viewDetails": "查看详情",
+    "gotIt": "知道了",
+    "memberDetails": "组件情况",
+    "installCancelled": "安装已取消。",
+    "mcpDetailsTitle": "REA MCP 详情",
+    "tools": "工具数量",
+    "inventoryGroups": "工具组 / 工具可用项",
+    "state": "状态",
+    "close": "关闭",
+    "checking": "检测中…",
+    "checkEnvironment": "检测环境",
+    "checkingEnvironment": "正在重新检测本机环境",
+    "collapse": "收起",
+    "expand": "展开",
+    "stepState": {
+      "pending": "等待",
+      "running": "进行中",
+      "succeeded": "已完成",
+      "failed": "失败",
+      "skipped": "已跳过"
+    },
+    "configurationGuide": "配置指南",
+    "confirm": "确定",
+    "groupState": {
+      "complete": "已完成",
+      "partial": "部分安装",
+      "installing": "安装中"
+    },
+    "stats": {
+      "all": "全部",
+      "installed": "已安装",
+      "installing": "安装中",
+      "uninstalled": "未安装",
+      "failed": "安装失败",
+      "check": "检测"
+    },
+    "visualState": {
+      "available": "可用",
+      "installing": "安装中",
+      "detecting": "检测中",
+      "needsAction": "需配置",
+      "detected": "已检测",
+      "unsupported": "当前不适用",
+      "notInstalled": "未安装",
+      "downloaded": "已下载未安装",
+      "partial": "部分可用",
+      "failed": "安装失败"
+    },
+    "cardDetail": {
+      "node": "Node {{version}}｜npm {{npmVersion}}｜npx 可用",
+      "runtime": "REA {{version}} 运行时响应正常",
+      "mcp": "{{count}} 个工具可用",
+      "mcpVerified": "工具合同与运行时状态已校验",
+      "members": "{{ready}}/{{total}} 个依赖已就绪",
+      "scenarios": "{{count}} 项需场景",
+      "unsupported": "{{count}} 项当前不适用"
+    },
+    "baseLabel": {
+      "node": "Node.js 与 npm/npx",
+      "runtime": "REA 运行时",
+      "mcp": "REA MCP"
+    },
+    "capability": {
+      "ghidra": "Ghidra",
+      "ghidraDesc": "原生反编译与函数分析",
+      "ida": "IDA",
+      "idaDesc": "商业反编译与交互分析",
+      "kuna": "Kuna",
+      "kunaDesc": "开源二进制反编译",
+      "hopper": "Hopper",
+      "hopperDesc": "macOS / Linux 原生反汇编",
+      "android": "Android 工具链",
+      "androidDesc": "JADX、ADB、Apktool",
+      "apple": "Apple 平台支持",
+      "appleDesc": "macOS native utilities",
+      "dynamic": "动态分析",
+      "dynamicDesc": "Frida、调试器、Cutter、浏览器与运行时观察",
+      "networkFirmware": "网络与固件",
+      "networkFirmwareDesc": "PCAP、代理抓包、固件与信号证据",
+      "scriptFormats": "脚本与格式",
+      "scriptFormatsDesc": "pwntools、WASM、JavaScript 恢复与底层格式",
+      "jeb": "JEB Android",
+      "jebDesc": "商业 Android 反编译与交互分析"
+    },
+    "capabilityHover": {
+      "ghidra": "适合查看程序结构和函数逻辑。",
+      "ida": "适合深入分析商业软件。",
+      "kuna": "适合免费查看程序逻辑。",
+      "hopper": "适合分析 Apple 平台程序。",
+      "android": "适合查看 Android 应用。",
+      "jeb": "适合深入分析 Android 应用。",
+      "apple": "适合分析 Apple 平台程序。",
+      "dynamic": "适合观察程序运行时的行为。",
+      "networkFirmware": "适合分析网络流量和设备固件。",
+      "scriptFormats": "适合处理脚本、网页和多种文件格式。"
+    },
+    "capabilityHint": {
+      "available": "这个能力已经准备好，可以直接使用。",
+      "installing": "正在准备这个能力。",
+      "detecting": "基础环境完成后会自动检测这个能力。",
+      "needsAction": "还需要补充外部软件或账号信息。",
+      "detected": "已经找到所需软件，还需要完成配置。",
+      "unsupported": "当前系统不支持这个能力。",
+      "notInstalled": "这个能力还没有安装。",
+      "downloaded": "安装包已下载，还需要完成安装。",
+      "partial": "部分工具已经可用，可以完成一些相关任务。",
+      "failed": "上次安装没有完成，可以重新检测。"
+    },
+    "memberState": {
+      "available": "可用",
+      "installing": "安装中",
+      "detecting": "等待检测",
+      "needsAction": "需要配置",
+      "detected": "已找到，尚未配置",
+      "unsupported": "当前系统不支持",
+      "notInstalled": "尚未安装",
+      "downloaded": "已下载，尚未安装",
+      "partial": "部分可用",
+      "failed": "安装或验证失败"
+    },
+    "groups": {
+      "native": "原生静态分析",
+      "android": "Android 工具链",
+      "network": "网络与数据分析",
+      "dynamic": "脚本与动态分析"
+    },
+    "guide": {
+      "title": "任务指南",
+      "installTitle": "第一步：一键安装环境",
+      "enhanceTitle": "第二步：补充增强能力",
+      "callTitle": "第三步：调用 REA MCP 完成任务",
+      "step1": "01 添加任务目标",
+      "step1Desc": "在对话框中添加想要分析的目标程序",
+      "step2": "02 调用 REA MCP",
+      "step2Desc": "调用 REA MCP，使用逆向分析能力",
+      "step3": "03 确认需求",
+      "step3Desc": "输入提示词，描述逆向工程的详细需求",
+      "actionPrompt": "使用 REA 分析目标程序，启动逆向调查。",
+      "prompt1": "用 REA 分析目标程序，启动逆向调查",
+      "prompt2": "用 REA 反编译当前模块，还原业务逻辑",
+      "prompt3": "用 REA 生成并导出逆向分析报告"
+    },
+    "eyebrow": "实验能力 · 逆向工程",
+    "title": "REA 逆向工程",
+    "description": "先安装最小可运行的 REA 基础能力，验证 MCP 后再决定是否按当前操作系统安装增强分析引擎。自动安装、手动授权和平台不支持项会分开处理，互不阻塞。",
+    "scanning": "正在扫描本机能力",
+    "ready": "基础能力已就绪",
+    "notReady": "基础能力未就绪",
+    "readyHint": "REA MCP 已通过握手，可直接开始逆向任务。",
+    "notReadyHint": "先完成 Node、REA 包和 MCP 三项最小依赖。",
+    "platform": "当前平台",
+    "parallelHint": "独立组件按依赖波次并行",
+    "baseTitle": "基础能力",
+    "baseHint": "这是启动 REA 的最小必需链路；每一步都依赖前一步，避免在未验证 MCP 时提前安装增强组件。",
+    "enhancedTitle": "增强能力",
+    "enhancedHint": "按当前操作系统生成计划。Java 完成后，Ghidra 与 JADX 并行；ADB、Apktool 和 PCAP 也会并行安装。",
+    "enhancedBlocked": "基础能力就绪后再生成增强能力计划。",
+    "enhancedNone": "当前平台没有可用的增强能力。",
+    "autoQueue": "自动安装队列",
+    "manualQueue": "需要你操作",
+    "unsupportedQueue": "当前平台不支持",
+    "planSummary": "安装计划",
+    "parallelExplainer": "增强安装会先并行执行无依赖组件，再并行执行依赖 Java 的组件。手动配置项不会阻塞自动队列。",
+    "installBase": "一键安装基础能力",
+    "installEnhanced": "安装增强能力",
+    "installing": "正在安装并验证",
+    "baseInstalling": "基础安装",
+    "enhancedInstalling": "增强安装",
+    "onePrimaryHint": "主流程只保留一个主要操作；诊断和修复是辅助入口。",
+    "decisionTitle": "是否安装增强能力？",
+    "decisionDescription": "增强能力预计耗时 30–40 分钟，安装后可扩展分析范围。为了不占用你的时间，只有点击“继续安装”才会开始；也可以稍后从环境配置中再次安装。",
+    "autoCount": "{{count}} 项可自动安装",
+    "manualCount": "{{count}} 项需要手动配置",
+    "continueEnhance": "继续安装",
+    "skipEnhance": "暂不安装",
+    "coreOnly": "已保留可用的 REA 基础能力。你仍可从上方增强计划启动安装或配置。",
+    "resultTitle": "安装结果",
+    "baseResultTitle": "基础能力已完成并通过验证",
+    "enhancedResultTitle": "增强能力处理完成",
+    "installPartial": "安装已完成，但部分验证未通过",
+    "toolCount": "已发现 {{count}} 个 MCP 工具",
+    "errorTitle": "安装遇到问题",
+    "recheck": "重新扫描",
+    "elapsed": "已用时 {{count}} 秒",
+    "stage": "阶段：{{stage}}",
+    "theoreticalTime": "理论耗时 {{range}}",
+    "downloadSource": "下载源",
+    "downloaded": "已下载",
+    "speed": "速度 {{speed}}",
+    "remaining": "预计剩余 {{time}}",
+    "stepStatus": {
+      "pending": "等待",
+      "running": "进行中",
+      "succeeded": "完成",
+      "failed": "失败",
+      "skipped": "已跳过"
+    },
+    "status": {
+      "ready": "已就绪",
+      "planned": "待安装",
+      "missing": "缺失",
+      "needsAction": "需要配置",
+      "unsupported": "不支持"
+    },
+    "resultState": {
+      "installed": "已安装",
+      "reused": "已复用",
+      "needs_action": "需要配置",
+      "unsupported": "不支持",
+      "skipped": "已跳过",
+      "failed": "失败"
+    },
+    "configure": "配置",
+    "viewGuide": "查看说明",
+    "configureTitle": "配置 {{name}}",
+    "configureHint": "按步骤完成外部软件操作，然后在这里应用本机配置。",
+    "configSummary": {
+      "ida": "在 IDA 软件中完成登录，获得许可证，下载 JSON 文件或复制代码。"
+    },
+    "unsupportedGuide": "当前系统不支持使用这个能力。你仍可查看官方说明，但无法在本机配置。",
+    "prerequisites": "开始前",
+    "stepsTitle": "操作步骤",
+    "officialLinks": "官方入口",
+    "manualCommands": "可选命令",
+    "copy": "复制",
+    "copied": "已复制",
+    "chooseFile": "选择文件",
+    "chooseDirectory": "选择目录",
+    "required": "必填",
+    "optional": "可选",
+    "applyConfiguration": "应用配置",
+    "configuring": "正在配置",
+    "secretWarning": "请勿粘贴账号密码、许可证密钥或其他敏感凭据。商业软件授权应在软件自身界面完成。",
+    "stages": {
+      "queued": "排队",
+      "starting": "准备安装",
+      "resolving_node": "检查 Node.js",
+      "preparing_rea": "准备 REA 依赖",
+      "writing_config": "写入 MCP 配置",
+      "verifying_mcp": "验证 REA MCP",
+      "final_scan": "刷新最终状态",
+      "completed": "完成",
+      "failed": "失败"
+    }
   },
   "a4pAuthorization": {
     "expandParams": "展开 {{name}} 的参数",
@@ -7543,6 +8091,21 @@
       "in_progress": "执行中",
       "blocked": "等待中",
       "stopped": "已停止"
+    },
+    "autoReply": {
+      "title": "自动判断回复",
+      "hint": "消息没有 @ 任何成员时，由判断模型决定哪些成员需要回复。@ 成员的消息始终由被 @ 的成员回复。",
+      "model": "判断模型",
+      "sessionModel": "跟随群会话模型",
+      "unavailableModel": "已保存的模型不可用",
+      "modelHint": "选用响应快的小模型可以降低开销和等待时间。",
+      "pending": "正在判断由谁回复…",
+      "notified": "自动判断：已通知 {{names}} 回复",
+      "coordinated": "自动判断：已请 {{owner}} 协调 {{names}} 共同完成",
+      "separator": "、",
+      "none": "自动判断：无需成员回复",
+      "failed": "未能自动判断由谁回复，可 @ 成员",
+      "stopped": "已停止，未判断由谁回复"
     }
   },
   "webuiFileImport": {
@@ -7555,15 +8118,19 @@
     "holdToSkip": "长按空格跳过"
   },
   "webuiPresentation": {
+    "autoStartBusy": "已有应用形态正在使用中。请先关闭，再重新启用悬浮插件。",
+    "closeOverlay": "关闭悬浮形态",
     "enter": "进入{{title}}",
-    "opening": "正在打开桌面形态…",
-    "desktopRequired": "请在桌面客户端使用应用形态",
+    "opening": "正在打开应用形态…",
+    "desktopRequired": "桌面模式的形态需要桌面客户端",
     "newConversation": "新对话",
-    "openFailed": "桌面形态未能打开，工作台仍可继续使用",
-    "updateFailed": "桌面形态更新失败，请返回工作台检查连接",
+    "openFailed": "应用形态未能打开，工作台仍可继续使用",
+    "updateFailed": "应用形态更新失败，请在工作台检查连接",
     "actionFailed": "操作未完成，请检查会话状态",
     "restored": "桌面形态已结束，工作台已恢复",
     "errors": {
+      "DESKTOP_REQUIRED": "这个形态需要桌面客户端",
+      "UNSUPPORTED_ACTION": "应用内悬浮形态不支持这个操作",
       "DISCONNECTED": "连接已断开，请返回工作台",
       "TARGET_INACTIVE": "这个会话已不可用，请重新选择",
       "CONVERSATION_BUSY": "会话正在运行或等待确认，请先完成当前操作",
@@ -7608,6 +8175,88 @@
       "forbidden": "无法访问此会话目录范围以外的文件",
       "unavailable": "当前会话的文件预览暂不可用",
       "error": "文件读取失败，请重新选择文件"
+    }
+  },
+  "marketplace": {
+    "cache": {
+      "refreshFailed": "目录刷新失败，继续显示上次可用内容。",
+      "stale": "当前显示旧缓存。",
+      "updatedAt": "上次更新时间：{{time}}"
+    }
+  },
+  "assetPublish": {
+    "errors": {
+      "desktopNotReady": "桌面浏览器功能尚未就绪，请重试。",
+      "popupBlocked": "浏览器阻止了授权窗口，请允许打开新标签页。",
+      "openBrowserFailed": "无法打开系统浏览器，请重试。",
+      "oauthUnavailable": "OAuth 登录不可用"
+    }
+  },
+  "hubOAuth": {
+    "startFailed": "无法启动 Hub 授权，请检查本地服务。",
+    "requestExpired": "授权请求已过期，请重新登录。",
+    "windowClosed": "授权窗口已关闭，请重新登录。",
+    "exchangeFailed": "Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。",
+    "failed": "授权失败，请重试。"
+  },
+  "workspace": {
+    "selectFilesUnavailable": "后端未注册 path.select_files，请重启 jiuwenswarm-start 后再试"
+  },
+  "approvals": {
+    "myTitle": "我的申请",
+    "mySubtitle": "查看并管理本人提交的审批单",
+    "unavailable": "当前环境无法查看申请记录",
+    "empty": "暂无申请记录",
+    "loadFailed": "加载申请列表失败",
+    "cancelFailed": "撤回申请失败",
+    "cancel": "撤回",
+    "resubmit": "编辑并重新提交",
+    "resubmitTitle": "重新提交申请",
+    "resubmitHint": "修改后重新提交，将更新同一张申请单。",
+    "resubmitSubmit": "重新提交",
+    "resubmitFailed": "重新提交失败",
+    "rejectComment": "驳回意见",
+    "currentQuota": "当前配额",
+    "approvers": "当前审批人",
+    "copyLink": "复制审批链接",
+    "copyLinkSuccess": "审批链接已复制",
+    "copyLinkFailed": "复制审批链接失败",
+    "copyOrderNum": "点击复制单号",
+    "copyOrderNumSuccess": "单号已复制",
+    "copyOrderNumFailed": "复制单号失败",
+    "stats": {
+      "total": "申请总数 {{count}}"
+    },
+    "search": {
+      "placeholder": "搜索单号、标题或申请说明",
+      "noResults": "没有符合条件的申请"
+    },
+    "filter": {
+      "reset": "清除筛选"
+    },
+    "table": {
+      "title": "标题",
+      "orderNum": "单号",
+      "type": "类型",
+      "summary": "摘要",
+      "requestedQuota": "申请配额",
+      "approver": "当前审批人",
+      "reason": "申请说明",
+      "status": "状态",
+      "createdAt": "提交时间",
+      "actions": "操作"
+    },
+    "status": {
+      "pending": "审批中",
+      "approved": "已通过",
+      "rejected": "已驳回",
+      "cancelled": "已撤回"
+    },
+    "business": {
+      "workspace_quota_expand": "工作区扩容"
+    },
+    "summary": {
+      "quotaExpand": "申请配额 {{size}}"
     }
   }
 }

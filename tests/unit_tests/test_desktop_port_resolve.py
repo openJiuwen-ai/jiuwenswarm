@@ -277,7 +277,8 @@ def test_cleanup_stale_update_artifacts_preserves_completed_installers(
     monkeypatch,
 ):
     workspace = tmp_path / "workspace"
-    updates_dir = workspace / "infra" / ".updates"
+    # 升级目录收敛到数据根 .updates/（get_updates_dir），不再挂在 infra/ 下
+    updates_dir = workspace / ".updates"
     updates_dir.mkdir(parents=True)
     completed_names = (
         "TomorrowDesk-preview.exe",
@@ -295,7 +296,7 @@ def test_cleanup_stale_update_artifacts_preserves_completed_installers(
         (updates_dir / name).write_bytes(b"update")
     keep = updates_dir / "release-notes.txt"
     keep.write_text("keep", encoding="utf-8")
-    monkeypatch.setattr(desktop_app, "get_infra_data_dir", lambda: workspace / "infra")
+    monkeypatch.setattr(desktop_app, "get_updates_dir", lambda: updates_dir)
 
     desktop_app._cleanup_stale_update_artifacts()
 

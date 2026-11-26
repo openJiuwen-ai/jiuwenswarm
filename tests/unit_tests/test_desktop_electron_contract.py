@@ -948,6 +948,7 @@ def test_electron_builds_run_the_same_frozen_verifiers() -> None:
     ):
         python_verifiers = set(re.findall(r"verify_\w+\.py", _read(py_build)))
         electron_verifiers = set(re.findall(r"verify_\w+\.py", _read(electron_build)))
+        assert "verify_swarm_resources_bundle.py" in electron_verifiers
         assert python_verifiers <= electron_verifiers, (
             f"{electron_build.name} 缺少 frozen 验证器: "
             f"{sorted(python_verifiers - electron_verifiers)}(Python 打包有、Electron 打包没有)"

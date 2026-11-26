@@ -103,6 +103,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.RESPONSE_PROMPT,
     registry.SYS_OPERATION,
     registry.STREAM_EVENT,
+    registry.WORKSPACE_QUOTA,
     registry.TASK_PLANNING,
     registry.SECURITY,
     registry.MODEL_ANOMALY_DETECTION,
@@ -820,6 +821,10 @@ def build_member_capability_specs(
         rails, tools = _build_team_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
+    from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+    if uses_jiuwen_team_memory(config, mode):
+        rails = [rail for rail in rails if rail.type != registry.CODE_CODING_MEMORY]
+        rails.append(RailSpec(type=registry.TEAM_MEMORY))
     # OpenCode Go models need a member-scoped session header; the rail is a
     # no-op for every other vendor, so mounting it needs no config gate.
     rails.append(RailSpec(type=registry.OPENCODE_SESSION))
@@ -852,7 +857,15 @@ def _subagent_language(mode: str, role: str, config: dict[str, Any]) -> str:
     openjiuwen sub-agent providers stay free of swarm mode/role policy.
     """
     if is_team_plan_mode(mode) and role == "leader":
-        return resolve_language((config or {}).get("preferred_language", "zh"))
+        from jiuwenswarm.common.i18n import to_runtime_language
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
+        mapped = to_runtime_language(resolve_preferred_language())
+        if mapped is None:
+            mapped = to_runtime_language((config or {}).get("preferred_language"))
+        return resolve_language(mapped)
     return "en"
 
 

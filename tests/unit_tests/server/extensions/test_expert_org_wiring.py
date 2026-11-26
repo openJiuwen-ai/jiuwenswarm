@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -36,6 +37,131 @@ def test_install_expert_org_adapters_injects_launcher_without_a_group_catalog() 
 
 def test_install_expert_org_adapters_noop_without_setters() -> None:
     install_expert_org_adapters(SimpleNamespace())  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_organization_invites_each_expert_group_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openjiuwen.agent_teams.organization import runtime
+    from openjiuwen.agent_teams.organization.tools import OrgCreateAndInviteExpertTeamTool, OrgInviteTeamTool
+    from openjiuwen.agent_teams.runtime import TeamRuntimeManager
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+    from jiuwenswarm.agents.harness.team.expert_org.wiring import register_expert_adapter_installer
+
+    manager = TeamRuntimeManager()
+    monkeypatch.setattr(GLOBAL_RUNNER, "_team_runtime_manager", manager, raising=False)
+    org_runtime = manager.organization_runtime_manager
+    register_expert_adapter_installer()
+    assert manager.organization_runtime_manager is org_runtime
+    patched_invite = org_runtime.invite_team
+    register_expert_adapter_installer()
+    assert org_runtime.invite_team is patched_invite
+    db = object()
+
+    def entry(group: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            current_session_id="session",
+            agent=SimpleNamespace(
+                spec=SimpleNamespace(agent_group_name=group, metadata={}),
+                team_backend=SimpleNamespace(db=db, messager=None, is_leader=True, leader_member_name="leader"),
+            ),
+        )
+
+    entries = {"owner": entry("business-planning"), "another-tech": entry("technology-insight")}
+    monkeypatch.setattr(manager.pool, "get", AsyncMock(side_effect=entries.get))
+    roster = [SimpleNamespace(team_id="owner")]
+    organization = SimpleNamespace(organization_id="org", owner_team_id="owner", leaders=roster, model_dump=lambda: {})
+
+    async def publish(event, **kwargs) -> None:
+        if hasattr(event, "joined_team_id"):
+            roster.append(SimpleNamespace(team_id=event.joined_team_id))
+
+    mock_org = SimpleNamespace(get_organization=AsyncMock(return_value=organization), publish_event=publish)
+    monkeypatch.setattr(runtime, "get_process_org_manager", lambda **kwargs: mock_org)
+    async def bind(*, backend, **kwargs):
+        backend.org_task_manager = SimpleNamespace(organization_id="org")
+
+    monkeypatch.setattr(org_runtime, "_bind_team", AsyncMock(side_effect=bind))
+    monkeypatch.setattr(org_runtime, "_resume_assignable_tasks", AsyncMock())
+
+    async def launch(**kwargs) -> SimpleNamespace:
+        await asyncio.sleep(0)
+        entries["tech"] = entry(kwargs["agent_group_name"])
+        return SimpleNamespace(
+            team_id="tech", agent_group_name=kwargs["agent_group_name"], to_dict=lambda: {"team_id": "tech"},
+        )
+
+    launcher = SimpleNamespace(launch=AsyncMock(side_effect=launch))
+    org_runtime.set_expert_adapter_installer(None)
+    org_runtime.set_expert_team_launcher(launcher)
+    create = OrgCreateAndInviteExpertTeamTool(org_runtime, "owner", "session")
+    invite = OrgInviteTeamTool(org_runtime, "owner", "session")
+
+    own_group = await create.invoke({"organization_id": "org", "agent_group_name": "business-planning"})
+    assert not own_group.success and "team 'owner'" in own_group.error
+    tech = {"organization_id": "org", "agent_group_name": "technology-insight"}
+    first, second = await asyncio.gather(create.invoke(tech), create.invoke(tech))
+    assert first.success and first.data["team_id"] == "tech"
+    assert not second.success and "team 'tech'" in second.error
+    launcher.launch.assert_awaited_once()
+
+    duplicate = await invite.invoke({"organization_id": "org", "team_id": "another-tech"})
+    assert not duplicate.success and "team 'tech'" in duplicate.error
+    retry = await invite.invoke({"organization_id": "org", "team_id": "tech"})
+    assert retry.success
+    org_runtime._bind_team.assert_awaited_once()
+
+    cold_entry = entries.pop("tech")
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.expert_org.organization_runtime.load_organization_team_identity",
+        lambda team_id: {"agent_group_name": "technology-insight"} if team_id == "tech" else {},
+    )
+
+    async def restore(**kwargs):
+        entries["tech"] = cold_entry
+
+    recover = AsyncMock(side_effect=restore)
+    monkeypatch.setattr(JiuwenExpertTeamLauncher, "restore", recover)
+    cold_retry = await invite.invoke({"organization_id": "org", "team_id": "tech"})
+    assert cold_retry.success
+    recover.assert_awaited_once_with(team_id="tech", session_id="session", organization=organization, db=db)
+    entries.pop("tech")
+    recover.side_effect = ValueError("package unavailable")
+    failed_retry = await invite.invoke({"organization_id": "org", "team_id": "tech"})
+    assert not failed_retry.success and failed_retry.error == "package unavailable"
+    assert [leader.team_id for leader in roster] == ["owner", "tech"]
+
+    # Keep the winning invite between its membership check and its join.
+    entries["risk"] = entry("risk-analysis")
+    invite_binding = asyncio.Event()
+    release_invite = asyncio.Event()
+
+    async def bind_risk(*, backend, **kwargs):
+        invite_binding.set()
+        await release_invite.wait()
+        await bind(backend=backend, **kwargs)
+
+    org_runtime._bind_team.side_effect = bind_risk
+    pending_invite = asyncio.create_task(invite.invoke({"organization_id": "org", "team_id": "risk"}))
+    await asyncio.wait_for(invite_binding.wait(), timeout=5)
+    create_started = asyncio.Event()
+
+    async def create_risk():
+        create_started.set()
+        return await create.invoke({"organization_id": "org", "agent_group_name": "risk-analysis"})
+
+    pending_create = asyncio.create_task(create_risk())
+    try:
+        await asyncio.wait_for(create_started.wait(), timeout=5)
+        launcher.launch.assert_awaited_once()
+        assert not pending_create.done()
+    finally:
+        release_invite.set()
+    invited, rejected = await asyncio.wait_for(asyncio.gather(pending_invite, pending_create), timeout=5)
+    assert invited.success
+    assert not rejected.success and "team 'risk'" in rejected.error
+    launcher.launch.assert_awaited_once()
+    assert [leader.team_id for leader in roster] == ["owner", "tech", "risk"]
 
 
 def test_register_expert_adapter_installer_sets_lazy_installer(
@@ -72,9 +198,10 @@ def test_register_expert_adapter_installer_sets_lazy_installer(
         register_expert_adapter_installer,
     )
 
-    register_expert_adapter_installer()
+    runtime = register_expert_adapter_installer()
     assert captured["installer"] is install_expert_org_adapters
-    assert getattr(runner, "_team_runtime_manager") is not None
+    assert runtime is getattr(runner, "_team_runtime_manager")
+    assert register_expert_adapter_installer() is runtime
 
 
 @pytest.mark.asyncio

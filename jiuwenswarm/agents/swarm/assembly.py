@@ -240,6 +240,7 @@ def _apply_agent_group(
         "capabilities": list(package.capabilities),
     }
     spec.agent_group_name = agent_group_name
+    spec.metadata["memory_experts"] = list(templates)
 
     leader_base = spec.agents.get("leader")
     teammate_base = spec.agents.get("teammate")
@@ -667,6 +668,20 @@ def enrich_team_spec_for_swarm(
     if "extension_bus" in getattr(SwarmBuildContext, "__dataclass_fields__", {}):
         context_kwargs["extension_bus"] = extension_bus
     base = SwarmBuildContext(**context_kwargs)
+    from jiuwenswarm.common.team_memory_binding import team_memory_key, uses_jiuwen_team_memory
+    if uses_jiuwen_team_memory(config, mode):
+        from jiuwenswarm.common.coding_memory_paths import resolve_coding_memory_project_name
+        from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import (
+            get_collective_memory_owner,
+        )
+        base.memory_agent_name = "main_agent"
+        base.memory_project = resolve_coding_memory_project_name(project_dir)
+        base.memory_group = agent_group_name or ""
+        base.memory_team = team_memory_key(*get_collective_memory_owner(config), base.memory_group)
+        base.bind_memory_membership_hook()
+        if spec.memory is not None:
+            spec.memory = spec.memory.model_copy(update={"enabled": False})
+
     mcp_configs = build_enabled_mcp_server_configs(
         config,
         server_id_scope=f"team:{spec.team_name}",
@@ -697,6 +712,7 @@ def enrich_team_spec_for_swarm(
             _apply_design_agent_group(spec, agent_group_name)
         else:
             _apply_agent_group(spec, agent_group_name, agent_group_package)
+            base.memory_experts = tuple(spec.metadata.pop("memory_experts", ()))
 
     project_skills_dirs = get_project_skills_dirs(project_dir)
     if project_skills_dirs:

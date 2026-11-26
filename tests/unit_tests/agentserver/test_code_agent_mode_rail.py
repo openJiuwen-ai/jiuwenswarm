@@ -15,7 +15,8 @@ from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import CodeAgent
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("profile", ["work", "code"])
-async def test_plan_mode_keeps_pcs_search_and_still_rejects_unrelated_tools(profile) -> None:
+@pytest.mark.parametrize("tool_name,tool_args", [("pcs_search", {"query": "project notes"}), ("pcs_read", {"path": "topic/page.md"})])
+async def test_plan_mode_keeps_pcs_search_and_still_rejects_unrelated_tools(profile, tool_name, tool_args) -> None:
     from jiuwenswarm.agents.harness.work.rails.work_agent_mode_rail import WorkAgentModeRail
     with patch("jiuwenswarm.common.config._read_with_retry", return_value={}):
         from jiuwenswarm.server.runtime.agent_adapter.interface_code import _CODE_PLAN_ALLOWED_TOOLS
@@ -32,14 +33,14 @@ async def test_plan_mode_keeps_pcs_search_and_still_rejects_unrelated_tools(prof
     ctx = SimpleNamespace(
         session=SimpleNamespace(session_id="pcs-plan-test"),
         inputs=SimpleNamespace(
-            tool_name="pcs_search", tool_args={"query": "project notes"},
+            tool_name=tool_name, tool_args=tool_args,
             tool_call=SimpleNamespace(id="pcs-plan-call"),
-            tools=[SimpleNamespace(name="pcs_search"), SimpleNamespace(name="send_file_to_user")],
+            tools=[SimpleNamespace(name=tool_name), SimpleNamespace(name="send_file_to_user")],
         ),
         extra={},
     )
     await rail.before_model_call(ctx)
-    assert [tool.name for tool in ctx.inputs.tools] == ["pcs_search"]
+    assert [tool.name for tool in ctx.inputs.tools] == [tool_name]
     await rail.before_tool_call(ctx)
     assert not ctx.extra.get("_skip_tool", False)
 

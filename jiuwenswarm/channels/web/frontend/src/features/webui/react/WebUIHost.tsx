@@ -170,6 +170,7 @@ export function WebUIHost({
             instanceKey={key}
             mountLeaseId={mountHandle?.mountLeaseId}
             styles={styles}
+            hostSessionId={viewContext.sessionId}
             selected={!!selectedTarget && selectedTarget.sessionId === sessionId
               && selectedTarget.packageId === runtime.getInstance(key)?.target.packageId
               && selectedTarget.instanceKey === runtime.getInstance(key)?.target.instanceKey}

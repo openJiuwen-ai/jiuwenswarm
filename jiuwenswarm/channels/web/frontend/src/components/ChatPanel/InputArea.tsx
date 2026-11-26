@@ -38,6 +38,7 @@ import { isConversationModelGroupBlocked } from '../../multi-session/state/conve
 import { useMultiModelCollaborationEnabled } from '../../features/multiModelCollaboration/featureConfig';
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import { getSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
+import { ExpertTeamBatchPicker } from './ExpertTeamBatchPicker';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
 import { isReachableTeamMemberStatus } from '../../features/teamMemberDeparture';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
@@ -1279,7 +1280,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const teamGroupSelectionActive = isTeamMode && Boolean(selectedGroupId);
   const teamSkillSelectionActive = isTeamMode && selectedSkills.length > 0;
   const agentSelectionDisabled = isTeamMode;
-  const agentGroupSelectionDisabled = isAgentMode || agentGroupPickerLocked || teamSkillSelectionActive;
+  const agentGroupSelectionDisabled = isAgentMode || (!organizationUiEnabled && agentGroupPickerLocked) || teamSkillSelectionActive;
 
   useEffect(() => {
     if (!isTeamMode && !isAgentMode) return;
@@ -1354,7 +1355,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (!activeSessionId || teamDispatchToggleDisabled) return;
     useSessionStore.getState().setTeamBootstrapMode(activeSessionId, next ? 'framework' : 'leader');
   };
-  const canUsePlanMenu = supportsPlanMode(mode);
+  const canUsePlanMenu = !enterprise && supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;
   // 永续会话标记：只对真实会话展示（/persist 创建或后端会话列表带 persist_session 的会话），
   // 欢迎页在 session.create 之前没有可展示的持久化状态。
@@ -4729,7 +4730,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                           <button type="button" role="tab" aria-selected={pickerTab === 'agent'} aria-disabled={agentSelectionDisabled} className={pickerTab === 'agent' ? 'is-active' : ''} disabled={agentSelectionDisabled} data-testid="chat-panel-agent-picker-agent-tab" title={agentSelectionDisabled ? t('chat.agentOnlyInSingleAgentMode') : undefined} onClick={() => { setPickerTab('agent'); setAgentPickerQuery(''); }}>{t('chat.agent')}</button>
                                         ) : null}
                                         {!isAgentMode ? (
-                                          <button type="button" role="tab" aria-selected={pickerTab === 'group'} aria-disabled={agentGroupSelectionDisabled} className={pickerTab === 'group' ? 'is-active' : ''} disabled={agentGroupSelectionDisabled} data-testid="chat-panel-agent-picker-agent-group-tab" title={isAgentMode ? t('chat.agentGroupOnlyInTeamMode') : teamSkillSelectionActive ? t('chat.teamSkillsGroupLocked') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : agentGroupLocked ? t('chat.agentGroupBinding') : undefined} onClick={() => { setPickerTab('group'); setAgentPickerQuery(''); }}>{t('chat.agentGroup')}</button>
+                                          <button type="button" role="tab" aria-selected={pickerTab === 'group'} aria-disabled={agentGroupSelectionDisabled} className={pickerTab === 'group' ? 'is-active' : ''} disabled={agentGroupSelectionDisabled} data-testid="chat-panel-agent-picker-agent-group-tab" title={organizationUiEnabled && isTeamMode ? undefined : isAgentMode ? t('chat.agentGroupOnlyInTeamMode') : teamSkillSelectionActive ? t('chat.teamSkillsGroupLocked') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : agentGroupLocked ? t('chat.agentGroupBinding') : undefined} onClick={() => { setPickerTab('group'); setAgentPickerQuery(''); }}>{t('chat.agentGroup')}</button>
                                         ) : null}
                                       </div>
                                     ) : null
@@ -4842,6 +4843,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                     </button>
                                   );
                                 })
+                              ) : organizationUiEnabled && isTeamMode && activeSessionId ? (
+                                <ExpertTeamBatchPicker
+                                  sessionId={activeSessionId}
+                                  groups={filteredGroupOptions}
+                                  loading={groupOptionsStatus === 'loading'}
+                                  loadError={groupOptionsStatus === 'error'}
+                                  ensureSession={() => onEnsureSession(t('chat.expertBatchTitle'))}
+                                  onCancel={() => setAttachMenuOpen(false)}
+                                />
                               ) : groupOptionsStatus === 'loading' ? (
                                 <div
                                   className="chat-agent-picker__state"
@@ -4973,11 +4983,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           ) : null}
                           {agentTooltipNode}
                         </div>
-                        {/* 插件/MCP 装备目前后端在集群模式下不生效（JiuWenSwarmDeepAdapter
-                    ._ensure_chat_extensions 对 team 模式直接短路，见
-                    interface_deep.py），继续展示这个入口只会让用户以为选了插件/MCP 会生效，
-                    实际发出去也是白发。集群模式下直接不渲染这个入口，跟旁边 SkillSelector
-                    （!isTeamMode 判断）保持同样的处理方式。 */}
+                        {/* 插件/MCP 装备：team 模式下后端 _ensure_chat_extensions 直接短路，
+                    展示入口会误导用户；agent 模式（含企业版）正常展示。 */}
                         <div className="chat-attach-menu-item-anchor">
                           <button
                             type="button"
@@ -5018,7 +5025,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           )}
                         </div>
-                        {!enterprise && !isTeamMode && (
+                        {!isTeamMode && (
                           <div className="chat-attach-menu-item-anchor">
                             <button
                               type="button"

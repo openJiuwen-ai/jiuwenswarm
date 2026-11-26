@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from jiuwenswarm.common.file_download_token import (
+    PURPOSE_ASSET_EXPORT,
     PURPOSE_SKILL_CONTENT_IMAGE,
     WebFileDownloadManager,
     build_file_download_info,
@@ -22,6 +23,7 @@ from jiuwenswarm.common.file_download_token import (
 )
 
 __all__ = [
+    "PURPOSE_ASSET_EXPORT",
     "PURPOSE_SKILL_CONTENT_IMAGE",
     "WebFileDownloadManager",
     "build_file_download_info",

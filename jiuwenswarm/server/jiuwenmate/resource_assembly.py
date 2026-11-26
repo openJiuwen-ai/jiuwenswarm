@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from jiuwenswarm.server.jiuwenmate.models import CapabilitySelection, PersistentAgentError
+from jiuwenswarm.common.paths import get_personal_context_dir
 from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 
 _SKILL_RAIL = "core.skill_use"
@@ -531,7 +532,7 @@ class InstalledResourceCatalog:
     def _context_root(self) -> Path:
         if self._knowledge_root is not None:
             return self._knowledge_root
-        return Path.home() / ".jiuwenswarm" / ".personal_context" / "workspace" / "context"
+        return get_personal_context_dir() / "workspace" / "context"
 
     def skill(self, name: str) -> SkillSource | None:
         if _NAME.fullmatch(name) is None:

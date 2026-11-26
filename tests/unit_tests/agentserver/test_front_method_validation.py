@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -12,10 +13,11 @@ from e2a.wire_codec import (
     parse_agent_server_wire_unary,
 )
 
-from jiuwenswarm.common.e2a.gateway_normalize import build_fallback_e2a
+from e2a.gateway_normalize import build_fallback_e2a
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.protocol import parse_raw_message
+from jiuwenswarm.server.edition_gate import ENTERPRISE_ONLY_METHODS
 
 
 @pytest.mark.parametrize("wire_kind", ["e2a", "legacy", "fallback"])
@@ -62,3 +64,80 @@ def test_absent_method_stays_available_for_internal_requests() -> None:
     request = parse_raw_message(json.dumps({"request_id": "internal-1", "channel": "web"}))
     assert isinstance(request, AgentRequest)
     assert request.req_method is None
+
+
+def test_enterprise_only_methods_are_declared_in_the_enum() -> None:
+    assert ENTERPRISE_ONLY_METHODS <= {method.value for method in ReqMethod}
+
+
+@pytest.mark.parametrize("method", sorted(ENTERPRISE_ONLY_METHODS))
+def test_personal_edition_rejects_enterprise_team_methods(
+    monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    payload = {"request_id": "personal-1", "channel": "web", "method": method}
+
+    wire = parse_raw_message(json.dumps(payload))
+    assert isinstance(wire, dict)
+    response = parse_agent_server_wire_unary(wire)
+    assert response.request_id == "personal-1"
+    assert response.ok is False
+    assert response.payload["code"] == "FORBIDDEN"
+    assert method in response.payload["error"]
+
+
+def test_enterprise_edition_keeps_enterprise_team_methods(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    payload = {"request_id": "enterprise-1", "channel": "web", "method": "team.create"}
+
+    request = parse_raw_message(json.dumps(payload))
+    assert isinstance(request, AgentRequest)
+    assert request.req_method is ReqMethod.TEAM_CREATE
+
+
+@pytest.mark.parametrize("method", ["team.list", "team.delete", "team.snapshot"])
+def test_personal_edition_keeps_local_team_methods(
+    monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    payload = {"request_id": "local-1", "channel": "web", "method": method}
+
+    request = parse_raw_message(json.dumps(payload))
+    assert isinstance(request, AgentRequest)
+    assert request.req_method is ReqMethod(method)
+
+
+@pytest.mark.asyncio
+async def test_personal_edition_blocks_enterprise_method_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    sent: list[dict] = []
+
+    async def _send(ws, payload) -> bool:
+        _ = ws
+        sent.append(payload)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.agent_ws_server.send_wire_payload", _send
+    )
+    request = AgentRequest(
+        request_id="personal-dispatch",
+        channel_id="web",
+        req_method=ReqMethod.TEAM_CREATE,
+        params={},
+    )
+
+    await AgentWebSocketServer.dispatch_parsed_request(
+        object.__new__(AgentWebSocketServer), object(), request, asyncio.Lock()
+    )
+
+    assert sent[0]["body"]["details"] == {
+        "error": "method not available in personal edition: team.create",
+        "code": "FORBIDDEN",
+    }

@@ -72,17 +72,21 @@ def _effective_tenant_key(tenant_key: str | None = None) -> str:
 
 
 def get_multi_tenant_user_workspace_dir(tenant_key: str | None = None) -> Path:
-    """Tenant workspace root.
+    """Tenant workspace root (under the profile zone).
 
-    - Enterprise: ``~/.jiuwenswarm/workspace_{tenant_key}``
-    - Personal: develop layout unchanged (``~/.jiuwenswarm``)
+    - Enterprise: ``profile/profile_{tenant_key}/``
+      （租户隔离根，内含各自的 agent/）
+    - Personal: ``profile/``
+
+    agent/ 子树（sessions/workspace/skills/teams...）整体落在工作空间根——
+    会话与工作区是跨 Pod 业务态，随共享卷持久化。
     """
-    from jiuwenswarm.common.utils import get_user_workspace_dir
+    from jiuwenswarm.common.paths import _ENTERPRISE_TENANT_DIR_PREFIX, get_profile_data_dir
 
     if is_enterprise():
         tk = _effective_tenant_key(tenant_key)
-        return get_user_workspace_dir() / f"workspace_{tk}"
-    return get_user_workspace_dir()
+        return get_profile_data_dir() / (_ENTERPRISE_TENANT_DIR_PREFIX + tk)
+    return get_profile_data_dir()
 
 
 def seed_tenant_agent_workspace(tenant_root: Path) -> None:
@@ -101,6 +105,7 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
         get_config_file,
     )
 
+
     workspace = Path(tenant_root) / get_agent_workspace_relative_dir()
     memory_dir = workspace / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
@@ -118,6 +123,7 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
         return
 
     config_path = get_config_file()
+    # Tenant-shared skeleton: use global yaml, not per-request user memo.
     resolved_lang = _resolve_preferred_language(config_path, None)
     suffix = "_ZH" if resolved_lang == "zh" else "_EN"
     # (模板内相对路径, 落盘相对路径)，多语言文件去掉 _ZH/_EN 后缀

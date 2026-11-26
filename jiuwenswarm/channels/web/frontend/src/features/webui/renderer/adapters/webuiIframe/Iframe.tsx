@@ -1,24 +1,47 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useState, type CSSProperties } from 'react';
 import { ExternalLink, LoaderCircle, RotateCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import './Iframe.css';
+
+const PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals allow-downloads';
+
+function canPreserveSourceOrigin(src: string | undefined): boolean {
+  if (
+    !src ||
+    typeof document === 'undefined' ||
+    document.querySelector('meta[name="workswarm-iframe-host-isolation"]')?.getAttribute('content') !== 'true'
+  ) {
+    return false;
+  }
+  const url = new URL(src, document.baseURI);
+  return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin !== document.location.origin;
+}
 
 export interface IframeProps {
   src?: string;
   srcDoc?: string;
   title: string;
   minWidth?: number;
+  permissions?: readonly string[];
   active?: boolean;
   className?: string;
   style?: CSSProperties;
 }
 
-function FrameDocument({ src, srcDoc, title, minWidth }: Pick<IframeProps, 'src' | 'srcDoc' | 'title' | 'minWidth'>) {
+type FrameDocumentProps = Pick<IframeProps, 'src' | 'srcDoc' | 'title' | 'minWidth'> & { allow?: string };
+
+function FrameDocument({ src, srcDoc, title, minWidth, allow }: FrameDocumentProps) {
   const { t } = useTranslation();
+  const frameId = useId();
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
   const [slow, setSlow] = useState(false);
   const [reloadVersion, setReloadVersion] = useState(0);
   const source = src ?? t('webuiIframe.pluginPage');
+  const sandbox = canPreserveSourceOrigin(src) ? `${PREVIEW_SANDBOX} allow-same-origin` : PREVIEW_SANDBOX;
+  const needsMediaBinding =
+    typeof window !== 'undefined' &&
+    window.jiuwenDesktop &&
+    allow?.split('; ').some((feature) => feature === 'camera' || feature === 'microphone');
 
   useEffect(() => {
     if (status !== 'loading') return;
@@ -69,10 +92,12 @@ function FrameDocument({ src, srcDoc, title, minWidth }: Pick<IframeProps, 'src'
           {status !== 'error' ? (
             <iframe
               key={reloadVersion}
+              name={needsMediaBinding ? `workswarm-media-${frameId}-${reloadVersion}` : undefined}
               src={src}
               srcDoc={srcDoc}
               title={title}
-              sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+              sandbox={sandbox}
+              allow={allow}
               referrerPolicy="no-referrer"
               className="webui-iframe__frame"
               style={{ minWidth }}
@@ -101,8 +126,10 @@ function FrameDocument({ src, srcDoc, title, minWidth }: Pick<IframeProps, 'src'
 }
 
 /** Own the browsing context only while this content is active. */
-export function Iframe({ src, srcDoc, title, minWidth = 0, active = true, className, style }: IframeProps) {
+export function Iframe({ src, srcDoc, title, minWidth = 0, permissions, active = true, className, style }: IframeProps) {
   const { t } = useTranslation();
+  const allow = src && permissions?.length ? Array.from(new Set(permissions)).join('; ') : undefined;
+  const documentKey = JSON.stringify([src, srcDoc, allow]);
   return (
     <section
       className={`webui-iframe${className ? ` ${className}` : ''}`}
@@ -111,7 +138,7 @@ export function Iframe({ src, srcDoc, title, minWidth = 0, active = true, classN
       data-testid="webui-iframe"
     >
       {active ? (
-        <FrameDocument key={src ?? srcDoc} src={src} srcDoc={srcDoc} title={title} minWidth={minWidth} />
+        <FrameDocument key={documentKey} src={src} srcDoc={srcDoc} title={title} minWidth={minWidth} allow={allow} />
       ) : (
         <div className="webui-iframe__notice" role="status" data-testid="webui-iframe-state" data-variant="inactive">
           {t('webuiIframe.inactive')}

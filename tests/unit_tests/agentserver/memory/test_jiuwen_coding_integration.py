@@ -9,8 +9,10 @@ import pytest
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 from jiuwenswarm.agents.harness.common.memory import jiuwen_rail_builder as builder
+from jiuwenswarm.agents.harness.common.memory import team_memory_members
 from jiuwenswarm.agents.harness.common.rails.memory_forbidden_rail import _targets_memory
 from jiuwenswarm.common.coding_memory_paths import resolve_coding_memory_project_name
+from jiuwenswarm.common.memory_config import get_builtin_memory_provider
 from jiuwenswarm.server.runtime.agent_adapter import interface_code, interface_deep
 
 
@@ -37,6 +39,9 @@ def memory_dependencies(monkeypatch):
     class JiuwenMemoryCodingRail(_MemoryRailStub):
         pass
 
+    class JiuwenTeamMemoryRail(_MemoryRailStub):
+        pass
+
     class Provider:
         def __init__(self, **options):
             self.options = options
@@ -50,13 +55,37 @@ def memory_dependencies(monkeypatch):
     monkeypatch.setitem(sys.modules, module.__name__, module)
     monkeypatch.setattr(rails, "JiuwenMemoryRail", JiuwenMemoryRail, raising=False)
     monkeypatch.setattr(rails, "JiuwenMemoryCodingRail", JiuwenMemoryCodingRail, raising=False)
+    monkeypatch.setattr(rails, "JiuwenTeamMemoryRail", JiuwenTeamMemoryRail, raising=False)
     monkeypatch.setattr(builder, "_build_security_provider", lambda org, user: object())
+    prepare = AsyncMock(return_value=True)
+    monkeypatch.setattr(team_memory_members, "prepare_project_memory", prepare)
+    return prepare
 
 
 def config():
     return {"modes": {mode: {"memory": {"enabled": True}} for mode in ("code", "agent")},
             "memory": {"mode": "local", "engine": "builtin", "builtin": {
                 "provider": "jiuwen", "jiuwen": {"mode": "http", "agent_id": "shared"}}}}
+
+
+@pytest.mark.parametrize("section,expected", [
+    ({}, ""),
+    ({"memory": None}, ""),
+    ({"memory": {"builtin": []}}, ""),
+    ({"memory": {"builtin": {"provider": " jiuwen "}}}, "jiuwen"),
+    ({"memory": {"builtin": {"provider": "native"}}}, "native"),
+])
+def test_provider_reader_preserves_explicit_config_and_builder_fallback(
+    monkeypatch, section, expected,
+):
+    load_config = Mock(return_value=config())
+    monkeypatch.setattr(builder, "_load_config", load_config)
+    assert get_builtin_memory_provider(section) == expected
+    assert builder.get_builtin_memory_provider(section) == expected
+    load_config.assert_not_called()
+    assert get_builtin_memory_provider(None) == ""
+    assert builder.get_builtin_memory_provider() == "jiuwen"
+    load_config.assert_called_once_with()
 
 
 def adapter(monkeypatch, tmp_path, cfg):
@@ -69,32 +98,43 @@ def adapter(monkeypatch, tmp_path, cfg):
 
 
 @pytest.mark.parametrize("name,session", [("main_agent", ""), ("review_agent", "configured-session")])
-def test_code_builder_binds_project_and_work_runtime_identity(monkeypatch, tmp_path, name, session):
+@pytest.mark.parametrize("mode", ["http", "sdk"])
+def test_work_code_share_configured_identity_and_team_keeps_stable_binding(monkeypatch, tmp_path, name, session, mode):
     cfg = config()
-    cfg["memory"]["builtin"]["jiuwen"]["session_id"] = session
+    cfg["memory"]["builtin"]["jiuwen"].update(session_id=session, mode=mode)
+    monkeypatch.setattr(builder, "get_embed_config", lambda: {})
     obj = adapter(monkeypatch, tmp_path, cfg)
     obj._agent_name = name
     monkeypatch.setattr(interface_deep, "get_config", lambda: cfg)
     work_adapter = interface_deep.JiuWenSwarmDeepAdapter()
-    work_adapter._agent_name = name
+    work_adapter._agent_name = "work-" + name
     code = obj._build_coding_memory_rail()
+    work_adapter._instance = SimpleNamespace(_jiuwenswarm_memory_project_dir=obj._project_dir)
     work = work_adapter._build_memory_rail("agent.work.normal", cfg)
     assert type(code).__name__ == "JiuwenMemoryCodingRail"
     assert code._provider.options["scene"] == "code"
     assert work._provider.options.get("scene", "agent") == "agent"
     assert code._provider.options["project"] == resolve_coding_memory_project_name(obj._project_dir)
+    assert code._provider.options["collective_coordinates"] == work._provider.options["collective_coordinates"] == {
+        "project": code._provider.options["project"],
+    }
     assert type(work).__name__ == "SwarmJiuwenMemoryRail"
-    work_agent = SimpleNamespace(_jiuwenswarm_memory_project_dir=obj._project_dir)
-    assert work._resolve_project(SimpleNamespace(agent=work_agent)) == code._provider.options["project"]
-    assert code._identity["agent_id"] == work._agent_id == name
+    work_context = SimpleNamespace(agent=work_adapter._instance)
+    assert work._resolve_project(work_context) == code._provider.options["project"]
+    assert code._identity["agent_id"] == work._agent_id == "shared"
     assert code._identity["session_id"] == work._session_id == session
     assert code is obj._build_coding_memory_rail()
     obj._project_dir = str(tmp_path / "other" / "repo")
     changed = obj._build_coding_memory_rail()
     assert changed is not code
     assert changed._provider.options["project"] != code._provider.options["project"]
-    team = builder.build_jiuwen_memory_rail(cfg, agent_name="team-member")
-    assert team._agent_id == "team-member" and team._session_id == session
+    team = builder.build_jiuwen_memory_rail(cfg, agent_name="team-member", scene="team",
+        project="repo", team_binding={"team": "repo--" + "a" * 24, "member": "member"})
+    assert team._provider.options["collective_coordinates"] == {"project": "repo", "team": "repo--" + "a" * 24}
+    assert (team._agent_id, team._session_id) == ("main_agent", "")
+    assert {rail._provider.options["agent_id"] for rail in (code, work)} == {"shared"}
+    assert team._provider.options["agent_id"] == "main_agent"
+    assert obj._agent_name == name and work_adapter._agent_name == "work-" + name
 
 
 @pytest.mark.asyncio
@@ -125,8 +165,8 @@ async def test_work_code_creation_resolves_the_same_name(
         monkeypatch.setattr(obj, "_sync_enterprise_skill_prebuilt", AsyncMock())
         await obj.create_instance(override, agent_definition=definition)
         assert obj._agent_name == expected
-    assert work._build_memory_rail("agent.work.normal", cfg)._agent_id == expected
-    assert code._build_coding_memory_rail()._identity["agent_id"] == expected
+    assert work._build_memory_rail("agent.work.normal", cfg)._agent_id == "shared"
+    assert code._build_coding_memory_rail()._identity["agent_id"] == "shared"
 
 
 @pytest.mark.parametrize("scene", ["agent", "code"])
@@ -137,7 +177,7 @@ def test_builder_identity_fallback_preserves_configured_session(scene):
     assert rail._provider.options["agent_id"] == "shared"
     del cfg["memory"]["builtin"]["jiuwen"]["agent_id"]
     rail = builder.build_jiuwen_memory_rail(cfg, scene=scene, shared_document_root=True)
-    assert rail._provider.options["agent_id"] == "jiuwenswarm"
+    assert rail._provider.options["agent_id"] == "main_agent"
     session = rail._identity["session_id"] if scene == "code" else rail._session_id
     assert session == "configured-session"
 
@@ -165,7 +205,9 @@ def test_jiuwen_selection_never_falls_back_to_legacy(monkeypatch, tmp_path, bloc
 
 
 @pytest.mark.asyncio
-async def test_reload_replaces_and_disables_code_memory_without_work_rail(monkeypatch, tmp_path):
+async def test_reload_replaces_and_disables_code_memory_without_work_rail(
+    monkeypatch, tmp_path, memory_dependencies,
+):
     cfg = config()
     obj = adapter(monkeypatch, tmp_path, cfg)
     obj._instance = SimpleNamespace(
@@ -173,13 +215,22 @@ async def test_reload_replaces_and_disables_code_memory_without_work_rail(monkey
         deep_config=SimpleNamespace(subagents=[]))
     first = obj._build_coding_memory_rail()
     first.aclose = AsyncMock()
-    obj._agent_name = "new-identity"
+    obj._agent_name = "new-runtime-name"
+    memory_dependencies.side_effect = [False, True, True]
+    for _ in range(3):
+        await obj._handle_memory_rail_by_config("agent.code.normal")
+    project = first._provider.options["project"]
+    assert memory_dependencies.await_args_list == [call(cfg, project)] * 2
+    assert obj._coding_memory_rail is first
+    first.aclose.assert_not_awaited()
+    cfg["memory"]["builtin"]["jiuwen"]["agent_id"] = "new-identity"
     await obj._handle_memory_rail_by_config("agent.code.normal")
     obj._instance.unregister_rail.assert_awaited_with(first)
     first.aclose.assert_awaited_once()
     assert obj._memory_rail is None
     current = obj._coding_memory_rail
     assert current._identity["agent_id"] == "new-identity"
+    assert memory_dependencies.await_count == 3
     current.aclose = AsyncMock()
     cfg["modes"]["code"]["memory"]["enabled"] = False
     await obj._handle_memory_rail_by_config("agent.code.normal")
@@ -279,20 +330,33 @@ def test_sdk_uses_shared_root_without_mutating_config(monkeypatch, markdown):
 
 
 @pytest.mark.asyncio
-async def test_work_rebinds_memory_when_runtime_name_changes(monkeypatch):
+async def test_work_rebinds_memory_when_configured_identity_or_project_changes(
+    monkeypatch, tmp_path, memory_dependencies,
+):
     cfg = config()
     monkeypatch.setattr(interface_deep, "get_config", lambda: cfg)
     obj = interface_deep.JiuWenSwarmDeepAdapter()
     obj._instance = SimpleNamespace(unregister_rail=AsyncMock(), register_rail=AsyncMock())
     await obj._handle_memory_rail_by_config("agent.work.normal")
     first = obj._memory_rail
-    assert first._agent_id == "main_agent"
+    assert first._agent_id == "shared"
     await obj._handle_memory_rail_by_config("agent.work.normal")
     assert obj._memory_rail is first
     obj._agent_name = "review_agent"
     await obj._handle_memory_rail_by_config("agent.work.normal")
+    assert obj._memory_rail is first
+    obj._instance.unregister_rail.assert_not_awaited()
+    cfg["memory"]["builtin"]["jiuwen"]["agent_id"] = "other-memory"
+    await obj._handle_memory_rail_by_config("agent.work.normal")
     obj._instance.unregister_rail.assert_awaited_once_with(first)
-    assert obj._memory_rail._agent_id == "review_agent"
+    assert obj._memory_rail._agent_id == "other-memory"
+
+    project_dir = str(tmp_path / "repo")
+    obj._bind_jiuwen_memory_project_dir(project_dir)
+    await obj._handle_memory_rail_by_config("agent.work.normal")
+    project = resolve_coding_memory_project_name(project_dir)
+    assert obj._memory_rail._provider.options["collective_coordinates"] == {"project": project}
+    memory_dependencies.assert_awaited_with(cfg, project, sdk_media_globals={})
 
 
 @pytest.mark.parametrize("mode", ["http", "sdk"])
@@ -334,7 +398,7 @@ async def test_http_v08_reload_uses_effective_memory_config(monkeypatch, tmp_pat
     elif change == "base_url":
         jiuwen["base_url"] = "http://127.0.0.1:9813"
     elif change == "agent_id":
-        obj._agent_name = "another-agent"
+        jiuwen["agent_id"] = "another-agent"
     elif change == "provider":
         cfg["memory"]["builtin"]["provider"] = ""
     else:
@@ -398,7 +462,9 @@ def test_v04_only_code_agent_reuses_the_http_memory_rail(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_http_root_change_keeps_client_through_full_spec_reload(monkeypatch, tmp_path):
+async def test_http_root_change_keeps_client_through_full_spec_reload(
+    monkeypatch, tmp_path, memory_dependencies,
+):
     from copy import copy
     from unittest.mock import MagicMock
 
@@ -461,6 +527,7 @@ async def test_http_root_change_keeps_client_through_full_spec_reload(monkeypatc
             call.unmount(agent), call.mount(agent), call.ready(),
         ]
         assert sum(item is rail for item in agent.configured_rails()) == 1
+        memory_dependencies.assert_awaited_once_with(cfg, rail._provider.options["project"])
     finally:
         await agent.unregister_rail(rail)
         await Runner.stop()
@@ -499,7 +566,7 @@ async def test_failed_jiuwen_rebuild_clears_memory_and_can_recover(
     elif changed == "project":
         obj._memory_project_dir = str(tmp_path / "another-project")
     else:
-        obj._agent_name = "another-agent"
+        cfg["memory"]["builtin"]["jiuwen"]["agent_id"] = "another-agent"
     original = interface_code.build_jiuwen_memory_rail
 
     def fail_build(*args, **kwargs):
@@ -567,7 +634,7 @@ def test_registered_memory_scene_uses_shared_builder(monkeypatch, mode):
     assert first._provider.options["scene"] == "review"
     assert first._provider.options["project"] == "a"
     assert second._provider.options["project"] == "b"
-    assert first._identity["agent_id"] == "reviewer"
+    assert first._identity["agent_id"] == "shared"
     assert first._identity["review_policy"] == "strict"
     assert "session_end_extract" not in first._identity
 

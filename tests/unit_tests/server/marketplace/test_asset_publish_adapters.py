@@ -244,6 +244,47 @@ def test_mcp_placeholder_needs_schema(tmp_path):
     assert run(root, "mcp")["wrapper"] is None
 
 
+@pytest.mark.parametrize(
+    "declares_entrypoint, extra_args, env, expected_error",
+    [
+        (True, [], {}, None),
+        (False, [], {}, "UNDEFINED_PLACEHOLDER"),
+        (True, [], {"OTHER": "${MCP_PACKAGE_ENTRYPOINT}"}, "UNDEFINED_PLACEHOLDER"),
+        (True, ["--path=${MCP_PACKAGE_ENTRYPOINT}"], {}, "UNDEFINED_PLACEHOLDER"),
+        (True, ["${OTHER}"], {}, "UNDEFINED_PLACEHOLDER"),
+        (True, ["${MCP_PACKAGE_ENTRYPOINT}"], {}, "INVALID_PACKAGE"),
+    ],
+)
+def test_mcp_publish_only_exempts_the_declared_entrypoint_arg(
+    tmp_path, declares_entrypoint, extra_args, env, expected_error
+):
+    integration = {"type": "stdio-mcp", "file": "mcp.json"}
+    if declares_entrypoint:
+        integration["entrypoint"] = "server.py"
+    root = package(tmp_path, "mcp", integration=integration)
+    (root / "server.py").write_text("# MCP entrypoint\n", encoding="utf-8")
+    write(root, "mcp.json", {
+        "mcpServers": {
+            "demo": {
+                "command": "python",
+                "args": ["-B", "${MCP_PACKAGE_ENTRYPOINT}", *extra_args],
+                "env": env,
+            }
+        }
+    })
+    config_path = root / "mcp.json"
+    before = config_path.read_bytes()
+
+    if expected_error is None:
+        assert run(root, "mcp")["wrapper"] is None
+    else:
+        with pytest.raises(PublishValidationError) as error:
+            run(root, "mcp")
+        assert error.value.code == expected_error
+
+    assert config_path.read_bytes() == before
+
+
 @pytest.mark.parametrize("header", ["Authorization", "authorization"])
 def test_host_oauth_mcp_normalizes_legacy_host_provided_access_token(tmp_path, header):
     root = mcp(tmp_path, {

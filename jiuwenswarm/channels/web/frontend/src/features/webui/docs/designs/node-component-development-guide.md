@@ -168,8 +168,8 @@ export const componentCatalog = createCatalog({
 
 - 只读 `node`，不要访问 runtime、transport、WebClient 或网络；渲染层不发起业务请求。
 - 只有 `node.events[...]` 存在时才派发对应事件，`data` 必须符合规则；`context.connected` 为 false 或组件禁用时不要派发。
-- 合法 replace 会按 `renderGeneration` 整树重建；需要跨帧保留的交互值用 `context.componentState`（参考 FileTree）。
-  例外：槽位目录中 `rerender: 'keep-mounted'` 的槽位（目前只有 `application.background`，Gateway S_07 不变量 6）在实例生命周期内新帧只更新属性，组件要自己按身份决定何时重建内部状态（`MediaSurface` 按 `src`，海报的失败状态按海报地址）。
+- 合法 replace 默认按 `renderGeneration` 整树重建；需要跨帧保留的交互值用 `context.componentState`（参考 FileTree）。
+  `rerender: 'keep-mounted'` 保留实例的整树挂载键，React 按节点协调新帧。启用此策略的槽位见 [slots.ts](../../catalog/slots.ts)。组件仍可按自身标识重置状态，如 `MediaSurface` 的媒体源随 `src` 变化。需要由服务端决定跨帧值时，使用相应的受控属性。
 - 内置文案走 `react-i18next`（参考 FileTree、FilePreview、Iframe）；不要硬编码颜色，使用宿主语义 token；插件不能传 `className`/`style`，外观只从 `appearance` 取。
 - 交互元素和承载语义的元素加 `data-testid="webui-xxx"`；渲染失败交给实例错误边界，不要自行吞掉异常继续渲染半棵树。
 

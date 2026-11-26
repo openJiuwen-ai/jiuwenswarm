@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any
 import uuid
 
-from agent_gateway.common.protocol_methods import ReqMethod
-
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import append_jsonl_log, get_user_workspace_dir
 from jiuwenswarm.extensions.video_duplex.backend.error_details import duplex_failure
 from jiuwenswarm.extensions.video_duplex.backend import (
@@ -847,15 +846,13 @@ def register_video_live_handler(
         )
 
     async def _core_receipts(ws, req_id, params, session_id):
-        from jiuwenswarm.common.schema.message import ReqMethod as CoreReqMethod
-
         from .task_adapter import task_identity
 
         try:
             owner, scope = task_identity(ws, str((params or {}).get("search_session_id") or ""))
             if not scope.startswith("task-duplex:"):
                 raise ValueError("Core receipts require a saved conversation")
-            payload = await task_agent_query(agent_client, CoreReqMethod.VOICE_SESSION_RECEIPTS,
+            payload = await task_agent_query(agent_client, ReqMethod.VOICE_SESSION_RECEIPTS,
                 {"token": params.get("token"), "action": params.get("action")},
                 scope.removeprefix("task-duplex:"), owner)
             await channel.send_response(ws, req_id, ok=True, payload=payload)

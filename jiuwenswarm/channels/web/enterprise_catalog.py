@@ -62,6 +62,8 @@ class Catalog:
             Column("jiuwenclaw_id", String), Column("resource_id", String),
             Column("resource_name", String), Column("match_expr", JSON),
             Column("enabled", Boolean), Column("expires_at", DateTime),
+            Column("ref_template_id", String),
+            Column("upload_local_skill", Boolean),
         )
 
     async def _admitted(
@@ -89,7 +91,7 @@ class Catalog:
             _active(row) and _matches_agent_rule(row.match_expr, user.user_id, group)
         )
 
-    async def contexts(self, db: AsyncConnection, user: User) -> list[dict[str, str]]:
+    async def contexts(self, db: AsyncConnection, user: User) -> list[dict[str, Any]]:
         admitted = await self._admitted(db, user)
         if not admitted:
             return []
@@ -106,6 +108,8 @@ class Catalog:
                         "bot_id": row.resource_id, "group_id": group, "user_id": user.user_id,
                         "jiuwenclaw_id": row.jiuwenclaw_id,
                         "agent_name": row.resource_name or row.resource_id,
+                        "agent_template_id": row.ref_template_id or "",
+                        "allow_local_skill_upload": bool(row.upload_local_skill),
                         "group_name": name, "jiuwenclaw_name": row.jiuwenclaw_name or row.jiuwenclaw_id,
                     })
         return sorted(result, key=lambda item: (

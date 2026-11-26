@@ -102,6 +102,7 @@ class PlanModeController:
         from jiuwenswarm.agents.harness.common.session_ops_service import (
             resolve_live_agent_session,
         )
+        from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 
         live_deep_agent = agent.get_live_session_instance(session_id)
         if live_deep_agent is not None:
@@ -122,6 +123,10 @@ class PlanModeController:
                 started = starter(session_id)
                 if inspect.isawaitable(started):
                     started = await started
+            except HistoryReplayError:
+                # A rejected restore must reach the caller before any plan state
+                # can be written to a separate Session or execution starts.
+                raise
             except Exception as exc:  # noqa: BLE001 - compatibility fallback
                 logger.warning(
                     "Failed to start live plan-state session for session=%s: %s; "

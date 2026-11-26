@@ -1779,6 +1779,32 @@ def enqueue_ask_user_stop(
     return receipt
 
 
+def _precheck_workspace_quota_for_history_append(item: dict[str, Any]) -> None:
+    """会话历史追加前的配额门禁（设计 §2.3）。
+
+    满额抛 ``WorkspaceQuotaExceeded``；特性关闭或门禁依赖不可用时不阻断。
+    """
+    try:
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+            WorkspaceQuotaExceeded,
+            check_workspace_write,
+            is_workspace_quota_enabled,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if not is_workspace_quota_enabled():
+        return
+    try:
+        approx = len(
+            json.dumps(item, ensure_ascii=False, default=str).encode("utf-8")
+        ) + 1  # jsonl 换行
+        check_workspace_write(additional_bytes=max(64, approx))
+    except WorkspaceQuotaExceeded:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[workspace.quota] history precheck skipped: %s", exc)
+
+
 def append_history_record(
     *,
     session_id: str,
@@ -1801,6 +1827,8 @@ def append_history_record(
     )
     if prepared is None:
         return
+    # §2.3：会话历史落盘前查配额；满额拒绝本条追加（与 origin/dev-stable 对齐）。
+    _precheck_workspace_quota_for_history_append(prepared.record)
     _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id)
     _update_history_record_metadata(prepared)
 

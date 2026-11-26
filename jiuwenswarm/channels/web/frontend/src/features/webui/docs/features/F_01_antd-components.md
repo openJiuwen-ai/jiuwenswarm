@@ -1,6 +1,6 @@
 # WebUI 组件目录与渲染适配
 
-建档日期：2026-10-30。最近修订：2026-11-09。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
+建档日期：2026-10-30。最近修订：2026-11-23。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
 Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)，作为插件侧、后端和前端共同遵循的属性定义；
 本次核对完整字段、嵌套结构、事件、默认值和功能影响，并将后续变更顺序写入仓库规则。
 实施及验证记录在本文件维护；属性清单只在 S_17 维护，现有规则代码继续负责执行，尚无自动生成链路。
@@ -10,7 +10,7 @@ Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../.
 ## 背景与范围
 
 组件目录集中描述组件属性、事件数据和槽位规则，供校验器及其他消费者查询。
-目录包含 26 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown`、`Icon`、`Form`、`Form.Item`、`MediaSurface`、`FileImport` 与 `ApplicationSurface`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`application.presentation`、`task.function` 与 `task.function.main`，其余 11 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
+目录包含 26 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown`、`Icon`、`Form`、`Form.Item`、`MediaSurface`、`FileImport` 与 `ApplicationSurface`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`application.appearance`、`application.presentation`、`task.function` 与 `task.function.main`，其余 11 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
 实际显示仍取决于渲染器注册和页面挂载。
 
 ## 方案与取舍
@@ -184,6 +184,8 @@ FileTree 使用现有实例状态端口保存滚动位置和宽度，解决目�
 组件右侧分界线支持拖拽和左右方向键，默认宽度为 240px；调整时为相邻预览保留空间，窄容器中自动收缩。
 滚动和宽度只在本地保存，不增加协议字段、插件事件或服务端目录缓存；全局重挂载规则保持不变。
 
+2026-11-23，`application.menu.main`、`task.function.main` 与 `conversation.panel.right` 改为 `keep-mounted`。这些槽位收到新帧时保留实例的整树挂载键，React 按节点协调新帧。FileTree 继续通过实例状态端口保存滚动位置和宽度。
+
 FilePreview 保留文件标题和文本视图，在组件内部用原生 img 加载图片，不添加插件子节点。
 宿主文件服务对 16 KiB 以内的文本继续返回 content；更大文本（最多 1 MiB）、图片和 PDF 返回 downloadUrl。
 URL 指向从已授权文件描述符复制的受管快照，有效期为 10 分钟，并携带可信会话上下文中的用户路由信息。
@@ -207,7 +209,7 @@ disabled、readOnly 和断连时也不提交；空值与回执尚未完成时的
 
 Switch 使用 Ant Design Switch 管理本地开关状态，按 checked、defaultChecked、false 的顺序初始化。
 切换时为已绑定的 `ui.change` 发送 `{checked}`；未绑定事件时仍可本地切换。
-disabled、loading 或断连时禁用；合法 replace 重新初始化状态，不因初始化或更新主动派发 change。
+disabled、loading 或断连时禁用；rebuild 槽位的合法 replace 重新初始化状态，不因初始化或更新主动派发 change。
 可独立绑定 `ui.click` 接收切换后的 `{checked}`；同时绑定 change 和 click 时，一次点击依次派发两个事件。
 
 Select 使用 Ant Design Select 管理本地选择值，value 优先于 defaultValue；合法 replace 重新初始化选择。
@@ -222,10 +224,12 @@ TreeSelect 使用 Ant Design TreeSelect 管理本地选择值，treeData 的 key
 
 Slider 使用 Ant Design Slider 管理本地数值，按 value、defaultValue 的顺序初始化，目录在缺省时准备合法默认值。
 拖动或键盘调整的每次有效变化为已绑定的 `ui.change` 发送数值 `{value}`，不合并中间值、不等待回执。
-未绑定事件时仍可本地调整；disabled 或断连时禁用，合法 replace 重新初始化数值。
+未绑定事件时仍可本地调整；disabled 或断连时禁用，rebuild 槽位的合法 replace 重新初始化数值。
+
+keep-mounted 槽位中，Switch、Slider 和 TreeSelect 在新帧重放受控值（包括同值），非受控默认值变化时重新初始化；默认值不变时保留本地编辑。Iframe 的 src、srcDoc 或权限变化时重新挂载文档，重置加载状态。
 
 Tabs 使用 Ant Design Tabs 管理本地激活页，activeKey 优先于 defaultActiveKey，缺省取首个可用页签。
-切换页签时为已绑定的 `ui.change` 发送 `{activeKey}`；未绑定事件时仍可本地切换，disabled 页签与断连时不可切换。
+切换页签时为已绑定的 `ui.change` 发送 `{activeKey}`。未提供 `activeKey` 时由组件记录本地选择，提供时由服务端帧决定选中项。禁用页签和断连时不可切换。
 隐藏页内容通过内容激活边界停用，其节点绑定在不可见期间释放，因此不会派发事件。
 默认保留已挂载隐藏页的本地状态，destroyOnHidden 时卸载并在切回后重新初始化；页签内容计入 8 层与 512 节点预算。
 

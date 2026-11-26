@@ -27,6 +27,8 @@ import logging
 import mimetypes
 import os
 import stat
+import tempfile
+import time
 from pathlib import Path
 from typing import Any, Final
 
@@ -66,6 +68,105 @@ _IMAGE_EXTENSIONS: Final[frozenset[str]] = frozenset(
 _SELECT_IMAGE_MAX_BYTES: Final[int] = 4 * 1024 * 1024
 # Keep base64 + E2A envelope well below the internal 8 MiB frame limit.
 _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES: Final[int] = 512 * 1024
+#: workspace.download 走 E2A content_b64 的原始字节上限（与 Gateway
+#: ``E2A_PAYLOAD_MAX_BYTES`` 对齐）。更大文件改签发 verified download token，
+#: 由 ``/file-api/download`` 分块拉取，避免单帧 PayloadTooBig 打断内部 WS。
+_WORKSPACE_E2A_INLINE_MAX_BYTES: Final[int] = 4 * 1024 * 1024
+_WORKSPACE_DOWNLOAD_TOKEN_TTL_SECONDS: Final[int] = 600
+
+
+def _workspace_e2a_inline_max_bytes() -> int:
+    try:
+        from agent_gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
+
+        return int(E2A_PAYLOAD_MAX_BYTES)
+    except Exception:  # noqa: BLE001
+        return _WORKSPACE_E2A_INLINE_MAX_BYTES
+
+
+def _workspace_download_response(
+    service: Any,
+    relative_path: Any,
+    *,
+    session_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """小文件 inline base64；超过 E2A 安全上限则签发 verified download token。"""
+    blob = service.download_payload(relative_path)
+    content = blob.get("content") or b""
+    if not isinstance(content, (bytes, bytearray)):
+        content = bytes(content)
+    filename = str(blob.get("filename") or "download.bin")
+    content_type = str(blob.get("content_type") or "application/octet-stream")
+    size_bytes = len(content)
+    inline_max = _workspace_e2a_inline_max_bytes()
+    if size_bytes <= inline_max:
+        return {
+            "filename": filename,
+            "content_type": content_type,
+            "size_bytes": size_bytes,
+            "content_b64": base64.b64encode(content).decode("ascii"),
+        }
+
+    from jiuwenswarm.common.file_download_token import build_verified_asset_download_info
+    from jiuwenswarm.common.verified_download_assets import (
+        get_verified_download_asset_owner,
+    )
+
+    owner = get_verified_download_asset_owner()
+    expires_at = time.time() + _WORKSPACE_DOWNLOAD_TOKEN_TTL_SECONDS
+    # 目录 zip / 已读入内存的内容：落临时文件再 stage；普通文件可 reference。
+    source_path: Path | None = None
+    try:
+        rel = str(relative_path or "").strip()
+        if rel:
+            candidate = service.resolve(rel)
+            if candidate.is_file() and candidate.stat().st_size == size_bytes:
+                source_path = candidate
+    except Exception:  # noqa: BLE001
+        source_path = None
+
+    if source_path is not None:
+        asset = owner.stage(
+            source_path,
+            file_name=filename,
+            expires_at=0,
+            reference_only=True,
+        )
+    else:
+        suffix = Path(filename).suffix[:32] or ".bin"
+        fd, tmp_name = tempfile.mkstemp(prefix="ws-dl-", suffix=suffix)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+            asset = owner.stage(
+                Path(tmp_name),
+                file_name=filename,
+                expires_at=expires_at,
+            )
+        finally:
+            # G.FIO.04：mkstemp 产物必须 os.unlink（静态规则不认 Path.unlink）。
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+
+    try:
+        info = build_verified_asset_download_info(
+            asset,
+            filename,
+            session_id=session_id,
+            user_id=user_id,
+        )
+        owner.commit(asset)
+    except Exception:
+        owner.revoke(asset)
+        raise
+    return {
+        "filename": filename,
+        "content_type": content_type,
+        "size_bytes": size_bytes,
+        "download_token": info["download_token"],
+        "download_url": info["download_url"],
+    }
 
 
 def _parse_optional_str(params: dict[str, Any], key: str) -> str | None:
@@ -123,21 +224,11 @@ class WorkspaceFileAdapter(GatewayAdapter):
             ReqMethod.WORKSPACE_PREVIEW.value,
             ReqMethod.WORKSPACE_USAGE.value,
             ReqMethod.WORKSPACE_ENTRIES_DELETE.value,
+            ReqMethod.WORKSPACE_DOWNLOAD.value,
         }
     )
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
-        from jiuwenswarm.enterprise.capabilities.workspace.quota import bind_quota_identity, reset_quota_identity
-        from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
-
-        group_id, bot_id, user_id = TenantAgentPool.extract_triple(request)
-        tokens = bind_quota_identity(group_id=group_id, bot_id=bot_id, user_id=user_id)
-        try:
-            return await self._handle(request)
-        finally:
-            reset_quota_identity(tokens)
-
-    async def _handle(self, request: AgentRequest) -> AgentResponse:
         method = request.req_method
         if method is not None and method.value.startswith("workspace."):
             return await self._handle_workspace(request)
@@ -201,30 +292,82 @@ class WorkspaceFileAdapter(GatewayAdapter):
             WorkspaceError,
             WorkspaceService,
         )
-        from jiuwenswarm.enterprise.capabilities.workspace.quota import resolve_effective_quota, snapshot_to_dict
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+            get_cached_used,
+            mark_usage_active,
+            measure_and_cache,
+        )
         from jiuwenswarm.common.utils import get_multi_tenant_user_workspace_dir
         from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
 
-        params = request.params or {}
+        params = request.params if isinstance(request.params, dict) else {}
         service = WorkspaceService(get_multi_tenant_user_workspace_dir())
+
+        def _force_refresh(raw_params: dict[str, Any]) -> bool:
+            # HTTP query ``force_refresh=1`` 经 Gateway _coerce_query_value 会变成 int 1。
+            raw = raw_params.get("force_refresh")
+            if raw is True or raw == 1:
+                return True
+            if isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"}:
+                return True
+            return False
+
+        def _resolve_used_bytes() -> int:
+            group_id, bot_id, user_id = TenantAgentPool.extract_triple(request)
+            root = service.tenant_root
+            if _force_refresh(params):
+                return measure_and_cache(
+                    root, user_id=user_id, group_id=group_id, bot_id=bot_id
+                )
+            mark_usage_active(root, user_id=user_id, group_id=group_id, bot_id=bot_id)
+            return get_cached_used(root)
 
         def execute():
             if request.req_method == ReqMethod.WORKSPACE_TREE:
                 return service.list_tree(params.get("relative_path"))
             if request.req_method == ReqMethod.WORKSPACE_PREVIEW:
-                limit = min(int(params.get("max_bytes") or 512 * 1024), 1024 * 1024)
+                # 与 Gateway parse_preview_max_bytes 对齐：缺省 512KiB / 硬顶 1MiB；
+                # 非法值抛 ValueError → 上层映射为 BAD_REQUEST。
+                raw_max = params.get("max_bytes")
+                if raw_max is None or raw_max == "":
+                    limit = 512 * 1024
+                else:
+                    if isinstance(raw_max, bool):
+                        raise ValueError("max_bytes must be a positive integer")
+                    try:
+                        limit = int(raw_max)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("max_bytes must be a positive integer") from exc
+                    if limit <= 0:
+                        raise ValueError("max_bytes must be a positive integer")
+                limit = min(limit, 1024 * 1024)
                 return service.preview_file(params.get("relative_path"), max_bytes=limit)
             if request.req_method == ReqMethod.WORKSPACE_ENTRIES_DELETE:
                 paths = params.get("relative_paths")
                 if not isinstance(paths, list):
                     raise ValueError("relative_paths must be a list")
-                return service.delete_entries(paths)
-            group_id, bot_id, user_id = TenantAgentPool.extract_triple(request)
-            snapshot = resolve_effective_quota(
-                tenant_root=service.tenant_root, user_id=user_id, group_id=group_id,
-                bot_id=bot_id, force_refresh=True,
-            )
-            return snapshot_to_dict(snapshot, user_id=user_id, group_id=group_id, bot_id=bot_id)
+                data = service.delete_entries(paths)
+                # 删除会改磁盘占用：必须重新 du 并回写缓存，否则 Gateway
+                # upsert_usage_cache 会一直沿用删前用量（对齐 !7494 语义）。
+                group_id, bot_id, user_id = TenantAgentPool.extract_triple(request)
+                used = measure_and_cache(
+                    service.tenant_root,
+                    user_id=user_id,
+                    group_id=group_id,
+                    bot_id=bot_id,
+                )
+                data = {**data, "used_bytes": used}
+                return data
+            if request.req_method == ReqMethod.WORKSPACE_DOWNLOAD:
+                _gid, _bid, uid = TenantAgentPool.extract_triple(request)
+                return _workspace_download_response(
+                    service,
+                    params.get("relative_path"),
+                    session_id=str(request.session_id or ""),
+                    user_id=str(uid or ""),
+                )
+            # usage：按设计只回 used_bytes；limit/status 由 Gateway 现算。
+            return {"used_bytes": _resolve_used_bytes()}
 
         try:
             payload = await asyncio.to_thread(execute)

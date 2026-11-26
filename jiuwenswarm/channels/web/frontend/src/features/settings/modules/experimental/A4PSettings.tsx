@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useChatStore } from '../../../../stores';
 import { Switch } from '../../../../components/ui';
 import { SettingRow } from '../../components';
 import type { SettingsCustomItemProps } from '../../registry/types';
@@ -13,7 +12,6 @@ type A4PConfig = { enabled: boolean };
 export function A4PSettings({ disabled }: SettingsCustomItemProps) {
   const { t } = useTranslation();
   const { isConnected, request } = useSettingsServices();
-  const activeSessionId = useChatStore((state) => state.activeSessionId);
   const [config, setConfig] = useState<A4PConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
@@ -27,16 +25,16 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
     setError('');
     setSaving(false);
     savingRef.current = false;
-    if (!activeSessionId || !isConnected) return;
+    if (!isConnected) return;
     try {
-      const loaded = await request<A4PConfig>('a4p.config.get', { session_id: activeSessionId });
+      const loaded = await request<A4PConfig>('a4p.config.get', {});
       if (generation === configGeneration.current) setConfig(loaded);
     } catch (loadError) {
       if (generation === configGeneration.current) {
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       }
     }
-  }, [activeSessionId, isConnected, request]);
+  }, [isConnected, request]);
 
   useEffect(() => {
     void loadConfig();
@@ -45,7 +43,7 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
     };
   }, [loadConfig]);
 
-  async function updateSetting(key: keyof A4PConfig, next: boolean) {
+  async function updateSetting(next: boolean) {
     if (controlsDisabled || !config || savingRef.current) return;
     setError('');
     const generation = configGeneration.current;
@@ -53,8 +51,7 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
     setSaving(true);
     try {
       const updated = await request<A4PConfig>('a4p.config.update', {
-        [key]: next,
-        session_id: activeSessionId,
+        enabled: next,
       });
       if (generation !== configGeneration.current) return;
       setConfig(updated);
@@ -70,7 +67,7 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
     }
   }
 
-  const controlsDisabled = disabled || !isConnected || !activeSessionId;
+  const controlsDisabled = disabled || !isConnected;
   return (
     <div className="settings-a4p" data-testid="settings-a4p">
       <SettingRow title={t('a4pSettings.enableTitle')} description={t('a4pSettings.description')}>
@@ -79,7 +76,7 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
           aria-label={t('a4pSettings.enableTitle')}
           checked={enabled}
           disabled={controlsDisabled || !config || saving}
-          onChange={(next) => void updateSetting('enabled', next)}
+          onChange={(next) => void updateSetting(next)}
         />
       </SettingRow>
       {error ? (

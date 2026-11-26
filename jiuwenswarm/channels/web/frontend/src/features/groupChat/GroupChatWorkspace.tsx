@@ -17,7 +17,8 @@ import { Dialog } from '../../components/ui/Dialog/Dialog';
 import type { GroupDirectory } from './useGroupDirectory';
 import { FileDownloadList } from '../../components/ChatPanel/MessageItem';
 import { getFileIdentityKey } from '../../utils/fileDownloadDedup';
-import { groupChatClient, type GroupExecution, type GroupInfo, type GroupMessage, type GroupQuestion } from './client';
+import { groupChatClient, type GroupAutoReply, type GroupExecution, type GroupInfo, type GroupMessage, type GroupQuestion } from './client';
+import { AutoReplySettings } from './AutoReplySettings';
 import { MemberPicker } from './MemberPicker';
 import { createAgentGroupManagementClient } from '../agentManagement/groupClient';
 import type { AgentGroupCatalogItem } from '../agentManagement/types';
@@ -25,7 +26,7 @@ import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
-import { FINISHED_EXECUTIONS, filterGroupMembers, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, matchesMemberQuery, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, renameAttachment, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
+import { FINISHED_EXECUTIONS, autoReplyNotice, filterGroupMembers, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, matchesMemberQuery, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, renameAttachment, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
 
 function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: GroupFile) => void }) {
@@ -127,6 +128,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
     return () => document.removeEventListener('pointerdown', close);
   }, [mentionMenu]);
   const [sending, setSending] = useState(false);
+  const [autoReplies, setAutoReplies] = useState<Record<string, GroupAutoReply>>({});
   const [modelReady, setModelReady] = useState(false);
   const [fileAction, setFileAction] = useState<{ kind: 'rename' | 'delete'; path: string; name: string } | null>(null);
   const [fileName, setFileName] = useState('');
@@ -221,6 +223,10 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       historyTotal.current = head.total;
       setRefreshError('');
       setGroup(info);
+      // Every history page carries the whole decision map; the head page is the freshest read.
+      // A decision pushed while this request was in flight is newer than its pending snapshot.
+      setAutoReplies((current) => Object.fromEntries(Object.entries(head.auto_replies ?? {}).map(([id, item]) =>
+        [id, item.status === 'pending' && current[id] && current[id].status !== 'pending' ? current[id] : item])));
       setQuestions((info.pending_questions ?? []).filter((item) => !answeredQuestions.current.has(item.request_id)));
       setMessages((current) => mergeMessages(current, history));
       setExecutions((current) => mergeExecutions(current, snapshots));
@@ -267,6 +273,14 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
         report(payload.error || payload.message || t('groupChat.sendFailed'));
         return;
       }
+      if (type === 'group.auto_reply.updated') {
+        // The gateway forwards only the event identity, so the decision itself is read from the history head.
+        // This read is independent of refresh(), which skips while another refresh is in flight.
+        void groupChatClient.history(groupId, { limit: 1 }).then((head) => {
+          if (alive.current && head.auto_replies) setAutoReplies(head.auto_replies);
+        }).catch(() => undefined);
+        return;
+      }
       if (type === 'team.group_message.accepted') {
         const message = payload.message as GroupMessage | undefined;
         if (message?.message_id) {
@@ -294,7 +308,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
         void refresh();
       }
     };
-    const stops = ['group.route.updated', 'group.message', 'group.execution.created', 'group.execution.updated',
+    const stops = ['group.route.updated', 'group.auto_reply.updated', 'group.message', 'group.execution.created', 'group.execution.updated',
       'chat.ask_user_question', 'chat.ask_user_answer', 'group.member.added', 'team.runtime_ready', 'team.group_message.accepted', 'chat.final', 'chat.error', 'team.error', 'team.interact.failed'].map((name) => webClient.on(name, onEvent));
     const stopState = webClient.onStateChange((state) => {
       setConnected(state === 'ready');
@@ -462,6 +476,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       historyStart.current = null;
       setOlderOffset(0);
       sessionSentIds.clear();
+      setAutoReplies({});
       setMessages([]);
       setExecutions((current) => current.filter((item) => !FINISHED_EXECUTIONS.has(item.status)));
       setPreview(null);
@@ -502,7 +517,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   // 刷新后据服务端执行恢复；乐观 pending 阶段不弹。
   const modelLocked = groupModelLocked(messages, executions, olderOffset > 0);
   const pendingMentionsByMessage = group
-    ? pendingMentionReplies(messages, executions, group.members, sessionSentIds, group.organization_routes)
+    ? pendingMentionReplies(messages, executions, group.members, sessionSentIds, group.organization_routes, autoReplies)
     : new Map<string, PendingMentionReply[]>();
 
   return <section className="group-chat-workspace has-conversation" data-testid="group-chat-workspace">
@@ -565,6 +580,11 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
                   {t('groupChat.sending')}
                 </small>}
                 {(item.message.attachments ?? []).map((file, index) => <Attachment key={index} file={file} onPreview={setPreview} />)}
+                {item.message.sender === 'user' && autoReplies[item.id] && <small className="group-chat-muted group-chat-auto-reply"
+                  role="status" data-testid="group-chat-auto-reply" data-variant={autoReplies[item.id].status}>
+                  {((notice) => t(notice.key, notice.values))(
+                    autoReplyNotice(autoReplies[item.id], group.members, t('groupChat.autoReply.separator')))}
+                </small>}
               </article>
               {(pendingMentionsByMessage.get(item.id) ?? []).map(({ memberName, execution, organization, route }) => {
                 const member = group.members.find((item2) => item2.member_name === memberName);
@@ -748,6 +768,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
           {!showSelf && !visibleMembers.length && <p className="group-chat-muted" data-testid="group-chat-no-member-match">
             {t('groupChat.noMemberMatch')}</p>}
         </div>
+        <AutoReplySettings group={group} disabled={!connected} onSaved={setGroup} onError={report} />
         {/* 清空聊天记录 / 删除会话入口暂时不暴露；恢复时把下面的 JSX 注释解开即可。 */}
         {/* <footer className="group-chat-panel-footer">
           <button type="button" className="group-chat-outline-button" disabled={clearing}

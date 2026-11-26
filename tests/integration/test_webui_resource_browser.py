@@ -23,6 +23,7 @@ from openjiuwen.core.events import PackageMetadata, SessionContext
 from playwright.async_api import async_playwright
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2 import assembly
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
@@ -75,7 +76,8 @@ async def test_sandboxed_resource_modules_fetch_and_isolation(tmp_path, monkeypa
 
     async def fetch(**kwargs):
         response = await adapter.handle(AgentRequest(
-            "read", channel_id=kwargs["channel_id"], req_method=kwargs["req_method"], params=kwargs["params"],
+            "read", channel_id=kwargs["channel_id"], req_method=ReqMethod(kwargs["req_method"].value),
+            params=kwargs["params"],
             user_id=kwargs["user_id"], session_id=kwargs["session_id"],
         ))
         return response.ok, response.payload

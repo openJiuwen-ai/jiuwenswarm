@@ -84,7 +84,7 @@ function createApplicationPresentation({ BrowserWindow, ipcMain, screen, getMain
   }
 
   register('open', 'main', async config => {
-    if (!config || typeof config.key !== 'string' || !config.key || config.key.length > 800
+    if (!config || (config.mode !== undefined && config.mode !== 'desktop') || typeof config.key !== 'string' || !config.key || config.key.length > 800
       || typeof config.src !== 'string' || !/^\/extension-assets\/[^/]+\/[^/]+\//.test(config.src)
       || typeof config.resourceUrl !== 'string' || !/^https?:\/\//.test(config.resourceUrl)
       || typeof config.title !== 'string' || !config.title.trim() || config.title.length > 200

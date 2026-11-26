@@ -29,7 +29,13 @@ class CuaExtensionRail(AgentRail):
         self.progress, = agent.find_rails_by_type((CuaProgressRail,))
         self.repl = CuaReplTool(self.runtime, self.owner_id, pause_on_user_input=self.pause_on_user_input)
         agent.ability_manager.add_ability(self.repl.card, self.repl)
-        agent.register_task_resource_cleanup(self.close)
+        agent.register_task_resource_cleanup(lambda: self.cleanup(agent))
+
+    async def cleanup(self, agent):
+        try:
+            await self.close()
+        finally:
+            agent.ability_manager.remove_ability("cua_repl")
 
     async def before_invoke(self, ctx):
         session_id = ctx.session.get_session_id() if ctx.session is not None else self.owner_id

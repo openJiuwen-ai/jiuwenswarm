@@ -10,6 +10,7 @@ import pytest
 
 from jiuwenswarm.extensions_v2.management import hub_catalog
 from jiuwenswarm.extensions_v2.management.catalog import (
+    PackageNotFound,
     build_state_index,
     entry_from_root,
     find_entry,
@@ -73,6 +74,68 @@ def test_hub_card_marks_the_matching_package_installed() -> None:
     assert card["active"] is True
     assert card["source"] == "hub"
     assert card["displayName"] == {"zh": "Auth", "en": "Auth"}
+
+
+@pytest.mark.parametrize(
+    ("status", "record_enabled", "expected"),
+    [
+        ("standby", True, True),
+        ("standby", False, False),
+        ("failed", True, False),
+    ],
+)
+def test_hub_cards_use_the_record_switch_state(
+    tmp_path: Path,
+    status: str,
+    record_enabled: bool,
+    expected: bool,
+) -> None:
+    package_id = "webui.standby"
+    install_dir = tmp_path / "installed"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    store.upsert(ExtensionInstallRecord(
+        package_id=package_id,
+        version="1.0.0",
+        origin="hub",
+        active=False,
+        enabled=record_enabled,
+        status=status,
+        install_path=str(install_dir / package_id / "1.0.0"),
+    ))
+    state = SimpleNamespace(active=[], installed=[])
+
+    card = hub_card(
+        HubAssetSummary(
+            kind="system_plugin",
+            asset_id="asset-standby",
+            display_name="Standby",
+            short_description="",
+            public_latest_version="1.0.0",
+            icon_uri="",
+            tags=(),
+            package_name=package_id,
+        ),
+        build_state_index(state, store),
+        store,
+    )
+    detail = hub_detail(
+        HubAssetDetail(
+            kind="system_plugin",
+            asset_id="asset-standby",
+            version="1.0.0",
+            display_name="Standby",
+            short_description="",
+            detail_description="",
+            icon_uri="",
+            tags=(),
+            package_name=package_id,
+        ),
+        state,
+        store,
+    )
+
+    assert card["enabled"] is expected
+    assert detail["enabled"] is expected
 
 
 def test_hub_detail_exposes_profile_and_preview() -> None:
@@ -147,6 +210,18 @@ def test_find_entry_uses_the_installed_version_when_a_preset_exists(tmp_path: Pa
     entry = find_entry("webui.demo", examples, state, install_dir=tmp_path / "installed")
 
     assert entry.version == "1.0.1"
+
+
+def test_find_entry_does_not_discover_an_unaccepted_store_copy(tmp_path: Path) -> None:
+    installed = write_package(tmp_path / "installed", package_id="webui.late")
+
+    with pytest.raises(PackageNotFound):
+        find_entry(
+            "webui.late",
+            tmp_path / "examples",
+            SimpleNamespace(active=[], installed=[]),
+            install_dir=installed.parent,
+        )
 
 
 def test_install_state_prefers_the_active_record(tmp_path: Path) -> None:

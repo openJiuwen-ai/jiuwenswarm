@@ -10,6 +10,8 @@ from typing import Optional, Dict, Any, List
 
 from openjiuwen.core.foundation.tool.tool import tool
 
+from jiuwenswarm.common.i18n import t
+
 from ..memory import (
     MemoryIndexManager,
     MemorySettings,
@@ -19,6 +21,14 @@ from ..memory import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _t(message_id: str, **params: Any) -> str:
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    return t(message_id, language=resolve_preferred_language(), **params)
 
 # 群聊模式标记：群聊中禁止 write_memory / edit_memory
 _GROUP_CHAT_MODE: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -305,7 +315,10 @@ async def write_memory(
         操作结果字典
     """
     if is_group_chat_mode():
-        return {"success": False, "error": "群聊模式下禁止写入记忆文件"}
+        return {
+            "success": False,
+            "error": _t("tools.memory.group_write_forbidden"),
+        }
     from jiuwenswarm.agents.harness.common.memory.forbidden import (
         contains_forbidden_memory_content,
     )
@@ -314,7 +327,7 @@ async def write_memory(
         return {
             "success": False,
             "path": path,
-            "error": "检测到敏感信息，已阻止写入记忆；请删除或脱敏后再保存",
+            "error": _t("tools.memory.sensitive_blocked"),
         }
     try:
         is_valid, result = _validate_memory_path(path)
@@ -376,7 +389,10 @@ async def edit_memory(
         操作结果字典
     """
     if is_group_chat_mode():
-        return {"success": False, "error": "群聊模式下禁止编辑记忆文件"}
+        return {
+            "success": False,
+            "error": _t("tools.memory.group_edit_forbidden"),
+        }
     from jiuwenswarm.agents.harness.common.memory.forbidden import (
         contains_forbidden_memory_content,
     )
@@ -385,7 +401,7 @@ async def edit_memory(
         return {
             "success": False,
             "path": path,
-            "error": "检测到敏感信息，已阻止写入记忆；请删除或脱敏后再保存",
+            "error": _t("tools.memory.sensitive_blocked"),
         }
     try:
         is_valid, result = _validate_memory_path(path)

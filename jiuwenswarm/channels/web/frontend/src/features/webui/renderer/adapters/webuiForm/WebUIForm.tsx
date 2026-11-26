@@ -11,7 +11,14 @@ export function WebUIFormsProvider({ children }: { children: ReactNode }) {
 }
 export function useWebUIForms() { return useContext(Forms); }
 
-export function WebUIForm({ node, context, children }: WebUIAdapterProps) {
+export function WebUIForm(props: WebUIAdapterProps) {
+  const FrameForm = useMemo(() => function FrameForm(frameProps: WebUIAdapterProps) {
+    return <FormBody {...frameProps} />;
+  }, [props.node]);
+  return <FrameForm {...props} />;
+}
+
+function FormBody({ node, context, children }: WebUIAdapterProps) {
   const forms = useWebUIForms();
   const [form] = Form.useForm();
   const active = useContentActivity();

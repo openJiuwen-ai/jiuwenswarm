@@ -73,7 +73,7 @@ flowchart TB
 | --- | --- | --- |
 | `init` | 签名见 [S_01](../specs/S_01_extension-management-facade.md#52-初始化) | 注入宿主事件、Handler、store 和资源清理回调，随后 `open_install_dir`；重复调用直接返回 |
 | `install` | `async install(paths: Sequence[Path]) -> list[ActivationReport]` | 委托 Core 登记报告、等待依赖、安装并清理自己的失败副本 |
-| `load_installed` | `async load_installed() -> list[ActivationReport]` | 委托 Core 从根目录发现包、排序、按 domain 选择并安装 |
+| `load_installed` | `async load_installed() -> list[ActivationReport]` | 首次调用截取根目录快照并委托 Core 排序、按 domain 选择并安装；后续调用不重扫 |
 | `uninstall` | `async uninstall(package_id) -> ActivationReport` | 活动包与未激活副本均委托 Core，成功后通知 |
 | `reload` | `async reload(package_id) -> ActivationReport` | 从安装副本热切换，generation 递增 |
 | `query` | `async query(package_id=None) -> QueryResult` | 触发 `package.query`，返回 agent-core 事实 |
@@ -104,14 +104,14 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-    A["Core.load_installed"] --> B["根目录完整发现和选版"]
+    A["ExtensionManager 截取一次启动快照"] --> B["Core.load_installed(roots) 选版"]
     B --> C["稳定排序并记录安装计划"]
     C --> D["选择 agentserver 包"]
     D --> E["逐包等待依赖后激活"]
     E --> F["更新报告并返回结果"]
 ```
 
-Core 返回非法声明和依赖拒绝的报告；独立包继续。报告与域规则见 [F_32](F_32_domain-install-report.md)。
+Core 返回非法声明和依赖拒绝的报告；独立包继续。启动后直接写入目录的新副本不进入当前进程的查询和管理范围，显式安装成功时才加入；报告与域规则见 [F_32](F_32_domain-install-report.md)。
 
 ### 5.3 卸载
 

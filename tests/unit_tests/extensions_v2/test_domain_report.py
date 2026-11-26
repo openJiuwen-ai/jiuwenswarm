@@ -15,7 +15,7 @@ from .management.support import make_bus, write_package
 
 
 def test_report_paths_and_unit_conversion(tmp_path, monkeypatch):
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path)
     assert resolve_extension_data_dir({}) == tmp_path / "extension"
     assert resolve_install_report_path({}) == tmp_path / "extension" / "extension_install_report.yaml"
     config = {"extensions": {"data_dir": "custom", "install_report": {

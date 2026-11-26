@@ -67,7 +67,9 @@ class RailManager:
         if hasattr(self, "_initialized"):
             return
 
-        self._extensions_dir = get_agent_workspace_dir() / "extensions"
+        from jiuwenswarm.common.paths import get_extensions_dir
+
+        self._extensions_dir = get_extensions_dir()
         self._config_file = self._extensions_dir / "extensions_config.json"
 
         # 确保目录存在

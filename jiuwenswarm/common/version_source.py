@@ -64,6 +64,87 @@ def strip_prerelease_suffix(version: str) -> str:
     return normalized
 
 
+# Daily wheels keep the release version and append the build time, e.g.
+# ``0.2.9.beta5.dev20261119`` or ``0.2.9+local.20261119``.
+_BUILD_SUFFIX_PATTERN = re.compile(
+    r"^(?P<version>.+?)"
+    r"(?:\+[0-9a-z]+(?:[.\-_][0-9a-z]+)*|[.\-_]?(?:dev|post)[.\-_]?\d{8,})$",
+    re.IGNORECASE,
+)
+
+
+# The build date travels either inside a ``dev``/``post`` segment or in the
+# PEP 440 local version daily builds use (``0.2.9+local.20261119``).
+_BUILD_DATE_PATTERN = re.compile(
+    r"(?:(?:dev|post)[.\-_]?|\+?local[.\-_]?)(\d{8,})(?!\d)",
+    re.IGNORECASE,
+)
+
+
+def strip_build_suffix(version: str) -> str:
+    """Drop the build-time suffix daily wheel builds append to the version.
+
+    The suffix (a date such as ``.dev20261119`` or a ``+local`` segment) only
+    identifies the artifact, not a newer release.  Ordering the raw metadata
+    version makes an installed daily build rank below an obsolete pre-release
+    of the same base (``0.2.9.beta5.dev20261119`` vs ``0.2.9b3``), so
+    comparisons use the release version itself (#6849).
+    """
+    stripped = (version or "").strip()
+    while True:
+        m = _BUILD_SUFFIX_PATTERN.match(stripped)
+        if m is None:
+            return stripped
+        stripped = m.group("version")
+
+
+def build_date_suffix(version: str) -> int:
+    """Return the daily-build date number (``20261119``) or 0 when absent.
+
+    Daily wheels carry the date in a ``dev``/``post`` segment
+    (``0.2.9.beta5.dev20261119``) or in the PEP 440 local part
+    (``0.2.9+local.20261119``); both forms identify the build.
+    """
+    m = _BUILD_DATE_PATTERN.search((version or "").strip())
+    return int(m.group(1)) if m else 0
+
+
+def distribution_sort_key(version: str) -> tuple[tuple[int, ...], int, tuple[int, ...], int, int]:
+    """Ordering key for distribution metadata versions.
+
+    Release semantics come from :func:`release_sort_key` after the build suffix
+    is stripped from both sides of a comparison.  When two artifacts share the
+    same release key, a clean release outranks a dated build of that release,
+    and a later build date outranks an earlier one.
+    """
+    build_date = build_date_suffix(version)
+    return (
+        *release_sort_key(strip_build_suffix(version)),
+        1 if build_date == 0 else 0,
+        build_date,
+    )
+
+
+def is_newer_distribution_version(candidate: str, current: str) -> bool:
+    """Return True when *candidate* is a newer artifact than *current*.
+
+    Build suffixes identify the artifact rather than a newer release, so both
+    sides are normalized before ordering.  When the normalized release versions
+    are equal, only two dated builds of that release are comparable; the later
+    build date wins.  A dated build and its clean release are equivalent, which
+    keeps an installed daily build from being "upgraded" to the same release.
+    """
+    candidate_release = release_sort_key(strip_build_suffix(candidate))
+    current_release = release_sort_key(strip_build_suffix(current))
+    if candidate_release != current_release:
+        return candidate_release > current_release
+    candidate_date = build_date_suffix(candidate)
+    current_date = build_date_suffix(current)
+    if candidate_date == 0 or current_date == 0:
+        return False
+    return candidate_date > current_date
+
+
 def release_sort_key(version: str) -> tuple[tuple[int, ...], int, tuple[int, ...]]:
     """Total-order key so that newer versions sort higher.
 
@@ -610,19 +691,36 @@ class PyPIVersionSource(VersionSource):
         if not whl_entries:
             raise RuntimeError("No .whl files found in PyPI simple API response.")
 
-        versions = set()
+        versions_by_filename: dict[str, str] = {}
         for entry in whl_entries:
             fn = str(entry.get("filename", ""))
-            m = re.match(rf"{re.escape(self._name)}-([\d.]+(?:[.\-_]?(?:alpha|beta|rc|dev|pre|a|b)(?:\.?\d+)?)*)-", fn)
+            m = re.match(
+                rf"{re.escape(self._name)}-"
+                r"([\d.]+(?:[.\-_]?(?:alpha|beta|rc|dev|pre|a|b)(?:\.?\d+)?)*"
+                r"(?:\+[0-9a-z]+(?:\.[0-9a-z]+)*)?)-",
+                fn,
+                re.IGNORECASE,
+            )
             if m:
-                versions.add(m.group(1))
-        if not versions:
+                versions_by_filename[fn] = m.group(1)
+        if not versions_by_filename:
             raise RuntimeError("Could not parse any version from .whl filenames.")
 
         # Pick the newest version overall, including pre-releases (beta channel).
-        latest_version = max(versions, key=release_sort_key)
-        latest_whls = [e for e in whl_entries if latest_version in e.get("filename", "")]
-        latest_whl = latest_whls[-1] if latest_whls else whl_entries[-1]
+        # Daily builds share the release version once their dated suffix is
+        # stripped, so the artifact order must break that tie by build date.
+        latest_version = max(
+            set(versions_by_filename.values()), key=distribution_sort_key
+        )
+        # The simple index lists every upload of the project, oldest first, so
+        # only the files whose parsed version equals the newest one belong to
+        # this release. Substring matching would also let 0.2.9 claim 0.2.9b3.
+        latest_whls = [
+            entry
+            for entry in whl_entries
+            if versions_by_filename.get(str(entry.get("filename", ""))) == latest_version
+        ]
+        latest_whl = latest_whls[-1]
 
         published_at = str(latest_whl.get("upload-time") or "")
         if not published_at:
@@ -636,7 +734,7 @@ class PyPIVersionSource(VersionSource):
                 download_url=self._resolve_url(str(e.get("url", ""))),
                 size=int(e.get("size", 0)),
             )
-            for e in whl_entries
+            for e in latest_whls
         ]
 
         return ReleaseInfo(

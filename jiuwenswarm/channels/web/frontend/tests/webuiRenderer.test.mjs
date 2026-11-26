@@ -12,7 +12,12 @@ import { createWebUIRuntime } from '../node_modules/.cache/webui-renderer/runtim
 import { createMockTransport } from '../node_modules/.cache/webui-renderer/transport/index.js';
 import { createWebUIAppRuntime } from '../node_modules/.cache/webui-renderer/assembly/index.js';
 import { webUIInstanceKey } from '../node_modules/.cache/webui-renderer/contracts/index.js';
-import { DEMO_SLOT, DEMO_SLOT_SINGLE, demoCatalog } from '../node_modules/.cache/webui-renderer/testing/demoCatalog.js';
+import {
+  DEMO_SLOT,
+  DEMO_SLOT_KEEP_MOUNTED,
+  DEMO_SLOT_SINGLE,
+  demoCatalog,
+} from '../node_modules/.cache/webui-renderer/testing/demoCatalog.js';
 import { demoClearFrame, demoRenderFrame } from '../node_modules/.cache/webui-renderer/testing/fixtures.js';
 
 function installDom() {
@@ -268,6 +273,75 @@ test('each legal replace rebuilds node local state, so reorder cannot inherit va
     });
     const localsAfter = [...document.querySelectorAll('[data-testid="probe-local"]')].map((node) => node.textContent);
     assert.deepEqual(localsAfter, ['0', '0', '0']);
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    restoreDom();
+  }
+});
+
+test('keep-mounted slots update props without remounting node local state', async () => {
+  const restoreDom = installDom();
+  const { transport, runtime } = setup();
+  const probe = createProbeAdapter();
+  const registry = createRendererRegistry({ demo: probe.Adapter });
+  const root = createRoot(document.getElementById('root'));
+  const target = { slot_id: DEMO_SLOT_KEEP_MOUNTED };
+  try {
+    await act(async () => {
+      renderHost(root, runtime, registry, { slotId: DEMO_SLOT_KEEP_MOUNTED });
+    });
+    await act(async () => {
+      transport.injectRenderFrame(demoRenderFrame({
+        revision: 1,
+        target,
+        root: { component: 'demo', props: { title: 'before' } },
+      }));
+    });
+    await act(async () => {
+      document.querySelector('[data-testid="probe-local-button"]')
+        .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+    assert.equal(document.querySelector('[data-testid="probe-local"]').textContent, '1');
+
+    await act(async () => {
+      transport.injectRenderFrame(demoRenderFrame({
+        revision: 2,
+        target,
+        root: { component: 'demo', props: { title: 'after' } },
+      }));
+    });
+    assert.equal(document.querySelector('[data-testid="probe-title"]').textContent, 'after');
+    assert.equal(
+      document.querySelector('[data-testid="probe-local"]').textContent,
+      '1',
+      'keep-mounted slots must keep the mounted adapter and its local state',
+    );
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    restoreDom();
+  }
+});
+
+test('keep-mounted slots recover from an adapter crash on a new frame', async () => {
+  const restoreDom = installDom();
+  const { transport, runtime } = setup();
+  const probe = createProbeAdapter();
+  const registry = createRendererRegistry({ demo: probe.Adapter });
+  const root = createRoot(document.getElementById('root'));
+  const target = { slot_id: DEMO_SLOT_KEEP_MOUNTED };
+  try {
+    await act(async () => renderHost(root, runtime, registry, { slotId: DEMO_SLOT_KEEP_MOUNTED }));
+    await act(async () => transport.injectRenderFrame(demoRenderFrame({
+      revision: 1, target, root: { component: 'demo', props: { title: 'crash' } },
+    })));
+    assert.ok(document.querySelector('[data-testid="webui-instance-error"]'));
+    await act(async () => transport.injectRenderFrame(demoRenderFrame({
+      revision: 2, target, root: { component: 'demo', props: { title: 'recovered' } },
+    })));
+    assert.equal(document.querySelector('[data-testid="webui-instance-error"]'), null);
+    assert.equal(document.querySelector('[data-testid="probe-title"]').textContent, 'recovered');
   } finally {
     await act(async () => root.unmount());
     runtime.dispose();

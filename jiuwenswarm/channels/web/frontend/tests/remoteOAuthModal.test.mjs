@@ -20,11 +20,13 @@ before(async () => {
       b.onResolve({ filter: /stores\/connectorStore$/ }, () => ({ path: 'store', namespace: 'mock' }));
       b.onResolve({ filter: /^react-i18next$/ }, () => ({ path: 'i18n', namespace: 'mock' }));
       b.onResolve({ filter: /^\/logo.svg$/ }, () => ({ path: 'logo', namespace: 'mock' }));
+      b.onResolve({ filter: /appearanceBrand$/ }, () => ({ path: 'brand', namespace: 'mock' }));
       b.onResolve({ filter: /EntityAvatar$/ }, () => ({ path: 'avatar', namespace: 'mock' }));
       b.onLoad({ filter: /.*/, namespace: 'mock' }, ({ path }) => ({ loader: 'js', contents: {
         store: 'export const useConnectorStore = selector => selector(globalThis.__oauthStore); useConnectorStore.getState = () => globalThis.__oauthStore;',
         i18n: 'export const useTranslation = () => ({t: key => key});',
         logo: 'export default "data:image/svg+xml,<svg/>";',
+        brand: 'export const useWorkSwarmLogo = () => ({ src: "test-logo.svg" });',
         avatar: 'export const EntityAvatar = () => null;',
       }[path] }));
     }}],

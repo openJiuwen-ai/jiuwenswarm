@@ -128,6 +128,20 @@ describe('the approval sheet', () => {
     expect(controller.answer).toHaveBeenCalledWith([{ selected: [{ value: 'session_allow', label: '会话内记住' }] }]);
   });
 
+  it('offers a plan approval\'s approve beside reject, and answers with it', () => {
+    const plan: JsonObject = {
+      request_id: 'call_8', interrupt_id: 'int_8', source: 'confirm_interrupt',
+      questions: [{
+        question: '**计划审批**', header: 'Exit Plan and Execute',
+        options: [{ value: 'approve', label: '批准' }, { value: 'reject', label: '拒绝' }],
+      }],
+    };
+    const { controller, buttons, button } = mounted({ conversation: conversationOf(['chat.ask_user_question', plan]) });
+    expect(buttons().filter(item => item.closest('.sheet-actions')).map(item => item.textContent)).toEqual(['拒绝', '批准']);
+    button('批准').click();
+    expect(controller.answer).toHaveBeenCalledWith([{ selected: [{ value: 'approve', label: '批准' }] }]);
+  });
+
   it('rejects on Esc', () => {
     const { controller } = mounted({ conversation: conversationOf(['chat.ask_user_question', PERMISSION]) });
     key('Escape');

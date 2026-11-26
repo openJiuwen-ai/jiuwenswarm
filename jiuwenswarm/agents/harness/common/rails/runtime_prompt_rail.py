@@ -33,12 +33,16 @@ from jiuwenswarm.agents.harness.common.prompt.shell_environment import (
     build_shell_environment_prompt,
     get_shell_capabilities,
 )
+from jiuwenswarm.common.paths import (
+    get_agent_teams_dir,
+    get_config_dir,
+)
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_runtime_state_path,
-    get_user_workspace_dir,
     logger,
 )
+
 
 
 A4P_PROMPT_VERSION = "2026-10-19.1"
@@ -641,7 +645,6 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder.remove_section("trusted_dirs_policy")
         if self._channel in ("tui", "web", "ws_client", "process_cli"):
             installed_workspace_dir = Path(get_agent_workspace_dir())
-            user_workspace_dir = Path(get_user_workspace_dir())
             # This agent's own workspace. Team members each own one; without
             # it (single-agent runs) the process-wide agent workspace is the
             # same directory anyway.
@@ -653,13 +656,13 @@ class RuntimePromptRail(DeepAgentRail):
                 installed_workspace_dir / "plugins" / "agent_templates" / "local"
             )
             installed_agent_groups_dir = (
-                user_workspace_dir / ".agent_teams" / "agent_groups" / "local"
+                get_agent_teams_dir() / "agent_groups" / "local"
             )
             installed_plugin_packages_dir = (
                 installed_workspace_dir / "plugins" / "plugin_packages" / "local"
             )
             installed_mcp_hub_dir = installed_workspace_dir / "mcp" / "mcp_hub"
-            config_dir = str(user_workspace_dir / "config")
+            config_dir = str(get_config_dir())
             dirs = self._conversation_dirs(agent_workspace_dir)
             task_workspace_root = dirs["task_workspace_root"]
             task_work_dir = dirs["task_work_dir"]

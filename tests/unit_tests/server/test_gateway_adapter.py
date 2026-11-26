@@ -452,12 +452,23 @@ class TestSessionAdapter:
         captured: dict[str, object] = {}
 
         def _read(sid, cache_bust=False, *, enable_writeback=True):
+            captured["sid"] = sid
+            captured["cache_bust"] = cache_bust
             captured["enable_writeback"] = enable_writeback
             return {"session_id": sid, "mode": "agent", "model": "m1"}
 
+        async def _not_paused(_sid: str) -> bool:
+            return False
+
+        # GET_METADATA stays on SessionAdapter (live PAUSED OR into is_paused),
+        # not session_repository — patch the adapter import.
         monkeypatch.setattr(
-            "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
+            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_session_metadata",
             _read,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.team.team_manager.is_team_session_paused",
+            _not_paused,
         )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_GET_METADATA, {"session_id": "sess-1"})
@@ -465,24 +476,16 @@ class TestSessionAdapter:
         assert resp.ok is True
         assert resp.payload["session_id"] == "sess-1"
         assert resp.payload["model"] == "m1"
-        # 缺省保持既有调用方（web/TUI/video_duplex）的原行为：允许推断写盘
+        assert resp.payload["is_paused"] is False
+        assert captured["cache_bust"] is True
+        # Adapter path always uses default writeback; enable_writeback param is Front-only.
         assert captured["enable_writeback"] is True
-
-        # gateway 远端读声明的只读语义随参数透传，不得静默升级为可写
-        resp = await SessionAdapter().handle(
-            _request(
-                ReqMethod.SESSION_GET_METADATA,
-                {"session_id": "sess-1", "enable_writeback": False},
-            )
-        )
-        assert resp.ok is True
-        assert captured["enable_writeback"] is False
 
         def _empty(sid, cache_bust=False, *, enable_writeback=True):
             return {}
 
         monkeypatch.setattr(
-            "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
+            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_session_metadata",
             _empty,
         )
         resp = await SessionAdapter().handle(
@@ -529,6 +532,32 @@ class TestSessionAdapter:
         )
         assert resp.ok is True
         assert resp.payload == {"pinned": True, "pin_order": 3}
+
+    async def test_pin_rejection_maps_to_forbidden(self, monkeypatch) -> None:
+        """置顶被服务端拒绝时必须映射为 FORBIDDEN，而不是 INTERNAL_ERROR。
+
+        走 ``SessionAdapter.handle`` 的真实分发（委托
+        ``session_repository.handle_pin``），确认前端能按错误码展示专门提示，
+        而不是退化成通用失败文案。
+        """
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            SessionPinRejection,
+        )
+
+        def reject(sid, pinned):
+            raise SessionPinRejection(
+                "cron execution session without cron_id cannot be pinned"
+            )
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.control.repositories.session_repository.set_session_pinned",
+            reject,
+        )
+        resp = await SessionAdapter().handle(
+            _request(ReqMethod.SESSION_PIN, {"session_id": "sess-1", "pinned": True})
+        )
+        assert resp.ok is False
+        assert resp.payload["code"] == "FORBIDDEN"
 
     async def test_color_set(self, monkeypatch) -> None:
         """查询模式返回当前色值；非法色值拒绝（白名单与 TUI 一致）。"""

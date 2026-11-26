@@ -2,6 +2,8 @@ import { matchesAssetName } from '../../features/assetNameSearch';
 import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
 import { catalogCacheOf } from '../../features/catalogCache';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
+import { equipmentListFilter } from '../../features/equipmentMarketplace';
+import { isEnterprise } from '../../edition';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { RefreshCw } from 'lucide-react';
@@ -12,12 +14,14 @@ import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { useSystemPluginStore } from '../../stores/systemPluginStore';
 import { localizedText } from '../../types/localized';
 import type { SystemPluginSummary } from '../../types/systemPlugin';
-import { connectorApi } from '../../services/connectorApi';
+import { connectorApi, type ConnectorSourceProvider } from '../../services/connectorApi';
 import { pluginPackagesApi } from '../../services/pluginPackagesApi';
 import type { PluginPackageSummary } from '../../types/pluginPackage';
 import { MarketCard } from './MarketCard';
 import { MyMarketCard } from './MyMarketCard';
 import { SystemPluginSwitch } from './SystemPluginSwitch';
+import { ConfirmDialog } from './ConfirmDialog';
+import { hasOtherEnabledSystemPlugin } from './systemPluginConflict';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import type { ConnectorConnectResponse, ConnectorSummary } from '../../types/connector';
@@ -37,6 +41,7 @@ import {
   type SuiteStatus,
   type Suites,
 } from '../../features/officeAddins/officeAddins';
+import { toast } from '../ui/Toast/toastStore';
 
 export type MarketKind = 'plugin' | 'mcp';
 // 应用市场（原 'app' tab）已提升为侧边栏一级入口（AppMarketPage），扩展页不再承载。
@@ -75,6 +80,10 @@ interface MarketplacePageProps {
   onRefresh: () => Promise<void>;
   /** 点击刷新时递增，用于重跑带搜索词的直连查询。 */
   refreshNonce: number;
+  /** Enterprise multi-source catalogue tabs (D-08). Personal edition leaves empty. */
+  connectorSources?: ConnectorSourceProvider[];
+  selectedConnectorSourceId?: string;
+  onConnectorSourceChange?: (sourceId: string) => void;
 }
 
 // MCP 分类是后端下发的自由字符串；按当前已加载的连接器统计前 N 个分类，其余归入“其他”。
@@ -105,8 +114,12 @@ export function MarketplacePage({
   onRegisterCustomMcp,
   onRefresh,
   refreshNonce,
+  connectorSources = [],
+  selectedConnectorSourceId = '',
+  onConnectorSourceChange,
 }: MarketplacePageProps) {
   const { t, i18n } = useTranslation();
+  const enterpriseEdition = isEnterprise();
 
   const systemPluginTags = (pkg: SystemPluginSummary): string[] => {
     const source = pkg.source === 'hub'
@@ -114,17 +127,26 @@ export function MarketplacePage({
       : pkg.source === 'local'
         ? t('connectorMarket.systemPlugin.sourceLocal')
         : '';
-    const status = t(
-      pkg.active
-        ? 'connectorMarket.systemPlugin.statusActive'
-        : pkg.installed
-          ? pkg.enabled
-            ? 'connectorMarket.systemPlugin.statusInstalled'
-            : 'connectorMarket.systemPlugin.statusDisabled'
-          : 'connectorMarket.systemPlugin.statusAvailable',
-    );
+    const isBundle = pkg.kind === 'bundle';
+    const status = isBundle
+      ? t(`connectorMarket.systemPlugin.overall.${pkg.overallStatus ?? 'not-installed'}`)
+      : t(
+        pkg.active
+          ? 'connectorMarket.systemPlugin.statusActive'
+          : pkg.installed
+            ? pkg.enabled
+              ? 'connectorMarket.systemPlugin.statusInstalled'
+              : 'connectorMarket.systemPlugin.statusDisabled'
+            : 'connectorMarket.systemPlugin.statusAvailable',
+      );
     return Array.from(new Set([
       t('connectorMarket.systemPlugin.badge'),
+      ...(isBundle
+        ? [
+          t('connectorMarket.systemPlugin.bundleBadge'),
+          t('connectorMarket.systemPlugin.bundleMembers', { count: pkg.membersCount ?? 0 }),
+        ]
+        : []),
       source,
       status,
       ...pkg.tags.map((tag) => localizedText(tag, i18n.language)),
@@ -140,6 +162,8 @@ export function MarketplacePage({
   const marketSearchRevisionRef = useRef(0);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [checkingSystemInstallId, setCheckingSystemInstallId] = useState<string | null>(null);
+  const [pendingSystemInstallId, setPendingSystemInstallId] = useState<string | null>(null);
   const createMenuRef = useRef<HTMLDivElement>(null);
   useClickOutside(createMenuRef, () => setCreateMenuOpen(false));
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -207,6 +231,24 @@ export function MarketplacePage({
     );
   };
 
+  const requestSystemPluginInstall = async (installId: string, packageId: string) => {
+    if (checkingSystemInstallId) return;
+    setCheckingSystemInstallId(installId);
+    let hasConflict = false;
+    try {
+      hasConflict = await hasOtherEnabledSystemPlugin(packageId);
+    } catch {
+      // Conflict discovery is advisory; a transient catalog failure must not block installation.
+    } finally {
+      setCheckingSystemInstallId(null);
+    }
+    if (hasConflict) {
+      setPendingSystemInstallId(installId);
+      return;
+    }
+    await installSystemPlugin(installId);
+  };
+
   useEffect(() => {
     const searchQuery = query.trim();
     const isMarketplace = topTab === 'mcp' || (topTab === 'plugin' && pluginKind === 'agent');
@@ -217,17 +259,29 @@ export function MarketplacePage({
       setMarketSearchLoading(false);
       return;
     }
+    // Enterprise MCP catalogue requires source_id (skills-source alignment).
+    if (topTab === 'mcp' && connectorSources.length > 0 && !selectedConnectorSourceId) {
+      setMarketConnectorResults(null);
+      setMarketSearchLoading(false);
+      return;
+    }
 
     setMarketSearchLoading(true);
     const timer = window.setTimeout(() => {
       const search = topTab === 'mcp'
-        ? connectorApi.list('builtin', searchQuery)
+        ? connectorApi.list(equipmentListFilter('mcp', 'catalog'), searchQuery, {
+            sourceId: selectedConnectorSourceId || undefined,
+          })
         : pluginPackagesApi.list('builtin+hub', searchQuery);
       void search
         .then((items) => {
           if (revision !== marketSearchRevisionRef.current) return;
-          if (topTab === 'mcp') setMarketConnectorResults(items as ConnectorSummary[]);
-          else setMarketPluginResults(items as PluginPackageSummary[]);
+          if (topTab === 'mcp') {
+            const connectors = items as ConnectorSummary[];
+            setMarketConnectorResults(connectors);
+            // Keep detail-page lookup working for search hits (not only builtinConnectors).
+            useConnectorStore.getState().rememberConnectors(connectors);
+          } else setMarketPluginResults(items as PluginPackageSummary[]);
         })
         .catch(() => {
           if (revision !== marketSearchRevisionRef.current) return;
@@ -239,7 +293,7 @@ export function MarketplacePage({
         });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [query, topTab, pluginKind, refreshNonce]);
+  }, [query, topTab, pluginKind, refreshNonce, selectedConnectorSourceId, connectorSources.length]);
 
   const handleRefreshClick = async () => {
     if (refreshing) return;
@@ -264,14 +318,30 @@ export function MarketplacePage({
     return map;
   }, [connectors, busyMap]);
 
+  function handleConnectorUpdatePlaceholder() {
+    // TODO(mcp.update): wire enterprise upgrade RPC; install on already-installed early-returns.
+    toast.open({
+      content: t('connectorMarket.card.updateNotSupportedYet'),
+      variant: 'info',
+      duration: 4,
+      testId: 'connector-market-toast',
+    });
+  }
+
   async function handleConnectorQuickAdd(identifier: string) {
     const connector = connectors.find((c) => c.id === identifier || c.runtimePackageName === identifier);
     // 已连接不重复 connect；connecting 态也跳过（正在连）。
+    // hasUpdate 短路不放在这里：本函数被「我的MCP」与广场共用，「我的MCP」按钮仍是
+    // 连接/安装，不能被更新占位挡住。更新 toast 只在广场卡片 onQuickAdd 按 hasUpdate 分流。
     if (!connector) return;
     const cs = mcpCardStates[connector.runtimePackageName];
     const action = nextMcpQuickAction(connector.installed, cs);
     if (action === 'install') {
-      const response = await installConnector(connector.id);
+      const response = await installConnector(connector.id, {
+        sourceId: connector.sourceId || selectedConnectorSourceId || undefined,
+        versionId: connector.version,
+        packageName: connector.runtimePackageName || connector.name,
+      });
       const connectResult = response?.connect;
       const connectName = connectResult?.name ?? connector.runtimePackageName;
       if (connectResult?.credentialsRequired) {
@@ -610,7 +680,11 @@ export function MarketplacePage({
               value={topTab}
               onChange={onTopTabChange}
               items={[
-                ...(['plugin', 'mcp', 'my'] as const).map((tab) => ({
+                // Enterprise hides the plugin plaza; personal keeps plugin / mcp / my.
+                ...(enterpriseEdition
+                  ? (['mcp', 'my'] as const)
+                  : (['plugin', 'mcp', 'my'] as const)
+                ).map((tab) => ({
                   value: tab,
                   label: t(tab === 'my' ? 'connectorMarket.tabs.my' : `connectorMarket.tabs.${tab}Market`),
                 })),
@@ -704,6 +778,40 @@ export function MarketplacePage({
         </div>
       </div>
 
+      {/* 企业版连接器广场：与技能广场一致，展示当前目录源页签（单源也显示）。 */}
+      {topTab === 'mcp' && connectorSources.length > 0 && (
+        <div className="page-shell">
+          <div
+            className="flex items-center gap-2 flex-wrap min-w-0"
+            role="tablist"
+            aria-label={t('connectorMarket.sources.tabsLabel')}
+            data-testid="connector-market-source-tabs"
+          >
+            {connectorSources.map((source) => {
+              const active = selectedConnectorSourceId === source.source_id;
+              return (
+                <button
+                  key={source.source_id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => onConnectorSourceChange?.(source.source_id)}
+                  className={`px-4 text-sm font-medium ${
+                    active
+                      ? 'rounded-[8px] bg-secondary h-8 text-text'
+                      : 'text-text-muted hover:text-text'
+                  }`}
+                  data-testid="connector-market-source-tab"
+                  data-source-id={source.source_id}
+                >
+                  {source.display_name?.trim() || source.source_id}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* 2026-08-29 MCP 广场目前都不带 tag（category 多为空），分类 tab 行先隐藏——去掉 false 即恢复 */}
       {false && topTab === 'mcp' && categoryTabs.length > 1 && (
         <div className="page-shell">
@@ -744,13 +852,18 @@ export function MarketplacePage({
         </div>
       )}
 
+      {/* 我的扩展：企业版只保留连接器；个人版保留插件 + 连接器。 */}
       {topTab === 'my' && (
         <div className="page-shell">
           <CategoryTabs<MarketKind>
-            items={[
-              { value: 'plugin', label: t('connectorMarket.tabs.plugin') },
-              { value: 'mcp', label: t('connectorMarket.tabs.mcp') },
-            ]}
+            items={
+              enterpriseEdition
+                ? [{ value: 'mcp', label: t('connectorMarket.tabs.mcp') }]
+                : [
+                    { value: 'plugin', label: t('connectorMarket.tabs.plugin') },
+                    { value: 'mcp', label: t('connectorMarket.tabs.mcp') },
+                  ]
+            }
             value={myKind}
             onChange={onMyKindChange}
             wrapperTestId="connector-market-my-kind-tabs"
@@ -800,7 +913,7 @@ export function MarketplacePage({
                       tags={systemPluginTags(pkg)}
                       description={localizedText(pkg.displayDescription, i18n.language)}
                       iconUrl={pkg.avatar || undefined}
-                      state={systemBusyIds[pkg.id] ? 'connecting' : pkg.installed ? 'connected' : 'idle'}
+                      state={pkg.installed ? 'connected' : 'idle'}
                       busyKind="install"
                       actionDisabled={!!systemBusyIds[pkg.id]}
                       onOpenDetail={() => onOpenSystemPluginDetail(pkg.id)}
@@ -856,10 +969,18 @@ export function MarketplacePage({
                     busyKind={busyMap[connector.id] ?? busyMap[connector.runtimePackageName]}
                     canOpenDetail
                     onOpenDetail={() => onOpenConnectorDetail(connector.id)}
-                    onQuickAdd={() => handleConnectorQuickAdd(connector.id)}
-                    quickAction={mcpInstalled ? 'connect' : 'install'}
+                    onQuickAdd={() => {
+                      if (connector.hasUpdate) {
+                        handleConnectorUpdatePlaceholder();
+                        return;
+                      }
+                      void handleConnectorQuickAdd(connector.id);
+                    }}
+                    quickAction={
+                      connector.hasUpdate ? 'update' : mcpInstalled ? 'connect' : 'install'
+                    }
                     onCancelConnect={() => void cancelConnectAction(connector.runtimePackageName)}
-                    onUse={onUse ? () => onUse?.({ kind: 'mcp', id: connector.runtimePackageName }) : undefined}
+                    onUse={onUse ? () => onUse({ kind: 'mcp', id: connector.runtimePackageName }) : undefined}
                   />
                 );
               })
@@ -871,12 +992,18 @@ export function MarketplacePage({
                   tags={systemPluginTags(pkg)}
                   description={localizedText(pkg.displayDescription, i18n.language)}
                   iconUrl={pkg.avatar || undefined}
-                  state={systemBusyIds[pkg.id] ? 'connecting' : pkg.installed ? 'connected' : 'idle'}
+                  state={pkg.installed ? 'connected' : 'idle'}
                   busyKind="install"
-                  actionDisabled={!!systemBusyIds[pkg.id]}
+                  actionDisabled={
+                    !!systemBusyIds[pkg.id]
+                    || checkingSystemInstallId === pkg.id
+                    || pendingSystemInstallId === pkg.id
+                  }
                   canOpenDetail
                   onOpenDetail={() => onOpenSystemPluginDetail(pkg.id)}
-                  onQuickAdd={() => { void installSystemPlugin(pkg.id); }}
+                  onQuickAdd={() => {
+                    void requestSystemPluginInstall(pkg.id, pkg.packageId || pkg.id);
+                  }}
                   headerAction={systemPluginHeaderAction(pkg)}
                   hideConnectedAction
                 />
@@ -958,6 +1085,20 @@ export function MarketplacePage({
           initial={authTarget.response}
           onCancel={() => setAuthTarget(null)}
           onConnected={() => setAuthTarget(null)}
+        />
+      )}
+
+      {pendingSystemInstallId && (
+        <ConfirmDialog
+          title={t('connectorMarket.systemPlugin.multiEnableTitle')}
+          message={t('connectorMarket.systemPlugin.multiEnableMessage')}
+          confirmLabel={t('connectorMarket.systemPlugin.multiEnableConfirm')}
+          onCancel={() => setPendingSystemInstallId(null)}
+          onConfirm={() => {
+            const installId = pendingSystemInstallId;
+            setPendingSystemInstallId(null);
+            void installSystemPlugin(installId);
+          }}
         />
       )}
 

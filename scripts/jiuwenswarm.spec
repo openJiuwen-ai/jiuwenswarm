@@ -148,6 +148,9 @@ datas = webview_datas + [
 datas += computer_use_datas
 if sys.platform in ("darwin", "win32"):
     datas += collect_data_files("computer_use", includes=["*.pyi", "py.typed"])
+if sys.platform == "darwin":
+    # The SDK launches this helper by file path to forward inherited descriptors.
+    datas += collect_data_files("computer_use", include_py_files=True, includes=["native/driver_exec.py"])
 # Every actual frozen backend build gets a distinct, bundled identity.
 _identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
 _identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
@@ -216,6 +219,13 @@ for _relative in (
         str(Path("jiuwenswarm", _relative).parent),
     ))
 datas += collect_data_files("jiuwenswarm.server.runtime.designer.skills", include_py_files=False)
+# Tool discovery parses these physical sources rather than importing PYZ modules.
+datas += collect_data_files(
+    "jiuwenswarm.agents.harness.common.tools",
+    include_py_files=True,
+    includes=["*_tools.py", "specs/*.py"],
+)
+datas += collect_data_files("jiuwenswarm.common.i18n", includes=["catalog/*.yaml"])
 datas += collect_data_files("agent_gateway", include_py_files=False)
 # Gateway reads the product version from the frozen WorkSwarm distribution metadata.
 datas += copy_metadata("workswarm")
@@ -339,6 +349,7 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "websockets",
     # The extension loader opens extension.py from disk in frozen builds.
     *collect_submodules("jiuwenswarm.extensions.app_market"),
+    "jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers",
     "loguru",
     "dotenv",
     "webview",
@@ -367,6 +378,7 @@ excludes = [
 ]
 if sys.platform in ("darwin", "win32"):
     hiddenimports += collect_submodules("computer_use") + collect_submodules("computer_use_mcp")
+    hiddenimports += collect_submodules("computer_use_agent")
 
 # 入口脚本位于 scripts 目录
 entry_script = os.path.join(project_root, "scripts", "jiuwenswarm_exe_entry.py")
@@ -530,6 +542,17 @@ _sqlite_vec_datas, _sqlite_vec_binaries, _sqlite_vec_hidden = collect_all("sqlit
 datas += _sqlite_vec_datas
 hiddenimports += _sqlite_vec_hidden
 _bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
+
+# AgentSSAS（agent_ssas）把检测模块与决策策略写成包内 YAML
+# （core/detection_modules/*/module.yaml、backend_client/openjiuwen/
+# decision_policies.yaml），并按 YAML 动态装配检测模块与 rail；PyInstaller
+# 静态分析既收不到这些数据文件，也跟不到动态导入的模块。冻结包缺
+# decision_policies.yaml 时策略模式会静默降级为默认行为，因此统一用
+# collect_all 收集数据文件与子模块。
+_agent_ssas_datas, _agent_ssas_binaries, _agent_ssas_hidden = collect_all("agent_ssas")
+datas += _agent_ssas_datas
+hiddenimports += _agent_ssas_hidden
+_bundled_binaries = _bundled_binaries + _agent_ssas_binaries
 
 a = Analysis(
     [entry_script],

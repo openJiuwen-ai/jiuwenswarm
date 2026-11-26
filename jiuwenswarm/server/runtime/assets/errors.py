@@ -84,7 +84,37 @@ _PACKAGE_BUILD_CODE_MAP: dict[str, str] = {
     "OUTPUT_INSIDE_SOURCE": AssetErrorCode.UNSAFE_PATH,
     "LIMIT_EXCEEDED": AssetErrorCode.LIMIT_EXCEEDED,
     "CREDENTIAL_VALUE": AssetErrorCode.CREDENTIAL_DETECTED,
+    # 损坏、加密、不支持的压缩包与非 UTF-8 包内容：确定性的无效资产包，
+    # 不得落入 INTERNAL_ERROR 兜底，否则调用方无法与可重试故障区分。
+    "INVALID_PACKAGE": AssetErrorCode.INVALID_PACKAGE,
 }
+
+
+# ASSET_* 契约码 → HTTP 状态码。供 /file-api/assets/* HTTP 面使用；
+# WS 入口不走该映射，直接以 ok=False + to_payload() 返回错误。
+_HTTP_STATUS: dict[str, int] = {
+    AssetErrorCode.NOT_FOUND: 404,
+    AssetErrorCode.EXPORT_FORBIDDEN: 403,
+    AssetErrorCode.INVALID_PACKAGE: 400,
+    AssetErrorCode.UNSAFE_PATH: 400,
+    AssetErrorCode.CREDENTIAL_DETECTED: 400,
+    AssetErrorCode.LIMIT_EXCEEDED: 413,
+    AssetErrorCode.ALREADY_EXISTS: 409,
+    AssetErrorCode.BUILTIN_READ_ONLY: 403,
+    # 入口层内部故障码（全仓既有约定）：服务端故障显式 500，
+    # 不得落未知码 400 兜底伪装成客户端错误。
+    "INTERNAL_ERROR": 500,
+}
+
+
+def asset_http_error_status(code: str) -> int:
+    """错误码 → HTTP 状态码；INTERNAL_ERROR 显式 500，未知码（如 INVALID_PARAMS）按 400 兜底。"""
+    return _HTTP_STATUS.get(code, 400)
+
+
+def asset_http_error_body(code: str, message: str) -> dict[str, str]:
+    """HTTP 错误响应体，与 /file-api/skills/* 的 {code, message, error} 形状一致。"""
+    return {"code": code, "message": message, "error": message}
 
 
 def map_internal_error(exc: BaseException) -> AssetError | None:
@@ -105,3 +135,25 @@ def map_internal_error(exc: BaseException) -> AssetError | None:
         str(exc) or internal_code,
         details={"internal_code": internal_code},
     )
+
+
+def converge_error_payload(exc: BaseException) -> dict[str, Any]:
+    """把任意异常收敛为入口响应 payload（``{"error", "code"}`` 形状）。
+
+    收敛顺序（WS handler 与 WS 适配器两条入口共用，保证同错同码）：
+
+    1. :class:`AssetError` —— 契约异常原样透传；
+    2. 带 ``.code`` 的内部异常 —— :func:`map_internal_error` 查表收敛；
+    3. 无内部码的 ``ValueError`` —— 契约层参数校验失败，``INVALID_PARAMS``
+       （与 session_assets、extensions_v2.management 等一致的入口层参数
+       错误码，不属于八类业务契约码，前端落通用失败提示）；
+    4. 其余 —— ``INTERNAL_ERROR`` 兜底。
+    """
+    if isinstance(exc, AssetError):
+        return exc.to_payload()
+    mapped = map_internal_error(exc)
+    if mapped is not None:
+        return mapped.to_payload()
+    if isinstance(exc, ValueError) and not hasattr(exc, "code"):
+        return {"error": str(exc) or "invalid params", "code": "INVALID_PARAMS"}
+    return {"error": str(exc) or "internal error", "code": "INTERNAL_ERROR"}

@@ -9,8 +9,8 @@ export function WebUIApplicationSurface({ node, context }: WebUIAdapterProps) {
   const host = usePresentationHost();
   const { i18n } = useTranslation();
   const language = i18n.resolvedLanguage ?? i18n.language ?? 'zh';
-  const declaration = useMemo(() => presentationDeclaration(context.instanceKey, node, language),
-    [context.instanceKey, node, language]);
+  const declaration = useMemo(() => presentationDeclaration(context.instanceKey, node, language, context.renderRevision),
+    [context.instanceKey, node, language, context.renderRevision]);
   useEffect(() => {
     host?.update(declaration);
   }, [host, declaration]);

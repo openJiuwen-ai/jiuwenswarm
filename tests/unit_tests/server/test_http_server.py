@@ -10,6 +10,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -115,6 +116,34 @@ def test_http_modules_do_not_use_the_websocket_dispatch() -> None:
             assert "server.dispatch" not in text
     routes_text = (_HTTP_DIR / "agent_http_routes.py").read_text(encoding="utf-8")
     assert "http_rpc" not in routes_text
+
+
+@pytest.mark.asyncio
+async def test_a4p_config_http_round_trip_without_session(monkeypatch, tmp_path) -> None:
+    from jiuwenswarm.agents.harness.common.a4p import rpc, runtime
+    from jiuwenswarm.common import config
+
+    path = tmp_path / "config.yaml"
+    path.write_text("a4p:\n  enabled: false\n", encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
+    monkeypatch.setattr(runtime, "get_config", config.get_config_raw)
+    reconfigure = AsyncMock()
+    monkeypatch.setattr(rpc, "reconfigure_a4p_runtime", reconfigure)
+    transport = httpx.ASGITransport(app=build_http_app(AppServices()))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        route = "/api/v1/a4p/config"
+        headers = {"x-channel-id": "web", "x-user-id": "alice"}
+        before = await client.get(route, headers=headers)
+        update = await client.put(route, headers=headers, json={"enabled": True})
+        after = await client.get(route, headers=headers)
+
+    responses = [response.json() for response in (before, update, after)]
+    assert all(response["ok"] for response in responses), responses
+    assert [response["data"] for response in responses] == [
+        {"enabled": False}, {"enabled": True}, {"enabled": True},
+    ]
+    assert config.get_config_raw()["a4p"]["enabled"] is True
+    reconfigure.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -943,6 +972,7 @@ def test_unhandled_urls_are_not_registered() -> None:
     assert ("GET", "/api/v1/heartbeat/config") not in routes
     assert ("POST", "/api/v1/sessions") in routes
     assert ("POST", "/api/v1/mcp/actions/list") in routes
+    assert ("POST", "/api/v1/mcp/actions/sources-providers") in routes
     assert ("POST", "/api/v1/sessions/{session_id}/swarmflow/actions/pause") in routes
     assert ("POST", "/api/v1/proactive/actions/feedback") in routes
     assert ("POST", "/api/v1/rpc/{method}") not in routes

@@ -43,6 +43,10 @@ import './ServicesPanel.css';
 const POLL_INTERVAL_MS = 5000;
 /** 图谱节点数刷新间隔：stream_graph 为全量流式拉取，开销大于轻量状态轮询，独立用更长周期。 */
 const GRAPH_REFRESH_INTERVAL_MS = 15000;
+/** 失败卡片最多逐条展示的失败项，其余用「另有 N 条」概括，避免长列表撑爆卡片。 */
+const MAX_VISIBLE_ITEM_ERRORS = 5;
+/** 后端 last_error_stage 的稳定标识，未知值统一回退到 unknown 文案。 */
+const FAILURE_STAGES = new Set(['scan', 'fetch', 'pipeline', 'publish', 'config', 'state', 'timeout', 'unknown']);
 
 function runTimestampValue(value: string | null | undefined): number {
   const timestamp = value ? new Date(value).getTime() : Number.NEGATIVE_INFINITY;
@@ -579,6 +583,17 @@ const ServiceCard = memo(function ServiceCard({
   const errorText = resultRun?.last_error ?? lastError;
   // 失败提示只在非采集/非停止时展示：采集中旧失败标记不应残留（与 statusKey 优先级一致）
   const showFailedHint = !isStopping && !isCollecting && lastRunFailed && !!errorText;
+  // #7008：失败不能只留一个悬停提示。阶段标识、业务错误码、扫描明细和逐项失败原因
+  // 都来自后端已本地化的运行记录，这里只负责展示，不回显内部原始错误文本。
+  const failureStageRaw = resultRun?.last_error_stage ?? '';
+  const failureStage = FAILURE_STAGES.has(failureStageRaw) ? failureStageRaw : '';
+  const failureCode = resultRun?.last_error_code ?? '';
+  const itemErrors = (resultRun?.item_errors ?? []).slice(0, MAX_VISIBLE_ITEM_ERRORS);
+  const omittedItemErrors = resultRun
+    ? Math.max(resultRun.omitted_item_errors ?? 0, (resultRun.item_errors?.length ?? 0) - MAX_VISIBLE_ITEM_ERRORS)
+    : 0;
+  const showFailureDetail = !isStopping && !isCollecting
+    && (showFailedHint || (resultRun?.failed_items ?? 0) > 0 || itemErrors.length > 0);
 
   const statusKey = isStopping
     ? 'stateStopping'
@@ -599,7 +614,7 @@ const ServiceCard = memo(function ServiceCard({
   const terminalRun = !isCollecting && !isStopping && resultRun &&
     ['succeeded', 'partial_succeeded', 'failed', 'cancelled'].includes(resultRun.run_state) &&
     (!lastRunFailed || resultRun.run_state === 'failed');
-  const resultText = terminalRun
+  const collectionResultText = terminalRun
     ? lastRunCompleted && resultRun.no_new_content === true
       ? t('personalContext.services.noNewContent')
       : [
@@ -614,6 +629,12 @@ const ServiceCard = memo(function ServiceCard({
             : null,
         ].filter(Boolean).join(' · ')
     : '';
+  const capacity = terminalRun ? resultRun.capacity_maintenance : undefined;
+  const resultText = [
+    collectionResultText,
+    capacity?.removed_count ? t('personalContext.services.capacityRemoved', { count: capacity.removed_count }) : '',
+    capacity && capacity.status !== 'succeeded' ? t('personalContext.services.capacityIncomplete') : '',
+  ].filter(Boolean).join(' · ');
 
   const percent = progress?.progress_percent;
   // 采集中即展示进度条（含 0%），避免后端尚未上报总量时进度条消失，让用户看到"采集中"进度占位。
@@ -736,6 +757,49 @@ const ServiceCard = memo(function ServiceCard({
       </div>
       {resultText && (
         <div className="pc-services__result" data-testid="personal-context-service-result">{resultText}</div>
+      )}
+      {showFailureDetail && (
+        <div className="pc-services__failure" data-testid="personal-context-service-failure">
+          <div className="pc-services__failure-head">
+            {failureStage ? (
+              <span data-testid="personal-context-service-failure-stage">
+                {t(`personalContext.services.failureStage.${failureStage}`)}
+              </span>
+            ) : null}
+            {failureCode ? (
+              <span data-testid="personal-context-service-failure-code">
+                {t('personalContext.services.failureCode', { code: failureCode })}
+              </span>
+            ) : null}
+          </div>
+          {errorText ? (
+            <div className="pc-services__failure-message" data-testid="personal-context-service-failure-message">
+              {errorText}
+            </div>
+          ) : null}
+          <div className="pc-services__failure-counts" data-testid="personal-context-service-failure-counts">
+            {t('personalContext.services.failureCounts', {
+              total: resultRun?.total_items ?? 0,
+              completed: resultRun?.completed_items ?? 0,
+              failed: resultRun?.failed_items ?? 0,
+            })}
+          </div>
+          {itemErrors.length > 0 && (
+            <ul className="pc-services__failure-items">
+              {itemErrors.map((item) => (
+                <li key={`${item.item_ref}:${item.failed_at}`} className="pc-services__failure-item">
+                  <span className="pc-services__failure-item-ref" title={item.item_ref}>{item.item_ref}</span>
+                  <span className="pc-services__failure-item-message">{item.message}</span>
+                </li>
+              ))}
+              {omittedItemErrors > 0 ? (
+                <li className="pc-services__failure-omitted" data-testid="personal-context-service-failure-omitted">
+                  {t('personalContext.services.failureOmitted', { count: omittedItemErrors })}
+                </li>
+              ) : null}
+            </ul>
+          )}
+        </div>
       )}
       {manualRunBlockedReason && !activeRun && (
         <div
