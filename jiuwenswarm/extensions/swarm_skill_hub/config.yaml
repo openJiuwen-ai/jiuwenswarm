@@ -7,5 +7,3 @@ hmac_key_id: "default"
 hmac_secret_ref: "env://SKILL_DOWNLOAD_HMAC_SECRET"
 allowed_download_hosts:
   - "openjiuwen-market.obs.*.myhuaweicloud.com"
-  - "127.0.0.1"
-  - "localhost"

@@ -932,6 +932,22 @@ def test_team_skills_hub_default_allowed_download_hosts_include_official_test_bu
     )
 
 
+@pytest.mark.parametrize(
+    "download_url",
+    (
+        "http://127.0.0.1:8080/demo.zip",
+        "https://localhost/demo.zip",
+    ),
+)
+def test_team_skills_hub_default_allowed_download_hosts_reject_loopback(
+    monkeypatch, download_url
+):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    with pytest.raises(RuntimeError, match="白名单"):
+        manager.call_assert_team_skills_hub_download_url_allowed(download_url)
+
+
 def test_safe_extract_zip_to_dir_rejects_zip_slip(tmp_path):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

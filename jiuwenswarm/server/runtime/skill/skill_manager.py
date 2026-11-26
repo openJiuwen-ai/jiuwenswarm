@@ -638,8 +638,6 @@ _TEAM_SKILLS_HUB_BASE_URL_DEFAULT = DEFAULT_HUB_BASE_URL
 _TEAM_SKILLS_HUB_DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = (
     "openjiuwen-market.obs.*.myhuaweicloud.com",
     "openjiuwen-market-test.obs.*.myhuaweicloud.com",
-    "127.0.0.1",
-    "localhost",
 )
 _IMPORT_LOCAL_REMOTE_TIMEOUT: float = float(os.environ.get("IMPORT_LOCAL_REMOTE_TIMEOUT", "60"))
 _IMPORT_LOCAL_DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = ("*.obs.*.myhuaweicloud.com",)

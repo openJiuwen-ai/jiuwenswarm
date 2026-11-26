@@ -44,8 +44,6 @@ _ENV_REF_RE = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
 # 与 SkillManager legacy Team Skills Hub 白名单保持一致的内置下载主机。
 _DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = (
     "openjiuwen-market.obs.*.myhuaweicloud.com",
-    "127.0.0.1",
-    "localhost",
 )
 
 _DEFAULTS: dict[str, Any] = {
