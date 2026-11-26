@@ -80,6 +80,9 @@ from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 logger = logging.getLogger(__name__)
 
 PERSONAL_CONTEXT = "swarm.personal_context"
+# OfficeAce cloud/PC user-profile overview; same session-level identity rail
+# family as PERSONAL_CONTEXT. Config-gated (returns None when disabled).
+OFFICE_ACE_USER_PROFILE = "swarm.office_ace_user_profile"
 RUNTIME_PROMPT = "swarm.runtime_prompt"
 TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 TEAM_SKILL_LIBRARY_RELOAD = "swarm.team_skill_library_reload"
@@ -157,6 +160,47 @@ def _build_personal_context_rail(
     except Exception as exc:
         logger.warning(
             "[swarm.personal_context] optional Rail construction failed (%s)",
+            type(exc).__name__,
+        )
+        return None
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=OFFICE_ACE_USER_PROFILE,
+    description=(
+        "OfficeAce user-profile overview injected into each member system prompt; "
+        "gated by external memory + officeace_cloud credentials."
+    ),
+)
+def _build_office_ace_user_profile_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> Any | None:
+    """Build OfficeAceUserProfileRail for team members, or None when disabled.
+
+    Mirrors single-agent adapters (deep/code/flash): enable only when
+    ``get_office_ace_user_profile_config`` reports enabled. Disabled → None
+    (zero residual), unlike PersonalContext which stays mounted for live switch.
+    """
+    del params, context
+    try:
+        from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+            get_office_ace_user_profile_config,
+        )
+        from jiuwenswarm.agents.harness.common.rails.office_ace_user_profile import (
+            OfficeAceUserProfileRail,
+            UserProfileConfig,
+        )
+        from jiuwenswarm.common.config import get_config
+
+        cfg = get_office_ace_user_profile_config(get_config())
+        if not cfg["enabled"]:
+            return None
+        return OfficeAceUserProfileRail(UserProfileConfig(**cfg))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[swarm.office_ace_user_profile] optional Rail construction failed (%s)",
             type(exc).__name__,
         )
         return None

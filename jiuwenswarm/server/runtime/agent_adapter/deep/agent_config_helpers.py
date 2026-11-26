@@ -44,35 +44,6 @@ def _set_skill_evolution_triggers(
     rail.signal_trigger = signal_trigger
 
 
-def _skill_evolution_rail_drift(
-    rail: Any,
-    *,
-    language: str,
-    triggers: dict[str, bool],
-) -> str | None:
-    """Return why a mounted SkillEvolutionRail must be rebuilt, or ``None``.
-
-    Contract source: ``openjiuwen/harness/rails/evolution/configuration.py``
-    ``_validate_evolution_rail_config`` refuses to reuse an existing rail whose
-    storable ``language`` / ``signal_trigger`` / ``review_trigger`` differ from
-    the request and raises ``Evolution rail config mismatch`` instead, so the
-    adapter has to tear the rail down before registering the new one.
-
-    The triggers legitimately change between the unbound session prewarm
-    (``user_id=null``: ``get_local_config`` falls through to the process env and
-    a legacy ``EVOLUTION_AUTO_SCAN=false`` wins) and the first bound chat turn
-    (sealed overlay: a missing key is unset, so the config value wins). Both
-    phases run on the same session adapter.
-    """
-    if getattr(rail, "_language", None) != language:
-        return f"language: {getattr(rail, '_language', None)!r} != {language!r}"
-    for name in ("signal_trigger", "review_trigger"):
-        mounted = getattr(rail, name, None)
-        if mounted != triggers[name]:
-            return f"{name}: {mounted!r} != {triggers[name]!r}"
-    return None
-
-
 def init_permission_engine(*_args: Any, **_kwargs: Any) -> None:
     """Legacy shim for tests/older call sites.
 

@@ -77,6 +77,8 @@ OfficeClaw 新对话的首轮里，会话实例构建（create_instance + 启动
 - `params.mode` 必填：chat.send 不带 mode 时会回退会话元数据，准备没有元数据可回退，缺 mode 应答 `INVALID_PARAMS`。
 - 解析出子模式（如进入 plan）时应答 `mode_not_supported`，这类会话首轮不受益，以命中日志核对实际命中率。
 - 会话被 2 小时空闲淘汰后再次对话，命中日志会记 `miss reason=not_prepared`；统计命中率时只看该会话第一条消息。
+- prepare 与首条 chat 的 evolution 配置快照若漂移（如 `signal_trigger`），曾导致 openjiuwen
+  `Evolution rail config mismatch` / OA.05000090；修复与跨仓契约见 [[B_03]]。
 
 ## 验证
 

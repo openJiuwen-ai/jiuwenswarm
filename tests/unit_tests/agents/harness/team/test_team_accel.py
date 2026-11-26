@@ -202,10 +202,12 @@ def test_member_rails_include_accel_and_response_prompt():
     assert registry.RESPONSE_PROMPT in _COMMON_RAIL_NAMES
     assert registry.TEAM_ACCEL_PROMPT in _COMMON_RAIL_NAMES
     assert registry.TEAM_ACCEL_SYS in _COMMON_RAIL_NAMES
+    assert registry.OFFICE_ACE_USER_PROFILE in _COMMON_RAIL_NAMES
     assert registry.SYS_OPERATION not in _COMMON_RAIL_NAMES
     assert registry.RESPONSE_PROMPT in _CODE_RAIL_NAMES
     assert registry.TEAM_ACCEL_PROMPT in _CODE_RAIL_NAMES
     assert registry.TEAM_ACCEL_SYS in _CODE_RAIL_NAMES
+    assert registry.OFFICE_ACE_USER_PROFILE in _CODE_RAIL_NAMES
     assert registry.SYS_OPERATION not in _CODE_RAIL_NAMES
 
     for role in ("leader", "teammate"):

@@ -1387,23 +1387,32 @@ async def test_ensure_active_evolution_rails_keeps_rail_when_triggers_match(
 
 
 @pytest.mark.asyncio
-async def test_ensure_active_evolution_rails_raises_when_triggers_drift_without_rebuild(
+async def test_ensure_active_evolution_rails_retries_when_cached_rail_is_missing(
     monkeypatch,
     tmp_path,
 ):
-    """Harness contract itself: skipping the rebuild raises the production error.
-
-    Guards the stub against silently weakening: if the stub stopped exercising
-    the real validation, the rebuild tests above would pass vacuously.
-    """
-    adapter, _rail = await _deep_adapter_with_cached_evolution_rail(
+    """A stale cache hides the mounted rail until the SDK detects the mismatch."""
+    adapter, stale_rail = await _deep_adapter_with_cached_evolution_rail(
         monkeypatch,
         tmp_path,
         signal_trigger=False,
     )
 
-    with pytest.raises(RuntimeError, match="Evolution rail config mismatch.*signal_trigger: False != True"):
-        await _configure_evolution_rail(adapter._instance, tmp_path, signal_trigger=True)
+    adapter._skill_evolution_rail = None
+    monkeypatch.setattr(
+        deep_module,
+        "get_passive_skill_evolution_triggers",
+        lambda _config: {"signal_trigger": True, "review_trigger": False},
+    )
+    configure = AsyncMock(wraps=configure_skill_evolution_runtime)
+    monkeypatch.setattr(deep_module, "configure_skill_evolution_runtime", configure)
+
+    await adapter._ensure_active_evolution_rails_registered()
+
+    assert configure.await_count == 2
+    assert adapter._skill_evolution_rail.signal_trigger is True
+    assert adapter._instance.find_rails_by_type((SkillEvolutionRail,)) == [adapter._skill_evolution_rail]
+    assert stale_rail not in adapter._instance.rails
 
 
 _RAIL_MISMATCH = (
@@ -1421,18 +1430,19 @@ async def test_flash_reconcile_survives_evolution_registration_failure(monkeypat
     }
     adapter._config_cache = {}
     adapter._instance = SimpleNamespace(register_rail=AsyncMock())
-    ensure = AsyncMock(side_effect=RuntimeError(_RAIL_MISMATCH))
+    configure = AsyncMock(side_effect=RuntimeError(_RAIL_MISMATCH))
     unconfigure = AsyncMock()
     reconcile_sleep = AsyncMock()
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
+    monkeypatch.setattr(deep_module, "configure_skill_evolution_runtime", configure)
+    monkeypatch.setattr(adapter, "_resolve_skill_dirs", lambda: [])
     monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
     monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
 
     await adapter._reconcile_flash_evolution_rails()
 
-    ensure.assert_awaited_once()
-    # Whatever the failed attempt left behind is torn down.
-    unconfigure.assert_awaited_once()
+    assert configure.await_count == 2
+    # Clean up before the retry and again after the second failure.
+    assert unconfigure.await_count == 2
     reconcile_sleep.assert_awaited_once()
 
 
@@ -1454,22 +1464,25 @@ async def test_flash_reconcile_survives_skill_sleep_registration_failure(monkeyp
     reconcile_sleep.assert_awaited_once()
 
 
+@pytest.mark.parametrize("entrypoint", ["chat", "slash"])
 @pytest.mark.asyncio
-async def test_deep_reconcile_survives_evolution_registration_failure(monkeypatch):
-    """Non-Flash modes (agent/code/team) get the same isolation."""
+async def test_deep_evolution_retry_failure_by_entrypoint(monkeypatch, entrypoint):
     adapter = JiuWenSwarmDeepAdapter()
     adapter._config_cache = {}
-    ensure = AsyncMock(side_effect=RuntimeError(_RAIL_MISMATCH))
-    unconfigure = AsyncMock()
+    adapter._instance = _EvolutionAgentStub()
+    configure = AsyncMock(side_effect=[RuntimeError(_RAIL_MISMATCH), RuntimeError("retry failed")])
     reconcile_sleep = AsyncMock()
     monkeypatch.setattr(deep_module, "get_evolution_enabled", lambda _config: True)
     monkeypatch.setattr(deep_module, "get_ttse_enabled", lambda _config: False)
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
-    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+    monkeypatch.setattr(deep_module, "configure_skill_evolution_runtime", configure)
+    monkeypatch.setattr(adapter, "_resolve_skill_dirs", lambda: [])
     monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
 
-    await adapter._reconcile_evolution_rails()
+    if entrypoint == "chat":
+        await adapter._reconcile_evolution_rails()
+        reconcile_sleep.assert_awaited_once()
+    else:
+        with pytest.raises(RuntimeError, match="retry failed"):
+            await adapter._ensure_evolution_rail_for_slash("agent")
 
-    ensure.assert_awaited_once()
-    unconfigure.assert_awaited_once()
-    reconcile_sleep.assert_awaited_once()
+    assert configure.await_count == 2
