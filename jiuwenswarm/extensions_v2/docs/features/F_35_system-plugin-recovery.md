@@ -12,18 +12,32 @@
 ## 1. 目标
 
 当系统插件使主服务无法正常响应时，用户仍可把已安装插件还原到最近记录中的某个状态。还原保留安装目录，
-只改变受管 `manifest.json` 的 `enable` 字段；确认还原后，父启动器会自动重启 AgentServer 和 Gateway 加载新状态。重启
+写回受管 `manifest.json` 的 `enable` 字段，并同步共享安装账本的 `enabled` / `active` / `status`；独立副本与
+组合包成员都在快照和还原范围内。确认还原后，父启动器会自动重启 AgentServer 和 Gateway 加载新状态。重启
 AgentServer 前会回收其独立的 Runtime Worker，避免该 Worker 保留还原前已加载的 Handler 或卡死执行状态。
 
 ## 2. 记录与还原规则
 
 每次程序启动都会在启动加载前追加一条 `startup` 记录。该记录覆盖当时所有已安装的 AgentServer 和 Gateway
-系统插件，不为启动加载的每个包分别新增记录。成功安装、卸载、启用、禁用和还原后分别新增一条记录，所有启动
-之间共最多保存最近 50 条。
+系统插件，并扫描到组合包成员级别：独立副本按 `<package_id>/<version>` 记录，组合包成员按 `plugins/<member>`
+记录并附带 `bundle_id` / `bundle_version`，组合包根目录不再作为伪包。启动加载完成后会刷新这条记录；若启动时
+目录尚未安装首批插件，后续仅安装操作会继续刷新该启动点，首次启用/禁用/卸载后冻结。成功安装、卸载、启用、
+禁用和还原后分别新增一条记录，所有启动之间共最多保存最近 50 条。
 
-还原某条记录时，当前仍在受管目录内的包按记录中的包 ID 和版本写回 `enable`。记录中没有、但当前安装目录
-仍存在的系统插件会被禁用。已经卸载且目录不存在的包不会重新下载或恢复。还原成功会产生新的 `restore` 记录，
-因此该状态也可以作为后续的还原点。
+还原某条记录时，当前仍在受管目录内的独立副本和组合包成员按记录中的包 ID 和版本写回 `manifest.enable`，
+并同步共享安装账本（`system_plugin_install_state.json`）的 `enabled` / `active` / `status`：
+
+- 记录中没有、但当前安装目录仍存在的独立副本和成员会被禁用，账本写为 `disabled`；
+- 记录中为启用的组合包成员写为 `enabled=true, active=false, status=pending`，由下一次启动的容器恢复加载，
+  避免“账本说 active 但运行时未加载”的假状态；独立副本写为 `active=true, status=active`；
+- 组合包容器按成员状态重算：全部禁用为 `disabled`，否则 `active=true`，有待加载成员为 `pending`；
+- 同一 `package_id@version` 的独立副本、组合包 A 成员、组合包 B 成员分别按 `(bundle_id, bundle_version, package_id, version)` 匹配；独立副本按 `(package_id, version)` 匹配，互不覆盖；
+- 台账中 `status=uninstalling` 的墓碑行不被还原改写，卸载收尾仍由各宿主完成；旧记录若只包含组合包根条目，仅在其为禁用时应用到该组合包的全部成员，根条目的启用值不用于启用成员。
+
+已经卸载且目录不存在的包不会重新下载或恢复。还原成功会产生新的 `restore` 记录，因此该状态也可以作为后续的还原点。
+
+加载侧同样受 `manifest.enable` 门禁：AgentServer 启动加载按该字段决定是否激活；Gateway 的容器同步在
+`enable=false` 且账本不是 standby/pending 时跳过并回写 `disabled`，standby/pending 副本仍可在接管时加载。
 
 还原不撤销插件已经产生的网络、文件或第三方服务副作用。确认后正在处理的任务会因后端重启而中断；它不是恶意代码隔离。
 

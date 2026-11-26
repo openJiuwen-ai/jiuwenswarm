@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from openjiuwen.core.events import ExtensionEventBus
@@ -16,6 +17,7 @@ from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.extensions_v2.session_authorization.service import AuthorizationCaller, SessionAuthorizationService
 from jiuwenswarm.extensions_v2.session_compaction.service import SessionCompactionService
 from jiuwenswarm.extensions_v2.config import (
+    InstallReportSettings,
     resolve_install_dir, resolve_state_dir, resolve_store_dir,
     resolve_install_report_path, resolve_install_report_settings,
 )
@@ -53,10 +55,22 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
     async with _LOCK:
         if _ASSEMBLY is not None:
             return _ASSEMBLY
+        # Resolving extension paths reads config.yaml; the first read imports
+        # openjiuwen.symphony. Keep that work off the event loop.
         try:
-            begin_system_plugin_recovery_session(
-                resolve_install_dir(),
-                resolve_install_report_path().parent,
+            install_dir = await asyncio.to_thread(resolve_install_dir)
+            report_path = await asyncio.to_thread(resolve_install_report_path)
+            settings = await asyncio.to_thread(resolve_install_report_settings)
+            store_dir = await asyncio.to_thread(resolve_store_dir)
+            state_dir = await asyncio.to_thread(resolve_state_dir)
+        except Exception:  # noqa: BLE001 - a broken install layout disables extensions, not the server
+            logger.exception("[ExtensionsV2] extension assembly is unavailable")
+            return None
+        try:
+            await asyncio.to_thread(
+                begin_system_plugin_recovery_session,
+                install_dir,
+                report_path.parent,
             )
         except Exception:  # noqa: BLE001 - recovery history must not block extension startup
             logger.warning(
@@ -64,7 +78,14 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
                 exc_info=True,
             )
         try:
-            assembly = _build_assembly(server)
+            assembly = _build_assembly(
+                server,
+                install_dir=install_dir,
+                report_path=report_path,
+                settings=settings,
+                store_dir=store_dir,
+                state_dir=state_dir,
+            )
 
             async def cleanup_package_views(package_id: str, generation: int, reason: str) -> None:
                 # Shutdown clears views in webui.shutdown(); do not fail package
@@ -101,7 +122,9 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
             logger.exception("[ExtensionsV2] assembly failed; extension features are unavailable")
             return None
 
-        await _activate_installed(assembly.manager)
+        await _activate_installed(
+            assembly.manager, install_dir=install_dir, report_path=report_path,
+        )
         _wire_team_extension_bus(assembly.bus)
         try:
             _publish_extension_bus(assembly.bus)
@@ -205,17 +228,24 @@ def _publish_extension_bus(bus: ExtensionEventBus | None) -> None:
     set_extension_bus(bus)
 
 
-def _build_assembly(server: Any) -> ExtensionAssembly:
+def _build_assembly(
+    server: Any,
+    *,
+    install_dir: Path,
+    report_path: Path,
+    settings: InstallReportSettings,
+    store_dir: Path,
+    state_dir: Path,
+) -> ExtensionAssembly:
     bus = SessionStartEventBus()
-    settings = resolve_install_report_settings()
     manager = ExtensionManager(
-        resolve_install_dir(),
-        report_path=resolve_install_report_path(),
+        install_dir,
+        report_path=report_path,
         poll_interval=settings.poll_interval,
         dependency_timeout=settings.dependency_timeout,
         lock_timeout=settings.lock_timeout,
-        store_dir=resolve_store_dir(),
-        state_dir=resolve_state_dir(),
+        store_dir=store_dir,
+        state_dir=state_dir,
     )
     transport = RenderTransport(push=_push_from(server))
     catalog = WebUICatalogService(manager.active_packages)
@@ -264,7 +294,9 @@ def _build_authorization_service(bus: ExtensionEventBus, manager: ExtensionManag
                                        caller_is_live=live, supported=supported)
 
 
-async def _activate_installed(manager: ExtensionManager) -> None:
+async def _activate_installed(
+    manager: ExtensionManager, *, install_dir: Path, report_path: Path,
+) -> None:
     try:
         from jiuwenswarm.extensions_v2.management import containers
 
@@ -281,6 +313,15 @@ async def _activate_installed(manager: ExtensionManager) -> None:
         await containers.recover_containers(manager)
     except Exception:  # noqa: BLE001 - recovery must not block chat startup
         logger.exception("[ExtensionsV2] failed to recover package containers")
+    try:
+        from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+
+        def _settle_startup() -> None:
+            SystemPluginRecovery(install_dir, report_path.parent).settle_startup()
+
+        await asyncio.to_thread(_settle_startup)
+    except Exception:  # noqa: BLE001 - recovery history must not block startup
+        logger.warning("[ExtensionsV2] could not settle system plugin recovery startup record", exc_info=True)
 
 
 def _push_from(server: Any) -> Any:
