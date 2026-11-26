@@ -7614,11 +7614,17 @@ class SkillManager:
                 origin = matched_local.get("origin")
                 if isinstance(origin, str) and origin.strip():
                     meta["origin"] = origin.strip()
+            # Hub / ClawHub / 本地导入写入的 display_name 优先于企业源 market 名。
             display_name = matched_local.get("display_name")
             if isinstance(display_name, str) and display_name.strip():
                 meta["display_name"] = display_name.strip()
 
         meta["source"] = source
+        # Display-name priority (standalone-safe):
+        # local_skills/Hub display_name → ledger display_name / market_display_name
+        # → registered slug. Promote before slug fallback so enterprise plaza
+        # titles never briefly collapse to the English package id.
+        self._promote_market_display_name(meta)
         if not str(meta.get("display_name") or "").strip():
             meta["display_name"] = registered_name
         meta["installed"] = True
@@ -7668,6 +7674,8 @@ class SkillManager:
                 return None
             meta["has_evolutions"] = False
         self._apply_skill_display(meta, child, language=language)
+        # skill_display 只在有语言字段时覆盖；若结果仍是 slug，再回填广场名。
+        self._promote_market_display_name(meta)
         # 不在列表中返回 body
         meta.pop("body", None)
         return meta
@@ -7813,6 +7821,10 @@ class SkillManager:
                 display_name = str(plugin.get("display_name") or "").strip()
                 if display_name:
                     return display_name
+                # 企业技能源安装把广场中文名落在 market_display_name。
+                market_name = str(plugin.get("market_display_name") or "").strip()
+                if market_name:
+                    return market_name
                 break
         return skill_name
 
@@ -12116,10 +12128,12 @@ class SkillManager:
                 "installation_id", "name", "declared_name", "source_type",
                 "source_id", "skill_id", "version_id", "version", "enabled",
                 "installed", "removable", "consistency", "author",
+                "market_display_name", "display_name",
             ):
                 value = record.get(key)
                 if value is not None:
                     skill_payload[key] = value
+            self._promote_market_display_name(skill_payload)
             return {"success": True, "skill": skill_payload}
         except SourceRegistryError as exc:
             return self._source_error(exc.code, str(exc))
@@ -12886,6 +12900,23 @@ class SkillManager:
         return None
 
     @staticmethod
+    def _promote_market_display_name(payload: dict[str, Any]) -> None:
+        """Fill display_name from market_display_name when the former is empty.
+
+        Enterprise skill-source install persists the plaza Chinese title as
+        ``market_display_name`` only. List/detail UIs read ``display_name``, so
+        promote here so「我的技能」matches the plaza card without reinstall.
+        Also replace when display_name is only the package slug (``name``).
+        """
+        market_name = str(payload.get("market_display_name") or "").strip()
+        if not market_name:
+            return
+        current = str(payload.get("display_name") or "").strip()
+        slug = str(payload.get("name") or "").strip()
+        if not current or (slug and current == slug):
+            payload["display_name"] = market_name
+
+    @staticmethod
     def _copy_skill_installation_identity(
         payload: dict[str, Any],
         source_meta: dict[str, Any],
@@ -12904,10 +12935,12 @@ class SkillManager:
             "sync_status",
             "consistency",
             "market_display_name",
+            "display_name",
             "author",
         ):
             if key in source_meta and source_meta[key] is not None:
                 payload[key] = source_meta[key]
+        SkillManager._promote_market_display_name(payload)
 
     def _apply_skill_installation_meta(
         self,
@@ -12931,10 +12964,12 @@ class SkillManager:
             "sync_status",
             "consistency",
             "market_display_name",
+            "display_name",
             "author",
         ):
             if key in dto:
                 payload[key] = dto[key]
+        self._promote_market_display_name(payload)
         source = str(dto.get("source") or "").strip()
         if source:
             payload["source"] = source
@@ -13103,6 +13138,10 @@ class SkillManager:
                 "enabled": bool(record.get("enabled", True)),
             }
         )
+        # Capture previous plaza title before overwriting market_display_name so
+        # force reinstall / upgrade can refresh display_name when it still mirrors
+        # the last market title (not a Hub / ClawHub custom name).
+        previous_market = str(record.get("market_display_name") or "").strip()
         for key, value in (
             ("source_id", source_id),
             ("skill_id", skill_id),
@@ -13114,6 +13153,16 @@ class SkillManager:
             normalized = str(value or "").strip()
             if normalized:
                 record[key] = normalized
+        # Enterprise source installs: also persist display_name so list/detail
+        # match the plaza title without relying only on read-time promote.
+        # Refresh when empty, slug-only, or still equal to the previous plaza title.
+        # Keep Hub / ClawHub custom display_name that differs from that title.
+        market_title = str(record.get("market_display_name") or "").strip()
+        current_display = str(record.get("display_name") or "").strip()
+        is_empty_or_slug = not current_display or current_display == safe_name
+        still_previous_title = bool(previous_market) and current_display == previous_market
+        if market_title and (is_empty_or_slug or still_previous_title):
+            record["display_name"] = market_title
         if isinstance(verification, dict):
             record["verification"] = dict(verification)
 

@@ -459,7 +459,7 @@ export function SkillPanel({
       // 两步（第二步挪到了下面 visibleSkills 里），computeMySkills 已经把两步合并，语义不变
       // （排除条件不依赖搜索关键字，跟下面的关键字过滤谁先谁后结果一样）。
       return computeMySkills(result, installedSkillNames).filter(skill =>
-        matchesAssetName(searchKeyword, [skill.display_name || skill.name]),
+        matchesAssetName(searchKeyword, [skill.display_name || skill.name, skill.name]),
       );
     }
     const keyword = searchKeyword.toLowerCase();
