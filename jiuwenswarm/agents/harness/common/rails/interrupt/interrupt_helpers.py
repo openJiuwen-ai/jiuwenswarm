@@ -620,8 +620,14 @@ def build_permission_rail(
                         )
 
                 # Cron is unattended: never fall through to interactive "interrupt".
-                # Without an A4P token path above, ask must fail closed.
-                if is_cron:
+                # Without an A4P token path above, default-permission ask must fail
+                # closed. Smart Approval (auto) still returns "interrupt" so the
+                # rail LLM path can decide — it never consumes A4P tokens.
+                from jiuwenswarm.common.permission_mode import is_auto_permission_mode
+
+                if is_cron and not is_auto_permission_mode(
+                    _get_installed_permissions(host_session_id)
+                ):
                     return _deny_cron_scope(
                         "定时任务无法使用交互式审批；"
                         "ask 需有效 A4P cron intent token，或将工具设为 allow/deny"

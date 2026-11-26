@@ -283,6 +283,8 @@ async def test_smart_approval_does_not_consume_a4p_tokens(monkeypatch, channel):
         pytest.fail("Smart Approval must not inspect A4P tokens")
 
     monkeypatch.setattr(a4p_runtime, "get_a4p_runtime", unexpected_runtime)
+    # activate() is idempotent per session_id; clear autouse cron metadata first.
+    AUTHORIZATION_EXECUTION_CONTEXTS.clear()
     AUTHORIZATION_EXECUTION_CONTEXTS.activate(
         AuthorizationExecutionContext(
             request_id="smart-request", session_id="cron-session",
