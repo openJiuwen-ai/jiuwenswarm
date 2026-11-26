@@ -426,6 +426,15 @@ def render_tool_result_for_llm(normalized: dict[str, Any]) -> str:
     write_file 的 original_file 等大载荷在 LLM 上下文中出现两份。这里保持
     框架 ``_build_tool_message_content`` 的 content 提取语义（data["content"]
     优先），其余情况只 dump data 或（无 data 的 dict 输入）normalized。
+
+    ``data["content"]`` 不存在时走 JSON 视图，多模态像素此时只能靠占位符保留
+    在文本之外：像素有正规通道（``data.multimodal`` → react_agent 提升出的
+    image 块），文本里的 base64 属于冗余副本。flash 多文件 ``read_file`` 的
+    ``{"files": [{"multimodal": [...]}], "multimodal": [...]}`` 两层都带副本，
+    按文本 token 计量可达百万级并触发端点 input token limit 拒收
+    （2026-11-25 事故：3 张 1.3MB 扫描页 → 5MB 文本 → 超 1,048,576）。
+    与 agent-core ``_build_tool_message_content`` 的占位符同一语义：仅对携带
+    ``multimodal`` 通道的结果生效，普通工具输出里的 data URL 是数据本身，不动。
     """
     display = normalized.get("display")
     if isinstance(display, str) and display.strip():
@@ -447,10 +456,47 @@ def render_tool_result_for_llm(normalized: dict[str, Any]) -> str:
             if key in _RENDER_SCHEMA_KEYS or key in merged:
                 continue
             merged[key] = value
-        return _json_text(merged)
+        return _json_text_redacting_multimodal(merged)
     if data is not None:
         return _json_text(data)
     return _json_text(normalized)
+
+
+#: 多模态载荷的传输编码形态（``data:<mime>;base64,<payload>``）。裸 base64 文本
+#: （无 data: 前缀）不匹配，不受影响。
+_MULTIMODAL_DATA_URL_RE = re.compile(r"data:[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+_MULTIMODAL_PAYLOAD_PLACEHOLDER = "<multimodal payload omitted>"
+
+
+def _has_multimodal_channel(data: Any) -> bool:
+    """结果是否带 ``multimodal`` 通道（顶层，或列表元素 ``files[*]`` 里）。"""
+    if not isinstance(data, dict):
+        return False
+    multimodal = data.get("multimodal")
+    if isinstance(multimodal, list) and multimodal:
+        return True
+    files = data.get("files")
+    if isinstance(files, list):
+        return any(_has_multimodal_channel(item) for item in files)
+    return False
+
+
+def _json_text_redacting_multimodal(value: Any) -> str:
+    """紧凑 JSON 序列化；带 ``multimodal`` 通道时把数据 URL 的 base64 换成占位符。
+
+    输出仍是同结构的 JSON，只是 ``data:<mime>;base64,<payload>`` 的 payload 段被
+    换成占位符——模型看到的键、层级、元数据（路径 / 尺寸 / mime）都不变。像素有
+    正规通道（``data.multimodal`` → react_agent 提升出的 image 块），文本里的
+    base64 是按文本 token 计量的冗余副本。无 multimodal 通道的结果原样序列化：
+    普通工具（bash 等）输出里的 data URL 是数据本身，清掉即丢数据。
+    """
+    text = _json_text(value)
+    if _has_multimodal_channel(value) and "base64," in text:
+        return _MULTIMODAL_DATA_URL_RE.sub(
+            lambda match: match.group(0).split(",", 1)[0] + "," + _MULTIMODAL_PAYLOAD_PLACEHOLDER,
+            text,
+        )
+    return text
 
 
 def _json_text(value: Any) -> str:
