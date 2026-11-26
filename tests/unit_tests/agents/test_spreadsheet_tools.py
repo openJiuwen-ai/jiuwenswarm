@@ -230,3 +230,85 @@ async def test_read_spreadsheet_file_not_found(tmp_path: Path) -> None:
     result = await read_spreadsheet.invoke({"file_path": str(missing)})
     assert "[ERROR]" in result
     assert "does not exist" in result
+
+
+@pytest.mark.asyncio
+async def test_read_csv_start_row_beyond_last_row(tmp_path: Path) -> None:
+    """Verify out-of-range start_row reports the real range instead of a bogus one."""
+    csv_file = _create_sample_csv(tmp_path)
+
+    result = await read_spreadsheet.invoke({
+        "file_path": str(csv_file),
+        "start_row": 100,
+        "max_rows": 10,
+    })
+
+    assert "beyond the last data row" in result
+    assert "The last page starts at start_row=2" in result
+    assert "Showing rows 100-100" not in result
+
+
+@pytest.mark.asyncio
+async def test_read_csv_header_only_reports_no_data_rows(tmp_path: Path) -> None:
+    """Verify a header-only CSV is not reported as a one-row page."""
+    csv_file = tmp_path / "header_only.csv"
+    csv_file.write_text("ID,Value\n", encoding="utf-8")
+
+    result = await read_spreadsheet.invoke({"file_path": str(csv_file)})
+
+    assert "header only" in result
+    assert "no data rows" in result
+    assert "Showing rows" not in result
+    assert "| ID | Value |" in result
+
+
+@pytest.mark.asyncio
+async def test_read_excel_header_only_reports_no_data_rows(tmp_path: Path) -> None:
+    """Verify a header-only Excel sheet does not report a contradictory start_row range."""
+    excel_path = tmp_path / "header_only.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Template"
+    sheet.append(["ID", "Value"])
+    workbook.save(excel_path)
+    workbook.close()
+
+    result = await read_spreadsheet.invoke({"file_path": str(excel_path)})
+
+    assert "header only" in result
+    assert "no data rows" in result
+    assert "beyond the last data row" not in result
+    assert "Showing rows" not in result
+    assert "| ID | Value |" in result
+
+
+@pytest.mark.asyncio
+async def test_read_excel_start_row_beyond_last_row(tmp_path: Path) -> None:
+    """Verify out-of-range start_row in Excel reports the total row count."""
+    excel_path = _create_sample_excel(tmp_path)
+
+    result = await read_spreadsheet.invoke({
+        "file_path": str(excel_path),
+        "sheet_name": "Employees",
+        "start_row": 50,
+    })
+
+    assert "beyond the last data row" in result
+    assert "2 data rows" in result
+    assert "The last page starts at start_row=2" in result
+    assert "Showing rows 50-50" not in result
+
+
+@pytest.mark.asyncio
+async def test_read_excel_last_page_reports_total_rows(tmp_path: Path) -> None:
+    """Verify the row summary includes the total when the whole sheet was scanned."""
+    excel_path = _create_sample_excel(tmp_path)
+
+    result = await read_spreadsheet.invoke({
+        "file_path": str(excel_path),
+        "sheet_name": "Employees",
+        "start_row": 2,
+        "max_rows": 10,
+    })
+
+    assert "Showing rows 2-2 of 2" in result

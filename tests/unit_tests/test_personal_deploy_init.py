@@ -184,7 +184,11 @@ def test_ensure_gateway_config_creates_missing_file(
     tmp_path: Path, monkeypatch,
 ) -> None:
     template = tmp_path / "gateway-template.yaml"
-    _write_yaml(template, {"gateway": {"agent_client": {"type": "websocket"}}})
+    stock_dirs = "${EXTENSION_DIRS:-agent_gateway/extensions}"
+    _write_yaml(template, {
+        "gateway": {"agent_client": {"type": "websocket"}},
+        "extensions": {"extension_dirs": stock_dirs},
+    })
     workspace = tmp_path / "workspace"
     _write_yaml(workspace / "config" / "config.yaml", {"models": {}})
     monkeypatch.setattr(utils, "get_gateway_config_template", lambda: template)
@@ -194,6 +198,7 @@ def test_ensure_gateway_config_creates_missing_file(
         (workspace / "config" / "config-gateway.yaml").read_text(encoding="utf-8")
     )
     assert generated["gateway"]["agent_client"]["type"] == "websocket"
+    assert generated["extensions"]["extension_dirs"] == f"{stock_dirs};jiuwenswarm/extensions"
 
 
 def test_ensure_gateway_config_merges_existing_file(

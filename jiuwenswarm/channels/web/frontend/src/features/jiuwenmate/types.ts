@@ -1,4 +1,4 @@
-export type JiuwenMateExistingPage = 'agents' | 'personalContext' | 'skills' | 'connectorMarket' | 'settings';
+export type JiuwenMateExistingPage = 'agents' | 'memory' | 'personalContext' | 'skills' | 'connectorMarket' | 'settings';
 
 export type JiuwenMateView =
   | 'office-intro'

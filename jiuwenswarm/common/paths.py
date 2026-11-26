@@ -160,6 +160,7 @@ import logging
 import os
 import re
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -411,7 +412,9 @@ def get_env_file() -> Path:
     return get_config_dir() / ".env"
 
 
-def get_gateway_config_dir(workspace_dir: Path | None = None) -> Path:
+def get_gateway_config_dir(
+    workspace_dir: Path | None = None, *, env: Mapping[str, str] | None = None,
+) -> Path:
     """
     获取 Gateway 专属配置目录（与 AgentServer 同目录：``config/``）。
 
@@ -420,7 +423,8 @@ def get_gateway_config_dir(workspace_dir: Path | None = None) -> Path:
     - 由 prepare_workspace 安装 gateway 模板、app.py 注入 env 供 gateway 子进程读取。
     """
     base = Path(workspace_dir) if workspace_dir is not None else get_user_workspace_dir()
-    override = (os.getenv("JIUWENSWARM_GATEWAY_CONFIG_DIR") or "").strip()
+    source = os.environ if env is None else env
+    override = source.get("JIUWENSWARM_GATEWAY_CONFIG_DIR", "").strip()
     if override:
         path = Path(override).expanduser()
         if not path.is_absolute():
@@ -429,11 +433,13 @@ def get_gateway_config_dir(workspace_dir: Path | None = None) -> Path:
     return base / "config"
 
 
-def get_gateway_config_file(workspace_dir: Path | None = None) -> Path:
+def get_gateway_config_file(
+    workspace_dir: Path | None = None, *, env: Mapping[str, str] | None = None,
+) -> Path:
     """
     获取 Gateway 专属配置文件（``config/config-gateway.yaml``，系统态）。
     """
-    return get_gateway_config_dir(workspace_dir) / "config-gateway.yaml"
+    return get_gateway_config_dir(workspace_dir, env=env) / "config-gateway.yaml"
 
 
 def get_gateway_config_template() -> Path:

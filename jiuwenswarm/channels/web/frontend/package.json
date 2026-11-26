@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:memory-portal": "node --test tests/memoryPortal.test.mjs",
     "test:entity-header-tags": "esbuild src/components/ui/EntityHeader/EntityHeader.tsx --bundle --packages=external --platform=node --format=esm --jsx=automatic --loader:.css=empty --outfile=node_modules/.cache/entity-header/EntityHeader.mjs && node --test tests/entityHeaderTags.test.mjs",
     "test:expert-team-batch": "node --test tests/expertTeamBatch.test.mjs",
     "test:video-duplex": "node ../../../extensions/video_duplex/tests/frontend/testSupport.mjs",
@@ -15,6 +16,7 @@
     "test:diagnosis-summary": "esbuild src/features/trajectory/diagnosis/DiagnosisSummaryTree.tsx --bundle --packages=external --platform=node --format=cjs --jsx=automatic --outfile=node_modules/.cache/trajectory-diagnosis/DiagnosisSummaryTree.cjs --loader:.css=empty --loader:.svg=dataurl --loader:.png=dataurl --define:import.meta.env={} && node --test tests/diagnosisSummaryTree.test.mjs",
     "test:kv-cache-affinity": "node --test tests/kvCacheAffinitySettings.test.mjs",
     "test:designer-entry": "node --test tests/designerEntry.test.mjs tests/appDesignerMoaRouting.test.mjs",
+    "test:designer-file-api": "node --test tests/designerFileApi.test.mjs",
     "test:designer-node-send": "esbuild src/features/designer/designerNodeGenerationKind.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/designer-node-send/designerNodeGenerationKind.mjs && node --test tests/designerNodeSendGate.test.mjs",
     "test:skill-marketplace": "esbuild src/components/SkillPanel/MarketplaceView.tsx src/components/SkillPanel/skillPanelUtils.ts --bundle --splitting --packages=external --platform=node --format=esm --jsx=automatic --out-extension:.js=.mjs --outdir=node_modules/.cache/skill-marketplace --loader:.svg=dataurl --loader:.png=dataurl --loader:.css=empty --define:import.meta.env={} && node --test tests/skillMarketplace.test.mjs",
   "test:skill-install-toast": "esbuild src/components/SkillPanel/SkillToasts.tsx --bundle --packages=external --platform=node --format=esm --jsx=automatic --loader:.css=empty --outfile=node_modules/.cache/skill-install-toast/SkillToasts.mjs && node --test tests/skillInstallToast.test.mjs",
@@ -247,6 +249,7 @@
     "test:designer-toolbar-visibility": "esbuild src/features/designer/designerToolbarVisibility.ts src/features/designer/designerRunView.ts --bundle --packages=external --platform=node --format=esm --outdir=node_modules/.cache/designer-toolbar-visibility && node --test tests/designerToolbarVisibility.test.mjs",
     "test:designer-materials": "esbuild src/features/designer/designerMaterials.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/designer-materials/designerMaterials.js --define:import.meta.env={} && node --test tests/designerMaterials.test.mjs",
     "test:designer-activity": "esbuild src/features/designer/designerActivity.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/designer-activity/designerActivity.js && node --test tests/designerActivity.test.mjs",
+    "test:designer-scene-binding": "esbuild src/features/designer/designerSceneBinding.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/designer-scene-binding/designerSceneBinding.js && node --test tests/designerSceneBinding.test.mjs",
     "test:pending-connector-flow": "node --test tests/pendingConnectorFlow.test.mjs",
     "test:plugin-mine-actions": "node --test tests/pluginMineActions.test.mjs",
     "test:connector-store-uninstall-guard": "node --test tests/connectorStoreUninstallGuard.test.mjs",

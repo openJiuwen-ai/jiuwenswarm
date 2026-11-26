@@ -6,7 +6,7 @@ No scene/genre/prompt hardcodes. Continuity comes from:
   - compact structured end_state (not raw prior Wan paragraphs)
 
 Leaf agents receive structured state only. Director hard-clears duplicate speech
-and rejects prompts that restage finished beats.
+while retaining authored video prose.
 """
 
 from __future__ import annotations
@@ -344,100 +344,3 @@ def agent_structured_continuity_block(cfg: dict[str, Any] | None) -> str:
             assign += "; speech=(silent)"
         lines.append(assign)
     return "\n".join(lines)
-
-
-def prompt_restates_forbidden_speech(prompt: str, cfg: dict[str, Any] | None) -> bool:
-    """True when free-form prompt embeds dialogue already marked forbidden."""
-    from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
-        speech_already_delivered,
-    )
-
-    body = str(prompt or "")
-    if not body:
-        return False
-    cfg = cfg if isinstance(cfg, dict) else {}
-    forbid = [
-        str(x).strip()
-        for x in (cfg.get("forbidden_speech") or [])
-        if str(x).strip()
-    ]
-    prior = str(cfg.get("previous_clip_speech") or "").strip()
-    if prior and prior not in forbid:
-        forbid.append(prior)
-    # Quoted spans + bare forbidden lines.
-    quotes = re.findall(r'["“”]([^"“”]{4,200})["“”]', body)
-    candidates = list(quotes)
-    # Also check "says: …" clauses without quotes.
-    for m in re.finditer(r"(?i)\bsays?\s*:\s*(.+?)(?:\.|$)", body):
-        candidates.append(m.group(1).strip())
-    for cand in candidates:
-        if any(speech_already_delivered(cand, p) for p in forbid):
-            return True
-    # Whole-prompt containment for short forbidden lines.
-    for p in forbid:
-        if len(p) >= 12 and speech_already_delivered(body, p):
-            return True
-    return False
-
-
-def prompt_violates_consistency(
-    prompt: str,
-    *,
-    cfg: dict[str, Any] | None = None,
-) -> list[str]:
-    """Hard Director reasons to force rewrite from this storyboard row."""
-    reasons: list[str] = []
-    cfg = cfg if isinstance(cfg, dict) else {}
-    body = str(prompt or "").strip()
-    if not body:
-        return reasons
-
-    speech_bad = prompt_restates_forbidden_speech(body, cfg)
-    if speech_bad:
-        reasons.append("restates_forbidden_speech")
-
-    prior_bias = False
-    try:
-        from jiuwenswarm.server.runtime.designer.pipeline.clip_scope import (
-            overlap_ratio,
-        )
-
-        prior_act = str(cfg.get("previous_clip_action") or "").strip()
-        this_act = str(cfg.get("clip_action") or "").strip()
-        rows_differ = bool(prior_act and this_act) and overlap_ratio(prior_act, this_act) < 0.4
-        if rows_differ and overlap_ratio(body, prior_act) >= 0.45 and overlap_ratio(body, this_act) < 0.35:
-            reasons.append("films_prior_action_not_this_row")
-            prior_bias = True
-    except Exception:  # noqa: BLE001
-        pass
-
-    # Replay heuristic alone is noisy (shared names/verbs). Require speech or
-    # prior-action bias before hard-rejecting.
-    try:
-        from jiuwenswarm.server.runtime.designer.pipeline.clip_prompt_handoff import (
-            agent_replays_finished_events,
-        )
-
-        if agent_replays_finished_events(
-            body,
-            already_done=[str(x) for x in (cfg.get("already_done") or []) if str(x)],
-            this_action=str(cfg.get("clip_action") or ""),
-        ) and (speech_bad or prior_bias):
-            reasons.append("replays_finished_events")
-    except Exception:  # noqa: BLE001
-        pass
-    return reasons
-
-
-def apply_consistency_contract(
-    cfg: dict[str, Any],
-    *,
-    graph: dict[str, Any] | None = None,
-    prompt: str = "",
-) -> tuple[dict[str, Any], str, list[str]]:
-    """Full Director gate: merge storyboard continuity, scrub speech, flag prompt."""
-    out, notes = merge_storyboard_consistency(cfg, graph=graph)
-    reasons = prompt_violates_consistency(prompt, cfg=out) if prompt else []
-    if reasons:
-        notes.extend(f"reject:{r}" for r in reasons)
-    return out, prompt, notes
