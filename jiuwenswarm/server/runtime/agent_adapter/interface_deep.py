@@ -8487,11 +8487,29 @@ class JiuWenSwarmDeepAdapter:
             active_skill_provider=self._get_progressive_active_skill,
         )
         if rail is not None:
+            # CR-13：装配/热更同步先于卡片注册（缓存空窗），declared 过滤彼时
+            # 无从判定；缓存填充后由 rail 回调补一次 ContextAssemble 同步，
+            # 避免未过滤名单长期驻留。
+            rail.add_prompt_allowlist_listener(
+                self._sync_context_assemble_allowlist_from_progressive
+            )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] ProgressiveToolRail mounted mode=%s",
                 "progressive" if rail.enabled else "skill-gate-only",
             )
         return rail
+
+    def _sync_context_assemble_allowlist_from_progressive(self) -> None:
+        """Re-sync ContextAssemble allowlist once the progressive cache fills (CR-13).
+
+        Invoked by ProgressiveToolRail when ``prompt_tool_allowlist()`` changes
+        after a deferred-cache refresh. Reads the CURRENT rail instances so a
+        mid-session rebuild stays correct.
+        """
+        _sync_context_assemble_tool_allowlist(
+            getattr(self, "_context_assemble_rail", None),
+            getattr(self, "_progressive_tool_rail", None),
+        )
 
     def _get_progressive_active_skill(self) -> str | None:
         """Return active-skill state for this adapter's current session."""
@@ -11073,7 +11091,7 @@ class JiuWenSwarmDeepAdapter:
             self._context_assemble_rail = _build_context_assemble_rail(
                 disabled_tools=disabled_list or None,
                 tool_name_allowlist=(
-                    list(self._progressive_tool_rail.eager_tools)
+                    list(self._progressive_tool_rail.prompt_tool_allowlist())
                     if self._progressive_tool_rail is not None
                     else None
                 ),
@@ -11085,7 +11103,7 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] ContextAssembleRail registered for agent mode "
                     "(disabled_tools=%s allowlist=%s)",
                     disabled_list,
-                    list(self._progressive_tool_rail.eager_tools)
+                    list(self._progressive_tool_rail.prompt_tool_allowlist())
                     if self._progressive_tool_rail is not None
                     else None,
                 )

@@ -39,7 +39,7 @@ processor 链      forked.activate → … → RoundLevel；FullCompact 由 swar
 
 | 术语 | 含义 |
 |---|---|
-| **ContextAssembleRail** | agent-core（priority=85）：向 system prompt 注入 workspace / 人设文件（AGENT/SOUL/…）/ tools 段；`tool_name_allowlist` 与 progressive eager 对齐 |
+| **ContextAssembleRail** | agent-core（priority=85）：向 system prompt 注入 workspace / 人设文件（AGENT/SOUL/…）/ tools 段；`tool_name_allowlist` 与 progressive 稳定可见集合 `prompt_tool_allowlist()`（eager + floor）对齐 |
 | **ContextProcessorRail** | agent-core（priority=85）：挂载 ContextEngine processor 链；受 `context_engine_config.enabled` 门控 |
 | **ContextOverflowRecoveryRail** | swarm（priority=100）：模型调用前 proactive 预压缩 + LLM 上下文溢出时 reactive 恢复 + 熔断流式事件 |
 | **FullCompactProcessor** | 整窗兜底压缩；日常 add 路径不触发，溢出时经 `set_force_compact` 在 GET 路径触发 |
@@ -56,7 +56,7 @@ processor 链      forked.activate → … → RoundLevel；FullCompact 由 swar
 | 域 | 入口 | 说明 |
 |---|---|---|
 | 引擎配置对象 | `_deep_agent_context_engine_config(react_cfg)` | 实现在 `deep/agent_config_helpers.py`，`interface_deep` 转 import → `create_deep_agent(..., context_engine_config=…)` |
-| Assemble 构建 | `_build_context_assemble_rail(disabled_tools, tool_name_allowlist)` | 与 ProgressiveToolRail.eager_tools 对齐 tools 段（[[S_06]]） |
+| Assemble 构建 | `_build_context_assemble_rail(disabled_tools, tool_name_allowlist)` | 与 ProgressiveToolRail.prompt_tool_allowlist()（eager + floor）对齐 tools 段（[[S_06]]） |
 | Processor 构建 | `_build_context_processor_rail(config)` | 从 `context_engine_config` 子键组装 user_processors + preset 链 |
 | 溢出恢复 | `_build_context_overflow_recovery_rail()` → `ContextOverflowRecoveryRail(max_recovery_attempts=3)` | 构建在 `deep/adapter_statics.py`，`interface_deep` 以实例方法注册；deep/code/flash 均装配（flash `_FLASH_RAIL_KEEP` 保留本 rail，`_llm_retry_rail` 同在 keep 名单；未列入白名单的动态 rail 会被裁剪）（[[S_05]]） |
 | 人设读补丁 | `apply_context_read_patch()` / `remove_context_read_patch()` | 企业版 `__init__` 分支安装，个人版 no-op；单测可 remove |
@@ -124,7 +124,7 @@ agent-core（姊妹实现归档 — 改 core 代码读那边）：
 5. **熔断后用户可行动**（[[S_05]] N3）。连续失败超过 `max_recovery_attempts` 发 `context_overflow_circuit_break` 流式 error，提示 `/compact` 或新会话；不得 silent 无限 retry。
 6. **Processor 循环中止必须 AbortError + CONTEXT_EXECUTION_ERROR**（[[S_03]] N2，agent-core 契约）。swarm 不得在 processor rail 外包一层"吞掉中止"的兜底。
 7. **压缩召回与重载独立门控**（[[S_04]] N1）。`compression_recall_config.enabled` 与 `enable_reload` 分别生效；工具 `recall_compressed_context` 仅在前者开启且压缩归档存在时才有意义。
-8. **Tools 段与 eager schema 对齐**（[[S_06]] N2）。`ContextAssembleRail.tool_name_allowlist` 须与 `ProgressiveToolRail.eager_tools` 同步（`_sync_context_assemble_tool_allowlist`），避免任务中途改写 prompt 前缀。
+8. **Tools 段与稳定 schema 对齐**（[[S_06]] N2）。`ContextAssembleRail.tool_name_allowlist` 须与 `ProgressiveToolRail.prompt_tool_allowlist()`（eager + floor，BUG20261117410859）同步（`_sync_context_assemble_tool_allowlist`），避免任务中途改写 prompt 前缀。
 9. **人设读 patch 只放宽读、不改写**（[[S_06]] N3）。`apply_context_read_patch` 仅对 persona 读路径设 `only_read=True`；写文件与原锁语义不变。安装点是企业版 `__init__` 分支，个人版 no-op。
 10. **双仓归档、就近生效**（[[S_01]] N4）。产品装配 / 溢出 / prompt 契约在本目录 `docs/`；engine / processor / core rails 契约在 agent-core `context_engine/docs/`。同一不变量只在「拥有实现」的一侧写死，另一侧引用——禁止两边各写一套互相漂移的全文。
 

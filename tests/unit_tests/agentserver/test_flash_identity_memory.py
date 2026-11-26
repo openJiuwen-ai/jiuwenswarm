@@ -54,7 +54,10 @@ def _isolate_other_rails(monkeypatch, adapter):
 async def test_context_rail_survives_consecutive_flash_requests(monkeypatch):
     adapter = JiuwenSwarmFlashAdapter()
     adapter._config_cache = {"disabled_tools": ["blocked_tool"]}
-    adapter._progressive_tool_rail = SimpleNamespace(eager_tools=["read_file", "blocked_tool"])
+    adapter._progressive_tool_rail = SimpleNamespace(
+        eager_tools=["read_file", "blocked_tool"],
+        prompt_tool_allowlist=lambda: ["read_file", "blocked_tool"],
+    )
     adapter._instance = SimpleNamespace(register_rail=AsyncMock(), unregister_rail=AsyncMock())
     _isolate_other_rails(monkeypatch, adapter)
 
@@ -235,7 +238,10 @@ async def test_real_model_input_keeps_workspace_identity_across_reload(monkeypat
         adapter._instance = agent
         adapter._parent_session_id = "identity-" + uuid4().hex
         adapter._disabled_tools_rail = _DisabledToolsForContext(["blocked_marker"])
-        adapter._progressive_tool_rail = SimpleNamespace(eager_tools=["visible_marker", "blocked_marker"])
+        adapter._progressive_tool_rail = SimpleNamespace(
+            eager_tools=["visible_marker", "blocked_marker"],
+            prompt_tool_allowlist=lambda: ["visible_marker", "blocked_marker"],
+        )
         _isolate_other_rails(monkeypatch, adapter)
         observed = []
 
