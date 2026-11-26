@@ -15,6 +15,7 @@ generated: true
 | 模块 |
 |---|
 | [agent-core/openjiuwen/agent_teams](#module-agent-core-openjiuwen-agent_teams) |
+| [agent-gateway/agent_gateway/channel_manager/web](#module-agent-gateway-agent_gateway-channel_manager-web) |
 | [agent_gateway/channel_manager/im_platforms/xiaoyi](#module-agent_gateway-channel_manager-im_platforms-xiaoyi) |
 | [agent_gateway/message_handler](#module-agent_gateway-message_handler) |
 | [agent_teams](#module-agent_teams) |
@@ -99,6 +100,15 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | D | SwarmChat 群成员自动判断是否回复设计方案 | weichenhao | — |
+
+<a id="module-agent-gateway-agent_gateway-channel_manager-web"></a>
+
+## agent-gateway/agent_gateway/channel_manager/web
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261125_1245_memory-portal-team-migration](features/F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
+| [S_03_memory-portal](specs/jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 
 <a id="module-agent_gateway-channel_manager-im_platforms-xiaoyi"></a>
 
@@ -213,6 +223,8 @@ generated: true
 |---|---|---|---|---|
 | [F-20261107-1700-coding-document-memory](features/F_20261107_1700_coding-document-memory.md) | F | Coding 接入 agent-memory 文档记忆 | Wang Tao | 无独立 D：依据已确认的跨仓 Coding 文档记忆方案；无独立仓内 D 文档。 |
 | [F-20261118-1150-team-document-memory](features/F_20261118_1150_team-document-memory.md) | F | Team 接入 Jiuwen 文档记忆 | Wang Tao | 无独立 D：依据 D-20261113-2017-jiuwen-memory-team-upgrade 及已确认的跨仓 Team 方案。 |
+| [F_20261125_1245_memory-portal-team-migration](features/F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
+| [S_03_memory-portal](specs/jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 | [S_04_coding-document-memory](specs/jiuwenswarm/server/runtime/agent_adapter/S_04_coding-document-memory.md) | S | Coding 文档记忆接入契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-agents-harness-common-prompt"></a>
@@ -384,6 +396,7 @@ generated: true
 | [F_20261119_1039_app-hub](features/F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
 | [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [F_20261124_1556_app-market-ai-roles](features/F_20261124_1556_app-market-ai-roles.md) | F | 应用市场 AI 角色清单与接入指引 | kdgmpw | 无独立 D：依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。 |
+| [F_20261125_1245_memory-portal-team-migration](features/F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
 | [B_20261030_1250_org-snapshot-removes-mirrored-workers](bugfix/jiuwenswarm/channels/web/frontend/B_20261030_1250_org-snapshot-removes-mirrored-workers.md) | B | 组织 UI 快照投影整表覆盖导致镜像 workflow worker 从成员面板消失 | xiajing | 无独立 D：对既有"快照完整替换"契约（跨 Team 切换不串数据）的成员级例外修复，属 F_20261027_1026 特性线的验证期 bugfix，无独立设计文档。 |
 | [B_20261103_1112_raw-file-range-seek](bugfix/jiuwenswarm/channels/web/B_20261103_1112_raw-file-range-seek.md) | B | /file-api/raw-file 不支持 Range 请求导致 design 模式视频预览进度条不可快进 | openjiuwen_ai | 无独立 D：根因与修法均为标准 HTTP 单区间 Range 语义（对齐 gateway 既有 serve_file_chunks 实现），无独立设计。 |
 | [B_20261105_0941_app-stop-graceful-and-page-close](bugfix/jiuwenswarm/extensions/app_market/app-stop-graceful-and-page-close.md) | B | 应用市场停止强杀跳过应用清理与页面关闭无感知 | kdgmpw | 无独立 D：修复依据既有契约（app-builder SKILL.md 的"应用负责优雅退出和会话清理、市场只终止进程"与扩展 README 的运行描述），无独立 D；新增契约已固化为 specs/jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md。 |
@@ -406,6 +419,7 @@ generated: true
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 | [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
+| [S_03_memory-portal](specs/jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-AppMarketPanel"></a>
 
@@ -507,9 +521,11 @@ generated: true
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
+| [F_20261125_1245_memory-portal-team-migration](features/F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
 | [B_20261117_1727_model-output-token-limit](bugfix/jiuwenswarm/channels/web/frontend/B_20261117_1727_model-output-token-limit.md) | B | 模型单次最大输出配置修复 | lizhiyuan | 无独立 D：用户在本轮会话确认的模型设置范围调整，未形成独立设计文档。 |
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
+| [S_03_memory-portal](specs/jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-common-e2a"></a>
 
@@ -750,11 +766,13 @@ generated: true
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
+| [F_20261125_1245_memory-portal-team-migration](features/F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
 | [B_20261110_1849_group-lock-cancellation](bugfix/jiuwenswarm/server/runtime/B_20261110_1849_group-lock-cancellation.md) | B | 群任务取消期间等待文件锁清理完成 | ShowHsiang | 无独立 D：修复现有群锁的取消清理契约，不新增管理器或调整任务并发策略。 |
 | [B_20261116_1701_my-plugin-installed-only](bugfix/jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
+| [S_03_memory-portal](specs/jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 

@@ -311,6 +311,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     # Gateway→Pod HTTP 回 HTTP_METHOD_NOT_HANDLED（对齐 !7494）。
     ReqMethod.WORKSPACE_DOWNLOAD: handle_gateway_adapter,
     # 语言配置在 AgentServer 的 ConfigAdapter。企业版 runtime 客户端会转发到这里。
+    ReqMethod.MEMORY_PORTAL_OPEN: handle_gateway_adapter,
     ReqMethod.LOCALE_GET_CONF: handle_gateway_adapter,
     ReqMethod.LOCALE_SET_CONF: handle_gateway_adapter,
     # 会话元数据和置顶都在 AgentServer 的 SessionAdapter。

@@ -173,7 +173,8 @@
     "personalContext": "Knowledge",
     "appMarket": "Apps",
     "workspace": "Workspace",
-    "approvals": "Requests"
+    "approvals": "Requests",
+    "memory": "Memory"
   },
   "appMarket": {
     "resourceMemory": "RAM",
@@ -789,6 +790,16 @@
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
+    "memory": {
+      "reconnect": "Reconnect",
+      "errors": {
+        "not_enabled": "Enable the Memory management page in Settings.",
+        "disconnected": "Swarm is disconnected. Reconnect and retry.",
+        "dependency_unavailable": "The installed dependency does not support Portal. Use an agent-memory version with Portal support.",
+        "timeout": "Opening the memory page timed out. Please retry.",
+        "portal_unavailable": "The memory page is unavailable. Check the service, identity and allowed frame origins, then reconnect."
+      }
+    },
     "multimodal": {
       "tab": "Multimodal models",
       "tabHelp": "Manage models for image, audio and video understanding, and image and video generation. Adjust tool switches and model bindings in Settings → Agent → Tools.",
@@ -877,6 +888,7 @@
       "configDescription": "Set the context window and other options for the limited-time free models"
     },
     "categories": {
+      "memory": "Memory",
       "voice": "Voice",
       "general": "General",
       "models": "Models",
@@ -1716,6 +1728,11 @@
         "title": "API Key",
         "description": "The JEV service credential.",
         "placeholder": "Enter API Key"
+      },
+      "memory_portal_enabled": {
+        "description": "Whether to enable the memory management page.",
+        "title": "Memory management",
+        "placeholder": ""
       }
     },
     "validation": {
@@ -2667,7 +2684,11 @@
     "expertBatchError": "Could not start teams: {{error}}. Retry safely; created teams will be reused.",
     "expertBatchRequestFailed": "Could not start expert teams. View details",
     "expertBatchSummary": "Expert teams: {{success}} succeeded, {{failed}} failed",
-    "expertBatchStatus": {"created": "Started", "existing": "Already added; reused", "failed": "Failed"},
+    "expertBatchStatus": {
+      "created": "Started",
+      "existing": "Already added; reused",
+      "failed": "Failed"
+    },
     "agentGroup": "Expert Teams",
     "agentToggle": "Choose an installed Expert",
     "agentSearchPlaceholder": "Enter keywords to search",

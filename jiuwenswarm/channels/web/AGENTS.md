@@ -161,3 +161,5 @@
 | `features/A4PAuthorizationModal` | `a4p-authorization` | A4P 授权卡片及范围选择 |
 
 | `features/groupChat` | `group-chat` | 群聊创建、成员、公开消息、任务卡片与产物 |
+
+| `features/memory` | `memory` | 记忆管理页面与 Portal 连接状态 |

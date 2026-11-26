@@ -173,7 +173,8 @@
     "personalContext": "知识",
     "appMarket": "应用",
     "workspace": "空间",
-    "approvals": "申请"
+    "approvals": "申请",
+    "memory": "记忆"
   },
   "appMarket": {
     "resourceMemory": "内存",
@@ -789,6 +790,16 @@
     "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。"
   },
   "settingsPanel": {
+    "memory": {
+      "reconnect": "重新连接",
+      "errors": {
+        "not_enabled": "请在设置中开启记忆管理页面。",
+        "disconnected": "Swarm 未连接，请连接后重试。",
+        "dependency_unavailable": "当前依赖不支持记忆 Portal，请使用包含 Portal 的 agent-memory 版本。",
+        "timeout": "获取记忆页面超时，请重试。",
+        "portal_unavailable": "记忆页面暂不可达。请检查服务、身份和允许嵌入的来源，然后重新连接。"
+      }
+    },
     "multimodal": {
       "tab": "多模态模型",
       "tabHelp": "统一管理图片、音频、视频理解及图像、视频生成模型。模型的使用开关和绑定关系可在「设置 → 智能体 → 工具」中调整。",
@@ -877,6 +888,7 @@
       "configDescription": "为限时免费模型单独设置上下文窗口等参数"
     },
     "categories": {
+      "memory": "记忆",
       "voice": "语音",
       "general": "常规",
       "models": "模型",
@@ -1716,6 +1728,11 @@
         "title": "API Key",
         "description": "JEV 服务的密钥。",
         "placeholder": "输入 API Key"
+      },
+      "memory_portal_enabled": {
+        "description": "是否启用记忆管理页面。",
+        "title": "记忆管理",
+        "placeholder": ""
       }
     },
     "validation": {
@@ -2667,7 +2684,11 @@
     "expertBatchError": "拉起失败：{{error}}。可重试，已创建的团队会复用。",
     "expertBatchRequestFailed": "专家团拉起失败，点击查看",
     "expertBatchSummary": "专家团：成功 {{success}}，失败 {{failed}}",
-    "expertBatchStatus": {"created": "已拉起", "existing": "已加入，复用现有团队", "failed": "拉起失败"},
+    "expertBatchStatus": {
+      "created": "已拉起",
+      "existing": "已加入，复用现有团队",
+      "failed": "拉起失败"
+    },
     "agentGroup": "专家团",
     "agentToggle": "选择已安装专家",
     "agentSearchPlaceholder": "请输入关键词搜索",

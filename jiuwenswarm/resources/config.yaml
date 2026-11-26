@@ -181,6 +181,8 @@ memory:
       identity_org: local          # http 模式认证身份 org（对齐 dev 认证器缺省）
       identity_user: developer     # http 模式认证身份 user
       session_end_extract: false   # Work uninit 时批量 EXTRACT；Code 不使用此项
+      portal:
+        enabled: false            # Controls only the Portal page; memory operations keep their own switches.
 
       # ---- sdk 模式专用（mode=sdk）----
       # SDK 配置会与 provider 内置的 agent 场景默认装配深合并。
@@ -1779,7 +1781,7 @@ modes:
     #   RuntimePromptRail, ResponsePromptRail, JiuSwarmStreamEventRail, SecurityRail,
     #   PermissionInterruptRail, SysOperationRail(FileSystemRail), LspRail,
     #   AgentModeRail, StructuredAskUserRail, ConfirmInterruptRail, ContextProcessorRail
-    # 注意：ProjectMemoryRail 及编码 Rail 受 memory.enabled 控制，无需列入动态 rails。
+    # 注意：ProjectMemoryRail 及编码 Rail 受 modes.code.memory.enabled 控制，无需列入动态 rails。
     #       provider=jiuwen 选 JiuwenMemoryCodingRail；空值保留 CodingMemoryRail。
     #       TTSERail 受 react.ttse.enabled 控制（与 agent 模式同一开关），
     #       开启后挂载 FACT/TIP 双轨自演进；不要放进下方动态 rails 列表。
