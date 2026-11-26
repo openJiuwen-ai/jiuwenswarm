@@ -94,8 +94,24 @@ function createAppMarketWindows(BaseWindow, WebContentsView, getOwner, getIcon, 
       if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
     });
     present(entry, embedded === true);
-    contents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-    contents.session.setPermissionCheckHandler(() => false);
+    const allowsPermission = (requester, permission, details) => {
+      if (requester !== contents || (permission !== 'pointerLock' && permission !== 'fullscreen')) return false;
+      // HTML fullscreen in an embedded view controls the WorkSwarm window.
+      if (permission === 'fullscreen' && entry.embedded) return false;
+      try {
+        const source = new URL(details?.requestingUrl);
+        const marketOrigin = new URL(entry.loadingUrl || entry.entryUrl || url.href).origin;
+        return ['http:', 'https:'].includes(source.protocol) && source.origin === marketOrigin;
+      } catch {
+        return false;
+      }
+    };
+    contents.session.setPermissionRequestHandler((requester, permission, callback, details) => {
+      callback(allowsPermission(requester, permission, details));
+    });
+    contents.session.setPermissionCheckHandler((requester, permission, _origin, details) => {
+      return allowsPermission(requester, permission, details);
+    });
     let nativeNavigation = 0;
     contents.on('will-navigate', (event, target) => {
       if (!isWebUrl(target)) { event.preventDefault(); return; }

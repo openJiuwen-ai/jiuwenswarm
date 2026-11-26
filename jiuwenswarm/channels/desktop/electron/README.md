@@ -22,8 +22,11 @@ panels, with expand, hide and close actions; it does not use Electron viewport A
 Manual closing does not stop the service. Successful market stop/delete closes
 only that app's page; storage is not cleared. The main window owns cleanup on exit.
 App windows retain persist:app-market-<appId>, sandbox isolation and no preload or
-Node integration. Permissions are denied by default. They do not depend on chat
-sessions or the browser headless setting. Saves and NPC checkpoints belong to the
+Node integration. Pages on the app entry's origin can request pointer lock in
+either view. Standalone app windows can also request fullscreen. Embedded apps
+use the panel's expand control. Permissions are denied by default.
+App windows operate independently of chat sessions and the browser headless
+setting. Saves and NPC checkpoints belong to the
 application. Browser storage follows URL origins and is not merged across Web and
 Electron; changing service ports does not migrate localStorage automatically.
 Regression check: node --test tests/electron/app_market_windows.test.cjs.
