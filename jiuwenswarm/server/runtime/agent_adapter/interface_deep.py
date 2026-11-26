@@ -353,6 +353,7 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.agent_config_helpers import (
     _resolve_instance_config_base,
     _session_adapter_idle_ttl_default,
     _set_skill_evolution_triggers,
+    _skill_evolution_rail_drift,
     _skill_session_lazy_refresh_enabled,
     _try_add_cache_control,
     init_permission_engine,
@@ -7753,11 +7754,22 @@ class JiuWenSwarmDeepAdapter:
 
         resolved_language = self._resolve_runtime_language()
         evolution_triggers = get_passive_skill_evolution_triggers(self._config_cache)
-        if (
-            self._skill_evolution_rail is not None
-            and getattr(self._skill_evolution_rail, "_language", None) != resolved_language
-        ):
-            await self._unconfigure_active_evolution_rails()
+        if self._skill_evolution_rail is not None:
+            drift = _skill_evolution_rail_drift(
+                self._skill_evolution_rail,
+                language=resolved_language,
+                triggers=evolution_triggers,
+            )
+            if drift is not None:
+                # agent-core rejects reconfiguring a mounted rail whose stored
+                # config differs. Rebuild it instead of letting the error abort
+                # the chat turn (e.g. unbound prewarm False -> bound turn True).
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] SkillEvolutionRail config drifted, "
+                    "rebuilding: %s",
+                    drift,
+                )
+                await self._unconfigure_active_evolution_rails()
 
         disabled_skills = merge_evolution_disabled_skills(
             self._skill_manager.list_execution_disabled_skills()
@@ -7795,6 +7807,32 @@ class JiuWenSwarmDeepAdapter:
                 evolution_triggers["review_trigger"],
                 evolution_triggers["signal_trigger"],
             )
+
+    async def _ensure_active_evolution_rails_registered_best_effort(self) -> None:
+        """Mount evolution rails without letting a failure abort the chat turn.
+
+        Skill evolution is auxiliary to answering the user. A rail that cannot
+        be mounted is degraded (no evolution this turn) rather than fatal. Any
+        partially mounted rail is torn down so the next reconcile starts clean
+        instead of hitting a half-registered stack. Explicit requests such as
+        the ``/evolve`` slash command keep calling the raising variant.
+        """
+        try:
+            await self._ensure_active_evolution_rails_registered()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] skill evolution rail register failed; "
+                "continuing this turn without it: %s",
+                exc,
+            )
+            try:
+                await self._unconfigure_active_evolution_rails()
+            except Exception as cleanup_exc:  # noqa: BLE001
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] skill evolution rail cleanup after "
+                    "register failure failed: %s",
+                    cleanup_exc,
+                )
 
     async def refresh_enabled_skills_from_db(self) -> bool:
         """workspace Skill 状态变更后刷新启用集并热替换 ``SkillUseRail``。
@@ -10987,7 +11025,7 @@ class JiuWenSwarmDeepAdapter:
     async def _reconcile_evolution_rails(self) -> None:
         """Apply evolution rail configuration through its runtime owner."""
         if get_evolution_enabled(self._config_cache):
-            await self._ensure_active_evolution_rails_registered()
+            await self._ensure_active_evolution_rails_registered_best_effort()
         elif (
             self._skill_evolution_rail is not None
             or self._evolution_interrupt_rail is not None

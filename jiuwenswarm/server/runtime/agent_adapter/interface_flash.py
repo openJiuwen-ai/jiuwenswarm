@@ -1419,11 +1419,15 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         concurrent requests and reloads. The register→await→cache sequence has
         suspend points, so sharing the context-rail lock would mix two
         unrelated failure domains and permit interleaved half-mounted state.
+
+        Registration is best-effort: both rails are auxiliary to answering the
+        user, so a rail that cannot be mounted is skipped for this turn instead
+        of aborting it.
         """
         async with self._flash_evolution_rail_lock:
             full_config = self._config_base_cache
             if _flash_evolution_enabled(full_config):
-                await self._ensure_active_evolution_rails_registered()
+                await self._ensure_active_evolution_rails_registered_best_effort()
             elif (
                 self._skill_evolution_rail is not None
                 or self._evolution_interrupt_rail is not None
@@ -1437,7 +1441,13 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                     )
 
             if _flash_skill_sleep_enabled(full_config):
-                await self._reconcile_skill_sleep_rail()
+                try:
+                    await self._reconcile_skill_sleep_rail()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[JiuwenSwarmFlashAdapter] SkillSleepRail reconcile failed: %s",
+                        exc,
+                    )
             elif self._skill_sleep_rail is not None:
                 try:
                     await self._unconfigure_skill_sleep_rail()
