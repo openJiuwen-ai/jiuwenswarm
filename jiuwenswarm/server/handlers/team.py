@@ -516,27 +516,39 @@ async def handle_team_delete(ctx: RequestContext) -> None:
                 team_name=team_name,
                 channel_id=request.channel_id,
             )
-            if result.deleted:
-                try:
-                    from jiuwenswarm.enterprise.team.session_cleanup import (
-                        purge_team_for_deleted_session,
-                    )
+            # Sessions that were deleted must drop their team and quota rows even
+            # when another Session of the same team failed. A partial delete keeps
+            # the team entity for the survivors, so only the removed Sessions'
+            # own rows are purged; the name fallback is safe on a full delete.
+            session_only = not result.deleted
+            purges: list[tuple[str, str]] = [(sid, "") for sid in result.session_ids]
+            if not purges and result.deleted:
+                purges = [("", team_name)]
+            try:
+                from jiuwenswarm.enterprise.team.session_cleanup import (
+                    purge_team_for_deleted_session,
+                )
 
-                    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
-
-                    for sid in result.session_ids:
+                from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+            except Exception:
+                logger.exception("[Team] quota release after delete failed: %s", team_name)
+            else:
+                for sid, purge_name in purges:
+                    try:
                         await run_team_store(
                             purge_team_for_deleted_session,
                             session_id=sid,
-                            team_name=team_name,
+                            team_name=purge_name,
+                            session_only=session_only,
                         )
-                    if not result.session_ids:
-                        await run_team_store(
-                            purge_team_for_deleted_session,
-                            team_name=team_name,
+                    except Exception:
+                        logger.exception(
+                            "[Team] quota release after delete failed: %s "
+                            "session_id=%s team_name=%s",
+                            team_name,
+                            sid or "-",
+                            purge_name or "-",
                         )
-                except Exception:
-                    logger.exception("[Team] quota release after delete failed: %s", team_name)
             payload = {
                 "team_name": result.team_name,
                 "session_ids": list(result.session_ids),

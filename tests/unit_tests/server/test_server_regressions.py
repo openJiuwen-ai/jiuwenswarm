@@ -411,6 +411,129 @@ async def test_team_delete_handler_only_maps_runtime_result(monkeypatch):
         "code": "DELETE_FAILED",
     }
 
+def _team_delete_ctx(runtime):
+    request = AgentRequest(
+        request_id="delete",
+        channel_id="web",
+        req_method=ReqMethod.TEAM_DELETE,
+        params={"mode": "team", "team_name": "team-a"},
+    )
+    return SimpleNamespace(
+        request=request,
+        services=SimpleNamespace(execution_runtime=lambda: runtime),
+        sink=SimpleNamespace(send_response=AsyncMock()),
+    )
+
+
+def _record_team_purges(monkeypatch, *, fail_session_id=""):
+    purges = []
+
+    async def _run_team_store(fn, /, **kwargs):
+        purges.append(kwargs)
+        if fail_session_id and kwargs.get("session_id") == fail_session_id:
+            raise RuntimeError("team store unavailable")
+        return None
+
+    monkeypatch.setattr(
+        "jiuwenswarm.infrastructure.db.team_store_actor.run_team_store",
+        _run_team_store,
+    )
+    return purges
+
+
+@pytest.mark.asyncio
+async def test_team_delete_handler_releases_quota_for_sessions_of_partial_delete(monkeypatch):
+    from jiuwenswarm.server.handlers.team import handle_team_delete
+
+    runtime = SimpleNamespace(
+        delete_team=AsyncMock(
+            return_value=TeamDeleteResult(
+                ok=False,
+                team_name="team-a",
+                session_ids=("s1",),
+                failed_session_ids=("s2",),
+                recovery_required=True,
+                error_code="DELETE_FAILED",
+                error_message="partial",
+            )
+        )
+    )
+    purges = _record_team_purges(monkeypatch)
+
+    await handle_team_delete(_team_delete_ctx(runtime))
+
+    # A surviving Session may still own the name, so the partial delete purges
+    # only the Session that was actually removed.
+    assert purges == [
+        {"session_id": "s1", "team_name": "", "session_only": True},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_delete_handler_isolates_quota_release_per_session(monkeypatch):
+    from jiuwenswarm.server.handlers.team import handle_team_delete
+
+    runtime = SimpleNamespace(
+        delete_team=AsyncMock(
+            return_value=TeamDeleteResult(
+                ok=False,
+                team_name="team-a",
+                session_ids=("s1", "s2"),
+                failed_session_ids=("s3",),
+                recovery_required=True,
+            )
+        )
+    )
+    purges = _record_team_purges(monkeypatch, fail_session_id="s1")
+
+    await handle_team_delete(_team_delete_ctx(runtime))
+
+    assert purges == [
+        {"session_id": "s1", "team_name": "", "session_only": True},
+        {"session_id": "s2", "team_name": "", "session_only": True},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_delete_handler_does_not_release_quota_when_nothing_was_deleted(monkeypatch):
+    from jiuwenswarm.server.handlers.team import handle_team_delete
+
+    runtime = SimpleNamespace(
+        delete_team=AsyncMock(
+            return_value=TeamDeleteResult(
+                ok=False,
+                team_name="team-a",
+                failed_session_ids=("s1",),
+                error_code="DELETE_FAILED",
+                error_message="failed before any destructive step",
+            )
+        )
+    )
+    purges = _record_team_purges(monkeypatch)
+
+    await handle_team_delete(_team_delete_ctx(runtime))
+
+    assert purges == []
+
+
+@pytest.mark.asyncio
+async def test_team_delete_handler_releases_quota_by_name_for_full_delete(monkeypatch):
+    from jiuwenswarm.server.handlers.team import handle_team_delete
+
+    runtime = SimpleNamespace(
+        delete_team=AsyncMock(
+            return_value=TeamDeleteResult(ok=True, team_name="team-a", deleted=True)
+        )
+    )
+    purges = _record_team_purges(monkeypatch)
+
+    await handle_team_delete(_team_delete_ctx(runtime))
+
+    assert purges == [
+        {"session_id": "", "team_name": "team-a", "session_only": False},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_plain_disconnect_does_not_run_delete_participant():
     participant = SimpleNamespace(

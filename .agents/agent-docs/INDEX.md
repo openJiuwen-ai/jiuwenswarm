@@ -606,6 +606,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [B_20261126_0210_enterprise-team-file-live-delivery](bugfix/jiuwenswarm/agents/harness/common/tools/B_20261126_0210_enterprise-team-file-live-delivery.md) | B | 企业版团队会话文件卡片丢失：投递优先级反转与网关补发 | hanxinyang | 无独立 D：针对 Issue |
+| [B_20261126_0212_team-delete-partial-quota-release](bugfix/jiuwenswarm/server/B_20261126_0212_team-delete-partial-quota-release.md) | B | 团队部分删除后配额占用残留：按会话清理与实体保留 | hanxinyang | 无独立 D：针对 Issue |
 
 <a id="module-jiuwenswarm-extensions-app_market"></a>
 
@@ -770,6 +771,7 @@ generated: true
 | [B_20261116_1540_interrupt-intent-contract](bugfix/jiuwenswarm/server/B_20261116_1540_interrupt-intent-contract.md) | B | chat.interrupt 未知 intent 静默假成功：WS/HTTP 双入口统一契约校验 | ZHANGPP_ | 无独立 D：依据联调现场与 PR 检视意见定位，无独立设计文档；修复限定 intent 契约校验范围，并补回归测试。 |
 | [B_20261125_1412_personal-edition-enterprise-team-methods](bugfix/jiuwenswarm/server/B_20261125_1412_personal-edition-enterprise-team-methods.md) | B | 个人版收到企业 team 控制面方法时落入聊天分支：服务端入口补 edition 闸门 | mingo007 | 无独立 D：依据代码逐跳核实定位，无独立设计文档；修复只在服务端入口补一次 edition 判定，不改企业 handler 与协议枚举。 |
 | [B_20261125_1658_unhandled-known-method-no-chat-fallback](bugfix/jiuwenswarm/server/B_20261125_1658_unhandled-known-method-no-chat-fallback.md) | B | 枚举内未接 handler 的方法落入聊天分支：runtime 两个入口补通用兜底 | mingo007 | 无独立 D：静态审计全部枚举成员的认领层，确认只有 4 个聊天入口方法允许落入 chat 执行器；兜底不维护 175 方法白名单，而是挂在两个入口的收口点上。 |
+| [B_20261126_0212_team-delete-partial-quota-release](bugfix/jiuwenswarm/server/B_20261126_0212_team-delete-partial-quota-release.md) | B | 团队部分删除后配额占用残留：按会话清理与实体保留 | hanxinyang | 无独立 D：针对 Issue |
 
 <a id="module-jiuwenswarm-server-control"></a>
 
