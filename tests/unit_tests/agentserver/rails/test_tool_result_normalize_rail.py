@@ -543,6 +543,56 @@ def test_render_keeps_sibling_keys() -> None:
     assert '"summary":"ok"' in rendered
     assert '"warnings":["w"]' in rendered
 
+
+_IMAGE_DATA_URL = "data:image/png;base64," + "A" * 4096
+
+
+def _multi_file_image_result() -> SimpleNamespace:
+    """模拟 flash read_file 多文件：每文件挂一份 multimodal，顶层再聚合一份。"""
+    multimodal = [{"type": "image", "data_url": _IMAGE_DATA_URL}]
+    return SimpleNamespace(
+        success=True,
+        data={
+            "files": [
+                {
+                    "file_path": "/tmp/sample.png",
+                    "content": "Image bytes are attached as multimodal input and omitted.",
+                    "type": "image",
+                    "multimodal": multimodal,
+                    "line_count": 1,
+                    "error": None,
+                }
+            ],
+            "total": 1,
+            "succeeded": 1,
+            "failed": 0,
+            "parallel_read": True,
+            "multimodal": multimodal,
+        },
+        error=None,
+    )
+
+
+def test_render_strips_image_base64_copies_from_text() -> None:
+    # 同一份 base64 在 files[i] 与顶层各一份；文本视图必须两份都换成占位符
+    normalized = normalize_tool_result(_multi_file_image_result())
+    rendered = render_tool_result_for_llm(normalized)
+    assert "data:image/" not in rendered
+    assert rendered.count("data_url") == 2
+    # 结构化载荷一个字节都不动：像素靠 data.multimodal 送 image 块
+    assert normalized["data"]["multimodal"][0]["data_url"] == _IMAGE_DATA_URL
+    assert normalized["data"]["files"][0]["multimodal"][0]["data_url"] == _IMAGE_DATA_URL
+
+
+def test_render_keeps_text_data_uri_without_multimodal() -> None:
+    # bash / 内嵌 HTML 里的 data URI 是业务数据，不能当图片副本剥掉
+    normalized = normalize_tool_result(
+        {"success": True, "output": "echo data:image/png;base64,AAAA done"}
+    )
+    rendered = render_tool_result_for_llm(normalized)
+    assert "data:image/png;base64,AAAA" in rendered
+
+
 @pytest.mark.asyncio
 async def test_rail_skips_skill_turbo_resume_in_flight_placeholder() -> None:
     # B_01 回归：防重占位带 __ 前缀 → 归一 rail 跳过，帧不带 success 字段
@@ -624,6 +674,17 @@ async def test_rail_rewrites_tool_result_and_msg() -> None:
     assert ctx.inputs.tool_result["status"] == STATUS_ERROR
     assert ctx.inputs.tool_result["success"] is False
     assert ctx.inputs.tool_msg.content == "[ERROR]: boom"
+
+
+@pytest.mark.asyncio
+async def test_rail_strips_image_base64_from_msg_but_keeps_payload() -> None:
+    rail = ToolResultNormalizeRail(normalize_enabled=True, llm_render_enabled=True)
+    ctx = _make_ctx(_multi_file_image_result())
+    await rail.after_tool_call(ctx)
+    assert "data:image/" not in ctx.inputs.tool_msg.content
+    # 结构化 data 不动，react_agent 仍能从中提升出 1 个 image 块
+    assert ctx.inputs.tool_result.data["multimodal"][0]["data_url"] == _IMAGE_DATA_URL
+
 
 
 @pytest.mark.asyncio

@@ -79,7 +79,9 @@ _SELECTION_CN = """# 工具选择总则
 - 严禁用 bash 替代专用工具：文件定位用 glob、内容检索用 grep、查看用 read_file、改动用 edit_file、创建新文件用 write_file
 - 独立命令尽量并行调用；多步依赖才用 && 串联（仅在不关心前序失败时才用 ;）
 - 长时间运行命令使用 background: true，不用 sleep 轮询等待
-- 相同参数不重复调用同一工具（除非文件或环境状态已变化）；上轮结果为空或无匹配时调整参数或换用其他工具，禁止盲目复读重试
+- 工具调用去重仅限本次用户请求内：已有相同工具、相同参数的结果，且没有文件或环境状态变化时，优先复用结果，避免重复调用
+- 新的用户请求涉及技能安装、卸载或当前安装/可用状态时，必须重新查询当前状态；即使工具和参数与历史请求相同，也不能以“之前查询过”为由跳过核实
+- 本次请求内，上一次结果为空或无匹配且没有状态变化时，应调整参数或换用其他工具，禁止盲目重复相同调用
 - 默认一个问题一个工具、精准使用，避免单次发散调用大量无关工具；但用户要求比较、任务要求跨源核对、或分步依赖时允许多个
 """
 
@@ -88,7 +90,9 @@ _SELECTION_EN = """# Tool Selection Principles
 - Never use bash as a substitute for dedicated tools: use glob to locate files, grep for content search, read_file to view, edit_file to modify, write_file to create new files
 - Run independent commands in parallel; chain with && only for dependent steps (use ; only when you don't care about prior-step failure)
 - Use background: true for long-running commands instead of polling with sleep
-- Do not repeat the same tool with identical arguments (unless the file or environment state has changed); when the previous result is empty or has no match, adjust parameters or switch tools, and never blindly retry verbatim
+- Deduplicate tool calls only within the current user request: reuse an existing result for the same tool and arguments when there is no indication of file or environment state changes
+- When a new user request concerns skill installation, uninstallation, or current installation/availability status, query the current state again; identical tools and arguments from earlier requests are not a reason to skip verification
+- Within the current request, if the previous result is empty or has no match and there is no state change, adjust arguments or switch tools instead of blindly repeating the same call
 - Default to one tool per question, used precisely, to avoid fanning out to many irrelevant tools in one shot; but allow multiple when the user requests comparison, the task requires cross-source verification, or steps depend on each other
 """
 

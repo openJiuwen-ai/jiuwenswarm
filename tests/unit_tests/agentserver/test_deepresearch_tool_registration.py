@@ -18,6 +18,7 @@ def test_formal_tool_surface_includes_single_interactive_entry():
         "deepresearch_prepare_rewrite",
         "deepresearch_commit_rewrite",
         "deepresearch_generate_rewrite_html",
+        "deepresearch_register_report",
     ]
 
 
@@ -61,7 +62,7 @@ def test_formal_tool_registration_does_not_import_sdk(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     monkeypatch.setattr(dr, "enable_deepresearch", lambda: True)
-    assert len(dr.get_deepresearch_tools()) == 5
+    assert len(dr.get_deepresearch_tools()) == 6
 
 
 def test_legacy_six_interface_names_remain_absent():
@@ -85,6 +86,7 @@ def test_adapter_registers_formal_tools_as_shared(monkeypatch):
             "deepresearch_prepare_rewrite",
             "deepresearch_commit_rewrite",
             "deepresearch_generate_rewrite_html",
+            "deepresearch_register_report",
         )
     ]
     registered_names: list[str] = []
