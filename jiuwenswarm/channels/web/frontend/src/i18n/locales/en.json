@@ -4926,7 +4926,9 @@
       "updating": "Saving…"
     },
     "confirm": {
-      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone.",
+      "deleteTitle": "Delete Expert “{{name}}”?",
+      "deleteMessage": "Are you sure you want to delete Expert “{{name}}”? This cannot be undone.",
+      "uninstallGroupTitle": "Uninstall the Expert Team “{{name}}”?",
       "uninstallGroupMessage": "Uninstall the Expert Team “{{name}}”?"
     },
     "card": {
