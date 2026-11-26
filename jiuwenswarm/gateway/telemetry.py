@@ -685,14 +685,42 @@ def current_response_trace() -> TraceOperation | None:
 def start_gateway_trace(
     name: str, *, attributes: dict | None = None, parent: TraceOperation | None = None,
     root: bool = False, links: list[TraceOperation] | None = None,
+    trace_context: dict | None = None,
 ) -> TraceOperation | None:
-    """Start a Gateway operation with explicit parentage and safe scalar facts."""
+    """Start a Gateway operation with explicit parentage and safe scalar facts.
+
+    ``trace_context`` carries the caller's W3C carrier. A valid ``traceparent``
+    makes this operation a child of the upstream span; otherwise its trace id
+    pins the operation to the caller trace as a root, so southbound requests
+    still keep a real Gateway parent span.
+    """
     if not _runtime or not _runtime.tracer:
         return None
     try:
         from opentelemetry import context, trace
 
         owner = None if root else parent or current_request_trace()
+        upstream_context = None
+        explicit_trace = 0
+        if trace_context:
+            parent_context, supplied_trace, source = _extract_request_context(trace_context)
+            if source == "traceparent":
+                upstream_context = parent_context
+            elif supplied_trace:
+                explicit_trace = supplied_trace
+        pinned = False
+        if upstream_context is not None:
+            owner = None
+        elif explicit_trace:
+            owner_trace = 0
+            if owner is not None:
+                try:
+                    owner_trace = owner.span.get_span_context().trace_id
+                except Exception:
+                    owner_trace = 0
+            if owner_trace != explicit_trace:
+                owner = None
+                pinned = True
         attrs = {key: value for key, value in (attributes or {}).items()
                  if isinstance(value, (str, int, float, bool))}
         user_id = attrs.pop("user_id", "")
@@ -718,10 +746,31 @@ def start_gateway_trace(
                 attrs.setdefault("session_id", session_id)
         sdk_links = [trace.Link(operation.span.get_span_context()) for operation in (links or [])
                      if operation is not None and operation.span.get_span_context().is_valid]
-        span = _runtime.tracer.start_span(
-            name, context=owner.context if owner is not None else context.Context(),
-            attributes=attrs, links=sdk_links,
-        )
+        if upstream_context is not None:
+            span = _runtime.tracer.start_span(
+                name, context=upstream_context, attributes=attrs, links=sdk_links,
+            )
+        elif pinned:
+            token = _root_trace_id.set(explicit_trace)
+            try:
+                span = _runtime.tracer.start_span(
+                    name, context=context.Context(), attributes=attrs, links=sdk_links,
+                )
+            finally:
+                _root_trace_id.reset(token)
+            if span.get_span_context().trace_id != explicit_trace:
+                # A provider without the Gateway id generator cannot honor a
+                # caller trace; keep the operation observable in a new trace.
+                span.end()
+                _trace_context_warning("incompatible_id_generator")
+                span = _runtime.tracer.start_span(
+                    name, context=context.Context(), attributes=attrs, links=sdk_links,
+                )
+        else:
+            span = _runtime.tracer.start_span(
+                name, context=owner.context if owner is not None else context.Context(),
+                attributes=attrs, links=sdk_links,
+            )
         if not span.get_span_context().is_valid:
             span.end()
             return None
@@ -739,10 +788,13 @@ def start_gateway_trace(
 @contextmanager
 def trace_operation(
     name: str, *, attributes: dict | None = None, root: bool = False,
-    links: list[TraceOperation] | None = None,
+    links: list[TraceOperation] | None = None, trace_context: dict | None = None,
 ):
     """Observe an existing operation without changing its exception policy."""
-    operation = start_gateway_trace(name, attributes=attributes, root=root, links=links)
+    operation = start_gateway_trace(
+        name, attributes=attributes, root=root, links=links,
+        trace_context=trace_context,
+    )
     if operation is None:
         yield None
         return

@@ -6,13 +6,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import logging
 import os
 import socket
 import time
 import urllib.parse
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 import aiohttp
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -22,6 +25,8 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     AgentRuntime,
     is_third_party_agent_type,
 )
+from jiuwenswarm.gateway.telemetry import trace_operation
+from jiuwenswarm.gateway.trace_context import trace_context_from_headers, trace_id_from_headers
 from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     _HTTP_METHODS,
     _TEST_NET_1,
@@ -86,6 +91,43 @@ def _proxy_config(channel: Any) -> WebProxyChannelConfig:
 
 def _is_wildcard_host(host: str) -> bool:
     return (host or "").strip().lower() in _WILDCARD_HOSTS
+
+
+def _trace_id_from_headers(headers: Any) -> str:
+    """Read the caller trace from X-Trace-Id, then W3C traceparent."""
+    return trace_id_from_headers(headers)
+
+
+@asynccontextmanager
+async def _bind_web_proxy_trace(headers: Any, *, protocol: str, user_id: str):
+    """Bind the upstream W3C carrier while resolving a sandbox endpoint."""
+    carrier = trace_context_from_headers(headers)
+    if not any(carrier.get(key) for key in ("traceparent", "x-trace-id", "trace_id")):
+        yield None
+        return
+    with trace_operation(
+        "gw.web_proxy.request",
+        trace_context=carrier,
+        attributes={"protocol": protocol, "user_id": user_id},
+    ) as operation:
+        yield operation
+
+
+def _resolver_trace_kwargs(resolver: Any, trace_id: str) -> dict[str, str]:
+    """Pass trace_id only to resolvers that can accept it."""
+    if not trace_id:
+        return {}
+    try:
+        parameters = inspect.signature(resolver).parameters.values()
+    except (TypeError, ValueError):
+        return {}
+    if any(
+        parameter.name == "trace_id"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    ):
+        return {"trace_id": trace_id}
+    return {}
 
 
 def _outbound_ip() -> str:
@@ -562,9 +604,17 @@ async def _proxy_http(
     held = False
     hold = None
     defer_release = False
+    headers = getattr(request, "headers", None)
+    trace_id = _trace_id_from_headers(headers)
     try:
         try:
-            endpoint = await resolver(user_id, agent_type, "http")
+            async with _bind_web_proxy_trace(headers, protocol="http", user_id=user_id) as operation:
+                if operation is not None and operation.trace_id:
+                    trace_id = str(UUID(hex=operation.trace_id))
+                endpoint = await resolver(
+                    user_id, agent_type, "http",
+                    **_resolver_trace_kwargs(resolver, trace_id),
+                )
         except Exception as exc:
             if _retry_after_seconds(exc) is not None:
                 return _sandbox_creating_response(exc)
@@ -752,9 +802,17 @@ async def _proxy_ws(
 
     held = False
     hold = None
+    headers = getattr(websocket, "headers", None)
+    trace_id = _trace_id_from_headers(headers)
     try:
         try:
-            endpoint = await resolver(user_id, agent_type, "ws")
+            async with _bind_web_proxy_trace(headers, protocol="ws", user_id=user_id) as operation:
+                if operation is not None and operation.trace_id:
+                    trace_id = str(UUID(hex=operation.trace_id))
+                endpoint = await resolver(
+                    user_id, agent_type, "ws",
+                    **_resolver_trace_kwargs(resolver, trace_id),
+                )
         except Exception as exc:
             if _retry_after_seconds(exc) is not None:
                 await websocket.close(code=1013, reason="agent sandbox is creating")

@@ -9,11 +9,21 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+from uuid import UUID
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.gateway import telemetry
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_listen import _proxy_http
+from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
+    _bind_web_proxy_trace,
+    _proxy_http,
+    _resolver_trace_kwargs,
+    _trace_id_from_headers,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     AgentCreating,
     AgentManager,
@@ -117,6 +127,7 @@ class FakeControlClient:
         runtime_spec: dict[str, Any],
         env_vars: dict[str, str] | None = None,
         mounts: list[dict[str, Any]] | None = None,
+        trace_id: str | None = None,
     ) -> SandboxInfo:
         self.create_calls += 1
         payload = {
@@ -127,6 +138,8 @@ class FakeControlClient:
             "env_vars": dict(env_vars or {}),
             "mounts": list(mounts or []),
         }
+        if trace_id:
+            payload["trace_id"] = trace_id
         self.create_payloads.append(payload)
         sandbox_id = f"sbx-{self.create_calls}"
         self.sandbox_env_vars[sandbox_id] = dict(payload["env_vars"])
@@ -511,6 +524,77 @@ async def test_web_moa_status_routes_to_authenticated_user_runtime(monkeypatch: 
         )
     finally:
         await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_manager_carries_caller_trace_into_create_metadata() -> None:
+    """The create boundary must retain the northbound caller trace."""
+    manager = AgentManager()
+    seen: dict[str, Any] = {}
+
+    async def creator(info: AgentInfo) -> AgentInfo:
+        seen.update(info.metadata)
+        return replace(info, status=AgentStatus.READY, sandbox_id="sbx-trace")
+
+    runtime = await manager.get_or_create_agent(
+        "trace-user",
+        "jiuwenswarm",
+        creator=creator,
+        trace_id="6a945399-1111-4111-8111-111111111111",
+    )
+
+    assert seen["trace_id"] == "6a945399-1111-4111-8111-111111111111"
+    assert runtime.info.metadata["trace_id"] == "6a945399-1111-4111-8111-111111111111"
+
+
+@pytest.mark.asyncio
+async def test_agent_manager_uses_bound_request_trace_when_not_explicit() -> None:
+    """File-api entry binds the trace; create must retain it without a new id."""
+    telemetry.configure_gateway_telemetry({"telemetry": {"enabled": True, "exporter": "none"}})
+    operation = telemetry.start_request_trace(
+        "trace-probe",
+        "upload",
+        channel="file-api",
+        connection_id="conn",
+        trace_context={"X-Trace-Id": "4906fe76-a145-4693-b5b9-585038270249"},
+    )
+    assert operation is not None
+    manager = AgentManager()
+    seen: dict[str, Any] = {}
+
+    async def creator(info: AgentInfo) -> AgentInfo:
+        seen.update(info.metadata)
+        return replace(info, status=AgentStatus.READY, sandbox_id="sbx-bound")
+
+    try:
+        with telemetry.bind_request_trace(operation):
+            await manager.get_or_create_agent(
+                "bound-user",
+                "jiuwenswarm",
+                creator=creator,
+            )
+    finally:
+        operation.finish("success")
+
+    assert seen["trace_id"] == str(UUID(hex=operation.trace_id))
+
+
+@pytest.mark.asyncio
+async def test_create_passes_caller_trace_to_platform(recovery_router) -> None:
+    """Router create must hand the caller trace to the platform client."""
+    router, frontend, _ = recovery_router()
+    try:
+        await router._create_agent(AgentInfo(
+            user_id="user",
+            agent_type="jiuwenswarm",
+            metadata={"trace_id": "6a945399-1111-4111-8111-111111111111"},
+        ))
+        assert (
+            frontend.create_sandbox.await_args.kwargs["trace_id"]
+            == "6a945399-1111-4111-8111-111111111111"
+        )
+    finally:
+        await router.shutdown()
 
 
 @pytest.mark.asyncio
@@ -3835,6 +3919,50 @@ async def test_resolve_web_endpoint_creates_when_missing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_web_endpoint_carries_trace_to_readiness() -> None:
+    """A caller trace reaches the post-create running wait unchanged."""
+    class TraceRecordingControl(FakeControlClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.wait_trace_ids: list[str | None] = []
+
+        async def wait_until_running(
+            self, instance_id: str, *, expected_generation: str | None = None,
+            deadline: float | None = None, trace_id: str | None = None,
+        ) -> dict:
+            self.wait_trace_ids.append(trace_id)
+            return await super().wait_until_running(
+                instance_id,
+                expected_generation=expected_generation,
+                deadline=deadline,
+            )
+
+    yuanrong = TraceRecordingControl()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+    key = AgentRuntime.build_key(
+        agent_manager.key_fields, user_id="u1", agent_type="openclaw"
+    )
+    info = AgentInfo(
+        user_id="u1",
+        agent_type="openclaw",
+        status=AgentStatus.READY,
+        sandbox_id="sbx-web",
+        metadata={"web_port": 18789},
+    )
+    agent_manager._runtimes[key] = AgentRuntime(info=info, key=key)
+    trace_id = "6a945399-1111-4111-8111-111111111111"
+    try:
+        url = await client.resolve_web_endpoint(
+            "u1", "openclaw", "http", trace_id=trace_id,
+        )
+        assert url
+        assert yuanrong.wait_trace_ids == [trace_id]
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_resolve_web_endpoint_creating_raises_busy() -> None:
     yuanrong = FakeControlClient()
     agent_manager = AgentManager()
@@ -4095,6 +4223,58 @@ async def test_delete_waits_for_creation_before_lifecycle_lock(monkeypatch, tmp_
                 task.cancel()
         await asyncio.gather(*(task for task in (creation, deletion) if task), return_exceptions=True)
         await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_web_proxy_binds_upstream_trace_parent(monkeypatch):
+    """Resolver-created sandboxes inherit the browser span, not a new root."""
+    monkeypatch.setattr(telemetry, "_runtime", None)
+    runtime = telemetry.configure_gateway_telemetry(
+        {"telemetry": {"enabled": True, "exporter": "none"}},
+    )
+    exporter = InMemorySpanExporter()
+    runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace_hex = "a" * 32
+    parent_hex = "b" * 16
+    traceparent = f"00-{trace_hex}-{parent_hex}-01"
+    async with _bind_web_proxy_trace(
+        {"Traceparent": traceparent, "X-Trace-Id": str(UUID(hex=trace_hex))},
+        protocol="http",
+        user_id="u1",
+    ) as operation:
+        assert operation is not None
+        assert operation.trace_id == trace_hex
+        assert telemetry.current_request_trace() is operation
+    span = next(
+        span for span in exporter.get_finished_spans()
+        if span.name == "gw.web_proxy.request"
+    )
+    assert span.parent.span_id == int(parent_hex, 16)
+
+
+def test_web_proxy_reads_caller_trace_and_only_forwards_supported_kwargs():
+    raw = "00-6a945399111141118111111111111111-bbbbbbbbbbbbbbbb-01"
+    assert _trace_id_from_headers({"traceparent": raw}) == (
+        "6a945399-1111-4111-8111-111111111111"
+    )
+    assert _trace_id_from_headers({
+        "Traceparent": raw,
+        "X-Trace-Id": "11111111-1111-4111-8111-111111111111",
+    }) == "11111111-1111-4111-8111-111111111111"
+    assert _trace_id_from_headers({
+        "traceparent": "00-" + "0" * 32 + "-bbbbbbbbbbbbbbbb-01",
+    }) == ""
+    assert _trace_id_from_headers(None) == ""
+
+    async def with_trace(user_id, agent_type, protocol, *, trace_id=None):
+        return None
+
+    async def without_trace(user_id, agent_type, protocol):
+        return None
+
+    assert _resolver_trace_kwargs(with_trace, "trace") == {"trace_id": "trace"}
+    assert _resolver_trace_kwargs(without_trace, "trace") == {}
+    assert _resolver_trace_kwargs(object(), "trace") == {}
 
 
 @pytest.mark.parametrize(('error', 'status'), [

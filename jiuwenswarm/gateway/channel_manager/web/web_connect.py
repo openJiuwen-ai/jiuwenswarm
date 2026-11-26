@@ -34,6 +34,7 @@ from jiuwenswarm.gateway.channel_manager.base import ChannelMetadata, RobotMessa
 from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
 from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.gateway.trace_context import trace_context_from_headers
 from jiuwenswarm.common.security.ws_origin import (
     get_header_value,
 )
@@ -54,6 +55,12 @@ from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect im
 logger = logging.getLogger(__name__)
 
 _WEB_CONNECTION_USER_ID_ATTR = "_web_connection_user_id"
+
+
+def _trace_context_from_ws(ws: Any) -> dict[str, str]:
+    """Read caller trace headers from the WebSocket handshake."""
+    headers = getattr(ws, "headers", None) or getattr(ws, "request_headers", None)
+    return trace_context_from_headers(headers)
 
 
 def _resolve_ws_auth_session(ws: Any) -> str:
@@ -1978,7 +1985,9 @@ class WebChannel(BaseWsChannel):
                     req_id, method, channel=self.channel_id, connection_id=str(id(ws)),
                     user_id=self._connection_user_id(ws) or "",
                     session_id=explicit_session if isinstance(explicit_session, str) else "",
-                    trace_context=data.get("trace_context"),
+                    trace_context=(
+                        data.get("trace_context") or _trace_context_from_ws(ws)
+                    ),
                 )
                 if operation is not None and not self._track_request_trace(ws, operation):
                     operation.finish("incomplete", reason="capacity")

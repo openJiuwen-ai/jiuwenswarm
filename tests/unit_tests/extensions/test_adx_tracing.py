@@ -67,7 +67,7 @@ async def test_w3c_context_reaches_control_invoke_and_native_files(monkeypatch, 
     operation = telemetry.start_request_trace('request', 'file.mkdir', channel='web', connection_id='connection')
     try:
         with telemetry.bind_request_trace(operation):
-            await client._request('GET', '/api/instances', trace_id='older-trace')
+            await client._request('GET', '/api/instances')
             await client.invoke('test-alice', 'file.exists', {'path': '/home/agentos'})
             async with file_request(client, 'test-alice', 'GET', '/home/agentos/file') as response:
                 assert await response.aread() == b'payload'
@@ -80,4 +80,31 @@ async def test_w3c_context_reaches_control_invoke_and_native_files(monkeypatch, 
     finally:
         operation.finish('success')
         telemetry.configure_gateway_telemetry({'telemetry': {'enabled': False}})
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_trace_id_wins_over_bound_context(monkeypatch, tmp_path):
+    """The caller create trace must replace the warmup span, not the reverse."""
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={})
+
+    client = AdxControlClient(config(monkeypatch, tmp_path), transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(telemetry, '_runtime', None)
+    telemetry.configure_gateway_telemetry({'telemetry': {'enabled': True, 'exporter': 'none'}})
+    operation = telemetry.start_request_trace(
+        'request', 'file.mkdir', channel='web', connection_id='connection',
+    )
+    explicit = '6a945399-1111-4111-8111-111111111111'
+    try:
+        with telemetry.bind_request_trace(operation):
+            await client._request('GET', '/api/instances', trace_id=explicit)
+        request = calls[0]
+        assert request.headers['x-trace-id'] == explicit
+        assert request.headers['traceparent'].split('-')[1] == explicit.replace('-', '')
+    finally:
+        operation.finish('success')
         await client.close()

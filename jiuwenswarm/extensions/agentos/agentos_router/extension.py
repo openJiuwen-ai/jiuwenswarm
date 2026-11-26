@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from jiuwenswarm.common.client.agent_client import AgentServerClient
 from jiuwenswarm.extensions.sdk.agent_server_client import AgentServerClientExtension
 from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
@@ -47,20 +49,29 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
         protocol: str,
         *,
         acquire: bool = False,
+        trace_id: str | None = None,
     ) -> str | None:
         """Delegate to router client for the WebChannel agent UI proxy."""
+        kwargs: dict[str, Any] = {"acquire": acquire}
+        if trace_id:
+            kwargs["trace_id"] = trace_id
         return await self._router_client.resolve_web_endpoint(
-            user_id, agent_type, protocol, acquire=acquire
+            user_id, agent_type, protocol, **kwargs
         )
 
     async def release_web_endpoint(self, user_id: str, agent_type: str) -> None:
         """Drop one web-proxy task hold taken by ``resolve_web_endpoint``."""
         await self._router_client.release_web_endpoint(user_id, agent_type)
 
-    async def acquire_web_endpoint(self, user_id: str, agent_type: str, protocol: str):
+    async def acquire_web_endpoint(
+        self, user_id: str, agent_type: str, protocol: str, *, trace_id: str | None = None,
+    ):
         """Resolve an endpoint with a generation-specific activity hold."""
+        kwargs: dict[str, Any] = {"acquire": True, "return_hold": True}
+        if trace_id:
+            kwargs["trace_id"] = trace_id
         return await self._router_client.resolve_web_endpoint(
-            user_id, agent_type, protocol, acquire=True, return_hold=True,
+            user_id, agent_type, protocol, **kwargs
         )
 
     def set_key_issuer(

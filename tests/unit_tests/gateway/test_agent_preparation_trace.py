@@ -60,10 +60,10 @@ async def test_disabled_gateway_tracing_preserves_external_context(monkeypatch):
     client = object.__new__(router_client.AgentOSRouterClient)
     marker = context.create_key("external-context")
     token = context.attach(context.set_value(marker, "preserved"))
-    info = SimpleNamespace(agent_type="test", user_id="user", sandbox_id="sandbox")
+    info = SimpleNamespace(agent_type="test", user_id="user", sandbox_id="sandbox", metadata={})
     seen = []
 
-    async def create_impl(self, agent_info, operation):
+    async def create_impl(self, agent_info, operation, trace_id=""):
         seen.append(("create", context.get_value(marker), operation))
         return agent_info
 
@@ -316,7 +316,7 @@ async def test_warmup_with_unconfirmed_ws_is_incomplete(monkeypatch):
     async def release(*args, **kwargs):
         pass
 
-    async def get_ws(self, agent_runtime):
+    async def get_ws(self, agent_runtime, *, trace_id=None):
         return SimpleNamespace(server_ready=False)
 
     client._agent_manager = SimpleNamespace(get_or_create_agent=get_or_create, release=release)

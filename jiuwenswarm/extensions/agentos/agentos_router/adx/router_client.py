@@ -15,7 +15,11 @@ from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.agentos.agentos_router.adx.ssh_relay import AdxSshRelay
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
 from jiuwenswarm.extensions.agentos.agentos_router.adx.config import AdxRouterConfig
-from jiuwenswarm.extensions.agentos.agentos_router.adx.control_client import AdxControlClient, AdxControlError
+from jiuwenswarm.extensions.agentos.agentos_router.adx.control_client import (
+    AdxControlClient,
+    AdxControlError,
+    trace_headers,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.adx.errors import AdxRoutingError
 from jiuwenswarm.extensions.agentos.agentos_router.adx.file_client import AdxFileMixin
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
@@ -39,7 +43,6 @@ from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     _sandbox_name,
 )
 from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
-from jiuwenswarm.extensions.agentos.agentos_router.backend import apply_trace_header
 from jiuwenswarm.gateway.health_check import HEALTH_CHECK_CHANNEL_ID, HEALTH_CHECK_OK
 
 
@@ -87,9 +90,12 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
 
     async def _resolve_agent(
         self, envelope: E2AEnvelope, *, acquire: bool = False, ws_ready: bool = False,
+        trace_id: str | None = None,
     ) -> AgentRuntime:
         try:
-            runtime = await super()._resolve_agent(envelope, acquire=acquire, ws_ready=ws_ready)
+            runtime = await super()._resolve_agent(
+                envelope, acquire=acquire, ws_ready=ws_ready, trace_id=trace_id,
+            )
             try:
                 launch = self._config.builtin_launch or {}
                 if 'network' in launch and runtime.info.agent_type == BUILTIN_AGENT_TYPE:
@@ -113,7 +119,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
     def _sandbox_physical_name(self, agent_info: AgentInfo) -> str:
         return f'{_sandbox_name(agent_info.user_id, agent_info.agent_type)}-{agent_info.agent_id[:12]}'
 
-    async def _create_agent_impl(self, agent_info, operation):
+    async def _create_agent_impl(self, agent_info, operation, trace_id: str = ""):
         if agent_info.agent_type == BUILTIN_AGENT_TYPE:
             from pathlib import Path
             from jiuwenswarm.extensions.agentos.agentos_router.adx.workspace import check_workspace_config
@@ -126,10 +132,11 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                 # No Environment was requested. A later successful deployment
                 # can admit this user without restarting Gateway or clearing caches.
                 raise AgentPreCreateError(str(exc)) from exc
-        return await super()._create_agent_impl(agent_info, operation)
+        return await super()._create_agent_impl(agent_info, operation, trace_id)
 
     async def _create_sandbox_for_agent(self, agent_info, *, reuse_existing, web_port=None, **kwargs):
         builtin = agent_info.agent_type == BUILTIN_AGENT_TYPE
+        trace_id = str(kwargs.get('trace_id') or '').strip()
         runtime_class = self._control.resolve_runtime_class(kwargs.get('runtime_spec') or {}, builtin=builtin)
         if reuse_existing and (runtime_class == 'runsc' or self._config.restart_policy is not None):
             namespace = self._control.agent_namespace + '-'
@@ -144,7 +151,9 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             available = []
             for instance in sorted(candidates):
                 try:
-                    view = await self._control.get_agent_info(instance)
+                    view = await self._control.get_agent_info(
+                        instance, trace_id=trace_id or None,
+                    )
                 except AdxControlError as exc:
                     if exc.code == 'NOT_FOUND':
                         continue
@@ -157,7 +166,9 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             if len(available) > 1:
                 raise AdxControlError('Multiple native Environments match the Agent identity', code='CONFLICT')
             if available:
-                return await self._control._ready_sandbox_info(available[0])
+                return await self._control._ready_sandbox_info(
+                    available[0], trace_id=trace_id or None,
+                )
         return await self._control.create_sandbox(
             builtin=builtin, web_port=web_port if self._local_ingress else None, **kwargs)
 
@@ -231,10 +242,11 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         return self._agent_ws_url(instance_id, agent_port)
 
     async def _connect_ws_until_ready(self, *, instance_id: str, agent_port: int,
-                                      user_id: str = '', session_id: str = '', agent_type: str = ''):
+                                      user_id: str = '', session_id: str = '', agent_type: str = '',
+                                      trace_id: str = ''):
         uri = self._agent_ws_url(instance_id, agent_port)
         deadline = asyncio.get_running_loop().time() + ws_connect_ready_timeout_seconds()
-        headers = apply_trace_header({'Authorization': 'Bearer ' + self._config.token})
+        headers = trace_headers({'Authorization': 'Bearer ' + self._config.token}, trace_id or None)
         while True:
             client = self._ws_client_factory()
             if self._push_handler is not None:

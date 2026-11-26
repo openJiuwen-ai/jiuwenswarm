@@ -3,18 +3,23 @@
 import asyncio
 import base64
 import json
+import logging
 import tempfile
 from types import SimpleNamespace
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, unquote, urlsplit
+from uuid import UUID
 
 import httpx
 import pytest
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.gateway import telemetry
 from jiuwenswarm.extensions.agentos.agentos_router.adx.config import load_router_config
 from jiuwenswarm.extensions.agentos.agentos_router.adx.runtime_config import managed_sandbox_settings
 from jiuwenswarm.extensions.agentos.agentos_router.adx.control_client import AdxControlClient
@@ -373,6 +378,10 @@ async def test_users_and_first_creates_are_isolated_and_coalesced(monkeypatch):
             assert target.startswith('urn:adx:instance:test-')
             assert client.headers['Authorization'] == 'Bearer platform-secret'
             assert 'X-ADX-Parameters' not in client.headers
+            assert client.headers['X-Trace-Id']
+            assert client.headers['traceparent'].split('-')[1] == (
+                client.headers['X-Trace-Id'].replace('-', '')
+            )
         assert all(body['rootfs']['imageurl'] == 'registry.example/agentserver:1' for body in router.test_api.creates)
         for body in router.test_api.creates:
             user = Path(body['mounts'][0]['host_path']).name
@@ -653,6 +662,226 @@ async def test_native_placement_is_available_to_strict_registry_on_first_post(mo
     finally:
         await control.close()
         await registry.close()
+
+
+CALLER_TRACE_HEX = "6a945399111141118111111111111111"
+CALLER_TRACE_ID = str(UUID(hex=CALLER_TRACE_HEX))
+
+
+def _enable_gateway_trace(monkeypatch):
+    monkeypatch.setattr(telemetry, "_runtime", None)
+    monkeypatch.delenv("OTEL_ENABLED", raising=False)
+    monkeypatch.delenv("OTEL_TRACES_SAMPLER", raising=False)
+    return telemetry.configure_gateway_telemetry(
+        {"telemetry": {"enabled": True, "exporter": "none"}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_sends_caller_trace_id(monkeypatch):
+    """The create request must carry the northbound caller trace to ADX."""
+    api = EnvironmentAPI()
+    seen: dict[str, str | None] = {}
+
+    def environment(request):
+        if request.method == 'POST':
+            seen['trace_id'] = request.headers.get('X-Trace-Id')
+            seen['traceparent'] = request.headers.get('traceparent')
+        return api.handle(request)
+
+    control = AdxControlClient(_config(monkeypatch), transport=httpx.MockTransport(environment))
+    trace_id = CALLER_TRACE_ID
+    _enable_gateway_trace(monkeypatch)
+    current = telemetry.start_request_trace(
+        "current",
+        "create",
+        channel="web",
+        connection_id="conn",
+        trace_context={"X-Trace-Id": "11111111-1111-4111-8111-111111111111"},
+    )
+    assert current is not None
+    try:
+        with telemetry.bind_request_trace(current):
+            sandbox = await control.create_sandbox(
+                namespace='test', name='alice+jiuwenswarm',
+                workspace='/home/agentos/alice',
+                runtime_spec={'rootfs': {'imageurl': 'agentos-supervisor:v1'}},
+                trace_id=trace_id,
+            )
+        assert seen['trace_id'] == trace_id
+        traceparent = str(seen['traceparent'] or '')
+        assert traceparent.split('-')[1] == trace_id.replace('-', '')
+        assert traceparent.endswith('-01')
+        assert sandbox.metadata['trace_id'] == trace_id
+    finally:
+        current.finish("success")
+        await control.close()
+
+
+@pytest.mark.asyncio
+async def test_warmup_keeps_caller_trace_for_every_adx_call(monkeypatch, caplog):
+    """Handshake trace -> create -> wait -> ADX WS -> create.ok keeps one key."""
+    runtime = _enable_gateway_trace(monkeypatch)
+    exporter = InMemorySpanExporter()
+    runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    router, clients = _router(_config(monkeypatch))
+    await router.connect("")
+    try:
+        with caplog.at_level(logging.INFO):
+            await router._warmup_user_agent(
+                "alice", trace_context={"x-trace-id": CALLER_TRACE_ID},
+            )
+            pending = list(getattr(router, "_background_tasks", ()))
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        assert router.test_api.requests
+        for request in router.test_api.requests:
+            assert request.headers["X-Trace-Id"] == CALLER_TRACE_ID
+            assert request.headers["traceparent"].split("-")[1] == CALLER_TRACE_HEX
+
+        assert clients
+        assert clients[0].headers["X-Trace-Id"] == CALLER_TRACE_ID
+        assert clients[0].headers["traceparent"].split("-")[1] == CALLER_TRACE_HEX
+
+        spans = {span.name: span for span in exporter.get_finished_spans()}
+        warmup = spans["gw.connect.warmup"]
+        create = spans["gw.agent.create"]
+        assert warmup.context.trace_id == int(CALLER_TRACE_HEX, 16)
+        assert create.context.trace_id == int(CALLER_TRACE_HEX, 16)
+        assert create.parent.span_id == warmup.context.span_id
+        post = next(request for request in router.test_api.requests if request.method == "POST")
+        traceparent = post.headers["traceparent"].split("-")
+        assert traceparent[1] == CALLER_TRACE_HEX
+        assert traceparent[2] == format(create.context.span_id, "016x")
+
+        created = [
+            record.getMessage() for record in caplog.records
+            if "sandbox.create.ok" in record.getMessage()
+        ]
+        assert created
+        assert f"trace_id={CALLER_TRACE_ID}" in created[-1]
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_warmup_attaches_to_upstream_traceparent(monkeypatch):
+    """A full W3C carrier keeps the browser span as warmup's parent."""
+    runtime = _enable_gateway_trace(monkeypatch)
+    exporter = InMemorySpanExporter()
+    runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    router, _ = _router(_config(monkeypatch))
+    await router.connect("")
+    upstream_span_hex = "b" * 16
+    try:
+        await router._warmup_user_agent("alice", trace_context={
+            "traceparent": f"00-{CALLER_TRACE_HEX}-{upstream_span_hex}-01",
+            "tracestate": "vendor=value",
+        })
+        pending = list(getattr(router, "_background_tasks", ()))
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        spans = {span.name: span for span in exporter.get_finished_spans()}
+        warmup = spans["gw.connect.warmup"]
+        create = spans["gw.agent.create"]
+        assert warmup.context.trace_id == int(CALLER_TRACE_HEX, 16)
+        assert warmup.parent.span_id == int(upstream_span_hex, 16)
+        assert create.context.trace_id == int(CALLER_TRACE_HEX, 16)
+        assert create.parent.span_id == warmup.context.span_id
+        post = next(request for request in router.test_api.requests if request.method == "POST")
+        traceparent = post.headers["traceparent"].split("-")
+        assert traceparent[1] == CALLER_TRACE_HEX
+        assert traceparent[2] == format(create.context.span_id, "016x")
+        assert post.headers["X-Trace-Id"] == CALLER_TRACE_ID
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_delete_uses_real_cleanup_span_as_adx_parent(monkeypatch):
+    """Background delete keeps its cleanup trace and a real Gateway parent."""
+    runtime = _enable_gateway_trace(monkeypatch)
+    exporter = InMemorySpanExporter()
+    runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
+    router, _ = _router(_config(monkeypatch))
+    await router.connect("")
+    try:
+        await router._warmup_user_agent("alice")
+        exporter.clear()
+        await router.delete_agent("alice", "jiuwenswarm")
+        spans = {span.name: span for span in exporter.get_finished_spans()}
+        delete = spans["gw.agent.delete"]
+        deletes = [
+            request for request in router.test_api.requests
+            if request.method == "DELETE"
+        ]
+        assert deletes
+        traceparent = deletes[-1].headers["traceparent"].split("-")
+        assert traceparent[1] == format(delete.context.trace_id, "032x")
+        assert traceparent[2] == format(delete.context.span_id, "016x")
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_adx_resolve_agent_accepts_caller_trace(monkeypatch):
+    """SSH relay passes trace_id through the ADX ``_resolve_agent`` override."""
+    router, _ = _router(_config(monkeypatch))
+    await router.connect("")
+    try:
+        runtime = await router._resolve_agent(_request(), trace_id=CALLER_TRACE_ID)
+        assert runtime.is_ready()
+        creates = [
+            request for request in router.test_api.requests
+            if request.method == 'POST'
+        ]
+        assert creates
+        assert creates[0].headers["X-Trace-Id"] == CALLER_TRACE_ID
+        assert creates[0].headers["traceparent"].split("-")[1] == CALLER_TRACE_HEX
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_chat_request_context_reaches_adx_create(monkeypatch, caplog):
+    """A chat request without an explicit trace_id keeps its bound trace."""
+    _enable_gateway_trace(monkeypatch)
+    router, clients = _router(_config(monkeypatch))
+    await router.connect("")
+    operation = telemetry.start_request_trace(
+        "selfcheck",
+        "chat.send",
+        channel="web",
+        connection_id="conn",
+        trace_context={"traceparent": f"00-{CALLER_TRACE_HEX}-bbbbbbbbbbbbbbbb-01"},
+    )
+    assert operation is not None
+    try:
+        with caplog.at_level(logging.INFO), telemetry.bind_request_trace(operation):
+            await router.send_request(_request())
+
+        creates = [
+            request for request in router.test_api.requests
+            if request.method == 'POST'
+        ]
+        assert len(creates) == 1
+        assert creates[0].headers["traceparent"].split("-")[1] == operation.trace_id
+        assert creates[0].headers["X-Trace-Id"] == str(UUID(hex=operation.trace_id))
+
+        assert clients
+        assert clients[0].headers["traceparent"].split("-")[1] == operation.trace_id
+
+        created = [
+            record.getMessage() for record in caplog.records
+            if "sandbox.create.ok" in record.getMessage()
+        ]
+        assert created
+        assert f"trace_id={UUID(hex=operation.trace_id)}" in created[-1]
+    finally:
+        operation.finish("success")
+        await router.shutdown()
 
 
 @pytest.mark.asyncio

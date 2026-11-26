@@ -14,6 +14,7 @@ from starlette.requests import Request
 
 from jiuwenswarm.gateway import telemetry
 from jiuwenswarm.gateway.channel_manager.web.container_file_http import (
+    _FileApiTraceMiddleware,
     _bind_file_api_request_trace,
     _incoming_trace_context,
 )
@@ -141,3 +142,29 @@ async def test_file_api_trace_middleware_reaches_route() -> None:
 
     assert response.status_code == 200
     assert response.json()["trace_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+
+
+@pytest.mark.asyncio
+async def test_file_api_trace_pure_asgi_middleware_reaches_route() -> None:
+    """The outer ASGI bind survives the BaseHTTPMiddleware task boundary."""
+    telemetry.configure_gateway_telemetry({"telemetry": {"enabled": True, "exporter": "none"}})
+    app = FastAPI()
+    app.add_middleware(_FileApiTraceMiddleware)
+
+    @app.post("/file-api/upload")
+    async def _upload():
+        operation = telemetry.current_request_trace()
+        return {"trace_id": operation.trace_id if operation is not None else ""}
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/file-api/upload",
+            headers={
+                "X-Trace-Id": "4906fe76-a145-4693-b5b9-585038270249",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["trace_id"] == "4906fe76a1454693b5b9585038270249"

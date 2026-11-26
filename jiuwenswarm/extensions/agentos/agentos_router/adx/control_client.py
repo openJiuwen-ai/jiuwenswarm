@@ -20,9 +20,9 @@ from jiuwenswarm.extensions.agentos.agentos_router.backend import (
     SandboxInfo, AgentApiError, AgentTimeoutError,
     AGENT_GENERATION_ENV, AgentNotFoundError, AgentNotVisibleError,
     AgentGenerationMismatchError, AgentFailedError, AgentCreateUncertainError,
-    TRACE_ID_HEADER, apply_trace_header, bind_southbound_trace_id,
+    TRACE_ID_HEADER, bind_southbound_trace_id,
 )
-from jiuwenswarm.gateway.telemetry import inject_request_headers
+from jiuwenswarm.gateway.trace_context import outbound_trace_headers, resolve_trace_id
 
 
 logger = logging.getLogger(__name__)
@@ -30,12 +30,13 @@ logger = logging.getLogger(__name__)
 
 def trace_headers(headers: dict[str, str], trace_id: str | None = None) -> dict[str, str]:
     """Propagate business tracing independently of ADX operation identities."""
-    carrier = inject_request_headers(headers)
-    return apply_trace_header(carrier, carrier.get(TRACE_ID_HEADER) or trace_id)
+    carrier = outbound_trace_headers(headers, trace_id)
+    carrier[TRACE_ID_HEADER] = bind_southbound_trace_id(carrier[TRACE_ID_HEADER])
+    return carrier
 
 
 def _resolve_trace_id(trace_id: str | None = None) -> str:
-    return bind_southbound_trace_id(inject_request_headers({}).get(TRACE_ID_HEADER) or trace_id)
+    return bind_southbound_trace_id(resolve_trace_id(trace_id))
 
 
 class AdxControlError(AgentApiError):

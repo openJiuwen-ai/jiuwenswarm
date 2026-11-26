@@ -1839,6 +1839,7 @@ async def _run(
     )
     from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
         WebPortManager,
+        _resolver_trace_kwargs,
         register_3rdagent_web_method,
     )
     from jiuwenswarm.common.config import get_config
@@ -3276,10 +3277,14 @@ async def _run(
                             user_id: str,
                             agent_type: str,
                             protocol: str,
+                            *,
+                            trace_id: str | None = None,
                             _resolve=web_resolver,
                         ) -> str | None:
                             return await _resolve(
-                                user_id, agent_type, protocol, acquire=True
+                                user_id, agent_type, protocol,
+                                acquire=True,
+                                **_resolver_trace_kwargs(_resolve, trace_id or ""),
                             )
 
                         token_resolver = getattr(agent_server_ext, "acquire_web_endpoint", None)
