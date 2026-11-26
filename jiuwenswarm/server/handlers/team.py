@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from agent_gateway.common.mode_matrix import is_team_mode
 
@@ -568,20 +568,34 @@ async def handle_team_delete(ctx: RequestContext) -> None:
     await ctx.sink.send_response(resp)
 
 
-async def handle_team_snapshot(ctx: RequestContext) -> None:
-    request = ctx.request
+def _snapshot_tasks(payload: dict[str, Any] | None) -> list[Any]:
+    if not isinstance(payload, dict):
+        return []
+    tasks = payload.get("tasks")
+    return tasks if isinstance(tasks, list) else []
+
+
+async def resolve_team_snapshot(
+    *,
+    session_id: str,
+    requested_team_name: str,
+    channel_id: str,
+    get_session_metadata_fn: Callable[[str], dict[str, Any] | None] | None = None,
+) -> tuple[dict[str, Any] | None, str, bool | None]:
+    """Resolve one ``team.snapshot`` board for every transport entry point.
+
+    A session can host several teams while ``TeamManager`` keeps only the last
+    monitor per session, so a live board is accepted only when it matches the
+    requested team. Prefer a scoped live monitor, then fall back to ``team.db``.
+    A live board whose roster is still empty is topped up from ``team.db`` and
+    reported as ``live+db`` so the right-side panel stops being empty.
+
+    Returns ``(snapshot, members_source, runtime_available)``.
+    """
     from jiuwenswarm.agents.harness.team import get_team_manager
     from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
         TeamMonitorHandler,
     )
-
-    params = request.params if isinstance(request.params, dict) else {}
-    session_id = str(params.get("session_id") or request.session_id or "").strip()
-    channel_id = request.channel_id or "web"
-    empty_payload = {"members": [], "tasks": [], "team_id": None}
-    # team_name 是调用方点名要看的团队。一个会话可以同时挂多个团队，
-    # 会话级看板只记住最后一个。对不上就不要把别的团队画上来。
-    requested_team_name = str(params.get("team_name") or "").strip()
 
     team_manager = get_team_manager(channel_id)
     monitor_handler = team_manager.get_monitor_handler(session_id) if session_id else None
@@ -603,12 +617,6 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
         except Exception as e:  # noqa: BLE001
             logger.warning("[AgentWebSocketServer] team.snapshot (live) failed: %s", e)
 
-    def _snapshot_tasks(payload: dict[str, Any] | None) -> list[Any]:
-        if not isinstance(payload, dict):
-            return []
-        tasks = payload.get("tasks")
-        return tasks if isinstance(tasks, list) else []
-
     # Resolve one exact identity for the runtime probe and DB fallback.
     # A session monitor may belong to another Team; a replacement worker
     # may have none. Probe only when the matching live board is missing.
@@ -616,8 +624,9 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
     if not snapshot_team_name and session_id:
         snapshot_team_name = str(team_manager.get_active_team_name(session_id) or "").strip()
         if not snapshot_team_name:
+            metadata_getter = get_session_metadata_fn or _server_global("get_session_metadata")
             snapshot_team_name = str(
-                (_server_global("get_session_metadata")(session_id) or {}).get("team_name") or ""
+                (metadata_getter(session_id) or {}).get("team_name") or ""
             ).strip()
     if snapshot is None and snapshot_team_name and session_id:
         try:
@@ -672,8 +681,58 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
             if db_snapshot is not None and (
                 snapshot is None or _snapshot_tasks(db_snapshot)
             ):
-                snapshot = db_snapshot
+                # A DB board without members must not drop the live members.
+                if not db_snapshot.get("members") and snapshot is not None:
+                    snapshot = {**db_snapshot, "members": snapshot.get("members") or []}
+                else:
+                    snapshot = db_snapshot
                 source = "db"
+
+    # Roster rows are written before ``team.runtime_ready`` while tasks may
+    # already be on the live board, so a live snapshot can carry tasks and no
+    # members. Top up the roster from DB separately instead of leaving the
+    # right-side panel empty until the next page refresh.
+    live_roster_empty = (
+        snapshot is not None
+        and not snapshot.get("members")
+        and source in ("live", "live-scoped")
+    )
+    if live_roster_empty and session_id and snapshot_team_name:
+        try:
+            db_members = await TeamMonitorHandler.get_member_list_from_db(
+                snapshot_team_name, exclude_leader=True
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] team.snapshot (db members) failed: "
+                "session_id=%s team_name=%s error=%s",
+                session_id,
+                snapshot_team_name,
+                e,
+            )
+            db_members = None
+        if db_members:
+            snapshot = {**snapshot, "members": db_members}
+            source = "live+db"
+
+    return snapshot, source, runtime_available
+
+
+async def handle_team_snapshot(ctx: RequestContext) -> None:
+    request = ctx.request
+    params = request.params if isinstance(request.params, dict) else {}
+    session_id = str(params.get("session_id") or request.session_id or "").strip()
+    channel_id = request.channel_id or "web"
+    empty_payload = {"members": [], "tasks": [], "team_id": None}
+    # team_name 是调用方点名要看的团队。一个会话可以同时挂多个团队，
+    # 会话级看板只记住最后一个。对不上就不要把别的团队画上来。
+    requested_team_name = str(params.get("team_name") or "").strip()
+
+    snapshot, source, runtime_available = await resolve_team_snapshot(
+        session_id=session_id,
+        requested_team_name=requested_team_name,
+        channel_id=channel_id,
+    )
 
     # A replacement worker can read the old DB's busy/running rows without
     # having restored any TeamAgent. Do not mutate those historical rows or
