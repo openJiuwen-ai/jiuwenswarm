@@ -1,6 +1,6 @@
 # WebUI 组件规则规约
 
-最近修订：2026-11-25。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
+最近修订：2026-11-26。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
 
 ## 范围与适用条件
 
@@ -12,8 +12,8 @@
 Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown、Icon、MediaSurface、FileImport。字段、默认值、必填与事件数据统一遵循
 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
 [`catalog/components/`](../../catalog/components/) 和后端规则是该规范的实现；本文维护运行与交互不变量，不复制完整属性表。
-槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`application.appearance`、`task.function` 与 `task.function.main`；
-其余 11 个槽位默认使用会话范围，设置槽位也允许显式应用范围。
+槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`application.menu`、`application.menu.main`、`application.background`、`application.splash`、`application.appearance`、`task.function` 与 `task.function.main`；
+其余 9 个槽位默认使用会话范围，设置槽位也允许显式应用范围。
 
 ## 表单、菜单与应用插槽
 
@@ -185,7 +185,7 @@ Select 与 TreeSelect 的 ui.change 用于承载整体选择值，ui.select 仍�
 包含 action_id、args、data、node_key 和 revision 的完整 payload 序列化后按 maxFrameBytes 校验，默认上限为 256 KiB。
 前后端遍历全部 Tabs 内容，
 隐藏内容也计入 8 层、512 节点预算，Panel/Iframe/MediaSurface 不能嵌套为普通子节点。
-`application.entry`、`application.sidebar.footer`、`application.background`、`application.splash` 与 `application.appearance` 使用 application 范围，以当前 Web 连接为身份，不要求会话。
+`application.entry`、`application.sidebar.footer`、`application.menu`、`application.menu.main`、`application.background`、`application.splash`、`application.appearance`、`task.function` 与 `task.function.main` 使用 application 范围，以当前 Web 连接为身份，不要求会话。
 `application.settings` 默认 session，允许按声明显式使用 application；两种范围的实例和挂载所有权隔离，
 清理会话不清理应用范围设置。其他槽位使用 session 范围。设置菜单、分类、位置及实例准入见
 [设置 location 规约](../../../../../../../../extensions_v2/docs/specs/S_18_settings-location.md)。
