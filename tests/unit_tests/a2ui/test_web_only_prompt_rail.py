@@ -5,14 +5,17 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen.core.single_agent.rail.base import InvokeInputs, ModelCallInputs
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs, ModelCallInputs
+from openjiuwen.harness.deep_agent import DeepAgent
 
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import (
     ResponsePromptRail,
     _BROWSER_WORKFLOW_ENABLED,
 )
+from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.a2ui.config import A2UIConfig
+from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
 
 class _FakePromptBuilder:
@@ -179,6 +182,60 @@ async def test_response_prompt_rail_removes_a2ui_when_request_skips_it(monkeypat
 
     assert "response" in rail.system_prompt_builder.sections
     assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_run", [False, True])
+async def test_connector_a2ui_opt_out_survives_agent_plan_model_call(monkeypatch, with_run):
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+    rail.set_channel("officeclaw")
+    adapter = interface_module.JiuWenSwarm()
+
+    for skip_a2ui in (False, True, False):
+        params = {"mode": "agent.plan", "query": "Pick an option"}
+        existing_run = {
+            "kind": "normal",
+            "context": {"skip_a2ui": False, "extra": {"existing": "kept"}},
+        }
+        if with_run:
+            params["run"] = existing_run
+        request = AgentRequest(
+            request_id="req-a2ui-gate",
+            channel_id="officeclaw",
+            session_id="officeclaw_session",
+            metadata={"skip_a2ui": True} if skip_a2ui else {},
+            params=params,
+        )
+        inputs, _, _ = adapter.build_inputs(request)
+        normalized = DeepAgent._normalize_inputs(None, inputs)
+        invoke_context = AgentCallbackContext(agent=None, inputs=normalized)
+        await rail.before_invoke(invoke_context)
+
+        # ReAct creates a separate model callback and carries over the RunContext.
+        model_context = AgentCallbackContext(
+            agent=None,
+            inputs=ModelCallInputs(),
+            extra={"run_context": normalized.run_context},
+        )
+        await rail.before_model_call(model_context)
+
+        sections = rail.system_prompt_builder.sections
+        assert (LocalSectionName.A2UI in sections) is not skip_a2ui
+        assert (LocalSectionName.A2UI_BOOST in sections) is not skip_a2ui
+        assert invoke_context.extra.get("skip_a2ui", False) is skip_a2ui
+        if with_run:
+            assert normalized.run_context.extra["existing"] == "kept"
+            assert request.params["run"]["context"] == {
+                "skip_a2ui": False,
+                "extra": {"existing": "kept"},
+            }
 
 
 @pytest.mark.asyncio

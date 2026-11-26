@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_07 / system-prompt-layering |
 | 关联模块 | agent-core harness prompts/sections + swarm Runtime/Response rails + prompt/ |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联 feature | 暂无（初版建档） |
 
 ## 范围 / 边界
@@ -28,7 +28,7 @@
 
 - **N1（人设文件归 core section）**：工作区 **AGENT.md / SOUL.md** 等由 agent-core `harness.prompts.sections.context` 读取并注入；swarm 通过 **context_read_patch** 优化读路径（[[S_06]] N3），**不** duplicate 正文到 yaml。
 - **N2（Runtime 动态、每轮刷新）**：RuntimePromptRail 在 **`before_model_call`** 读 `runtime_state.yaml`、时钟、shell 环境、trusted dirs、browser 策略等；priority **5**。Good：时间/模式变更不依赖工具调用。Bad：把 runtime 状态写进静态 AGENT.md。
-- **N3（Response 格式归 ResponsePromptRail）**：回复格式、thinking discipline、final visible reply 规则由 **ResponsePromptRail** 注入 section 名 `response` / `LocalSectionName.*`；A2UI section 按 channel/query 条件追加。
+- **N3（Response 格式归 ResponsePromptRail）**：回复格式、thinking discipline、final visible reply 规则由 **ResponsePromptRail** 注入 section 名 `response` / `LocalSectionName.*`；A2UI 提示段按渠道、配置和本轮 `skip_a2ui` 门控。
 - **N4（Attachments）**：RuntimePromptRail 使用 **PromptAttachmentManager**（`attachment` sections，实现见 `_upsert_prompt_attachment`（runtime_prompt_rail.py:904）/ `_clear_prompt_attachment`（:932））；与 core 附件 kind 枚举协作。
 - **N5（压缩召回用法）**：若模型需要知道 `[[HANDLE]]` / `[[COMPRESSION_RECALL]]` 用法，提示段由 **agent-core processor / context sections** 或产品 prompt 段承担——新增时须登记本 spec 与 [[S_04]]，避免 duplicate 冲突。
 
@@ -63,6 +63,11 @@
 | A2UI | 条件 section `LocalSectionName.A2UI` |
 
 `before_invoke`：写入 channel / skip_a2ui / a2ui_browser_workflow 到 ctx.extra。
+
+请求 `metadata.skip_a2ui=true` 经 `JiuWenSwarm._build_inputs()` 写入
+`run.context.extra`。DeepAgent 在调用阶段从 `InvokeInputs.run_context` 传递该值，ReAct 模型回调从
+`ctx.extra["run_context"]` 获取同一上下文。门控命中时，ResponsePromptRail 移除 A2UI 主提示段和强化段。
+门控按请求生效，同一会话后续未携带标记的 Web 请求按正常配置判断。
 
 ## 数据结构
 

@@ -153,7 +153,20 @@ class ResponsePromptRail(DeepAgentRail):
             return True
 
         extra = getattr(ctx, "extra", None)
-        return isinstance(extra, dict) and extra.get(SKIP_A2UI_PROMPT_CONTEXT_KEY) is True
+        if not isinstance(extra, dict):
+            extra = {}
+        if extra.get(SKIP_A2UI_PROMPT_CONTEXT_KEY) is True:
+            return True
+
+        # DeepAgent 从 InvokeInputs 传入 RunContext，ReAct 模型回调从 extra 读取它。
+        input_run_context = (
+            inputs.get("run_context") if isinstance(inputs, dict) else getattr(inputs, "run_context", None)
+        )
+        for run_context in (input_run_context, extra.get("run_context")):
+            run_extra = getattr(run_context, "extra", None)
+            if isinstance(run_extra, dict) and run_extra.get(SKIP_A2UI_PROMPT_CONTEXT_KEY) is True:
+                return True
+        return False
 
     def _resolve_channel(self, ctx: AgentCallbackContext) -> str | None:
         """Read the request channel from callback inputs when available."""
