@@ -204,17 +204,26 @@ export function DefinitionUploadDialog({
   const handleConfirm = async () => {
     if (!filePick || submitting) return;
     setSubmitting(true);
+    let stagedPath: string;
     try {
-      // 两通道统一先换受控暂存路径，再交给父组件既有的 import + install +
-      // 回滚链：浏览器 File 走 HTTP multipart 上传（upload-temp），桌面本机
-      // 路径由服务端复制进同一暂存根（assets.stage_local），防护一致。
-      const stagedPath = browserFile
+      // 两通道统一先换受控暂存路径：浏览器 File 走 HTTP multipart 上传
+      // （upload-temp），桌面本机路径由服务端复制进同一暂存根
+      // （assets.stage_local），防护一致。
+      stagedPath = browserFile
         ? await uploadAssetPackage(browserFile)
         : await stageLocalAssetPackage(filePick.path);
-      await onConfirm(stagedPath, kind);
     } catch (error) {
-      // 上传阶段失败就地展示（服务端契约码 → i18n）；导入阶段失败仍由父组件经 error 属性回传。
+      // 只就地收敛上传/暂存阶段失败（服务端契约码 → i18n 通用映射）。
       setPickerError(t(assetIssueKey(error)));
+      setSubmitting(false);
+      return;
+    }
+    try {
+      // 导入阶段交给父组件既有的 import + install + 回滚链：其失败由父组件
+      // 自行捕获并按页签细化文案（assetIssueKeyForKind）经 error 属性回传；
+      // 此处不 catch，避免通用映射的 pickerError 覆盖细化文案（渲染时
+      // pickerError 优先于 error 属性）。
+      await onConfirm(stagedPath, kind);
     } finally {
       setSubmitting(false);
     }

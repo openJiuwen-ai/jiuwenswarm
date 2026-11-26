@@ -1051,7 +1051,9 @@ test('Expert Team upload dialog puts Expert first and removes the reference link
 test('Expert Team upload dialog wires both channels through unified staging', () => {
   // 纯浏览器环境：隐藏 .zip 文件输入 + 拖拽收下 File 对象，确认时经统一
   // uploadAssetPackage 换暂存路径；桌面本机路径经 stageLocalAssetPackage
-  // （assets.stage_local）复制入同一暂存根。两通道随后共用 onConfirm 链。
+  // （assets.stage_local）复制入同一暂存根。两通道随后共用 onConfirm 链；
+  // 上传/暂存失败就地收敛为 pickerError，导入失败不由对话框 catch（父组件
+  // 按页签细化文案经 error 属性回传，pickerError 渲染优先，不得覆盖）。
   assert.match(
     groupUploadSource,
     /<input\s*\n?\s*ref=\{browserInputRef\}\s*\n?\s*type="file"\s*\n?\s*accept="\.zip"\s*\n?\s*hidden/,
@@ -1059,7 +1061,12 @@ test('Expert Team upload dialog wires both channels through unified staging', ()
   assert.match(groupUploadSource, /data-testid="agent-management-group-upload-browser-file-input"/);
   assert.match(
     groupUploadSource,
-    /const stagedPath = browserFile[\s\S]*?uploadAssetPackage\(browserFile\)[\s\S]*?stageLocalAssetPackage\(filePick\.path\);[\s\S]*?await onConfirm\(stagedPath, kind\);/,
+    /stagedPath = browserFile[\s\S]*?uploadAssetPackage\(browserFile\)[\s\S]*?stageLocalAssetPackage\(filePick\.path\);[\s\S]*?await onConfirm\(stagedPath, kind\);/,
+  );
+  // 暂存 catch 以 return 收口 → onConfirm 在其 try 之外，导入错误不落 pickerError。
+  assert.match(
+    groupUploadSource,
+    /setPickerError\(t\(assetIssueKey\(error\)\)\);\s*\n\s*setSubmitting\(false\);\s*\n\s*return;/,
   );
   assert.match(groupUploadSource, /if \(desktopReady\) \{[\s\S]*?acceptPick\(pickFromDroppedFile\(file\)\);[\s\S]*?acceptBrowserFile\(file\);/);
   assert.match(groupUploadSource, /setPickerError\(t\(assetIssueKey\(error\)\)\);/);
