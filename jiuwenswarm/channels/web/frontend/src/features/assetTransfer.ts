@@ -9,6 +9,7 @@
 import { gatewayFetch } from '../services/gatewayFetch';
 import { webRequest } from '../services/webClient';
 import { saveBlobWithResult, type BlobSaveResult } from '../utils/desktopSave';
+import { getWebTransport } from '../utils/env';
 
 export type AssetKind = 'skill' | 'skillpack' | 'agent_template' | 'agent_group' | 'plugin';
 
@@ -69,6 +70,7 @@ const ASSET_ERROR_KEYS = {
   ASSET_ALREADY_EXISTS: 'assetTransfer.errors.alreadyExists',
   ASSET_BUILTIN_READ_ONLY: 'assetTransfer.errors.builtinReadOnly',
   // 以下码仅由前端产生：上传/下载 HTTP 阶段失败（未拿到服务端契约码），
+  // HTTP 传输下桌面暂存被前提校验拒绝（stage_local 无 REST 路由），
   // 以及下载内容与服务端 sha256 不一致的完整性校验失败。
   ASSET_UPLOAD_FAILED: 'assetTransfer.errors.uploadFailed',
   ASSET_DOWNLOAD_FAILED: 'assetTransfer.errors.downloadFailed',
@@ -205,8 +207,21 @@ export async function uploadAssetPackage(file: File, deps: AssetTransferDeps = {
  *  仅 WS 入口：服务端有意不声明 REST 路由（webHttpClient ROUTES 亦有意无
  *  此条目，取舍依据链见该处注释）。调用前提 desktopReady 由桌面壳 pywebview
  *  桥决定（见 useDesktopLocalFilePickerReady），纯浏览器部署恒为 false；
- *  桌面壳传输方式由 app_web._runtime_web_transport 注入，个人版默认 websocket。 */
+ *  桌面壳传输方式由 app_web._runtime_web_transport 注入，个人版默认 websocket。
+ *  该传输前提不只写在注释里，函数体在发请求前做运行时校验（见下）。 */
 export async function stageLocalAssetPackage(path: string, deps: AssetTransferDeps = {}): Promise<string> {
+  // 运行时前提校验（声明与实现一致）：stage_local 有意无 REST 路由，http
+  // 传输下发起必失败，就地收敛为 ASSET_UPLOAD_FAILED 契约码（对话框映射
+  // uploadFailed 文案），替代路由装配层的晦涩报错。受支持链路零影响：
+  // 桌面壳默认 websocket 恒通过；纯浏览器 http 部署 desktopReady 为 false，
+  // 不会走到本函数。回退 uploadAssetPackage 不可行——桌面通道只有路径
+  // 字符串，没有 File 对象可供 multipart 上传。
+  if (getWebTransport() === 'http') {
+    throw new AssetTransferError(
+      'ASSET_UPLOAD_FAILED',
+      'assets.stage_local requires websocket transport; the desktop staging channel has no REST route',
+    );
+  }
   const request = deps.request ?? webRequest;
   const result = await request<{ path?: string }>('assets.stage_local', { path });
   if (typeof result?.path !== 'string' || !result.path) {
