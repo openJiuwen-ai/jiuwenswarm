@@ -285,6 +285,7 @@ def _push_wire(
     event_type: str = "chat.processing_status",
     is_processing: bool = False,
     idle: bool | None = None,
+    is_complete: bool | None = None,
 ) -> dict[str, Any]:
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
@@ -292,7 +293,7 @@ def _push_wire(
         "event_type": event_type,
         "session_id": session_id,
         "is_processing": is_processing,
-        "is_complete": not is_processing,
+        "is_complete": (not is_processing) if is_complete is None else is_complete,
     }
     if idle is not None:
         payload["idle"] = idle
@@ -382,7 +383,7 @@ async def test_deferred_stops_when_touch_misses_or_transport_fails(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_deferred_stops_on_round_end_frame(monkeypatch):
-    """没有 idle 的收口帧停掉后续期。带 idle 的灯帧、team.idle 和 is_processing true 不停。"""
+    """任意 is_processing false 的收口帧停掉后续期，带 idle 的灯帧也停。"""
     _patch_authorize(monkeypatch)
     route = _FakeRoute()
     client = RuntimeRoutedAgentClient(
@@ -405,15 +406,12 @@ async def test_deferred_stops_on_round_end_frame(monkeypatch):
     )
     assert "sess-cron-1" in client._session_keepalives
 
+    # 企业版 team.idle / team.completed 的灯帧带 idle=True：它只让前端保留回复
+    # 连接，不代表还有后台活在跑。灯灭后必须停止 touch，否则会话永不过期、
+    # Pod 永远进不了 idle 池（issue #144）。
     await client._handle_pod_push(
         "http://pod",
         _push_wire("sess-cron-1", is_processing=False, idle=True),
-    )
-    assert "sess-cron-1" in client._session_keepalives
-
-    await client._handle_pod_push(
-        "http://pod",
-        _push_wire("sess-cron-1", is_processing=False),
     )
     assert "sess-cron-1" not in client._session_keepalives
     await asyncio.sleep(0.25)
@@ -434,6 +432,37 @@ async def test_deferred_stops_on_round_end_frame(monkeypatch):
     assert "sess-cron-1" not in client._session_keepalives
     await client.disconnect()
     assert client._session_keepalives == {}
+
+
+@pytest.mark.asyncio
+async def test_deferred_stops_on_unclosed_round_frame(monkeypatch):
+    """按帧收口不依赖 ``is_complete``：字段缺失或为假也停保活。
+
+    生产方所有 ``is_processing=False`` 的 ``chat.processing_status`` 帧
+    ``is_complete`` 恒为 True（``team_helpers._quiet_round_status_payload``
+    等）。这里锁定消费方取舍：只要灯灭就停，避免字段缺失时漏停、会话永不过期
+    导致 Pod 无法回收（issue #144）。
+    """
+    _patch_authorize(monkeypatch)
+    route = _FakeRoute()
+    client = RuntimeRoutedAgentClient(
+        route_client=route,
+        http_client=_DeferredHttp(),
+        touch_interval_seconds=0.2,
+    )
+    await client.connect("http://unused")
+    monkeypatch.setattr(client, "_ensure_pod_push", AsyncMock())
+    await _drain(client, _envelope(method="chat.send"))
+    assert "sess-cron-1" in client._session_keepalives
+
+    await client._handle_pod_push(
+        "http://pod",
+        _push_wire("sess-cron-1", is_processing=False, is_complete=False),
+    )
+    assert "sess-cron-1" not in client._session_keepalives
+    await asyncio.sleep(0.25)
+    assert len(route.touch_calls) == 1
+    await client.disconnect()
 
 
 @pytest.mark.asyncio

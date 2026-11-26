@@ -877,15 +877,14 @@ class RuntimeRoutedAgentClient(AgentServerClient):
     ) -> None:
         """收口帧停掉这个会话的后续期。
 
-        ``idle`` 为真的灯帧表示团队还在这台 Pod 上，只是本轮灯灭了，继续 touch。
-        被按住的 team.idle 不会变成这帧。没有 ``idle`` 的 ``is_processing`` 为假
-        才是后台流真正退出。
+        ``is_processing`` 为假就表示本轮已经没有后台活在跑；``idle`` 只让前端
+        保留回复连接，不改变这一点。灯灭后继续 touch 会让会话永不过期，Pod
+        永远进不了 idle 池而被回收（issue #144）。被按住的 team.idle 不会变成
+        这帧，所以这里可以按帧收口。
         """
         if payload.get("event_type") != "chat.processing_status":
             return
         if payload.get("is_processing") is not False:
-            return
-        if payload.get("idle") is True:
             return
         seen: list[str] = []
         for raw in (wire.get("session_id"), payload.get("session_id")):
