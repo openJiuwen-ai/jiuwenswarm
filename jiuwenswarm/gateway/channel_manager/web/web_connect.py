@@ -51,6 +51,10 @@ _WEB_CONNECTION_USER_ID_ATTR = "_web_connection_user_id"
 
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
 
+# PC(web) 渠道 ask_user 超时兜底：卡片下发后用户长时间不答则取消任务收口。
+# 与 xiaoyi 渠道对齐（48 小时）。
+_WEB_ASK_USER_EXPIRE_S = 48 * 60 * 60
+
 _STREAM_COALESCE_EVENT_TYPES = frozenset({"chat.delta", "chat.reasoning"})
 _STREAM_COALESCE_MAX_FRAMES = 32
 
@@ -191,6 +195,10 @@ class WebChannel(BaseWsChannel):
         # Git diff 监控注册表(设计文档阶段10):由 app_gateway 在启动期注入,
         # handler 通过 ``getattr(channel, "git_watcher_registry", None)`` 防御性读取。
         self.git_watcher_registry: Any = None
+        # ask_user 超时兜底：session_id -> {request_id, task_id, created_at}。
+        # 下发 chat.ask_user_question 时登记，用户作答(chat.send)或超时后清。
+        self._pending_ask_users: dict[str, dict[str, Any]] = {}
+        self._ask_user_timeout_task: asyncio.Task | None = None
 
     @staticmethod
     def _coalescible_stream_frame(
@@ -579,6 +587,88 @@ class WebChannel(BaseWsChannel):
 
     # ── Channel 生命周期 ──────────────────────────────────
 
+    def _ensure_ask_user_timeout_task(self) -> None:
+        """确保 ask_user 超时扫描任务在跑（幂等）。"""
+        if self._ask_user_timeout_task is None or self._ask_user_timeout_task.done():
+            self._ask_user_timeout_task = asyncio.create_task(
+                self._ask_user_timeout_loop(), name="web-ask-user-timeout"
+            )
+
+    def _record_pending_ask_user(self, msg: "Message", payload: dict[str, Any]) -> None:
+        """登记一条待答复 ask_user（下发 chat.ask_user_question 时调用）。"""
+        sid = str(getattr(msg, "session_id", "") or "")
+        if not sid:
+            return
+        self._pending_ask_users[sid] = {
+            "request_id": str(payload.get("request_id") or ""),
+            "task_id": str(getattr(msg, "id", "") or ""),
+            "created_at": time.time(),
+        }
+
+    def _clear_pending_ask_user(self, session_id: str) -> None:
+        """清除某会话的待答 ask_user（用户作答/发新消息/超时后）。"""
+        if session_id:
+            self._pending_ask_users.pop(session_id, None)
+
+    async def _ask_user_timeout_loop(self) -> None:
+        """周期扫描待答 ask_user，超过 _WEB_ASK_USER_EXPIRE_S 未答则取消任务。"""
+        while self._running:
+            try:
+                await asyncio.sleep(60)
+                if not self._running:
+                    return
+                now = time.time()
+                for sid in list(self._pending_ask_users.keys()):
+                    pending = self._pending_ask_users.get(sid)
+                    if not pending:
+                        continue
+                    if now - float(pending.get("created_at") or 0) <= _WEB_ASK_USER_EXPIRE_S:
+                        continue
+                    self._pending_ask_users.pop(sid, None)
+                    await self._cancel_timed_out_ask_user(sid, pending)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("[WebChannel] ask_user 超时扫描异常")
+
+    async def _cancel_timed_out_ask_user(self, session_id: str, pending: dict[str, Any]) -> None:
+        """超时未答 → 路由 CHAT_CANCEL 取消挂起运行（与前端「停止」同链路）。
+
+        终止后 AgentServer 流收尾的终态帧会经 MessageHandler 正常分发回渠道，
+        PC 前端与（若在线/镜像的）手机端随之收口，不再一直 working。
+        """
+        task_id = str(pending.get("task_id") or "")
+        logger.info(
+            "[WebChannel] ask_user 待答复超时（%ds），取消任务 session=%s task_id=%s request_id=%s",
+            _WEB_ASK_USER_EXPIRE_S, session_id, task_id, pending.get("request_id"),
+        )
+        stop_message = Message(
+            id=f"{task_id}:stop",
+            type="req",
+            channel_id=self.channel_id,
+            session_id=session_id,
+            params={
+                "desktop_stop": True,
+                "intent": "cancel",
+                "session_id": session_id,
+                "request_id": task_id,
+            },
+            timestamp=time.time(),
+            ok=True,
+            req_method=ReqMethod.CHAT_CANCEL,
+        )
+        try:
+            if self._on_message_cb is not None:
+                result = self._on_message_cb(stop_message)
+                if inspect.isawaitable(result):
+                    await result
+            else:
+                await self.bus.publish_user_messages(stop_message)
+        except Exception:
+            logger.exception(
+                "[WebChannel] ask_user 超时取消路由失败 session=%s", session_id
+            )
+
     async def start(self) -> None:
         """启动 WebSocket 服务并监听客户端连接.
 
@@ -599,6 +689,7 @@ class WebChannel(BaseWsChannel):
             # 桌面形态：仅管道 server，不监听 TCP（WS 18590 不再存在）
             await self._maybe_start_pipe_server()
             self._running = True
+            self._ensure_ask_user_timeout_task()
             # start() 语义是「常驻直到 stop」：用事件保持，stop() 置位退出
             self._pipe_only_stop = asyncio.Event()
             logger.info("WebChannel 桌面形态：仅命名管道监听（TCP 不监听）")
@@ -626,6 +717,7 @@ class WebChannel(BaseWsChannel):
         # 桌面形态：并行起命名管道 server（cron 通道目标态载体），失败不阻断 WS
         await self._maybe_start_pipe_server()
         self._running = True
+        self._ensure_ask_user_timeout_task()
         logger.info(
             f"WebChannel 已启动: ws://{self.config.host}:{self.config.port}{self.config.path}"
         )
@@ -634,6 +726,9 @@ class WebChannel(BaseWsChannel):
     async def stop(self) -> None:
         """停止 WebSocket 服务并清理连接."""
         self._running = False
+        if self._ask_user_timeout_task is not None and not self._ask_user_timeout_task.done():
+            self._ask_user_timeout_task.cancel()
+            self._ask_user_timeout_task = None
         # 桌面形态（仅管道）：唤醒 start() 的常驻等待
         if self._pipe_only_stop is not None:
             self._pipe_only_stop.set()
@@ -768,6 +863,8 @@ class WebChannel(BaseWsChannel):
         """
         _pl = getattr(msg, "payload", None) or {}
         _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
+        if _et == "chat.ask_user_question" and isinstance(_pl, dict):
+            self._record_pending_ask_user(msg, _pl)
         _has_fanout = bool((getattr(msg, "metadata", None) or {}).get("fan_out_targets"))
         logger.debug(
             "[WebChannel] send() called: id=%s event_type=%s payload_et=%s has_fanout=%s"
@@ -1489,6 +1586,8 @@ class WebChannel(BaseWsChannel):
             if not handler_already_called:
                 return
 
+        if str(method).strip().lower() == "chat.send" and session_id:
+            self._clear_pending_ask_user(str(session_id))
         handled_by_callback = False
         if self._on_message_cb is not None:
             result = self._on_message_cb(user_message)

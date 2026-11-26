@@ -559,6 +559,87 @@ async def test_interaction_cancel_clears_pending_interrupt_state(
     assert response.payload["intent"] == "cancel"
 
 
+@pytest.mark.asyncio
+async def test_interaction_cancel_aborts_suspended_run() -> None:
+    """取消挂起的 ask_user 运行（cancel_round=False）时必须真正 abort。
+
+    回归 2026-11-21「超时取消不生效」：挂起在 ask_user 交互中断上的运行不算
+    活跃流式轮次，cancel_round() 返回 False；此前只清 pending 中断状态、不终止
+    DeepAgent 任务循环 → 运行悬挂、端侧仍显示未取消。修复后应补 abort。
+    """
+    loop_session = MagicMock()
+    loop_session.get_session_id.return_value = "tui_sess_1"
+    loop_session.commit = AsyncMock()
+    interruption_state = _interruption_state("ask_user")
+    loop_session.get_state.return_value = interruption_state
+    context = MagicMock()
+    context.get_messages.return_value = [
+        SimpleNamespace(tool_calls=[]),
+        interruption_state.ai_message,
+    ]
+    context_engine = MagicMock()
+    context_engine.get_context.return_value = context
+    context_engine.save_contexts = AsyncMock()
+
+    instance = MagicMock()
+    instance._interaction_started = True
+    instance._loop_session = loop_session
+    instance.react_agent = SimpleNamespace(context_engine=context_engine)
+    instance.goal_manager = None
+    instance.cancel_round = AsyncMock(return_value=False)
+
+    rail = MagicMock()
+    rail.get_cancelled_tool_results.return_value = []
+    adapter = _make_adapter(
+        _active_session_ids={},
+        _stream_event_rail=rail,
+        _instance=instance,
+    )
+    # 挂起运行仍在跑（stream task 未结束）→ 必须 abort 终止
+    adapter._is_deep_agent_executing_for_session = MagicMock(return_value=True)
+    abort_spy = AsyncMock()
+    adapter._abort_shared_agent_if_safe = abort_spy
+
+    response = await adapter.process_interrupt(_build_cancel_request())
+
+    abort_spy.assert_awaited_once()
+    assert abort_spy.await_args.args[1] == "cancel"
+    assert response.payload["intent"] == "cancel"
+
+
+@pytest.mark.asyncio
+async def test_interaction_cancel_keeps_instance_for_active_round() -> None:
+    """有活跃轮次可取消（cancel_round=True）时不额外 abort，保留实例复用语义。"""
+    loop_session = MagicMock()
+    loop_session.get_session_id.return_value = "tui_sess_1"
+    loop_session.commit = AsyncMock()
+    loop_session.get_state.return_value = None
+    context_engine = MagicMock()
+    context_engine.save_contexts = AsyncMock()
+
+    instance = MagicMock()
+    instance._interaction_started = True
+    instance._loop_session = loop_session
+    instance.react_agent = SimpleNamespace(context_engine=context_engine)
+    instance.goal_manager = None
+    instance.cancel_round = AsyncMock(return_value=True)
+
+    rail = MagicMock()
+    rail.get_cancelled_tool_results.return_value = []
+    adapter = _make_adapter(
+        _active_session_ids={},
+        _stream_event_rail=rail,
+        _instance=instance,
+    )
+    adapter._is_deep_agent_executing_for_session = MagicMock(return_value=True)
+    abort_spy = AsyncMock()
+    adapter._abort_shared_agent_if_safe = abort_spy
+
+    await adapter.process_interrupt(_build_cancel_request())
+
+    abort_spy.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("session_id", "tool_names"),
     [
