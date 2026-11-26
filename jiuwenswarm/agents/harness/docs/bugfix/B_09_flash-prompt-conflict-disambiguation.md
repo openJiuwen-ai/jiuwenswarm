@@ -4,7 +4,7 @@
 | --- | --- |
 | 类型 | bugfix |
 | 日期 | 2026-11-25 |
-| 关联规约 | [S_05 agent skill rails](../../../server/runtime/skill/docs/specs/S_05_agent-skill-rails.md) |
+| 关联规约 | [S_05 agent skill rails](../../../../server/runtime/skill/docs/specs/S_05_agent-skill-rails.md) |
 
 Flash 系统提示词中 5 处规则互相打架，模型会按任意一条执行：
 

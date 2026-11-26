@@ -4,7 +4,7 @@
 | --- | --- |
 | 类型 | bugfix |
 | 日期 | 2026-11-25 |
-| 关联规约 | [S_05 agent skill rails](../../../server/runtime/skill/docs/specs/S_05_agent-skill-rails.md) |
+| 关联规约 | [S_05 agent skill rails](../../../../server/runtime/skill/docs/specs/S_05_agent-skill-rails.md) |
 
 relay 产品包（`RelayClawAgentService.ts` 拼装、经 `system_prompt` 下发）与 flash 自有段存在两处重复，根因是去重只做单向、且产品补丁块持续新增：
 

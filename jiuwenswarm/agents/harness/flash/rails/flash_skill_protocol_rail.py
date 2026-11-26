@@ -271,8 +271,11 @@ class FlashSkillProtocolRail(DeepAgentRail):
                 fallback_text = fixed_text
             if new_text is None:
                 guard_miss = True
-                # 工具名守卫未命中时保留「消歧后的正文」，不回退掉已生效的纪律修正。
+                # 工具名守卫未命中时保留「消歧后的正文」，不回退掉已生效的纪律修正；
+                # 消歧确有改动同样置 changed，否则 rewritten_content 会被下方
+                # ``if not changed`` 整体丢弃。
                 rewritten_content[lang] = fallback_text
+                changed = changed or (fallback_text != text)
             else:
                 rewritten_content[lang] = new_text
                 changed = changed or (new_text != text)

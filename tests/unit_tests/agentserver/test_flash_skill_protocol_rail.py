@@ -23,6 +23,7 @@ import pytest
 
 from jiuwenswarm.agents.harness.flash.rails.flash_skill_protocol_rail import (
     FlashSkillProtocolRail,
+    _BATCH_UPDATE_LINE,
     _fix_todo_status_discipline,
     _rewrite_todo_names,
 )
@@ -145,6 +146,32 @@ async def test_before_model_call_guard_miss_keeps_original() -> None:
     section = agent.system_prompt_builder.get_section("skill_protocol")
     assert section.content is original
     assert len(agent.system_prompt_builder.get_all_sections()) == 1
+
+
+@pytest.mark.asyncio
+async def test_discipline_fix_kept_when_tool_name_guard_misses() -> None:
+    """消歧命中、工具名守卫未命中时，已生效的消歧仍须写回（CR-11000-02）。
+
+    批量更新句本身带旧工具名 ``todo_modify``；删掉它之后全文已无旧工具名，
+    ``_rewrite_todo_names`` 返回 None。守卫分支若不置 ``changed``，下方
+    ``if not changed`` 会把消歧结果整体丢弃，原文（含批量更新句）被原样保留。
+    """
+    batch = _BATCH_UPDATE_LINE["cn"]
+    text = (
+        "2. **必须使用 todo**：保持状态。\n"
+        f"{batch}"
+        "3. **严格顺序**：按序推进。\n"
+    )
+    assert "todo_create" not in text and text.count("todo_modify") == 1
+
+    agent = _FakeAgent([_sec("skill_protocol", 45, {"cn": text})])
+    rail = FlashSkillProtocolRail()
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+
+    section = agent.system_prompt_builder.get_section("skill_protocol")
+    assert section.content["cn"] == text.replace(batch, "")
+    assert "统一批量更新状态" not in section.content["cn"]
 
 
 @pytest.mark.asyncio
