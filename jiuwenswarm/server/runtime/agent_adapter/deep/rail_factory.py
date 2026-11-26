@@ -366,10 +366,12 @@ def _build_fact_premise_observation_rail(
             else {}
         )
         obs_cfg = (
-            guard_cfg.get("fact_premise_observation", {})
+            guard_cfg.get("fact_premise_observation")
             if isinstance(guard_cfg, dict)
             else {}
         )
+        if not isinstance(obs_cfg, dict):
+            obs_cfg = {}
         if not _config_bool(obs_cfg.get("enabled"), False):
             logger.info(
                 "[JiuWenSwarmDeepAdapter] FactPremiseObservationRail disabled by config"

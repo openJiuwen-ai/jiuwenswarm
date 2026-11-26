@@ -442,3 +442,17 @@ async def test_pure_negated_event_name_no_alert(monkeypatch):
     calls = _capture(monkeypatch)
     await rail.after_model_call(_model_ctx("2028年不会举办世界冠军赛。", ctx.extra))
     assert len(calls) == 0
+
+
+def test_build_observation_rail_scalar_config_does_not_throw():
+    """fact_premise_observation 为标量（false/None）时，builder 不抛异常、返回 None。"""
+    from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import (
+        _build_fact_premise_observation_rail,
+    )
+
+    assert _build_fact_premise_observation_rail(
+        {"execution_guard": {"fact_premise_observation": False}}
+    ) is None
+    assert _build_fact_premise_observation_rail(
+        {"execution_guard": {"fact_premise_observation": None}}
+    ) is None

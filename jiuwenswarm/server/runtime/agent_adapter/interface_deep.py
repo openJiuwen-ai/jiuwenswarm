@@ -8875,10 +8875,12 @@ class JiuWenSwarmDeepAdapter:
             else {}
         )
         obs_cfg = (
-            guard_cfg.get("fact_premise_observation", {})
+            guard_cfg.get("fact_premise_observation")
             if isinstance(guard_cfg, dict)
             else {}
         )
+        if not isinstance(obs_cfg, dict):
+            obs_cfg = {}
         if _config_bool(obs_cfg.get("enabled"), False):
             rail_infos.append(
                 _RailBuildInfo(
