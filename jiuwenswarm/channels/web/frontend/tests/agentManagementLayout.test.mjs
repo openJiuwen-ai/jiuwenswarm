@@ -98,6 +98,10 @@ const groupUploadSource = readFileSync(
 );
 const inputAreaSource = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+// 真实语言包全量内容：下方 init 的内联 resources 只覆盖 agentManagement 骨架键；
+// 涉及其他命名空间的用例（如导出按钮的 assetTransfer.actions.export）在用例内
+// 经 addResourceBundle 全量合入后断言，文案以真实语言包为准。勿把这类键误判为
+// 「测试资源未覆盖」而复制进内联 resources。
 const zhLocale = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
 const enLocale = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
 
@@ -425,6 +429,9 @@ for (const [source, installed, visible] of [
     const { DefinitionDetailPage } =
       await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
     const { JSDOM } = await import('jsdom');
+    // 文案断言（assetTransfer.actions.export）以真实语言包为准：用例内合入，不依赖执行顺序。
+    i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+    i18next.addResourceBundle('en', 'translation', enLocale, true, true);
     const detail = {
       id: 'test',
       runtimePackageName: 'test',
@@ -472,6 +479,9 @@ for (const [source, installed, visible] of [
     const { AgentGroupDetailPage } =
       await import('../node_modules/.cache/agent-management-layout/AgentGroupDetailPage.mjs');
     const { JSDOM } = await import('jsdom');
+    // 文案断言（assetTransfer.actions.export）以真实语言包为准：用例内合入，不依赖执行顺序。
+    i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+    i18next.addResourceBundle('en', 'translation', enLocale, true, true);
     const detail = {
       id: 'team-test',
       displayName: 'Team Test',
