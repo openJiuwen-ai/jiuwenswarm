@@ -81,7 +81,34 @@ import type {
   SkillRebuildResponse,
 } from './types';
 
-function errorToMessage(error: unknown): string {
+function errorDetailKey(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const direct = (error as { detailKey?: unknown }).detailKey;
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  const payload = (error as { payload?: { detail_key?: unknown } }).payload;
+  const fromPayload = payload?.detail_key;
+  return typeof fromPayload === 'string' && fromPayload.trim() ? fromPayload.trim() : undefined;
+}
+
+function errorDetailParams(error: unknown): Record<string, unknown> | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const direct = (error as { detailParams?: unknown }).detailParams;
+  if (direct && typeof direct === 'object') return direct as Record<string, unknown>;
+  const payload = (error as { payload?: { detail_params?: unknown } }).payload;
+  const fromPayload = payload?.detail_params;
+  return fromPayload && typeof fromPayload === 'object'
+    ? (fromPayload as Record<string, unknown>)
+    : undefined;
+}
+
+function errorToMessage(
+  error: unknown,
+  t?: (key: string, params?: Record<string, unknown>) => string,
+): string {
+  const detailKey = errorDetailKey(error);
+  if (detailKey && t) {
+    return t(detailKey, errorDetailParams(error) ?? {});
+  }
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -328,7 +355,7 @@ export function SkillPanel({
 
   const showErrorToast = useCallback(
     (error: unknown, fallbackKey: string) => {
-      showMessage('error', errorToMessage(error) || t(fallbackKey));
+      showMessage('error', errorToMessage(error, t) || t(fallbackKey));
     },
     [showMessage, t],
   );
@@ -807,17 +834,31 @@ export function SkillPanel({
   }, [t]);
 
   const createUploadError = useCallback(
-    (code: string | undefined, status: number) => {
+    (
+      code: string | undefined,
+      status: number,
+      detailKey?: string,
+      detailParams?: Record<string, unknown>,
+    ) => {
       let message = t('skills.errors.uploadFailed');
-      // 服务端写入失败也使用 SKILL_INVALID_PACKAGE，须先区分 HTTP 状态。
-      if (status === 400) {
+      if (detailKey && typeof detailKey === 'string' && detailKey.trim()) {
+        message = t(detailKey.trim(), detailParams ?? {});
+      } else if (status === 413 || code === 'SKILL_FILE_TOO_LARGE') {
+        message = t('skills.errors.skillPackageTooLarge', detailParams ?? {});
+      } else if (status === 400) {
+        // 服务端写入失败也使用 SKILL_INVALID_PACKAGE，须先区分 HTTP 状态。
         if (code === 'SKILL_UNSAFE_PATH') {
           message = t('skills.errors.uploadUnsafePath');
         } else if (code === 'SKILL_INVALID_PACKAGE') {
           message = t('skills.errors.uploadInvalidRequest');
         }
       }
-      return Object.assign(new Error(message), { code, status });
+      return Object.assign(new Error(message), {
+        code,
+        status,
+        detailKey: detailKey?.trim() || undefined,
+        detailParams,
+      });
     },
     [t],
   );
@@ -829,7 +870,12 @@ export function SkillPanel({
       const uploadResp = await gatewayFetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
       const uploadData = await uploadResp.json();
       if (!uploadResp.ok || !uploadData.path) {
-        throw createUploadError(uploadData.code, uploadResp.status);
+        throw createUploadError(
+          uploadData.code,
+          uploadResp.status,
+          uploadData.detail_key,
+          uploadData.detail_params,
+        );
       }
       return uploadData.path as string;
     },
@@ -876,6 +922,8 @@ export function SkillPanel({
             message?: string;
             skill?: { name?: string };
             code?: string;
+            detail_key?: string;
+            detail_params?: Record<string, unknown>;
           }>(
             'skills.import_upload',
             withSession({
@@ -886,8 +934,12 @@ export function SkillPanel({
           if (!data.success) {
             const err = new Error(data.detail || data.message || t('skills.errors.importFailed')) as Error & {
               code?: string;
+              detailKey?: string;
+              detailParams?: Record<string, unknown>;
             };
             err.code = data.code;
+            err.detailKey = data.detail_key;
+            err.detailParams = data.detail_params;
             throw err;
           }
           return data;
@@ -900,9 +952,10 @@ export function SkillPanel({
           const code = (error as Error & { code?: string }).code;
           if (code === 'SKILL_ALREADY_EXISTS' || code === 'SKILL_IMPORT_OVERWRITE_REQUIRED') {
             const msg = error instanceof Error ? error.message : String(error);
+            const localized = errorToMessage(error, t) || msg;
             const confirmMessage = confirmOverwrite
-              ? msg
-              : `${msg}\n${t('skills.overwriteConfirm')}`;
+              ? localized
+              : `${localized}\n${t('skills.overwriteConfirm')}`;
             const overwrite = confirmOverwrite
               ? await confirmOverwrite(confirmMessage)
               : window.confirm(confirmMessage);
@@ -1034,7 +1087,7 @@ export function SkillPanel({
             'error',
             skillName
               ? t('skills.errors.knowledgeSkillExists', { name: skillName })
-              : errorToMessage(error) || t('skills.errors.knowledgeSkillExistsGeneric'),
+              : errorToMessage(error, t) || t('skills.errors.knowledgeSkillExistsGeneric'),
           );
           return;
         }
@@ -1795,6 +1848,7 @@ export function SkillPanel({
           actionTarget={actionTarget}
           onUpload={enterpriseEdition ? handleEnterpriseSkillUpload : handleSkillUpload}
           onClose={() => setUploadSkillModalOpen(false)}
+          onRejectFile={(reasonKey) => showMessage('error', t(reasonKey))}
         />
       )}
       {overwritePrompt && (
