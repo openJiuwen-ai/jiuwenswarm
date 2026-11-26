@@ -72,6 +72,7 @@ export function DefinitionUploadDialog({
       const valid = kind === 'group' ? isAgentGroupUploadFilename(pick.filename) : isAgentUploadFilename(pick.filename);
       if (!valid) {
         setFilePick(null);
+        setBrowserFile(null);
         setPickerError(
           t(
             kind === 'group'
@@ -81,7 +82,10 @@ export function DefinitionUploadDialog({
         );
         return;
       }
+      // 桌面路径选中必须清掉残留的浏览器 File：desktopReady 可能在弹窗存活期
+      // 由 false 翻转为 true，否则确认时 browserFile 分支优先，误传旧文件。
       setPickerError(null);
+      setBrowserFile(null);
       setFilePick(pick);
     },
     [kind, t],
