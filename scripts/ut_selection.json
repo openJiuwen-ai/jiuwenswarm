@@ -1,9 +1,20 @@
 {
   "baseline": [
+    "tests/unit_tests/agentserver/test_session_input_adapter.py",
+    "tests/unit_tests/agentserver/test_worker_entrypoint.py",
+    "tests/unit_tests/agentserver/test_worker_runtime_ownership.py",
     "tests/unit_tests/common/test_config_parse_cache.py",
+    "tests/unit_tests/common/test_model_config_validation.py",
     "tests/unit_tests/common/test_protocol_ids.py",
+    "tests/unit_tests/gateway/test_session_login_owner.py",
+    "tests/unit_tests/runtime/test_model_catalog.py",
     "tests/unit_tests/runtime/test_request.py",
     "tests/unit_tests/runtime/test_session_input.py",
+    "tests/unit_tests/runtime/test_session_lifecycle_participants.py",
+    "tests/unit_tests/runtime/test_session_provision_contract.py",
+    "tests/unit_tests/runtime/test_workspace_sqlite.py",
+    "tests/unit_tests/server/test_gateway_adapter.py",
+    "tests/unit_tests/server/test_session_repository.py",
     "tests/unit_tests/test_mode_matrix.py"
   ],
   "worker_groups": {},
