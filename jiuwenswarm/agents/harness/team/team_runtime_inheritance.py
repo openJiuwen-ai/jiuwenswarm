@@ -31,6 +31,7 @@ from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+from jiuwenswarm.agents.harness.common.rails.todo_policy import build_product_task_planning_kwargs
 from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail import TeamWorkspaceReportPathRail
 from jiuwenswarm.common.config import (
     get_config,
@@ -211,7 +212,7 @@ def build_member_rails(
 
     try:
         if role != "leader":
-            rail = TaskPlanningRail()
+            rail = TaskPlanningRail(**build_product_task_planning_kwargs())
             rails_list.append(rail)
             logger.info("[TeamRuntime] TaskPlanningRail created")
     except Exception as exc:

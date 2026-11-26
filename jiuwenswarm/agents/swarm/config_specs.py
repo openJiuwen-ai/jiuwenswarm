@@ -42,6 +42,7 @@ from openjiuwen.harness.rails import SkillUseRail
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.rails.todo_policy import build_product_task_planning_kwargs
 from jiuwenswarm.common.config import (
     ASCEND_AFFINITY_PROVIDER,
     get_default_model_provider,
@@ -384,6 +385,7 @@ def _member_evolution_rail_params(config: dict[str, Any]) -> dict[str, Any]:
 
 # Per-element attribute params, keyed by provider name; empty for parameterless.
 _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    registry.TASK_PLANNING: lambda _config: build_product_task_planning_kwargs(),
     registry.CONTEXT_PROCESSOR: _context_processor_params,
     registry.CODE_PROJECT_MEMORY: lambda c: {
         "additional_directories": _additional_directories(c)

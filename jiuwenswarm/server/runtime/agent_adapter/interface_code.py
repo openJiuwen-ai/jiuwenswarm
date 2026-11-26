@@ -31,7 +31,8 @@ from openjiuwen.harness.rails import (
     AgentModeRail,
     CodingMemoryRail,
     SysOperationRail,
-    LspRail
+    LspRail,
+    TaskPlanningRail,
 )
 from openjiuwen.harness.lsp import InitializeOptions
 from openjiuwen.harness.schema.config import SubAgentConfig
@@ -98,6 +99,7 @@ from jiuwenswarm.common.coding_memory_paths import (
 from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import CodeAgentRail
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.agents.harness.common.memory.workspace import configure_workspace_memory
+from jiuwenswarm.agents.harness.common.rails.todo_policy import build_product_task_planning_kwargs
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
@@ -832,7 +834,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     def _build_code_task_planning_rail() -> CodeTaskPlanningRail | None:
         """Use the same todo tools and task-planning prompt as work mode."""
         try:
-            return CodeTaskPlanningRail()
+            return CodeTaskPlanningRail(**build_product_task_planning_kwargs())
         except Exception as exc:
             logger.warning("[JiuwenSwarmCodeAdapter] CodeTaskPlanningRail create failed: %s", exc)
             return None
@@ -1060,13 +1062,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             # code_agent subagent — 按配置启用
             code_agent_cfg = subagents_cfg.get("code_agent")
             if self._is_subagent_enabled(code_agent_cfg):
-                code_agent_rails = None
+                code_agent_rails = [
+                    SysOperationRail(),
+                    TaskPlanningRail(**build_product_task_planning_kwargs()),
+                ]
                 # 复用主 Agent 已构建的 CodingMemoryRail
                 coding_memory_rail = self._coding_memory_rail
                 if coding_memory_rail is not None:
-                    # SysOperationRail is default rail for code_agent;
-                    # passing rails overrides defaults, must include it explicitly
-                    code_agent_rails = [SysOperationRail(), coding_memory_rail]
+                    code_agent_rails.append(coding_memory_rail)
                 code_spec = build_code_agent_config(
                     model,
                     workspace=workspace,

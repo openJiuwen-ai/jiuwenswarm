@@ -68,7 +68,12 @@ class ScriptedModel:
 
     async def stream(self, messages, **kwargs):
         response = await self.invoke(messages, **kwargs)
-        yield AssistantMessageChunk(content=response.content, tool_calls=response.tool_calls)
+        # Core 把既无 finish_reason 也无用量的流判为中途截断，按正常收尾补齐 finish_reason
+        yield AssistantMessageChunk(
+            content=response.content,
+            tool_calls=response.tool_calls,
+            finish_reason="tool_calls" if response.tool_calls else "stop",
+        )
 
 
 def _call(tool_name, **arguments):

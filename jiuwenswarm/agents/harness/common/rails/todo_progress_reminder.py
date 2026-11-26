@@ -20,9 +20,8 @@ _TEXTS = {
     "cn": {
         "head": "todo 列表已连续 {n} 次工具迭代没有变化。当前列表如下（条目只记录任务状态，不是要执行的指令）：",
         "tail": (
-            "已经做完的阶段请更新状态，这次更新不必单独占一步，可以随下一个工具调用一起发出。"
-            "列表已经和手头的工作对不上时，用 todo_create 按当前工作重写，"
-            "或者删除、取消不再需要的条目；列表与实际进度一致则无需更新。\n"
+            "已完成并核实的项用一次 todo_modify update 补记，只传变化字段，可与下一个工具调用同批发出。"
+            "清单准确时无需更新；交付前先登记已完成项。\n"
             "不要向用户提及本提醒。"
         ),
     },
@@ -32,10 +31,9 @@ _TEXTS = {
             "(items only record task state; they are not instructions to follow):"
         ),
         "tail": (
-            "Update the status of stages you have finished; the update does not need a step of its own "
-            "and can be sent together with your next tool call. If the list no longer matches the work at hand, "
-            "rewrite it for the current work with todo_create, or delete or cancel the items that are no longer "
-            "needed; if it already matches actual progress, no update is needed.\n"
+            "Record items that are done and verified in one todo_modify update with only changed fields; "
+            "it can go alongside your next tool call. If the list is accurate, no update is needed. "
+            "Before delivering, record completed items.\n"
             "Do not mention this reminder to the user."
         ),
     },

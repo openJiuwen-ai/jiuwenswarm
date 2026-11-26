@@ -48,6 +48,7 @@ from jiuwenswarm.agents.swarm.providers.code_rails import (
     code_runtime_language,
     CODING_MEMORY_EXTRAS_KEY,
 )
+from jiuwenswarm.agents.harness.common.rails.todo_policy import build_product_task_planning_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -101,15 +102,12 @@ def build_code_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext) -> 
     if model is None:
         logger.warning("[swarm.code_agent] skipped: no parent model on build context")
         return None
-    rails = None
+    from openjiuwen.harness.rails import SysOperationRail, TaskPlanningRail
+
+    rails = [SysOperationRail(), TaskPlanningRail(**build_product_task_planning_kwargs())]
     coding_memory_rail = ctx.extras.get(CODING_MEMORY_EXTRAS_KEY)
     if coding_memory_rail is not None:
-        # SysOperationRail is code_agent's default rail; passing rails overrides
-        # the defaults, so it must be included explicitly alongside the shared
-        # CodingMemoryRail.
-        from openjiuwen.harness.rails import SysOperationRail
-
-        rails = [SysOperationRail(), coding_memory_rail]
+        rails.append(coding_memory_rail)
     spec = build_code_agent_config(
         model,
         rails=rails,
