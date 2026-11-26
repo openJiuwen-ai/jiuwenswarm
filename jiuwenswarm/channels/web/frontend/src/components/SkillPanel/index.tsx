@@ -844,7 +844,16 @@ export function SkillPanel({
       if (detailKey && typeof detailKey === 'string' && detailKey.trim()) {
         message = t(detailKey.trim(), detailParams ?? {});
       } else if (status === 413 || code === 'SKILL_FILE_TOO_LARGE') {
-        message = t('skills.errors.skillPackageTooLarge', detailParams ?? {});
+        // 网关/旧后端可能只回 413 无 detail_params；缺插值时回退通用文案，避免露出 {{sizeMB}}。
+        if (
+          detailParams &&
+          detailParams.sizeMB !== undefined &&
+          detailParams.limitMB !== undefined
+        ) {
+          message = t('skills.errors.skillPackageTooLarge', detailParams);
+        } else {
+          message = t('skills.errors.uploadFailed');
+        }
       } else if (status === 400) {
         // 服务端写入失败也使用 SKILL_INVALID_PACKAGE，须先区分 HTTP 状态。
         if (code === 'SKILL_UNSAFE_PATH') {

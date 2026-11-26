@@ -6568,8 +6568,7 @@ class SkillManager:
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_METADATA,
                 "无法解析 SKILL.md",
-                detail_key="skills.errors.invalidMetadata",
-                detail_params={"error": "无法解析 SKILL.md"},
+                detail_key="skills.errors.invalidMetadataUnparsable",
             )
         if str(meta.get("kind") or "").strip().casefold() == "skillpack":
             if not allow_skillpack:
@@ -9489,10 +9488,8 @@ class SkillManager:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 目录深度超过限制（{_SKILL_ZIP_MAX_PATH_DEPTH}）",
-                    detail_key="skills.errors.uploadUnpackFailed",
-                    detail_params={
-                        "error": f"ZIP 目录深度超过限制（{_SKILL_ZIP_MAX_PATH_DEPTH}）",
-                    },
+                    detail_key="skills.errors.uploadZipDepthExceeded",
+                    detail_params={"limit": _SKILL_ZIP_MAX_PATH_DEPTH},
                 )
             dest_path = dest_root.joinpath(*rel.parts)
             try:
@@ -9508,10 +9505,8 @@ class SkillManager:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 文件数量超过限制（{_SKILL_ZIP_MAX_FILE_COUNT}）",
-                    detail_key="skills.errors.uploadUnpackFailed",
-                    detail_params={
-                        "error": f"ZIP 文件数量超过限制（{_SKILL_ZIP_MAX_FILE_COUNT}）",
-                    },
+                    detail_key="skills.errors.uploadZipFileCountExceeded",
+                    detail_params={"limit": _SKILL_ZIP_MAX_FILE_COUNT},
                 )
             declared = int(getattr(info, "file_size", 0) or 0)
             if declared > _SKILL_ZIP_MAX_SINGLE_FILE_BYTES:

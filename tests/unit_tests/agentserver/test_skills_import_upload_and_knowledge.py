@@ -246,6 +246,62 @@ def test_upload_temp_too_large_has_detail_key() -> None:
     )
 
 
+def test_safe_extract_zip_depth_exceeded_has_detail_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.server.runtime.skill import skill_manager as sm
+
+    monkeypatch.setattr(sm, "_SKILL_ZIP_MAX_PATH_DEPTH", 2)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a/b/c.txt", b"x")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+        with pytest.raises(SkillRpcError) as exc:
+            SkillManager._safe_extract_zip_members_into(zf, dest.resolve())
+    assert exc.value.code == ERROR_SKILL_FILE_TOO_LARGE
+    assert exc.value.detail_key == "skills.errors.uploadZipDepthExceeded"
+    assert exc.value.detail_params == {"limit": 2}
+
+
+def test_safe_extract_zip_file_count_exceeded_has_detail_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.server.runtime.skill import skill_manager as sm
+
+    monkeypatch.setattr(sm, "_SKILL_ZIP_MAX_FILE_COUNT", 1)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.txt", b"1")
+        zf.writestr("b.txt", b"2")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+        with pytest.raises(SkillRpcError) as exc:
+            SkillManager._safe_extract_zip_members_into(zf, dest.resolve())
+    assert exc.value.code == ERROR_SKILL_FILE_TOO_LARGE
+    assert exc.value.detail_key == "skills.errors.uploadZipFileCountExceeded"
+    assert exc.value.detail_params == {"limit": 1}
+
+
+def test_assert_skill_package_safe_unparsable_skill_md(
+    manager: SkillManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill_dir = tmp_path / "demo-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: demo\n---\n# Body\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(SkillManager, "_parse_skill_md", staticmethod(lambda _path: None))
+    with pytest.raises(SkillRpcError) as exc:
+        manager._assert_skill_package_safe(skill_dir)
+    assert exc.value.code == ERROR_SKILL_INVALID_METADATA
+    assert exc.value.detail_key == "skills.errors.invalidMetadataUnparsable"
+    assert exc.value.detail_params == {}
+
+
 @pytest.mark.asyncio
 async def test_create_from_knowledge_xor(manager: SkillManager) -> None:
     with pytest.raises(SkillRpcError) as exc:
