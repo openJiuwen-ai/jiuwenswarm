@@ -1,20 +1,23 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import type { TimelineDisplayItem } from '../../features/chatTimeline/projectTimelineItems';
+import {
+  acquireSessionViewportToken,
+  isScrollAtBottom,
+  releaseSessionViewportToken,
+  type SessionViewportToken,
+  type TimelineViewportState,
+} from '../../features/chatTimeline/sessionViewportCache';
 
 const ROW_GAP = 8;
 const ESTIMATED_ROW_HEIGHT = 120;
-
-export interface TimelineViewportState {
-  measurements: VirtualItem[];
-  offset: number;
-}
 
 interface VirtualTimelineProps {
   items: TimelineDisplayItem[];
   renderItem: (item: TimelineDisplayItem) => ReactNode;
   initialState?: TimelineViewportState;
-  onSaveState: (state: TimelineViewportState) => void;
+  viewportSessionId?: string | null;
+  onSaveState: (state: TimelineViewportState, token: SessionViewportToken | null) => void;
   canLoadOlderHistory: boolean;
   historyRequestKey: string;
   onLoadOlderHistory?: () => void | Promise<void>;
@@ -24,13 +27,14 @@ export function VirtualTimeline({
   items,
   renderItem,
   initialState,
+  viewportSessionId = null,
   onSaveState,
   canLoadOlderHistory,
   historyRequestKey,
   onLoadOlderHistory,
 }: VirtualTimelineProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [scrollMargin, setScrollMargin] = useState(0);
+  const [scrollMargin, setScrollMargin] = useState<number | null>(null);
   const getScrollElement = useCallback(
     () => containerRef.current?.closest<HTMLElement>('[data-timeline-scroll-root]') ?? null,
     [],
@@ -47,7 +51,7 @@ export function VirtualTimeline({
     initialRect: { width: 0, height: 1 },
     gap: ROW_GAP,
     overscan: 5,
-    scrollMargin,
+    scrollMargin: scrollMargin ?? 0,
     anchorTo: 'end',
     // Keep size and positions in the same measurement frame without flushing React from row refs.
     directDomUpdates: true,
@@ -63,17 +67,30 @@ export function VirtualTimeline({
   );
   const rows = virtualizer.getVirtualItems();
   const saveStateRef = useRef(onSaveState);
+  const anchorRestoredRef = useRef(false);
   saveStateRef.current = onSaveState;
 
-  useLayoutEffect(
-    () => () => {
-      saveStateRef.current({
-        measurements: virtualizer.takeSnapshot(),
-        offset: virtualizer.scrollOffset ?? 0,
-      });
-    },
-    [virtualizer],
-  );
+  useLayoutEffect(() => {
+    const token = acquireSessionViewportToken(viewportSessionId ?? '');
+    return () => {
+      try {
+        const scrollElement = getScrollElement();
+        const offset = scrollElement?.scrollTop ?? virtualizer.scrollOffset ?? 0;
+        const anchor = virtualizer.getVirtualItemForOffset(offset);
+        saveStateRef.current({
+          measurements: virtualizer.takeSnapshot(),
+          offset,
+          atBottom: scrollElement ? isScrollAtBottom(scrollElement) : false,
+          ...(anchor ? {
+            anchorKey: String(anchor.key),
+            anchorOffset: offset - anchor.start,
+          } : {}),
+        }, token);
+      } finally {
+        releaseSessionViewportToken(token);
+      }
+    };
+  }, [virtualizer, viewportSessionId]);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -93,6 +110,21 @@ export function VirtualTimeline({
     if (container.parentElement) observer.observe(container.parentElement);
     return () => observer.disconnect();
   }, [getScrollElement]);
+
+  useLayoutEffect(() => {
+    if (scrollMargin === null || anchorRestoredRef.current) return;
+    anchorRestoredRef.current = true;
+    if (initialState?.atBottom) return;
+    const anchorKey = initialState?.anchorKey;
+    if (!anchorKey) return;
+
+    const anchorIndex = items.findIndex((item) => item.key === anchorKey);
+    const anchor = anchorIndex >= 0 ? virtualizer.measurementsCache[anchorIndex] : undefined;
+    const target = anchor?.key === anchorKey
+      ? anchor.start + (initialState?.anchorOffset ?? 0)
+      : initialState?.offset;
+    if (target !== undefined) virtualizer.scrollToOffset(target);
+  }, [initialState, items, scrollMargin, virtualizer]);
 
   // The virtualizer owns prepend anchoring. Loading older data is independent
   // of which rows happen to be mounted, including a history shorter than a page.

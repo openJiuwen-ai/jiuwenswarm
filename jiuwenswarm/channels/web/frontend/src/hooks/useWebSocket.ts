@@ -5,6 +5,7 @@
  */
 
 import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
+import { deleteSessionViewport } from '../features/chatTimeline/sessionViewportCache';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import { mayProcessingTrueFrameRelight } from '../features/interruptSettleGuard';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
@@ -4938,7 +4939,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on<ArchiveResourceEventPayload>('session.unarchived', () => {
         scheduleArchiveWorkspaceRefresh(true);
       }),
-      webClient.on<ArchiveResourceEventPayload>('session.deleted', () => {
+      webClient.on<ArchiveResourceEventPayload>('session.deleted', ({ payload }) => {
+        const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+        if (sessionId) deleteSessionViewport(sessionId);
         scheduleArchiveWorkspaceRefresh(false);
       }),
       // 项目移除/恢复会连带改变其会话与定时任务的可见性:隐藏时任务被停用并

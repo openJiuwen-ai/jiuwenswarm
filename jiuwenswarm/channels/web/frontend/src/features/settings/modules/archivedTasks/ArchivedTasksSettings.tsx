@@ -17,6 +17,7 @@ import {
   getArchivedSessionTitle,
 } from '../../../../features/workspace/archivedTaskGrouping';
 import { projectRegistryClient } from '../../../../features/workspace/projectRegistryClient';
+import { deleteSessionViewport } from '../../../../features/chatTimeline/sessionViewportCache';
 import { useArchivedTaskLists } from './useArchivedTaskLists';
 import './ArchivedTasksSettings.css';
 
@@ -125,11 +126,13 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
     setPendingActions((prev) => ({ ...prev, [actionKey]: 'delete' }));
     try {
       await archivedTaskClient.deleteSession(session.session_id);
+      deleteSessionViewport(session.session_id);
       removeLocalSession(session.session_id);
       showToast('success', t('settingsPanel.archivedTasks.sessionDeleted'));
       setDeleteTarget(null);
     } catch (error) {
       if (getArchiveErrorCode(error) === 'NOT_FOUND') {
+        deleteSessionViewport(session.session_id);
         removeLocalSession(session.session_id);
         showToast('success', t('settingsPanel.archivedTasks.sessionDeleted'));
         setDeleteTarget(null);
@@ -157,7 +160,10 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
     setDeleteArchivedError(null);
     try {
       const result = await projectRegistryClient.deleteArchivedSessions(deleteArchivedTarget.projectId);
-      result.results.filter((item) => item.ok).forEach((item) => removeLocalSession(item.session_id));
+      result.results.filter((item) => item.ok).forEach((item) => {
+        deleteSessionViewport(item.session_id);
+        removeLocalSession(item.session_id);
+      });
       if (result.failed_count) {
         setDeleteArchivedError(t('settingsPanel.archivedTasks.batchPartialFailure', {
           succeeded: result.succeeded_count,

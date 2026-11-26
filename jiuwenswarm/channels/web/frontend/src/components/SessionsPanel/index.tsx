@@ -7,6 +7,7 @@ import { containsIgnoredDirectory } from '../../features/fileTreeFilters';
 import { isHistoryPreviewFile } from '../../features/historyFilePreview';
 import { webRequest } from '../../services/webClient';
 import { getArchiveErrorCode, getArchiveErrorFinishingCause } from '../../features/workspace/archivedTaskClient';
+import { deleteSessionViewport } from '../../features/chatTimeline/sessionViewportCache';
 import { useChatStore } from '../../stores/chatStore';
 import { getWorkspaceModeRevision, useWorkspaceStore } from '../../stores/workspaceStore';
 import { isEnterprise } from '../../edition';
@@ -488,6 +489,7 @@ export function SessionsPanel({
     setDeletingSessionId(sessionId);
     try {
       await webRequest('session.delete', { session_id: sessionId });
+      deleteSessionViewport(sessionId);
       await loadSessions();
       if (selectedSessionId === sessionId) {
         setSelectedFile(null);

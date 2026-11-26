@@ -45,6 +45,14 @@ import type { HumanShareCommand } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { useAgentGroupVisualIdentity } from '../../features/agentManagement/useAgentGroupAvatars';
 import { MessageList } from './MessageList';
+import {
+  acquireSessionViewportToken,
+  getSessionScrollRestore,
+  isScrollAtBottom,
+  releaseSessionViewportToken,
+  saveSessionScrollTop,
+  type SessionViewportToken,
+} from '../../features/chatTimeline/sessionViewportCache';
 import { ContextCompressionLines } from './MessageItem';
 import { activeMoaPhase, MoaProgress } from './MoaProgress';
 import { InputArea, type InputAreaHandle } from './InputArea';
@@ -1123,13 +1131,8 @@ function HumanShareCard({ commands, onShare }: { commands: HumanShareCommand[]; 
 
 // The dismissal notice stays long enough to use its buttons, fades out over its last second
 // (ChatPanel.css) and then leaves the page.
-const SCROLL_BOTTOM_THRESHOLD_PX = 40;
 const LOAD_OLDER_THRESHOLD_PX = 8;
 const VISIBILITY_RESTORE_SCROLL_SUPPRESS_MS = 300;
-
-function isScrollAtBottom(el: HTMLDivElement): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_BOTTOM_THRESHOLD_PX;
-}
 
 function scrollToBottom(el: HTMLDivElement): void {
   el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
@@ -1602,17 +1605,14 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   // 跟踪用户是否正在查看历史消息（不在底部）
   const userScrolledUpRef = useRef(false);
-  // 跟踪上一个 sessionId，切换 session 时需要恢复或重置滚动状态
-  const lastSessionIdRef = useRef<string>(activeSessionId ?? '');
-  // 记忆每个访问过的 session 的滚动位置
-  const sessionScrollTopMapRef = useRef<Map<string, number>>(new Map());
+  // Track the previous session only after the viewport has been initialized.
+  const lastSessionIdRef = useRef<string | null>(null);
+  const sessionViewportTokenRef = useRef<SessionViewportToken | null>(null);
   // 记录 tab 从隐藏恢复为可见的时间，用于抑制恢复后的自动滚底
   const visibilityRestoredAtRef = useRef<number>(0);
 
-  const rememberSessionScrollTop = useCallback((sessionId: string, el: HTMLDivElement) => {
-    if (sessionId) {
-      sessionScrollTopMapRef.current.set(sessionId, el.scrollTop);
-    }
+  const rememberSessionScrollTop = useCallback((token: SessionViewportToken | null, el: HTMLDivElement) => {
+    saveSessionScrollTop(token, el.scrollTop, isScrollAtBottom(el));
   }, []);
 
   const updateHistoryLayoutSnapshot = useCallback(
@@ -1627,14 +1627,15 @@ export const ChatPanel = React.memo(function ChatPanel({
   );
 
   const restoreSessionScrollTop = useCallback(
-    (sessionId: string, el: HTMLDivElement): boolean => {
-      const savedScrollTop = sessionScrollTopMapRef.current.get(sessionId);
-      if (savedScrollTop === undefined) {
+    (sessionId: string, el: HTMLDivElement, preferTimelineAnchor = false): boolean => {
+      const savedViewport = getSessionScrollRestore(sessionId, el.scrollHeight, el.clientHeight);
+      if (savedViewport === undefined) {
         return false;
       }
 
-      el.scrollTop = savedScrollTop;
-      const atBottom = isScrollAtBottom(el);
+      const deferToTimelineAnchor = preferTimelineAnchor && savedViewport.hasTimelineAnchor && !savedViewport.wasAtBottom;
+      if (!deferToTimelineAnchor) el.scrollTop = savedViewport.scrollTop;
+      const atBottom = savedViewport.wasAtBottom || (!deferToTimelineAnchor && isScrollAtBottom(el));
       userScrolledUpRef.current = !atBottom;
       stickToBottomUntilStableRef.current = atBottom;
       updateHistoryLayoutSnapshot(sessionId, el);
@@ -1642,6 +1643,16 @@ export const ChatPanel = React.memo(function ChatPanel({
     },
     [updateHistoryLayoutSnapshot],
   );
+
+  useLayoutEffect(() => {
+    const token = acquireSessionViewportToken(activeSessionId ?? '');
+    sessionViewportTokenRef.current = token;
+    return () => {
+      // The timeline saves the old viewport before this shared DOM is replaced.
+      releaseSessionViewportToken(token);
+      if (sessionViewportTokenRef.current === token) sessionViewportTokenRef.current = null;
+    };
+  }, [activeSessionId]);
 
   // 检测用户滚动位置
   const handleScroll = useCallback(() => {
@@ -1655,7 +1666,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     }
 
     const currentSessionId = activeSessionId ?? '';
-    rememberSessionScrollTop(currentSessionId, el);
+    rememberSessionScrollTop(sessionViewportTokenRef.current, el);
     updateHistoryLayoutSnapshot(currentSessionId, el);
 
     // 当滚动到顶部且有更多历史消息时，加载更多
@@ -1726,7 +1737,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       const currentSessionId = activeSessionId ?? '';
       if (document.hidden) {
         if (el) {
-          rememberSessionScrollTop(currentSessionId, el);
+          rememberSessionScrollTop(sessionViewportTokenRef.current, el);
         }
       } else {
         visibilityRestoredAtRef.current = Date.now();
@@ -1793,7 +1804,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     // 切换 session 时恢复记忆位置；第一次访问则默认滚到底部
     if (lastSessionIdRef.current !== currentSessionId) {
       // 位置已经在 handleScroll / render 阶段记录，这里只恢复目标 session 的位置
-      const restoredScrollTop = restoreSessionScrollTop(currentSessionId, el);
+      const restoredScrollTop = restoreSessionScrollTop(currentSessionId, el, true);
       if (!restoredScrollTop) {
         // 第一次访问该 session，从底部开始
         userScrolledUpRef.current = false;

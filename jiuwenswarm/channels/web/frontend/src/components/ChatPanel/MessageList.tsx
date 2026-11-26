@@ -20,7 +20,13 @@ import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import type { ReasoningSegment } from '../../stores/chatStore';
 import { filterPublishedHistoryBatch } from '../../features/historyPagination';
 import { projectTimelineItems, type TimelineDisplayItem } from '../../features/chatTimeline/projectTimelineItems';
-import { VirtualTimeline, type TimelineViewportState } from './VirtualTimeline';
+import {
+  getSessionTimelineViewport,
+  saveSessionScrollTop,
+  saveSessionTimelineViewport,
+  type TimelineViewportState,
+} from '../../features/chatTimeline/sessionViewportCache';
+import { VirtualTimeline } from './VirtualTimeline';
 import { TimelineRowStateProvider, useTimelineRowState } from './timelineRowState';
 import { EMPTY_APPLICATION_TASKS, useApplicationTaskStore } from '../../applicationPlugins/taskProgressStore';
 import { taskTimelineClock, type TaskTimelineClock } from '../../applicationPlugins/taskTimelineClock';
@@ -630,6 +636,7 @@ export function ChatTimelineList({
     return names;
   }, [renderItems]);
   const timelineScope = staticTimeline ? 'static' : (sessionId ?? 'interactive');
+  const persistViewport = !staticTimeline && Boolean(sessionId);
   const viewportByScopeRef = useRef(new Map<string, TimelineViewportState>());
   const rowStateRef = useRef(new Map<string, unknown>());
   const settlingForStreak = isSettlingForStreak(renderItems, Date.now());
@@ -944,8 +951,21 @@ export function ChatTimelineList({
             {renderDisplayItem(item)}
           </TimelineRowStateProvider>
         )}
-        initialState={viewportByScopeRef.current.get(timelineScope)}
-        onSaveState={(state) => viewportByScopeRef.current.set(timelineScope, state)}
+        viewportSessionId={persistViewport ? timelineScope : null}
+        initialState={
+          persistViewport
+            ? getSessionTimelineViewport(timelineScope)
+            : viewportByScopeRef.current.get(timelineScope)
+        }
+        onSaveState={(state, token) => {
+          if (persistViewport) {
+            // This cleanup still sees the old session DOM; ChatPanel's shared ref may already show the next one.
+            saveSessionScrollTop(token, state.offset, state.atBottom ?? false);
+            saveSessionTimelineViewport(token, state);
+          } else {
+            viewportByScopeRef.current.set(timelineScope, state);
+          }
+        }}
         canLoadOlderHistory={canLoadOlderHistory}
         onLoadOlderHistory={onLoadOlderHistory}
         historyRequestKey={`${timelineScope}:${historyPagerMeta?.loadedBatchSeq ?? 0}:${historyPagerMeta?.publishedBatchSeq ?? 0}:${historyPagerMeta?.hasMore ? 1 : 0}`}
