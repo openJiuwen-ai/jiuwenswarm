@@ -592,6 +592,77 @@ def test_purge_deletes_route_binding_by_team_id(tmp_path: Path) -> None:
         set_team_route_binding_store(None)
 
 
+def test_purge_session_only_keeps_surviving_members(tmp_path: Path) -> None:
+    """A partial team delete drops only the removed Session's own rows."""
+    from jiuwenswarm.enterprise.team.route_binding_store import (
+        InMemoryTeamRouteBindingStore,
+        set_team_route_binding_store,
+    )
+    from jiuwenswarm.enterprise.team.control_store import (
+        TEAM_STATUS_RUNNING,
+        SqliteTeamControlStore,
+        set_team_control_store,
+    )
+    from jiuwenswarm.enterprise.team.session_cleanup import (
+        purge_team_for_deleted_session,
+    )
+
+    control = SqliteTeamControlStore(tmp_path / "team_control.db")
+    svc = _svc(tmp_path)
+    routes = InMemoryTeamRouteBindingStore()
+    set_team_control_store(control)
+    set_team_quota_service(svc)
+    set_team_route_binding_store(routes)
+    try:
+        ident = _ident()
+        entity = control.create_entity(
+            team_name="shared",
+            owner=ident,
+            team_session_id="sess-leader",
+            status=TEAM_STATUS_RUNNING,
+        )
+        control.upsert_membership(
+            team_id=entity.team_id,
+            identity=ident,
+            member_name="owner",
+            status="active",
+        )
+        leader = svc.reserve_team_create(ident, "sess-leader")
+        svc.commit_lease(leader, team_id=entity.team_id)
+        spawn = svc.reserve_teammate_spawn(
+            team_id=entity.team_id,
+            member_name="qa",
+            owner=ident,
+        )
+        svc.commit_lease(spawn, team_id=entity.team_id, member_name="qa")
+        routes.upsert(
+            team_session_id="sess-member",
+            endpoint="http://agent.local",
+            team_id=entity.team_id,
+            owner=("g1", "b1", "u1"),
+        )
+
+        purge_team_for_deleted_session(session_id="sess-leader", session_only=True)
+
+        # The team and its survivors stay intact; only the deleted Session's
+        # create lease and route binding are gone.
+        assert control.get_entity(entity.team_id) is not None
+        assert len(control.list_memberships(entity.team_id)) == 1
+        keys = [
+            row[0]
+            for row in svc._sqlite()
+            .execute("SELECT idempotency_key FROM team_quota_lease ORDER BY idempotency_key")
+            .fetchall()
+        ]
+        assert keys == [teammate_spawn_key(entity.team_id, "qa")]
+        assert routes.get_by_session("sess-member") is not None
+        assert routes.get_by_team_id(entity.team_id) is not None
+    finally:
+        set_team_control_store(None)
+        set_team_quota_service(None)
+        set_team_route_binding_store(None)
+
+
 def _bind_reconcile_stores(tmp_path: Path):
     from jiuwenswarm.enterprise.team.control_store import SqliteTeamControlStore
     from jiuwenswarm.enterprise.team.route_binding_store import (
