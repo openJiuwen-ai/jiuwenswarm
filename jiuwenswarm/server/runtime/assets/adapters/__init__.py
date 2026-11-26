@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from jiuwenswarm.server.runtime.assets.registry import (
+    get_asset_adapter,
     register_asset_adapter,
     registered_asset_kinds,
 )
@@ -28,7 +29,11 @@ def install_default_adapters() -> None:
     from jiuwenswarm.server.runtime.assets.adapters.agent import register_agent_adapters
     from jiuwenswarm.server.runtime.assets.adapters.skill import SkillAssetAdapter
 
-    register_asset_adapter(SkillAssetAdapter())
+    # 与 register_agent_adapters 同款幂等：若前次安装在此步之后失败，
+    # 重试不会因 skill 已注册（不同实例）抛 ValueError 留下半安装状态。
+    skill_adapter = SkillAssetAdapter()
+    if get_asset_adapter(skill_adapter.kind) is None:
+        register_asset_adapter(skill_adapter)
     register_agent_adapters()
     _installed = True
 
