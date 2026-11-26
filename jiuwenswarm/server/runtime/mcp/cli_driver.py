@@ -23,6 +23,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -704,11 +705,12 @@ class CliDriver:
                 )
         domain = str(step.get("authUrlDomain", "")).strip()
         wait_for_exit = bool(step.get("authWaitForExit"))
-        # authWaitForExit commands (e.g. awesun login) block until the user
-        # completes OAuth. Start them non-blocking, read the auth URL from
-        # early stdout, and return immediately so the event loop is not held.
-        if wait_for_exit:
-            return self._start_auth_proc(index, cmd, domain)
+        # authUrlDomain commands print a URL and then block for the user, so
+        # they must start non-blocking even without authWaitForExit.
+        if wait_for_exit or domain:
+            return self._start_auth_proc(
+                index, cmd, domain, fail_on_early_exit=not wait_for_exit
+            )
         res = self._runner(cmd)
         url = _extract_url(res.combined_output, domain) if domain else None
         return AuthStepResult(
@@ -720,13 +722,18 @@ class CliDriver:
             error_kind=res.error_kind if not res.succeeded else "",
         )
 
-    def _start_auth_proc(self, index: int, cmd: str, domain: str) -> AuthStepResult:
-        """Start an authWaitForExit command non-blocking, capture its auth URL.
+    def _start_auth_proc(
+        self, index: int, cmd: str, domain: str, *, fail_on_early_exit: bool = False,
+    ) -> AuthStepResult:
+        """Start a blocking auth command non-blocking, capture its auth URL.
 
         The subprocess keeps running (blocking until OAuth completes); we read
         stdout for up to a few seconds to surface the auth URL, then return an
         auth_required sentinel. The proc is stashed in ``_PENDING_AUTH_PROCS``
         for :meth:`auth_proc_done` / :meth:`status` to poll.
+
+        ``fail_on_early_exit`` turns a non-zero exit before any auth URL into
+        a failed step; ``authWaitForExit`` steps stay lenient.
         """
         if self._proc_runner is not None:
             # Test path: injector returns (proc, initial_output_string).
@@ -762,24 +769,35 @@ class CliDriver:
             )
         _cleanup_stale_auth_proc(self.name)
         _PENDING_AUTH_PROCS[self.name] = proc
-        url: str | None = None
-        deadline = time.time() + _AUTH_URL_WAIT_S
         chunks: list[str] = []
+
+        def _drain() -> None:
+            try:
+                chunks.extend(proc.stdout)
+            except (OSError, ValueError):
+                pass  # pipe closed during teardown
+
+        if proc.stdout is not None:
+            # readline() would block past the deadline on a silent login.
+            threading.Thread(target=_drain, daemon=True).start()
+        deadline = time.time() + _AUTH_URL_WAIT_S
+        url: str | None = None
         while time.time() < deadline:
-            line = proc.stdout.readline() if proc.stdout else ""
-            if line:
-                chunks.append(line)
-                if domain:
-                    found = _extract_url(line, domain)
-                    if found:
-                        url = found
-                        break
-            else:
-                rc = proc.poll()
-                if rc is not None:
-                    break
-                time.sleep(0.2)
+            if domain:
+                url = _extract_url("".join(chunks), domain)
+            if url or proc.poll() is not None:
+                break
+            time.sleep(0.1)
         out = "".join(chunks)
+        rc = proc.poll()
+        if fail_on_early_exit and rc is not None and rc != 0 and not url:
+            _PENDING_AUTH_PROCS.pop(self.name, None)
+            return AuthStepResult(
+                name=self.name, step_index=index, command=cmd,
+                succeeded=False, needs_user_action=False,
+                error=f"rc={rc}: {out}",
+                output=out,
+            )
         return AuthStepResult(
             name=self.name, step_index=index, command=cmd,
             succeeded=True, needs_user_action=True,
