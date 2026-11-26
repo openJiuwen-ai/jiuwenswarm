@@ -208,7 +208,6 @@
       "title": "AI Roles",
       "empty": "No AI roles declared",
       "loadFailed": "Failed to load AI roles",
-      "agent": "Single-role session",
       "team": "Team session",
       "teamBadge": "Team",
       "leader": "Leader"
