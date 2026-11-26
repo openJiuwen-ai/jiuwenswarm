@@ -30,7 +30,11 @@ import json
 from pathlib import Path
 from jiuwenswarm.common.utils import get_user_workspace_dir, get_agent_root_dir
 root = get_user_workspace_dir()
-assert get_agent_root_dir() == root / 'agent'
+# After the profile layout migration, get_agent_root_dir() is
+# {DATA_DIR}/profile/agent and {DATA_DIR}/agent is left as a
+# compatibility symlink. Path equality would fail; resolve() still
+# identifies the same directory so persisted legacy URIs stay valid.
+assert get_agent_root_dir().resolve() == (root / 'agent').resolve()
 record = root / 'agent' / 'designer' / 'saved_references.json'
 for uri in json.loads(record.read_text())['uris']:
     target = Path(uri)
