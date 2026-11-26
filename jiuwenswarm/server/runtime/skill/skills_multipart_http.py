@@ -36,7 +36,7 @@ from jiuwenswarm.server.runtime.skill.skill_manager import (
     SKILL_ZIP_MAX_UPLOAD_BYTES,
     SkillManager,
     SkillRpcError,
-    _format_size_mb,
+    format_size_mb,
 )
 
 logger = logging.getLogger(__name__)
@@ -178,8 +178,8 @@ def handle_skills_upload_temp_http(
             "上传包超过限制",
             detail_key="skills.errors.skillPackageTooLarge",
             detail_params={
-                "sizeMB": _format_size_mb(len(body)),
-                "limitMB": _format_size_mb(SKILL_ZIP_MAX_UPLOAD_BYTES),
+                "sizeMB": format_size_mb(len(body)),
+                "limitMB": format_size_mb(SKILL_ZIP_MAX_UPLOAD_BYTES),
             },
         )
     try:

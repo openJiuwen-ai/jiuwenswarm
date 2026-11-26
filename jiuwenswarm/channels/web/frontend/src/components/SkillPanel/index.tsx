@@ -69,6 +69,7 @@ import { useSymphonyGraph } from './useSymphonyGraph';
 import { useRetrievalIndexBuild } from './useRetrievalIndexBuild';
 import { useEvolution } from './useEvolution';
 import { useSkillFilesTab } from './useSkillFilesTab';
+import { errorToMessage, resolveUploadErrorMessage } from './skillUploadErrors';
 import type {
   InstalledPluginItem,
   LoadState,
@@ -80,37 +81,6 @@ import type {
   SkillVersionsListResponse,
   SkillRebuildResponse,
 } from './types';
-
-function errorDetailKey(error: unknown): string | undefined {
-  if (!error || typeof error !== 'object') return undefined;
-  const direct = (error as { detailKey?: unknown }).detailKey;
-  if (typeof direct === 'string' && direct.trim()) return direct.trim();
-  const payload = (error as { payload?: { detail_key?: unknown } }).payload;
-  const fromPayload = payload?.detail_key;
-  return typeof fromPayload === 'string' && fromPayload.trim() ? fromPayload.trim() : undefined;
-}
-
-function errorDetailParams(error: unknown): Record<string, unknown> | undefined {
-  if (!error || typeof error !== 'object') return undefined;
-  const direct = (error as { detailParams?: unknown }).detailParams;
-  if (direct && typeof direct === 'object') return direct as Record<string, unknown>;
-  const payload = (error as { payload?: { detail_params?: unknown } }).payload;
-  const fromPayload = payload?.detail_params;
-  return fromPayload && typeof fromPayload === 'object'
-    ? (fromPayload as Record<string, unknown>)
-    : undefined;
-}
-
-function errorToMessage(
-  error: unknown,
-  t?: (key: string, params?: Record<string, unknown>) => string,
-): string {
-  const detailKey = errorDetailKey(error);
-  if (detailKey && t) {
-    return t(detailKey, errorDetailParams(error) ?? {});
-  }
-  return error instanceof Error ? error.message : String(error);
-}
 
 const REBUILD_POLL_MS = 3000;
 const REBUILD_WAIT_MS = 30 * 60 * 1000;
@@ -840,28 +810,7 @@ export function SkillPanel({
       detailKey?: string,
       detailParams?: Record<string, unknown>,
     ) => {
-      let message = t('skills.errors.uploadFailed');
-      if (detailKey && typeof detailKey === 'string' && detailKey.trim()) {
-        message = t(detailKey.trim(), detailParams ?? {});
-      } else if (status === 413 || code === 'SKILL_FILE_TOO_LARGE') {
-        // 网关/旧后端可能只回 413 无 detail_params；缺插值时回退通用文案，避免露出 {{sizeMB}}。
-        if (
-          detailParams &&
-          detailParams.sizeMB !== undefined &&
-          detailParams.limitMB !== undefined
-        ) {
-          message = t('skills.errors.skillPackageTooLarge', detailParams);
-        } else {
-          message = t('skills.errors.uploadFailed');
-        }
-      } else if (status === 400) {
-        // 服务端写入失败也使用 SKILL_INVALID_PACKAGE，须先区分 HTTP 状态。
-        if (code === 'SKILL_UNSAFE_PATH') {
-          message = t('skills.errors.uploadUnsafePath');
-        } else if (code === 'SKILL_INVALID_PACKAGE') {
-          message = t('skills.errors.uploadInvalidRequest');
-        }
-      }
+      const message = resolveUploadErrorMessage(code, status, detailKey, detailParams, t);
       return Object.assign(new Error(message), {
         code,
         status,

@@ -103,7 +103,12 @@ export function UploadSkillModal({
               e.preventDefault();
               const file = e.dataTransfer.files[0];
               if (!file) return;
-              if (file.name.toLowerCase().endsWith('.zip')) {
+              const lower = file.name.toLowerCase();
+              if (lower.endsWith('.skill.zip')) {
+                onRejectFile?.('skills.errors.uploadSkillZipRejected');
+                return;
+              }
+              if (lower.endsWith('.zip')) {
                 markDesktopDropHandled(file);
                 setUploadSkillPath(file.name);
                 setUploadSkillFile(file);
@@ -126,10 +131,20 @@ export function UploadSkillModal({
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (file) {
+                if (!file) return;
+                const lower = file.name.toLowerCase();
+                if (lower.endsWith('.skill.zip')) {
+                  onRejectFile?.('skills.errors.uploadSkillZipRejected');
+                  e.target.value = '';
+                  return;
+                }
+                if (lower.endsWith('.zip')) {
                   setUploadSkillPath(file.name);
                   setUploadSkillFile(file);
+                  return;
                 }
+                onRejectFile?.('skills.errors.uploadZipOnly');
+                e.target.value = '';
               }}
             />
           </label>

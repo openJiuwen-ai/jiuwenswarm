@@ -169,7 +169,7 @@ _SKILL_ZIP_MAX_SINGLE_FILE_BYTES = 32 * 1024 * 1024
 _SKILL_ZIP_MAX_PATH_DEPTH = 20
 
 
-def _format_size_mb(num_bytes: int) -> str:
+def format_size_mb(num_bytes: int) -> str:
     """Format byte counts for i18n detail_params (one decimal MB)."""
     return f"{max(0, int(num_bytes)) / (1024 * 1024):.1f}"
 
@@ -6062,8 +6062,8 @@ class SkillManager:
                     f"上传包超过限制（{SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
                     detail_key="skills.errors.skillPackageTooLarge",
                     detail_params={
-                        "sizeMB": _format_size_mb(size),
-                        "limitMB": _format_size_mb(SKILL_ZIP_MAX_UPLOAD_BYTES),
+                        "sizeMB": format_size_mb(size),
+                        "limitMB": format_size_mb(SKILL_ZIP_MAX_UPLOAD_BYTES),
                     },
                 )
 
@@ -9516,8 +9516,8 @@ class SkillManager:
                     detail_key="skills.errors.skillPackageSingleFileTooLarge",
                     detail_params={
                         "fileName": rel_str,
-                        "sizeMB": _format_size_mb(declared),
-                        "limitMB": _format_size_mb(_SKILL_ZIP_MAX_SINGLE_FILE_BYTES),
+                        "sizeMB": format_size_mb(declared),
+                        "limitMB": format_size_mb(_SKILL_ZIP_MAX_SINGLE_FILE_BYTES),
                     },
                 )
             if total_uncompressed + max(declared, 0) > _SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES:
@@ -9526,7 +9526,7 @@ class SkillManager:
                     f"ZIP 解包总大小超过限制（{_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES} 字节）",
                     detail_key="skills.errors.skillPackageUncompressedTooLarge",
                     detail_params={
-                        "limitMB": _format_size_mb(_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES),
+                        "limitMB": format_size_mb(_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES),
                     },
                 )
             # 越界校验已在上方完成，此处仅处理超长路径的落盘兜底
@@ -9540,7 +9540,7 @@ class SkillManager:
                     detail_key="skills.errors.skillPackageSingleFileTooLargeStreaming",
                     detail_params={
                         "fileName": rel_str,
-                        "limitMB": _format_size_mb(_SKILL_ZIP_MAX_SINGLE_FILE_BYTES),
+                        "limitMB": format_size_mb(_SKILL_ZIP_MAX_SINGLE_FILE_BYTES),
                     },
                 )
             total_uncompressed += len(data)
@@ -9550,7 +9550,7 @@ class SkillManager:
                     f"ZIP 解包总大小超过限制（{_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES} 字节）",
                     detail_key="skills.errors.skillPackageUncompressedTooLarge",
                     detail_params={
-                        "limitMB": _format_size_mb(_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES),
+                        "limitMB": format_size_mb(_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES),
                     },
                 )
             _write_bytes_long(dest_path, data)
