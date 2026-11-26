@@ -1,0 +1,35 @@
+.memory-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  padding: 20px;
+  gap: 16px;
+}
+
+.memory-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.memory-page-header h1 {
+  margin: 0;
+  font-size: 22px;
+  color: var(--color-text-primary);
+}
+
+.memory-page-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+}
+
+@media (max-width: 640px) {
+  .memory-page { padding: 12px; gap: 12px; }
+}

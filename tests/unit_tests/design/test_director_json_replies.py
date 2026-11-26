@@ -154,3 +154,90 @@ async def test_execution_graph_still_fails_when_replies_never_parse(
     with pytest.raises(DesignerLlmError, match="execution graph JSON"):
         await orchestration.Director().design_execution_graph(graph)
     assert len(systems) == 2
+
+
+def _execution_graph_reply(setting_id: str, *, declare_it: bool) -> str:
+    scenes = [{"id": "set_1", "name": "the old library", "description": "Dusty shelves."}]
+    if declare_it and setting_id != "set_1":
+        scenes.append({"id": setting_id, "name": "the river pier", "description": "Wet planks."})
+    return json.dumps(
+        {
+            "characters": [{"id": "char_1", "name": "Lead", "description": "A reader."}],
+            "scenes": scenes,
+            "clips": [
+                {
+                    "clip_index": 1,
+                    "timeline": "0-5s",
+                    "action": "Lead reads aloud.",
+                    "on_screen": ["char_1"],
+                    "setting_id": setting_id,
+                    "speech_line": "",
+                }
+            ],
+            "notes": "designed",
+        }
+    )
+
+
+def _execution_graph_bootstrap() -> dict:
+    return {
+        "description": "Lead reads aloud.",
+        "nodes": [],
+        "metadata": {
+            "approved_brief": "# Brief\n\nLead reads aloud.",
+            "script_analysis": {
+                "source": "llm",
+                "characters": [{"id": "char_1", "name": "Lead"}],
+                "scenes": [{"id": "set_1", "name": "the old library"}],
+                "clips": [{"clip_index": 1, "setting_id": "set_1", "action": "Read"}],
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_execution_graph_reasks_once_when_shots_cite_undeclared_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.capabilities.detect_audio_backends",
+        lambda: {"can_speech": False, "can_music": False, "can_video_audio": True},
+    )
+    systems = _scripted_model(
+        monkeypatch,
+        [
+            _execution_graph_reply("set_2", declare_it=False),
+            _execution_graph_reply("set_2", declare_it=True),
+        ],
+    )
+    graph = _execution_graph_bootstrap()
+
+    await orchestration.Director().design_execution_graph(graph)
+
+    assert len(systems) == 2
+    assert orchestration._SCENE_DECLARATION_RETRY_RULE not in systems[0]
+    assert orchestration._SCENE_DECLARATION_RETRY_RULE in systems[1]
+    ack = graph["metadata"]["director_graph_ack"]
+    assert ack["ok"] is True
+    scenes = graph["metadata"]["script_analysis"]["scenes"]
+    assert {sc["id"] for sc in scenes} == {"set_1", "set_2"}
+
+
+@pytest.mark.asyncio
+async def test_execution_graph_fails_closed_when_settings_stay_undeclared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    systems = _scripted_model(
+        monkeypatch,
+        [
+            _execution_graph_reply("set_2", declare_it=False),
+            _execution_graph_reply("set_2", declare_it=False),
+        ],
+    )
+    graph = _execution_graph_bootstrap()
+
+    with pytest.raises(DesignerLlmError, match="named scenes"):
+        await orchestration.Director().design_execution_graph(graph)
+    assert len(systems) == 2
+    assert orchestration._SCENE_DECLARATION_RETRY_RULE in systems[1]
+    assert graph["nodes"] == []

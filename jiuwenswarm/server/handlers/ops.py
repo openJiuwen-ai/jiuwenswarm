@@ -206,6 +206,14 @@ async def handle_agent_reload_config(ctx: RequestContext) -> None:
 
             # 网关带来的快照可能比本进程里刚改过的 a4p 配置旧，以本进程为准。
             config_payload = {**config_payload, "a4p": get_a4p_config()}
+        from jiuwenswarm.server.runtime.memory_portal import get_memory_portal_service
+
+        try:
+            await get_memory_portal_service().configure(
+                config_payload if isinstance(config_payload, dict) and "memory" in config_payload else get_config()
+            )
+        except Exception as exc:  # Portal failures must not block Agent configuration reload.
+            logger.warning("Memory Portal configuration update failed (%s)", type(exc).__name__)
         should_reload_agents = not reload_scopes or bool(reload_scopes & _AGENT_RELOAD_SCOPES)
 
         should_warm_tokenizers = True

@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.server.runtime.designer.handlers.clip import (
-    _looks_like_contaminated_prompt,
     build_clip_prompt,
     edge_text_inputs,
 )
@@ -55,16 +54,7 @@ def _ctx(graph: dict) -> NodeExecutionContext:
     return NodeExecutionContext(graph=graph, run_id="run_test", node_id="n_clip_1", run={})
 
 
-def test_contaminated_filter_allows_scene_specs_and_long_text():
-    assert not _looks_like_contaminated_prompt(
-        "Film shot 1. Action: pastor speaks. SCENE SPECS scene=church; STAGING LOCK: left."
-    )
-    long_ok = "Action: pastor speaks from the pulpit while the congregation listens attentively. " * 20
-    assert not _looks_like_contaminated_prompt(long_ok)
-    assert _looks_like_contaminated_prompt("PREVIOUS CLIP HAD: something\nYOUR ASSIGNMENT: else")
-
-
-def test_storyboard_row_wins_over_stale_clip_action(tmp_path, monkeypatch):
+def test_authored_generate_prompt_is_preserved(tmp_path):
     graph = _graph_with_storyboard(
         tmp_path,
         {
@@ -74,13 +64,8 @@ def test_storyboard_row_wins_over_stale_clip_action(tmp_path, monkeypatch):
             },
         },
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.designer.handlers.clip.collect_clip_scene_image",
-        lambda *a, **k: None,
-    )
     prompt = build_clip_prompt(graph, graph["nodes"][1], _ctx(graph))
-    assert "beach sunset" not in prompt.lower()
-    assert "pastor speaks from pulpit" in prompt.lower()
+    assert prompt == graph["nodes"][1]["config"]["generate"]["prompt"]
 
 
 def test_clip_reads_only_its_own_row_from_the_edge(tmp_path):
@@ -93,8 +78,8 @@ def test_clip_reads_only_its_own_row_from_the_edge(tmp_path):
 def test_clip_without_storyboard_edge_does_not_read_the_storyboard(tmp_path):
     graph = _graph_with_storyboard(tmp_path, {})
     graph["edges"] = []
-    prompt = build_clip_prompt(graph, graph["nodes"][1], _ctx(graph))
-    assert "Pastor speaks from pulpit" not in prompt
+    with pytest.raises(ValueError, match="prompt or storyboard action required"):
+        build_clip_prompt(graph, graph["nodes"][1], _ctx(graph))
 
 
 def test_storyboard_is_not_a_connected_text_payload_for_clips(tmp_path):

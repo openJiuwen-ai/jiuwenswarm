@@ -8,6 +8,7 @@ export interface JiuwenMatePublicNavItem {
 export const JIUWENMATE_PUBLIC_PAGES: readonly JiuwenMatePublicNavItem[] = [
   { nav: 'agents', labelKey: 'jiuwenmate.nav.plaza' },
   { nav: 'personalContext', labelKey: 'jiuwenmate.nav.assets' },
+  { nav: 'memory', labelKey: 'nav.memory' },
   { nav: 'skills', labelKey: 'jiuwenmate.nav.skills' },
   { nav: 'connectorMarket', labelKey: 'jiuwenmate.nav.extensions' },
   { nav: 'settings', labelKey: 'jiuwenmate.nav.settings' },

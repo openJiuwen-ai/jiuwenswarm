@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.server.runtime.designer.handlers.clip import collect_clip_reference_images
+from jiuwenswarm.server.runtime.designer.handlers.clip import (
+    collect_clip_reference_images,
+    collect_clip_reference_slots,
+)
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     apply_uploaded_outputs_to_run,
     node_output_image_paths,
@@ -591,29 +594,37 @@ def test_wired_user_image_joins_clip_refs_before_the_scene(tmp_path) -> None:
     refs = collect_clip_reference_images(ctx, 2, graph["nodes"][4])
     assert refs == [character_spec.resolve(), officer.resolve(), scene.resolve()]
     assert unconnected.resolve() not in refs
-    prompt = build_clip_prompt(graph, graph["nodes"][4], ctx)
-    assert "Image 5" in prompt
-    assert "officer.png" in prompt
-
-
-def test_attach_order_names_every_edge_input(tmp_path) -> None:
-    from jiuwenswarm.server.runtime.designer.handlers.clip import attach_order_clause
-
-    character_spec = tmp_path / "character_spec.png"
-    officer = tmp_path / "officer.png"
-    scene = tmp_path / "scene.png"
-    for path in (character_spec, officer, scene):
-        path.write_bytes(b"img")
-    flow = [
-        ("character", "Character 1", character_spec),
-        ("image", "Image 5", officer),
-        ("scene", "Scene 1", scene),
+    slots = collect_clip_reference_slots(ctx, 2, graph["nodes"][4])
+    assert [(s.index, s.role, s.node_id) for s in slots] == [
+        (1, "character", "n_character_1"),
+        (2, "other", "n_image_5"),
+        (3, "scene", "n_scene_1"),
     ]
-    clause = attach_order_clause([character_spec, officer, scene], flow)
-    assert "Image 1 = Character 1 (character_spec.png)" in clause
-    assert "Image 2 = Image 5 (officer.png)" in clause
-    assert "Image 3 = Scene 1 (scene.png)" in clause
-    assert "canvas edges" in clause
+    prompt = build_clip_prompt(graph, graph["nodes"][4], ctx, slots=slots)
+    assert "from Image 1" in prompt
+    assert "Image 2 is the connected still Image 5" in prompt
+    assert "in the scene from Image 3" in prompt
+
+
+def test_reference_binding_names_every_attached_image(tmp_path) -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+        ReferenceSlot,
+        render_reference_binding,
+    )
+
+    slots = [
+        ReferenceSlot(1, "character", "Ada", tmp_path / "character_spec.png"),
+        ReferenceSlot(2, "other", "Image 5", tmp_path / "officer.png"),
+        ReferenceSlot(3, "scene", "the old library", tmp_path / "scene.png"),
+    ]
+    assert render_reference_binding(slots, family="wan", lang="en").splitlines() == [
+        "Image 1 is the identity reference for Ada.",
+        "Image 2 is the connected reference image Image 5.",
+        "Image 3 is the scene: the old library.",
+    ]
+    zh = render_reference_binding(slots, family="seedance", lang="zh")
+    assert "@Image 1 是Ada的形象参考。" in zh
+    assert "@Image 3 是场景：the old library。" in zh
 
 
 def test_edge_flow_carries_text_and_video(tmp_path) -> None:
