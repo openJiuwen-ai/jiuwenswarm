@@ -1100,8 +1100,8 @@ def test_r2v_prompt_forbids_a_score_by_default(monkeypatch: pytest.MonkeyPatch) 
     )
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.designer.pipeline.content_language.get_config",
-        lambda: {"preferred_language": "zh"},
+        "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+        lambda: "zh",
     )
     cfg = {
         "clip_index": 1,
@@ -1120,8 +1120,8 @@ def test_r2v_prompt_forbids_a_score_by_default(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_kept_r2v_prompt_still_forbids_a_score() -> None:
-    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
-        director_prepare_video_prompt,
+    from jiuwenswarm.server.runtime.designer.pipeline.video_call_contract import (
+        prepare_video_prompt,
     )
 
     cfg = {
@@ -1131,24 +1131,23 @@ def test_kept_r2v_prompt_still_forbids_a_score() -> None:
         "style_lock": {"look": "alpine commercial"},
         "reference_call_mode": "r2v",
     }
-    raw = (
+    composed = compose_reference_clip_prompt(cfg)
+    assert "mist drifts along the ridge" in composed
+    assert composed.count("no ambient music bed") == 1
+    sent = prepare_video_prompt(composed, cfg=cfg)
+    assert sent == composed
+    authored = (
         "Visual style: alpine commercial. "
         "Action: mist drifts along the ridge. Camera: wide. "
         "Image 1 is the product."
     )
-    text, notes = director_prepare_video_prompt(raw, cfg=cfg)
-    assert notes == ["kept_reference_led_prompt"]
-    assert "mist drifts along the ridge" in text
-    assert "no music" in text
-    assert "no ambient music bed" in text
-    again, _notes = director_prepare_video_prompt(text, cfg=cfg)
-    assert again.count("no ambient music bed") == 1
+    assert prepare_video_prompt(authored, cfg=cfg) == authored
 
 
 def test_r2v_sound_line_follows_the_practice_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.designer.pipeline.content_language.get_config",
-        lambda: {"preferred_language": "zh"},
+        "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+        lambda: "zh",
     )
     base = {
         "clip_index": 1,
@@ -1170,8 +1169,8 @@ def test_r2v_sound_line_follows_the_practice_branches(monkeypatch: pytest.Monkey
 
 def test_r2v_authored_speech_is_not_called_silence(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.designer.pipeline.content_language.get_config",
-        lambda: {"preferred_language": "zh"},
+        "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+        lambda: "zh",
     )
     base = {
         "clip_index": 1,

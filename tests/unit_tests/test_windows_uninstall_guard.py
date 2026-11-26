@@ -34,6 +34,15 @@ def exe_entry():
     return module
 
 
+def test_mixed_restore_arguments_cannot_dispatch_init(exe_entry, monkeypatch):
+    init_main = Mock()
+    monkeypatch.setitem(sys.modules, "jiuwenswarm.init_workspace", SimpleNamespace(main=init_main))
+    monkeypatch.setattr(sys, "argv", ["workswarm.exe", "init", "--force", "--desktop-restore-upgrade-config"])
+    with pytest.raises(ValueError, match="restore does not accept arguments"):
+        exe_entry._dispatch()
+    init_main.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "arguments, expected_on_windows",
     [

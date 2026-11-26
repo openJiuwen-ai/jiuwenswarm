@@ -738,9 +738,21 @@ def team_config(language):
 
 @pytest.mark.parametrize('language, expected', [('zh', 'cn'), (' ZH ', 'cn'), ('cn', 'cn'), ('en', 'en')])
 def test_team_config_uses_core_language(language, expected, monkeypatch):
-    monkeypatch.setenv('AGENT_PROMPT_LANGUAGE', 'en')
+    """Harness language follows request memo (simulated UI preference), not config_base alone."""
+    from jiuwenswarm.enterprise.config import preferred_language as pref
+
+    # Memo is enterprise-only; personal edition always falls back to yaml.
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("GATEWAY_DB_TYPE", "mariadb")
+    monkeypatch.setenv("GATEWAY_DB_HOST", "db.internal")
+    monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+    monkeypatch.setenv("GATEWAY_DB_USER", "root")
+    monkeypatch.setenv("GATEWAY_DB_PASSWORD", "p@ss")
+    monkeypatch.setenv("GATEWAY_DB_NAME", "gw")
+
     config = team_config(language)
-    spec = load_team_spec_dict(config_base=config)
+    with pref.bind_preferred_language_memo(user_id="test", language=language):
+        spec = load_team_spec_dict(config_base=config)
     assert spec['language'] == expected
     assert config['preferred_language'] == language
 

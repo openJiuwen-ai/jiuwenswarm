@@ -5,6 +5,16 @@ title: "[Bug]: "
 labels: ["bug"]
 type: "Bug-Report"
 body:
+  - type: dropdown
+    id: issue_handler
+    attributes:
+      label: "issue处理人"
+      options:
+        - 由社区负责处理
+        - issue作者自己处理
+      default: 0
+    validations:
+      required: true
   - type: cascading-dropdown
     id: module_select
     attributes:

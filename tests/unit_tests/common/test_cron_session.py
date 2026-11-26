@@ -7,7 +7,9 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.common.cron_session import (
+    cron_session_has_job_identity,
     cron_session_matches_job,
+    cron_session_name_has_job,
     is_cron_execution_context,
     is_cron_execution_session,
 )
@@ -49,6 +51,42 @@ def test_is_cron_execution_session(session_id, expected):
 )
 def test_cron_session_matches_job(session_id, cron_id, expected):
     assert cron_session_matches_job(session_id, cron_id) is expected
+
+
+@pytest.mark.parametrize(
+    ("session_id", "expected"),
+    [
+        # team 执行会话与 proactive 稳定会话的名字都嵌 job id。
+        ("cron_1a0d273b71b_9c29c6a6", True),
+        ("cron_9c29c6a6", True),
+        # 单 agent 执行会话后缀是随机串，不算 job 形态。
+        ("__cron___1a0d26c410a_rand", False),
+        ("cron_", False),
+        ("cron-session", False),
+        ("web_19abc_abcdef123456", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_cron_session_name_has_job(session_id, expected):
+    assert cron_session_name_has_job(session_id) is expected
+
+
+@pytest.mark.parametrize(
+    ("session_id", "cron_id", "expected"),
+    [
+        # 持久化 cron_id 权威，名字只是缺失时的兜底。
+        ("web_19abc_abcdef123456", "job-1", True),
+        ("__cron___1a0d26c410a_rand", "job-1", True),
+        ("cron_1a0d273b71b_9c29c6a6", "", True),
+        ("__cron___1a0d26c410a_rand", "", False),
+        ("__cron___1a0d26c410a_rand", "   ", False),
+        ("web_19abc_abcdef123456", None, False),
+        (None, None, False),
+    ],
+)
+def test_cron_session_has_job_identity(session_id, cron_id, expected):
+    assert cron_session_has_job_identity(session_id, cron_id) is expected
 
 
 @pytest.mark.parametrize(

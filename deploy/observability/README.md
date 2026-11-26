@@ -52,8 +52,7 @@ later with `upload_traces_to_langfuse.py`.
 
 ```yaml
 observability:
-  team:
-    enabled: true
+  enabled: true
   exporter: "file"
   # traces_dir 留空则默认写入 ~/.jiuwenswarm/.trace
   traces_dir: ""
@@ -145,12 +144,11 @@ docker-compose down -v
 
 ## Enable in Jiuwenswarm
 
-编辑 `~/.jiuwenswarm/config/config.yaml`，将 `observability.team.enabled` 设为 `true`，重启即可。
+编辑 `~/.jiuwenswarm/config/config.yaml`，将 `observability.enabled` 设为 `true`，下一次 Agent、Team 或 Code 请求同步时应用到共享导出策略。若同时修改 exporter 类型、endpoint 或凭据，需重启以重建 provider。
 
 ```yaml
 observability:
-  team:
-    enabled: true
+  enabled: true
   endpoint: http://localhost:4317
 ```
 
@@ -162,8 +160,7 @@ Application sends traces to local Collector. Auth is handled by Collector.
 
 ```yaml
 observability:
-  team:
-    enabled: true
+  enabled: true
   exporter: "otlp_grpc"
   endpoint: "http://localhost:4317"
   sample_rate: 1.0
@@ -175,8 +172,7 @@ Application sends traces directly to Langfuse Cloud (bypasses local Collector).
 
 ```yaml
 observability:
-  team:
-    enabled: true
+  enabled: true
   exporter: "otlp_http"
   endpoint: "https://cloud.langfuse.com/api/public/otel/v1/traces"
   langfuse_public_key: "pk-lf-xxx"
@@ -187,8 +183,7 @@ observability:
 
 ```yaml
 observability:
-  team:
-    enabled: true
+  enabled: true
   exporter: "console"
 ```
 
@@ -196,12 +191,11 @@ Traces printed as JSON to console.
 
 ## Configuration Reference
 
-All fields live under the top-level `observability` section. The export fields are shared by Team and single-agent tracing (one OTel provider per process); only the two `enabled` switches are per runtime. Legacy `team_observability` / `agent_observability` sections are migrated into `observability` automatically on upgrade.
+All fields live under the top-level `observability` section. The `enabled` switch controls export for Team, Agent and Code in the same process; UI, evolution and plugins can still request span capture when export is disabled. Legacy `team_observability` / `agent_observability` sections, and the earlier `observability.team.enabled` / `observability.agent.enabled` switches, are migrated into the single `observability.enabled` switch automatically on upgrade (false only when every legacy switch was false).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `team.enabled` | bool | true | Enable Team (TeamAgent) tracing |
-| `agent.enabled` | bool | false | Enable single-agent / coding-agent tracing |
+| `enabled` | bool | true | Enable tracing (shared by Team and single-agent / coding-agent) |
 | `service_name` | str | "jiuwenswarm" | OTel resource service name |
 | `exporter` | str | "otlp_grpc" | Exporter type: `otlp_grpc`, `otlp_http`, `console`, `file` |
 | `endpoint` | str | "http://localhost:4317" | OTLP endpoint URL |

@@ -8,6 +8,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { useHarnessStore, useSessionStore, useChatStore } from '../../stores';
 import type { ExtensionProgressInfo, ExtensionProgressStatus } from '../../stores/harnessStore';
 import clsx from 'clsx';
@@ -167,15 +168,15 @@ function ExtensionStatusIcon({ status }: { status: ExtensionProgressStatus }) {
   return <span className="harness-extension-status pending" data-testid="chat-panel-harness-extension-status-icon" data-variant="pending">○</span>;
 }
 
-function statusLabel(status: ExtensionProgressStatus): string {
-  if (status === 'success') return '已完成';
-  if (status === 'running') return '进行中';
-  if (status === 'failed') return '失败';
-  if (status === 'timeout') return '超时';
-  if (status === 'skipped') return '已跳过';
-  if (status === 'rejected') return '已拒绝';
-  if (status === 'waiting') return '等待确认';
-  return '未开始';
+function statusLabel(status: ExtensionProgressStatus, t: TFunction): string {
+  if (status === 'success') return t('autoHarness.status.success');
+  if (status === 'running') return t('autoHarness.status.running');
+  if (status === 'failed') return t('autoHarness.status.failed');
+  if (status === 'timeout') return t('autoHarness.status.timeout');
+  if (status === 'skipped') return t('autoHarness.status.skipped');
+  if (status === 'rejected') return t('autoHarness.status.rejected');
+  if (status === 'waiting') return t('autoHarness.status.waiting');
+  return t('autoHarness.status.pending');
 }
 
 function resolveActivateDisplayStatus(
@@ -368,9 +369,9 @@ export function HarnessProgressBar() {
                     <div key={ext.extensionName} className="harness-extension-row" data-testid="chat-panel-harness-extension-row" data-variant={ext.extensionName}>
                       <div className="harness-extension-name" title={ext.extensionName} data-testid="chat-panel-harness-extension-name">{ext.extensionName}</div>
                       <div className="harness-extension-flow" data-testid="chat-panel-harness-extension-flow">
-                        <span><ExtensionStatusIcon status={ext.implementStatus} />实现扩展</span>
+                        <span><ExtensionStatusIcon status={ext.implementStatus} />{t('autoHarness.extension.implement')}</span>
                         <span className="harness-extension-arrow">→</span>
-                        <span><ExtensionStatusIcon status={ext.verifyStatus} />验证扩展</span>
+                        <span><ExtensionStatusIcon status={ext.verifyStatus} />{t('autoHarness.extension.verify')}</span>
                       </div>
                     </div>
                   ))}
@@ -386,7 +387,7 @@ export function HarnessProgressBar() {
                     <div className="harness-extension-flow" data-testid="chat-panel-harness-extension-flow">
                       <span>
                         <ExtensionStatusIcon status={activateDisplayStatus} />
-                        {statusLabel(activateDisplayStatus)}
+                        {statusLabel(activateDisplayStatus, t)}
                       </span>
                     </div>
                   </div>
@@ -407,16 +408,16 @@ export function HarnessProgressBar() {
                     <StageSummaryList
                       items={gapItems}
                       stageStatus={stageInfo.status}
-                      itemLabel="关键 gap"
-                      emptyLabel="暂无 gap 摘要"
+                      itemLabel={t('autoHarness.summary.gapItem')}
+                      emptyLabel={t('autoHarness.summary.gapEmpty')}
                     />
                   )}
                   {stageInfo.stage === 'plan' && (
                     <StageSummaryList
                       items={designItems}
                       stageStatus={stageInfo.status}
-                      itemLabel="设计方案"
-                      emptyLabel="暂无设计摘要"
+                      itemLabel={t('autoHarness.summary.designItem')}
+                      emptyLabel={t('autoHarness.summary.designEmpty')}
                     />
                   )}
                   {buildVerifyRows}

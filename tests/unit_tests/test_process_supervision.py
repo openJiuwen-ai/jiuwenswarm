@@ -24,24 +24,30 @@ _COMMANDS = {"agentserver": ["agentserver"], "gateway": ["gateway"]}
 
 
 @pytest.mark.parametrize(
-    "keep_worker,worker_ok,expected,gateway_config_dir",
+    "keep_worker,worker_ok,expected,gateway_config",
     [
-        (False, True, 0, None),
-        (False, False, 1, None),
-        (True, False, 0, "D:/explicit-gateway-config"),
+        (False, True, 0, "managed"),
+        (False, False, 1, "fallback"),
+        (True, False, 0, "explicit"),
     ],
 )
 def test_application_final_exit_owns_worker_unless_launcher_delegates(
+    tmp_path,
     monkeypatch,
     keep_worker,
     worker_ok,
     expected,
-    gateway_config_dir,
+    gateway_config,
 ):
     import sys
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths, utils
     from jiuwenswarm.server.supervisor import shutdown
 
+    monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(paths, "get_config_dir", lambda: tmp_path / "config")
+    monkeypatch.setattr(utils, "get_config_dir", lambda: tmp_path / "config")
+    monkeypatch.setattr(utils, "is_agentos_runtime", lambda: False)
+    monkeypatch.delenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", raising=False)
     monkeypatch.setattr(utils, "cleanup_stale_openjiuwen_descs", lambda: None)
     monkeypatch.setattr(utils, "prepare_runtime_workspace", lambda **kwargs: None)
     monkeypatch.setattr(utils, "ensure_gateway_config", lambda **kwargs: None)
@@ -56,17 +62,13 @@ def test_application_final_exit_owns_worker_unless_launcher_delegates(
         return 0
 
     monkeypatch.setattr(app, "supervise", supervise_application)
-    if gateway_config_dir is None:
-        monkeypatch.delenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", raising=False)
-        # prepare_local_gateway_config 只在无独立 Gateway 配置且非 AgentOS 时注入
-        # 实例配置目录；固定走注入分支，不依赖运行环境的真实配置文件。
-        import agent_gateway.common.paths as gateway_paths
-
-        monkeypatch.setattr(gateway_paths, "get_config_file",
-                            lambda: Path("<nonexistent>") / "gateway-config.yaml")
-        monkeypatch.setattr(utils, "is_agentos_runtime", lambda: False)
-    else:
-        monkeypatch.setenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", gateway_config_dir)
+    expected_dir = tmp_path / "config"
+    if gateway_config == "managed":
+        expected_dir.mkdir(parents=True, exist_ok=True)
+        (expected_dir / "config-gateway.yaml").write_text("extensions: {}\n", encoding="utf-8")
+    if gateway_config == "explicit":
+        expected_dir = tmp_path / "explicit-gateway"
+        monkeypatch.setenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", str(expected_dir))
     monkeypatch.setattr(app, "begin_system_plugin_recovery_session", lambda: None)
     monkeypatch.setattr(app.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(poll=lambda: 0))
     monkeypatch.setattr(app.signal, "signal", lambda *args: None)
@@ -81,7 +83,7 @@ def test_application_final_exit_owns_worker_unless_launcher_delegates(
     agent_env = kwargs["command_popen_kwargs"]["agentserver"]["env"]
     assert "JIUWENSWARM_GATEWAY_CONFIG_DIR" not in agent_env
     gateway_env = kwargs["command_popen_kwargs"]["gateway"]["env"]
-    assert gateway_env["JIUWENSWARM_GATEWAY_CONFIG_DIR"] == str(app.get_gateway_config_dir())
+    assert gateway_env["JIUWENSWARM_GATEWAY_CONFIG_DIR"] == str(expected_dir)
 
 
 class _Clock:

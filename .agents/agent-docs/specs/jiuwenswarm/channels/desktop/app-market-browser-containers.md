@@ -4,19 +4,21 @@ title: 应用市场分端展示契约
 type: S
 author: default
 author_email: default
-updated: 2026-11-24
+updated: 2026-11-26
 modules: [jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel]
-files: [jiuwenswarm/channels/desktop/electron/app_market_windows.cjs]
+files: [jiuwenswarm/channels/desktop/electron/app_market_windows.cjs, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/AppMarketPage.tsx, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/AppMarketAiRoles.tsx]
 ---
 
 # 应用市场分端展示
 
-- 页签按“应用广场”“我的应用”排列，默认打开“我的应用”。在我的应用中，点击运行中的卡片直接切换到该应用页面，使用同一运行实例已有的页面。运行中应用可从卡片菜单进入“查看详情”，停止的应用可点击卡片进入详情。应用广场卡片点击进入上架详情。
+- 页签按“应用广场”“我的应用”排列，默认打开“我的应用”。在我的应用中，点击运行中的卡片直接切换到该应用页面，使用同一运行实例已有的页面。运行中应用可从卡片菜单进入“查看详情”，停止的应用可点击卡片进入详情。应用广场卡片点击进入上架详情。列表页显示“应用”页头与副标题；进入应用详情或运行中的应用页面时收起页头；再次点击已选中的“我的应用”会收起运行页面并回到列表，不停止应用。
+- 列表页沿用技能页的工具栏布局，左侧为主标签，右侧为两个页签共用的搜索框，资源监控和刷新放到页头。详情页隐藏列表工具栏，分栏预览时列表列仍提供页签和搜索。
+- 我的应用在同一列表展示所有来源的应用，按名称与描述即时过滤。应用广场把去空格后的关键字作为 `query` 交给 Hub 服务端分页搜索，输入防抖 300ms。关键字变化（含清空）时回到第 1 页，同一关键字下重新进入页签时保留页码。有关键字但无结果时显示“没有匹配项”，空关键字下显示各自的默认空列表文案。
 - 普通 Web 使用 sandbox iframe 承载右侧面板。支持视口同步的 Electron 将 WebContentsView 放在右侧面板，旧版 Electron 使用独立 BaseWindow。“编辑”将同一 WebContentsView 移入主窗口的会话侧栏。两端均按稳定 app_id 复用页面。
 - Electron 受信前端通过 openMarketApp(appId, url, title, embedded?) 与 closeMarketApp(appId) 调用桌面 IPC；只接受无凭据的 loopback HTTP/HTTPS 初始入口。独立窗口标题以“应用名 · WorkSwarm”为前缀并显示页面 CPU、内存，图标复用主窗口解析入口。
 - Electron 窗口设置 skipTaskbar，不显示独立任务栏按钮；最小化后隐藏，从市场“打开／恢复应用”恢复现有窗口，不重载页面。隐藏期间的导航完成不重新弹出。Windows 不设置原生 parent，其他平台保留 owner。
 - 每个 Electron 应用沿用 persist:app-market-<编码appId> 分区；页面 sandbox/contextIsolation 开启，无 Node 或主界面 preload，权限默认拒绝。主窗口销毁时清理全部应用窗口。
-- Web iframe 由前端注册表持有，面板卸载/收起仅隐藏实例。展开时面板固定占满浏览器页面视口，覆盖市场标题和导航区域，仅保留应用工具栏；恢复时回到原分栏且不重建 iframe。支持关闭面板、模态遮挡隐藏和恢复不抢焦点。应用必须允许 iframe 嵌入，市场遵守 CSP/X-Frame-Options。Web iframe 与 Electron 原生视图通过同一面板的尺寸同步接入，各自使用 webAppViews.setViewport 与 setMarketAppViewport，不接入聊天自动化浏览器或 headless 配置。两端按运行实例跟踪页面，实例结束后清理对应容器，见 [S_02_app-market-stop-and-page-lifecycle](../../extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md)。
+- Web iframe 由前端注册表持有，面板卸载/收起仅隐藏实例。展开时面板固定占满浏览器页面视口，覆盖市场工具栏与列表区域，仅保留应用工具栏；恢复时回到原分栏且不重建 iframe。支持关闭面板、模态遮挡隐藏和恢复不抢焦点。应用必须允许 iframe 嵌入，市场遵守 CSP/X-Frame-Options。Web iframe 与 Electron 原生视图通过同一面板的尺寸同步接入，各自使用 webAppViews.setViewport 与 setMarketAppViewport，不接入聊天自动化浏览器或 headless 配置。两端按运行实例跟踪页面，实例结束后清理对应容器，见 [S_02_app-market-stop-and-page-lifecycle](../../extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md)。
 - 手动关闭应用窗口/页面不停止服务；停止/删除 RPC 成功后关闭对应容器，失败保留。停止成功后的窗口清理异常单独提示，不回滚服务状态。显式停止销毁不执行 beforeunload，应用不能以卸载作为唯一存档点。
 - Electron 仅最新入口导航可提交缓存或清理失败，市场入口和页面目标分开。原生 HTTP 导航保留 POST，popup 转入同窗口并保留正文、Content-Type/boundary 和 referrer；非 HTTP 导航拒绝。
 - Electron 持久分区与 Web 浏览器存储不合并。Web 使用每个应用专属的 `*.localhost` 主机，浏览器数据按协议、主机和端口保存。原 `127.0.0.1` 来源及不同端口的数据不会自动迁移。多存档、世界状态和 NPC session 绑定由应用管理；市场容器不管理聊天会话或浏览器 headless。

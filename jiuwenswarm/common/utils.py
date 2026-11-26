@@ -59,6 +59,7 @@ from e2a.logging_config import (
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_exception import format_log_exception
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
+from jiuwenswarm.common.windows_upgrade_config import is_windows_installer_restore
 from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.common.paths import (
     logger,
@@ -104,6 +105,8 @@ _JSONL_LOG_LOCK = threading.Lock()
 # 默认不启用（gateway.log 与其它日志同目录），由环境变量 AGENTOS_GATEWAY_LOG_DIR 指定，
 # Linux 部署脚本（deploy/yuanrong/gateway_handler.sh）注入 /var/log/agentos。
 _GATEWAY_LOG_DIR_ENV = "AGENTOS_GATEWAY_LOG_DIR"
+_GATEWAY_CONFIG_DIR_ENV = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
+_STOCK_GATEWAY_EXTENSION_DIRS = "${EXTENSION_DIRS:-agent_gateway/extensions}"
 
 
 @dataclass
@@ -1103,6 +1106,14 @@ def _merge_existing_gateway_config(gateway_dest: Path, template_path: Path) -> N
     migrate_config_from_template(template_path, gateway_dest, prune=False)
 
 
+def _include_swarm_gateway_extensions(config: Any) -> bool:
+    extensions = config.get("extensions") if isinstance(config, dict) else None
+    if not isinstance(extensions, dict) or extensions.get("extension_dirs") != _STOCK_GATEWAY_EXTENSION_DIRS:
+        return False
+    extensions["extension_dirs"] = f"{_STOCK_GATEWAY_EXTENSION_DIRS};jiuwenswarm/extensions"
+    return True
+
+
 def _install_gateway_config(
     workspace_dir: Path,
     legacy_config: Path | None,
@@ -1125,6 +1136,8 @@ def _install_gateway_config(
     generated = _project_gateway_config(template, legacy)
     _merge_gateway_hooks(generated, legacy)
     _copy_gateway_owned_config(generated, legacy)
+    if not (os.getenv(_GATEWAY_CONFIG_DIR_ENV) or "").strip():
+        _include_swarm_gateway_extensions(generated)
 
     # 共享 config/ 目录可能尚未落位（prepare_workspace 先行创建是常规路径，
     # 但部署工具/迁移链路可能直呼本函数）
@@ -1651,13 +1664,10 @@ def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
     """Add Swarm's built-ins to the old stock Gateway search path."""
     from agent_gateway.common.config import config_write_lock, dump_yaml_round_trip, load_yaml_round_trip
 
-    legacy_dirs = "${EXTENSION_DIRS:-agent_gateway/extensions}"
     try:
         with config_write_lock(config_path=config_path):
             config = load_yaml_round_trip(config_path)
-            extensions = config.get("extensions") if isinstance(config, dict) else None
-            if isinstance(extensions, dict) and extensions.get("extension_dirs") == legacy_dirs:
-                extensions["extension_dirs"] = f"{legacy_dirs};jiuwenswarm/extensions"
+            if _include_swarm_gateway_extensions(config):
                 dump_yaml_round_trip(config_path, config)
     except (OSError, YAMLError, portalocker.exceptions.LockException) as exc:
         logger.warning("Could not migrate local Gateway extension directories in %s: %s", config_path, exc)
@@ -1665,15 +1675,17 @@ def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
 
 def prepare_local_gateway_config(env: dict[str, str]) -> None:
     """Prepare the effective Gateway config for a local Swarm launcher."""
-    key = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
-    if env.get(key, "").strip() or is_agentos_runtime():
+    key = _GATEWAY_CONFIG_DIR_ENV
+    gateway_config = get_gateway_config_file(env=env)
+    if env.get(key, "").strip():
+        env[key] = str(gateway_config.parent)
+        return
+    if is_agentos_runtime():
         return
 
-    from agent_gateway.common.paths import get_config_file as get_agent_gateway_config_file
-
-    gateway_config = get_agent_gateway_config_file()
     if gateway_config.is_file():
         _migrate_local_gateway_extension_dirs(gateway_config)
+        env[key] = str(gateway_config.parent)
         return
     env[key] = str(get_config_dir())
 
@@ -3331,7 +3343,9 @@ from jiuwenswarm.enterprise.tenant.tenant_paths import (  # noqa: E402
     seed_tenant_agent_workspace,
 )
 
-# 分区迁移先于 setup_logger 等目录创建行为执行：
-# 旧平铺数据优先整体搬迁，而非退化为逐文件吸收
-migrate_profile_data_root_layout()
-setup_logger()
+# Setup reports restore failures itself. Application logs may live behind
+# a Windows junction that the installer process is not permitted to traverse.
+if not is_windows_installer_restore():
+    # Migrate the legacy layout before logging creates any new directories.
+    migrate_profile_data_root_layout()
+    setup_logger()

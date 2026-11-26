@@ -11,6 +11,7 @@ import traceback
 from pathlib import Path
 
 from jiuwenswarm.common._build_config import DISPLAY_NAME, ERROR_LOG_NAME
+from jiuwenswarm.common.windows_upgrade_config import RESTORE_CONFIG_FLAG, is_windows_installer_restore
 
 _ENTRY_ARGV = tuple(sys.argv)
 
@@ -18,7 +19,7 @@ _ENTRY_ARGV = tuple(sys.argv)
 # 导致 openjiuwen 的默认日志路径 "./logs/" 解析为 "/logs/"（只读）。
 # 在任何业务 import 之前，将 cwd 切换到用户数据目录 ~/.jiuwenswarm，
 # 让 openjiuwen 的相对日志路径落到 <data>/logs/，与项目其它运行时数据同根。
-if getattr(sys, "frozen", False):
+if getattr(sys, "frozen", False) and not is_windows_installer_restore():
     # Skills may need to run bundled Python scripts on machines without an
     # external Python installation.  The frozen executable already supports
     # `jiuwenswarm.exe script.py ...` via the runpy branch below.
@@ -633,8 +634,8 @@ def _dispatch() -> int | None:
         from jiuwenswarm.common.utils import get_user_workspace_dir
 
         return 0 if remove_all(get_user_workspace_dir()) else 1
-    if _pop_flag("--desktop-restore-upgrade-config"):
-        if len(sys.argv) != 1:
+    if RESTORE_CONFIG_FLAG in sys.argv[1:]:
+        if len(sys.argv) != 2:
             raise ValueError("upgrade configuration restore does not accept arguments")
         from jiuwenswarm.common.windows_upgrade_config import restore_legacy_upgrade_config
 

@@ -12,7 +12,7 @@ from pathlib import Path
 import psutil
 from filelock import FileLock, Timeout
 
-from jiuwenswarm.server.supervisor.identity import data_scope, deployment_scope
+from jiuwenswarm.server.supervisor.identity import data_scope, deployment_scope, hello_matches_process
 
 
 class WorkerShutdownIncomplete(RuntimeError):
@@ -95,7 +95,9 @@ def worker_process(
                 "Its process was left running. After checking its installation, stop that "
                 f"specific Worker with: jiuwenswarm-stop --legacy-worker-pid {pid}"
             )
-        if hello.get("process_created") not in (None, created):
+        # Compare with a clock-independent start time: this process and the
+        # Worker may have cached different psutil boot times.
+        if not hello_matches_process(hello, process):
             raise RuntimeError("Worker PID identity changed")
         return process, created
     except (psutil.Error, OSError) as exc:

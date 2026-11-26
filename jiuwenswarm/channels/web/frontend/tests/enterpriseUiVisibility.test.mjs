@@ -28,6 +28,7 @@ for (const [name, value] of Object.entries({
   Element: dom.window.Element,
   CustomEvent: dom.window.CustomEvent,
   MutationObserver: dom.window.MutationObserver,
+  getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
   ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
   requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
   cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
@@ -183,6 +184,42 @@ async function withChatTools(edition, run) {
     webClient.request = originalRequest;
     delete window.__JIUWENSWARM_EDITION__;
   }
+}
+
+for (const edition of ['enterprise', 'personal']) {
+  test(`${edition} human member invitations follow edition visibility`, () =>
+    withChatTools(edition, async ({ render, byId }) => {
+      const sid = 'ui-session-a';
+      const history = parseHistoryJsonFileToTimelinePreview([
+        { role: 'user', content: 'Create a team with a human member', timestamp: '2026-11-25T00:00:00Z' },
+      ], sid);
+      useChatStore.setState(state => ({ runtimes: {
+        ...state.runtimes,
+        [sid]: { ...state.runtimes[sid], messages: history.messages },
+      } }));
+      useSessionStore.setState(state => ({ runtimes: {
+        ...state.runtimes,
+        [sid]: { ...state.runtimes[sid], mode: 'team', teamHumanShareCommands: [{
+          memberName: 'student', sessionId: sid, teamName: 'school', sessionRef: sid,
+          joinCommand: 'join school', exitCommand: 'exit', status: 'pending', updatedAt: 1,
+        }] },
+      } }));
+      await render(createElement(ChatPanel, { promptSuggestionBox, onSendMessage: noop, isProcessing: false }));
+      const personal = edition === 'personal';
+      assert.equal(Boolean(byId('chat-panel-human-share-card')), personal);
+      assert.equal(Boolean(byId('chat-panel-human-share-trigger')), personal);
+      if (personal) {
+        await act(async () => byId('chat-panel-human-share-card-trigger').click());
+        assert.ok(byId('chat-panel-human-share-modal'));
+        window.__JIUWENSWARM_EDITION__ = 'enterprise';
+        await act(async () => useSessionStore.setState(state => ({ runtimes: {
+          ...state.runtimes,
+          [sid]: { ...state.runtimes[sid], teamHumanShareCommands: [...state.runtimes[sid].teamHumanShareCommands] },
+        } })));
+        await render(createElement(ChatPanel, { promptSuggestionBox, onSendMessage: noop, isProcessing: false }));
+      }
+      assert.equal(byId('chat-panel-human-share-modal'), null);
+    }));
 }
 
 for (const edition of ['enterprise', 'personal']) {

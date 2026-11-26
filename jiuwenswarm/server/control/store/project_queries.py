@@ -17,12 +17,15 @@ from agent_gateway.common.work_mode import (
     is_default_project_id,
 )
 
-from jiuwenswarm.common.cron_session import cron_session_matches_job
+from jiuwenswarm.common.cron_session import (
+    cron_session_matches_job,
+)
 from jiuwenswarm.server.runtime.session import project_store
 from jiuwenswarm.server.runtime.session.lifecycle import projection as lifecycle_projection
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
 from jiuwenswarm.server.runtime.session.session_metadata import (
     collect_all_sessions_metadata,
+    pinned_session_admitted,
     sync_session_request_metadata,
 )
 from jiuwenswarm.server.runtime.session.work_mode import resolve_request_work_mode
@@ -209,15 +212,28 @@ def load_pinned_sessions() -> dict[str, Any]:
     content, pinned conversations included.  Their ``pinned`` flag stays in the
     session metadata, so restoring the project puts them back in the pinned
     area without any bookkeeping here.
+
+    ``__cron__`` channel sessions are admitted when they carry a ``cron_id`` or
+    their directory name embeds a job id (``cron_<job_id>`` / ``cron_<ts>_<job_id>``,
+    the legacy team execution convention). Admitting the name-matched shape keeps
+    sessions that were pinned before this identity check existed visible in the
+    pinned area, so the user can unpin them from the UI; the project session
+    list and the cron group both exclude pinned sessions, so without this
+    fallback the session would disappear from every sidebar list.
+
+    Admission goes through ``session_metadata.pinned_session_admitted`` — the
+    same predicate ``set_session_pinned`` rejects on — so pin-time rejection and
+    pinned-area listing can never disagree about any channel shape.
     """
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
     _, removed_project_ids = split_project_ids(all_projects)
     sessions = collect_all_sessions_metadata()
     pinned = []
     for session in sessions:
-        channel_id = session.get("channel_id")
-        if not session.get("pinned") or not (
-            channel_id == "web" or (channel_id == "__cron__" and session.get("cron_id"))
+        if not session.get("pinned"):
+            continue
+        if not pinned_session_admitted(
+            session.get("session_id"), session
         ):
             continue
         if str(session.get("project_id") or "") in removed_project_ids:

@@ -11,6 +11,10 @@ export type EnterpriseAgentContext = {
   /** 实例/集群展示名（对应 Manager instance_info.jiuwenclaw_name） */
   jiuwenclaw_name: string;
   agent_name: string;
+  /** Agent 配置模板 id；旧 Manager 缺省 */
+  agent_template_id?: string;
+  /** 当前 Agent 配置模板是否允许上传本地 Skill；旧 Manager 缺省按 false */
+  allow_local_skill_upload?: boolean;
   group_name: string;
 };
 

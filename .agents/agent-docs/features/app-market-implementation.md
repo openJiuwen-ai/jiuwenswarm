@@ -5,7 +5,7 @@ type: F
 author: default
 author_email: default
 modules: [jiuwenswarm/channels/desktop/electron, jiuwenswarm/channels/web/frontend, jiuwenswarm/extensions/app_market]
-files: [jiuwenswarm/channels/desktop/electron/app_market_windows.cjs, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx]
+files: [jiuwenswarm/channels/desktop/electron/app_market_windows.cjs, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/AppMarketPage.tsx, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/AppMarketAiRoles.tsx, jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/AppMarketPanel.css]
 designs: []
 design_note: 用户明确授权初步本地实现，无独立设计文档。
 ---
@@ -89,3 +89,31 @@ Web 复用已有 iframe；Electron 将独立窗口改为 BaseWindow 承载 WebCo
 Electron 本机读数与服务端应用内存分别按各自的请求结果更新。若等两路一起返回，服务端超时会延后本机读数和告警。桌面应用内存采样随市场订阅启停，普通 Web 共用一次服务端资源请求。
 
 Windows 下运行 `npm run test:app-market`，86 项通过。组件测试覆盖服务端采样挂起期间本机告警继续更新、详情页打开失败后成功重试及固定页签定位。Electron IPC 与服务端请求使用替身，未进行真实窗口联调。
+
+## 2026-11-25 页面留白、页签回主页与 AI 角色排版修订
+
+应用市场列表页保留「应用」页头，并补充副标题「Swarm 应用的管理和监控」（参考技能页）。AppMarketPage 继续根据详情与运行页状态控制页头：进入应用详情或打开运行中的应用页面时收起页头，回到列表（包括再次点击「我的应用」）后恢复。AppMarketPanel 通过 onDetailChange 与 onApplicationOpenChange 上报两种页面状态。详情页同步去掉最外层卡片的描边、圆角和底色，内容直接铺在页面上，避免详情与列表之间再套一层框。
+
+「我的应用」页签在已选中时不再空操作：点击会收起运行中的应用面板（Web iframe 与 Electron 视图只隐藏、不关闭，服务继续运行），同时退出展开态和详情；切换到「应用广场」仍按原逻辑收起。
+
+详情页 AI 角色改为按组自适应：列数取组内角色数并封顶 4 列，窄屏由 auto-fit 自动降列，同行卡片等高；team 组增加边框与中性底色容器，角色卡片标签行增加「团队」标记并保留「队长」，agent 组不显示团队标记。
+
+验证：Windows 前端 `npm run test:app-market` 92 项通过（rebase 到 develop 后基线 90 项；新增 2 项覆盖 AI 角色列数/标记与运行页隐藏页头，改写页面页头和页签收起断言）。组件测试只验证行为与内联样式属性，未运行 tsc、ESLint、Prettier，未做真实浏览器像素级布局或 Electron 实机验证。
+
+## 2026-11-26 应用广场与我的应用搜索、来源筛选
+
+参考技能页在应用市场工具栏增加一个共用搜索框（`ui/PageToolbarSearch`），两个页签使用同一关键字。我的应用是本地清单，按应用名称和描述直接过滤，不发请求；应用广场由 Hub 分页返回，因此通过既有 `app_market.market_list` 的 `query` 参数做服务端搜索，后端无需改动。
+
+广场输入按 300ms 防抖合并请求，关键字实际变化时回到第 1 页；用 `appliedMarketQuery` 记录已生效关键字，清除关键字或在同一关键字下重新进入页签不会重置页码。结果为空且有关键字时显示「没有匹配项」，无关键字时保留原有空列表文案。搜索框位于 `!detailOpen` 区域内，进入详情或运行中的应用页面时随工具栏一起隐藏。
+
+「我的应用」另增加来源筛选（`AppMarketSourceFilter`，复用技能面板的 `FilterDropdown`），选项为全部应用、Hub 应用、本地应用，只在「我的应用」页签显示。Hub 应用转为本地后 `source` 为 `local`，缺失 `source` 按清单默认值视为本地，因此「本地应用」取非 `hub` 的补集。筛选与搜索叠加生效；筛选或搜索任一激活且结果为空时显示「没有匹配项」。
+
+验证：Windows 前端 `npm run test:app-market` 92 项通过（基线 88 项），新增 4 项覆盖我的应用本地过滤、无匹配文案与清除恢复，广场三次连续输入只发一次请求并回到第 1 页、参数为去空格后的 `query`，来源筛选三态切换与广场页签隐藏，以及来源筛选与搜索叠加后的空结果文案。组件测试未运行 tsc、ESLint、Prettier，未做真实浏览器像素级布局或连接真实 Hub 的端到端验证。
+
+补充：中途 `releases/0.2.10` 前进到 `0b32282f3`（NPC 队伍修复），本分支已 rebase 到该提交；测试在该基线上重跑通过。
+
+## 2026-11-26 应用页布局调整
+
+基于 `03ae14423`，应用页复用技能页的 `PageToolbar` 和下划线页签，左侧放应用广场和我的应用，右侧放搜索框。资源监控与刷新移至列表页头。根据用户确认，撤掉来源筛选，我的应用统一展示各来源应用。两个页签继续共用搜索关键字，分别在本地清单与服务端广场中匹配。
+
+Windows 上 `npm run test:app-market` 90 项通过，覆盖页头与工具栏结构、两种来源共用搜索、广场防抖分页和重复点击页签收起应用预览。使用模拟应用数据在 Chrome 1440px 与 920px 两种视口核对了两个页签的工具栏对齐。本轮未做 Electron 实机验证。

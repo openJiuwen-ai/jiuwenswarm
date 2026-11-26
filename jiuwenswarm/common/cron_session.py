@@ -82,6 +82,36 @@ def is_cron_execution_context(
     return bool(str(session_metadata.get("cron_id") or "").strip())
 
 
+def cron_session_name_has_job(session_id: str | None) -> bool:
+    """Whether a session directory name embeds a cron job id by convention.
+
+    Mirrors the ``cron_<job_id>`` / ``cron_<ts>_<job_id>`` shapes accepted by
+    :func:`cron_session_matches_job` without needing a job id to compare
+    against: the suffix after ``cron_`` must be non-empty for the name to count
+    as job-shaped. ``__cron___<ts>_<rand>`` ids never match — their suffix is
+    random, so they rely on the persisted ``cron_id`` instead.
+    """
+    sid = str(session_id or "").strip()
+    return sid.startswith("cron_") and bool(sid[len("cron_"):])
+
+
+def cron_session_has_job_identity(
+    session_id: str | None, cron_id: str | None
+) -> bool:
+    """Whether a cron execution session carries a resolvable job identity.
+
+    The persisted ``cron_id`` is authoritative; legacy team execution sessions
+    whose metadata never got the stamp fall back to a job-shaped directory
+    name. Both the pinned-area admission (``load_pinned_sessions``) and the
+    pin-time rejection (``set_session_pinned``) must call this one predicate:
+    if they disagree, a session can be pinned while no sidebar list shows it
+    (pinned area rejects it, cron group and project list exclude pinned).
+    """
+    return bool(str(cron_id or "").strip()) or cron_session_name_has_job(
+        session_id
+    )
+
+
 def cron_session_matches_job(session_id: str | None, cron_id: str) -> bool:
     """Whether a session directory name follows the cron job naming convention.
 

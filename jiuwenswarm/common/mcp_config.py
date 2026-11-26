@@ -265,6 +265,160 @@ def build_enabled_mcp_server_configs(
     return configs
 
 
+def _mcp_state() -> Any:
+    """The MCP state store module, via the common injection point.
+
+    Layering rule R1: ``common`` never imports ``jiuwenswarm.server`` directly —
+    the store self-registers as ``provider("mcp_state")`` on import. The
+    module-level ``provider`` is used (no local import: G.VAR.03 shadowing).
+    """
+    return provider("mcp_state")
+
+
+def _connector_skill_dirs(skills_root: str, disabled: set[str]) -> list[str]:
+    """One absolute directory per bundled Skill (a child holding ``SKILL.md``)."""
+    root = os.path.abspath(skills_root)
+    try:
+        children = sorted(os.listdir(root))
+    except OSError:
+        return []
+    dirs: list[str] = []
+    for child in children:
+        if child.startswith("."):
+            continue
+        if child in disabled:
+            continue
+        if os.path.isfile(os.path.join(root, child, "SKILL.md")):
+            dirs.append(os.path.join(root, child))
+    return dirs
+
+
+def _connector_server_entries() -> dict[str, dict[str, Any]]:
+    """Name → server entry, degrading to empty when the merged source fails.
+
+    Same defensive read as :func:`extract_enabled_mcp_server_entries`: early
+    bootstrap / an unreadable store must not fail the member build.
+    """
+    try:
+        from jiuwenswarm.common.config import get_mcp_servers
+
+        return {
+            str(item.get("name", "") or "").strip(): item
+            for item in get_mcp_servers()
+            if isinstance(item, dict)
+        }
+    except Exception as exc:  # noqa: BLE001 — degrade, like the sibling reader
+        logger.warning("[mcp_config] connector server entries unavailable: %s", exc)
+        return {}
+
+
+def _connector_skills_roots() -> dict[str, str]:
+    """Name → bundled-skills root of the connected MCPs, degrading per entry.
+
+    One malformed record (missing ``name``/``dir``) is skipped, matching the
+    per-entry defense of :func:`_connector_server_entries`, so it cannot drop
+    every connector's Skills at once.
+    """
+    try:
+        items = _mcp_state().connected_mcp_skill_dirs()
+    except Exception as exc:  # noqa: BLE001 — degrade; state read via the provider
+        logger.warning("[mcp_config] connector skill dirs unavailable: %s", exc)
+        return {}
+    roots: dict[str, str] = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        directory = str(item.get("dir") or "").strip()
+        if name and directory:
+            roots[name] = directory
+    return roots
+
+
+def _connector_state_record(name: str) -> dict[str, Any] | None:
+    """One connector's state record, degrading to None on a bad read."""
+    try:
+        return _mcp_state().get_mcp_record(name)
+    except Exception as exc:  # noqa: BLE001 — one bad read skips one connector
+        logger.warning("[mcp_config] connector %s state read failed: %s", name, exc)
+        return None
+
+
+def _connector_mcp_config(
+    name: str,
+    entry: dict[str, Any],
+    server_id_scope: str | None,
+) -> McpServerConfig | None:
+    """Build one connector's server config with credentials, degrading to None."""
+    try:
+        cfg = build_mcp_server_config(
+            entry,
+            server_id_scope=server_id_scope,
+            credential_resolver=build_mcp_credential_resolver(name),
+            resolve_node_launcher=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — one bad connector must not drop the rest
+        logger.warning("[mcp_config] connector %s server skipped: build failed: %s", name, exc)
+        return None
+    if cfg is None:
+        logger.warning("[mcp_config] connector %s server skipped: invalid server entry", name)
+    return cfg
+
+
+def resolve_connectors(
+    names: list[str],
+    *,
+    server_id_scope: str | None = None,
+    disabled_skills: set[str] | None = None,
+) -> tuple[list[McpServerConfig], list[str]]:
+    """Resolve connectors into MCP server configs and bundled Skill directories.
+
+    Used for an expert member's template connectors (``mcps[].connector``):
+    readiness follows the single-agent gate (``state == "connected"``); the
+    TUI-only ``enabled`` flag is ignored. Each connected connector contributes
+    whatever it has — its MCP server (credentials resolved) and its bundled
+    Skills under ``mcp/skills/<name>/``; Skills in ``disabled_skills`` (the
+    caller's switched-off set) are left out. Unknown, unready or empty
+    connectors are logged and skipped, and failing data sources degrade to
+    empty, so this never fails the member build.
+
+    Returns:
+        ``(mcp_configs, skill_dirs)`` — skill dirs are absolute, one per Skill.
+    """
+    wanted: list[str] = []
+    for raw in names or []:
+        name = str(raw or "").strip()
+        if name and name not in wanted:
+            wanted.append(name)
+    if not wanted:
+        return [], []
+    entries = _connector_server_entries()
+    skills_roots = _connector_skills_roots()
+    disabled = set(disabled_skills or ())
+    configs: list[McpServerConfig] = []
+    skill_dirs: list[str] = []
+    for name in wanted:
+        rec = _connector_state_record(name)
+        if not isinstance(rec, dict) or rec.get("state") != "connected":
+            logger.warning(
+                "[mcp_config] connector %s skipped: not connected (state=%s)",
+                name,
+                rec.get("state") if isinstance(rec, dict) else None,
+            )
+            continue
+        dirs = _connector_skill_dirs(skills_roots[name], disabled) if name in skills_roots else []
+        skill_dirs.extend(d for d in dirs if d not in skill_dirs)
+        entry = entries.get(name)
+        if entry is None:
+            if not dirs:
+                logger.warning("[mcp_config] connector %s skipped: no server entry and no skills", name)
+            continue
+        cfg = _connector_mcp_config(name, entry, server_id_scope)
+        if cfg is not None:
+            configs.append(cfg)
+    return configs, skill_dirs
+
+
 async def preflight_mcp_server_reachable(
     cfg: McpServerConfig,
     *,
@@ -819,6 +973,7 @@ __all__ = [
     "build_enabled_mcp_server_configs",
     "build_mcp_credential_resolver",
     "build_mcp_server_config",
+    "resolve_connectors",
     "extract_enabled_mcp_server_entries",
     "preflight_mcp_server_reachable",
     "prewarm_connected_mcps",

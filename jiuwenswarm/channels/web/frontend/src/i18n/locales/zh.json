@@ -119,6 +119,9 @@
     "retry": "重试",
     "selectedCount": "已选 {{count}} 个",
     "noMatches": "没有匹配项",
+    "all": "全部",
+    "yes": "是",
+    "no": "否",
     "editMenu": {
       "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
@@ -185,10 +188,12 @@
     "serverResourceHint": "统计运行后端服务的整台服务器 CPU 与内存占用，包含该机器上的所有进程，不是 WorkSwarm 单独占用。本地连接通常指向本机，但代理、端口转发可能指向远程服务器；容器可能返回宿主机指标。每 3 秒更新，CPU 或内存连续 3 次达到 85% 时提醒，两项均低于 75% 时解除。",
     "highResourceUsage": "整机资源占用偏高，建议停止暂时不用的应用或其他任务。",
     "title": "应用",
+    "subtitle": "Swarm 应用的管理和监控",
     "myApps": "我的应用",
     "market": "应用广场",
     "marketLoadFailed": "加载应用广场失败",
     "noMarketApps": "应用广场暂无应用",
+    "searchPlaceholder": "搜索应用",
     "moreActions": "更多操作：{{name}}",
     "pin": "置顶",
     "unpin": "取消置顶",
@@ -202,6 +207,7 @@
       "loadFailed": "加载 AI 角色失败",
       "agent": "单角色会话",
       "team": "团队会话",
+      "teamBadge": "团队",
       "leader": "队长"
     },
     "backToMyApps": "返回我的应用",
@@ -522,6 +528,7 @@
       "removeMaterial": "移除素材",
       "promptPlaceholder": "本片段画面描述，将与上方参考图一起发给模型",
       "promptHint": "发给该节点子代理的提示词。生成前可选编辑；子代理仍可能根据项目情况微调细节。",
+      "sceneReferenceMissing": "原场景卡片已丢失，本次生成将不使用场景参考，环境可能与其他镜头不一致。",
       "editPlaceholder": "编辑文本内容…",
       "aspectRatio": "长宽比",
       "resolution": "分辨率",
@@ -630,6 +637,8 @@
       "deleteConfirmMessage": "该节点包含已生成的内容，删除后不可恢复。是否确定删除？",
       "deleteConfirmCancel": "取消",
       "deleteConfirmOk": "确定",
+      "deleteSceneWarning": "以下 {{count}} 个视频节点引用的场景卡片将被删除：",
+      "deleteSceneMissing": "「{{clip}}」将失去场景参考，生成时环境可能与其他镜头不一致",
       "resize": "调整大小",
       "resizeHint": "拖动右下角调整节点大小",
       "playAudio": "播放音频",
@@ -2842,6 +2851,26 @@
     "stagePending": "等待中",
     "stageMessage": "消息",
     "inputPlaceholder": "输入优化目标...",
+    "status": {
+      "success": "已完成",
+      "running": "进行中",
+      "failed": "失败",
+      "timeout": "超时",
+      "skipped": "已跳过",
+      "rejected": "已拒绝",
+      "waiting": "等待确认",
+      "pending": "未开始"
+    },
+    "extension": {
+      "implement": "实现扩展",
+      "verify": "验证扩展"
+    },
+    "summary": {
+      "gapItem": "关键 gap",
+      "gapEmpty": "暂无 gap 摘要",
+      "designItem": "设计方案",
+      "designEmpty": "暂无设计摘要"
+    },
     "stages": {
       "assess": "评估当前状态",
       "plan": "制定优化计划",
@@ -3060,6 +3089,7 @@
   },
   "channels": {
     "fetchFailed": "获取失败",
+    "configLoadFailed": "配置加载失败",
     "retry": "重试",
     "hideValue": "隐藏明文",
     "showValue": "显示明文",
@@ -3847,6 +3877,19 @@
       "collectionStoppingHint": "正在停止采集，请等待停止完成后重试。",
       "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
+      "failureStage": {
+        "scan": "失败阶段：目录扫描",
+        "fetch": "失败阶段：数据抓取",
+        "pipeline": "失败阶段：内容处理（切分与向量化）",
+        "publish": "失败阶段：写入索引",
+        "config": "失败阶段：配置校验",
+        "state": "失败阶段：状态检查",
+        "timeout": "失败阶段：执行超时",
+        "unknown": "失败阶段：未知"
+      },
+      "failureCode": "错误码 {{code}}",
+      "failureCounts": "扫描 {{total}} 项 · 成功 {{completed}} 项 · 失败 {{failed}} 项",
+      "failureOmitted": "另有 {{count}} 条失败项未展示，可查看运行日志了解详情",
       "stateWaiting": "等待采集",
       "stateStopped": "已停止",
       "stateStopping": "正在停止",
@@ -4691,6 +4734,8 @@
       "skillNetInstallFailedHint": "SkillNet 安装失败，请检查 skill URL 或依赖",
       "importFailed": "导入失败",
       "importFailedHint": "导入失败，请检查路径或权限",
+      "localSkillUploadDisabled": "当前 Agent 配置模板未开启「上传本地Skill」。",
+      "localSkillUploadUnavailable": "无法确认当前 Agent 配置，请稍后重试。",
       "knowledgeSkillExists": "技能「{{name}}」已存在，请更换名称或先卸载后再试",
       "knowledgeSkillExistsGeneric": "同名技能已存在，请更换名称或先卸载后再试",
       "uploadFailed": "文件上传失败，请重试",
@@ -5373,6 +5418,12 @@
       "acceptAll": "全部接收",
       "submit": "确认提交",
       "entryCount": "共 {{count}} 条演进经验"
+    },
+    "activateConfirm": {
+      "header": "扩展激活确认",
+      "question": "是否激活扩展 **{{extensionName}}**？",
+      "accept": "激活",
+      "reject": "拒绝"
     }
   },
   "share": {
@@ -5837,7 +5888,8 @@
         "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。",
         "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。",
         "archiveSessionFinalizing": "会话正在收尾，请稍后重试归档。",
-        "removeSessionFinalizing": "会话正在收尾，请稍后重试移除。"
+        "removeSessionFinalizing": "会话正在收尾，请稍后重试移除。",
+        "pinCronNoIdentity": "该定时任务会话缺少任务标识，置顶后将无法在侧边栏找到，已取消置顶"
       },
       "cancel": "取消",
       "confirm": "确定"
