@@ -277,6 +277,9 @@ const ROUTES: Record<string, RouteRow> = {
   // 统一资产导入导出：包体经 /file-api/assets/upload-temp 上传、
   // /file-api/download 短效链接下载，此处只登记控制面 RPC，
   // 路径与服务端 pod_rest_map 的声明一致。
+  // assets.stage_local 有意不登记：桌面本机路径暂存为 WS 专用 RPC，
+  // 服务端 pod_rest_map 同样未声明 REST 路由（只补这里会 404；两边
+  // 都补则把「按服务端任意路径复制 .zip」暴露给 HTTP 北向）。
   'assets.export': { verb: 'POST', path: '/assets/export', kind: 'unary' },
   'assets.import': { verb: 'POST', path: '/assets/import', kind: 'unary' },
 };
