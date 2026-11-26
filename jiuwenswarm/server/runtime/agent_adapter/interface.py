@@ -40,6 +40,10 @@ from agent_gateway.common.mode_matrix import (
     read_request_work_mode,
 )
 
+from e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+)
 from e2a.hooks import AgentServerHookEvents
 from e2a.hooks import MemoryHookContext
 from jiuwenswarm.common.utils import get_agent_home_dir
@@ -85,11 +89,6 @@ from jiuwenswarm.runtime.session.model import (
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config
-from e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
-)
-
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
@@ -2404,7 +2403,7 @@ class JiuWenSwarm:
     async def _handle_assets_package_request(self, request: AgentRequest) -> AgentResponse | None:
         if request.req_method not in (ReqMethod.ASSETS_EXPORT, ReqMethod.ASSETS_IMPORT):
             return None
-        return await self._get_management_requests()._handle_assets_package_request(request)
+        return await self._get_management_requests().handle_assets_package_request(request)
 
     @staticmethod
     def _is_skills_rebuild_followup(payload: Any) -> bool:
@@ -2423,10 +2422,16 @@ class JiuWenSwarm:
         return ManagementRequests._is_skills_create_from_knowledge_followup(payload)
 
     def _schedule_skills_rebuild_followup(self, request: AgentRequest, payload: dict[str, Any]) -> str:
-        return self._get_management_requests()._schedule_skills_rebuild_followup(request, payload)
+        return self._get_management_requests().schedule_skills_rebuild_followup(request, payload)
 
-    async def _finish_skills_rebuild_job(self, rebuild_id: str, skill_dir: Path | None, request: AgentRequest, payload: dict[str, Any]) -> None:
-        await self._get_management_requests()._finish_skills_rebuild_job(rebuild_id, skill_dir, request, payload)
+    async def _finish_skills_rebuild_job(
+        self,
+        rebuild_id: str,
+        skill_dir: Path | None,
+        request: AgentRequest,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._get_management_requests().finish_skills_rebuild_job(rebuild_id, skill_dir, request, payload)
 
     async def _run_skills_rebuild_followup(
         self,
@@ -2489,7 +2494,7 @@ class JiuWenSwarm:
 
     async def _prepare_live_plugin_replacement(self, package_id: str) -> Any:
         """Delegate replacement preparation to the optional management owner."""
-        return await self._get_management_requests()._prepare_live_plugin_replacement(package_id)
+        return await self._get_management_requests().prepare_live_plugin_replacement(package_id)
 
     async def _handle_package_catalog_request(self, request: AgentRequest) -> AgentResponse | None:
         """Delegate to the optional management provider."""

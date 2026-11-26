@@ -48,8 +48,8 @@ def main() -> None:
         "code_identity": fingerprint,
         "source_observation": None if _identity_path().is_file() else launch_source_observation(),
     }
-    # Stdout carries the identity subprocess protocol, rather than diagnostics.
-    sys.stdout.write(json.dumps(payload) + "\n")
+    # The parent reads stdout in full as a JSON protocol document.
+    json.dump(payload, sys.stdout)
 
 
 if __name__ == "__main__":

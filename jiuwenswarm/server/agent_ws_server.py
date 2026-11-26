@@ -31,7 +31,6 @@ from agent_gateway.common.ws_diagnostics import (
 )
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 
-from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from e2a.constants import E2A_WIRE_INTERNAL_METADATA_KEYS
 from e2a.gateway_normalize import (
     E2A_FALLBACK_FAILED_KEY,
@@ -40,6 +39,8 @@ from e2a.gateway_normalize import (
 )
 from e2a.models import E2AEnvelope
 from e2a.wire_codec import encode_json_parse_error_wire
+
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.plan import PlanModeController

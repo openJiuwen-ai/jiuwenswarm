@@ -446,7 +446,14 @@ from jiuwenswarm.server.utils.stream_utils import (
     parse_ask_user_question_payload,
     parse_stream_chunk as parse_common_stream_chunk,
 )
-from jiuwenswarm.agents.harness.common.tools.multimodal_config import apply_audio_model_config_from_yaml, apply_image_gen_model_config_from_yaml, apply_video_model_config_from_yaml, apply_vision_model_config_from_yaml, complete_multimodal_model_configured, multimodal_model_enabled
+from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
+    apply_audio_model_config_from_yaml,
+    apply_image_gen_model_config_from_yaml,
+    apply_video_model_config_from_yaml,
+    apply_vision_model_config_from_yaml,
+    complete_multimodal_model_configured,
+    multimodal_model_enabled,
+)
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import is_send_file_enabled
 from jiuwenswarm.agents.harness.common.tools.heartbeat_policy import is_heartbeat_supported

@@ -607,7 +607,7 @@ class ManagementRequests:
             metadata=request.metadata,
         )
 
-    async def _prepare_live_plugin_replacement(self, package_id: str) -> Any:
+    async def prepare_live_plugin_replacement(self, package_id: str) -> Any:
         """Detach idle selections through their execution owner before replacement."""
         adapter = getattr(self._host, "_adapter", None)
         prepare = getattr(adapter, "prepare_plugin_replacement", None)
@@ -715,7 +715,7 @@ class ManagementRequests:
                 ok, payload = await asyncio.wait_for(
                     package_manager.install_equipment_from_hub_gated(
                         "plugin_packages", params,
-                        before_replace=self._prepare_live_plugin_replacement,
+                        before_replace=self.prepare_live_plugin_replacement,
                     ),
                     timeout=120,
                 )
@@ -808,7 +808,7 @@ class ManagementRequests:
         )
 
 
-    async def _handle_assets_package_request(self, request: AgentRequest) -> AgentResponse | None:
+    async def handle_assets_package_request(self, request: AgentRequest) -> AgentResponse | None:
         """Handle unified asset transfer requests (assets.export / assets.import);
         None means not one of them."""
         host = self._host
@@ -855,12 +855,12 @@ class ManagementRequests:
         )
 
 
-    def _schedule_skills_rebuild_followup(
+    def schedule_skills_rebuild_followup(
         self,
         request: AgentRequest,
         payload: dict[str, Any],
     ) -> str:
-        """登记重建任务并在后台跑静默 Agent。调用方立刻拿到 rebuild_id。"""
+        """Schedule a silent rebuild and return its identifier immediately."""
         host = self._host
         from jiuwenswarm.server.runtime.skill.skill_manager import (
             note_rebuild_live,
@@ -895,14 +895,14 @@ class ManagementRequests:
         return rebuild_id
 
 
-    async def _finish_skills_rebuild_job(
+    async def finish_skills_rebuild_job(
         self,
         rebuild_id: str,
         skill_dir: Path | None,
         request: AgentRequest,
         payload: dict[str, Any],
     ) -> None:
-        """后台跑完静默改写后才把任务写成 done。失败只记在任务上，不再回写原 RPC。"""
+        """Persist the rebuild result without sending another response to the original RPC."""
         host = self._host
         from jiuwenswarm.server.runtime.skill.skill_manager import (
             note_rebuild_live,

@@ -28,6 +28,10 @@ from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ORIGIN,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
+from e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+)
 
 from jiuwenswarm.server.edition_gate import enterprise_only_denial
 from jiuwenswarm.server.heartbeat_push import merge_heartbeat_push_metadata, should_skip_heartbeat_push
@@ -65,10 +69,6 @@ from jiuwenswarm.common.config import (
     get_config,
     get_sandbox_endpoint,
     get_sandbox_startup_mode_explicit,
-)
-from e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.schema.agent import (

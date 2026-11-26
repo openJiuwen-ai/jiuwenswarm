@@ -507,8 +507,6 @@ def _owner_session_dir(owner: OwnerIdentity, session_id: str) -> Path:
 @contextmanager
 def _sweep_lock(volume: Path) -> Iterator[None]:
     """One AgentServer replica sweeps at a time. The purge itself is idempotent."""
-    import portalocker
-
     with (volume / _SWEEP_LOCK_NAME).open("a+") as handle:
         while True:
             try:
