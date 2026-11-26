@@ -132,6 +132,9 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.CONTEXT_OVERFLOW_RECOVERY,
     registry.TEAM_ADMISSION,
     registry.PERSONAL_CONTEXT,
+    # Session-level OfficeAce user profile (same family as PERSONAL_CONTEXT).
+    # Provider returns None when credentials/provider gate is off.
+    registry.OFFICE_ACE_USER_PROFILE,
     registry.PLUGIN_RAILS,
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
@@ -188,6 +191,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CONTEXT_OVERFLOW_RECOVERY,
     registry.TEAM_ADMISSION,
     registry.PERSONAL_CONTEXT,
+    registry.OFFICE_ACE_USER_PROFILE,
     registry.CODE_TASK_PLANNING,
     registry.CODE_AGENT_RAIL,
     registry.USER_HOOKS,
