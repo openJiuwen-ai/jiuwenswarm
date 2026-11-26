@@ -38,6 +38,7 @@ from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
     VIDEO_ANIMATE_IMAGE,
     VIDEO_MULTI_REF,
     compose_reference_clip_prompt,
+    copy_r2v_sound_inputs,
     stamp_creative_intent,
     video_generation_overrides,
 )
@@ -1165,6 +1166,39 @@ def test_r2v_sound_line_follows_the_practice_branches(monkeypatch: pytest.Monkey
     cued = compose_reference_clip_prompt({**base, "sfx": ["岩面水声", "风声"]})
     assert "声音：仅岩面水声、风声；不要配乐、不要背景音乐、不要氛围音床。" in cued
     assert "仅本镜头的现场音" not in cued
+
+
+def test_r2v_authored_speech_is_not_called_silence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.pipeline.content_language.get_config",
+        lambda: {"preferred_language": "zh"},
+    )
+    base = {
+        "clip_index": 1,
+        "clip_action": "主持人面对镜头介绍产品",
+        "camera": "中景",
+        "timeline": "0-4s",
+        "duration_sec": 4,
+        "style_lock": {"look": "发布会"},
+        "reference_call_mode": "r2v",
+    }
+    spoken = dict(base)
+    copy_r2v_sound_inputs(
+        spoken,
+        {"speech_line": "欢迎来到我们的新产品发布会！", "audio_policy": "speech"},
+        {"characters": [{"id": "char_1", "name": "主持人"}]},
+    )
+    spoken_prompt = compose_reference_clip_prompt(spoken)
+    assert "人物没有台词" not in spoken_prompt
+    assert "不要配乐、不要背景音乐、不要氛围音床。" in spoken_prompt
+
+    named = dict(base)
+    copy_r2v_sound_inputs(named, {"speech_by_character": {"char_1": "看这边"}}, {})
+    assert "人物没有台词" not in compose_reference_clip_prompt(named)
+
+    quiet = dict(base)
+    copy_r2v_sound_inputs(quiet, {}, {})
+    assert "人物没有台词、对白或独白。" in compose_reference_clip_prompt(quiet)
 
 
 def test_i2v_prompt_does_not_take_the_r2v_sound_line() -> None:

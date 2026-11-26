@@ -400,11 +400,18 @@ def copy_r2v_sound_inputs(
     shot: dict[str, Any] | None,
     analysis: dict[str, Any] | None,
 ) -> None:
-    """Put ``audio_policy`` and ``sfx`` on an R2V clip, the fields ``_sound_line`` reads.
+    """Put ``audio_policy``, ``sfx``, and speech on an R2V clip.
 
-    A practice clip is stamped with these before its prompt is written. An R2V
-    clip that lacks them always falls through to the room-tone sentence.
+    ``_sound_line`` reads those fields. A practice clip is stamped with them
+    before its prompt is written. An R2V clip that lacks a policy falls through
+    to the room-tone sentence, and a non-silent clip with no speech is told
+    that nobody speaks.
     """
+    from jiuwenswarm.server.runtime.designer.audio_locks import (
+        normalize_speech_by_character,
+        speech_line_from_by_character,
+    )
+
     shot = shot if isinstance(shot, dict) else {}
     analysis = analysis if isinstance(analysis, dict) else {}
     audio = analysis.get("audio") if isinstance(analysis.get("audio"), dict) else {}
@@ -413,10 +420,21 @@ def copy_r2v_sound_inputs(
         cfg["audio_policy"] = policy
     if policy == "silent":
         cfg["sfx"] = []
+        cfg["speech_by_character"] = {}
+        cfg["speech_line"] = ""
         return
     cues = shot.get("sfx") if isinstance(shot.get("sfx"), list) else shot.get("sound_cues")
     if isinstance(cues, list):
         cfg["sfx"] = [str(cue).strip() for cue in cues if str(cue).strip()][:3]
+    characters = analysis.get("characters") if isinstance(analysis.get("characters"), list) else []
+    by_char = normalize_speech_by_character(shot, characters)
+    speech_line = speech_line_from_by_character(by_char) or str(
+        shot.get("speech_line") or shot.get("dialogue") or shot.get("speech") or ""
+    ).strip()
+    if by_char:
+        cfg["speech_by_character"] = by_char
+    if speech_line:
+        cfg["speech_line"] = speech_line
 
 
 def append_r2v_diegetic_sound(prompt: str, cfg: dict[str, Any] | None) -> str:
