@@ -119,6 +119,9 @@
     "retry": "Retry",
     "selectedCount": "{{count}} selected",
     "noMatches": "No matches",
+    "all": "All",
+    "yes": "Yes",
+    "no": "No",
     "editMenu": {
       "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",

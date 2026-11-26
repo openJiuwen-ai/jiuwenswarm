@@ -119,6 +119,9 @@
     "retry": "重试",
     "selectedCount": "已选 {{count}} 个",
     "noMatches": "没有匹配项",
+    "all": "全部",
+    "yes": "是",
+    "no": "否",
     "editMenu": {
       "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
