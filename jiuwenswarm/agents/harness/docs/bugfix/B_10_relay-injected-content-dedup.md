@@ -13,8 +13,9 @@ relay 产品包（`RelayClawAgentService.ts` 拼装、经 `system_prompt` 下发
 
 修复（只动 flash 侧，common 与 deep 行为不变）：
 
-- **删第 6 条**：按「行首编号 + 关键短语」定位，编号漂移也能命中；其余 1–5 条保留（flash 无对应物，整块删除会有损）。
-- **工具名改写**：映射表下沉到 `prompt/content/memory_names.py`，`FlashMemoryRail` 与 `FlashRelayMergeRail` 共用同一常量；best-effort，无旧名即原样返回。
+- **删第 6 条**：仅当本轮已生成等价的 120 删除规范（`deletion_protocol` 段含「回收站 + 已处理」约束）时删除 relay 简版；safety 域关闭或拆分回退时 120 不存在，relay 第 6 条是唯一来源，保留。按「行首编号 + 关键短语」定位，编号漂移也能命中；其余 1–5 条保留（flash 无对应物，整块删除会有损）。
+- **工具名改写**：映射表下沉到 `prompt/content/memory_names.py`，`FlashMemoryRail` 与 `FlashRelayMergeRail` 共用同一常量；只改写 `[记忆纠正规则]` 块内的旧工具名，不碰人格段等同段内其它文本；锚点缺失即原样返回。
+- **守卫回退**：`[文件输出约束]` 锚点缺失/布局漂移时整体回退，原内容重加，记忆块两项改写一并跳过。
 
 不处理（避免把非重复项当成重复）：
 

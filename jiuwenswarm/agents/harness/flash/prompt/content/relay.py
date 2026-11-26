@@ -67,32 +67,61 @@ def _strip_relay_duplicates(content: str) -> str | None:
     return (content[:ws_idx] + content[mc_idx:]).rstrip()
 
 
-# ── relay [记忆纠正规则] 第 6 条：删除=回收站 —— 120 已完整覆盖 ────────────────
-# 120 删除规范含「大文件同卷软删除回退」例外，relay 第 6 条是缺例外的简版；两版并存时
-# 模型可能只按简版执行，故删 relay 侧副本。按「行首编号 + 关键短语」定位，编号漂移也能命中。
+# ── relay [记忆纠正规则] 块：第 6 条删除 + 旧工具名改写 ──────────────────────
+# 两处改写都限定在该块内：request_system_prompt 还含 [Personality Override]（调用方人格）、
+# 交互提示与 Add-in 上下文，对整段做字符串替换会误伤其中的同名文本（如 read_memory.md）。
+# 第 6 条按「行首编号 + 关键短语」定位，编号漂移也能命中。
 _MEMORY_RULE6_MARKER = "移入回收站即为合规的软删除"
 _MEMORY_RULE6_LINE = re.compile(r"^[ \t]*\d+[.、][ \t]*")
 
 
+def _memory_block_span(text: str) -> tuple[int, int] | None:
+    """返回 ``[记忆纠正规则]`` 块的 ``(start, end)``；锚点缺失返回 None。
+
+    ``end`` 取块后第一个 relay 分区标题（``[xxx]`` 独占一行）或段尾。
+    """
+    start = text.find(_ANCHOR_MEMORY_CORRECTION)
+    if start < 0:
+        return None
+    end = len(text)
+    for match in _RELAY_SECTION_HEADER.finditer(
+        text, start + len(_ANCHOR_MEMORY_CORRECTION)
+    ):
+        end = match.start()
+        break
+    return start, end
+
+
 def _strip_memory_rule6(text: str) -> tuple[str, bool]:
     """删 ``[记忆纠正规则]`` 的删除=回收站一条，返回 ``(new_text, hit)``。"""
-    lines = text.split("\n")
+    span = _memory_block_span(text)
+    if span is None:
+        return text, False
+    start, end = span
+    lines = text[start:end].split("\n")
     for index, line in enumerate(lines):
         if _MEMORY_RULE6_MARKER in line and _MEMORY_RULE6_LINE.match(line):
             del lines[index]
-            return "\n".join(lines), True
+            return text[:start] + "\n".join(lines) + text[end:], True
     return text, False
 
 
 def _rewrite_memory_tool_names(text: str, replacements) -> tuple[str, bool]:
-    """把 relay 块里的旧记忆工具名改写为统一入口，返回 ``(new_text, hit)``。
+    """改写 ``[记忆纠正规则]`` 块内的旧记忆工具名，返回 ``(new_text, hit)``。
 
     映射表由调用方注入（取 ``memory_names.MEMORY_NAME_REPLACEMENTS``，与
-    FlashMemoryRail 共用同一份）；best-effort：没有旧名即原样返回，不阻断其它改写。
+    FlashMemoryRail 共用同一份）；best-effort：锚点缺失或没有旧名即原样返回。
     """
+    span = _memory_block_span(text)
+    if span is None:
+        return text, False
+    start, end = span
+    block = text[start:end]
     hit = False
     for old, new in replacements or ():
-        if old in text:
-            text = text.replace(old, new)
+        if old in block:
+            block = block.replace(old, new)
             hit = True
-    return text, hit
+    if not hit:
+        return text, False
+    return text[:start] + block + text[end:], True

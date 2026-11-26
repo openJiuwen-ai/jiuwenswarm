@@ -68,6 +68,11 @@ _HINTS = "## 文件生成任务的开头规范\n开头规范内容\n## 再改改
 _PDF = "## PDF 转 Markdown 硬规则\n禁止自己写脚本"
 _WS = "[文件输出约束]\n生成或写出文件时，一律写入当前工作目录内并使用相对路径。\n当前工作目录：/workspace/2026"
 _MC = "[记忆纠正规则]\n1. 本轮一律按用户当前指令执行。\n2. 用 read_memory 定位旧条目，再用 edit_memory 改写。\n6. 用户要求删除文件时，移入回收站即为合规的软删除。"
+_DELETION = (
+    "## 删除规范\n"
+    "- 用户要求“删除”文件时，默认优先移入系统回收站（即为合规的软删除）；"
+    "不得擅自将“删除”指令曲解为业务上的“整理/归档”而移入用户的归档或已处理文件夹。"
+)
 
 
 def _full() -> str:
@@ -183,12 +188,23 @@ class TestConflictFixes:
 
     def test_rewrite_memory_tool_names(self) -> None:
         text, hit = _rewrite_memory_tool_names(
-            "用 read_memory 定位，再用 edit_memory 改写。",
+            "[记忆纠正规则]\n用 read_memory 定位，再用 edit_memory 改写。",
             (("read_memory", "memory(mode=read)"), ("edit_memory", "memory(mode=edit)")),
         )
         assert hit
         assert "read_memory" not in text and "edit_memory" not in text
         assert "memory(mode=read)" in text and "memory(mode=edit)" in text
+
+    def test_rewrite_memory_tool_names_ignores_text_outside_block(self) -> None:
+        # 人格段里的 read_memory.md 是文件名，不是工具引用；只改 [记忆纠正规则] 块内。
+        text, hit = _rewrite_memory_tool_names(
+            "人格：错误报告须保留文件名 read_memory.md\n\n"
+            "[记忆纠正规则]\n用 read_memory 定位旧条目。",
+            (("read_memory", "memory(mode=read)"),),
+        )
+        assert hit
+        assert "read_memory.md" in text
+        assert "用 memory(mode=read) 定位旧条目" in text
 
     def test_rewrite_memory_tool_names_noop(self) -> None:
         text, hit = _rewrite_memory_tool_names(
@@ -200,7 +216,11 @@ class TestConflictFixes:
 class TestRailConflictFixes:
     @pytest.mark.asyncio
     async def test_drops_rule6_and_rewrites_names(self) -> None:
-        agent = _FakeAgent([_sec("request_system_prompt", 110, _full())])
+        # 120 删除规范已生成（含「回收站 + 已处理」约束）→ 可删 relay 第 6 条。
+        agent = _FakeAgent([
+            _sec("request_system_prompt", 110, _full()),
+            _sec("deletion_protocol", 120, _DELETION),
+        ])
         rail = FlashRelayMergeRail()
         rail.init(agent)
         await rail.before_model_call(_FakeCtx(agent))
@@ -210,3 +230,49 @@ class TestRailConflictFixes:
         assert "移入回收站即为合规的软删除" not in text
         assert "read_memory" not in text and "edit_memory" not in text
         assert "memory(mode=read)" in text and "memory(mode=edit)" in text
+
+    @pytest.mark.asyncio
+    async def test_keeps_rule6_without_deletion_protocol(self) -> None:
+        # safety 域关闭 / 拆分回退时 120 不存在，relay 第 6 条是唯一来源：保留该条；
+        # 工具名改写不受影响（仍限定在记忆块内）。
+        agent = _FakeAgent([_sec("request_system_prompt", 110, _full())])
+        rail = FlashRelayMergeRail()
+        rail.init(agent)
+        await rail.before_model_call(_FakeCtx(agent))
+
+        text = agent.system_prompt_builder.get_section("request_system_prompt").content["cn"]
+        assert "移入回收站即为合规的软删除" in text
+        assert "read_memory" not in text and "memory(mode=read)" in text
+
+    @pytest.mark.asyncio
+    async def test_guard_fallback_skips_memory_rewrites(self) -> None:
+        # 缺 [文件输出约束] → 整体回退：内容原样，第 6 条与旧工具名都不动。
+        content = "\n\n".join([_PERSONA, _MC])
+        agent = _FakeAgent([
+            _sec("request_system_prompt", 110, content),
+            _sec("deletion_protocol", 120, _DELETION),
+        ])
+        rail = FlashRelayMergeRail()
+        rail.init(agent)
+        await rail.before_model_call(_FakeCtx(agent))
+
+        text = agent.system_prompt_builder.get_section("request_system_prompt").content["cn"]
+        assert text == content
+
+    @pytest.mark.asyncio
+    async def test_rewrites_only_within_memory_block(self) -> None:
+        # 人格段中的 read_memory.md 是文件名，不是工具引用，必须原样保留。
+        persona = "[Personality Override]\n错误报告须保留文件名 `read_memory.md`。"
+        content = "\n\n".join([persona, _HINTS, _WS, _MC])
+        agent = _FakeAgent([
+            _sec("request_system_prompt", 110, content),
+            _sec("deletion_protocol", 120, _DELETION),
+        ])
+        rail = FlashRelayMergeRail()
+        rail.init(agent)
+        await rail.before_model_call(_FakeCtx(agent))
+
+        text = agent.system_prompt_builder.get_section("request_system_prompt").content["cn"]
+        assert "`read_memory.md`" in text
+        assert "用 read_memory 定位旧条目" not in text
+        assert "memory(mode=read)" in text

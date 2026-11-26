@@ -14,13 +14,15 @@ relay TS 层（RelayClawAgentService.ts buildRequest）把产品内容包经 ``s
 同时剥除段内与 flash 域 rail 重复的部分：
 
 - ``[文件输出约束]``（220 已接管）——按锚点剥除；
-- ``[记忆纠正规则]`` 的第 6 条（删除=回收站）——120 已完整覆盖且含大文件回退例外，删 relay 简版；
+- ``[记忆纠正规则]`` 的第 6 条（删除=回收站）——仅当本轮已生成等价的 120 删除规范
+  （``deletion_protocol`` 段含「回收站 + 已处理」约束）时删除 relay 简版；safety 域关闭
+  或拆分回退时 120 不存在，relay 第 6 条是唯一来源，保留；
 - ``[记忆纠正规则]`` 里的旧记忆工具名（read_memory / edit_memory / write_memory）——按
   ``prompt.content.memory_names.MEMORY_NAME_REPLACEMENTS``（与 FlashMemoryRail 共用）改写为
-  统一入口 ``memory(mode=…)``。
+  统一入口 ``memory(mode=…)``；改写只在该块内进行，不碰人格段等同段内其它文本。
 
-剥除机制：``[文件输出约束]`` 按锚点定位，锚点缺失即**整体回退**（用原内容重加），不盲切；
-其余改写均为独立锚点的 best-effort，锚点缺失只跳过该项、不影响其它项（带守卫原则）。
+剥除机制：``[文件输出约束]`` 按锚点定位，锚点缺失即**整体回退**（用原内容重加，后续记忆块
+改写一并跳过），不盲切；记忆块两项均为独立锚点的 best-effort（带守卫原则）。
 
 安全性说明：RuntimePromptRail 每轮 ``before_model_call`` 都重新注入
 ``request_system_prompt``（``add_section`` 按名覆盖于 110），故本 rail **不设幂等
@@ -51,6 +53,13 @@ from jiuwenswarm.agents.harness.flash.prompt.content.relay import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DELETION_SECTION = "deletion_protocol"
+# 120 删除规范中「删除=回收站 / 不得改判为归档」的两条约束（中英各一组）。
+_DELETION_RULE_MARKERS: tuple[tuple[str, ...], ...] = (
+    ("移入系统回收站", "已处理文件夹"),
+    ("recycle bin", "processed folder"),
+)
 
 
 class FlashRelayMergeRail(DeepAgentRail):
@@ -115,8 +124,10 @@ class FlashRelayMergeRail(DeepAgentRail):
 
         content = self._extract_content(section, builder)
         stripped = _strip_relay_duplicates(content)
-        if stripped is None:
-            # 命中守卫（锚点缺失）——用原 content 重加，不盲切。
+        guard_miss = stripped is None
+        if guard_miss:
+            # 命中守卫（锚点缺失/布局漂移）——整体回退：原内容重加，后续记忆块改写
+            # 一并跳过，避免在未识别的布局上做字符串手术。
             stripped = content
             if not self._warned_guard_miss:
                 self._warned_guard_miss = True
@@ -124,12 +135,13 @@ class FlashRelayMergeRail(DeepAgentRail):
                     "[FlashRelayMergeRail] relay 去重剥除命中守卫（锚点缺失），原样重加到段号 %s",
                     _PRIO_REQUEST,
                 )
-
-        # 以下两步各自独立锚点、best-effort：某一项没命中只跳过该项，不影响其它项。
-        # 删除=回收站：120 已覆盖（含大文件回退例外），删 relay 简版。
-        stripped, _ = _strip_memory_rule6(stripped)
-        # 旧记忆工具名 → 统一入口（映射表与 FlashMemoryRail 共用同一常量）。
-        stripped, _ = _rewrite_memory_tool_names(stripped, MEMORY_NAME_REPLACEMENTS)
+        else:
+            # 删除=回收站：仅当本轮已生成等价的 120 删除规范时才删 relay 简版；
+            # safety 域关闭或拆分回退时 120 不存在，relay 第 6 条是唯一来源，保留。
+            if self._deletion_rule_present(builder):
+                stripped, _ = _strip_memory_rule6(stripped)
+            # 旧记忆工具名 → 统一入口（映射表与 FlashMemoryRail 共用同一常量）。
+            stripped, _ = _rewrite_memory_tool_names(stripped, MEMORY_NAME_REPLACEMENTS)
 
         builder.remove_section(_SECTION_REQUEST)
         builder.add_section(PromptSection(
@@ -137,6 +149,22 @@ class FlashRelayMergeRail(DeepAgentRail):
             content={"cn": stripped, "en": stripped},
             priority=_PRIO_REQUEST,
         ))
+
+    def _deletion_rule_present(self, builder: Any) -> bool:
+        """本轮提示词是否已含等价的 120 删除规范（relay 第 6 条可删的前提）。
+
+        ``deletion_protocol`` 由 FlashSafetyRail（priority 4，先于本 rail）生成；
+        ``flash.safety.enabled=false`` 或 safety 拆分守卫回退时该段不存在，此时 relay
+        第 6 条是「删除=回收站 / 不得改判为归档」的唯一来源，不能删。
+        """
+        section = self._get_section(builder, _DELETION_SECTION)
+        if section is None:
+            return False
+        text = self._extract_content(section, builder)
+        return any(
+            all(marker in text for marker in markers)
+            for markers in _DELETION_RULE_MARKERS
+        )
 
     @staticmethod
     def _get_section(builder: Any, name: str) -> Any | None:
