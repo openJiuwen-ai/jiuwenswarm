@@ -11,6 +11,7 @@ import PlusIcon from '../../assets/sidebar/plus.svg?react';
 import SettingsIcon from '../../assets/settings/app-navigation/settings.svg?react';
 import UpdateIcon from '../../assets/sidebar/download-update.svg?react';
 import WorkIcon from '../../assets/工作.svg?react';
+import MemoryIcon from '../../assets/memory.svg?react';
 import SkillDesignIcon from '../../assets/agent-management/agent-skill.svg?react';
 import AgentDesignIcon from '../../assets/智能体.svg?react';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
@@ -157,6 +158,7 @@ const mainNavItems: NavItem[] = [
   { key: 'appMarket', labelKey: 'nav.appMarket', icon: appMarketNavIcon },
   { key: 'experiments', labelKey: 'nav.experiments', icon: experimentsNavIcon },
   { key: 'personalContext', labelKey: 'nav.personalContext', icon: personalContextNavIcon },
+  { key: 'memory', labelKey: 'nav.memory', icon: <MemoryIcon aria-hidden /> },
   { key: 'settings', labelKey: 'nav.settings', icon: <SettingsIcon aria-hidden /> },
   { key: 'updatepanel', labelKey: 'nav.update', icon: <UpdateIcon aria-hidden /> },
 ];
