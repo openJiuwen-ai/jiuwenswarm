@@ -117,6 +117,11 @@ class UpdateStatus:
     checked_at: float = 0.0
     installing: bool = False
     restart_command: str = ""
+    # Pip-install progress line and captured output pushed by the upgrade
+    # executor via _executor_callback. current_activity is read by the
+    # UpdatePanel frontend; pip_output is diagnostics, no UI consumer yet.
+    current_activity: str = ""
+    pip_output: str = ""
 
 
 class UpdaterService:
