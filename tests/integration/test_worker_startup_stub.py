@@ -78,7 +78,7 @@ class Observe(importlib.abc.MetaPathFinder):
                     send = module.DeepAgent.send_input
                     async def entered(instance, *args, **kwargs):
                         record("sdk_entry", legacy_server_loaded="jiuwenswarm.server.agent_ws_server" in sys.modules,
-                               sdk=module.__file__, python=sys.executable)
+                               sdk=module.__file__, python=sys.executable, agent_instance=id(instance))
                         return await send(instance, *args, **kwargs)
                     module.DeepAgent.send_input = entered
         spec.loader = Loader()
@@ -345,6 +345,66 @@ async def test_configuration_management_and_history_after_real_chat(tmp_path, mo
         configuration = await rpc('config', 'config.get', {})
         assert configuration.get('ok') is True, configuration
         assert configuration['payload']['setup_guide_enabled'] == 'false'
+    finally:
+        await chain.stop()
+        model.shutdown()
+        model.server_close()
+        (tmp_path / 'model-calls.json').write_text(json.dumps(model.calls), encoding='utf-8')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['agent', 'code.normal'])
+async def test_front_restart_reuses_worker_sdk_session_and_durable_history(tmp_path, mode):
+    """A restarted Front/Gateway must reuse the live SDK owner and both chat turns."""
+    model = ThreadingHTTPServer(('127.0.0.1', 0), ModelStub)
+    model.calls = []
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    (tmp_path / 'release').touch()
+    chain = WorkerChain(Path(__file__).resolve().parents[2], tmp_path, mode, 'slow', model.server_port)
+    try:
+        await chain.start()
+        first = await chain.chat('first')
+        worker = next(row['pid'] for row in chain.stages() if row['event'] == 'sdk_entry')
+        created = psutil.Process(worker).create_time()
+        await chain.ws.close()
+        chain.ws = None
+        # Keep the owned child identities before their Front parents disappear.
+        for process in chain.processes:
+            try:
+                chain.identities.extend((child.pid, child.create_time())
+                                        for child in psutil.Process(process.pid).children(recursive=True))
+            except psutil.NoSuchProcess:
+                pass
+        for process in reversed(chain.processes):
+            if process.poll() is None:
+                process.terminate()
+                await asyncio.to_thread(process.wait, 10)
+        chain.processes.clear()
+        chain.log.close()
+        chain.log = None
+        assert psutil.Process(worker).create_time() == created
+
+        await chain.start()
+        follow = await chain.chat('follow')
+        assert first['payload']['runtime_event']['worker_instance'] == follow['payload']['runtime_event']['worker_instance']
+        entries = [row for row in chain.stages() if row['event'] == 'sdk_entry']
+        assert len(entries) == 2 and {row['pid'] for row in entries} == {worker}
+        assert len({row['agent_instance'] for row in entries}) == 1
+        assert not any(row['event'] == 'runtime_closed' and row['pid'] == worker for row in chain.stages())
+        history_start = len(chain.frames)
+        await chain.send('restart-history', 'history.get', {'cursor': None, 'limit': 50})
+        done = await chain.receive_until(
+            lambda wire: wire.get('event') == 'history.message'
+            and (wire.get('payload') or {}).get('status') in {'done', 'error'}
+        )
+        assert done['payload']['status'] == 'done'
+        transcript = json.dumps(chain.frames[history_start:])
+        assert 'STUB_REPLY_first' in transcript and 'STUB_REPLY_follow' in transcript
+        (tmp_path / 'reattach.json').write_text(json.dumps({
+            'mode': mode, 'worker_pid': worker, 'process_created': created,
+            'same_worker': True, 'sdk_inputs': len(entries), 'history_contains_both_turns': True,
+            'same_sdk_agent': True,
+        }), encoding='utf-8')
     finally:
         await chain.stop()
         model.shutdown()

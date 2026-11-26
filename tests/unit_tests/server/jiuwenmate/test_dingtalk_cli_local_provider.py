@@ -12,6 +12,7 @@ import time
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -19,6 +20,99 @@ from jiuwenswarm.server.jiuwenmate import dingtalk_cli_local_provider
 from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliRuntimeService, DingTalkCliScope
 from jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider import LocalDingTalkCliRuntime
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
+
+@pytest.mark.parametrize("operation", ["status", "cancel"])
+def test_unverified_oauth_process_keeps_pending_state_and_credentials(tmp_path, monkeypatch, operation):
+    def runner(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, json.dumps({"authenticated": False}), "")
+
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path, config_loader=lambda: _config(_app("employee-1", "app", "secret")),
+        dws_path=Path("/tools/dws"), runner=runner,
+    )
+    scope = DingTalkCliScope("local", "employee-1")
+    operation_id = runtime._scope_digest(scope) + "." + "a" * 32
+    log, pid, _ = runtime._oauth_paths(scope, operation_id)
+    log.parent.mkdir(parents=True)
+    log.write_text("pending", encoding="utf-8")
+    pid.write_text("123", encoding="utf-8")
+    current = runtime._oauth_current(scope)
+    current.write_text(operation_id, encoding="utf-8")
+    credential = runtime._oauth_root(scope) / "credential-probe"
+    credential.write_text("keep", encoding="utf-8")
+    signals = []
+    monkeypatch.setattr(runtime, "_oauth_process_running", lambda path: None)
+    monkeypatch.setattr(os, "kill", lambda *args: signals.append(args))
+    if operation == "status":
+        status = runtime._dingtalk_auth_status(scope)
+        assert status["error_code"] == "authorization_process_unverified"
+    else:
+        with pytest.raises(PersistentAgentError) as error:
+            runtime._cancel_dingtalk_auth(scope, operation_id)
+        assert error.value.code == "DINGTALK_CLI_AUTH_CLEANUP_FAILED"
+    assert log.exists() and pid.exists() and current.exists()
+    assert credential.read_text(encoding="utf-8") == "keep"
+    assert signals == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["identity_unknown", "exit_unconfirmed"])
+async def test_expired_oauth_cleanup_failure_retains_pending_state(
+    tmp_path, monkeypatch, caplog, failure,
+):
+    import psutil
+
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path, config_loader=lambda: _config(_app("employee-1", "app", "secret")),
+        dws_path=Path("/tools/dws"), runner=lambda args, **kwargs: subprocess.CompletedProcess(
+            args, 0, json.dumps({"authenticated": False}), "",
+        ),
+    )
+    scope = DingTalkCliScope("local", "employee-1")
+    operation_id = runtime._scope_digest(scope) + "." + "a" * 32
+    log, pid, exit_path = runtime._oauth_paths(scope, operation_id)
+    log.parent.mkdir(parents=True)
+    log.write_text("pending", encoding="utf-8")
+    pid.write_text("123", encoding="utf-8")
+    current = runtime._oauth_current(scope)
+    current.write_text(operation_id, encoding="utf-8")
+    credential = runtime._oauth_root(scope) / "credential-probe"
+    credential.write_text("keep", encoding="utf-8")
+    os.utime(pid, (time.time() - 700, time.time() - 700))
+    process = Mock(pid=123)
+    process.wait.side_effect = psutil.TimeoutExpired(3, pid=123)
+    verified = Mock(return_value=(process, 100.0))
+    running = Mock(return_value=True)
+    if failure == "identity_unknown":
+        running.side_effect = [True, None]
+    monkeypatch.setattr(runtime, "_oauth_process_running", running)
+    monkeypatch.setattr(runtime, "_verified_oauth_process", verified)
+    monkeypatch.setattr(
+        dingtalk_cli_local_provider, "process_identity_matches", lambda *args, **kwargs: True,
+    )
+
+    status = await runtime.dingtalk_auth_status(scope)
+    assert status["status"] == "error"
+    assert status["error_code"] == "authorization_cleanup_failed"
+    assert "timeout cleanup failed; pending state retained" in caplog.text
+    running.assert_called()
+    if failure == "identity_unknown":
+        verified.assert_not_called()
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+    else:
+        process.terminate.assert_called_once()
+        process.kill.assert_called_once()
+    assert all(path.exists() for path in (log, pid, current))
+    assert credential.read_text(encoding="utf-8") == "keep"
+    assert not exit_path.exists()
+
+    monkeypatch.setattr(runtime, "_oauth_process_running", lambda path: None)
+    retry = await runtime.dingtalk_auth_status(scope)
+    assert retry["error_code"] == "authorization_process_unverified"
+    assert all(path.exists() for path in (log, pid, current, credential))
+    assert not exit_path.exists()
 
 
 def _online_document_runtime(tmp_path, monkeypatch, responses):
@@ -2179,6 +2273,8 @@ async def test_device_authorization_reports_rejected_client_without_exposing_cli
 
 @pytest.mark.asyncio
 async def test_disconnect_stops_pending_device_authorization_before_deleting_profile(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
     runtime = LocalDingTalkCliRuntime(
         root=tmp_path, config_loader=lambda: _config(_app('employee-1', 'app', 'secret')),
         dws_path=Path('/tools/dws'),
@@ -2191,7 +2287,9 @@ async def test_disconnect_stops_pending_device_authorization_before_deleting_pro
     pid.write_text('987654', encoding='utf-8')
     runtime._oauth_current(scope).write_text(operation, encoding='utf-8')
     stopped = []
-    monkeypatch.setattr(os, 'kill', lambda target, sig: stopped.append(target))
+    process = SimpleNamespace(pid=987654, terminate=lambda: stopped.append(987654), wait=lambda timeout: None)
+    monkeypatch.setattr(runtime, '_verified_oauth_process', lambda path: (process, 123.0))
+    monkeypatch.setattr(dingtalk_cli_local_provider, 'process_identity_matches', lambda *args, **kwargs: True)
     monkeypatch.setattr(runtime, '_oauth_process_running', lambda path: True)
     root = runtime._oauth_root(scope)
     await runtime.dingtalk_auth_disconnect(scope)
@@ -2483,10 +2581,15 @@ async def test_concurrent_device_authorization_reuses_one_pending_process(tmp_pa
     )
     scope = DingTalkCliScope('local', 'employee-1')
     monkeypatch.setattr(runtime, '_oauth_process_running', lambda path: True, raising=False)
+    monkeypatch.setattr(dingtalk_cli_local_provider, 'read_process_identity', lambda pid: 'proc_start_ticks:4242')
     first, second = await asyncio.gather(runtime.dingtalk_auth_begin(scope), runtime.dingtalk_auth_begin(scope))
     assert len(started) == 1
     assert first['operation_id'] == second['operation_id']
     assert first['user_code'] == 'TEST-CODE'
+    _, pid_file, _ = runtime._oauth_paths(scope, first['operation_id'])
+    assert json.loads(pid_file.read_text(encoding='utf-8')) == {
+        'pid': 987654, 'process_identity': 'proc_start_ticks:4242',
+    }
 
 
 @pytest.mark.asyncio

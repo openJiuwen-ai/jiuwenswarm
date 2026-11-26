@@ -9,12 +9,13 @@ import pytest
 
 from jiuwenswarm.runtime.service import AgentRuntime
 from jiuwenswarm.runtime.team_controller import LazyTeamExecutionController
-from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
+from jiuwenswarm.server.worker import early_import, runtime_backend, runtime_bootstrap
 from jiuwenswarm.server.worker.telemetry import StartupTelemetry
 
 
 @pytest.mark.asyncio
-async def test_required_configuration_and_sdk_import_overlap_before_runtime_patches(monkeypatch):
+@pytest.mark.parametrize("prestarted_sdk", [False, True])
+async def test_required_configuration_and_sdk_import_overlap_before_runtime_patches(monkeypatch, prestarted_sdk):
     barrier = threading.Barrier(2, timeout=2)
     complete = []
 
@@ -25,6 +26,8 @@ async def test_required_configuration_and_sdk_import_overlap_before_runtime_patc
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "1")
     monkeypatch.setattr(runtime_backend, "_prepare_worker_configuration", lambda: prepare("config"))
     monkeypatch.setattr(runtime_backend, "_preload_sdk_execution_modules", lambda: prepare("sdk"))
+    ticket = SimpleNamespace(wait=lambda: prepare("sdk")) if prestarted_sdk else None
+    monkeypatch.setattr(early_import, "current_import_ticket", lambda: ticket)
 
     def apply_after_join():
         assert set(complete) == {"config", "sdk"}
@@ -58,7 +61,8 @@ def test_dirty_description_layout_is_cleaned_even_with_parent_workspace_marker(m
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failed_stage", ["configuration", "sdk"])
-async def test_required_preparation_failure_prevents_runtime_consumers(monkeypatch, failed_stage):
+@pytest.mark.parametrize("prestarted_sdk", [False, True])
+async def test_required_preparation_failure_prevents_runtime_consumers(monkeypatch, failed_stage, prestarted_sdk):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "1")
 
     def fail():
@@ -68,6 +72,8 @@ async def test_required_preparation_failure_prevents_runtime_consumers(monkeypat
                         fail if failed_stage == "configuration" else lambda: None)
     monkeypatch.setattr(runtime_backend, "_preload_sdk_execution_modules",
                         fail if failed_stage == "sdk" else lambda: None)
+    ticket = SimpleNamespace(wait=fail if failed_stage == "sdk" else lambda: None) if prestarted_sdk else None
+    monkeypatch.setattr(early_import, "current_import_ticket", lambda: ticket)
     monkeypatch.setattr(runtime_backend, "_configure_openjiuwen_logging",
                         lambda: pytest.fail("configuration did not become usable"))
     monkeypatch.setattr(runtime_backend, "_apply_runtime_entry_patches",

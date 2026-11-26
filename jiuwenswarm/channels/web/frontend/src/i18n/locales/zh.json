@@ -7570,7 +7570,9 @@
         "failures": {
           "org_access_denied": "钉钉账号已确认，但所选组织未授权此账号通过 CLI 访问数据。请联系组织主管理员开通权限后重新授权，或选择已有权限的组织。",
           "authorization_expired": "本次设备授权已过期，请重新点击“授权钉钉账号”获取新链接和设备码。",
-          "authorization_failed": "本次授权未完成或授权进程已结束，请重新授权，勿重复使用旧设备码。"
+          "authorization_failed": "本次授权未完成或授权进程已结束，请重新授权，勿重复使用旧设备码。",
+          "authorization_process_unverified": "暂时无法确认钉钉授权状态，已保留授权记录。请稍后重试。",
+          "authorization_cleanup_failed": "授权已超时，但清理尚未完成，已保留授权记录。请稍后重试。"
         },
         "status": {
           "loading": "正在检查授权状态…",

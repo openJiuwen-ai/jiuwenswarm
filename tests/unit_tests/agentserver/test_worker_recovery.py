@@ -203,8 +203,10 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
 
         class Capture:
             async def send(self, payload, **_kwargs):
-                # Model a Gateway slower than IPC, including on fast Unix sockets.
-                await asyncio.sleep(0.001)
+                # The producer waits for actual Gateway consumption every 32
+                # frames. Yield without a millisecond timer: Windows timer
+                # granularity must not determine whether replay meets a deadline.
+                await asyncio.sleep(0)
                 wires.append(payload)
                 sequence = payload.get("metadata", {}).get("runtime_event", {}).get("sequence", 0)
                 if payload.get("session_id") == "a" and sequence and sequence % 32 == 0:

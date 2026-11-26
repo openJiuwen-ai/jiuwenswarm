@@ -8,7 +8,7 @@ Front 优先准备控制面的配置读取路径。Web 应用在当前连接的 
 
 连接建立后可以先打开“添加模型”并填写草稿。保存仍等待已有模型列表和供应商配置加载完成，以保留模型校验、身份和冲突检查；后台结果返回不会清除已填写内容。初始化失败时可以重试，或取消草稿。
 
-Worker IPC 使用 v3，Supervisor 验证 HELLO 中的协议、构建身份和数据目录后才发放启动许可；旧协议 Worker 不会直接复用。SDK 的安全导入可以提前进行，配置迁移、Runtime 资源构造和执行仍受启动许可约束。
+Worker IPC 使用 v3，Supervisor 验证 HELLO 中的协议、进程创建身份、构建身份和数据目录后才发放启动许可；旧协议 Worker 不会直接复用。协议 v2 及更新版本必须提供可验证的创建时间或进程启动计数。SDK 的安全导入可以提前进行，配置迁移、Runtime 资源构造和执行仍受启动许可约束。
 
 `runtime_prewarm` 默认有界开启，只准备一个配置中的 profile，不创建 Session 或发送模型请求。默认空闲延迟为 1 秒，最多尝试两次，预算为 10 秒墙钟、5 秒进程 CPU 和 256 MB RSS 增量。前台活动会阻止后续后台步骤；同步导入不能强制抢占，CPU/RSS 预算用于观测并停止后续工作。显式设置 `runtime_prewarm.enabled: false` 可以关闭预热；真冷启动测量应关闭预热并与默认配置结果分别报告。
 
@@ -27,6 +27,8 @@ Rail 扩展的启用和关闭会更新当前 Worker 中由会话适配器登记�
 workspace 准备期间正式 Quit 会取消后续服务启动。完整桌面模式在 AgentServer 尚未启动时也会检查并关闭当前部署已有的常驻 Worker；frontend-only 模式继续保留其外部后端。
 
 IPC 端点按安装位置、Python 环境、数据目录和运行配置隔离。Worker HELLO 还携带代码/构建身份、实际安装依赖身份及进程创建时间；版本、依赖或构建改变后不复用旧代码进程。WHL 和原生桌面每次后端构建获得独立构建 ID，即使输入源码相同也会更换 ID。WHL 在构建时写入成品身份，启动读取该身份并检查实际依赖；源码 checkout 继续校验内容。
+
+HarmonyOS 沙箱拒绝读取全局 `/proc/stat` 时，Worker 和 Supervisor 可使用 `/proc/<pid>/stat` 的进程启动计数继续校验身份；它与创建时间戳分开传输。两种来源都不可读时，HELLO 失败日志包含 PID、阶段和异常栈，启动失败；后续清理也不会仅凭 PID 终止未经身份校验的目标。
 
 共享数据目录中的不同服务实例继续通过 `JIUWENSWARM_RUNTIME_INSTANCE`（优先）或 `HOSTNAME` 区分端点和部署身份。停止命令须使用对应实例的相同环境；不得将其他实例的历史 Worker 当成当前实例的进程回收。
 
@@ -84,11 +86,29 @@ resident Worker 的 IPC 暂时断开时，Front 保留已提交流式请求的�
 
 IPC 发送和关闭同时失败时，Front 仍保留原恢复等待；恢复订阅失败后退役该连接，再续接所有保留的请求。服务停止时，即使 IPC 关闭抛错，等待者和后台任务也会清理。
 
+## 进程身份
+
+IPC protocol 2 的 HELLO 必须携带有效的创建时间或进程启动计数，两个字段都缺失或为空时拒绝握手。仅 protocol 1 保留省略创建字段的兼容行为，并仍须通过操作系统归属校验。时间戳与启动计数保留不同单位，bool 和非正数均不是有效身份。
+
+debug 服务状态和新的钉钉 OAuth PID 记录保存操作系统进程身份，受限系统可使用启动计数。身份不可读时保留未知状态：debug 停止拒绝发送信号，OAuth 取消报告清理未完成，并保留 pending 状态及凭据。旧时间戳记录在身份仍可验证时继续兼容。
+
+debug 服务身份不可验证时，显式指定的 `--legacy-worker-pid` 仍可进入 Worker 独立归属校验及清理流程；不向未知身份的 Front 发送信号，保留 debug 状态，并以非零退出码报告服务整体停止尚未确认。OAuth 超时清理在二次校验或退出等待中失败时，状态查询返回 `authorization_cleanup_failed`，保留 pending 记录及凭据，不写入 `expired` 退出标记；后续查询继续校验进程状态。
+
+develop 还发送可选的 `process_started` 原生启动标记，用于兼容观察方之间的时钟修正差异。该字段不可读时为空，不影响有效 ticks 的握手；它不能替代 protocol 2 必须声明的创建时间或 ticks，也不放宽旧时间戳的身份匹配。双方都有可读 ticks 时仍优先使用 ticks。
+
 ## Worker 输出日志
 
-resident 与 `front_loopback` 均沿用原始输出路由：stdout 继承启动进程的输出，stderr 直接追加写入 `logs/worker-logs/runtime-worker-*.stderr.log`。Supervisor 启动日志和运行诊断提供 stderr 文件路径，异常退出的堆栈保留在该文件中。
+resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<UUID>[-<owner>].stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，使用当前 Worker socket 路径父目录下的 `worker-logs`。自定义 socket 路径时，默认日志目录随之变化；`front_loopback` 同样按传入的 socket 路径选择默认日志目录。该设置不改变 IPC 端点位置。
+
+建议为 `JIUWEN_WORKER_LOG_DIR` 使用绝对路径；相对路径按 Supervisor 当前工作目录解析。
 
 Supervisor 不再逐行读取并重标 Worker 输出，也不创建独立的 stdout 日志文件。stderr 可以包含正常 INFO 日志，不能据此判定 Worker 发生错误；排障时结合文件中的原始日志级别、异常堆栈与进程退出码。
+
+同一目录下的 `latest-worker-error.log` 保存最近一次 Worker 的错误诊断，包括 PID、异常类型、消息和 traceback。Supervisor 在启动新 Worker 前尝试删除旧诊断，并通过内部环境变量 `JIUWEN_WORKER_DIAGNOSTIC_PATH` 将路径传给子进程，通常无需人工设置该变量。诊断文件不是按 Worker 永久归档的日志。
+
+多个 Worker 使用同一日志目录时，会共享这个固定诊断文件：新 Worker 启动时可能清除其他 Worker 的诊断，并发写入也可能交错。需要隔离诊断时，为各实例指定独立日志目录；每次启动独立的 stderr 文件仍可用于排障。
+
+Worker 将顶层异常、HELLO 失败及 ERROR 日志（包括未处理的 asyncio 任务异常）写入诊断文件。HELLO 失败诊断在关闭 IPC 前落盘，确保父进程开始回收时已可读取；普通 ERROR 日志沿用后台写入。诊断写入失败不会替换原异常。Worker 启动失败后，Supervisor 在回收子进程时记录诊断路径及文件末尾最多 16 KiB 的内容；文件不可读或不存在时记录不可用原因。普通 stderr 仍只保存在原始文件中。
 
 Worker stderr 复用应用日志的大小与保留常量：20 MiB 触发轮转，最多保留 20 份归档。Worker 自己的后台线程每 5 秒检查文件，复制归档后截断原文件，保留原有文件描述符；resident Worker 在 Front 退出后仍继续轮转。归档名为 `runtime-worker-<UUID>[-<owner>].stderr_<UTC日期>_<UTC时间>_<纳秒>.log`，同一 Worker 的后缀递增去重，每份不超过 20 MiB。分块边界保留完整 UTF-8 字符。一次突发超过阈值时拆分归档；超过完整归档预算的旧内容被丢弃，最多保留最近 400 MiB。轮询期间当前文件可暂时超过阈值。
 

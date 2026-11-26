@@ -105,13 +105,95 @@ def test_start_marker_rejects_a_reused_pid(boot_time_platform, tmp_path):
 
 @pytest.mark.parametrize(
     ("created", "accepted"),
-    [(None, True), (BOOT_TIME + RAW_START - 1.0, True), (BOOT_TIME + RAW_START + 30.0, False),
+    [(None, False), (BOOT_TIME + RAW_START, True),
+     (BOOT_TIME + RAW_START - 1.0, False), (BOOT_TIME + RAW_START + 30.0, False),
      (True, False), ("1795186846.5", False)],
 )
-def test_legacy_hello_tolerates_small_clock_drift_only(boot_time_platform, tmp_path, created, accepted):
+def test_legacy_hello_requires_comparable_birth_identity(boot_time_platform, tmp_path, created, accepted):
     hello = {"kind": "hello", "protocol": 2, "pid": PID, "process_created": created}
 
     assert identity.hello_matches_process(hello, _view(tmp_path, cached_boot_time=BOOT_TIME)) is accepted
+
+
+def test_protocol_one_can_omit_birth_fields(boot_time_platform, tmp_path):
+    process = _view(tmp_path, cached_boot_time=BOOT_TIME)
+    assert identity.hello_matches_process({"protocol": 1}, process)
+
+
+def test_optional_marker_cannot_replace_protocol_two_birth_fields(boot_time_platform, tmp_path):
+    process = _view(tmp_path, cached_boot_time=BOOT_TIME)
+    hello = {"protocol": 2, "process_started": identity.process_start_marker(process)}
+    assert not identity.hello_matches_process(hello, process)
+
+
+@pytest.mark.parametrize("failure", [psutil.AccessDenied(PID), PermissionError("restricted native API")])
+def test_marker_permission_failure_keeps_tick_fallback(boot_time_platform, monkeypatch, failure):
+    from jiuwenswarm.common import process_identity as common
+
+    process = SimpleNamespace(
+        pid=PID, create_time=Mock(side_effect=failure),
+        _proc=SimpleNamespace(create_time=Mock(side_effect=failure)),
+    )
+    monkeypatch.setattr(psutil, "Process", lambda pid: process)
+    monkeypatch.setattr(common, "proc_start_ticks", lambda pid: 4242)
+    fields = common.process_identity_fields(PID)
+    assert fields == {"process_created": None, "process_start_ticks": 4242, "process_started": None}
+    assert common.validate_process_identity(PID, {"protocol": 2, **fields}, process=process) == "proc_start_ticks:4242"
+
+
+def test_ticks_take_priority_over_a_different_optional_marker(boot_time_platform, monkeypatch, tmp_path):
+    from jiuwenswarm.common import process_identity as common
+
+    process = _view(tmp_path, cached_boot_time=BOOT_TIME)
+    hello = _hello_from(process)
+    hello.update(process_start_ticks=4242, process_started=hello["process_started"] + 1)
+    monkeypatch.setattr(common, "proc_start_ticks", lambda pid: 4242)
+    assert common.validate_process_identity(PID, hello, process=process) == "proc_start_ticks:4242"
+
+
+def test_optional_marker_failure_keeps_comparable_creation_time(boot_time_platform, monkeypatch):
+    from jiuwenswarm.common import process_identity as common
+
+    process = SimpleNamespace(
+        pid=PID, create_time=lambda: 1000.0,
+        _proc=SimpleNamespace(create_time=Mock(side_effect=psutil.AccessDenied(PID))),
+    )
+    monkeypatch.setattr(common, "proc_start_ticks", lambda pid: None)
+    hello = {"protocol": 2, "process_created": 1000.0, "process_started": 1000.0}
+    assert common.validate_process_identity(PID, hello, process=process) == 1000.0
+
+
+@pytest.mark.parametrize("operation", ["fields", "hello"])
+def test_readable_optional_marker_does_not_replace_unavailable_birth_sources(
+    boot_time_platform, monkeypatch, operation,
+):
+    from jiuwenswarm.common import process_identity as common
+
+    process = SimpleNamespace(
+        pid=PID, create_time=Mock(side_effect=psutil.AccessDenied(PID)),
+        _proc=SimpleNamespace(create_time=lambda **kwargs: 1000.0),
+    )
+    monkeypatch.setattr(psutil, "Process", lambda pid: process)
+    monkeypatch.setattr(common, "proc_start_ticks", lambda pid: None)
+    with pytest.raises(psutil.AccessDenied, match="process identity unavailable"):
+        if operation == "fields":
+            common.process_identity_fields(PID)
+        else:
+            common.validate_process_identity(
+                PID, {"protocol": 2, "process_created": 1000.0, "process_started": 1000.0}, process=process,
+            )
+
+
+@pytest.mark.parametrize("started", [True, "1", -1, float("nan"), float("inf")])
+def test_invalid_marker_is_rejected_even_with_valid_ticks(boot_time_platform, monkeypatch, tmp_path, started):
+    from jiuwenswarm.common import process_identity as common
+
+    process = _view(tmp_path, cached_boot_time=BOOT_TIME)
+    monkeypatch.setattr(common, "proc_start_ticks", lambda pid: 4242)
+    hello = {"protocol": 2, "process_created": process.create_time(),
+             "process_start_ticks": 4242, "process_started": started}
+    with pytest.raises(RuntimeError, match="invalid process start marker"):
+        common.validate_process_identity(PID, hello, process=process)
 
 
 @pytest.mark.parametrize("started", [True, "1", BOOT_TIME + RAW_START + 1.0])

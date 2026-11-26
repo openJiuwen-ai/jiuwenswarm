@@ -407,13 +407,13 @@ async def test_replacement_worker_reclaims_and_executes_persisted_session(monkey
     monkeypatch.setattr(paths, "_workspace_base_dir", data)
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     monkeypatch.setenv("JIUWENSWARM_BUILD_ID", "owner-recovery-old-build")
-    session = data / "agent" / "sessions" / "persisted"
+    session = utils.get_agent_sessions_dir() / "persisted"
     session.mkdir(parents=True)
     metadata = '{"session_id":"persisted","channel_id":"web","title":"Keep me"}'
     (session / "metadata.json").write_text(metadata, encoding="utf-8")
     original = {"content": "original persisted history"}
     (session / "history.jsonl").write_text(json.dumps(original) + "\n", encoding="utf-8")
-    owner_path = data / "agent" / "lifecycle" / "resources" / "session_persisted.json"
+    owner_path = paths.get_lifecycle_dir() / "resources" / "session_persisted.json"
     endpoint = (str(tmp_path / "worker.pipe") if os.name == "nt"
                 else f"/tmp/jw-owner-{uuid.uuid4().hex[:8]}.sock")
     first = RuntimeSupervisor(Readiness(), forwarder=EventForwarder(), socket_path=endpoint, max_restarts=0)
