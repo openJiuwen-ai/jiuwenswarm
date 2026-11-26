@@ -15,6 +15,7 @@ from jiuwenswarm.agents.harness.team.config_loader import (
     get_team_template_snapshot,
     list_team_template_summaries,
     load_team_spec_dict,
+    merge_tip_default_headers,
     resolve_team_sqlite_db_path,
 )
 from jiuwenswarm.agents.harness.team import config_loader as team_config_loader
@@ -208,6 +209,24 @@ def test_load_team_spec_dict_merges_tip_default_headers_into_member_model(monkey
         "X-Tenant": "tenant-a",
         "X-Existing": "keep",
     }
+
+
+def test_merge_tip_default_headers_skips_third_party_model_with_own_key(monkeypatch):
+    monkeypatch.setattr(
+        team_config_loader,
+        "read_default_headers",
+        lambda: {"Authorization": "Basic tip-auth", "X-Tenant": "tenant-a"},
+    )
+    original = {
+        "api_base": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
+        "api_key": "volc-real-key",
+        "model_name": "deepseek-v4.1-flash",
+        "client_provider": "OpenAI",
+        "custom_headers": {"X-Existing": "keep"},
+    }
+    merged = merge_tip_default_headers(original)
+    assert merged["custom_headers"] == {"X-Existing": "keep"}
+    assert original["custom_headers"] == {"X-Existing": "keep"}
 
 
 def test_requested_model_ref_overrides_every_team_agent_model_and_preserves_other_fields():

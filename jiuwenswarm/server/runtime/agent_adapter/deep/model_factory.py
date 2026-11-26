@@ -371,16 +371,10 @@ def _build_model_from_entry(mcc: dict, mco: dict, modalities: Any = None) -> Mod
             exc_info=True,
         )
     if tip_headers:
-        from jiuwenswarm.llm_sse_patch import _is_huawei_maas_api_base
+        from jiuwenswarm.llm_sse_patch import should_merge_tip_default_headers
 
-        own_key = str(mcc_fields.get("api_key") or "").strip()
         api_base = str(mcc_fields.get("api_base") or "")
-        skip = (
-            bool(own_key)
-            and own_key != "huawei-maas-session"
-            and not _is_huawei_maas_api_base(api_base)
-        )
-        if skip:
+        if not should_merge_tip_default_headers(mcc_fields):
             logger.info(
                 "[JiuWenSwarmDeepAdapter] skip tip default_headers for "
                 "non-MaaS model with own api_key: model=%s host=%s",
