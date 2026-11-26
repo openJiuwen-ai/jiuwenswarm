@@ -2,6 +2,7 @@
 """Identity permission failures cannot authorize signalling or imply exit."""
 
 import json
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -73,18 +74,49 @@ def test_debug_stop_keeps_unverified_state_and_does_not_signal(monkeypatch, rest
     clear.assert_not_called()
 
 
-def test_debug_group_rechecks_identity_before_forced_kill(monkeypatch, restricted_process):
+@pytest.mark.parametrize("recorded_identity", [None, "proc_start_ticks:4242"])
+@pytest.mark.parametrize("worker_stopped", [False, True])
+def test_debug_selected_worker_cleanup_retains_unknown_front(
+    monkeypatch, tmp_path, restricted_process, recorded_identity, worker_stopped,
+):
+    monkeypatch.setattr(debug_launcher, "REPO_ROOT", tmp_path)
+    state = debug_launcher.DebugState(123, 100.0, "log", ["python"], ".", recorded_identity)
+    debug_launcher.write_debug_state(state)
+    state_path = debug_launcher.get_debug_state_path()
+    original = state_path.read_bytes()
+    tree, worker = Mock(), Mock(return_value=worker_stopped)
+    monkeypatch.setattr(debug_launcher, "is_process_alive", lambda pid: True)
+    monkeypatch.setattr(debug_launcher, "_stop_process_tree", tree)
+    monkeypatch.setattr(debug_launcher, "_stop_resident_worker", worker)
+    if recorded_identity is not None:
+        monkeypatch.setattr(identity, "proc_start_ticks", lambda pid: None)
+
+    assert debug_launcher.stop_debug_service(timeout=0, legacy_worker_pid=7777) == 1
+    worker.assert_called_once_with(timeout=0, legacy_worker_pid=7777)
+    tree.assert_not_called()
+    assert state_path.read_bytes() == original
+    restricted_process.terminate.assert_not_called()
+    restricted_process.kill.assert_not_called()
+
+
+@pytest.mark.parametrize("latest_ticks", [4243, None])
+def test_debug_group_rechecks_identity_before_forced_kill(
+    monkeypatch, restricted_process, caplog, latest_ticks,
+):
     import signal
 
-    ticks = iter([4242, 4243])
+    ticks = iter([4242, latest_ticks])
     killpg = Mock()
     monkeypatch.setattr(identity, "proc_start_ticks", lambda pid: next(ticks))
     monkeypatch.setattr(debug_launcher.platform, "system", lambda: "Linux")
     monkeypatch.setattr(debug_launcher.os, "getpgid", lambda pid: pid, raising=False)
     monkeypatch.setattr(debug_launcher.os, "killpg", killpg, raising=False)
     monkeypatch.setattr(debug_launcher, "_process_group_alive", lambda pid: True)
+    caplog.set_level(logging.INFO)
     assert not debug_launcher._stop_process_tree(123, timeout=0, expected_created="proc_start_ticks:4242")
     killpg.assert_called_once_with(123, signal.SIGTERM)
+    assert "before forced termination pid=123" in caplog.text
+    assert "sending SIGKILL" not in caplog.text
 
 
 @pytest.mark.parametrize("ticks, expected", [(4242, True), (4243, False), (None, None)])

@@ -7497,7 +7497,9 @@
         "failures": {
           "org_access_denied": "Your DingTalk account was confirmed, but the selected organization has not allowed this account to access data through the CLI. Ask an organization administrator to grant access, then authorize again, or select an organization where you already have access.",
           "authorization_expired": "This device authorization expired. Select Authorize DingTalk account to get a new link and code.",
-          "authorization_failed": "Authorization did not complete or its process ended. Start again instead of reusing the old device code."
+          "authorization_failed": "Authorization did not complete or its process ended. Start again instead of reusing the old device code.",
+          "authorization_process_unverified": "DingTalk authorization status could not be confirmed. Your authorization records have been kept. Please try again shortly.",
+          "authorization_cleanup_failed": "Authorization timed out, but cleanup is incomplete. Your authorization records have been kept. Please try again shortly."
         },
         "status": {
           "loading": "Checking authorization…",
