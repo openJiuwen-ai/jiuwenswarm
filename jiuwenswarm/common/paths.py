@@ -1028,6 +1028,9 @@ def _migrate_absorb_file(old: Path, new: Path) -> None:
     """迁移归并的文件级处理：目标不存在剪切；同名同内容剪源；同名异内容源
     改名 ``.migrated`` 备份（正本不覆盖，不静默丢数据）。
     """
+    # Junctions and compatibility aliases can name the same durable file.
+    if old.resolve() == new.resolve():
+        return
     if not new.exists():
         new.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1062,6 +1065,10 @@ def _migrate_absorb(old: Path, new: Path) -> None:
     迁移中断）时，``_move_if_absent`` 不能整体剪切——递归归并保证老数据
     合入新位置，避免幂等跳过导致数据永久滞留老布局。
     """
+    # Windows junctions are not symlinks on every supported Python version.
+    # Never traverse an alias back into the destination and deduplicate itself.
+    if old.resolve() == new.resolve():
+        return
     both_dirs = (
         old.is_dir()
         and new.is_dir()
