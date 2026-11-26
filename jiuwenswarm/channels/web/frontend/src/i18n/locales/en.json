@@ -193,6 +193,7 @@
     "market": "App Plaza",
     "marketLoadFailed": "Failed to load the App Plaza",
     "noMarketApps": "No apps in the App Plaza",
+    "searchPlaceholder": "Search apps",
     "moreActions": "More actions: {{name}}",
     "pin": "Pin to top",
     "unpin": "Unpin",

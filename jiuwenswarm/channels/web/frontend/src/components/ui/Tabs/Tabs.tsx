@@ -18,6 +18,8 @@ export interface TabsProps<T extends string = string> {
   items: readonly TabsItem[];
   value: T;
   onChange?: (value: T) => void;
+  /** Optional action when the selected tab is clicked again. */
+  onReselect?: (value: T) => void;
   /** 底部 1px 分隔线（inset box-shadow 实现） */
   bordered?: boolean;
   wrapperTestId?: string;
@@ -31,6 +33,7 @@ export function Tabs<T extends string = string>({
   items,
   value,
   onChange,
+  onReselect,
   bordered = false,
   wrapperTestId,
   itemTestId,
@@ -43,14 +46,14 @@ export function Tabs<T extends string = string>({
     <div className={classes} role={role} aria-label={ariaLabel} data-testid={wrapperTestId}>
       {items.map((item) => {
         const active = !item.onClick && item.value === value;
-        // 点击当前已选中的页签不触发 onChange（与原生 tab 行为一致），动作项 onClick 不受影响
+        const onSelect = active ? onReselect : onChange;
         const trigger = (
           <button
             key={item.value}
             type="button"
             role={role === 'tablist' && !item.onClick ? 'tab' : undefined}
             aria-selected={role === 'tablist' && !item.onClick ? item.value === value : undefined}
-            onClick={item.onClick ?? (onChange && item.value !== value ? () => onChange(item.value as T) : undefined)}
+            onClick={item.onClick ?? (onSelect ? () => onSelect(item.value as T) : undefined)}
             className={item.suffix ? 'tabs__trigger' : active ? 'is-active' : ''}
             data-testid={item.testId ?? itemTestId}
             data-variant={item.value}
