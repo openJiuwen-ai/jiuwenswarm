@@ -29,6 +29,14 @@ _TIER_MODEL_KEYWORDS = frozenset({"auto", "fast", "balanced", "extreme"})
 # 不同 provider 的 usage 字段差异：OpenAI 风格只暴露 prompt_tokens
 _PROMPT_TOKEN_KEYS = ("input_tokens", "prompt_tokens", "total_tokens")
 
+# 会话恢复时播种的上下文水位（session_ops_service.warmup_session_context 写入）。
+# 回灌消息不带 usage_metadata，冷启动只能靠它看到真实占用。
+_WARMUP_SEED_ATTR = "_jiuwenswarm_warmup_prompt_tokens"
+
+# 溢出重试的 payload 指纹（ctx.extra 请求级）：连续两次相同说明压缩没有产生
+# 替换，原样重发必然再次溢出，直接熔断而不是耗完重试次数。
+_OVERFLOW_FP_KEY = "_overflow_payload_fp"
+
 
 def _coerce_positive_int(value: Any) -> int:
     try:
@@ -172,7 +180,9 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
            unconditionally triggers FullCompact (bypass ``trigger_total_tokens``).
         4. **Retry** — call ``ctx.request_retry()`` to re-enter the LLM call.
         5. **Circuit-break** — after ``max_recovery_attempts`` consecutive failures,
-           stop retrying and let the exception propagate with a clear user-facing message.
+           or as soon as a retry would resend the exact same payload (compaction
+           produced no replacement), stop retrying and let the exception propagate
+           with a clear user-facing message.
         Priority: 100 (higher value = runs first; higher than StreamEventRail's 80
         and ContextEngineeringRail's 85), so ``on_model_exception`` fires **before**
         those rails.
@@ -202,6 +212,8 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
         每个 invoke 最多触发一次（通过 ``ctx.extra`` 标记），压缩失败或
         usage 不可用时不改变原有行为。未知模型按 agent-core 的
         ``DEFAULT_CONTEXT_MAX_TOKENS``（200000）兜底，不再静默跳过。
+        消息上没有任何 usage 时（从磁盘回灌历史的冷启动），水位取
+        ``warmup_session_context`` 播种的一次性计数。
         """
         if ctx.extra.get("_context_overflow_proactive_done"):
             return
@@ -233,8 +245,8 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
             )
 
     @staticmethod
-    def _last_prompt_tokens(ctx: AgentCallbackContext) -> int:
-        """从历史消息的 usage_metadata 取最近一次真实 prompt token 数。
+    def _usage_prompt_tokens(ctx: AgentCallbackContext) -> int:
+        """从历史消息的 usage_metadata 取最近一次真实 prompt token 数（0 = 无 usage）。
 
         兼容 dict / Pydantic / 普通对象三种 usage 形态，并按
         input_tokens → prompt_tokens → total_tokens 回退（与 StreamEventRail 一致）。
@@ -249,6 +261,29 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
                 value = _coerce_positive_int(_usage_field(usage, key))
                 if value > 0:
                     return value
+        return 0
+
+    @classmethod
+    def _last_prompt_tokens(cls, ctx: AgentCallbackContext) -> int:
+        """最近一次已知上下文占用：优先真实 usage，冷启动回落到 warmup 播种值。
+
+        热路径不变：有 usage 就用 usage（零成本）。只有从磁盘回灌历史的消息没有
+        usage_metadata 时，才落到恢复时称过一次的重量；成功调用后播种值被清除，
+        之后回到 usage 主路径。
+        """
+        used = cls._usage_prompt_tokens(ctx)
+        if used > 0:
+            return used
+        seed = _coerce_positive_int(
+            getattr(getattr(ctx, "context", None), _WARMUP_SEED_ATTR, 0)
+        )
+        if seed > 0:
+            logger.debug(
+                "[ContextOverflowRecovery] no usage_metadata; using warmup seed=%d", seed
+            )
+            return seed
+        inputs = getattr(ctx, "inputs", None)
+        messages = list(getattr(inputs, "messages", None) or [])
         if messages:
             logger.debug(
                 "[ContextOverflowRecovery] no usage_metadata found in %d messages; "
@@ -404,8 +439,46 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
 
     @staticmethod
     def last_prompt_tokens(ctx: AgentCallbackContext) -> int:
-        """公开口径：最近一次真实 prompt token 数；无 usage 时返回 0。"""
+        """公开口径：最近一次已知上下文占用。
+
+        优先历史消息的 ``usage_metadata``（热路径）；无 usage 时回落
+        ``warmup_session_context`` 播种的冷启动水位，两者都没有才返回 0。
+        """
         return ContextOverflowRecoveryRail._last_prompt_tokens(ctx)
+
+    @staticmethod
+    def _payload_fingerprint(ctx: AgentCallbackContext) -> tuple | None:
+        """当前 messages 的轻量指纹：消息数 + 各条角色/长度 + 图片块数。
+
+        用于识别"压缩后 payload 没变"：两次溢出指纹相同即原样重发，不需要真的
+        序列化整份 prompt（base64 图片按块计数，不计文本长度）。
+        """
+        inputs = getattr(ctx, "inputs", None)
+        messages = list(getattr(inputs, "messages", None) or [])
+        if not messages:
+            return None
+        parts: list[tuple[str, int]] = []
+        image_blocks = 0
+        for message in messages:
+            role = str(getattr(message, "role", "") or "")
+            content = getattr(message, "content", None)
+            length = 0
+            if isinstance(content, str):
+                length = len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, str):
+                        length += len(part)
+                    elif isinstance(part, dict):
+                        if part.get("type") == "image":
+                            image_blocks += 1
+                        text = part.get("text")
+                        if isinstance(text, str):
+                            length += len(text)
+                    else:
+                        length += len(str(part))
+            parts.append((role, length))
+        return (len(messages), tuple(parts), image_blocks)
 
     # ------------------------------------------------------------------
     # on_model_exception: core recovery logic
@@ -421,6 +494,22 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
         logger.warning(f"[ContextOverflowRecovery] Context overflow detected "
                        f"(attempt {self._consecutive_overflow_count}/{self._max_recovery_attempts}) "
                        f"actual_tokens={actual_tokens} limit_tokens={limit_tokens}")
+
+        # 首次盲重试保留一次；若重试的 payload 与上次完全相同，说明压缩没有产生
+        # 任何替换，原样重发只会得到同样的 400——直接熔断，不耗完剩余次数。
+        fingerprint = self._payload_fingerprint(ctx)
+        extra = getattr(ctx, "extra", None)
+        previous = extra.get(_OVERFLOW_FP_KEY) if isinstance(extra, dict) else None
+        if fingerprint is not None and previous == fingerprint:
+            logger.error(
+                "[ContextOverflowRecovery] payload unchanged after recovery "
+                "(messages=%d); skip blind retry",
+                fingerprint[0],
+            )
+            await self._circuit_break(ctx)
+            return
+        if isinstance(extra, dict) and fingerprint is not None:
+            extra[_OVERFLOW_FP_KEY] = fingerprint
 
         if self._consecutive_overflow_count > self._max_recovery_attempts:
             await self._circuit_break(ctx)
@@ -451,6 +540,21 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
                     self._consecutive_overflow_count,
                 )
             self._consecutive_overflow_count = 0
+            extra = getattr(ctx, "extra", None)
+            if isinstance(extra, dict):
+                extra.pop(_OVERFLOW_FP_KEY, None)
+            self._clear_warmup_seed(ctx)
+
+    @staticmethod
+    def _clear_warmup_seed(ctx: AgentCallbackContext) -> None:
+        """成功调用后删除播种值：后续轮次由真实 usage 接管水位。"""
+        context = getattr(ctx, "context", None)
+        if context is None or getattr(context, _WARMUP_SEED_ATTR, None) is None:
+            return
+        try:
+            delattr(context, _WARMUP_SEED_ATTR)
+        except Exception:  # noqa: BLE001
+            logger.debug("[ContextOverflowRecovery] clear warmup seed failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Detection: structured → status code → keyword fallback
@@ -584,6 +688,7 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
                 await session.write_stream(
                     OutputSchema(
                         type="error",
+                        index=999,
                         payload={
                             "error_type": "context_overflow_circuit_break",
                             "message": (

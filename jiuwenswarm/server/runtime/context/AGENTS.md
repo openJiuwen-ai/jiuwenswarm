@@ -20,7 +20,7 @@ LLM **上下文窗口**与**系统提示词**的产品化子系统。本模块�
 - `docs/specs/S_01_overview-and-boundaries.md` — 总览与包边界（跨目录管辖 / 两仓协作 / 与 PersonalContext·RequestContext 的切割）
 - `docs/specs/S_02_context-engine-and-processors.md` — ContextEngine、forked processor 链、FullCompact GET 路径语义
 - `docs/specs/S_03_context-engineer-rails.md` — AssembleRail vs ProcessorRail、priority、AbortError 循环中止
-- `docs/specs/S_04_compression-recall-and-reload.md` — recall 工具、`[[HANDLE]]` 重载、enable 门控
+- `docs/specs/S_04_compression-recall-and-reload.md` — recall 工具、`[[OFFLOAD]]` 读回、enable 门控
 - `docs/specs/S_05_overflow-recovery.md` — 413/400+关键词检测、force_compact、主动预压缩、熔断事件、`/compact`
 - `docs/specs/S_06_product-assembly-and-config.md` — interface_deep/code/flash 门控、context_read_patch、config 键、allowlist 与渐进工具同步
 - `docs/specs/S_07_system-prompt-layering.md` — 工作区人设文件 vs Runtime/Response rails vs 压缩召回段的分层归属
@@ -33,7 +33,7 @@ LLM **上下文窗口**与**系统提示词**的产品化子系统。本模块�
 ```
 ContextEngine     agent-core 上下文引擎：会话消息池 + processor 链 + checkpointer 落盘
 processor 链      forked.activate → … → RoundLevel；FullCompact 由 swarm 按需注入（非 preset 默认项）
-[[HANDLE:…]]      enable_reload 下 core 注入 reload prompt 段；标记的实际触发由调用方/模型按提示完成
+[[OFFLOAD:…]]     enable_reload 下 core 注入 reload prompt 段；模型按 path 用 read_file 读回（path 指向 .txt 文本副本）
 [[COMPRESSION_RECALL:…]]  压缩召回标记（compression_recall_config.enabled 时）
 ```
 
@@ -136,7 +136,7 @@ agent-core（姊妹实现归档 — 改 core 代码读那边）：
 |---|---|---|
 | `enabled` | deep `_update_agent_rails` / team `get_context_engine_enabled` | ProcessorRail 总开关（见双默认漂移） |
 | `enable_tiktoken_counter` | ContextEngineConfig | 精确 token 计数；词表不可用时 core 回退字符估算 |
-| `enable_reload` | `_deep_agent_context_engine_config` → core `ContextProcessorRail` | core 仅记录并注入 reload prompt 段；`ContextMessageBuffer.reload` 可用但无 core 内调用方，`[[HANDLE]]` 实际触发由调用方/模型按提示完成 |
+| `enable_reload` | `_deep_agent_context_engine_config` → core `ContextProcessorRail` | core 仅记录并注入 reload prompt 段；`OffloadMessageBuffer.reload` 可用但无 core 内调用方，模型按 `[[OFFLOAD]]` 的 path 用 read_file 读回 |
 | `compression_recall_config` | ContextEngineConfig + 压缩器 | 归档分块 + `[[COMPRESSION_RECALL]]` |
 | `*_compressor_config` / `message_summary_offloader_config` | `_build_context_processor_rail` | 各 processor 阈值与行为 |
 | `full_compact_processor_config` | user_processors 注入 FullCompact | 溢出兜底；与 RecoveryRail 联动 |

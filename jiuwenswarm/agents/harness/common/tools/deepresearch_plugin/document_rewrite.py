@@ -29,6 +29,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.artifact_naming
     ArtifactNamingError,
     ArtifactPaths,
     allocate_next_paths,
+    initial_version,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.citation_links import (
     iter_citations,
@@ -46,6 +47,9 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.markdown_rewrit
     reconstruct_markdown,
     structure_signature,
     visible_slot_byte_ranges,
+)
+from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.report_bundle import (
+    serialize_final_result_snapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -1828,6 +1832,110 @@ def _publish_create(
         )
         raise
     return descriptor
+
+
+def register_main_agent_report(
+    *, workspace_root: Path, report_path: str
+) -> dict[str, str]:
+    """Register the exact bytes of a Markdown report at its existing path."""
+    root = _lexical_workspace_root(workspace_root)
+    report = _lexical_absolute(report_path, base=root)
+    if not _inside(report, root) or report.suffix.lower() != ".md":
+        raise RewriteError("BAD_REQUEST", "expected a workspace Markdown report")
+    try:
+        with _document_lock(f"registration:{os.path.normcase(str(report))}"):
+            with _authorized_artifact_directory(root, report.parent) as directory:
+                body = _read_regular_bounded_beneath(report, root, MARKDOWN_MAX_BYTES, "report markdown")
+                markdown = body.decode("utf-8")
+                if not markdown.strip():
+                    raise RewriteError("BAD_REQUEST", "report markdown is empty")
+                provenance = _register_existing_markdown(directory, report, body, markdown)
+    except RewriteError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise RewriteError("REPORT_REGISTRATION_FAILED", "report could not be registered") from exc
+    return {
+        "report_path": str(report),
+        "document_id": provenance["document_id"],
+        "revision_id": provenance["revision_id"],
+    }
+
+
+def _register_existing_markdown(
+    directory: _AuthorizedArtifactDirectory, report: Path, body: bytes, markdown: str
+) -> dict:
+    root = directory.root_path
+    provenance_path = report.with_suffix(".provenance.json")
+    content_hash = _sha256(body)
+    if os.path.lexists(provenance_path):
+        provenance, _ = _load_provenance(report, root)
+        if provenance.get("content_sha256") != content_hash:
+            raise RewriteError("REVISION_CONFLICT", "the report revision changed")
+        if (
+            provenance.get("markdown_path") != str(report)
+            or not re.fullmatch(r"doc_[A-Za-z0-9_-]{1,128}", str(provenance.get("document_id")))
+            or not re.fullmatch(r"rev_[A-Za-z0-9_-]{1,128}", str(provenance.get("revision_id")))
+        ):
+            raise RewriteError("INVALID_PROVENANCE", "report provenance is invalid")
+        _load_final_result_citations(report, provenance, root)
+        return provenance
+
+    version = initial_version(report.name)
+    snapshot = serialize_final_result_snapshot({
+        "response_content": markdown,
+        "response_content_type": "text/markdown",
+        "citation_messages": {"data": []},
+        "infer_messages": [],
+        "chart_messages": [],
+    })
+    snapshot_path = report.with_suffix(".final-result.json")
+    provenance = {
+        "schema_version": 2,
+        "document_id": f"doc_{uuid.uuid4().hex}",
+        "revision_id": f"rev_{uuid.uuid4().hex}",
+        "parent_revision_id": None,
+        "markdown_path": str(report),
+        "content_sha256": content_hash,
+        "final_result_path": snapshot_path.name,
+        "final_result_sha256": _sha256(snapshot),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "operation": {"action": "main_agent_report_register"},
+        "version_number": version.version_number,
+        "version_base_stem": version.base_stem,
+        "citations": [],
+        "inference_manifest": [],
+        "chart_manifest": [],
+        "rewrite_history": [],
+    }
+    directory_fd = directory.directory_descriptor
+    published: list[tuple[Path, int]] = []
+    try:
+        _validate_authorized_artifact_directory(directory)
+        try:
+            existing = _read_regular_bounded_beneath(snapshot_path, root, FINAL_RESULT_MAX_BYTES, "report snapshot")
+        except FileNotFoundError:
+            descriptor = _publish_create(snapshot_path, snapshot, directory_fd=directory_fd)
+            published.append((snapshot_path, descriptor))
+        else:
+            # Retry a previous publication which stopped before writing provenance.
+            if existing != snapshot:
+                raise RewriteError("REVISION_CONFLICT", "the report snapshot is already occupied")
+        payload = json.dumps(provenance, ensure_ascii=False, indent=2).encode("utf-8")
+        _validate_authorized_artifact_directory(directory)
+        descriptor = _publish_create(provenance_path, payload, directory_fd=directory_fd)
+        published.append((provenance_path, descriptor))
+        _validate_authorized_artifact_directory(directory)
+        current = _read_regular_bounded_beneath(report, root, MARKDOWN_MAX_BYTES, "report markdown")
+        if current != body:
+            raise RewriteError("REVISION_CONFLICT", "the report changed during registration")
+    except BaseException:
+        for path, descriptor in reversed(published):
+            _cleanup_owned_publication(path, descriptor, directory_fd=directory_fd)
+        raise
+    else:
+        for _, descriptor in published:
+            os.close(descriptor)
+    return provenance
 
 
 def _allocate_paths(
