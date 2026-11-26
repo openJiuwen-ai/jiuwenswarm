@@ -110,22 +110,6 @@ generated: true
 | [F_20261125_1245_memory-portal-team-migration](features/F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
 | [S_03_memory-portal](specs/jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 
-<a id="module-agent-gateway-channel_manager-web"></a>
-
-## agent-gateway/channel_manager/web
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
-
-<a id="module-agent-gateway-extensions-runtime_management_extension"></a>
-
-## agent-gateway/extensions/runtime_management_extension
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
-
 <a id="module-agent_gateway-channel_manager-im_platforms-xiaoyi"></a>
 
 ## agent_gateway/channel_manager/im_platforms/xiaoyi
@@ -294,8 +278,6 @@ generated: true
 | [F_20261116_0500_office-document-reader-tools](features/F_20261116_0500_office-document-reader-tools.md) | F | 补齐结构化办公文档只读工具 (read_docx 与 read_spreadsheet) | zhuxiangju | 无独立 D：补齐办公文档 Word 与 Excel/CSV 结构化只读能力的工程落地。 |
 | [F_20261116_2130_safe-archive-tools](features/F_20261116_2130_safe-archive-tools.md) | F | 补齐安全归档与压缩包工具集 (inspect_archive 与 extract_archive) | zhuxiangju | 无独立 D：安全高效的压缩包预览与解压工具落地，严密防范路径穿越。 |
 | [F_20261116_2200_pptx-reading-tool](features/F_20261116_2200_pptx-reading-tool.md) | F | read_pptx PowerPoint Presentation Reading Tool | zhuxiangju | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
-| [B_20261126_0210_enterprise-team-file-live-delivery](bugfix/jiuwenswarm/agents/harness/common/tools/B_20261126_0210_enterprise-team-file-live-delivery.md) | B | 企业版团队会话文件卡片丢失：投递优先级反转与网关补发 | hanxinyang | 无独立 D：针对 Issue |
-| [B_20261126_0956_spreadsheet-out-of-range-paging](bugfix/jiuwenswarm/agents/harness/common/tools/B_20261126_0956_spreadsheet-out-of-range-paging.md) | B | read_spreadsheet 越界分页与仅表头文件的矛盾提示 | openjiuwen_ai | 无独立 D：内置工具只读分页提示的缺陷修复，无独立设计方案，按 Issue |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
@@ -344,7 +326,6 @@ generated: true
 | [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 | [B_20261123_1757_harmony-process-identity](bugfix/jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
-| [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
 | [S_01_process-identity](specs/jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
@@ -432,7 +413,6 @@ generated: true
 | [B_20261119_1150_chat-terminal-reasoning-close](bugfix/jiuwenswarm/channels/web/frontend/B_20261119_1150_chat-terminal-reasoning-close.md) | B | 消息出错后思考段不收口，「思考中…」永久转圈直到下次发消息 | gunner_beat | 无独立 D：交互层缺陷修复，复用同文件 chat.processing_status(false) 分支已有的「终态兜底收口」口径（幂等空操作），无独立设计文档。 |
 | [B_20261121_1529_skill-install-toast-display-name-width](bugfix/jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
 | [B_20261126_1420_channel-settings-failure-feedback](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_1420_channel-settings-failure-feedback.md) | B | 渠道设置页保存/加载失败反馈缺失——保存失败零提示、单渠道加载失败整列表永久骨架 | gunner_beat | 无独立 D：交互反馈层缺陷修复，复用 FormDialog 既有 status 插槽与骨架/横幅/toast 三层反馈位，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
-| [B_20261126_1750_source-skill-display-name-ledger](bugfix/jiuwenswarm/server/runtime/skill/B_20261126_1750_source-skill-display-name-ledger.md) | B | 企业源技能广场改名后账本 display_name 冻结及前后端展示优先级不一致 | meizi6 | 无独立 D：线上缺陷（Issue |
 | [B_20261126_2208_application-menu-slot-flicker](bugfix/jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
@@ -528,9 +508,6 @@ generated: true
 | [B_20261121_0108_pypi-update-version-baseline](bugfix/jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
 | [B_20261123_1757_harmony-process-identity](bugfix/jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
 | [B_20261124_2201_rea-npx-readiness](bugfix/jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
-| [B_20261125_1146_design-shared-path-regressions](bugfix/jiuwenswarm/channels/web/B_20261125_1146_design-shared-path-regressions.md) | B | Design 公共路径历史回归防护 | Huang, Zeyu | 无独立 D：依据历史 issue 和当前公共路径契约补回归测试，无独立设计方案；不重构产品代码。 |
-| [B_20261125_2150_windows-installer-restore-bootstrap](bugfix/scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
-| [B_20261126_1631_shared-workspace-dir-metadata](bugfix/jiuwenswarm/common/B_20261126_1631_shared-workspace-dir-metadata.md) | B | 共享卷上工作区准备因已存在目录元数据 EPERM 导致 AgentServer 启动失败 | wangmingqi | 无独立 D：对既有工作区模板播种行为的局部缺陷修复与语义收紧，不新增架构方案。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 | [S_01_process-identity](specs/jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
@@ -870,7 +847,6 @@ generated: true
 | [B_20261103_1636_builtin-catalog-upgrade](bugfix/jiuwenswarm/server/runtime/skill/builtin-catalog-upgrade.md) | B | 旧内置技能未归一与应用市场入口不明显 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [B_20261116_1412_skill-import-validation-and-list](bugfix/jiuwenswarm/server/runtime/skill/B_20261116_1412_skill-import-validation-and-list.md) | B | 技能导入元数据与 ZIP 路径安全校验修复 | zhangzhongteng | 无独立 D：用户确认统一个人版技能导入和市场安装的元数据校验，并修复 ZIP 原始文件名及路径检查；无独立设计。 |
 | [B_20261117_1019_skill-upload-temp-leak](bugfix/jiuwenswarm/server/runtime/skill/B_20261117_1019_skill-upload-temp-leak.md) | B | 技能导入的两阶段上传临时目录永久残留 | mengliang0116 | 无独立 D：两阶段上传缺少文件生命周期归属，属实现缺陷的小范围修复，不引入新的架构设计；接口与生命周期契约记录在本文。 |
-| [B_20261126_1750_source-skill-display-name-ledger](bugfix/jiuwenswarm/server/runtime/skill/B_20261126_1750_source-skill-display-name-ledger.md) | B | 企业源技能广场改名后账本 display_name 冻结及前后端展示优先级不一致 | meizi6 | 无独立 D：线上缺陷（Issue |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-server-supervisor"></a>
