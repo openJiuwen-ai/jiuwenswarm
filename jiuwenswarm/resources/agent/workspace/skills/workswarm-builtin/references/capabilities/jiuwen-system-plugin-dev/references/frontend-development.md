@@ -14,7 +14,16 @@
 | 桌宠或桌面形态 | 应用形态，Gateway 的 ApplicationSurface 与形态资源 |
 | 应用界面与会话行为共同变化 | Harness 工作台组合包，按两域职责拆分成员 |
 
-围绕需要的槽位查宿主清单、后端规则和直接测试。AgentServer 与 Gateway 支持范围分别核对；示例有的能力不能直接推为旧版宿主也有。
+Swarm 前端目录为 `<SWARM_ROOT>/jiuwenswarm/channels/web/frontend/src/features/webui/`，按问题直接定位：
+
+| 当前问题 | 该目录下的文件 |
+| --- | --- |
+| 有哪些槽位、支持几项、怎样展示 | `catalog/slots.ts`，例如搜索 `conversation.input.below` |
+| 组件名和 props 是否支持 | `catalog/componentCatalog.ts` 和 `catalog/components/` 中对应组件 |
+| 组件与槽位的使用规范 | `docs/specs/S_01_components.md` 中对应小节 |
+| 槽位在哪里挂载、何时发送 `ui.ready` | `react/WebUIHost.tsx` 与相关 `WebUI*Host.tsx`；只在核对挂载行为时读取 |
+
+先查清单中的对应项，再核对所属域的后端规则和直接测试，不从仓库根搜索槽位。AgentServer 与 Gateway 支持范围分别核对；示例有的能力不能直接推为旧版宿主也有。
 某个名称未命中时，按 [源码查找说明](source-reading.md#3-报告能力缺失前的核对) 补查公开导出与实际调用点，再判断缺口。
 
 ## 2. 嵌入网页与权限

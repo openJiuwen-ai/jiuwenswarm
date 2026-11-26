@@ -16,6 +16,7 @@ from run_tests import main as run_tests
 
 ZIP_ENV = "JIUWEN_SYSTEM_PLUGIN_ZIP"
 SOURCE_ENV = "JIUWEN_SYSTEM_PLUGIN_SOURCE"
+SKILL_ENV = "JIUWEN_SYSTEM_PLUGIN_SKILL_ROOT"
 
 
 def _emit(stream: TextIO, message: str, *, level: int = logging.INFO) -> None:
@@ -71,10 +72,12 @@ def main(argv: list[str] | None = None) -> int:
     temporary = _temporary_zip(output)
     previous_zip = os.environ.get(ZIP_ENV)
     previous_source = os.environ.get(SOURCE_ENV)
+    previous_skill = os.environ.get(SKILL_ENV)
     try:
         build_package(source, temporary)
         os.environ[ZIP_ENV] = str(temporary)
         os.environ[SOURCE_ENV] = str(source)
+        os.environ[SKILL_ENV] = str(Path(__file__).resolve().parent.parent)
         result = run_tests([str(path) for path in tests])
         if result != 0:
             _emit(sys.stderr, "系统插件测试失败，未生成最终 ZIP。", level=logging.ERROR)
@@ -92,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         _restore_environment(ZIP_ENV, previous_zip)
         _restore_environment(SOURCE_ENV, previous_source)
+        _restore_environment(SKILL_ENV, previous_skill)
         if temporary.exists():
             temporary.unlink()
 

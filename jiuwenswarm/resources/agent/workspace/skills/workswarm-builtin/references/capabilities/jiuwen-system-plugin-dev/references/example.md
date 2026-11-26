@@ -69,7 +69,7 @@ jiuwenswarm extension query example.greeting-panel
 2. 安装报告中的页面通知会让已就绪的槽位重新发送 `ui.ready`；不为了证明显示效果而启动或查找浏览器。
 3. 使用当前环境提供的提问能力，请用户确认输入区上方的实际效果。
 
-已有同 ID 的系统插件时，先确定更新方式，不直接重复安装。
+已有同 ID 时，正式升级安装新版本 ZIP；当前版本验收调整使用 reload，不重复安装同版本，也不改旧安装目录中的版本号。
 普通使用者可以按系统插件 README 在 Web 输入框执行 `/extension` 命令，CLI 未完成安装时不能将人工教程当作自动安装完成。
 
 ## 4. 改成用户需要的系统插件
@@ -77,4 +77,16 @@ jiuwenswarm extension query example.greeting-panel
 - **业务选择：** 重新确定系统插件名称、模块名、已有事件、匹配条件和实际处理，不只替换问候文案后就声称支持其他业务。
 - **真实字段：** 示例 Text 使用 `props.value`，系统插件身份来自 `ops.package_metadata`，会话来自 `ops.session_context`。
 - **返回结果：** 保留合法输出和默认动作次数，检查真实 `UiRenderOutput` 状态。
-- **测试与文档：** 按本系统插件实际行为补测试、README 和安装后的验收步骤。
+- **测试与文档：** 按本系统插件实际行为补测试、README 和安装后的验收步骤。不必复制全部示例测试，`test_build_package.py` 验证的是本 Skill 的打包工具，不是每个系统插件都要重写的测试。
+- **测试位置：** 将改写后的业务测试放进系统插件源码的 `tests/`，随 ZIP 交付，后续可以直接从安装副本复用。用 `finalize_package.py` 运行时，脚本提供 `JIUWEN_SYSTEM_PLUGIN_ZIP`、`JIUWEN_SYSTEM_PLUGIN_SOURCE` 和 `JIUWEN_SYSTEM_PLUGIN_SKILL_ROOT` 三个绝对路径，分别指向本次待交付 ZIP、源码和开发 Skill。不要用新测试文件的 `parents[2]` 猜 Skill 路径，也不要写死开发者电脑目录。
+- **验证同一文件：** 复制 `test_package.py` 的业务测试时，保留从环境读取 ZIP 的逻辑，再按自己的 ID、槽位和预期效果改写断言。最终验证不能又调用打包器生成另一份 ZIP。单独调试某个测试时，显式提供已生成 ZIP 路径。
+
+系统插件自己的测试可直接这样取得本次文件，再交给真实管理器安装到临时目录：
+
+```python
+import os
+from pathlib import Path
+
+archive = Path(os.environ["JIUWEN_SYSTEM_PLUGIN_ZIP"])
+assert archive.is_file(), "The final validation ZIP must exist"
+```
