@@ -295,6 +295,7 @@ async def _persist_and_probe_mcp(
         logger.warning("[command.mcp] live-probe failed: %s", probe_reason)
         from jiuwenswarm.common.mcp_config import (
             probe_failure_is_auth_rejected,
+            probe_failure_is_local_env,
         )
         auth_rejected = probe_failure_is_auth_rejected(probe_reason)
         try:
@@ -308,6 +309,14 @@ async def _persist_and_probe_mcp(
             rollback_failed_connect(name, wipe_credentials=auth_rejected)
         except Exception as rollback_exc:  # noqa: BLE001
             logger.warning("[command.mcp] rollback '%s' failed: %s", name, rollback_exc)
+        # Runner connect-failure strings can embed the full server_config
+        # (env credentials included), so the default stays the redacted
+        # fixed message; only locally-built reasons (PATH-missing command,
+        # invalid URL) are safe to surface — same redact contract as
+        # _run_mcp_connect_flow (review CR-10905-01).
+        error = "MCP live-connect probe failed"
+        if not auth_rejected and probe_failure_is_local_env(probe_reason):
+            error = probe_reason
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -315,7 +324,7 @@ async def _persist_and_probe_mcp(
             payload={
                 "type": types.fail,
                 "name": payload["name"],
-                "error": probe_reason or "MCP live-connect probe failed",
+                "error": error,
                 "code": CODE_CREDENTIALS_INVALID if auth_rejected else CODE_UNREACHABLE,
             },
         )

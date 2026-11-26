@@ -51,8 +51,8 @@ generated: true
 | [jiuwenswarm/channels/web/frontend/src/features/trajectory](#module-jiuwenswarm-channels-web-frontend-src-features-trajectory) |
 | [jiuwenswarm/common](#module-jiuwenswarm-common) |
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
-| [jiuwenswarm/enterprise/team](#module-jiuwenswarm-enterprise-team) |
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
+| [jiuwenswarm/enterprise/team](#module-jiuwenswarm-enterprise-team) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
 | [jiuwenswarm/extensions_v2](#module-jiuwenswarm-extensions_v2) |
@@ -72,6 +72,7 @@ generated: true
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
+| [jiuwenswarm/server/runtime/mcp](#module-jiuwenswarm-server-runtime-mcp) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
 | [jiuwenswarm/server/supervisor](#module-jiuwenswarm-server-supervisor) |
@@ -389,6 +390,7 @@ generated: true
 | [B_20261119_1039_video-memory-submit-pending](bugfix/jiuwenswarm/channels/web/frontend/B_20261119_1039_video-memory-submit-pending.md) | B | 视频记忆任务 pending 导致提交工具持续执行中 | ToNy_St4rk | 无独立 D：现有工具结果状态的局部修复，无独立设计。 |
 | [B_20261119_1150_chat-terminal-reasoning-close](bugfix/jiuwenswarm/channels/web/frontend/B_20261119_1150_chat-terminal-reasoning-close.md) | B | 消息出错后思考段不收口，「思考中…」永久转圈直到下次发消息 | gunner_beat | 无独立 D：交互层缺陷修复，复用同文件 chat.processing_status(false) 分支已有的「终态兜底收口」口径（幂等空操作），无独立设计文档。 |
 | [B_20261121_1529_skill-install-toast-display-name-width](bugfix/jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
+| [B_20261126_0812_probe-failure-credential-classification](bugfix/jiuwenswarm/server/B_20261126_0812_probe-failure-credential-classification.md) | B | MCP 连接探活失败被无条件当成凭据错误回滚，网络抖动静默清空用户已保存 token | CharlesWang2030 | 无独立 D：既有探活回滚契约的数据丢失缺陷修复，不新增架构方案；取舍依据沉淀自 Issue |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
@@ -481,6 +483,7 @@ generated: true
 | [B_20261120_1735_upsert-empty-temperature](bugfix/jiuwenswarm/common/B_20261120_1735_upsert-empty-temperature.md) | B | models.upsert 将空串 temperature 原样落库，与文档约定的空串转 null 不符 | openjiuwen_ai | 无独立 D：仅统一 upsert 与 replace_all 对空串 temperature 的归一化口径，不改模型配置结构与合并语义；无独立设计。 |
 | [B_20261121_0108_pypi-update-version-baseline](bugfix/jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
 | [B_20261124_2201_rea-npx-readiness](bugfix/jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
+| [B_20261126_0812_probe-failure-credential-classification](bugfix/jiuwenswarm/server/B_20261126_0812_probe-failure-credential-classification.md) | B | MCP 连接探活失败被无条件当成凭据错误回滚，网络抖动静默清空用户已保存 token | CharlesWang2030 | 无独立 D：既有探活回滚契约的数据丢失缺陷修复，不新增架构方案；取舍依据沉淀自 Issue |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 
@@ -498,13 +501,6 @@ generated: true
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
-<a id="module-jiuwenswarm-enterprise-team"></a>
-
-## jiuwenswarm/enterprise/team
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 <a id="module-jiuwenswarm-debug_launcher-py"></a>
 
 ## jiuwenswarm/debug_launcher.py
@@ -513,6 +509,14 @@ generated: true
 |---|---|---|---|---|
 | [B_20261120_1958_debug-worker-shutdown-budget](bugfix/jiuwenswarm/B_20261120_1958_debug-worker-shutdown-budget.md) | B | Debug 重启提前终止正常清理中的 Worker | alan_cheng | 无独立 D：用户确认经真实子进程对照验证的局部修复；保留已有生命周期和身份保护，无独立设计文档。 |
 | [S_01_debug-shutdown](specs/jiuwenswarm/debug_launcher/S_01_debug-shutdown.md) | S | Debug 服务最终停止的预算与旧 Worker 选择 | alan_cheng | — |
+
+<a id="module-jiuwenswarm-enterprise-team"></a>
+
+## jiuwenswarm/enterprise/team
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 
 <a id="module-jiuwenswarm-extensions-app_market"></a>
 
@@ -654,6 +658,7 @@ generated: true
 | [B_20261029_0927_missing-supervisor-entry](bugfix/jiuwenswarm/server/B_20261029_0927_missing-supervisor-entry.md) | B | 重启 AgentServer 时缺少 supervisor 启动函数 | xinyang_bali | 无独立 D：用户请求重启时发现当前工作区入口不完整，恢复既有 Front/Worker 启动契约。 |
 | [B_20261031_1042_pr9317-review](bugfix/jiuwenswarm/server/B_20261031_1042_pr9317-review.md) | B | PR 9317 插件模式校验与 Front 遗留启动链清理 | xinyang_bali | 无独立 D：根据 openJiuwen-bot 检视意见清理现有实现，不引入新接口或架构方案，无独立 D。 |
 | [B_20261116_1540_interrupt-intent-contract](bugfix/jiuwenswarm/server/B_20261116_1540_interrupt-intent-contract.md) | B | chat.interrupt 未知 intent 静默假成功：WS/HTTP 双入口统一契约校验 | ZHANGPP_ | 无独立 D：依据联调现场与 PR 检视意见定位，无独立设计文档；修复限定 intent 契约校验范围，并补回归测试。 |
+| [B_20261126_0812_probe-failure-credential-classification](bugfix/jiuwenswarm/server/B_20261126_0812_probe-failure-credential-classification.md) | B | MCP 连接探活失败被无条件当成凭据错误回滚，网络抖动静默清空用户已保存 token | CharlesWang2030 | 无独立 D：既有探活回滚契约的数据丢失缺陷修复，不新增架构方案；取舍依据沉淀自 Issue |
 
 <a id="module-jiuwenswarm-server-control"></a>
 
@@ -749,6 +754,14 @@ generated: true
 | [B_20261116_2059_hub-package-root](bugfix/jiuwenswarm/server/runtime/B_20261116_2059_hub-package-root.md) | B | Hub 安装把包内子资产 manifest 误判为多个包根 | openjiuwen_ai | 无独立 D：仅修正包根识别的深度判定，不改变 Hub 包格式、安装状态机与 marketplace 契约；无独立设计。 |
 | [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
 
+<a id="module-jiuwenswarm-server-runtime-mcp"></a>
+
+## jiuwenswarm/server/runtime/mcp
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261126_0812_probe-failure-credential-classification](bugfix/jiuwenswarm/server/B_20261126_0812_probe-failure-credential-classification.md) | B | MCP 连接探活失败被无条件当成凭据错误回滚，网络抖动静默清空用户已保存 token | CharlesWang2030 | 无独立 D：既有探活回滚契约的数据丢失缺陷修复，不新增架构方案；取舍依据沉淀自 Issue |
+
 <a id="module-jiuwenswarm-server-runtime-session"></a>
 
 ## jiuwenswarm/server/runtime/session
@@ -838,6 +851,7 @@ generated: true
 | [B_20261031_1048_ttse-core-dependent-ut](bugfix/tests/unit_tests/agentserver/B_20261031_1048_ttse-core-dependent-ut.md) | B | 暂时移除依赖未合入 core 工厂能力的插件 UT | xinyang_bali | 无独立 D：用户明确要求暂时删除依赖 core 的相关 UT，不调整依赖或运行实现，无独立 D。 |
 | [B_20261116_1701_my-plugin-installed-only](bugfix/jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [B_20261117_1050_adapter-ut-fixtures](bugfix/tests/unit_tests/agentserver/B_20261117_1050_adapter-ut-fixtures.md) | B | 图片降级提示与付费搜索 UT 的测试替身和断言漂移 | TwZhang | 无独立 D：根据用户提供的 UT 报告修正测试替身及副作用断言，无独立设计。 |
+| [B_20261126_0812_probe-failure-credential-classification](bugfix/jiuwenswarm/server/B_20261126_0812_probe-failure-credential-classification.md) | B | MCP 连接探活失败被无条件当成凭据错误回滚，网络抖动静默清空用户已保存 token | CharlesWang2030 | 无独立 D：既有探活回滚契约的数据丢失缺陷修复，不新增架构方案；取舍依据沉淀自 Issue |
 
 <a id="module-tests-unit_tests-gateway"></a>
 

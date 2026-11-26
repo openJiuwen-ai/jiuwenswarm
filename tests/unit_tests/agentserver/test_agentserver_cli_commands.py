@@ -1111,13 +1111,16 @@ async def test_handle_command_mcp_add_probe_fails_rolls_back(server, fake_ws, mo
     # handshake timeout is network-class — credentials must be kept (JW-79)
     assert rolled_back["wipe"] is False
     assert called["reload"] == 0, "reload must not run when probe fails"
+    # "stdio spawn failed" is neither a proven auth rejection nor a whitelisted
+    # locally-built reason, so the wire error stays on the redacted fixed
+    # message (same redact contract as _run_mcp_connect_flow, CR-10905-01).
     assert fake_ws.sent == [
         {
             "response_id": "req-mcp-add-fail",
             "payload": {
                 "type": "add_failed",
                 "name": "demo",
-                "error": "stdio spawn failed: handshake timeout",
+                "error": "MCP live-connect probe failed",
                 "code": "MCP_UNREACHABLE",
             },
             "ok": False,

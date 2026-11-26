@@ -648,3 +648,123 @@ async def test_persist_and_probe_network_failure_keeps_credentials() -> None:
     assert resp.ok is False
     assert resp.payload["code"] == "MCP_UNREACHABLE"
     assert recorder.calls == [("demo", False)]
+
+
+@pytest.mark.asyncio
+async def test_persist_and_probe_runner_failure_stays_redacted() -> None:
+    """Both ``_persist_and_probe_mcp`` copies (command.mcp add/update path)
+    must keep the redacted fixed message for runner connect-failure reasons —
+    the same redact contract as ``_run_mcp_connect_flow``: those strings can
+    embed the full server_config (env credentials included), so they must not
+    reach the wire verbatim (review CR-10905-01 on PR !10905)."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer, McpUpsertTypes
+    from jiuwenswarm.server.handlers import mcp as mcp_handler
+
+    leaky_reason = (
+        "mcp server connect failed, server_config={"
+        "'env': {'HUAWEI_ACCESS_KEY': 'AK-SENTINEL'}}, error='timed out'"
+    )
+
+    class _Manager:
+        async def probe_mcp_live_connection(self, name: str):
+            return False, leaky_reason
+
+    recorder = _RollbackRecorder()
+    request = SimpleNamespace(request_id="req-jw79-redact", channel_id="tui")
+    payload = {"name": "demo", "transport": "stdio", "command": "python", "args": []}
+    types = McpUpsertTypes(ok="added", fail="add_failed")
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = _Manager()
+    with (
+        patch("jiuwenswarm.server.agent_ws_server.upsert_mcp_server", lambda p, **kw: None),
+        patch(
+            "jiuwenswarm.server.agent_ws_server.get_config_yaml_mcp_servers",
+            return_value=[],
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+            new=recorder,
+        ),
+    ):
+        resp = await AgentWebSocketServer._persist_and_probe_mcp(
+            server, request, payload, None, types,
+        )
+    assert resp.ok is False
+    assert resp.payload["type"] == "add_failed"
+    assert resp.payload["code"] == "MCP_UNREACHABLE"
+    assert resp.payload["error"] == "MCP live-connect probe failed"
+    assert "AK-SENTINEL" not in str(resp.payload)
+    assert recorder.calls == [("demo", False)]
+
+    # The handlers/mcp.py copy must behave identically (dual implementations,
+    # one regression pin per copy).
+    hub_recorder = _RollbackRecorder()
+    services = SimpleNamespace(agent_manager=_Manager())
+    with (
+        patch("jiuwenswarm.server.handlers.mcp.upsert_mcp_server", lambda p, **kw: None),
+        patch(
+            "jiuwenswarm.server.handlers.mcp.get_config_yaml_mcp_servers",
+            return_value=[],
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+            new=hub_recorder,
+        ),
+    ):
+        resp2 = await mcp_handler._persist_and_probe_mcp(
+            services, request, payload, None, types,
+        )
+    assert resp2.ok is False
+    assert resp2.payload["type"] == "add_failed"
+    assert resp2.payload["code"] == "MCP_UNREACHABLE"
+    assert resp2.payload["error"] == "MCP live-connect probe failed"
+    assert "AK-SENTINEL" not in str(resp2.payload)
+    assert hub_recorder.calls == [("demo", False)]
+
+
+@pytest.mark.asyncio
+async def test_persist_and_probe_local_env_reason_surfaces_details() -> None:
+    """A locally-built reason (stdio command missing from PATH) still reaches
+    the wire verbatim on the command.mcp add path — it is safe to surface and
+    must not be misreported as "service unreachable" (review P2 on
+    PR !10905), while the redact contract only guards runner strings."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer, McpUpsertTypes
+
+    class _Manager:
+        async def probe_mcp_live_connection(self, name: str):
+            return False, "command 'npx' not found on PATH (install it or add to PATH)"
+
+    recorder = _RollbackRecorder()
+    request = SimpleNamespace(request_id="req-jw79-local-env", channel_id="tui")
+    payload = {"name": "demo", "transport": "stdio", "command": "npx", "args": []}
+    types = McpUpsertTypes(ok="added", fail="add_failed")
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = _Manager()
+    with (
+        patch("jiuwenswarm.server.agent_ws_server.upsert_mcp_server", lambda p, **kw: None),
+        patch(
+            "jiuwenswarm.server.agent_ws_server.get_config_yaml_mcp_servers",
+            return_value=[],
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+            new=recorder,
+        ),
+    ):
+        resp = await AgentWebSocketServer._persist_and_probe_mcp(
+            server, request, payload, None, types,
+        )
+    assert resp.ok is False
+    assert resp.payload["code"] == "MCP_UNREACHABLE"
+    assert resp.payload["error"] == (
+        "command 'npx' not found on PATH (install it or add to PATH)"
+    )
+    assert recorder.calls == [("demo", False)]
