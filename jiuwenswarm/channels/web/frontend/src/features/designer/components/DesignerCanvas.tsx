@@ -219,14 +219,14 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
   useEffect(() => {
     if (!layoutRequestId || layoutRequestId === lastLayoutRequestRef.current) return;
     lastLayoutRequestRef.current = layoutRequestId;
-    if (editingLocked) return;
+    // Pure layout: allowed while the agent team holds the edit lock.
     autoLayout();
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         void fitView({ padding: DESIGNER_FIT_VIEW_PADDING, duration: 220 });
       });
     });
-  }, [autoLayout, editingLocked, fitView, layoutRequestId]);
+  }, [autoLayout, fitView, layoutRequestId]);
 
   const syncZoomPercent = useCallback(
     (zoom: number) => {
@@ -439,7 +439,8 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
         zoomOnScroll={false}
         zoomActivationKeyCode={['Control', 'Meta']}
         selectionOnDrag={!handMode && !canvasLocked}
-        nodesDraggable={!handMode && !canvasLocked && !editingLocked}
+        // Position-only: drag stays on during the agent-work edit lock.
+        nodesDraggable={!handMode && !canvasLocked}
         // Port handles stay connectable in select and hand tools; only lock blocks them.
         nodesConnectable={!canvasLocked && !editingLocked}
         connectionDragThreshold={8}

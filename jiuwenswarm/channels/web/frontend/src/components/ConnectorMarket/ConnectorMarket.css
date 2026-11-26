@@ -29,3 +29,19 @@
 }
 
 .connector-market-card-install:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.ui-dialog.system-plugin-readme-dialog {
+  width: min(860px, calc(100vw - 32px));
+  /* The body owns scrolling; a scrolling <dialog> would add a second bar. */
+  overflow: hidden;
+}
+
+.ui-dialog.system-plugin-preview-dialog {
+  width: min(1040px, calc(100vw - 32px));
+  overflow: hidden;
+}
+
+.system-plugin-dialog-body {
+  /* Match the dialog content box so only the inner pane scrolls. */
+  max-height: calc(min(760px, 100vh - 32px) - 2px);
+}

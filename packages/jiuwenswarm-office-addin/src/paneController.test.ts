@@ -72,8 +72,8 @@ function emit(event: string, payload: JsonObject, sessionId = 's1'): void {
 beforeEach(() => {
   vi.useFakeTimers();
   gateway = new ScriptedGateway();
-  let attaches = 0;
-  gateway.answer('client.attach', () => ({ attachment_id: `a${++attaches}`, renew_every_seconds: 30, pending: [] }));
+  // As the backend's: one id for every attach of the document by its user.
+  gateway.answer('client.attach', { attachment_id: 'a1', renew_every_seconds: 30, pending: [] });
   gateway.answer('client.conversations', { conversations: [
     { session_id: 's1', title: '改标题', last_message_at: 200 }, { session_id: 's0', title: '旧的', last_message_at: 100 },
   ] });
@@ -112,6 +112,16 @@ describe('opening the pane', () => {
     expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s5']);
   });
 
+  it('shows the turn the server still runs as running, so it can be stopped', async () => {
+    gateway.answer('session.get_metadata', { session_id: 's1', is_processing: true, runtime: {} });
+    const controller = pane();
+    await controller.open();
+    await settle();
+
+    expect(controller.state().conversation.turn).toBe('running');
+    expect(transcript(controller)).toEqual([{ kind: 'user', text: '改标题' }, { kind: 'assistant', text: '好了。' }]);
+  });
+
   it('applies what streams in while the history loads after the history', async () => {
     let release: (value: JsonObject) => void = () => undefined;
     gateway.answer('client.conversation.messages', () => new Promise<JsonObject>(resolve => { release = resolve; }));
@@ -129,7 +139,7 @@ describe('opening the pane', () => {
 });
 
 describe('chatting', () => {
-  it('sends a message to the attached conversation, and a message during a turn goes on as a supplement', async () => {
+  it('sends a message to the attached conversation; one sent during a turn waits its turn, in order', async () => {
     const controller = pane();
     await controller.open();
     await settle();
@@ -139,14 +149,19 @@ describe('chatting', () => {
     expect(controller.state().conversation.turn).toBe('running');
 
     expect(await controller.send('只看前 3 页')).toBe(true);
-    expect(gateway.sent('chat.interrupt')).toEqual([
-      { session_id: 's1', intent: 'supplement', new_input: '只看前 3 页', model_name: 'm-active' }]);
+    expect(await controller.send('再统一字号')).toBe(true);
+    expect(controller.state().queue.map(item => item.text)).toEqual(['只看前 3 页', '再统一字号']);
+    expect(gateway.sent('chat.interrupt')).toEqual([]);
     expect(gateway.sent('chat.send')).toHaveLength(1);
+    emit('chat.processing_status', { is_processing: false });
+    await settle();
+    expect(gateway.sent('chat.send').map(params => params.content)).toEqual(['检查标题', '只看前 3 页']);
+    expect(controller.state().queue.map(item => item.text)).toEqual(['再统一字号']);
     expect(transcript(controller).filter(entry => entry.kind === 'user')).toEqual(
       ['改标题', '检查标题', '只看前 3 页'].map(text => ({ kind: 'user', text })));
   });
 
-  it('sends the images picked with the message, and shows them in it; during a turn they wait', async () => {
+  it('sends the images picked with the message, and shows them in it; during a turn they wait with it', async () => {
     const path = { filename: 'logo.png', mime_type: 'image/png', path: '/u/logo.png' };
     gateway.answer('media.persist', { media_items: [{ type: 'image', ...path }] });
     const controller = pane();
@@ -161,10 +176,35 @@ describe('chatting', () => {
       { kind: 'user', text: '', images: [{ filename: 'logo.png', src: 'data:image/png;base64,QUJD' }] });
 
     expect(controller.state().conversation.turn).toBe('running');
-    const shown = transcript(controller);
-    expect(await controller.send('照这个改', [logo])).toBe(false);
-    expect(gateway.sent('chat.interrupt')).toEqual([]);
-    expect(transcript(controller)).toEqual(shown);
+    expect(await controller.send('照这个改', [logo])).toBe(true);
+    expect(controller.state().queue).toEqual([expect.objectContaining({ text: '照这个改', attachments: [logo] })]);
+  });
+
+  it('sends a document with the message, naming its path to the model as the web chat does', async () => {
+    const stored = { type: 'document', filename: 'brief.pdf', mime_type: 'application/pdf', path: '/u/my brief.pdf',
+      original_path: '/u/my brief.pdf', size_bytes: 3 };
+    gateway.answer('document.persist', params => (
+      (params.documents as JsonObject[])[0].filename === 'brief.pdf'
+        ? { media_items: [stored] } : { document_errors: [{ index: 0, error: 'Forbidden document type' }] }));
+    const controller = pane();
+    await controller.open();
+    await settle();
+    const brief = { filename: 'brief.pdf', mimeType: 'application/pdf', base64Data: 'QUJD' };
+
+    expect(await controller.send('总结一下', [brief])).toBe(true);
+    expect(gateway.sent('document.persist')[0]).toEqual({ session_id: 's1', content: '',
+      documents: [{ filename: 'brief.pdf', mime_type: 'application/pdf', base64_data: 'QUJD', size_bytes: 3 }] });
+    expect(gateway.sent('chat.send')[0]).toMatchObject({
+      content: '总结一下\n【上传文档】\n@"/u/my brief.pdf"', media_items: [stored],
+      files: { uploaded_documents: [
+        { filename: 'brief.pdf', path: '/u/my brief.pdf', mime_type: 'application/pdf', size_bytes: 3 }] },
+    });
+    expect(transcript(controller).at(-1)).toEqual(
+      { kind: 'user', text: '总结一下', files: [{ filename: 'brief.pdf', size: 3 }] });
+
+    emit('chat.processing_status', { is_processing: false });
+    expect(await controller.send('', [{ ...brief, filename: 'tool.pdf' }])).toBe(false);
+    expect(controller.state().alert?.text).toBe('发送失败：tool.pdf：Forbidden document type');
   });
 
   it('says why a message did not go out, takes it off the transcript and leaves the turn idle', async () => {
@@ -177,6 +217,23 @@ describe('chatting', () => {
     expect(controller.state().conversation.turn).toBe('idle');
     expect(controller.state().alert).toEqual({ tone: 'error', text: '发送失败：连接已断开' });
     expect(transcript(controller).filter(entry => entry.kind === 'user')).toEqual([{ kind: 'user', text: '改标题' }]);
+  });
+
+  it('sends the failed message again on retry, offered only while the failure is the last thing that happened', async () => {
+    const controller = pane();
+    await controller.open();
+    await settle();
+    await controller.send('改成蓝色');
+    emit('chat.error', { error: 'error code: 429', code: 'rate_limited', upstream: true });
+    expect(controller.state().retry).toBe(controller.state().conversation.entries.at(-1)!.id);
+
+    await controller.retry();
+    expect(gateway.sent('chat.send').map(params => params.content)).toEqual(['改成蓝色', '改成蓝色']);
+    expect(controller.state().retry).toBeUndefined();
+    emit('chat.tool_call', { tool_call: { id: 'w1', name: 'presentation_apply_patch' } });
+    emit('chat.tool_result', { tool_result: { tool_call_id: 'w1', status: 'success' } });
+    emit('chat.error', { error: 'error code: 429', code: 'rate_limited', upstream: true });
+    expect(controller.state().retry).toBeUndefined();
   });
 
   it('runs the turn\'s PowerPoint call and stays running until the turn ends', async () => {
@@ -208,16 +265,32 @@ describe('chatting', () => {
     expect(gateway.sent('chat.send')[0]).toMatchObject({ content: '检查标题', model_name: 'm-other' });
   });
 
-  it('carries the picked model on a message that joins a running turn', async () => {
+  it('sends a waiting message now as a supplement of the running turn, on the picked model', async () => {
     const controller = pane();
     await controller.open();
     await settle();
     controller.chooseModel('m-other');
     await controller.send('检查标题');
     await controller.send('只看前 3 页');
+    await controller.sendNow(controller.state().queue[0].id);
 
+    expect(controller.state().queue).toEqual([]);
     expect(gateway.sent('chat.interrupt')).toEqual([
       { session_id: 's1', intent: 'supplement', new_input: '只看前 3 页', model_name: 'm-other' }]);
+  });
+
+  it('keeps a waiting message while the turn waits on the user\'s answer', async () => {
+    const controller = pane();
+    await controller.open();
+    await settle();
+    await controller.send('检查标题');
+    await controller.send('只看前 3 页');
+    emit('chat.ask_user_question', PERMISSION);
+    await controller.sendNow(controller.state().queue[0].id);
+
+    expect(gateway.sent('chat.interrupt')).toEqual([]);
+    expect(controller.state().queue.map(item => item.text)).toEqual(['只看前 3 页']);
+    expect(controller.state().conversation.prompt).toBeDefined();
   });
 
   it('drops the writes the turn still had queued when a message takes the turn over', async () => {
@@ -235,6 +308,7 @@ describe('chatting', () => {
     }
     await settle();
     await controller.send('先别做了，换个主题');
+    await controller.sendNow(controller.state().queue[0].id);
     release();
     await settle();
 
@@ -254,20 +328,42 @@ describe('chatting', () => {
     expect(controller.state()).toMatchObject({ models: ['m-new', 'm-third'], model: 'm-new' });
   });
 
-  it('shows the history again when it attaches again after a reconnect, as the turn may have ended meanwhile', async () => {
+  it('shows the history again after a reconnect, and the turn as ended when the server no longer runs it', async () => {
     const controller = pane();
     await controller.open();
     await settle();
     await controller.send('检查标题');
+    emit('chat.tool_call', { tool_call: { id: 't1', name: 'read_presentation_context' } });
+    // The server restarted mid-turn: the turn's history stops with no reply, and nothing ended it on this socket.
     gateway.answer('client.conversation.messages', { messages: [
-      { role: 'user', content: '检查标题' }, { role: 'assistant', content: '标题都检查过了。' }] });
+      { role: 'user', content: '检查标题' },
+      { event_type: 'chat.tool_call', tool_call: { id: 't1', name: 'read_presentation_context' } },
+      { event_type: 'chat.llm_call_start', content: '' },
+      { event_type: 'chat.request_completed', content: '', status: 'cancelled' }] });
+    gateway.answer('session.get_metadata', { session_id: 's1', is_processing: false, runtime: {} });
     gateway.connection({ kind: 'down', attempt: 1, retryAt: 1000 });
     gateway.connection({ kind: 'open' });
     await settle();
 
     expect(gateway.sent('client.conversation.messages')).toHaveLength(2);
     expect(controller.state().conversation.turn).toBe('idle');
-    expect(transcript(controller).at(-1)).toEqual({ kind: 'assistant', text: '标题都检查过了。' });
+    expect(transcript(controller)).toEqual([
+      { kind: 'user', text: '检查标题' }, { kind: 'tool', name: 'read_presentation_context', status: 'failed' },
+      { kind: 'notice', tone: 'info', text: '连接中断期间，这一轮已结束。' }]);
+  });
+
+  it('keeps the transcript shown when the history cannot be read again after a reconnect', async () => {
+    const controller = pane();
+    await controller.open();
+    await settle();
+    gateway.answer('client.conversation.messages', new GatewayRequestError('down', 'UNAVAILABLE'));
+    gateway.connection({ kind: 'down', attempt: 1, retryAt: 1000 });
+    gateway.connection({ kind: 'open' });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(gateway.sent('client.conversation.messages')).toHaveLength(3);
+    expect(transcript(controller)).toEqual([{ kind: 'user', text: '改标题' }, { kind: 'assistant', text: '好了。' }]);
+    expect(controller.state().alert).toEqual({ tone: 'error', text: '历史消息暂时无法加载：down' });
   });
 
   it('follows the connection: down with the next attempt, and open again', async () => {
@@ -285,10 +381,12 @@ describe('chatting', () => {
     await controller.open();
     await settle();
     await controller.send('检查标题');
+    await controller.send('再统一字号');
     await controller.stop();
 
     expect(gateway.sent('chat.interrupt')).toEqual([{ session_id: 's1', intent: 'cancel' }]);
     expect(controller.state().conversation.turn).toBe('idle');
+    expect(controller.state().queue).toEqual([]);
   });
 });
 
@@ -333,7 +431,9 @@ describe('undoing a turn', () => {
       '（已撤销你此前的修改，恢复了第 2、3 页；这些页的 id 已变化，请先重新读取演示文稿。）\n换个配色' });
     expect(transcript(controller).at(-1)).toEqual({ kind: 'user', text: '换个配色' });
     await controller.send('再试一次');
-    expect(gateway.sent('chat.interrupt').at(-1)).toMatchObject({ new_input: '再试一次' });
+    emit('chat.processing_status', { is_processing: false });
+    await settle();
+    expect(gateway.sent('chat.send').at(-1)).toMatchObject({ content: '再试一次' });
   });
 
   it('asks before it overwrites slides changed since, and undoes once the user confirms', async () => {
@@ -410,6 +510,28 @@ describe('the document\'s conversations', () => {
     expect(transcript(controller)).toEqual([{ kind: 'user', text: '旧的' }]);
   });
 
+  it('keeps a waiting message that failed to go out off a conversation switched to meanwhile', async () => {
+    let fail: (error: Error) => void = () => undefined;
+    gateway.answer('chat.send', {}, () => new Promise<JsonObject>((_, reject) => { fail = reject; }));
+    const controller = pane();
+    await controller.open();
+    await settle();
+    await controller.send('检查标题');
+    await controller.send('只看前 3 页');
+    emit('chat.processing_status', { is_processing: false });
+    await settle();
+    await controller.switchTo('s0' as SessionId);
+    await settle();
+    fail(new GatewayRequestError('连接已断开'));
+    await settle();
+    emit('chat.processing_status', { is_processing: true }, 's0');
+    emit('chat.processing_status', { is_processing: false }, 's0');
+    await settle();
+
+    expect(controller.state().queue).toEqual([]);
+    expect(gateway.sent('chat.send').map(params => params.session_id)).toEqual(['s1', 's1']);
+  });
+
   it('starts a new conversation and lists it', async () => {
     gateway.answer('session.create', { session_id: 's2' });
     const controller = pane();
@@ -447,6 +569,24 @@ describe('the document\'s conversations', () => {
     await controller.newConversation();
     await settle();
 
+    expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
+  });
+
+  it('stops a turn that runs before it leaves it, and stays when the stop does not go out', async () => {
+    gateway.answer('session.create', { session_id: 's2' });
+    gateway.answer('chat.interrupt', new GatewayRequestError('busy', 'UNAVAILABLE'), {});
+    const controller = pane();
+    await controller.open();
+    await settle();
+    await controller.send('检查标题');
+    await controller.switchTo('s0' as SessionId);
+
+    expect(controller.state().alert).toEqual({ tone: 'error', text: '停止任务失败：busy' });
+    expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1']);
+    await controller.newConversation();
+    await settle();
+    expect(gateway.sent('chat.interrupt')).toEqual([
+      { session_id: 's1', intent: 'cancel' }, { session_id: 's1', intent: 'cancel' }]);
     expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
   });
 });

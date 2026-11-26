@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Session-level team dispatch / bootstrap modes: resolution, persistence and spec wiring."""
 
@@ -98,10 +98,12 @@ async def _build_spec(
     bootstrap_mode: str | None = None,
     *,
     config_bootstrap_mode: str = "leader",
+    config_dispatch_mode: str = "scheduled",
 ) -> SimpleNamespace:
     spec = SimpleNamespace(
         team_name="team",
-        dispatch_mode="scheduled",
+        leader=SimpleNamespace(goal={"max_attempts": 10}),
+        dispatch_mode=config_dispatch_mode,
         bootstrap_mode=config_bootstrap_mode,
         enable_task_verification=True,
         enable_member_messaging=True,
@@ -114,7 +116,10 @@ async def _build_spec(
     monkeypatch.setattr("jiuwenswarm.agents.harness.team.team_manager.get_config", lambda: {})
     monkeypatch.setattr(TeamManager, "_ensure_postgresql_for_leader", fake_ensure_postgresql)
     monkeypatch.setattr(TeamManager, "_load_session_team_spec", lambda self, _sid, **_kw: (spec, True))
-    monkeypatch.setattr("jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm", lambda _spec, **_kw: None)
+    def check_assembly_mode(spec: SimpleNamespace, **_kwargs: Any) -> None:
+        assert spec.dispatch_mode == (dispatch_mode or config_dispatch_mode)
+
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm", check_assembly_mode)
 
     return await TeamManager().get_swarm_enriched_team_spec(
         "s1",
@@ -130,6 +135,7 @@ async def test_autonomous_session_overrides_spec_and_drops_verification(monkeypa
     spec = await _build_spec(monkeypatch, "autonomous")
 
     assert spec.dispatch_mode == "autonomous"
+    assert spec.leader.goal is None
     assert spec.enable_task_verification is False
     assert spec.enable_member_messaging is False
     assert spec.max_subtask_depth == 0
@@ -140,6 +146,7 @@ async def test_unspecified_dispatch_mode_keeps_team_config(monkeypatch: pytest.M
     spec = await _build_spec(monkeypatch, None)
 
     assert spec.dispatch_mode == "scheduled"
+    assert spec.leader.goal == {"max_attempts": 10}
     assert spec.enable_task_verification is True
     assert spec.enable_member_messaging is True
     assert spec.max_subtask_depth == 2
@@ -196,7 +203,7 @@ def test_persist_bootstrap_mode_writes_metadata(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.asyncio
 async def test_framework_bootstrap_lands_on_a_scheduled_spec(monkeypatch: pytest.MonkeyPatch) -> None:
-    spec = await _build_spec(monkeypatch, "scheduled", "framework")
+    spec = await _build_spec(monkeypatch, "scheduled", "framework", config_dispatch_mode="autonomous")
 
     assert spec.dispatch_mode == "scheduled"
     assert spec.bootstrap_mode == "framework"
@@ -221,3 +228,15 @@ async def test_framework_team_config_rejects_autonomous_session(monkeypatch: pyt
     """A team configured for framework bootstrap cannot be run as an autonomous session."""
     with pytest.raises(ValueError, match="requires scheduled dispatch"):
         await _build_spec(monkeypatch, "autonomous", None, config_bootstrap_mode="framework")
+
+
+def test_framework_build_check_uses_session_team_row_not_first_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_metadata(monkeypatch, {"session_id": "s1"})
+
+    assert team_helpers._framework_bootstrap_will_build("s1") is True
+
+    _patch_metadata(monkeypatch, {"session_id": "s2", "team_name": "team-2"})
+
+    assert team_helpers._framework_bootstrap_will_build("s2") is False

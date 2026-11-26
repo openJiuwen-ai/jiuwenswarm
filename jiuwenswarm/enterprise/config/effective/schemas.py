@@ -18,6 +18,20 @@ from e2a.template_slots import (
     normalize_template_ref,
 )
 
+# react / execution_guard 槽位以字符串接线：e2a.template_slots（协议包，固定 commit）
+# 尚未登记这两个槽位，这里在仓内派生默认加载槽位集合，待协议包发版后收敛。
+# 元素为 TemplateRefSlot 枚举与字符串的混合集合，loader 侧统一取 .value 收敛
+# （TemplateRefSlot 是 StrEnum，字符串比较语义一致）。
+REACT_SLOT = "react"
+REACT_ENTITY_TABLE = "react_template"
+EXECUTION_GUARD_SLOT = "execution_guard"
+EXECUTION_GUARD_ENTITY_TABLE = "execution_guard_template"
+DEFAULT_AGENT_LOAD_SLOTS = frozenset({
+    *DEFAULT_AGENT_LOAD_SLOTS,
+    REACT_SLOT,
+    EXECUTION_GUARD_SLOT,
+})
+
 
 @dataclass(frozen=True)
 class RoutingContext:
@@ -51,6 +65,11 @@ class EffectiveEnterpriseConfig:
     extension_config: list[dict[str, Any]] | None = None
     mcp: list[dict[str, Any]] | None = None
     permissions: list[dict[str, Any]] | None = None
+    # react 运行策略（react_template.data 按键深度合并 config.react：
+    # data 配置键覆盖，未配置键保留本地值）。
+    react: list[dict[str, Any]] | None = None
+    # 执行护栏（execution_guard_template.body 整段替换 config.execution_guard）。
+    execution_guard: list[dict[str, Any]] | None = None
     a2a_access_policy: list[dict[str, Any]] | None = None
     # Gateway advanced_config 表行（按 agent_template_id）；含 a4p_enabled 等。
     advanced_config: dict[str, Any] | None = None
@@ -72,6 +91,8 @@ class EffectiveEnterpriseConfig:
             "extension_config": self.extension_config,
             "mcp": self.mcp,
             "permissions": self.permissions,
+            "react": self.react,
+            "execution_guard": self.execution_guard,
             "a2a_access_policy": self.a2a_access_policy,
             "advanced_config": self.advanced_config,
             "service_id": self.service_id,

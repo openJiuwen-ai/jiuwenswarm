@@ -23,6 +23,7 @@ from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled,
     REST_ROUTES,
+    RestAssemblyError,
     assemble_rest_request,
 )
 
@@ -99,6 +100,24 @@ def test_session_upload_reader_has_dedicated_route_and_identity_headers() -> Non
     assert request.query["path"] == envelope.params["path"]
 
 
+def test_identity_headers_carry_cron_meta_like_websocket_channel_context() -> None:
+    """HTTP must ferry channel_context.cron so Agent rebuilds metadata['cron']."""
+    envelope = _envelope(
+        "chat.send",
+        user_id="u",
+        channel_context={
+            "routing": {"group_id": "g", "bot_id": "b"},
+            "targets": "web",
+            "cron": {"job_id": "job-1", "run_id": "job-1:99", "timezone": "Asia/Shanghai"},
+        },
+    )
+    headers = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766").headers
+    assert headers["X-Cron-Targets"] == "web"
+    assert headers["X-Cron-Meta"] == (
+        '{"job_id":"job-1","run_id":"job-1:99","timezone":"Asia/Shanghai"}'
+    )
+
+
 def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
     expected = {
         "mcp.list": "/api/v1/mcp/actions/list",
@@ -112,6 +131,7 @@ def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
         "mcp.register_custom": "/api/v1/mcp/actions/register-custom",
         "mcp.delete_custom": "/api/v1/mcp/actions/delete-custom",
         "mcp.save_credentials": "/api/v1/mcp/actions/save-credentials",
+        "mcp.sources.providers": "/api/v1/mcp/actions/sources-providers",
         "swarmflow.pause": "/api/v1/sessions/sess-1/swarmflow/actions/pause",
         "swarmflow.resume": "/api/v1/sessions/sess-1/swarmflow/actions/resume",
         "swarmflow.stop": "/api/v1/sessions/sess-1/swarmflow/actions/stop",
@@ -300,6 +320,51 @@ def test_session_pin_uses_the_dedicated_url() -> None:
     assert "ReqMethod.SESSION_PIN: handle_gateway_adapter" in text
 
 
+def test_team_list_catalog_ignores_envelope_affinity_session() -> None:
+    """TeamPanel 目录态：params 无 session_id → GET /teams，不把信封亲和号写进 URL/query。"""
+    from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
+        declared_http_routes,
+    )
+
+    for affinity in ("shared_user_user1", "webhttp_abcdef123456"):
+        sent = assemble_rest_request(
+            E2AEnvelope(
+                request_id="req-1",
+                channel="web",
+                method="team.list",
+                session_id=affinity,
+                params={"user_id": "user1", "group_id": "g", "bot_id": "b"},
+            ),
+            base_url="http://10.0.0.8:8766",
+        )
+        assert sent.verb == "GET"
+        assert sent.url == "http://10.0.0.8:8766/api/v1/teams"
+        assert sent.query is not None
+        assert "session_id" not in sent.query
+        assert sent.headers.get("X-Session-Id") == affinity
+
+    routes = declared_http_routes()
+    assert ("team.list", "GET", "/teams") in routes
+    assert ("team.list", "GET", "/sessions/{session_id}/teams") in routes
+
+
+def test_team_list_session_selector_uses_params_session_id() -> None:
+    sent = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="team.list",
+            session_id="shared_user_user1",
+            params={"session_id": "web_1a1c4644802_a019e33b798d"},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert sent.verb == "GET"
+    assert sent.url == (
+        "http://10.0.0.8:8766/api/v1/sessions/web_1a1c4644802_a019e33b798d/teams"
+    )
+
+
 def test_session_asset_routes_are_declared_rows() -> None:
     assert REST_ROUTES["session.assets.list"] == ("GET", "/sessions/{session_id}/assets")
     assert REST_ROUTES["session.assets.register"] == ("POST", "/sessions/{session_id}/assets")
@@ -361,3 +426,115 @@ def test_session_delete_is_registered_for_rpc() -> None:
     dispatch = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "dispatch.py"
     text = dispatch.read_text(encoding="utf-8")
     assert "ReqMethod.SESSION_DELETE: handle_session_delete" in text
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"name": None, "origin": "sds-fixture:sds-contract-skill"},
+        {"name": "", "origin": "sds-fixture:sds-contract-skill"},
+    ],
+)
+def test_skills_uninstall_missing_name_raises_rest_assembly_error(
+    params: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """北向 body.name 缺失/null 时，南向 DELETE /skills/{name} 不得静默拼出坏 URL。"""
+    # 避开本测环境 ReqMethod/dispatch 漂移导致的 handler 探测失败。
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map.method_has_http_handler",
+        lambda _method: True,
+    )
+    with pytest.raises(RestAssemblyError, match=r"\['name'\].*/skills/\{name\}"):
+        assemble_rest_request(
+            E2AEnvelope(
+                request_id="req-1",
+                channel="web",
+                method="skills.uninstall",
+                params=params,
+            ),
+            base_url="http://10.0.0.8:8766",
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../sds-contract-skill",
+        "a/b",
+        r"a\b",
+        "..",
+        ".",
+    ],
+)
+def test_skills_uninstall_path_separator_name_raises_rest_assembly_error(
+    name: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """含路径分隔符/相对段的 name 不得编进 DELETE /skills/{name}（#168）。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map.method_has_http_handler",
+        lambda _method: True,
+    )
+    with pytest.raises(RestAssemblyError, match=r"非法路径片段"):
+        assemble_rest_request(
+            E2AEnvelope(
+                request_id="req-1",
+                channel="web",
+                method="skills.uninstall",
+                params={"name": name, "origin": "sds-fixture:sds-contract-skill"},
+            ),
+            base_url="http://10.0.0.8:8766",
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        [],
+        ["sds-contract-skill"],
+        {},
+        True,
+    ],
+)
+def test_skills_uninstall_non_string_name_raises_rest_assembly_error(
+    name, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """name=[] 等非标量不得编成 DELETE /skills/%5B%5D（#169）。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map.method_has_http_handler",
+        lambda _method: True,
+    )
+    with pytest.raises(RestAssemblyError, match=r"类型非法"):
+        assemble_rest_request(
+            E2AEnvelope(
+                request_id="req-1",
+                channel="web",
+                method="skills.uninstall",
+                params={"name": name, "origin": "sds-fixture:sds-contract-skill"},
+            ),
+            base_url="http://10.0.0.8:8766",
+        )
+
+
+@pytest.mark.asyncio
+async def test_skills_uninstall_missing_name_returns_bad_request(monkeypatch) -> None:
+    """组装失败应落成 BAD_REQUEST，而不是冒泡成 Web HTTP 500。"""
+    from jiuwenswarm.extensions.runtime_management_extension import pod_http_client as mod
+
+    client = object.__new__(mod.HttpSseAgentServerClient)
+    monkeypatch.setattr(client, "_resolve_api_root", lambda _base=None: "http://agent/api/v1")
+
+    async def _boom(envelope, api_root):
+        raise RestAssemblyError("REST 路径缺占位符 ['name']: /skills/{name}")
+
+    monkeypatch.setattr(mod, "_assemble_with_expert_packages", _boom)
+    envelope = E2AEnvelope(
+        request_id="req-uninstall",
+        channel="web",
+        method="skills.uninstall",
+        params={},
+    )
+    response = await client.send_request(envelope, base_url="http://agent")
+    assert response.ok is False
+    assert response.payload["code"] == "BAD_REQUEST"
+    assert "name" in str(response.payload.get("error") or "")

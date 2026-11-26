@@ -1,6 +1,6 @@
 ---
 name: workswarm-builtin
-description: WorkSwarm 内置能力总目录。需要创建或修改 Skill、Agent、专家团、插件、应用，处理文档、图像、检索、项目维护或算子开发时，按目录检索并读取实际技能；普通问答无需加载。
+description: WorkSwarm 内置能力总目录。需要创建或修改 Skill、Agent、专家团、插件、系统插件、应用，处理文档、图像、检索、项目维护或算子开发时，按目录检索并读取实际技能；普通问答无需加载。
 ---
 
 # WorkSwarm 内置能力目录
@@ -10,7 +10,7 @@ description: WorkSwarm 内置能力总目录。需要创建或修改 Skill、Age
 - 路径相对本目录解析。实际技能的 `{skill_directory}`、脚本工作目录与相对资源路径均指向该子技能自己的目录。
 - 子技能不作为顶层独立注册名；使用文件路径读取，不假定旧名称能直接调用 SkillTool。历史请求指定某个旧内置名称时，按目录定位同名能力。
 - 若存在 [升级偏好说明](references/migration.md)，先读取并遵循其中的禁用选择；缺失表示没有迁移偏好。保留的用户自定义同名技能仍作为用户资产使用，不用本目录覆盖。
-- 创建/编辑 Skill 时，先读取 [Skill Creator](references/capabilities/skill-creator/SKILL.md)，再由其选择专项 creator。Agent、专家团与插件创建按目录选择各自能力。
+- 创建/编辑 Skill 时，先读取 [Skill Creator](references/capabilities/skill-creator/SKILL.md)，再由其选择专项 creator。Agent、专家团与插件创建按目录选择各自能力；普通系统插件开发读取 [系统插件开发](references/capabilities/jiuwen-system-plugin-dev/SKILL.md)，DeepSeek Harness 插件转换读取 [DeepSeek Harness 插件转换](references/capabilities/deepseek-harness-plugin-converter/SKILL.md)。
 - 多个能力协作时按步骤逐个读取。缺少资源或依赖时明确说明实际缺口，不声称已执行。
 
 ## 应用开发：适用于 code 模式

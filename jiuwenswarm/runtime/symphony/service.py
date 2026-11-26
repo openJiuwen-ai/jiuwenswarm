@@ -7,23 +7,18 @@ from collections import OrderedDict
 from concurrent.futures import Future as ConcurrentFuture
 from contextlib import nullcontext
 from copy import deepcopy
-from dataclasses import dataclass
-from functools import lru_cache
 import hashlib
 import inspect
 import json
 import logging
 import os
-import stat
 import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, TypeAlias
 
 import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
-from openjiuwen.symphony import FINGERPRINT_ARTIFACT_FILENAME
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.model_error_messages import user_facing_model_error
@@ -46,25 +41,21 @@ from jiuwenswarm.runtime.symphony.skillpack_candidates import (
     trusted_session_user,
 )
 from jiuwenswarm.runtime.symphony.adapter import (
-    candidate_ids_from_skill_ids,
-    graph_config_from_swarm,
     llm_config_signature,
     model_from_config,
-    model_response_observer_from_config,
-    orchestration_config_from_swarm,
+    normalize_candidate_ids,
 )
+from jiuwenswarm.runtime.symphony.capabilities import expert_candidates
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, probe_model_connection
 from jiuwenswarm.common.symphony_config import (
     SymphonyConfig,
-    evolution_flow_enabled,
+    configured_skill_roots,
     load_symphony_config,
+    require_graph_skill_root,
 )
 from jiuwenswarm.runtime.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.runtime.symphony.build import graph_status
-from jiuwenswarm.runtime.symphony.graph_state import GRAPH_STATE_FILENAME
 from jiuwenswarm.runtime.symphony.graph_storage import (
-    BUILD_RUNS_DIRNAME,
-    CURRENT_POINTER_FILENAME,
     resolve_graph_artifact_dir,
 )
 
@@ -75,21 +66,8 @@ SymphonyRuntimeType: TypeAlias = Any
 SymphonyRuntime = core_symphony.SymphonyRuntime
 normalize_name_key = core_symphony.normalize_name_key
 CapabilityPackager = core_symphony.flow.CapabilityPackager
-LLMPackageReviewAgent = core_symphony.LLMPackageReviewAgent
-PackageReviewGate = core_symphony.flow.PackageReviewGate
-SymphonyFlowEngine = core_symphony.flow.SymphonyFlowEngine
-SymphonyFlowConfig = core_symphony.orchestration.config.SymphonyFlowConfig
 SkillPackAdapter = core_symphony.flow.SkillPackAdapter
 VERDICT_APPROVED = core_symphony.flow.VERDICT_APPROVED
-
-
-def _symphony_flow_config(flow_cfg: Any) -> SymphonyFlowConfig:
-    """Map Host distillation thresholds to the supported Core contract."""
-
-    return SymphonyFlowConfig(
-        min_successes=flow_cfg.min_successes,
-        min_pack_success_rate=flow_cfg.min_pack_success_rate,
-    )
 
 
 ProgressCallback = Callable[[dict[str, Any]], Any]
@@ -100,11 +78,6 @@ def experience_request_id(recipe_id: str, version: int) -> str:
 
     digest = hashlib.sha256(f"{recipe_id}:{version}".encode()).hexdigest()[:20]
     return f"symphony_experience_{digest}"
-
-
-def _graph_scope_id(graph_dir: Path) -> str:
-    digest = hashlib.sha256(str(graph_dir.resolve()).encode()).hexdigest()[:20]
-    return f"jiuwenswarm-{digest}"
 
 
 def _unique_candidates(
@@ -226,6 +199,19 @@ def _save_install_receipt(flow_root: Path, receipt: dict[str, Any]) -> None:
         raise
 
 
+def _build_log_path(graph_dir: Path) -> Path:
+    # Job logs precede Core artifact binding and live outside the versioned runtime layout.
+    return graph_dir.parent.parent / "runtime_jobs" / "graph" / "build_log.jsonl"
+
+
+class _PlanningPreparationError(RuntimeError):
+    """Carry a host graph preparation failure through the Core callback."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__(payload["detail"])
+        self.payload = payload
+
+
 class SwarmSymphonyService:
     """Own the process-local Symphony runtime used by all Agent tools."""
 
@@ -247,99 +233,29 @@ class SwarmSymphonyService:
         self._skillpack_candidate_flows: OrderedDict[tuple[str, str], Any] = OrderedDict()
         self._retired_runtime_tasks: set[asyncio.Task[None]] = set()
         self._closing = False
-        self._graph_status_lock = asyncio.Lock()
-        self._graph_status_cache_key: _GraphStatusCacheKey | None = None
-        self._graph_status_cache_payload: dict[str, Any] | None = None
-        self._graph_status_cache_created_at = 0.0
-        self._graph_status_generation = 0
+        self._active_build_progress: _OrderedProgressDispatcher | None = None
 
-    async def graph_status(
-        self,
-    ) -> dict[str, Any]:
+    async def graph_status(self) -> dict[str, Any]:
         config = load_symphony_config()
-        skills_root = config.paths.skills_root
-        graph_dir = config.paths.graph_dir
+        graph_dir = Path(config.storage.artifact_root) / "graph"
         await self._repair_interrupted_build_state(graph_dir)
-        cache_key = await asyncio.to_thread(
-            _graph_status_cache_key,
-            config,
-            skills_root,
-            graph_dir,
-        )
-        graph_payload = await self._cached_graph_status(
-            config,
-            skills_root,
-            graph_dir,
-            cache_key,
-        )
-        return await asyncio.to_thread(
-            _compose_graph_status_payload,
-            graph_payload,
-            graph_dir,
-        )
-
-    async def _cached_graph_status(
-        self,
-        config: SymphonyConfig,
-        skills_root: Path,
-        graph_dir: Path,
-        cache_key: _GraphStatusCacheKey,
-    ) -> dict[str, Any]:
-        """Cache only the expensive graph scan. Build progress stays live."""
-        cached = self._graph_status_cache_payload
-        if self._graph_status_cache_is_fresh(cache_key) and cached is not None:
-            return cached
-
-        def status() -> dict[str, Any]:
-            return graph_status(
-                skills_root,
-                graph_dir,
-                # Freshness follows the model identity captured by the published
-                # graph. The current default model is an online planning concern
-                # and must not make that graph stale merely because it changed.
-                llm_config=None,
-                symphony_config=config,
-            ).to_dict()
-
-        async with self._graph_status_lock:
-            cached = self._graph_status_cache_payload
-            if self._graph_status_cache_is_fresh(cache_key) and cached is not None:
-                return cached
-            generation = self._graph_status_generation
-            payload = await asyncio.to_thread(status)
-            if generation == self._graph_status_generation:
-                self._graph_status_cache_key = cache_key
-                self._graph_status_cache_payload = payload
-                self._graph_status_cache_created_at = time.monotonic()
-            return payload
-
-    def _graph_status_cache_is_fresh(self, cache_key: _GraphStatusCacheKey) -> bool:
-        if (
-            self._graph_status_cache_key != cache_key
-            or self._graph_status_cache_payload is None
-        ):
-            return False
-        age = time.monotonic() - self._graph_status_cache_created_at
-        return age < _GRAPH_STATUS_CACHE_TTL_SECONDS
-
-    def _invalidate_graph_status_cache(self) -> None:
-        """Drop the cached status after a build changes its inputs."""
-        self._graph_status_generation += 1
-        self._graph_status_cache_key = None
-        self._graph_status_cache_payload = None
-        self._graph_status_cache_created_at = 0.0
+        try:
+            status = await asyncio.to_thread(graph_status, config, llm_config=None)
+            graph_payload = status.to_dict()
+        except (OSError, ValueError) as exc:
+            graph_payload = {"success": False, "exists": False, "stale": True,
+                             "graph_dir": str(graph_dir), "detail": str(exc)}
+        return await asyncio.to_thread(_compose_graph_status_payload, graph_payload, graph_dir)
 
     async def refresh_graph(
         self,
         *,
         force: bool = False,
         progress: ProgressCallback | None = None,
-        llm_config: LLMConfig | None = None,
     ) -> dict[str, Any]:
         return await self._build_graph(
             force=force,
             progress=progress,
-            llm_config=llm_config,
         )
 
     async def start_refresh_graph(
@@ -350,9 +266,11 @@ class SwarmSymphonyService:
         """Start or reuse a process-local background graph build."""
 
         config = load_symphony_config()
-        graph_dir = config.paths.graph_dir
+        skills_root = require_graph_skill_root(config)
+        graph_dir = (Path(config.storage.artifact_root) / "graph")
         async with self._build_guard:
-            self._invalidate_graph_status_cache()
+            if self._closing:
+                return {"success": False, "reason": "service_closing", "detail": "Symphony 服务正在关闭。"}
             task = self._active_build_task
             if task is not None and not task.done():
                 payload = {
@@ -372,11 +290,11 @@ class SwarmSymphonyService:
                 return payload
             if task is not None:
                 self._active_build_task = None
-            build_logger = _BuildProcessLogger(graph_dir / "build_log.jsonl")
+            build_logger = _BuildProcessLogger(_build_log_path(graph_dir))
             build_logger.reset()
             build_logger.record(
                 "update.start",
-                skills_root=str(config.paths.skills_root),
+                skills_root=str(skills_root),
                 out_dir=str(graph_dir),
                 force=force,
             )
@@ -406,15 +324,14 @@ class SwarmSymphonyService:
         self,
     ) -> dict[str, Any]:
         config = load_symphony_config()
-        graph_dir = config.paths.graph_dir
-        build_logger = _BuildProcessLogger(graph_dir / "build_log.jsonl")
+        graph_dir = (Path(config.storage.artifact_root) / "graph")
+        build_logger = _BuildProcessLogger(_build_log_path(graph_dir))
         async with self._build_guard:
             task = self._active_build_task
             if task is None or task.done():
                 if task is not None:
                     self._active_build_task = None
                 _repair_interrupted_build_log(graph_dir)
-                self._invalidate_graph_status_cache()
                 payload = {
                     "success": False,
                     "graph_dir": str(graph_dir),
@@ -425,20 +342,31 @@ class SwarmSymphonyService:
                 payload.update(_build_log_payload(graph_dir))
                 payload["build_status"] = "idle"
                 return payload
-            build_logger.record("update.cancel_requested")
-            task.cancel("skills.graph.cancel")
-            build_logger.record("update.cancelled")
-            self._invalidate_graph_status_cache()
+            entries = _read_build_log(graph_dir)
+            committed = any(entry.get("stage") in {"build_published", "build_reused", "update.done"}
+                            and entry.get("success") is not False for entry in entries)
+            dispatcher = self._active_build_progress
+            if not committed:
+                build_logger.record("update.cancel_requested")
+            task.cancel("skills.graph.finish_notifications" if committed else "skills.graph.cancel")
+        # Publication has already committed: stop only a slow UI callback.
+        # Keep the build's successful result and published version intact.
+        if committed and dispatcher is not None:
+            await dispatcher.abort()
+        result = None
         try:
-            await task
+            result = await task
         except asyncio.CancelledError:
             pass
+        completed = committed or (isinstance(result, dict) and result.get("success") is True)
+        if not completed and _build_progress(_read_build_log(graph_dir)).get("status") != "cancelled":
+            build_logger.record("update.cancelled")
         payload = {
             "success": True,
             "graph_dir": str(graph_dir),
-            "cancelled": True,
-            "build_status": "cancelled",
-            "detail": "已取消技能总谱构建，已完成的缓存和 checkpoint 会保留。",
+            "cancelled": not completed,
+            "build_status": "completed" if completed else "cancelled",
+            "detail": "技能总谱已发布，本次未取消。" if completed else "已取消技能总谱构建，上一可用版本和缓存保留。",
         }
         payload.update(_build_log_payload(graph_dir))
         return payload
@@ -447,7 +375,8 @@ class SwarmSymphonyService:
         """Return the public graph artifact in the shape consumed by the Web UI."""
 
         config = load_symphony_config()
-        graph_dir = config.paths.graph_dir
+        skills_root = require_graph_skill_root(config)
+        graph_dir = (Path(config.storage.artifact_root) / "graph")
         await self._repair_interrupted_build_state(graph_dir)
         try:
             artifact = self._read_graph_artifact(graph_dir)
@@ -463,8 +392,8 @@ class SwarmSymphonyService:
                 artifact,
                 graph_dir=graph_dir,
                 min_edge_confidence=config.orchestration.min_edge_confidence,
-                disabled_skill_names=load_execution_disabled_skills(),
-                skills_root=config.paths.skills_root,
+                disabled_skill_names=load_execution_disabled_skills(skills_dir=skills_root),
+                skills_root=skills_root,
             )
         payload.update(_build_log_payload(graph_dir))
         _prefer_build_failure_detail(payload)
@@ -476,109 +405,110 @@ class SwarmSymphonyService:
         mode: str | None = None,
         candidate_skill_ids: list[str] | None = None,
         *,
+        capability_type: str = "auto",
+        candidate_ids: list[str] | None = None,
+        inputs: list[dict[str, str]] | None = None,
         progress: ProgressCallback | None = None,
         llm_config: LLMConfig | None = None,
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         query = str(query or "").strip()
         if not query:
             return {"success": False, "detail": "query is required"}
-        candidate_ids = candidate_ids_from_skill_ids(candidate_skill_ids)
+        if capability_type not in {"auto", "skill", "expert"}:
+            return {"success": False, "detail": "type must be auto, skill or expert"}
+        if candidate_skill_ids is not None and (capability_type != "skill" or candidate_ids is not None):
+            return {"success": False, "detail": "candidate_skill_ids is a Skill-only alias for candidate_ids"}
+        candidate_ids = normalize_candidate_ids(candidate_ids if candidate_ids is not None else candidate_skill_ids)
         language = _resolve_orchestration_language(
             get_config().get("preferred_language", "zh")
         )
         config = load_symphony_config()
-        requested_mode = str(mode or config.orchestration.mode).strip()
+        requested_mode = str(mode or config.orchestration.plan.mode).strip()
         try:
-            orchestration_config_from_swarm(config, mode=requested_mode)
+            type(config.orchestration.plan).model_validate(
+                {**config.orchestration.plan.model_dump(), "mode": requested_mode},
+            )
         except ValueError as exc:
             return {
                 "success": False,
                 "detail": str(exc),
             }
 
-        status = await self.graph_status()
-        if not status.get("success"):
-            return {
-                "success": False,
-                "detail": "Skill Score status check failed before planning",
-                "graph_status": status,
-            }
-        if _graph_needs_build(status):
-            refresh_kwargs: dict[str, Any] = {"progress": progress}
-            if llm_config is not None:
-                refresh_kwargs["llm_config"] = llm_config
-            graph_build = await self.refresh_graph(**refresh_kwargs)
+        graph_build = None
+        status = {"success": True}
+
+        async def prepare_skill_graph():
+            nonlocal graph_build, status
+            status = await self.graph_status()
+            if not status.get("success"):
+                raise _PlanningPreparationError({"success": False, "detail": "Skill graph status check failed",
+                                                 "graph_status": status})
+            if not _graph_needs_build(status):
+                return
+            graph_build = await self.refresh_graph(progress=progress)
             if not graph_build.get("success"):
-                failure = {
-                    "success": False,
-                    "detail": "Skill Score build failed before planning",
-                    "graph_status": status,
-                    "graph_build": graph_build,
-                }
+                failure = {"success": False, "detail": "Skill graph build failed before planning",
+                           "graph_status": status, "graph_build": graph_build}
                 if graph_build.get("reason") == "graph_preparing":
-                    failure.update(
-                        {
-                            "reason": "graph_preparing",
-                            "retryable": False,
-                            "build_status": "running",
-                            "operation": "plan",
-                            "detail": graph_build.get("detail") or failure["detail"],
-                        }
-                    )
-                return failure
+                    failure.update(reason="graph_preparing", retryable=False, build_status="running",
+                                   operation="plan", detail=graph_build.get("detail") or failure["detail"])
+                raise _PlanningPreparationError(failure)
             graph_build["rebuilt"] = True
-        else:
-            graph_build = None
+
         transient_runtime = llm_config is not None
         runtime = None
         try:
-            runtime = (
-                self._runtime_for(config, llm_config=llm_config)
-                if llm_config is not None
-                else self._runtime_for(config)
-            )
-            public_payload = await runtime.graph_engine.plan(
-                query,
-                graph_scope_id=runtime.graph_scope_id,
-                candidate_ids=candidate_ids,
-                language=language,
-                progress=progress,
-                disabled_capability_ids=load_execution_disabled_skills(),
-                mode=requested_mode,
+            if capability_type == "skill":
+                await prepare_skill_graph()
+            runtime = (self._runtime_for(config, llm_config=llm_config)
+                       if llm_config is not None else self._runtime_for(config))
+            plan_options: dict[str, Any] = {}
+            if capability_type in {"auto", "expert"}:
+                has_experts = any(source.type == "expert" for source in config.capability.sources)
+                installed = await expert_candidates(config) if has_experts else ()
+                plan_options["expert_manifest_paths"] = [
+                    item.manifest_path for item in installed
+                    if item.descriptor.available and item.manifest_path is not None
+                ]
+            if capability_type in {"auto", "skill"}:
+                disabled = set()
+                for root in configured_skill_roots(config):
+                    disabled.update(load_execution_disabled_skills(skills_dir=root))
+                plan_options["disabled_capability_ids"] = disabled
+            if capability_type == "auto":
+                plan_options.update(context=context, prepare_skill_graph=prepare_skill_graph)
+            if inputs:
+                plan_options["inputs"] = inputs
+            public_payload = await runtime.orchestration.plan(
+                query, type=capability_type, candidate_ids=candidate_ids, language=language,
+                progress=progress, mode=requested_mode, **plan_options,
             )
             payload = public_payload.to_dict()
+        except _PlanningPreparationError as exc:
+            return exc.payload
         except Exception as exc:  # noqa: BLE001
             logger.exception("Symphony planning failed")
-            payload = {"success": False, "detail": str(exc)}
+            return {"success": False, "detail": str(exc)}
         finally:
             if transient_runtime and runtime is not None:
                 await self._close_transient_runtime(runtime)
         if not isinstance(payload, dict):
-            return {
-                "success": False,
-                "detail": "Symphony orchestration returned an invalid payload",
-                "graph_status": status,
-                **({"graph_build": graph_build} if graph_build else {}),
-            }
+            return {"success": False, "detail": "Symphony orchestration returned an invalid payload"}
         if payload.get("success") is False:
-            return {
-                "success": False,
-                "graph_status": status,
-                **({"graph_build": graph_build} if graph_build else {}),
-                **payload,
-            }
+            return payload
+        route = payload.get("execution_route")
         planned_graph = payload.get("planned_graph")
-        if not isinstance(planned_graph, dict):
-            return {
-                "success": False,
-                "detail": "Symphony orchestration returned no planned_graph",
-                "graph_status": status,
-                **({"graph_build": graph_build} if graph_build else {}),
-            }
-        result = {
-            "success": True,
-            "planned_graph": planned_graph,
-        }
+        if not isinstance(planned_graph, dict) and not (
+            isinstance(route, dict) and route.get("requires_planning") is False
+        ):
+            return {"success": False, "detail": "Symphony orchestration returned no planned_graph"}
+        result = {"success": True}
+        if isinstance(route, dict):
+            result["execution_route"] = route
+            result["_planning_inputs"] = payload.get("planning_inputs", inputs or [])
+        if isinstance(planned_graph, dict):
+            result["planned_graph"] = planned_graph
         if graph_build is not None:
             result["graph_build"] = graph_build
         return result
@@ -590,13 +520,14 @@ class SwarmSymphonyService:
         progress: ProgressCallback | None,
         prestarted: bool = False,
         config: SymphonyConfig | None = None,
-        llm_config: LLMConfig | None = None,
     ) -> dict[str, Any]:
         config = config or load_symphony_config()
-        skills_root = config.paths.skills_root
-        graph_dir = config.paths.graph_dir
+        skills_root = require_graph_skill_root(config)
+        graph_dir = (Path(config.storage.artifact_root) / "graph")
         current_task = asyncio.current_task()
         async with self._build_guard:
+            if self._closing:
+                return {"success": False, "reason": "service_closing", "detail": "Symphony 服务正在关闭。"}
             active_task = self._active_build_task
             if (
                 active_task is not None
@@ -614,11 +545,12 @@ class SwarmSymphonyService:
                 payload.update(_build_log_payload(graph_dir))
                 return payload
             self._active_build_task = current_task
-            self._invalidate_graph_status_cache()
         progress_dispatcher = _OrderedProgressDispatcher(progress)
         progress_dispatcher.start()
+        self._active_build_progress = progress_dispatcher
+        result: dict[str, Any] | None = None
         build_logger = _BuildProcessLogger(
-            graph_dir / "build_log.jsonl",
+            _build_log_path(graph_dir),
             progress=progress_dispatcher,
         )
         abort_progress = False
@@ -633,7 +565,7 @@ class SwarmSymphonyService:
                 )
             try:
                 try:
-                    llm_config = llm_config or LLMConfig.from_default_model()
+                    llm_config = LLMConfig.from_default_model()
                     model_name = str(getattr(llm_config, "model", "") or "")
                     build_logger.record(
                         "model.probe.start",
@@ -662,11 +594,9 @@ class SwarmSymphonyService:
                     return payload
                 result = (
                     await service_build_graph(
-                        skills_root,
-                        graph_dir,
+                        config,
                         llm_config,
                         force=force,
-                        symphony_config=config,
                         build_log=build_logger.record,
                     )
                 ).to_dict()
@@ -711,12 +641,16 @@ class SwarmSymphonyService:
             result.update(_build_log_payload(graph_dir))
             return result
         finally:
-            self._invalidate_graph_status_cache()
             try:
                 if abort_progress:
                     await progress_dispatcher.abort()
                 else:
-                    await progress_dispatcher.close()
+                    try:
+                        await progress_dispatcher.close()
+                    except asyncio.CancelledError:
+                        await progress_dispatcher.abort()
+                        if result is None or result.get("success") is not True:
+                            raise
             finally:
                 await self._clear_active_build_task(current_task)
 
@@ -729,30 +663,22 @@ class SwarmSymphonyService:
         if self._closing:
             raise RuntimeError("Symphony service is closing")
         if llm_config is not None:
-            return self._create_runtime(config, llm_config, with_flow=False)
+            return self._create_runtime(config, llm_config, with_experience=False)
         llm_config = LLMConfig.from_default_model()
         llm_signature = llm_config_signature(llm_config)
-        key = (
-            str(config.paths.graph_dir),
-            config.orchestration.mode,
-            config.orchestration.top_k,
-            config.orchestration.max_depth,
-            config.orchestration.min_edge_confidence,
-            evolution_flow_enabled(config),
-            llm_signature,
-        )
+        key = (config.model_dump_json(), llm_signature)
         if self._runtime is None or self._runtime_key != key:
             previous_runtime = self._runtime
             if (
                 previous_runtime is not None
-                and getattr(previous_runtime, "flow_engine", None) is not None
+                and previous_runtime.flow.status()["started"]
             ):
                 # A Flow store has exactly one process owner. Configuration
                 # changes take effect after orderly service restart.
                 return previous_runtime
             if previous_runtime is not None:
                 self._retire_runtime(previous_runtime)
-            self._runtime = self._create_runtime(config, llm_config, with_flow=True)
+            self._runtime = self._create_runtime(config, llm_config, with_experience=True)
             self._runtime_key = key
             self._flow_started = False
             self._notified_candidates.clear()
@@ -763,49 +689,23 @@ class SwarmSymphonyService:
         config: Any,
         llm_config: LLMConfig,
         *,
-        with_flow: bool,
+        with_experience: bool,
     ) -> SymphonyRuntimeType:
-        model = model_from_config(llm_config)
-        flow_engine = None
-        if with_flow and evolution_flow_enabled(config):
-            flow_dir = config.paths.graph_dir.parent / "flow"
-            flow_cfg = config.evolution.flow
-            flow_engine = SymphonyFlowEngine(
-                flow_dir,
-                config=_symphony_flow_config(flow_cfg),
-                llm_client=model,
-                gate=PackageReviewGate(LLMPackageReviewAgent(model)),
-                skill_adapter=SkillPackAdapter(),
-            )
-        return SymphonyRuntime(
-            graph_artifact_root=config.paths.graph_dir,
-            capability_provider=(),
-            model=model,
-            model_response_observer=model_response_observer_from_config(llm_config),
-            orchestration_config=orchestration_config_from_swarm(config),
-            graph_config=graph_config_from_swarm(config),
-            flow_engine=flow_engine,
-            graph_scope_id=_graph_scope_id(config.paths.graph_dir),
-        )
+        if not with_experience:
+            orchestration = config.orchestration
+            experience = orchestration.experience.model_copy(update={"enabled": False})
+            config = config.model_copy(update={
+                "orchestration": orchestration.model_copy(update={"experience": experience}),
+            })
+        return SymphonyRuntime(model=model_from_config(llm_config), config=config)
 
     @staticmethod
     async def _close_transient_runtime(runtime: SymphonyRuntimeType) -> None:
-        close = getattr(runtime, "aclose", None)
-        if callable(close):
-            await close()
-            return
-        close = getattr(runtime, "close", None)
-        if callable(close):
-            close()
+        await runtime.aclose()
 
     def _retire_runtime(self, runtime: SymphonyRuntimeType) -> None:
         """Close a replaced Runtime without blocking synchronous Rail assembly."""
 
-        if getattr(runtime, "flow_engine", None) is None:
-            close = getattr(runtime, "close", None)
-            if callable(close):
-                close()
-            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -844,27 +744,30 @@ class SwarmSymphonyService:
         """Submit one Rail graph pair and deliver any new install candidates."""
 
         config = load_symphony_config()
-        if not config.enabled or not evolution_flow_enabled(config):
+        if not config.orchestration.experience_enabled or len(configured_skill_roots(config)) != 1:
             return
         runtime = self._runtime_for(config)
         if isinstance(execution_graph.get("graph"), dict):
-            execution_graph = annotate_member_types(execution_graph, config.paths.skills_root)
+            execution_graph = annotate_member_types(
+                execution_graph, require_graph_skill_root(config),
+            )
         await runtime.submit_evolution(
             planned_graph,
             execution_graph,
             session_id=session_id,
             capture_mode=capture_mode,
         )
-        flow = runtime.flow_engine
+        flow = runtime.flow
         trace_id = str(execution_graph.get("trace_id") or "")
         evidence = flow.store.find_evidence(trace_id) if flow is not None and trace_id else None
         trace_recorded = False
         if evidence is not None and session_id:
             try:
+                skills_root = require_graph_skill_root(config)
                 snapshot = member_snapshot(
-                    config.paths.skills_root,
+                    skills_root,
                     list(evidence.graph.get("nodes", {})),
-                    load_execution_disabled_skills(),
+                    load_execution_disabled_skills(skills_dir=skills_root),
                 )
                 CandidateScopeStore(flow.store.root).record_trace(
                     trace_id, session_id, snapshot, trusted_session_user(session_id),
@@ -918,7 +821,7 @@ class SwarmSymphonyService:
     ) -> tuple[CombinationCandidateType, ...]:
         if self._closing:
             raise RuntimeError("Symphony service is closing")
-        if runtime.flow_engine is None or self._flow_started:
+        if not runtime.flow.enabled or self._flow_started:
             return ()
         task = self._flow_start_task
         if task is not None and self._flow_start_runtime is not runtime:
@@ -929,7 +832,7 @@ class SwarmSymphonyService:
         if task is not None:
             retry = task.cancelled() or (task.done() and task.exception() is not None)
         if retry:
-            task = asyncio.create_task(runtime.flow_engine.start(), name="symphony-flow-start")
+            task = asyncio.create_task(runtime.flow.start(), name="symphony-flow-start")
             self._flow_start_task = task
             self._flow_start_runtime = runtime
             task.add_done_callback(self._consume_flow_start_result)
@@ -947,7 +850,7 @@ class SwarmSymphonyService:
         """Start Flow recovery when the feature is enabled."""
 
         config = load_symphony_config()
-        if not config.enabled or not evolution_flow_enabled(config):
+        if not config.orchestration.experience_enabled:
             return
         runtime = self._runtime_for(config)
         recovered = await self._start_flow(runtime)
@@ -1016,10 +919,10 @@ class SwarmSymphonyService:
             item for item in tuple(self._notified_candidates) if item[:2] == key
         )
         runtime = self._runtime
-        if runtime is None or runtime.flow_engine is None:
+        if runtime is None or not runtime.flow.enabled:
             return
         try:
-            runtime.flow_engine.release_candidate(*key)
+            runtime.flow.release_candidate(*key)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Symphony deferred candidate release failed (%s)",
@@ -1045,7 +948,7 @@ class SwarmSymphonyService:
         """Return installable Recipe versions retained by the Core Flow store."""
 
         config = load_symphony_config()
-        if not config.enabled or not evolution_flow_enabled(config):
+        if not config.orchestration.experience_enabled:
             return {"success": True, "enabled": False, "candidates": []}
         return {"success": False, "reason": "scoped_skillpack_tool_required", "candidates": []}
 
@@ -1055,6 +958,7 @@ class SwarmSymphonyService:
         """Reuse at most eight idle/active scope workers under the candidate lock."""
         if self._closing:
             raise RuntimeError("Symphony service is closing")
+        skills_root = require_graph_skill_root(config)
         key = (str(source.store.root.resolve()), scope.key)
         cached = self._skillpack_candidate_flows.get(key)
         if cached is not None:
@@ -1066,13 +970,10 @@ class SwarmSymphonyService:
             await retired.close()
             del self._skillpack_candidate_flows[retired_key]
         store = ScopedCandidateStore(
-            source.store, scope, config.paths.skills_root,
-            disabled_for=lambda: load_execution_disabled_skills(),
+            source.store, scope, skills_root,
+            disabled_for=lambda: load_execution_disabled_skills(skills_dir=skills_root),
         )
-        flow = SymphonyFlowEngine(
-            store.root, store=store, config=source.config, llm_client=source.llm_client,
-            packager=source.packager, gate=source.gate, skill_adapter=source.skill_adapter,
-        )
+        flow = source.create_scope(store=store)
         self._skillpack_candidate_flows[key] = flow
         return flow
 
@@ -1091,16 +992,17 @@ class SwarmSymphonyService:
     ) -> dict[str, Any]:
         """Review persisted evidence in a Host-authenticated user/session scope."""
         config = load_symphony_config()
-        if not evolution_flow_enabled(config):
+        if not config.orchestration.experience.enabled:
             return {"success": False, "reason": "skillpack_disabled"}
         if not callable(getattr(SkillPackAdapter, "validate_members", None)):
             return {"success": False, "reason": "core_skillpack_contract_missing"}
-        if not session_id or not config.enabled or not evolution_flow_enabled(config):
+        if not session_id or not config.orchestration.experience_enabled:
             return {"success": False, "reason": "flow_or_session_unavailable"}
         if scope not in {"current_user", "current_session"}:
             return {"success": False, "reason": "invalid_scope"}
+        skills_root = require_graph_skill_root(config)
         user_id = trusted_session_user(session_id)
-        source = self._runtime_for(config).flow_engine
+        source = self._runtime_for(config).flow
         if source is None:
             return {"success": False, "reason": "flow_disabled"}
         identity = CandidateEvidenceScope.resolve(session_id, user_id, scope, source_refs, flow_root=source.store.root)
@@ -1112,7 +1014,7 @@ class SwarmSymphonyService:
         candidates = flow.list_candidates()
         if automatic and candidates:
             installed_structures = await asyncio.to_thread(
-                installed_candidate_structures, config.paths.skills_root,
+                installed_candidate_structures, skills_root,
             )
             installed_count = sum(tuple(sorted(item.structure)) in installed_structures for item in candidates)
             if installed_count:
@@ -1144,7 +1046,7 @@ class SwarmSymphonyService:
             try:
                 snapshot = await asyncio.to_thread(
                     member_snapshot,
-                    config.paths.skills_root, candidate_members(recipe), load_execution_disabled_skills(),
+                    skills_root, candidate_members(recipe), load_execution_disabled_skills(skills_dir=skills_root),
                 )
                 traces = await asyncio.to_thread(
                     scope_store.scoped_evidence,
@@ -1176,7 +1078,7 @@ class SwarmSymphonyService:
                 previews.append(preview)
             except (OSError, ValueError):
                 continue
-        if not evolution_flow_enabled(load_symphony_config()):
+        if not load_symphony_config().orchestration.experience.enabled:
             return {"success": False, "reason": "skillpack_disabled", "candidates": []}
         return {"success": True, "candidates": previews, "scope": effective_scope}
 
@@ -1199,9 +1101,9 @@ class SwarmSymphonyService:
         prepared = await self._prepare_skillpack_candidates(session_id=session_id, scope=scope, source_refs=source_refs)
         if not prepared.get("success"):
             return prepared
-        if not evolution_flow_enabled(load_symphony_config()):
+        if not load_symphony_config().orchestration.experience.enabled:
             return {"success": False, "reason": "skillpack_disabled"}
-        source = self.runtime().flow_engine
+        source = self.runtime().flow
         if source is None:
             return {"success": False, "reason": "flow_disabled"}
         identity = CandidateEvidenceScope.resolve(
@@ -1222,9 +1124,9 @@ class SwarmSymphonyService:
         session_id: str, channel_id: str | None, force: bool = True,
     ) -> dict[str, Any]:
         """Offer this lock-protected review result without reviewing it again."""
-        if not evolution_flow_enabled(load_symphony_config()):
+        if not load_symphony_config().orchestration.experience.enabled:
             return {"success": False, "reason": "skillpack_disabled"}
-        source = self.runtime().flow_engine
+        source = self.runtime().flow
         if source is None:
             return {"success": False, "reason": "flow_disabled"}
         recipe_id, recipe_version = preview["recipe_id"], preview["recipe_version"]
@@ -1238,7 +1140,7 @@ class SwarmSymphonyService:
             # Review awaited external work; a different session may have
             # installed this combination meanwhile. Do not issue another card.
             installed_structures = await asyncio.to_thread(
-                installed_candidate_structures, load_symphony_config().paths.skills_root,
+                installed_candidate_structures, require_graph_skill_root(load_symphony_config()),
             )
             if tuple(sorted(candidate.structure)) in installed_structures:
                 logger.info("SkillPack automatic offer suppressed after concurrent installation")
@@ -1255,7 +1157,7 @@ class SwarmSymphonyService:
         request_id = candidate_request_id(recipe_id, recipe_version, session_id, identity.key)
         if not force and (recipe_id, recipe_version, request_id) in self._notified_candidates:
             return {"success": True, "request_id": request_id, "awaiting_user_confirmation": True}
-        if not evolution_flow_enabled(load_symphony_config()):
+        if not load_symphony_config().orchestration.experience.enabled:
             return {"success": False, "reason": "skillpack_disabled"}
         approval = dict(preview)
         approval["session_id"] = session_id
@@ -1280,7 +1182,7 @@ class SwarmSymphonyService:
         """Re-send one retained candidate through the existing Host question flow."""
 
         config = load_symphony_config()
-        if not config.enabled or not evolution_flow_enabled(config):
+        if not config.orchestration.experience_enabled:
             return {"success": False, "reason": "flow_disabled"}
         return {"success": False, "reason": "scoped_skillpack_tool_required"}
 
@@ -1308,7 +1210,7 @@ class SwarmSymphonyService:
         """Prepare, validate, and install one server-owned Skill artifact."""
 
         config = load_symphony_config()
-        if not config.enabled or not evolution_flow_enabled(config):
+        if not config.orchestration.experience_enabled:
             return {"installed": False, "reason": "flow_disabled"}
         from_tool = request_id.startswith("symphony_experience_tool_")
         if not from_tool:
@@ -1316,11 +1218,12 @@ class SwarmSymphonyService:
         async with self._install_lock:
             # The host accepted this install under the candidate lock. Finish
             # against this snapshot even if discovery is switched off later.
-            flow = self._runtime_for(config).flow_engine
+            flow = self._runtime_for(config).flow
             if flow is None:
                 return {"installed": False, "reason": "flow_disabled"}
             source_flow = flow
             if from_tool:
+                skills_root = require_graph_skill_root(config)
                 approval = CandidateScopeStore(flow.store.root).approval(request_id)
                 if not approval or approval.get("session_id") != session_id:
                     return {"installed": False, "reason": "invalid_request_id"}
@@ -1350,7 +1253,7 @@ class SwarmSymphonyService:
                     return {"installed": False, "reason": "invalid_request_id"}
                 try:
                     snapshot = member_snapshot(
-                        config.paths.skills_root, approval["members"], load_execution_disabled_skills(),
+                        skills_root, approval["members"], load_execution_disabled_skills(skills_dir=skills_root),
                     )
                 except (OSError, ValueError):
                     return {"installed": False, "reason": "members_changed_reconfirm"}
@@ -1418,7 +1321,7 @@ class SwarmSymphonyService:
             # Review awaits external work. Revalidate after it, under the same
             # inventory lock as all installation writers, before any recovery
             # or install can commit the user's previously confirmed candidate.
-            with inventory_mutex(config.paths.skills_root) if from_tool else nullcontext():
+            with inventory_mutex(skills_root) if from_tool else nullcontext():
                 if from_tool:
                     try:
                         current_identity = CandidateEvidenceScope.resolve(
@@ -1431,7 +1334,7 @@ class SwarmSymphonyService:
                         return {"installed": False, "reason": "evidence_scope_changed_reconfirm"}
                     try:
                         snapshot = member_snapshot(
-                            config.paths.skills_root, approval["members"], load_execution_disabled_skills(),
+                            skills_root, approval["members"], load_execution_disabled_skills(skills_dir=skills_root),
                         )
                     except (OSError, ValueError):
                         return {"installed": False, "reason": "members_changed_reconfirm"}
@@ -1501,6 +1404,12 @@ class SwarmSymphonyService:
         await asyncio.shield(self._close_task)
 
     async def _close_owned(self) -> None:
+        from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
+        await SkillTaxonomyRuntime.cancel_all()
+        build_task = self._active_build_task
+        if build_task is not None and build_task is not asyncio.current_task() and not build_task.done():
+            build_task.cancel()
+            await asyncio.gather(build_task, return_exceptions=True)
         preparation, self._flow_start_task = self._flow_start_task, None
         self._flow_start_runtime = None
         if preparation is not None and not preparation.done():
@@ -1515,11 +1424,13 @@ class SwarmSymphonyService:
         runtime_error: BaseException | None = None
         try:
             async with self._skillpack_candidate_lock:
-                for flow in self._skillpack_candidate_flows.values():
-                    await flow.close()
+                scopes = tuple(self._skillpack_candidate_flows.values())
                 self._skillpack_candidate_flows.clear()
+            operations = [flow.close() for flow in scopes]
             if runtime is not None:
-                await runtime.aclose()
+                operations.append(runtime.aclose())
+            results = await asyncio.gather(*operations, return_exceptions=True)
+            runtime_error = next((result for result in results if isinstance(result, BaseException)), None)
         except BaseException as exc:
             runtime_error = exc
         finally:
@@ -1545,20 +1456,16 @@ class SwarmSymphonyService:
     def _read_graph_artifact(graph_dir: Path) -> dict[str, Any]:
         """Read an existing graph without requiring an LLM client configuration."""
 
-        return (
-            SymphonyRuntime(
-                graph_artifact_root=graph_dir,
-                capability_provider=(),
-                model=None,
-            )
-            .orchestration.read()
-            .to_dict()
-        )
+        config = load_symphony_config()
+        if Path(config.storage.artifact_root) / "graph" != graph_dir:
+            raise ValueError("Graph directory does not match the configured Symphony runtime")
+        return SymphonyRuntime(None, config).orchestration.read().to_dict()
 
     async def _clear_active_build_task(self, task: asyncio.Task | None) -> None:
         async with self._build_guard:
             if self._active_build_task is task:
                 self._active_build_task = None
+                self._active_build_progress = None
 
     @staticmethod
     def _consume_background_build_result(task: asyncio.Task) -> None:
@@ -1579,8 +1486,6 @@ class SwarmSymphonyService:
             if task is not None:
                 self._active_build_task = None
             repaired = await asyncio.to_thread(_repair_interrupted_build_log, graph_dir)
-            if repaired:
-                self._invalidate_graph_status_cache()
             return repaired
 
 
@@ -1631,7 +1536,13 @@ def _web_graph_payload(
 ) -> dict[str, Any]:
     """Adapt the public capability graph for the existing Skill Graph panel."""
 
+    mixed = str(artifact.get("schema_version", "")).split(".", 1)[0] == "2"
+
+    def artifact_ref(value: Any) -> str:
+        return str(value or "") if mixed else _capability_id(value)
+
     skills = []
+    web_skill_refs: dict[str, str] = {}
     web_node_refs: dict[str, str] = {}
     web_node_types: dict[str, str] = {}
     disabled_refs = {
@@ -1644,9 +1555,7 @@ def _web_graph_payload(
         if not isinstance(raw_capability, dict):
             continue
         capability = dict(raw_capability)
-        capability_id = _capability_id(
-            capability.get("capability_id") or capability.get("id")
-        )
+        capability_id = artifact_ref(capability.get("capability_id") or capability.get("id"))
         if not capability_id:
             continue
         capability["id"] = capability_id
@@ -1654,25 +1563,27 @@ def _web_graph_payload(
             capability.get("capability_type") or capability.get("type") or "skill"
         )
         capability["type"] = capability_type
-        if (
+        layer = "expert" if capability_type == "expert" else "skill"
+        artifact_id = f"{layer}:{capability_id}" if mixed else capability_id
+        if capability_type != "expert" and (
             _normalize_capability_ref(capability_id) in disabled_refs
             or _normalize_capability_ref(capability.get("name")) in disabled_refs
         ):
-            disabled_ids.add(capability_id)
+            disabled_ids.add(artifact_id)
             continue
-        skills.append(capability)
-        web_node_refs[capability_id] = (
-            f"skill:{capability_id}"
-            if capability_type == "skill"
-            else f"capability:{capability_id}"
-        )
-        web_node_types[capability_id] = capability_type
+        web_type = capability_type if capability_type in {"skill", "expert"} else "capability"
+        web_ref = f"{web_type}:{capability_id}"
+        web_node_refs[artifact_id] = web_ref
+        web_node_types[artifact_id] = capability_type
+        if capability_type != "expert":
+            skills.append(capability)
+            web_skill_refs[capability_id] = web_ref
 
     nodes: list[dict[str, Any]] = []
     for node in artifact.get("nodes") or []:
         if not isinstance(node, dict):
             continue
-        capability_id = _capability_id(node.get("id"))
+        capability_id = artifact_ref(node.get("id"))
         if capability_id in disabled_ids:
             continue
         web_node = dict(node)
@@ -1685,8 +1596,8 @@ def _web_graph_payload(
     for edge in artifact.get("edges") or []:
         if not isinstance(edge, dict):
             continue
-        source_id = _capability_id(edge.get("source"))
-        target_id = _capability_id(edge.get("target"))
+        source_id = artifact_ref(edge.get("source"))
+        target_id = artifact_ref(edge.get("target"))
         if source_id in disabled_ids:
             continue
         if target_id in disabled_ids:
@@ -1737,7 +1648,7 @@ def _web_graph_payload(
             })
             # Create contains edges from pack to each member
             for member_id in member_ids:
-                member_ref = web_node_refs.get(member_id)
+                member_ref = web_skill_refs.get(member_id)
                 if not member_ref:
                     # Member skill not in main graph, create a node for it
                     member_ref = f"skill:{member_id}"
@@ -1795,6 +1706,10 @@ def _resolve_orchestration_language(value: Any = None) -> str:
 
 
 _BUILD_STAGE_LABELS = {
+    "build_started": "构建技能关系图",
+    "build_published": "技能关系图已发布",
+    "build_reused": "复用现有技能关系图",
+    "fingerprint.extract.progress": "提取技能指纹",
     "update.start": "开始构建技能总谱",
     "model.probe.start": "测试主模型连接",
     "model.probe.done": "主模型连接测试通过",
@@ -1842,6 +1757,9 @@ def _starting_build_progress() -> dict[str, Any]:
 
 
 _BUILD_STAGE_PROGRESS = {
+    "build_started": 58,
+    "build_published": 98,
+    "build_reused": 98,
     "update.start": 3,
     "model.probe.start": 5,
     "model.probe.done": 7,
@@ -1871,412 +1789,6 @@ _BUILD_STAGE_PROGRESS = {
     "update.failed": 100,
     "update.done": 100,
 }
-
-
-@dataclass(frozen=True)
-class _FileStamp:
-    """File identity used to invalidate graph-status caches."""
-
-    mtime_ns: int
-    ctime_ns: int
-    size: int
-    inode: int
-    device: int
-
-
-def _path_stamp(path: Path) -> _FileStamp | None:
-    """Return the identity used to invalidate graph-status caches."""
-    try:
-        info = path.stat()
-    except OSError:
-        return None
-    return _FileStamp(
-        mtime_ns=info.st_mtime_ns,
-        ctime_ns=info.st_ctime_ns,
-        size=info.st_size,
-        inode=info.st_ino,
-        device=info.st_dev,
-    )
-
-
-# Keep these rules aligned with the pinned Symphony Scanner. The cache key must
-# change when the Scanner would read different Skill inputs, and no more often.
-_MAX_CACHE_SCAN_DIRECTORIES = 50_000
-_MAX_CACHE_DIRECTORY_ENTRIES = 20_000
-_MAX_CACHE_ENTRYPOINTS = 10_000
-_MAX_CACHE_ASSET_FILES_PER_SKILL = 10_000
-_MAX_CACHE_ASSET_FILES = 100_000
-_EXCLUDED_CACHE_DIRECTORY_NAMES = frozenset(
-    {
-        ".cache",
-        ".git",
-        ".hg",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".svn",
-        ".tox",
-        ".venv",
-        ".ssh",
-        "__pycache__",
-        "cache",
-        "caches",
-        "credential",
-        "credentials",
-        "key",
-        "keys",
-        "node_modules",
-        "private_keys",
-        "secret",
-        "secrets",
-    }
-)
-_SENSITIVE_DIRECTORY_TOKENS = frozenset(
-    {
-        "credential",
-        "credentials",
-        "key",
-        "keys",
-        "password",
-        "passwords",
-        "private",
-        "secret",
-        "secrets",
-        "token",
-        "tokens",
-    }
-)
-_SENSITIVE_FILE_TOKENS = frozenset(
-    {
-        "credential",
-        "credentials",
-        "key",
-        "keys",
-        "password",
-        "private",
-        "secret",
-        "secrets",
-        "token",
-        "tokens",
-    }
-)
-_KEY_MATERIAL_SUFFIXES = frozenset(
-    {
-        ".der",
-        ".jks",
-        ".key",
-        ".keystore",
-        ".p12",
-        ".pem",
-        ".pfx",
-        ".pkcs12",
-        ".ppk",
-        ".pub",
-    }
-)
-_SENSITIVE_EXACT_FILENAMES = frozenset(
-    {
-        ".netrc",
-        ".npmrc",
-        ".pypirc",
-        "authorized_keys",
-        "id_dsa",
-        "id_ecdsa",
-        "id_ed25519",
-        "id_rsa",
-    }
-)
-
-
-# Token checks intentionally under-exclude compared with the Scanner. Extra
-# files only cause a cache miss; a false exclusion would hide a real change.
-@lru_cache(maxsize=4096)
-def _cache_name_tokens(name: str) -> frozenset[str]:
-    normalized = "".join(
-        char if char.isalnum() else "_" for char in name.casefold()
-    )
-    return frozenset(token for token in normalized.split("_") if token)
-
-
-def _cache_excludes_directory(name: str) -> bool:
-    lowered = name.casefold()
-    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
-        return True
-    if lowered in _EXCLUDED_CACHE_DIRECTORY_NAMES or lowered.endswith(".cache"):
-        return True
-    return bool(_cache_name_tokens(name) & _SENSITIVE_DIRECTORY_TOKENS)
-
-
-def _cache_excludes_file(name: str) -> bool:
-    lowered = name.casefold()
-    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
-        return True
-    if lowered in {".git", "__pycache__", "cache"}:
-        return True
-    stem, suffix = os.path.splitext(lowered)
-    if lowered in _SENSITIVE_EXACT_FILENAMES or suffix in _KEY_MATERIAL_SUFFIXES:
-        return True
-    if lowered.endswith((".pyc", ".pyo")):
-        return True
-    return bool(_cache_name_tokens(stem) & _SENSITIVE_FILE_TOKENS)
-
-
-def _cache_is_link_stat(info: os.stat_result) -> bool:
-    file_attributes = getattr(info, "st_file_attributes", 0)
-    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return stat.S_ISLNK(info.st_mode) or bool(file_attributes & reparse_flag)
-
-
-class _MetadataBudget:
-    __slots__ = ("directories", "entrypoints", "files")
-
-    def __init__(self) -> None:
-        self.directories = 0
-        self.entrypoints = 0
-        self.files = 0
-
-
-class _MetadataScanLimitExceeded(RuntimeError):
-    """The metadata walk reached a Scanner resource limit."""
-
-
-def _cache_relative_path(path: str, root: str) -> str:
-    try:
-        return os.path.relpath(path, root).replace(os.sep, "/")
-    except ValueError:
-        return os.path.basename(path)
-
-
-def _read_metadata_entries(
-    directory: str,
-    budget: _MetadataBudget,
-) -> list[tuple[str, str, os.stat_result]]:
-    """List directory entries with the Scanner's limits and ordering."""
-    if budget.directories >= _MAX_CACHE_SCAN_DIRECTORIES:
-        raise _MetadataScanLimitExceeded
-    budget.directories += 1
-    entries: list[tuple[str, str, os.stat_result]] = []
-    with os.scandir(directory) as iterator:
-        for entry in iterator:
-            if len(entries) >= _MAX_CACHE_DIRECTORY_ENTRIES:
-                raise _MetadataScanLimitExceeded
-            try:
-                info = entry.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            entries.append((entry.name, entry.path, info))
-    entries.sort(key=lambda item: (item[0].casefold(), item[0]))
-    return entries
-
-
-def _discover_skill_roots(
-    root: Path,
-    max_depth: int | None,
-    budget: _MetadataBudget,
-) -> list[str]:
-    """Find Skill roots with the Scanner's ``max_depth`` semantics."""
-    root_path = str(root)
-    pending: list[tuple[str, int]] = [(root_path, 0)]
-    roots: set[str] = set()
-    while pending:
-        directory, depth = pending.pop()
-        try:
-            entries = _read_metadata_entries(directory, budget)
-        except OSError:
-            if directory == root_path:
-                raise
-            continue
-        subdirectories: list[str] = []
-        for name, path, info in entries:
-            if _cache_is_link_stat(info):
-                continue
-            if stat.S_ISREG(info.st_mode) and name == "SKILL.md":
-                budget.entrypoints += 1
-                if budget.entrypoints > _MAX_CACHE_ENTRYPOINTS:
-                    raise _MetadataScanLimitExceeded
-                roots.add(os.path.dirname(path))
-                continue
-            if stat.S_ISDIR(info.st_mode) and not _cache_excludes_directory(
-                name
-            ):
-                if max_depth is None or depth < max_depth:
-                    subdirectories.append(path)
-        pending.extend((child, depth + 1) for child in reversed(subdirectories))
-    return sorted(
-        roots,
-        key=lambda path: _cache_relative_path(path, root_path).casefold(),
-    )
-
-
-def _collect_skill_asset_files(
-    skill_root: str,
-    budget: _MetadataBudget,
-) -> tuple[list[tuple[str, os.stat_result]], bool]:
-    """Collect Skill asset metadata. ``max_depth`` does not limit assets."""
-    pending: list[tuple[str, str]] = [(skill_root, "")]
-    files: list[tuple[str, os.stat_result]] = []
-    limited = False
-    while pending:
-        directory, prefix = pending.pop()
-        try:
-            entries = _read_metadata_entries(directory, budget)
-        except OSError:
-            continue
-        subdirectories: list[tuple[str, str]] = []
-        for name, path, info in entries:
-            if _cache_is_link_stat(info):
-                continue
-            relative_path = f"{prefix}/{name}" if prefix else name
-            if stat.S_ISDIR(info.st_mode):
-                if not _cache_excludes_directory(name):
-                    subdirectories.append((path, relative_path))
-                continue
-            if not stat.S_ISREG(info.st_mode) or _cache_excludes_file(name):
-                continue
-            budget.files += 1
-            if budget.files > _MAX_CACHE_ASSET_FILES:
-                raise _MetadataScanLimitExceeded
-            files.append((relative_path, info))
-            if len(files) > _MAX_CACHE_ASSET_FILES_PER_SKILL:
-                limited = True
-                files.sort(key=lambda item: (item[0].casefold(), item[0]))
-                return files, limited
-        pending.extend(reversed(subdirectories))
-    files.sort(key=lambda item: (item[0].casefold(), item[0]))
-    return files, limited
-
-
-def _skills_metadata_digest(root: Path, *, max_depth: int | None) -> str:
-    """Hash Skill asset metadata without reading file contents.
-
-    Entry discovery follows ``max_depth``. Asset collection always walks each
-    discovered Skill recursively, matching ``SkillFolderScanner``.
-    """
-    digest = hashlib.sha256()
-    digest.update(b"skills-metadata-v1\0")
-    try:
-        root_stat = root.lstat()
-    except OSError:
-        digest.update(b"missing")
-        return digest.hexdigest()
-    if _cache_is_link_stat(root_stat) or not stat.S_ISDIR(
-        root_stat.st_mode
-    ):
-        digest.update(b"invalid")
-        return digest.hexdigest()
-
-    budget = _MetadataBudget()
-    root_path = str(root)
-    try:
-        skill_roots = _discover_skill_roots(root, max_depth, budget)
-        for skill_root in skill_roots:
-            digest.update(b"skill\0")
-            digest.update(
-                _cache_relative_path(skill_root, root_path).encode(
-                    "utf-8", "surrogateescape"
-                )
-            )
-            digest.update(b"\0")
-            files, limited = _collect_skill_asset_files(skill_root, budget)
-            if limited:
-                digest.update(b"limited\0")
-            for relative_path, info in files:
-                digest.update(
-                    relative_path.encode("utf-8", "surrogateescape")
-                )
-                digest.update(b"\0")
-                digest.update(
-                    (
-                        f"{info.st_mode}:{info.st_size}:{info.st_mtime_ns}:"
-                        f"{info.st_ctime_ns}:{info.st_ino}:{info.st_dev}"
-                    ).encode("ascii")
-                )
-                digest.update(b"\0")
-    except (_MetadataScanLimitExceeded, OSError):
-        # Force a cache miss so the real Scanner can report its own limit error.
-        return f"unavailable:{os.urandom(8).hex()}"
-    return digest.hexdigest()
-
-
-def _build_runs_digest(graph_dir: Path) -> str:
-    """Hash build run directories and checkpoints used by resume status."""
-    digest = hashlib.sha256()
-    runs_root = graph_dir / BUILD_RUNS_DIRNAME
-    if not runs_root.is_dir():
-        digest.update(b"missing")
-        return digest.hexdigest()
-    try:
-        with os.scandir(runs_root) as entries:
-            ordered = sorted(entries, key=lambda entry: entry.name)
-    except OSError:
-        digest.update(b"unreadable")
-        return digest.hexdigest()
-    for entry in ordered:
-        run_dir = Path(entry.path)
-        digest.update(entry.name.encode("utf-8", "surrogateescape"))
-        digest.update(b"\0")
-        digest.update(repr(_path_stamp(run_dir)).encode("ascii"))
-        digest.update(b"\0")
-        digest.update(
-            repr(_path_stamp(run_dir / "checkpoint.json")).encode("ascii")
-        )
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
-# Bound staleness when metadata cannot prove a change. On Unix, ctime detects
-# content edits that restore mtime. On Windows, ctime is creation time.
-_GRAPH_STATUS_CACHE_TTL_SECONDS = 60.0
-
-
-@dataclass(frozen=True)
-class _GraphStatusCacheKey:
-    skills_root: str
-    graph_dir: str
-    max_depth: int | None
-    config_digest: str
-    skills_digest: str
-    graph_dir_stamp: _FileStamp | None
-    pointer_stamp: _FileStamp | None
-    artifact_stamps: tuple[_FileStamp | None, ...]
-    build_runs_digest: str
-
-
-def _graph_status_cache_key(
-    config: Any,
-    skills_root: Path,
-    graph_dir: Path,
-) -> _GraphStatusCacheKey:
-    """Build a cheap identity for everything graph status reads."""
-    fingerprint_config = getattr(config, "fingerprint", None)
-    scan_config = getattr(fingerprint_config, "scan", None)
-    max_depth = getattr(scan_config, "max_depth", None)
-    try:
-        artifact_dir = resolve_graph_artifact_dir(graph_dir)
-    except (OSError, ValueError):
-        artifact_dir = None
-
-    artifact_stamps: tuple[_FileStamp | None, ...] = ()
-    if artifact_dir is not None:
-        artifact_stamps = (
-            _path_stamp(artifact_dir / "graph.json"),
-            _path_stamp(artifact_dir / GRAPH_STATE_FILENAME),
-            _path_stamp(artifact_dir / FINGERPRINT_ARTIFACT_FILENAME),
-        )
-
-    return _GraphStatusCacheKey(
-        skills_root=str(skills_root),
-        graph_dir=str(graph_dir),
-        max_depth=max_depth,
-        config_digest=hashlib.sha256(
-            repr(config).encode("utf-8", "surrogateescape")
-        ).hexdigest(),
-        skills_digest=_skills_metadata_digest(skills_root, max_depth=max_depth),
-        graph_dir_stamp=_path_stamp(graph_dir),
-        pointer_stamp=_path_stamp(graph_dir / CURRENT_POINTER_FILENAME),
-        artifact_stamps=artifact_stamps,
-        build_runs_digest=_build_runs_digest(graph_dir),
-    )
 
 
 _BUILD_LOG_READ_CHUNK_BYTES = 64 * 1024
@@ -2336,7 +1848,7 @@ def _build_log_payload(graph_dir: Path | str, *, limit: int = 80) -> dict[str, A
 
 
 def _read_build_log(graph_dir: Path, *, limit: int = 80) -> list[dict[str, Any]]:
-    log_path = graph_dir / "build_log.jsonl"
+    log_path = _build_log_path(graph_dir)
     if not log_path.is_file():
         return []
     line_limit = max(1, limit)
@@ -2362,7 +1874,7 @@ def _repair_interrupted_build_log(graph_dir: Path) -> bool:
     """
     if _build_progress(_read_build_log(graph_dir)).get("status") != "running":
         return False
-    _BuildProcessLogger(graph_dir / "build_log.jsonl").record(
+    _BuildProcessLogger(_build_log_path(graph_dir)).record(
         "update.cancelled",
         reason="process_interrupted",
     )
@@ -2483,11 +1995,11 @@ def _build_token_usage_payload(
     for usage in (
         _read_manifest_token_usage(graph_dir),
         (
-            _read_json_token_usage(artifact_dir / "llm_token_usage.json")
+            _read_json_token_usage(artifact_dir / "llm_usage.json")
             if artifact_dir is not None
             else {}
         ),
-        _read_json_token_usage(graph_dir / "llm_token_usage.json"),
+        _read_json_token_usage(graph_dir / "llm_usage.json"),
     ):
         if _has_token_usage(usage):
             return usage
@@ -2561,12 +2073,12 @@ def _graph_resolve_percent(
 ) -> int:
     """Advance relation progress only after a matcher batch has completed."""
 
-    candidate_progress = [
-        counts
-        for candidate in entries
-        if candidate.get("stage") == "graph.resolve.progress"
-        if (counts := _graph_resolve_candidate_counts(candidate)) is not None
-    ]
+    candidate_progress = []
+    for candidate in entries:
+        if candidate.get("stage") == "graph.resolve.progress":
+            counts = _graph_resolve_candidate_counts(candidate)
+            if counts is not None:
+                candidate_progress.append(counts)
     if candidate_progress:
         current, total = max(candidate_progress, key=lambda item: item[0] / item[1])
         return _progress_between(

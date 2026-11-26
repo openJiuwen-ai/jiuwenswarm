@@ -6,11 +6,14 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 import tempfile
 
 logger = logging.getLogger(__name__)
 BUILTIN_CATALOG_NAME = "workswarm-builtin"
+_APP_BUILDER_SKILL = "references/capabilities/workswarm-app-builder/SKILL.md"
+_APP_BUILDER_GUIDES = ("ai-roles.md", "single-npc.md")
 
 
 def with_builtin_catalog(skills: list[str], skills_dir: Path) -> list[str]:
@@ -51,11 +54,71 @@ def skill_tree_digest(directory: Path) -> str:
     return digest.hexdigest()
 
 
-def _refresh_catalog_navigation(builtin_dir: Path, catalog: Path, versions: dict) -> None:
-    """Refresh only navigation files that exactly match a known shipped version."""
-    for name in ("SKILL.md", "skill_display.md"):
+def _install_missing_catalog_capabilities(builtin_dir: Path, catalog: Path) -> None:
+    """Publish new bundled capabilities without replacing any existing leaf."""
+    source_root = builtin_dir / BUILTIN_CATALOG_NAME / "references" / "capabilities"
+    if not source_root.is_dir():
+        return
+    destination_root = catalog / "references" / "capabilities"
+    if destination_root.is_symlink() or not destination_root.resolve().is_relative_to(catalog.resolve()):
+        raise ValueError("Catalog capability directory escapes workspace")
+    destination_root.mkdir(parents=True, exist_ok=True)
+    for source in sorted(source_root.iterdir()):
+        if not source.is_dir() or source.is_symlink() or not (source / "SKILL.md").is_file():
+            continue
+        target = destination_root / source.name
+        if target.exists() or target.is_symlink():
+            continue
+        # The caller holds the install lock. Publish the complete leaf on the
+        # same filesystem so interrupted copies never become discoverable.
+        with tempfile.TemporaryDirectory(prefix=".builtin-capability-", dir=destination_root) as directory:
+            staged = Path(directory) / source.name
+            shutil.copytree(source, staged)
+            staged.rename(target)
+
+
+def _replace_catalog_file(target: Path, content: bytes) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=".catalog-file-", dir=target.parent)
+    try:
+        try:
+            stream = os.fdopen(descriptor, "wb")
+        except Exception:
+            os.close(descriptor)
+            raise
+        with stream:
+            stream.write(content)
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _install_app_builder_guides(source: Path, target: Path, catalog: Path) -> bool:
+    """Place new guides before switching the trusted instructions that link to them."""
+    pending = []
+    for name in _APP_BUILDER_GUIDES:
+        guide = target.parent / "references" / name
+        content = (source.parent / "references" / name).read_bytes()
+        if guide.is_symlink() or not guide.resolve().is_relative_to(catalog.resolve()):
+            return False
+        if guide.exists():
+            if not guide.is_file() or guide.read_bytes().replace(b"\r\n", b"\n") != content.replace(b"\r\n", b"\n"):
+                return False
+        else:
+            pending.append((guide, content))
+    for guide, content in pending:
+        guide.parent.mkdir(parents=True, exist_ok=True)
+        _replace_catalog_file(guide, content)
+    return True
+
+
+def _refresh_catalog_files(builtin_dir: Path, catalog: Path, versions: dict) -> None:
+    """Refresh bundled files that exactly match a known shipped version."""
+    for name in ("SKILL.md", "skill_display.md", "references/catalog.md", _APP_BUILDER_SKILL):
         target = catalog / name
         source = builtin_dir / BUILTIN_CATALOG_NAME / name
+        if not target.resolve().is_relative_to(catalog.resolve()):
+            raise ValueError("Catalog file escapes workspace")
         if not target.is_file() or not source.is_file() or target.is_symlink():
             continue
         previous = target.read_bytes()
@@ -66,26 +129,66 @@ def _refresh_catalog_navigation(builtin_dir: Path, catalog: Path, versions: dict
         trusted = versions.get("_catalog_files", {}).get(name, [])
         if not any(item.get("digest") == digest for item in trusted):
             continue
+        if name == _APP_BUILDER_SKILL and not _install_app_builder_guides(source, target, catalog):
+            continue
         backup = catalog / ".legacy" / "catalog-files" / f"{name}-{digest[:12]}"
         if not backup.resolve().is_relative_to(catalog.resolve()):
-            raise ValueError("Catalog navigation archive escapes workspace")
+            raise ValueError("Catalog file archive escapes workspace")
         backup.parent.mkdir(parents=True, exist_ok=True)
         if backup.exists() and backup.read_bytes() != previous:
-            raise ValueError("Conflicting catalog navigation archive")
+            raise ValueError("Conflicting catalog file archive")
         backup.write_bytes(previous)
-        descriptor, temporary = tempfile.mkstemp(prefix=".catalog-navigation-", dir=catalog)
+        _replace_catalog_file(target, replacement)
+
+
+def _refresh_catalog_capabilities(builtin_dir: Path, catalog: Path, versions: dict) -> None:
+    """Refresh unmodified catalog leaves and preserve user-customized copies."""
+    source_root = builtin_dir / BUILTIN_CATALOG_NAME / "references" / "capabilities"
+    target_root = catalog / "references" / "capabilities"
+    if not source_root.is_dir() or not target_root.is_dir():
+        return
+    for source in sorted(source_root.iterdir()):
+        target = target_root / source.name
+        if not source.is_dir() or source.is_symlink():
+            continue
+        if not target.is_dir() or target.is_symlink():
+            continue
         try:
+            source_digest = skill_tree_digest(source)
+            target_digest = skill_tree_digest(target)
+        except (OSError, ValueError) as exc:
+            logger.warning("Preserving unreadable catalog capability %s: %s", source.name, exc)
+            continue
+        if source_digest == target_digest:
+            continue
+        trusted = {
+            str(item.get("digest") or "")
+            for item in versions.get(source.name, [])
+            if isinstance(item, dict)
+        }
+        if target_digest not in trusted:
+            continue
+
+        backup_root = catalog / ".legacy" / "catalog-capabilities"
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup = backup_root / f"{source.name}-{target_digest[:12]}"
+        suffix = 0
+        while backup.exists():
+            suffix += 1
+            backup = backup_root / f"{source.name}-{target_digest[:12]}-{suffix}"
+        if not backup.resolve().is_relative_to(catalog.resolve()):
+            raise ValueError("Catalog capability archive escapes workspace")
+
+        with tempfile.TemporaryDirectory(prefix=".builtin-capability-refresh-", dir=target_root) as directory:
+            staged = Path(directory) / source.name
+            shutil.copytree(source, staged)
+            target.rename(backup)
             try:
-                stream = os.fdopen(descriptor, "wb")
+                staged.rename(target)
             except Exception:
-                os.close(descriptor)
+                if not target.exists() and backup.exists():
+                    backup.rename(target)
                 raise
-            with stream:
-                stream.write(replacement)
-            os.replace(temporary, target)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
 
 
 def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
@@ -108,7 +211,9 @@ def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
     hashes = json.loads((builtin_dir / BUILTIN_CATALOG_NAME / "legacy_hashes.json").read_text(encoding="utf-8"))
     versions_file = builtin_dir / BUILTIN_CATALOG_NAME / "legacy_versions.json"
     versions = json.loads(versions_file.read_text(encoding="utf-8")) if versions_file.is_file() else {}
-    _refresh_catalog_navigation(builtin_dir, catalog, versions)
+    _install_missing_catalog_capabilities(builtin_dir, catalog)
+    _refresh_catalog_capabilities(builtin_dir, catalog, versions)
+    _refresh_catalog_files(builtin_dir, catalog, versions)
     plugins = state.get("installed_plugins", [])
     configs = state.get("skill_configs", {})
     if not isinstance(plugins, list) or not isinstance(configs, dict):

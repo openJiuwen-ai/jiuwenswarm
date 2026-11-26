@@ -1,9 +1,10 @@
 /**
- * The runner of ``execute_office_js``: the model's code on the host's own Office.js, inside ``<Host>.run`` on the
- * pane's main thread, where the host context lives (a Worker has none). The first run locks the realm down (SES
- * ``lockdown``, keeping what Office.js added to the built-ins); the code then runs in a ``Compartment`` whose only
- * globals are the host's enums and ``attachImage``, and it reaches the document only through ``context``, wrapped
- * so that every write is seen before it is queued. A write the host's rules refuse stops the code
+ * The runner of ``execute_office_js`` and ``execute_wps_js``: the model's code on the host's own Office.js, inside
+ * ``<Host>.run``, or on a WPS document's object model, on the pane's main thread, where the host context lives (a
+ * Worker has none). The first run locks the realm down (SES ``lockdown``, keeping what Office.js added to the
+ * built-ins); the code then runs in a ``Compartment`` whose only globals are the host's enums and ``attachImage``,
+ * and it reaches the document only through its one parameter (Office.js's ``context``, a WPS document), wrapped so
+ * that every write is seen before it is queued or, on WPS, made. A write the host's rules refuse stops the code
  * (``ToolExecutionBlocked``), even when the code catches the refusal; code that returns with writes still queued is
  * an error, as those writes never land.
  *
@@ -13,7 +14,7 @@
  */
 import 'ses';
 
-import { type ClientToolError, type ClientToolResponse, png } from './clientToolDispatcher';
+import { type ClientToolError, type ClientToolResponse, type ClientToolRuntime, png } from './clientToolDispatcher';
 
 /** The most a ``context.sync()`` may take, as the industry runner allows, and the most a whole call may take. */
 export const SYNC_MS = 30_000;
@@ -32,10 +33,17 @@ export interface HostWrite {
 export interface CodeHost {
   /** As the model reads it: ``Excel``. */
   name: string;
-  /** ``Excel.run``, injected so tests can drive a fake host. */
+  /** ``Excel.run``, injected so tests can drive a fake host; on WPS, a batch given the document. */
   run: <T>(batch: (context: object) => Promise<T>) => Promise<T>;
-  /** The host's enums, which the code sees under ``name``. */
-  enums: Record<string, Readonly<Record<string, string>>>;
+  /** The globals the code sees: the host's enums (``{Excel: …}``, or WPS's constants by name). */
+  globals: Record<string, unknown>;
+  /**
+   * WPS: the code gets the document as ``parameter``, not ``context``, and each write lands as the code makes it;
+   * there is no ``sync``.
+   */
+  wps?: { parameter: string };
+  /** Names the code may not read or call, lower-cased: on WPS, the way out to the application and files. */
+  unreachable?: ReadonlySet<string>;
   /** Why a write is refused, or undefined to let it through. */
   screen(write: HostWrite): string | undefined;
   /** Hears each write let through, with the host object it changes, just before the code queues it. */
@@ -53,25 +61,56 @@ const WRITE_METHODS = new Set(['delete', 'clear', 'clearAll', 'deleteAll', 'dele
 const WRITE_PREFIXES = ['add', 'apply', 'attach', 'auto', 'break', 'change', 'clear', 'convert', 'copy', 'create',
   'cut', 'delete', 'detach', 'distribute', 'duplicate', 'freeze', 'hide', 'import', 'increment', 'indent', 'insert',
   'merge', 'move', 'open', 'outdent', 'protect', 'refresh', 'remove', 'replace', 'request', 'resize', 'reset',
-  'save', 'scale', 'set', 'show', 'sort', 'split', 'group', 'unfreeze', 'unprotect', 'update'];
+  'save', 'scale', 'set', 'show', 'sort', 'split', 'group', 'unfreeze', 'unprotect', 'update', 'fill', 'paste'];
 /** Names that would reach Office.js internals (``_``), a class or a prototype rather than the document. */
 const HIDDEN = /^_|^(?:constructor|prototype|__proto__)$/;
 const NETWORK = ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource'];
 
 class CodeBlocked extends Error {}
 
-let lockedDown = false;
+/** Whether the realm is locked down, or why it could not be: lockdown runs once, and no code runs without it. */
+let realm: { locked: true } | { failed: unknown } | undefined;
 
 function lockRealm(): void {
-  if (lockedDown) return;
+  if (realm) {
+    if ('failed' in realm) throw realm.failed;
+    return;
+  }
   const extensions = ajaxExtensions();
-  // Unsafe error, console and locale taming keep the pane's own stack traces, logging and locale-aware text as
-  // they were; severe override taming lets the pane's code assign over properties that lockdown freezes.
-  repairIntrinsics({ errorTaming: 'unsafe', consoleTaming: 'unsafe', localeTaming: 'unsafe',
-    overrideTaming: 'severe' });
-  restoreAjaxExtensions(extensions);
-  hardenIntrinsics();
-  lockedDown = true;
+  const setAside = unrepairableGlobals();
+  try {
+    for (const name of setAside.keys()) delete (globalThis as Record<string, unknown>)[name];
+    // Unsafe error, console and locale taming keep the pane's own stack traces, logging and locale-aware text as
+    // they were; severe override taming lets the pane's code assign over properties that lockdown freezes.
+    repairIntrinsics({ errorTaming: 'unsafe', consoleTaming: 'unsafe', localeTaming: 'unsafe',
+      overrideTaming: 'severe' });
+    restoreAjaxExtensions(extensions);
+    hardenIntrinsics();
+    realm = { locked: true };
+  } catch (error) {
+    realm = { failed: error };
+    throw error;
+  } finally {
+    for (const [name, descriptor] of setAside) Object.defineProperty(globalThis, name, descriptor);
+  }
+}
+
+/**
+ * Global functions lockdown cannot repair: WPS's page gives some of its own (``TextEncoder``) non-configurable
+ * ``arguments`` or ``caller`` properties, which lockdown fails to delete. They are left out of the locked-down
+ * intrinsics, and so out of the code's reach, and go back on the page's global object after.
+ */
+function unrepairableGlobals(): Map<string, PropertyDescriptor> {
+  const found = new Map<string, PropertyDescriptor>();
+  for (const name of Object.getOwnPropertyNames(globalThis)) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name)!;
+    const { value } = descriptor;
+    if (descriptor.configurable && typeof value === 'function'
+      && ['arguments', 'caller'].some(key => Object.getOwnPropertyDescriptor(value, key)?.configurable === false)) {
+      found.set(name, descriptor);
+    }
+  }
+  return found;
 }
 
 /**
@@ -204,7 +243,7 @@ export async function runOfficeCode(host: CodeHost, code: string): Promise<Clien
   lockRealm();
   const run = new Run();
   const compartment = new Compartment({
-    [host.name]: harden({ ...host.enums }),
+    ...harden({ ...host.globals }),
     attachImage: (base64: unknown) => {
       if (typeof base64 !== 'string' || !base64) throw new TypeError('attachImage takes the base64 text of a PNG');
       if (run.image !== undefined) throw new Error('attachImage takes one image per call');
@@ -216,7 +255,7 @@ export async function runOfficeCode(host: CodeHost, code: string): Promise<Clien
   });
   let body: (context: unknown) => Promise<unknown>;
   try {
-    body = compartment.evaluate(`(async function(context) { ${code}\n})`);
+    body = compartment.evaluate(`(async function(${host.wps?.parameter ?? 'context'}) { ${code}\n})`);
   } catch (error) {
     return failure(host, run, error);
   }
@@ -304,7 +343,8 @@ class Membrane {
     if (value === null || typeof value !== 'object') return value;
     if (Array.isArray(value)) return value.map(item => this.wrap(item, path));
     const prototype = Object.getPrototypeOf(value);
-    if (prototype === Object.prototype || prototype === null) {
+    // A WPS object may be a plain object of getters: only Office.js hands out plain data.
+    if (!this.host.wps && (prototype === Object.prototype || prototype === null)) {
       return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.wrap(item, [...path, key])]));
     }
     if (isPageObject(value)) throw this.run.refuse('The code reached a page object, which it may not use.');
@@ -336,7 +376,9 @@ class Membrane {
 
   private handler(target: object, path: readonly string[]): ProxyHandler<object> {
     const reveal = (name: string | symbol): string => {
-      if (typeof name === 'string' && !HIDDEN.test(name)) return name;
+      if (typeof name === 'string' && !HIDDEN.test(name) && !this.host.unreachable?.has(name.toLowerCase())) {
+        return name;
+      }
       throw this.run.refuse(`${String(name)} is not reachable here.`);
     };
     return {
@@ -353,12 +395,17 @@ class Membrane {
         this.write(target, { path, name: key, values: [value] });
         return Reflect.set(target, key, this.unwrap(value));
       },
-      has: (_shell, name) => typeof name === 'string' && !HIDDEN.test(name) && Reflect.has(target, name),
-      ownKeys: () => Reflect.ownKeys(target).filter(key => typeof key === 'string' && !HIDDEN.test(key)),
+      has: (_shell, name) => typeof name === 'string' && !HIDDEN.test(name)
+        && !this.host.unreachable?.has(name.toLowerCase()) && Reflect.has(target, name),
+      // Listed are only the members ``get`` gives, so enumerating an object (``Object.keys``, ``for in``) works.
+      ownKeys: () => Reflect.ownKeys(target).filter(key => typeof key === 'string' && !HIDDEN.test(key)
+        && !this.host.unreachable?.has(key.toLowerCase())),
+      // Described without reading it: a WPS object has members that throw when read, and ``Object.keys`` only asks
+      // whether each is there.
       getOwnPropertyDescriptor: (_shell, name) => {
         const key = reveal(name);
         return Reflect.has(target, key)
-          ? { configurable: true, enumerable: true, writable: true, value: this.wrap(Reflect.get(target, key), path) }
+          ? { configurable: true, enumerable: true, get: () => this.wrap(Reflect.get(target, key), path) }
           : undefined;
       },
       defineProperty: () => {
@@ -376,7 +423,9 @@ class Membrane {
     if (path.some(step => /^on[A-Z]/.test(step))) {
       throw this.run.refuse('Code cannot listen to document events; read the state it needs instead.');
     }
-    if (WRITE_METHODS.has(name) || WRITE_PREFIXES.some(prefix => name.startsWith(prefix))) {
+    // WPS names its methods as VBA does (``AddComment``), Office.js as ``addComment``.
+    const camel = name.charAt(0).toLowerCase() + name.slice(1);
+    if (WRITE_METHODS.has(camel) || WRITE_PREFIXES.some(prefix => camel.startsWith(prefix))) {
       this.write(target, { path, name, values: args });
     }
     const result = Reflect.apply(method, target, args.map(arg => this.unwrap(arg)));
@@ -390,7 +439,8 @@ class Membrane {
     const reason = this.host.screen({ ...write, values: write.values.map(value => this.data(value)) });
     if (reason) throw this.run.refuse(reason);
     this.host.writing?.(target);
-    this.run.queued += 1;
+    if (this.host.wps) this.run.wrote = true;
+    else this.run.queued += 1;
   }
 
   private async sync(context: object, sync: Function): Promise<void> {
@@ -413,6 +463,27 @@ class Membrane {
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * ``execute_wps_js``: the code on ``document``, a WPS document it gets as ``parameter``, with WPS's ``constants``
+ * (``xlCenter``…) as globals. WPS has thousands of them and reading each is a call into WPS (all of them take half a
+ * minute), so a run gets only those its code names.
+ */
+export function wpsCodeRuntime({ document, constants, parameter, ...host }: Pick<CodeHost, 'name' | 'screen' | 'unreachable'>
+  & { parameter: string; document: object; constants: Record<string, unknown> }): ClientToolRuntime<'execute_wps_js'> {
+  let names: ReadonlySet<string> | undefined;
+  return {
+    tools: new Set(['execute_wps_js']),
+    execute: ({ input }) => {
+      const code = String(input.code);
+      names ??= new Set(Object.keys(constants));
+      const named = [...new Set(code.match(/[A-Za-z_$][\w$]*/g))].filter(name => names!.has(name));
+      const globals = Object.fromEntries(named.map(name => [name, constants[name]])
+        .filter(([, value]) => typeof value === 'number'));
+      return runOfficeCode({ ...host, run: async batch => batch(document), globals, wps: { parameter } }, code);
+    },
+  };
 }
 
 /** The enums of a host's namespace (``Excel``, ``Word``), without its classes and functions. */

@@ -210,6 +210,8 @@ In a channel conversation, run:
 
 The current thread enters Agent Team mode, and the Leader agent coordinates tasks.
 
+Under **Settings → Experimental → Scheduled Dispatch**, turn on **Disable Code Todo reminders** to stop adding periodic Todo reminders to Code team members' context during scheduled dispatch. Members can still use Todo tools. The switch defaults to off and is stored at `modes.team.jiuwen_team.disable_code_todo_reminder`.
+
 **How to write prompts in Agent Team mode**
 
 Prompting is similar to normal chat, but for smoother runs:
@@ -308,6 +310,31 @@ A few things to know:
 - An expert that runs on an external CLI (Claude Code / Codex) needs that CLI enabled for teams, just like other external CLI members.
 - External experts inherit the team's CLI executable path, working directory, and other deployment settings; templates add skills and behavior settings. Custom-path detection verifies the program identity, so Claude and Codex paths are not interchangeable. Recreate the team after changing its launch configuration.
 - A spawned expert keeps the version it was spawned with: upgrading or uninstalling the package later does not change members already in the team.
+
+### 2.8 Leader goal mode for scheduled teams
+
+Enable **Leader goal mode** under **Settings → Experimental features → Scheduled dispatch**. It is off by default and applies only to scheduled dispatch and newly created teams. Bound and running teams retain their configuration snapshots.
+
+When current tasks finish but the original goal remains unmet, the leader checks the goal and organizes further work as needed. The default policy uses `hybrid` evaluation and allows **10 automatic continuation attempts**, without a token budget. These attempts differ from model iterations and task retries. When the goal becomes blocked, the page ends the current processing state and displays the reason; additional input can resume work.
+
+Turning off scheduled dispatch clears and disables the leader goal setting. Turning scheduled dispatch back on does not restore it. Autonomous sessions never enable the leader goal, including when YAML or an older template contains `leader.goal`. External CLI leaders do not support this setting.
+
+![Leader goal mode in scheduled dispatch](../assets/images/team-leader-goal/en-narrow.png)
+
+Advanced configuration belongs under `modes.team.<template>` (`jiuwen_team` by default):
+
+```yaml
+dispatch_mode: scheduled
+leader:
+  goal:
+    strategy: hybrid
+    max_attempts: 10
+member_goal: null
+```
+
+With trajectory diagnosis enabled, newly captured independent Goal model assessments appear in a separate collapsible section under the leader. It shows the attempt, model verdict, tokens, duration and complete request details. Goal-driven execution rounds remain on the leader trajectory. Historical records without purpose metadata retain their original presentation.
+
+Missing or `null` policies disable the feature; `{}` uses the default strategy and attempt limit. Strategies are `agent_report`, `transcript`, and `hybrid`. The attempt limit accepts a positive integer, or explicit `null` for unlimited attempts. The settings page exposes only the leader switch and preserves existing manual strategy and attempt values while enabled. Member policies are YAML/template only and disabled by default. Configuration rejects `token_budget` and other unknown policy fields.
 
 ---
 

@@ -4,13 +4,57 @@ set -euo >/dev/null 2>&1
 # gateway 就绪检查最大重试次数（服务健康检查与部署前端口检查共用）
 GATEWAY_MAX_RETRY=15
 
-gateway_get_config_dir() {
-    local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
+gateway_workspace_dir() {
+    local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]:-}"
     if [ -n "${instance_name}" ]; then
-        echo "/root/.jiuwenswarm-instances/${instance_name}/config"
+        echo "/root/.jiuwenswarm-instances/${instance_name}"
     else
-        echo "/root/.jiuwenswarm/config"
+        echo "/root/.jiuwenswarm"
     fi
+}
+
+gateway_get_config_dir() {
+    local workspace override
+    workspace=$(gateway_workspace_dir)
+    override="${DEPLOY_VARS["JIUWENSWARM_GATEWAY_CONFIG_DIR"]:-${JIUWENSWARM_GATEWAY_CONFIG_DIR:-}}"
+    if [ -n "${override}" ]; then
+        case "${override}" in
+            /*) echo "${override%/}" ;;
+            *)  echo "${workspace}/infra/config/${override%/}" ;;
+        esac
+    else
+        echo "${workspace}/infra/config"
+    fi
+}
+
+gateway_get_template_file() {
+    local host="$1"
+    local explicit="${DEPLOY_VARS["GATEWAY_CONFIG_TEMPLATE_FILE"]:-${GATEWAY_CONFIG_TEMPLATE_FILE:-}}"
+    local py="python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}"
+    local path
+
+    if [ -n "${explicit}" ]; then
+        if [ -f "${explicit}" ]; then
+            echo "${explicit}"
+            return 0
+        fi
+        path=$(exec_on_host "${host}" "test -f '${explicit}' && echo '${explicit}'" 2>/dev/null | tr -d '\r') || true
+        if [ -n "${path}" ]; then
+            echo "${path}"
+            return 0
+        fi
+        # 诊断信息必须走 stderr：本函数在 $(...) 中调用，stdout 只允许输出路径。
+        echo "GATEWAY_CONFIG_TEMPLATE_FILE not found on ${host}: ${explicit}" >&2
+    fi
+
+    path=$(exec_on_host "${host}" \
+        "${py} -c 'import agent_gateway, pathlib, sys; p = pathlib.Path(agent_gateway.__file__).resolve().parent / \"resources\" / \"config.agentos.yaml\"; print(p); sys.exit(0 if p.is_file() else 1)'" \
+        2>/dev/null | tr -d '\r') || true
+    if [ -z "${path}" ]; then
+        echo "AgentOS Gateway template not found on ${host}. Install agent-gateway or set GATEWAY_CONFIG_TEMPLATE_FILE." >&2
+        return 1
+    fi
+    echo "${path}"
 }
 
 # yuanrong 部署固定使用 /root；若目标机 JIUWENSWARM_HOME（或 $HOME）不是 /root 则提示，
@@ -66,13 +110,38 @@ gateway_compute_extension_dirs() {
 }
 
 gateway_gen_config() {
+    local host="$1"
     gateway_compute_extension_dirs
 
-    info "Generating gateway config.yaml from template..."
-    render_config_template "${GATEWAY_CONFIG_TEMPLATE_FILE}" "${GATEWAY_CONFIG_FILE}" "DEPLOY_VARS"
+    local template_file
+    if ! template_file=$(gateway_get_template_file "${host}"); then
+        error "AgentOS Gateway template not found on ${host}"
+    fi
 
-    info "Generating gateway .env from DEPLOY_VARS..."
-    write_env_to_file "${GATEWAY_ENV_FILE}" "DEPLOY_VARS"
+    # 模板可能在目标机（AGW 包资源），也可能在部署机（显式覆盖）；统一拉回本地渲染。
+    local local_template="${GATEWAY_CONFIG_FILE}.template.$$"
+    if [ -f "${template_file}" ]; then
+        cp -f "${template_file}" "${local_template}"
+    else
+        exec_on_host "${host}" "cat '${template_file}'" > "${local_template}" \
+            || { rm -f "${local_template}"; error "Failed to read Gateway template from ${host}: ${template_file}"; }
+    fi
+
+    info "Generating gateway config.yaml from template: ${template_file}"
+    render_config_template "${local_template}" "${GATEWAY_CONFIG_FILE}" "DEPLOY_VARS"
+    rm -f "${local_template}"
+
+    if grep -q '<<[A-Z0-9_]*>>' "${GATEWAY_CONFIG_FILE}"; then
+        error "Unresolved <<...>> placeholders remain in ${GATEWAY_CONFIG_FILE}"
+    fi
+
+    info "Generating shared Gateway/AgentServer .env from DEPLOY_VARS..."
+    # 这些变量必须在进程启动前由 systemd/nohup 注入；写进 .env 后
+    # load_dotenv(override=True) 可能用空值覆盖进程环境，导致路径丢失。
+    local -a shared_env_excludes=(
+        JIUWENSWARM_GATEWAY_CONFIG_DIR
+    )
+    write_filtered_env_to_file "${SHARED_ENV_FILE}" "DEPLOY_VARS" shared_env_excludes
 
     local config_dir
     config_dir=$(gateway_get_config_dir)
@@ -116,6 +185,8 @@ gateway_start_systemd() {
     # gateway 日志独立目录（gateway.log 及轮转归档）；源码默认与其它日志同目录，
     # 由部署脚本显式指定 /var/log/agentos（Linux），可通过 .env.custom 覆盖。
     local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
+    local config_dir
+    config_dir=$(gateway_get_config_dir)
 
     # 解析 jiuwenswarm-gateway 和 python bin/lib 目录的绝对路径（远程主机上）
     local gw_bin py_bindir py_libdir
@@ -181,11 +252,9 @@ Environment=GATEWAY_PORT=${gw_port}
 Environment=WEB_PORT=${web_port}
 Environment=AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir}"
     dropin_content="${dropin_content}
-Environment=JIUWENSWARM_RUNTIME_PROFILE=agentos"
-    if [ "${force_root_home}" = "1" ]; then
-        dropin_content="${dropin_content}
-Environment=JIUWENSWARM_HOME=/root"
-    fi
+Environment=JIUWENSWARM_RUNTIME_PROFILE=agentos
+Environment=JIUWENSWARM_HOME=/root
+Environment=JIUWENSWARM_GATEWAY_CONFIG_DIR=${config_dir}"
     if [ -n "${instance_name}" ]; then
         dropin_content="${dropin_content}
 Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
@@ -255,8 +324,10 @@ gateway_start_nohup() {
 
     # gateway 日志独立目录（与 systemd 模式一致），通过环境变量传给进程
     local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
+    local config_dir
+    config_dir=$(gateway_get_config_dir)
     exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
-    local log_dir_prefix="JIUWENSWARM_RUNTIME_PROFILE=agentos AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
+    local log_dir_prefix="JIUWENSWARM_HOME=/root JIUWENSWARM_RUNTIME_PROFILE=agentos JIUWENSWARM_GATEWAY_CONFIG_DIR=${config_dir} AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
 
     local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     if [ -n "${instance_name}" ]; then
@@ -269,7 +340,7 @@ gateway_start_nohup() {
     local retry=0
     while [ ${retry} -lt ${GATEWAY_MAX_RETRY} ]; do
         sleep 2
-        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1" \
+        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway$' >/dev/null 2>&1" \
             && port_is_listening "${master_host}" "${gw_port}" \
             && port_is_listening "${master_host}" "${web_port}"; then
             success "Gateway process is running on ${master_host} (ports ${gw_port}/${web_port} listening)"
@@ -281,7 +352,7 @@ gateway_start_nohup() {
 
     # 失败诊断：区分是进程没起来、还是起来了但端口未监听（对标 systemd 分支的 gw_state/监听探测）。
     local gw_proc="no" gw_listen="no" web_listen="no"
-    exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1" && gw_proc="yes"
+    exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway$' >/dev/null 2>&1" && gw_proc="yes"
     port_is_listening "${master_host}" "${gw_port}" && gw_listen="yes"
     port_is_listening "${master_host}" "${web_port}" && web_listen="yes"
     info "jiuwenswarm-gateway on ${master_host}: proc(alive)=${gw_proc}; port ${gw_port}(GATEWAY_PORT)=${gw_listen}, port ${web_port}(WEB_PORT)=${web_listen}"
@@ -351,6 +422,52 @@ gateway_wait_port() {
     return 1
 }
 
+gateway_migrate_legacy_config() {
+    local host="$1"
+    local workspace config_dir legacy target
+    workspace=$(gateway_workspace_dir)
+    config_dir=$(gateway_get_config_dir)
+    legacy="${workspace}/config/config.yaml"
+    target="${config_dir}/config.yaml"
+
+    local has_legacy=0 has_target=0
+    if exec_on_host "${host}" "test -f '${legacy}'" 2>/dev/null; then
+        has_legacy=1
+    fi
+    if exec_on_host "${host}" "test -f '${target}'" 2>/dev/null; then
+        has_target=1
+    fi
+    if [ "${has_legacy}" = "0" ] && [ "${has_target}" = "0" ]; then
+        return 0
+    fi
+
+    local remote_template="/tmp/agentos-gateway-template.$$.yaml"
+    copy_to_host "${host}" "${GATEWAY_CONFIG_FILE}" "${remote_template}"
+    local py="python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}"
+    local common_args="--workspace '${workspace}' --template '${remote_template}' --gateway-dir '${config_dir}'"
+
+    if [ "${has_legacy}" = "1" ]; then
+        info "Legacy shared config detected on ${host}: ${legacy}"
+        if ! exec_on_host "${host}" \
+            "JIUWENSWARM_RUNTIME_PROFILE=agentos ${py} -m jiuwenswarm.agentos_migration ${common_args}"; then
+            exec_on_host "${host}" "rm -f '${remote_template}'" || true
+            error "Failed to migrate legacy AgentOS config on ${host}"
+        fi
+        success "Legacy AgentOS config migrated on ${host}"
+    fi
+
+    if [ "${has_legacy}" = "1" ] || [ "${has_target}" = "1" ]; then
+        info "Refreshing deploy-owned Gateway config fields on ${host}: ${target}"
+        if ! exec_on_host "${host}" \
+            "JIUWENSWARM_RUNTIME_PROFILE=agentos ${py} -m jiuwenswarm.agentos_migration ${common_args} --refresh-deploy-owned"; then
+            exec_on_host "${host}" "rm -f '${remote_template}'" || true
+            error "Failed to refresh deployed Gateway config fields on ${host}"
+        fi
+        success "Gateway deploy-owned fields refreshed on ${host}"
+    fi
+    exec_on_host "${host}" "rm -f '${remote_template}'" || true
+}
+
 gateway_deploy_process() {
     # gateway 部署跟随 master_nodes：本机属于 master_nodes 即安装 systemd 服务，
     # 不区分 VIP 持有；启动时由系统单元的 ExecStartPre (= check-ingress-master) 判定是否持有 VIP。
@@ -374,7 +491,7 @@ gateway_deploy_process() {
             return 0
         fi
     fi
-    if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1"; then
+    if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway$' >/dev/null 2>&1"; then
         warning "jiuwenswarm-gateway process already alive (unit not active: deactivating/legacy nohup); run 'down' first to redeploy"
         return 0
     fi
@@ -397,22 +514,31 @@ gateway_deploy_process() {
         info "Local host does not hold ingress VIP, skipping pre-deploy port checks"
     fi
 
-    gateway_gen_config
+    gateway_gen_config "${master_host}"
 
-    local config_dir
+    local config_dir as_config_dir
     config_dir=$(gateway_get_config_dir)
+    as_config_dir="$(gateway_workspace_dir)/config"
 
-    local home_prefix=""
-    local force_root_home=0
-    if ! gateway_check_jiuwenswarm_home "${master_host}"; then
-        home_prefix="JIUWENSWARM_HOME=/root "
-        force_root_home=1
+    local as_config_exists=0
+    if exec_on_host "${master_host}" "test -f '${as_config_dir}/config.yaml'" 2>/dev/null; then
+        as_config_exists=1
     fi
 
-    local init_cmd="${home_prefix}jiuwenswarm-init -f </dev/null"
+    # 升级：旧共享配置 -> Gateway 独立配置；已存在的 Gateway 配置只刷新
+    # deploy-owned 字段，保留用户配置。迁移/刷新在 init 之前执行，
+    # 因为 init 会补齐/保留 AS 配置，但不会生成 AgentOS Gateway 配置。
+    gateway_migrate_legacy_config "${master_host}"
+
+    local home_prefix="JIUWENSWARM_HOME=/root "
+    local init_cmd="${home_prefix}JIUWENSWARM_RUNTIME_PROFILE=agentos jiuwenswarm-init"
     if [ -n "${instance_name}" ]; then
-        init_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} jiuwenswarm-init -f </dev/null"
+        init_cmd="${home_prefix}JIUWENSWARM_RUNTIME_PROFILE=agentos JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} jiuwenswarm-init"
     fi
+    if [ "${as_config_exists}" = "0" ]; then
+        init_cmd="${init_cmd} -f"
+    fi
+    init_cmd="${init_cmd} </dev/null"
 
     info "Running jiuwenswarm-init on ${master_host}..."
     if exec_on_host "${master_host}" "${init_cmd}"; then
@@ -421,14 +547,19 @@ gateway_deploy_process() {
         error "Failed to run jiuwenswarm-init on ${master_host}"
     fi
 
-    info "Copying gateway config.yaml and .env to ${master_host}:${config_dir}/..."
-    exec_on_host "${master_host}" "mkdir -p ${config_dir}"
-    copy_to_host "${master_host}" "${GATEWAY_CONFIG_FILE}" "${config_dir}/config.yaml"
-    copy_to_host "${master_host}" "${GATEWAY_ENV_FILE}" "${config_dir}/.env"
+    exec_on_host "${master_host}" "mkdir -p '${config_dir}' '${as_config_dir}'"
+    if exec_on_host "${master_host}" "test -f '${config_dir}/config.yaml'" 2>/dev/null; then
+        info "Keeping existing/migrated Gateway config: ${config_dir}/config.yaml"
+    else
+        info "Copying rendered Gateway config to ${master_host}:${config_dir}/..."
+        copy_to_host "${master_host}" "${GATEWAY_CONFIG_FILE}" "${config_dir}/config.yaml"
+    fi
+    # Gateway/AS 共用一份 env，落到 AS 配置目录。
+    copy_to_host "${master_host}" "${SHARED_ENV_FILE}" "${as_config_dir}/.env"
 
     # 启动 gateway：优先 systemd，不可用时回退 nohup
     if gateway_has_systemd "${master_host}"; then
-        gateway_start_systemd "${master_host}" "${force_root_home}"
+        gateway_start_systemd "${master_host}" "0"
     else
         warning "systemd not available on ${master_host}, falling back to nohup mode"
         gateway_start_nohup "${master_host}" "${home_prefix}"

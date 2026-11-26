@@ -29,9 +29,6 @@ from jiuwenswarm.server.runtime.agent_adapter.task_tool_events import (
     apply_task_tool_event_patch,
 )
 from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
-    active_cua_execution,
-    bind_managed_task_request,
-    reset_managed_task_request,
     bind_managed_task_session,
     cancel_cua_execution,
     has_active_cua,
@@ -152,9 +149,10 @@ async def test_forwarding_emits_roster_and_activity_frames() -> None:
     ]
     subagent = _FakeSubagent(chunks)
     task_tool: Any = SimpleNamespace()
+    task_description = "Search for the requested topic. " * 20
 
     result = await _invoke_with_event_forwarding(
-        task_tool, _consuming_original, subagent, _kwargs(session)
+        task_tool, _consuming_original, subagent, _kwargs(session, task_description=task_description)
     )
 
     assert result == {"output": "done"}
@@ -164,6 +162,7 @@ async def test_forwarding_emits_roster_and_activity_frames() -> None:
     assert roster[0]["turn_outcome"] is None
     assert roster[-1]["status"] == "idle"
     assert roster[-1]["turn_outcome"] == "completed"
+    assert all(frame["task_description"] == task_description[:500] for frame in roster)
     assert all(frame["subagent_id"] == "sess_sub_browser_agent_ab12" for frame in roster)
     assert all(frame["parent_session_id"] == "parent-sess-1" for frame in roster)
     assert len(activities) == 1
@@ -276,7 +275,9 @@ async def test_heartbeat_touches_roster_while_running(
     monkeypatch.setattr(task_tool_events, "_HEARTBEAT_INTERVAL_S", 0.02)
     session = _RecordingSession()
     subagent = _FakeSubagent()
-    task_tool: Any = SimpleNamespace()
+    avatar = "data:image/webp;base64,YXZhdGFy"
+    names = {"zh": "调研专家", "en": "Research Expert"}
+    task_tool: Any = SimpleNamespace(display_avatar=avatar, display_name_i18n=names, language="en")
 
     await _invoke_with_event_forwarding(
         task_tool, _slow_original, subagent, _kwargs(session)
@@ -288,6 +289,9 @@ async def test_heartbeat_touches_roster_while_running(
     running_touches = roster[1:-1]
     assert len(running_touches) >= 1
     assert all(frame["status"] == "running" for frame in running_touches)
+    assert all(frame["display_name"] == names["en"] and frame["display_name_i18n"] == names for frame in roster)
+    assert roster[0]["avatar"] == roster[-1]["avatar"] == avatar
+    assert all("avatar" not in frame for frame in running_touches)
     revisions = [frame["revision"] for frame in roster]
     assert revisions == sorted(revisions)
     assert roster[-1]["turn_outcome"] == "completed"

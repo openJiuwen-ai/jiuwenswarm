@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { MULTIMODAL_CAPABILITIES, multimodalModelOptions, MultimodalSettingsStore } from '../node_modules/.cache/multimodal-settings/features/settings/services/multimodalSettings.js';
+import { MULTIMODAL_CAPABILITIES, multimodalModelOptions, multimodalProviderLabel, MultimodalSettingsStore } from '../node_modules/.cache/multimodal-settings/features/settings/services/multimodalSettings.js';
 import { SettingsSaveQueue } from '../node_modules/.cache/multimodal-settings/features/settings/services/SettingsSaveQueue.js';
 import { FormStore } from '../node_modules/.cache/multimodal-settings/components/form/core/FormStore.js';
 
@@ -9,7 +9,7 @@ function snapshot(tools = {}) {
   return { schema_version: 1, models: [], tools };
 }
 
-test('tool options filter capability, retain list order and distinguish duplicate names', () => {
+test('tool options retain display names and move model details into hover titles', () => {
   const models = [
     { model_id: 'a', display_name: 'Shared', model_name: 'vision-a', api_base: 'https://a.invalid', capabilities: ['vision'] },
     { model_id: 'b', display_name: 'Shared', model_name: 'vision-b', api_base: 'https://b.invalid', capabilities: ['vision'] },
@@ -19,10 +19,14 @@ test('tool options filter capability, retain list order and distinguish duplicat
   ];
   const options = multimodalModelOptions(models, 'vision');
   assert.deepEqual(options.map((option) => option.value), ['a', 'b', 'd', 'e']);
-  assert.equal(new Set(options.map((option) => option.label)).size, 4);
-  assert.match(options[0].label, /vision-a.*https:\/\/a\.invalid/);
-  assert.equal(options[3].label, 'Unique');
-  assert.deepEqual(multimodalModelOptions(models, 'audio'), [{ value: 'c', label: 'Shared' }]);
+  assert.deepEqual(options.map((option) => option.label), ['Shared', 'Shared', 'Shared', 'Unique']);
+  assert.deepEqual(options.map((option) => option.title), [
+    'vision-a\nhttps://a.invalid\na', 'vision-b\nhttps://b.invalid\nb',
+    'vision-a\nhttps://a.invalid\nd', 'vision-e\nhttps://e.invalid\ne',
+  ]);
+  assert.deepEqual(multimodalModelOptions(models, 'audio'), [
+    { value: 'c', label: 'Shared', title: 'audio\nhttps://c.invalid\nc' },
+  ]);
 });
 
 test('all callers share the saved snapshot and queued writes send ordinary save parameters', async () => {
@@ -219,3 +223,23 @@ test('shortcut notice remains while a write waits and clears when that write sta
   await Promise.all([blocker, write]);
   assert.equal(store.getSnapshot().notice, null);
 });
+
+test('the multimodal list labels a vLLM-Omni row by protocol, not the stored OpenAI provider', () => {
+  assert.equal(
+    multimodalProviderLabel({ provider: 'OpenAI', protocol: 'vllm-omni' }),
+    'vLLM-Omni',
+  );
+  assert.equal(
+    multimodalProviderLabel({ provider: 'OpenAI', protocol: ' vllm-omni ' }),
+    'vLLM-Omni',
+  );
+  assert.equal(
+    multimodalProviderLabel({ provider: 'MiniMax', protocol: 'minimax' }),
+    'MiniMax',
+  );
+  assert.equal(
+    multimodalProviderLabel({ provider: 'OpenAI', protocol: 'openai' }),
+    'OpenAI',
+  );
+});
+

@@ -69,17 +69,26 @@ PACKAGE_ROOT = SKILL_DIR.parent.parent.parent.parent
 REPO_ROOT = PACKAGE_ROOT.parent
 
 # Agent 根目录：优先使用 jiuwenswarm.utils，其次环境变量，最后硬编码
-if _has_jiuwenswarm:
-    AGENT_ROOT = get_agent_root_dir()
+_agent_root_from_skills_tree = None
+for _parent in Path(__file__).resolve().parents:
+    if _parent.name == "skills":
+        _located = _parent.parent.parent
+        if "resources" not in _located.parts:
+            _agent_root_from_skills_tree = _located
+        break
+
+if _agent_root_from_skills_tree is not None:
+    AGENT_ROOT = _agent_root_from_skills_tree
 else:
-    env_workspace = os.getenv("JIUWENSWARM_DATA_DIR")
-    if env_workspace:
-        AGENT_ROOT = Path(env_workspace) / "agent"
+    agent_root_env = os.getenv("JIUWENSWARM_AGENT_ROOT", "").strip()
+    if agent_root_env:
+        AGENT_ROOT = Path(agent_root_env).expanduser()
+    elif _has_jiuwenswarm:
+        AGENT_ROOT = get_agent_root_dir()
     else:
-        AGENT_ROOT = Path(os.environ.get(
-            "JIUWENSWARM_AGENT_ROOT",
-            str(Path.home() / ".jiuwenswarm" / "domain" / "agent"),
-        ))
+        env_workspace = os.getenv("JIUWENSWARM_DATA_DIR")
+        base = Path(env_workspace).expanduser() if env_workspace else Path.home() / ".jiuwenswarm"
+        AGENT_ROOT = base / "profile" / "agent"
 
 # 配置环境文件路径
 if _has_jiuwenswarm:
@@ -422,32 +431,13 @@ def generate_daily_report(date: str = None, enable_ai: bool = True) -> str:
                 if item and not item.startswith("<!--"):
                     work_items.append(item)
 
-    # 查找 todo 文件
-    todo_file = None
-    session_dir = AGENT_ROOT / "sessions"
-    if session_dir.exists():
-        todo_files = list(session_dir.rglob("todo.md"))
-        if todo_files:
-            todo_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-            todo_file = todo_files[0]
+    # 采集待办：与 DeepAgent workspace 一致，读取 workspace/todo/<session>/todo.json，
+    # 并兼容旧版 sessions/<session>/todo.md。
+    from collectors.todo_collector import TodoCollector
 
-    # 解析 todo
-    completed_tasks = []
-    pending_tasks = []
-
-    if todo_file and todo_file.exists():
-        todo_content = todo_file.read_text(encoding="utf-8")
-        for line in todo_content.split("\n"):
-            stripped = line.strip()
-            # Checkbox 格式
-            match = re.match(r"-\s*\[([xX ])\]\s*(.+)", stripped)
-            if match:
-                checked = match.group(1).lower() == "x"
-                task = match.group(2).strip()
-                if checked:
-                    completed_tasks.append(task)
-                else:
-                    pending_tasks.append(task)
+    todo_stats = TodoCollector(AGENT_ROOT).collect()
+    completed_tasks = [t.content for t in todo_stats.tasks if t.status == "completed"]
+    pending_tasks = [t.content for t in todo_stats.tasks if t.status in ("waiting", "running")]
 
     # 生成报告
     lines = [

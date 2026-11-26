@@ -10,6 +10,8 @@ export interface HeaderState {
   shown: SessionId | undefined;
   /** Whether the pane can switch and start conversations now. */
   enabled: boolean;
+  /** Whether leaving the shown conversation stops its turn, so the pane asks first. */
+  busy: boolean;
   /** Whether the shown conversation has anything to download. */
   canDownload: boolean;
   /** The user's open documents, by conversation; Files lists the ones of this document's kind. */
@@ -18,7 +20,8 @@ export interface HeaderState {
 
 /**
  * The top bar: icons only, leaving the top right corner to the host's own menu. Files lists the open documents of
- * this one's kind; History lists the document's conversations; More downloads the shown one.
+ * this one's kind; History lists the document's conversations; More downloads the shown one. Leaving a busy
+ * conversation asks first under the buttons; Esc or a press elsewhere stays.
  */
 export class Header {
   readonly element: HTMLElement;
@@ -32,6 +35,15 @@ export class Header {
   private readonly moreButton = iconButton('more', copy.more);
   private readonly downloadItem: HTMLButtonElement;
   private readonly moreMenu: HTMLElement;
+  private readonly leaveBody = h('p', { class: 'leave-body', id: 'leave-body' });
+  private readonly leaveCancel = h('button', { type: 'button', class: 'button' }, copy.cancel);
+  private readonly leaveConfirm = h('button', { type: 'button', class: 'button button-primary' });
+  private readonly leaveMenu = h('div', {
+    class: 'menu leave', role: 'alertdialog', 'aria-labelledby': 'leave-title', 'aria-describedby': 'leave-body',
+  }, h('h2', { class: 'sheet-title', id: 'leave-title' }, copy.leaveTitle), this.leaveBody,
+  h('div', { class: 'leave-actions' }, this.leaveCancel, this.leaveConfirm));
+  /** The button the ask came from, which the focus goes back to. */
+  private leaveFrom: HTMLButtonElement | undefined;
   private last: HeaderState | undefined;
 
   constructor(noun: string, private readonly actions: {
@@ -48,14 +60,49 @@ export class Header {
     this.moreMenu = h('div', { class: 'menu', id: 'more-menu', role: 'group', 'aria-label': copy.more }, this.downloadItem);
     this.element = h('header', { class: 'header' }, h('div', { class: 'header-actions' },
       this.filesButton, this.historyButton, this.newButton, this.moreButton, this.filesMenu, this.historyMenu,
-      this.moreMenu));
+      this.moreMenu, this.leaveMenu));
     dropdown(this.filesButton, this.filesMenu, this.element);
     this.history = dropdown(this.historyButton, this.historyMenu, this.element);
     const more = dropdown(this.moreButton, this.moreMenu, this.element);
     this.newButton.addEventListener('click', () => {
       this.history.close();
-      actions.newConversation();
+      this.leave(this.newButton, copy.leaveForNew, copy.stopAndCreate, actions.newConversation);
     });
+    this.leaveMenu.hidden = true;
+    this.leaveCancel.addEventListener('click', () => this.closeLeave());
+    // Before the document hears it: an approval sheet takes Esc as its rejection.
+    this.leaveMenu.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeLeave();
+    });
+    document.addEventListener('pointerdown', event => {
+      if (!this.leaveMenu.hidden && !this.leaveMenu.contains(event.target as Node)) this.closeLeave(false);
+    });
+  }
+
+  /** Leave the shown conversation at once, or, while it is busy, once the user agrees to stop it. */
+  private leave(from: HTMLButtonElement, body: string, label: string, go: () => void): void {
+    if (!this.last?.busy) {
+      go();
+      return;
+    }
+    this.leaveFrom = from;
+    this.leaveBody.textContent = body;
+    this.leaveConfirm.textContent = label;
+    this.leaveConfirm.onclick = () => {
+      this.closeLeave();
+      go();
+    };
+    this.leaveMenu.hidden = false;
+    this.leaveCancel.focus();
+  }
+
+  private closeLeave(refocus = true): void {
+    this.leaveMenu.hidden = true;
+    if (refocus) this.leaveFrom?.focus();
+    this.leaveFrom = undefined;
   }
 
   update(state: HeaderState): void {
@@ -63,6 +110,7 @@ export class Header {
     if (last && (Object.keys(state) as (keyof HeaderState)[]).every(key => state[key] === last[key])) return;
     this.last = state;
     const { conversations, shown, enabled, canDownload, documents } = state;
+    if (!enabled) this.closeLeave(false);
     const files = sameKind(documents);
     this.filesCount.textContent = files.length ? String(files.length) : '';
     this.filesMenu.replaceChildren(...files.map(file => h('div', { class: 'menu-item' },
@@ -81,7 +129,9 @@ export class Header {
         type: 'button', class: 'menu-item', 'aria-current': current ? 'true' : undefined,
         onclick: () => {
           this.history.close();
-          if (!current) this.actions.switchTo(item.sessionId);
+          if (current) return;
+          const go = (): void => this.actions.switchTo(item.sessionId);
+          this.leave(this.historyButton, copy.leaveForSwitch, copy.stopAndSwitch, go);
         },
       }, h('span', { class: 'menu-item-title' }, item.title || copy.untitledConversation),
       item.lastMessageAt ? h('span', { class: 'menu-item-meta' }, relativeTime(item.lastMessageAt)) : null);

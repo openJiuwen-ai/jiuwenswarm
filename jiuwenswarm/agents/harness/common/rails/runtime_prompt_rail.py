@@ -33,12 +33,16 @@ from jiuwenswarm.agents.harness.common.prompt.shell_environment import (
     build_shell_environment_prompt,
     get_shell_capabilities,
 )
+from jiuwenswarm.common.paths import (
+    get_agent_teams_dir,
+    get_config_dir,
+)
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_runtime_state_path,
-    get_user_workspace_dir,
     logger,
 )
+
 
 
 A4P_PROMPT_VERSION = "2026-10-19.1"
@@ -62,6 +66,36 @@ def _routed_model_placeholder() -> str:
     return ROUTED_MODEL_PLACEHOLDER
 
 
+
+
+def _extension_package_management_prompt() -> PromptSection:
+    """Build the cross-mode extension package query guidance."""
+
+    return PromptSection(
+        name="extension_package_management",
+        content={
+            "cn": (
+                "# 系统插件包查询\n\n"
+                "当用户要求查看当前运行实例中已生效的 JiuwenSwarm 系统插件时，"
+                "先按当前分发形态选择入口：源码或 Wheel 使用 `jiuwenswarm extension query --json`；"
+                "EXE 或 DMG 将 `JIUWENSWARM_EXECUTABLE` 指向的后端程序作为入口，并传递 "
+                "`extension query --json` 参数。不得把 `extension` 单独作为系统命令执行。"
+                "该查询会汇总 AgentServer 和 Gateway 两个域的结果；根据 `state.active` 中的"
+                "包 ID、版本和安装目录回答用户。"
+            ),
+            "en": (
+                "# System Extension Package Query\n\n"
+                "When the user asks to inspect active JiuwenSwarm system extension packages in the current "
+                "running instance, choose the entrypoint for the current distribution: for source and "
+                "Wheel installations, run `jiuwenswarm extension query --json`; for EXE and DMG "
+                "installations, use the backend program identified by `JIUWENSWARM_EXECUTABLE` and pass "
+                "it `extension query --json`. Do not invoke `extension` as a standalone system command. "
+                "The query aggregates AgentServer and Gateway results; answer from the package ID, "
+                "version, and installation path in `state.active`."
+            ),
+        },
+        priority=SystemPromptPriority.EXTENSION_PACKAGE_MANAGEMENT,
+    )
 
 
 class RuntimePromptRail(DeepAgentRail):
@@ -113,6 +147,8 @@ class RuntimePromptRail(DeepAgentRail):
         self._agent = agent
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         self.attachment_manager = getattr(agent, "prompt_attachment_manager", None)
+        if self.system_prompt_builder is not None:
+            self.system_prompt_builder.add_section(_extension_package_management_prompt())
 
     def _apply_voice_summary_policy(self, ctx: AgentCallbackContext) -> None:
         """Apply voice receipt policy only when the optional module is present."""
@@ -164,6 +200,7 @@ class RuntimePromptRail(DeepAgentRail):
     def uninit(self, agent) -> None:
         """清理注入的 section 并释放引用。"""
         if self.system_prompt_builder is not None:
+            self.system_prompt_builder.remove_section("extension_package_management")
             self.system_prompt_builder.remove_section("video_duplex.voice_receipt")
             self.system_prompt_builder.remove_section("time")
             self.system_prompt_builder.remove_section("runtime.model_answer_policy")
@@ -608,7 +645,6 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder.remove_section("trusted_dirs_policy")
         if self._channel in ("tui", "web", "ws_client", "process_cli"):
             installed_workspace_dir = Path(get_agent_workspace_dir())
-            user_workspace_dir = Path(get_user_workspace_dir())
             # This agent's own workspace. Team members each own one; without
             # it (single-agent runs) the process-wide agent workspace is the
             # same directory anyway.
@@ -620,43 +656,40 @@ class RuntimePromptRail(DeepAgentRail):
                 installed_workspace_dir / "plugins" / "agent_templates" / "local"
             )
             installed_agent_groups_dir = (
-                user_workspace_dir / ".agent_teams" / "agent_groups" / "local"
+                get_agent_teams_dir() / "agent_groups" / "local"
             )
             installed_plugin_packages_dir = (
                 installed_workspace_dir / "plugins" / "plugin_packages" / "local"
             )
             installed_mcp_hub_dir = installed_workspace_dir / "mcp" / "mcp_hub"
-            config_dir = str(user_workspace_dir / "config")
-            project_dir = self._existing_dir(self._project_dir)
-            task_workspace_root = self._existing_dir(self._task_workspace_root)
-            task_work_dir = self._existing_dir(self._task_work_dir)
-            task_outputs_dir = self._existing_dir(self._task_outputs_dir)
-            runtime_cwd = (
-                self._existing_dir(self._cwd)
-                or task_work_dir
-                or project_dir
-                or agent_workspace_dir
-            )
-            has_projectless_task = (
-                project_dir is None
-                and task_workspace_root is not None
-                and task_work_dir is not None
-                and task_outputs_dir is not None
-            )
-            has_project = project_dir is not None
-            prompt_project_dir = project_dir or runtime_cwd
-            has_distinct_cwd = bool(
-                has_project
-                and not self._same_path(project_dir or "", runtime_cwd)
-            )
+            config_dir = str(get_config_dir())
+            dirs = self._conversation_dirs(agent_workspace_dir)
+            task_workspace_root = dirs["task_workspace_root"]
+            task_work_dir = dirs["task_work_dir"]
+            task_outputs_dir = dirs["task_outputs_dir"]
+            runtime_cwd = dirs["runtime_cwd"]
+            has_projectless_task = dirs["has_projectless_task"]
+            has_project = dirs["has_project"]
+            prompt_project_dir = dirs["prompt_project_dir"]
+            has_distinct_cwd = dirs["has_distinct_cwd"]
+            # These paths differ per conversation. With prompt attachments they
+            # go to runtime.setting (see _conversation_directory_lines), so the
+            # system prompt stays byte-identical across conversations and its
+            # provider prefix cache is shared by every new conversation.
+            paths_elsewhere = self.attachment_manager is not None
 
             if not self._force_english and self._language == "cn":
                 if has_projectless_task:
                     active_directory_content = (
                         "## 当前任务目录\n\n"
-                        f"- 当前任务根目录：`{task_workspace_root}`\n"
-                        f"- 临时工作目录：`{task_work_dir}`\n"
-                        f"- 最终产物目录：`{task_outputs_dir}`\n\n"
+                        + (
+                            "- 当前任务根目录、临时工作目录和最终产物目录的具体路径见运行时状态中的「当前目录」。\n\n"
+                            if paths_elsewhere else
+                            f"- 当前任务根目录：`{task_workspace_root}`\n"
+                            f"- 临时工作目录：`{task_work_dir}`\n"
+                            f"- 最终产物目录：`{task_outputs_dir}`\n\n"
+                        )
+                        +
                         "- 相对路径以临时工作目录为基准。\n"
                         "- Bash 未显式传入 `workdir` 时，默认在临时工作目录执行。\n"
                         "- 中间文件、缓存和临时脚本放在临时工作目录。\n"
@@ -670,7 +703,12 @@ class RuntimePromptRail(DeepAgentRail):
                 elif not has_project:
                     active_directory_content = (
                         "## 当前项目目录\n\n"
-                        f"- 项目目录是当前运行时工作空间：`{prompt_project_dir}`\n\n"
+                        + (
+                            "- 项目目录是当前运行时工作空间，具体路径见运行时状态中的「当前目录」。\n\n"
+                            if paths_elsewhere else
+                            f"- 项目目录是当前运行时工作空间：`{prompt_project_dir}`\n\n"
+                        )
+                        +
                         "- 相对路径以项目目录为基准。\n"
                         "- Bash 未显式传入 `workdir` 时，默认在项目目录执行。\n"
                         "- 未指定保存位置时，任务产物放在项目目录内的合理位置。\n\n"
@@ -687,7 +725,11 @@ class RuntimePromptRail(DeepAgentRail):
                         else "- 项目目录是你当前的工作空间，"
                     )
                     cwd_description = (
-                        f"- 当前工作目录（cwd、相对路径基准及 Bash 默认目录）是：`{runtime_cwd}`\n\n"
+                        (
+                            "- 当前工作目录（cwd、相对路径基准及 Bash 默认目录）见运行时状态中的「当前目录」。\n\n"
+                            if paths_elsewhere else
+                            f"- 当前工作目录（cwd、相对路径基准及 Bash 默认目录）是：`{runtime_cwd}`\n\n"
+                        )
                         if has_distinct_cwd
                         else "\n"
                     )
@@ -702,7 +744,11 @@ class RuntimePromptRail(DeepAgentRail):
                         "## 项目目录\n\n"
                         "### 项目目录说明\n\n"
                         f"{project_description}"
-                        f"当前项目目录是：`{prompt_project_dir}`\n"
+                        + (
+                            "当前项目目录见运行时状态中的「当前目录」。\n"
+                            if paths_elsewhere else f"当前项目目录是：`{prompt_project_dir}`\n"
+                        )
+                        +
                         f"{cwd_description}"
                         "### 项目目录规则\n\n"
                         f"{separation_rule}"
@@ -713,9 +759,15 @@ class RuntimePromptRail(DeepAgentRail):
                 if has_projectless_task:
                     active_directory_content = (
                         "## Current Task Directories\n\n"
-                        f"- Current task root: `{task_workspace_root}`\n"
-                        f"- Temporary working directory: `{task_work_dir}`\n"
-                        f"- Final deliverables directory: `{task_outputs_dir}`\n\n"
+                        + (
+                            "- The paths of the current task root, temporary working directory and final "
+                            "deliverables directory are under Current Directories in the runtime state.\n\n"
+                            if paths_elsewhere else
+                            f"- Current task root: `{task_workspace_root}`\n"
+                            f"- Temporary working directory: `{task_work_dir}`\n"
+                            f"- Final deliverables directory: `{task_outputs_dir}`\n\n"
+                        )
+                        +
                         "- Resolve relative paths against the temporary working directory.\n"
                         "- When Bash is called without an explicit `workdir`, "
                         "run it in the temporary working directory.\n"
@@ -731,7 +783,13 @@ class RuntimePromptRail(DeepAgentRail):
                 elif not has_project:
                     active_directory_content = (
                         "## Current Project Directory\n\n"
-                        f"- The project directory is the current runtime workspace: `{prompt_project_dir}`\n\n"
+                        + (
+                            "- The project directory is the current runtime workspace; its path is under "
+                            "Current Directories in the runtime state.\n\n"
+                            if paths_elsewhere else
+                            f"- The project directory is the current runtime workspace: `{prompt_project_dir}`\n\n"
+                        )
+                        +
                         "- Resolve relative paths against the project directory.\n"
                         "- When Bash is called without an explicit `workdir`, run it in the project directory.\n"
                         "- When no save location is specified, put task artifacts in "
@@ -749,8 +807,13 @@ class RuntimePromptRail(DeepAgentRail):
                         else "- The project directory is your current workspace; "
                     )
                     cwd_description = (
-                        f"- The current working directory (cwd, relative-path base, and Bash default) is: "
-                        f"`{runtime_cwd}`\n\n"
+                        (
+                            "- The current working directory (cwd, relative-path base, and Bash default) is "
+                            "under Current Directories in the runtime state.\n\n"
+                            if paths_elsewhere else
+                            f"- The current working directory (cwd, relative-path base, and Bash default) is: "
+                            f"`{runtime_cwd}`\n\n"
+                        )
                         if has_distinct_cwd
                         else "\n"
                     )
@@ -768,7 +831,11 @@ class RuntimePromptRail(DeepAgentRail):
                         "## Project Directory\n\n"
                         "### Project Directory Description\n\n"
                         f"{project_description}"
-                        f"the current project directory is: `{prompt_project_dir}`\n"
+                        + (
+                            "the current project directory is under Current Directories in the runtime state.\n"
+                            if paths_elsewhere else f"the current project directory is: `{prompt_project_dir}`\n"
+                        )
+                        +
                         f"{cwd_description}"
                         "### Project Directory Rules\n\n"
                         f"{separation_rule}"
@@ -835,6 +902,56 @@ class RuntimePromptRail(DeepAgentRail):
                 content={"cn": directory_content, "en": directory_content},
                 priority=SystemPromptPriority.DIRECTORY_BOUNDARIES,
             ))
+
+    def _conversation_dirs(self, agent_workspace_dir: str | None = None) -> dict[str, Any]:
+        """The directories of this conversation: its task or project, and its cwd."""
+        if agent_workspace_dir is None:
+            agent_workspace_dir = self._existing_dir(self._workspace_dir) or str(Path(get_agent_workspace_dir()))
+        project_dir = self._existing_dir(self._project_dir)
+        task_workspace_root = self._existing_dir(self._task_workspace_root)
+        task_work_dir = self._existing_dir(self._task_work_dir)
+        task_outputs_dir = self._existing_dir(self._task_outputs_dir)
+        runtime_cwd = (
+            self._existing_dir(self._cwd)
+            or task_work_dir
+            or project_dir
+            or agent_workspace_dir
+        )
+        has_project = project_dir is not None
+        return {
+            "task_workspace_root": task_workspace_root,
+            "task_work_dir": task_work_dir,
+            "task_outputs_dir": task_outputs_dir,
+            "runtime_cwd": runtime_cwd,
+            "has_projectless_task": bool(
+                project_dir is None and task_workspace_root and task_work_dir and task_outputs_dir
+            ),
+            "has_project": has_project,
+            "prompt_project_dir": project_dir or runtime_cwd,
+            "has_distinct_cwd": bool(has_project and not self._same_path(project_dir or "", runtime_cwd)),
+        }
+
+    def _conversation_directory_lines(self, cn: bool) -> str:
+        """The paths the system prompt's directory rules refer to, for runtime.setting."""
+        if self._channel not in ("tui", "web", "ws_client", "process_cli"):
+            return ""
+        dirs = self._conversation_dirs()
+        if dirs["has_projectless_task"]:
+            rows = (
+                ("当前任务根目录", "Current task root", dirs["task_workspace_root"]),
+                ("临时工作目录", "Temporary working directory", dirs["task_work_dir"]),
+                ("最终产物目录", "Final deliverables directory", dirs["task_outputs_dir"]),
+            )
+        elif not dirs["has_project"]:
+            rows = (("项目目录", "Project directory", dirs["prompt_project_dir"]),)
+        else:
+            rows = (("当前项目目录", "Current project directory", dirs["prompt_project_dir"]),)
+            if dirs["has_distinct_cwd"]:
+                rows += (("当前工作目录", "Current working directory", dirs["runtime_cwd"]),)
+        heading = "## 当前目录" if cn else "## Current Directories"
+        separator = "：" if cn else ": "
+        lines = [f"- {label_cn if cn else label_en}{separator}`{path}`" for label_cn, label_en, path in rows]
+        return "\n\n" + heading + "\n\n" + "\n".join(lines)
 
     async def _refresh_dynamic_attachments(
         self,
@@ -910,6 +1027,7 @@ class RuntimePromptRail(DeepAgentRail):
                 f"- 当前模式：{mode}\n"
                 f"- 当前语言：{language_val}\n"
                 f"- 当前渠道：{channel}"
+                f"{self._conversation_directory_lines(cn=True)}"
             )
         else:
             runtime_content = (
@@ -919,6 +1037,7 @@ class RuntimePromptRail(DeepAgentRail):
                 f"- Current mode: {mode}\n"
                 f"- Current language: {language_val}\n"
                 f"- Current channel: {channel}"
+                f"{self._conversation_directory_lines(cn=False)}"
             )
         await self._upsert_prompt_attachment(
             ctx,

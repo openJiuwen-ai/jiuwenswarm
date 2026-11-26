@@ -44,8 +44,11 @@ const SURFACE_NOTE = 'The document state at the start of this turn is in the lat
 interface Options {
   run: WordRun;
   host: OfficeHost;
-  /** The enums ``execute_office_js`` code sees as ``Word``. */
-  enums: Record<string, Readonly<Record<string, string>>>;
+  /**
+   * The enums ``execute_office_js`` code sees as ``Word``; absent on a host that runs no Office.js (WPS), which then
+   * has no ``execute_office_js``.
+   */
+  enums?: Record<string, Readonly<Record<string, string>>>;
   reviews: DocEditReview;
   /** The document's first pages, drawn; absent where Word cannot export a PDF (Word on the web). */
   pages?: () => Promise<RenderedPages>;
@@ -77,7 +80,8 @@ export function wordRuntime(options: Options): ClientToolRuntime<WordToolName> {
     },
   };
   return {
-    tools: new Set(WORD_TOOL_NAMES.filter(name => name !== 'verify_doc_visual' || options.pages)),
+    tools: new Set(WORD_TOOL_NAMES.filter(name => (name !== 'verify_doc_visual' || options.pages)
+      && (name !== 'execute_office_js' || options.enums))),
     execute: async ({ toolName, input, callId, sessionId }) => {
       try {
         return await tools[toolName]({ input, callId, sessionId });
@@ -331,7 +335,7 @@ async function runCode({ run, enums }: Options, code: string): Promise<ClientToo
     }
     return result;
   });
-  const response = await runOfficeCode({ name: 'Word', run: watched, enums, screen: screenWordWrite }, code);
+  const response = await runOfficeCode({ name: 'Word', run: watched, globals: { Word: enums }, screen: screenWordWrite }, code);
   return warning && response.ok ? { ...response, successFields: { tracked_change_warning: warning } } : response;
 }
 

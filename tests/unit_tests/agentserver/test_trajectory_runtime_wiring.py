@@ -69,7 +69,7 @@ def test_agent_symphony_capture_enables_observability_without_manual_switch(
         lambda: {
             "react": {"evolution": {"skill_evolution": False}},
             "observability": {"agent": {"enabled": False}},
-            "symphony": {"enabled": True, "evolution": {"enabled": True}},
+            "symphony": {"orchestration": {"enabled": True, "experience": {"enabled": True}}},
         },
     )
     monkeypatch.setattr(
@@ -152,7 +152,7 @@ def test_team_symphony_capture_enables_observability_without_manual_switch(
         lambda: {
             "react": {"evolution": {"skill_evolution": False}},
             "observability": {"team": {"enabled": False}},
-            "symphony": {"enabled": True, "evolution": {"enabled": True}},
+            "symphony": {"orchestration": {"enabled": True, "experience": {"enabled": True}}},
         },
     )
     monkeypatch.setattr(
@@ -322,7 +322,7 @@ def test_agent_observability_init_receives_process_processor(monkeypatch, tmp_pa
             state.__setitem__("initialized", True),
         ),
     )
-    monkeypatch.setattr(agent_observability, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(agent_observability, "get_trace_dir", lambda: tmp_path / ".trace")
     monkeypatch.setattr(
         agent_observability,
         "get_config",
@@ -361,7 +361,7 @@ def test_team_observability_init_receives_process_processor(monkeypatch, tmp_pat
             state.__setitem__("initialized", True),
         ),
     )
-    monkeypatch.setattr(team_manager, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(team_manager, "get_trace_dir", lambda: tmp_path / ".trace")
     monkeypatch.setattr(
         team_manager,
         "get_config",

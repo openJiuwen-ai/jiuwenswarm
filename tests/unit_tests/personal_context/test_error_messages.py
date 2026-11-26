@@ -48,6 +48,42 @@ def test_serialized_history_errors_use_only_stable_code_prefix():
     assert payload["last_error"]["message"] == "raw"
 
 
+def test_run_records_expose_failure_stage_and_business_code():
+    from jiuwenswarm.server.personal_context.error_messages import localize_payload
+
+    payload = {
+        "services": [
+            {
+                "service_id": "Test-01",
+                "run_state": "failed",
+                "last_error": (
+                    "[154002] context proactive_file execution error, "
+                    "reason: local files directory scan failed"
+                ),
+            },
+            {"service_id": "Test-02", "run_state": "succeeded", "last_error": None},
+        ]
+    }
+    failed, succeeded = localize_payload(payload, "zh")["services"]
+    assert failed["last_error_code"] == "154002"
+    assert failed["last_error_stage"] == "scan"
+    assert "文件" in failed["last_error"]
+    assert "local files directory scan failed" not in failed["last_error"]
+    assert succeeded["last_error_code"] == ""
+    assert succeeded["last_error_stage"] == ""
+
+
+def test_failure_stage_resolves_from_both_codes_and_core_status_names():
+    from jiuwenswarm.server.personal_context.error_messages import describe_error
+
+    assert describe_error({"code": 154002}) == {"code": "154002", "stage": "scan"}
+    assert describe_error({"code": 154005})["stage"] == "publish"
+    assert describe_error(
+        {"status": "CONTEXT_PROACTIVE_PIPELINE_EXECUTION_ERROR"}
+    )["stage"] == "pipeline"
+    assert describe_error(None) == {"code": "", "stage": ""}
+
+
 @pytest.mark.parametrize(
     "text",
     [

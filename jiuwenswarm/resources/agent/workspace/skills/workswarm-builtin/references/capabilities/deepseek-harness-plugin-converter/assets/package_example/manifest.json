@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "id": "example.converted-panel",
+    "version": "0.0.1",
+    "domain": "agentserver"
+  },
+  "display": {
+    "name": {
+      "zh": "转换结果示例面板",
+      "en": "Converted Plugin Example Panel"
+    },
+    "description": {
+      "zh": "演示转换后的系统插件如何复用已有槽位。",
+      "en": "Shows how a converted system plugin reuses an existing slot."
+    },
+    "events": [
+      {
+        "name": "ui.ready",
+        "description": {
+          "zh": "目标槽位挂载后渲染示例内容",
+          "en": "Render example content after the target slot mounts"
+        }
+      }
+    ]
+  },
+  "extensions": [
+    {
+      "id": "converted-panel",
+      "runtime": "backend",
+      "module": "example_plugin/extension.py"
+    }
+  ],
+  "ui": {
+    "apiVersion": 1,
+    "items": [
+      {
+        "type": "web.slot.contribution",
+        "id": "converted-panel.main",
+        "slot": "conversation.input.above",
+        "order": 30,
+        "renderer": {
+          "kind": "webui-tree"
+        }
+      }
+    ]
+  }
+}

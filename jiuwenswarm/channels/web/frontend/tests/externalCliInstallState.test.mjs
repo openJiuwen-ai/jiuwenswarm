@@ -247,7 +247,8 @@ test('re-detecting keeps the card layout stable instead of unmounting the path b
   // `installed` must not depend on detectingNow: gating it unmounted the path
   // block and install button during probes, collapsing and regrowing the card
   // (the whole settings page shook on every 检测 click).
-  assert.match(sectionSource, /const installed = isInstalledStatus\(result\);/);
+  assert.match(sectionSource, /const installed = isInstalledStatus\(result\)/);
+  assert.doesNotMatch(sectionSource, /const installed = [^;]*detectingNow/);
   // Controls stay mounted and are merely disabled while detecting. Detect and
   // install disable independently: detect is a read-only probe, so it stays
   // usable while the agent's own install runs — only the install button
@@ -465,7 +466,9 @@ async function mountCliSection(draftValues, onDetect, sectionProps = {}) {
     onDetect,
     onChange: () => {},
     onCommitAgent: async (agent, choice) => { commits.push([agent, choice]); },
-    initialResults: { claude: { cli_agent: 'claude', status: 'ok', path: '/bundled/claude' } },
+    initialResults: {
+      claude: { cli_agent: 'claude', status: 'ok', path: '/bundled/claude', reference_version: '2.1.206' },
+    },
     t: (key) => key,
     ...sectionProps,
   };
@@ -503,12 +506,14 @@ function assertCliStatus(agent, expected) {
   assert.equal(status.textContent, `config.externalCli.${expected}`, agent);
 }
 
-for (const [name, enabled, detectionStatus, expected] of [
-  ['undetected and disabled', false, null, 'notInstalled'],
-  ['missing and disabled', false, 'missing', 'notInstalled'],
-  ['installed and disabled', false, 'ok', 'disabled'],
-  ['installed with a warning and disabled', false, 'warning', 'disabled'],
-  ['installed and enabled', true, 'ok', 'installed'],
+for (const [name, enabled, detectionStatus, referenceVersion, expected] of [
+  ['undetected and disabled', false, null, undefined, 'notInstalled'],
+  ['missing CLI with an SDK', false, 'missing', '0.144.4', 'notInstalled'],
+  ['usable CLI without an SDK and disabled', false, 'ok', '', 'notInstalled'],
+  ['usable CLI without an SDK and enabled', true, 'ok', undefined, 'notInstalled'],
+  ['installed and disabled', false, 'ok', '0.144.4', 'disabled'],
+  ['installed with a warning and disabled', false, 'warning', '0.144.4', 'disabled'],
+  ['installed and enabled', true, 'ok', '0.144.4', 'installed'],
 ]) {
   test(`external CLI status labels: ${name}`, async () => {
     const agents = ['claude', 'codex'];
@@ -516,11 +521,17 @@ for (const [name, enabled, detectionStatus, expected] of [
       `external_cli_agent_${agent}_enabled`, String(enabled),
     ]));
     const initialResults = detectionStatus === null ? {} : Object.fromEntries(agents.map((agent) => [
-      agent, { cli_agent: agent, status: detectionStatus },
+      agent, { cli_agent: agent, status: detectionStatus, reference_version: referenceVersion },
     ]));
     const env = await mountCliSection(draft, undefined, { initialResults });
     try {
-      for (const agent of agents) assertCliStatus(agent, expected);
+      for (const agent of agents) {
+        assertCliStatus(agent, expected);
+        const installHint = document.querySelector(
+          `[data-testid="settings-panel-external-cli-agent-install-hint"][data-variant="${agent}"]`,
+        );
+        assert.equal(Boolean(installHint), expected === 'notInstalled', agent);
+      }
     } finally {
       env.cleanup();
     }
@@ -558,6 +569,7 @@ test('PATH remains selectable with a saved built-in choice and after changing ex
   };
   const onDetect = async (agent, path, builtin) => ({
     cli_agent: agent, status: 'ok', path: path || (builtin ? '/bundled/claude' : '/local/claude'),
+    reference_version: '2.1.206',
   });
   const env = await mountCliSection(initial, onDetect);
   try {
@@ -589,6 +601,7 @@ test('enabling and installing prefer PATH while explicit executable choices surv
   };
   const env = await mountCliSection(initial, async (agent, path) => ({
     cli_agent: agent, status: 'ok', path: path || '/local/claude',
+    reference_version: '2.1.206',
   }));
   try {
     await env.click('[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]');
@@ -674,6 +687,19 @@ test('uploaded custom agents are listed after Claude and Codex', async () => {
   assert.equal(section.externalCliAgentDisplayName('opencode'), 'opencode');
   assert.deepEqual(section.parseExternalCliCustomAgents('not json'), []);
   assert.deepEqual(section.parseExternalCliCustomAgents(undefined), []);
+});
+
+test('a usable custom agent does not require an SDK reference version', async () => {
+  const env = await mountCliSection({ external_cli_agent_opencode_enabled: 'true' }, undefined, {
+    customAgents: [{ name: 'opencode', version: '0.1.0', summary: 'OpenCode', has_cli: true }],
+    initialResults: { opencode: { cli_agent: 'opencode', status: 'ok', reference_version: '' } },
+  });
+  try {
+    const card = document.querySelector('[data-testid="settings-panel-external-cli-agent"][data-variant="opencode"]');
+    assert.equal(card?.getAttribute('data-state'), 'installed');
+  } finally {
+    env.cleanup();
+  }
 });
 
 test('custom agent switches are accepted settings keys', async () => {

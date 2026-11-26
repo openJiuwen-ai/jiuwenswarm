@@ -296,6 +296,37 @@ async def test_a_cancelled_pause_asks_nothing_more() -> None:
     assert await runtime.pending_interactions(session_id) == []
 
 
+class _StalledResumeAgent(_DocumentAgent):
+    """Resumes on the answered calls, then waits on the model until the turn is cancelled."""
+
+    async def deliver_control_input(self, request: AgentRequest):
+        self.delivered.append(dict(request.params))
+        yield AgentResponseChunk(request_id=request.request_id, channel_id=request.channel_id,
+                                 payload={"event_type": "chat.delta", "content": "working"})
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_a_message_from_another_conversation_runs_once_a_resumed_turn_is_cancelled() -> None:
+    session_id = "client-resume-cancel"
+    runtime, admission = await _paused(session_id, _StalledResumeAgent())
+    resumed = asyncio.Event()
+
+    async def resume() -> None:
+        async for _event in runtime.stream(_resume(session_id, is_stream=True), trigger_hook=False):
+            resumed.set()
+
+    turn = asyncio.create_task(resume())
+    await asyncio.wait_for(resumed.wait(), 5)
+    await runtime.cancel_request(AgentRequest(
+        request_id="cancel-1", channel_id="web", session_id=session_id, req_method=ReqMethod.CHAT_CANCEL,
+        params={"intent": "cancel"},
+    ))
+    await asyncio.gather(turn, return_exceptions=True)
+
+    await asyncio.wait_for(admission.begin_session_message(session_id, "message-1"), 1)
+
+
 class _MixedAgent(FakeAgent):
     """Pauses on an approval and a client tool call; a resume asks again for what it left unanswered."""
 

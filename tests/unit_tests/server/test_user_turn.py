@@ -40,6 +40,36 @@ def test_render_carries_uploaded_files():
     assert json.loads(envelope["files_updated_by_user"]) == files
     assert envelope["content"] == "总结这份文档"
 
+    assert envelope["preferred_response_language"] == "match"
+
+
+def test_user_turn_envelope_uses_match_even_when_ui_language_is_en():
+    rendered = _turn(language="en", text="用中文总结").render()
+    envelope = _envelope(rendered)
+
+    assert envelope["preferred_response_language"] == "match"
+    assert rendered.startswith("You receive a new message:\n")
+
+
+def test_cron_envelope_keeps_configured_language():
+    envelope = _envelope(_turn(channel="cron", language="en").render())
+
+    assert envelope["preferred_response_language"] == "en"
+    assert envelope["source"] == "system"
+
+
+def test_cron_internal_channel_keeps_configured_language():
+    envelope = _envelope(
+        _turn(
+            channel="__cron__",
+            language="zh",
+            metadata={"cron": {"job_id": "j1", "run_id": "r1"}},
+        ).render()
+    )
+
+    assert envelope["preferred_response_language"] == "zh"
+
+
 
 @pytest.mark.parametrize("relative_root", [False, True])
 def test_browser_video_upload_reaches_agent_prompt(tmp_path, monkeypatch, relative_root):
@@ -241,6 +271,7 @@ def test_render_marks_heartbeat_automation_and_adds_zh_task_boundary(origin_kind
     assert envelope["source"] == "system"
     assert envelope["type"] == "heartbeat"
     assert envelope["origin_kind"] == origin_kind
+    assert envelope["preferred_response_language"] == "zh"
     assert "files_updated_by_user" not in envelope
 
 
@@ -249,12 +280,14 @@ def test_render_adds_english_heartbeat_task_boundary():
         language="en",
         metadata={"automation": {"kind": "heartbeat", "run_id": "run-1"}},
     ).render()
+    envelope = _envelope(rendered)
 
     assert rendered.startswith(
         "This is an automated Heartbeat task. Execute only the task explicitly "
         "specified in content; do not change its objective or manage Heartbeat "
         "jobs unless content explicitly requires it:\n"
     )
+    assert envelope["preferred_response_language"] == "en"
 
 
 def test_render_heartbeat_preserves_explicit_management_request():
@@ -287,6 +320,7 @@ def test_render_cross_session_message_as_untrusted_agent_content():
     assert envelope["type"] == "cross_session_message"
     assert envelope["message_id"] == "sm-1"
     assert envelope["source_session"] == {"id": "source-1", "title": "Source"}
+    assert envelope["preferred_response_language"] == "zh"
     assert "skills_to_use" not in envelope
     assert "files_updated_by_user" not in envelope
 
@@ -347,3 +381,26 @@ def test_render_falls_back_to_shanghai_for_invalid_timezone():
     envelope = _envelope(turn.render())
 
     assert envelope["timestamp"].endswith("(UTC+08:00, Asia/Shanghai)")
+
+
+def test_prefer_mcp_directive_follows_ui_language_zh():
+    envelope = _envelope(
+        _turn(
+            language="zh",
+            metadata={"prefer_mcp": {"display_name": "天气", "id": "weather"}},
+        ).render()
+    )
+
+    assert "MCP「天气」" in envelope["prefer_mcp"]
+
+
+def test_prefer_mcp_directive_follows_ui_language_en():
+    envelope = _envelope(
+        _turn(
+            language="en",
+            metadata={"prefer_mcp": {"display_name": "Weather", "id": "weather"}},
+        ).render()
+    )
+
+    assert 'MCP "Weather"' in envelope["prefer_mcp"]
+    assert "本次任务" not in envelope["prefer_mcp"]

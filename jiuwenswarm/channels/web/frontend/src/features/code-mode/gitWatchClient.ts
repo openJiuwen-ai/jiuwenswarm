@@ -1,5 +1,7 @@
 import type { WebConnectionState, WebError, WsEvent, WsResponse } from '../../types';
 import { getWsBase } from '../../utils/env';
+import i18n from '../../i18n';
+import { browserClientCapabilities } from '../webui/client/browserClient.ts';
 
 type EventHandler = (event: WsEvent) => void;
 type StateHandler = (state: WebConnectionState) => void;
@@ -23,6 +25,14 @@ function buildGitWsUrl(): string {
 }
 
 class GitWatchClient {
+  constructor() {
+    browserClientCapabilities.subscribe(({ phase }) => {
+      if (phase === 'changing') {
+        this.rejectAllPending(this.createError(i18n.t('network.requestAborted'), 'CONTEXT_CHANGED'));
+      }
+    });
+  }
+
   private ws: WebSocket | null = null;
   private state: WebConnectionState = 'idle';
   private connectPromise: Promise<void> | null = null;
@@ -113,6 +123,10 @@ class GitWatchClient {
     }
 
     const id = this.nextRequestId();
+    const message = browserClientCapabilities.bindWebSocket({ type: 'req', id, method, params });
+    if (browserClientCapabilities.isChanging()) {
+      throw this.createError(i18n.t('network.requestAborted'), 'CONTEXT_CHANGED');
+    }
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     return new Promise<T>((resolve, reject) => {
       const timeoutId = window.setTimeout(() => {
@@ -124,7 +138,7 @@ class GitWatchClient {
         reject,
         timeoutId,
       });
-      this.ws?.send(JSON.stringify({ type: 'req', id, method, params }));
+      this.ws?.send(JSON.stringify(message));
     });
   }
 
@@ -150,6 +164,7 @@ class GitWatchClient {
     }
     if (raw.type !== 'event' || typeof raw.event !== 'string') return;
     const payload = raw.payload && typeof raw.payload === 'object' ? (raw.payload as Record<string, unknown>) : {};
+    if (browserClientCapabilities.isUnavailable()) return;
     const event: WsEvent = {
       type: 'event',
       event: raw.event,

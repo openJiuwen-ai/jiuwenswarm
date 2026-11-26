@@ -769,7 +769,9 @@ class BackgroundGenerationCoordinator:
         generation_task: asyncio.Future[BackgroundGenerationResult] | None = None
         generation_attempt_id = current_background_generation_attempt_id() or f"background-attempt-{uuid.uuid4().hex}"
         try:
-            if not restock and self._already_written(trigger_key):
+            if not restock and await asyncio.to_thread(
+                self._already_written, trigger_key,
+            ):
                 return "already_written"
             if require_ark_config and ark_config is None:
                 self.record_generation_event(

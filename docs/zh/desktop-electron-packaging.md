@@ -135,6 +135,7 @@ app.whenReady
 JIUWENSWARM_DESKTOP=1  JIUWENSWARM_ELECTRON=1
 WEB_PORT=<gatewayApi>  GATEWAY_PORT=<gatewayInternal>
 AGENT_SERVER_PORT=AGENT_PORT=<agentServer>  FRONTEND_PORT=<frontend>
+OFFICE_TLS_PORT=<officeTls>（Office 加载项任务窗格的 HTTPS 监听端口）
 JIUWENSWARM_RUNTIME_WORKSPACE_READY=1
 删除 AGENT_SERVER_URL（防 .env 里的陈旧 URL 绕过重映射端口）
 ```
@@ -361,3 +362,11 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 | `src/features/singleAgentPanelState.ts` / `teamPanelStateNormalize.ts` | tab 状态（含 'browser'） |
 | `src/utils/env.ts` | apiBase/wsBase（Electron FrontendOnly 走 jiuwenDesktop） |
 | `src/types/electron.ts` | jiuwenDesktop 类型 |
+
+
+## 扩展包命令入口
+
+冻结后端增加 `extension` 分发，位置在桌面单实例锁之前，复用 `jiuwenswarm.channels.cli.extension`。
+EXE 与 DMG 都通过现有后端程序执行，路径由 `JIUWENSWARM_EXECUTABLE` 提供；不新增系统级命令启动器。
+PyInstaller spec 显式收集 CLI 模块与本机管理通道。命令结果及退出码沿用源码、Wheel 入口。
+运行中的后端自动提供本机连接信息；具体用法见[命令行指令](命令行指令.md#扩展包管理extension)。

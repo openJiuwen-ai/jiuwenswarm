@@ -14,6 +14,7 @@ const LIFECYCLE_ERROR_KEYS: Record<string, string> = {
   SESSION_INPUT_IMAGE_UNAVAILABLE: 'chat.steerImageUnavailable',
   SESSION_INPUT_DELIVERY_FAILED: 'chat.steerDeliveryFailed',
   SWARMFLOW_SESSION_BUDGET_EXHAUSTED: 'swarmflow.budgetExhaustedSession',
+  WORKSPACE_QUOTA_EXCEEDED: 'agent.quota.chatBlockBody',
 };
 
 // "ambiguous legacy model name"（ModelSelectionError 固定文案）：模型目录存在
@@ -45,7 +46,7 @@ function withQuotaExhaustedHint(message: string, t: Translate): string | null {
 }
 
 export function describeChatError(
-  payload: { code?: unknown; upstream?: unknown },
+  payload: { code?: unknown; upstream?: unknown; error?: unknown; detail?: unknown },
   rawErrorMsg: string,
   t: Translate,
 ): string {
@@ -53,6 +54,11 @@ export function describeChatError(
   if (code === 'model_not_configured') return t('chat.modelNotConfigured');
   const lifecycleKey = LIFECYCLE_ERROR_KEYS[code];
   if (lifecycleKey) return t(lifecycleKey);
+  // 部分路径只在 error/detail 字符串里带 WORKSPACE_QUOTA_EXCEEDED。
+  const blob = `${rawErrorMsg} ${String(payload.error ?? '')} ${String(payload.detail ?? '')}`;
+  if (blob.includes('WORKSPACE_QUOTA_EXCEEDED')) {
+    return t('agent.quota.chatBlockBody');
+  }
   const hintKey = UPSTREAM_HINT_KEYS[code];
   if (!hintKey) return withModelNameAmbiguousHint(rawErrorMsg, t);
   if (code === 'free_model_unavailable' && payload.upstream === true) {
@@ -64,4 +70,29 @@ export function describeChatError(
   }
   console.warn('[free-models] chat error', code, rawErrorMsg);
   return t(hintKey);
+}
+
+// 常驻 worker 关闭是 INFO 级生命周期事件。该请求已经交过本轮终结的 chat.final
+// 且当前不在处理时，说明任务已正常收尾，之后的关闭只是进程回收。
+const WORKER_LIFECYCLE_CODES = new Set(['WORKER_CLOSED', 'WORKER_UNSTABLE']);
+
+export interface WorkerLifecycleTurnState {
+  // 会话当前是否仍在处理中。
+  isProcessing: boolean;
+  // 会话当前正在处理的 request_id（未知时为空）。
+  processingRequestId?: string;
+}
+
+export function isFinishedTurnWorkerLifecycleError(
+  payload: { code?: unknown },
+  requestId: string | undefined,
+  finalizedRequestIds: ReadonlySet<string>,
+  turn: WorkerLifecycleTurnState,
+): boolean {
+  const code = typeof payload.code === 'string' ? payload.code : '';
+  if (!WORKER_LIFECYCLE_CODES.has(code) || !requestId) return false;
+  if (!finalizedRequestIds.has(requestId)) return false;
+  // 该请求仍是会话正在跑的这一轮时，关闭就是真实故障：中间段 final 之后
+  // 仍可能继续执行（Goal 续跑、团队多轮），不能把半截结果当成完整结果。
+  return !(turn.isProcessing && turn.processingRequestId === requestId);
 }

@@ -41,7 +41,12 @@ def model_headers_from_data(data: Any) -> dict[str, str] | None:
 
 
 def model_entity_to_config_entry(entity: dict[str, Any]) -> dict[str, Any]:
-    """将 ``model_template`` 行转为 ``get_default_models`` 兼容的条目。"""
+    """将 ``model_template`` 行转为 ``get_default_models`` 兼容的条目。
+
+    ``retry_count`` 只写入 ``model_client_config.max_retries`` 作为兼容字段
+    （SDK 仍固定 0，不由此驱动）。执行护栏的 ``transient_max_retries`` 与开关
+    由执行护栏模板持有，模型套用不再改 ``execution_guard``。
+    """
     parameters = entity.get("parameters")
     if not isinstance(parameters, dict):
         parameters = {}
@@ -153,9 +158,9 @@ def apply_enterprise_models_to_config(
 
         mcc = entry.get("model_client_config") or {}
         models_section[config_key] = {
-            "model_client_config": dict(mcc),
-            "model_config_obj": dict(entry.get("model_config_obj") or {}),
-        }
+        "model_client_config": dict(mcc),
+        "model_config_obj": dict(entry.get("model_config_obj") or {}),
+    }
         if config_key == "default":
             default_entry = entry
         applied = True

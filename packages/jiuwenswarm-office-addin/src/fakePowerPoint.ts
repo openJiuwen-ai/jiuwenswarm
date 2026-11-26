@@ -619,7 +619,9 @@ export function importSlides(base64: string, sourceSlideIds?: string[]): {
 
 /** The offset and extent of the first ``xfrm`` of a shape element, in points. */
 function geometry(element: Element): Pick<FakeShapeState, 'left' | 'top' | 'width' | 'height'> {
-  const of = (name: string) => element.getElementsByTagNameNS(A, name)[0];
+  // A picture's extension list (``a:extLst/a:ext``) comes before its frame's ``a:ext``.
+  const of = (name: string) => Array.from(element.getElementsByTagNameNS(A, name))
+    .find(item => item.parentNode?.localName === 'xfrm');
   const at = (name: string, attribute: string) => Number(of(name)?.getAttribute(attribute) ?? 0) / EMU;
   return { left: at('off', 'x'), top: at('off', 'y'), width: at('ext', 'cx'), height: at('ext', 'cy') };
 }

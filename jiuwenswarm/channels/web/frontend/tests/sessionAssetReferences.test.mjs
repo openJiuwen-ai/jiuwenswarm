@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   displayFileName,
   findReferencedAssets,
+  normalizePath,
   resolveAssetDisplayNames,
   samePath,
   validateAssetName,
@@ -46,6 +47,30 @@ test('validates asset names like the backend', () => {
 test('compares Windows paths ignoring case and slash direction', () => {
   assert.equal(samePath('C:\\A\\b.png', 'c:/a/B.PNG'), true);
   assert.equal(samePath('C:\\A\\b.png', 'C:\\A\\c.png'), false);
+});
+
+test('preserves POSIX paths and compares them case-sensitively', () => {
+  assert.equal(normalizePath('/a/B.png'), '/a/B.png');
+  assert.equal(samePath('/a/B.png', '/a/b.png'), false);
+  assert.equal(samePath('/a/B.png', '/a/B.png'), true);
+});
+
+test('preserves relative paths without a Windows prefix', () => {
+  assert.equal(normalizePath('assets/Img.png'), 'assets/Img.png');
+  assert.equal(normalizePath('assets\\Img.png'), 'assets\\Img.png');
+  assert.equal(samePath('assets\\Img.png', 'assets/Img.png'), false);
+});
+
+test('normalizes Windows drive paths with either slash direction', () => {
+  assert.equal(normalizePath('C:\\A\\b.png'), 'c:/a/b.png');
+  assert.equal(normalizePath('c:/A/B.PNG'), 'c:/a/b.png');
+});
+
+test('compares UNC paths ignoring case and slash direction', () => {
+  assert.equal(normalizePath('\\\\Server\\Share\\B.PNG'), '//server/share/b.png');
+  assert.equal(normalizePath('//Server/Share/B.PNG'), '//server/share/b.png');
+  assert.equal(samePath('\\\\Server\\Share\\B.PNG', '//server/share/b.png'), true);
+  assert.equal(samePath('//server/share/B.png', '//server/share/C.png'), false);
 });
 
 test('display name adds the extension back without an @ prefix', () => {

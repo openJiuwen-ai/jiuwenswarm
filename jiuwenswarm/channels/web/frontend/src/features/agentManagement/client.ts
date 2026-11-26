@@ -181,7 +181,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
             webRequest,
             'agent_templates.list',
             params,
-            !options.query,
+            { preferCache: !options.query },
           );
         const payload = isEnterprise()
           ? await retryWhilePodStarting(loadCatalog, { onWaiting: options.onPodStarting })
@@ -298,6 +298,8 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
             source: item.source,
             runtimePackageName,
             ...(item.hubAssetId ? { hubAssetId: item.hubAssetId } : {}),
+            ...(item.sourceId ? { sourceId: item.sourceId } : {}),
+            ...(item.version ? { version: item.version } : {}),
             installed: item.installed,
             icon: item.icon,
           };

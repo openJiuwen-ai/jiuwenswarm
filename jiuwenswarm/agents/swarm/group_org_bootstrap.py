@@ -704,16 +704,29 @@ def queued_direct_result(plan: dict) -> Any:
     )
 
 
-def release_deferred_direct(session_id: str, plan_id: str) -> None:
+def has_deferred_direct(session_id: str) -> bool:
+    """Return whether this session has a direct reply waiting to start."""
+    return any(key[0] == session_id and not job.get("started") for key, job in _deferred_direct.items())
+
+
+def release_deferred_direct(
+    session_id: str, plan_id: str, *, plans: list[dict] | None = None,
+) -> None:
     """After an organization posts, start direct replies that were waiting on it."""
-    plan = _plan_record(session_id, plan_id) or {}
+    plan = (_plan_record(session_id, plan_id) if plans is None else
+            next((item for item in plans if item.get("plan_id") == plan_id), None)) or {}
     for name in plan.get("members") or []:
         release_member_turn(session_id, str(name), plan_id)
     for key, job in list(_deferred_direct.items()):
         if key[0] != session_id or job.get("started"):
             continue
         member = str(job.get("member") or "")
-        if pending_organization_plan(session_id, member) is not None:
+        if plans is None:
+            pending = pending_organization_plan(session_id, member) is not None
+        else:
+            pending = any(item.get("status") in {"pending", "running"}
+                          and member in (item.get("members") or []) for item in plans)
+        if pending:
             continue
         job["started"] = True
         _schedule_direct_member(session_id, job)
@@ -1155,6 +1168,13 @@ async def wait_for_earlier_organization_plans(
         if not pending:
             return
         event = _plan_event(session_id, str(pending[0].get("plan_id") or ""))
+        if event.is_set():
+            # The plan's record still reads live although its completion was
+            # signalled: a status write failed, or the event outlived an earlier
+            # plan with the same id. ``event.wait()`` on a set event returns
+            # without suspending, so waiting on it would spin and starve the
+            # event loop. Re-arm it; the timeout below re-reads the record.
+            event.clear()
         try:
             await asyncio.wait_for(event.wait(), timeout=POLL_SECONDS)
         except TimeoutError:

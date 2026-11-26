@@ -152,6 +152,11 @@ def resolve_package(name: str) -> McpPackageManifest | None:
     return _resolve_package(name)
 
 
+def list_local_packages() -> list[McpPackageManifest]:
+    """Read installed connector manifests using the registry's root precedence."""
+    return iter_mcp_packages(*_package_roots())
+
+
 def _resolve_package(name: str) -> McpPackageManifest | None:
     return resolve_mcp_package(str(name or "").strip(), *_package_roots())
 
@@ -205,11 +210,8 @@ def _detect_integration_type(pkg_dir: Path) -> str:
     return load_mcp_package(pkg_dir).integration_type
 
 
-def _load_index_entry(name: str) -> dict[str, Any]:
-    """Return display metadata from a package's own manifest."""
-    package = _resolve_package(name)
-    if package is None:
-        return {}
+def _index_entry_from_package(package: McpPackageManifest) -> dict[str, Any]:
+    """Return display metadata from an already-loaded package manifest."""
     raw = package.raw
     display_name = raw.get("display_name") if isinstance(raw.get("display_name"), dict) else {}
     display_description = (
@@ -231,6 +233,12 @@ def _load_index_entry(name: str) -> dict[str, Any]:
         "examples_zh": examples.get("zh") or [],
         "examples": examples.get("en") or [],
     }
+
+
+def _load_index_entry(name: str) -> dict[str, Any]:
+    """Return display metadata from a package's own manifest."""
+    package = _resolve_package(name)
+    return _index_entry_from_package(package) if package is not None else {}
 
 
 def _connector_meta_by_name(name: str) -> dict[str, Any]:
@@ -279,11 +287,8 @@ def get_connector_catalog_display(name: str) -> tuple[dict[str, str], dict[str, 
     return display_name, display_desc
 
 
-def _bundled_skill_names(pkg_dir: Path) -> list[str]:
+def _bundled_skill_names(package: McpPackageManifest) -> list[str]:
     """Bundled skill runtime names from manifest-declared directories."""
-    package = resolve_mcp_package(pkg_dir.name, pkg_dir.parent)
-    if package is None:
-        return []
     names: list[str] = []
     for skills_dir in package.skill_dirs:
         if _has_skill_file(skills_dir):
@@ -303,36 +308,35 @@ def _mask_mcp_spec(mcp_spec: dict[str, Any]) -> dict[str, Any]:
     return masked
 
 
-def _load_icon_data_url(pkg_dir: Path) -> str | None:
-    """Read a package's PNG icon as a data URL, or None.
+def _package_icon_url(package: McpPackageManifest) -> str | None:
+    """Return a signed icon URL; the stat in the cache key refreshes it on update."""
+    icon = package.icon_file
+    if icon is None:
+        return None
+    try:
+        stat = icon.stat()
+        relative = icon.relative_to(package.root).as_posix()
+    except (OSError, ValueError):
+        return None
+    from jiuwenswarm.server.runtime.package_avatars import cached_package_avatar_url
 
-    Frontend can't reach the workspace filesystem, so inline the icon bytes
-    as a data URL the <img src> can render directly — no extra HTTP route
-    or fetch round-trip. PNG icons are small, so the base64
-    overhead in the summary payload is acceptable. Returns None when the
-    package ships no icon file (frontend falls back to a default/initial).
-    """
-    import base64
-    package = resolve_mcp_package(pkg_dir.name, pkg_dir.parent)
-    p = package.icon_file if package is not None else None
-    if p is not None:
-        try:
-            raw = p.read_bytes()
-        except OSError:
-            return None
-        return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
-    return None
+    url = cached_package_avatar_url(
+        relative,
+        package_dir=package.root,
+        cache_key=f"{icon}:{stat.st_mtime_ns}:{stat.st_size}",
+    )
+    return url or None
 
 
 def _build_summary(
     name: str,
-    pkg_dir: Path,
+    package: McpPackageManifest,
     meta: dict[str, Any],
     connected_names: set[str],
     connecting_names: set[str] | None = None,
 ) -> dict[str, Any]:
-    integration_type = _detect_integration_type(pkg_dir)
-    bundled = _bundled_skill_names(pkg_dir)
+    integration_type = package.integration_type
+    bundled = _bundled_skill_names(package)
     is_connected = name in connected_names
     is_connecting = name in (connecting_names or set())
     # connection_state: connected (apply done) > connecting (connect in
@@ -345,9 +349,9 @@ def _build_summary(
         connection_state = "connecting"
     else:
         connection_state = "disconnected"
-    # Icon: source meta.icon is unreliable (mostly unset); read the manifest-
-    # declared PNG and inline it so the frontend needs no extra HTTP route.
-    icon = _load_icon_data_url(pkg_dir)
+    # Icon: source meta.icon is unreliable (mostly unset); resolve the
+    # manifest-declared image to a signed HTTP URL so catalogs stay small.
+    icon = _package_icon_url(package)
     return {
         "name": name,
         # 中文名优先：display_name > name(中文) > name_zh > 包名
@@ -365,7 +369,7 @@ def _build_summary(
         # button visibility — only customize MCPs are editable.
         # Manifest 中的 source 只用于资产描述，不决定运行时来源。目录是
         # 唯一可信来源，避免 Hub 包伪装成预置包或预置包被错误标成 Hub。
-        "source": "hub" if pkg_dir.parent.name == _HUB_PACKAGES_SUBDIR else "built_in",
+        "source": "hub" if package.root.parent.name == _HUB_PACKAGES_SUBDIR else "built_in",
         # 连接状态用 connection_state 单字段表达；会话级启用走 chat.send 的
         # ``mcp`` 字段（非持久 flag），不在此返回 enabled/connected 冗余字段。
     }
@@ -373,15 +377,14 @@ def _build_summary(
 
 def _build_detail(
     name: str,
-    pkg_dir: Path,
+    package: McpPackageManifest,
     meta: dict[str, Any],
     connected_names: set[str],
     connecting_names: set[str] | None = None,
 ) -> dict[str, Any] | None:
-    summary = _build_summary(name, pkg_dir, meta, connected_names, connecting_names)
-    package = resolve_mcp_package(pkg_dir.name, pkg_dir.parent)
-    mcp_spec = _mask_mcp_spec(package.server_config or {}) if package is not None else {}
-    cli_present = package is not None and package.integration_type == "cli"
+    summary = _build_summary(name, package, meta, connected_names, connecting_names)
+    mcp_spec = _mask_mcp_spec(package.server_config or {})
+    cli_present = package.integration_type == "cli"
     # skills: full {name, description} list (bundled_skills is just names).
     # tools: tools currently registered for a connected MCP. 
     skills = get_mcp_skills(name)
@@ -394,7 +397,7 @@ def _build_detail(
         "examples": meta.get("examples_zh") or meta.get("examples", []),
         "mcp_spec": mcp_spec or None,
         "cli_spec_present": cli_present,
-        "bundled_skills": _bundled_skill_names(pkg_dir),
+        "bundled_skills": _bundled_skill_names(package),
         "skills": skills,
         "tools": get_mcp_tools(name),
     }
@@ -486,8 +489,8 @@ def list_marketplace_mcps(mcp_filter: str = "builtin") -> list[dict[str, Any]]:
             # local: 只返回已连接的预置 MCP（会话页只需可启用集合）。
             if f == "local" and name not in connected:
                 continue
-            meta = _load_index_entry(name)
-            out.append(_build_summary(name, package.root, meta, connected, connecting))
+            meta = _index_entry_from_package(package)
+            out.append(_build_summary(name, package, meta, connected, connecting))
             seen_names.add(name)
     else:
         logger.debug("[mcp.registry] marketplace package roots not found: %s", package_roots)
@@ -538,10 +541,10 @@ def get_mcp(name: str) -> dict[str, Any] | None:
         return None
     package = _resolve_package(target)
     if package is not None:
-        meta = _load_index_entry(target)
+        meta = _index_entry_from_package(package)
         connected = _connected_server_names()
         connecting = _connecting_server_names()
-        return _build_detail(target, package.root, meta, connected, connecting)
+        return _build_detail(target, package, meta, connected, connecting)
     # Custom MCP: no marketplace package — synthesize a detail from state.json
     # so the frontend can show it and render its tools panel.
     try:
@@ -1052,6 +1055,31 @@ def rollback_failed_connect(name: str) -> None:
         _wipe_stored_credentials(n)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp.registry] rollback '%s' failed: %s", n, exc)
+
+
+def settle_connecting_mcp(name: str, *, probe_ok: bool) -> None:
+    """Apply a startup probe result to a ``connecting`` record.
+
+    A live server is promoted to connected; a failed one is lowered to a
+    retryable state so the card cannot stay on "connecting" forever. The
+    conditional write leaves a connect that finished meanwhile untouched.
+    """
+    n = str(name or "").strip()
+    if not n:
+        return
+    from jiuwenswarm.server.runtime.mcp.state_store import set_mcp_state_if
+
+    target = "connected"
+    if not probe_ok:
+        try:
+            is_custom = _resolve_package(n) is None
+        except Exception:  # noqa: BLE001 - a broken package must not block settling
+            is_custom = False
+        target = "registered" if is_custom else "disconnected"
+    try:
+        set_mcp_state_if(n, expected="connecting", state=target)
+    except Exception as exc:  # noqa: BLE001 - startup self-heal is best-effort
+        logger.warning("[mcp.registry] settle connecting '%s' failed: %s", n, exc)
 
 
 def _entry_missing_tokens(entry: dict[str, Any], store: Any) -> set[str]:
@@ -1616,6 +1644,7 @@ __all__ = [
     "delete_custom_mcp",
     "save_mcp_credentials",
     "rollback_failed_connect",
+    "settle_connecting_mcp",
     "CliConnectError",
     "McpRegistryError",
     "CODE_RUNTIME_MISSING",

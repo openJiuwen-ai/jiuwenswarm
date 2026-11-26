@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import contextvars
 import logging
 import os
 import threading
@@ -37,14 +36,21 @@ QuotaStatus = Literal["ok", "warn", "block"]
 
 
 def is_workspace_quota_enabled() -> bool:
-    """用户空间配额特性开关；默认关闭。
+    """用户空间配额特性开关；仅企业版生效，默认开启。
 
-    真值：``1/true/yes/on``；假值：``0/false/no/off/""``（未设置亦为假）。
-    与 Manager 共用 ``WORKSPACE_QUOTA_ENABLED``（企业部署由同一 .env 注入）。
+    须 ``is_enterprise()`` 为真。``WORKSPACE_QUOTA_ENABLED`` 未设置或空串时默认
+    ``true``；显式 ``0/false/no/off`` 关闭，``1/true/yes/on`` 开启。
+    与 Manager / Gateway 共用同名变量（企业部署由同一 .env / ConfigMap 注入）。
+    个人版恒为关闭。
     """
-    from jiuwenswarm.common.config import coerce_config_bool
+    from jiuwenswarm.enterprise import is_enterprise
 
-    return coerce_config_bool(os.environ.get(FEATURE_ENABLED_ENV), False)
+    if not is_enterprise():
+        return False
+    raw = os.environ.get(FEATURE_ENABLED_ENV)
+    if raw is None or not str(raw).strip():
+        return True
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -81,43 +87,15 @@ class WorkspaceQuotaExceeded(Exception):
         self.decision = decision
 
 
-_QUOTA_USER_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "workspace_quota_user_id", default=""
-)
-_QUOTA_GROUP_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "workspace_quota_group_id", default=""
-)
-_QUOTA_BOT_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "workspace_quota_bot_id", default=""
-)
-
-
-def bind_quota_identity(
-    *,
-    user_id: str | None = None,
-    group_id: str | None = None,
-    bot_id: str | None = None,
-) -> tuple[contextvars.Token, contextvars.Token, contextvars.Token]:
-    return (
-        _QUOTA_USER_CV.set(str(user_id or "").strip()),
-        _QUOTA_GROUP_CV.set(str(group_id or "").strip()),
-        _QUOTA_BOT_CV.set(str(bot_id or "").strip()),
-    )
-
-
-def reset_quota_identity(
-    tokens: tuple[contextvars.Token, contextvars.Token, contextvars.Token],
-) -> None:
-    _QUOTA_USER_CV.reset(tokens[0])
-    _QUOTA_GROUP_CV.reset(tokens[1])
-    _QUOTA_BOT_CV.reset(tokens[2])
-
-
 def _get_quota_identity() -> dict[str, str]:
+    """Read plaintext triple from the multi-tenant request envelope."""
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    group_id, bot_id, user_id = TenantContext.current_triple()
     return {
-        "user_id": _QUOTA_USER_CV.get() or "",
-        "group_id": _QUOTA_GROUP_CV.get() or "",
-        "bot_id": _QUOTA_BOT_CV.get() or "",
+        "user_id": user_id,
+        "group_id": group_id,
+        "bot_id": bot_id,
     }
 
 
@@ -262,6 +240,14 @@ def get_cached_used(tenant_root: Path | str) -> int:
         if entry is None or not entry.has_value:
             return 0
         return max(0, int(entry.used_bytes))
+
+
+def has_cached_used(tenant_root: Path | str) -> bool:
+    """是否已有一次有效 du 结果（区别于「用量恰好为 0」）。"""
+    key = _root_key(tenant_root)
+    with _USAGE_CACHE_LOCK:
+        entry = _USAGE_CACHE.get(key)
+        return bool(entry is not None and entry.has_value)
 
 
 def set_cached_used(
@@ -579,9 +565,9 @@ def resolve_tenant_root(tenant_root: Path | None = None) -> Path:
     root = tenant_root
     if root is None:
         try:
-            from jiuwenswarm.enterprise.tenant.tenant_context import get_bound_tenant_root
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
-            bound = get_bound_tenant_root()
+            bound = TenantContext.current_tenant_root()
             if bound is not None:
                 root = bound
         except Exception:  # noqa: BLE001
@@ -635,7 +621,9 @@ def resolve_effective_quota(
 
     - 默认只读缓存（不 du）；
     - ``force_refresh``：强制同步 du（页面刷新）；
-    - ``sync_on_near_limit``：缓存已是 warn/block 时门禁路径同步校准（展示路径应关）。
+    - ``sync_on_near_limit``（门禁路径默认开；展示路径应关）：
+      - 尚无有效缓存时同步 du（避免冷启动按 0 误判为 ok 放行超限写盘/建会话）；
+      - 或缓存已是 warn/block 时再同步校准。
     """
     identity = _get_quota_identity()
     uid = (user_id or identity.get("user_id") or "").strip()
@@ -649,10 +637,12 @@ def resolve_effective_quota(
         )
 
     mark_usage_active(root, user_id=uid, group_id=gid, bot_id=bid)
+    cached = has_cached_used(root)
     used = get_cached_used(root)
     snap = _snapshot_for_used(used, user_id=uid, group_id=gid, bot_id=bid)
     need_du = bool(force_refresh) or (
-        sync_on_near_limit and snap.status in ("warn", "block")
+        sync_on_near_limit
+        and (not cached or snap.status in ("warn", "block"))
     )
     if need_du:
         used = measure_and_cache(
@@ -748,7 +738,6 @@ __all__ = [
     "UsageCacheEntry",
     "WORKSPACE_QUOTA_EXCEEDED",
     "WorkspaceQuotaExceeded",
-    "bind_quota_identity",
     "check_path_write",
     "check_workspace_write",
     "clear_used_bytes_cache",
@@ -759,12 +748,12 @@ __all__ = [
     "fallback_limit_bytes",
     "get_cached_used",
     "get_db_policy_cache",
+    "has_cached_used",
     "is_workspace_quota_enabled",
     "list_usage_reconcile_targets",
     "mark_usage_active",
     "measure_and_cache",
     "reconcile_interval_seconds",
-    "reset_quota_identity",
     "resolve_effective_quota",
     "resolve_tenant_root",
     "set_cached_used",

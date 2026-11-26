@@ -349,6 +349,22 @@ def test_inherit_session_model_validation_failure_keeps_payload(monkeypatch: pyt
     assert "model_name" not in payload
 
 
+def test_invalid_session_selection_keeps_legacy_model_inheritance(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"model": "mimo-v2.5-free", "model_selection": {}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.cron.models.validate_cron_model", lambda raw: raw,
+    )
+    payload = _CronToolsCronBackend._inherit_session_model(
+        {"name": "legacy-fallback"},
+        context=CronToolContext(channel_id="web", session_id="web_legacy_model"),
+    )
+    assert payload["model_name"] == "mimo-v2.5-free"
+    assert "model_selection" not in payload
+
+
 def test_inherit_session_model_without_context() -> None:
     payload = _CronToolsCronBackend._inherit_session_model(
         {"name": "x", "cron_expr": "0 9 * * *"},

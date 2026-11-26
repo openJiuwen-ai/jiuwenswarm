@@ -1,4 +1,10 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { matchesAssetName } from '../../features/assetNameSearch';
+import {
+  AssetTransferError,
+  assetIssueKey,
+  exportAssetToLocalFile,
+} from '../../features/assetTransfer';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
  * SkillPanel 组件
@@ -11,6 +17,7 @@ import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Upload } from 'lucide-react';
 import MoreIcon from '../../assets/work-mode/more-rimless.svg?react';
 import NewConversationIcon from '../../assets/new_conversation.svg?react';
 import SourceManagerIcon from '../../assets/skill-panel/source-manager.svg?react';
@@ -29,6 +36,7 @@ import {
   MARKETPLACE_CATEGORIES,
   SKILLS_FETCH_TIMEOUT_REFRESH_MS,
   SKILLS_FETCH_TIMEOUT_NORMAL_MS,
+  canUploadLocalSkill,
   coerceStringList,
   getSourceLabel,
   isAdminManagedSkill,
@@ -45,10 +53,13 @@ import { SkillGraphTab } from './SkillGraphTab';
 import { MarketplaceView } from './MarketplaceView';
 import { SkillDetailView } from './SkillDetailView';
 import { UploadSkillModal } from './UploadSkillModal';
+import { SkillOverwriteConfirmModal } from './SkillOverwriteConfirmModal';
 import { DocToSkillModal } from './DocToSkillModal';
 import { useSkillToasts } from './useSkillToasts';
 import { useHubMarketplace, type MarketplaceSubView } from './useHubMarketplace';
 import { isEnterprise } from '../../edition';
+import { useEnterpriseContext } from '../../services/enterpriseContext';
+import { stageSkillZip } from '../../services/enterpriseSkillUpload';
 import {
   EnterpriseSkillSourcePanel,
   fetchEnterpriseSkillSources,
@@ -234,6 +245,11 @@ export function SkillPanel({
   const { t } = useTranslation();
   // 导航与页签
   const enterpriseEdition = isEnterprise();
+  const enterpriseContext = useEnterpriseContext();
+  const canUploadSkill = canUploadLocalSkill(
+    enterpriseEdition,
+    enterpriseContext?.selected?.allow_local_skill_upload,
+  );
   const [activeTab, setActiveTab] = useState<'my' | 'marketplace' | 'graph'>('marketplace');
   const [marketplaceSubView, setMarketplaceSubView] = useState<MarketplaceSubView>('list');
   const [mySkillsSubTab, setMySkillsSubTab] = useState<MySkillsSubTab>('all');
@@ -270,11 +286,31 @@ export function SkillPanel({
   const [clawHubModalOpen, setClawHubModalOpen] = useState(false);
   const [teamSkillsHubModalOpen, setTeamSkillsHubModalOpen] = useState(false);
   const [uploadSkillModalOpen, setUploadSkillModalOpen] = useState(false);
+  const [overwritePrompt, setOverwritePrompt] = useState<string | null>(null);
+  const overwriteResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const [docToSkillModalOpen, setDocToSkillModalOpen] = useState(false);
   const [enableFilterOpen, setEnableFilterOpen] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
+  const [exportingSkill, setExportingSkill] = useState(false);
   const [synthesizeTooltip, setSynthesizeTooltip] = useState<{ left: number; top: number } | null>(null);
+
+  // 企业版：模板未开启「上传本地Skill」时关闭已打开的上传弹窗。
+  useEffect(() => {
+    if (enterpriseEdition && !canUploadSkill) {
+      setUploadSkillModalOpen(false);
+    }
+  }, [canUploadSkill, enterpriseEdition]);
+
+  // 卸载时结算未决的覆盖确认，避免上传流程在 await 处挂起、finally 清理不执行。
+  useEffect(
+    () => () => {
+      const resolve = overwriteResolverRef.current;
+      overwriteResolverRef.current = null;
+      resolve?.(false);
+    },
+    [],
+  );
 
   // 挂载/激活时序标记
   const prevIsActiveRef = useRef(isActive);
@@ -491,7 +527,7 @@ export function SkillPanel({
           success: boolean;
           cancelled?: boolean;
           pending?: boolean;
-          skill?: { name: string };
+          skill?: { name: string; display_name?: string };
           detail?: string;
           detail_key?: string;
           message?: string;
@@ -544,7 +580,12 @@ export function SkillPanel({
         if (data.pending) {
           throw new Error(t('skills.errors.installFailedHint'));
         }
-        showMessage('success', t('skills.messages.installed', { name: data.skill?.name || skill.name }));
+        showMessage(
+          'success',
+          t('skills.messages.installed', {
+            name: skill.display_name || data.skill?.display_name || data.skill?.name || skill.name,
+          }),
+        );
         await fetchSkills();
       } catch (error) {
         console.error(error);
@@ -688,13 +729,14 @@ export function SkillPanel({
   }, []);
 
   // 新建会话并将技能选中到输入框：只有集群技能进集群模式，其余（普通技能、技能包等）固定单 agent
-  const handleGoToChat = useCallback((skillName: string, skillType?: string) => {
+  const handleGoToChat = useCallback((skillName: string, skillType?: string, resetAttachmentDrafts = false) => {
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
         detail: {
           skillName,
           mode: skillType === 'swarm_skill' ? ('team' as const) : ('agent' as const),
           preserveDraft: true,
+          resetAttachmentDrafts,
         },
       }),
     );
@@ -784,7 +826,7 @@ export function SkillPanel({
     async (file: File): Promise<string> => {
       const form = new FormData();
       form.append('file', file);
-      const uploadResp = await fetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
+      const uploadResp = await gatewayFetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
       const uploadData = await uploadResp.json();
       if (!uploadResp.ok || !uploadData.path) {
         throw createUploadError(uploadData.code, uploadResp.status);
@@ -794,17 +836,39 @@ export function SkillPanel({
     [createUploadError],
   );
 
-  /** 上传技能 .zip 包：先上传到临时目录，再通过 WebSocket 调用 skills.import_upload */
-  const handleSkillUpload = useCallback(
-    async (file: File) => {
+  const confirmEnterpriseOverwrite = useCallback(
+    (message: string) =>
+      new Promise<boolean>((resolve) => {
+        overwriteResolverRef.current = resolve;
+        setOverwritePrompt(message);
+      }),
+    [],
+  );
+
+  const resolveOverwritePrompt = useCallback((confirmed: boolean) => {
+    const resolve = overwriteResolverRef.current;
+    overwriteResolverRef.current = null;
+    setOverwritePrompt(null);
+    resolve?.(confirmed);
+  }, []);
+
+  /** 把已落到 Pod 的 ZIP 安装到 workspace；prepare 负责把文件送到 Pod。 */
+  const importSkillPackage = useCallback(
+    async (
+      file: File,
+      prepare: (file: File) => Promise<{ path: string; cleanup?: () => Promise<void> }>,
+      confirmOverwrite?: (message: string) => boolean | Promise<boolean>,
+    ) => {
       setActionTarget('import_local');
       setMessage(null);
       setMessageType(null);
+      let cleanup: (() => Promise<void>) | undefined;
       try {
-        // Step 1: 上传文件到服务端临时目录
-        const tempPath = await uploadTempFile(file);
+        const prepared = await prepare(file);
+        cleanup = prepared.cleanup;
+        const path = prepared.path;
 
-        // Step 2: 通过 WebSocket 调用 skills.import_upload
+        // Step 2: 通过 WebSocket / HTTP 调用 skills.import_upload
         const doImport = async (overwrite: boolean) => {
           const data = await webRequest<{
             success: boolean;
@@ -815,7 +879,7 @@ export function SkillPanel({
           }>(
             'skills.import_upload',
             withSession({
-              path: tempPath,
+              path,
               overwrite,
             }),
           );
@@ -836,7 +900,12 @@ export function SkillPanel({
           const code = (error as Error & { code?: string }).code;
           if (code === 'SKILL_ALREADY_EXISTS' || code === 'SKILL_IMPORT_OVERWRITE_REQUIRED') {
             const msg = error instanceof Error ? error.message : String(error);
-            const overwrite = window.confirm(`${msg}\n${t('skills.overwriteConfirm')}`);
+            const confirmMessage = confirmOverwrite
+              ? msg
+              : `${msg}\n${t('skills.overwriteConfirm')}`;
+            const overwrite = confirmOverwrite
+              ? await confirmOverwrite(confirmMessage)
+              : window.confirm(confirmMessage);
             if (!overwrite) return;
             data = await doImport(true);
           } else {
@@ -850,13 +919,45 @@ export function SkillPanel({
           await fetchSkillDetail(data.skill.name);
         }
       } catch (error) {
-        console.error(error);
-        showErrorToast(error, 'skills.errors.importFailedHint');
+        const code = (error as Error & { code?: string }).code;
+        if (code === 'SKILL_UPLOAD_LOCAL_SKILL_DISABLED') {
+          showMessage('error', t('skills.errors.localSkillUploadDisabled'));
+        } else if (code === 'SKILL_UPLOAD_POLICY_UNAVAILABLE') {
+          showMessage('error', t('skills.errors.localSkillUploadUnavailable'));
+        } else {
+          console.error(error);
+          showErrorToast(error, 'skills.errors.importFailedHint');
+        }
       } finally {
+        if (cleanup) {
+          try {
+            await cleanup();
+          } catch (error) {
+            console.error('[skill-upload] cleanup failed', error);
+          }
+        }
         setActionTarget(null);
       }
     },
-    [uploadTempFile, fetchSkills, fetchSkillDetail, t, withSession, showMessage, setMessage, setMessageType],
+    [fetchSkills, fetchSkillDetail, t, withSession, showMessage, setMessage, setMessageType],
+  );
+
+  /** 上传技能 .zip 包：先上传到临时目录，再通过 WebSocket 调用 skills.import_upload */
+  const handleSkillUpload = useCallback(
+    (file: File) =>
+      importSkillPackage(file, async (picked) => ({ path: await uploadTempFile(picked) })),
+    [importSkillPackage, uploadTempFile],
+  );
+
+  /** 企业版：把 ZIP 落到当前会话 uploads/ 后直接安装。 */
+  const handleEnterpriseSkillUpload = useCallback(
+    (file: File) =>
+      importSkillPackage(
+        file,
+        (picked) => stageSkillZip(webRequest, picked, sessionId),
+        confirmEnterpriseOverwrite,
+      ),
+    [confirmEnterpriseOverwrite, importSkillPackage, sessionId],
   );
 
   /** 知识转技能：先上传文件到临时目录（如有），再通过 WebSocket 调用 skills.create_from_knowledge */
@@ -980,6 +1081,33 @@ export function SkillPanel({
       setSearch(nextSearch);
     },
     [activeTab, enterpriseEdition, search, invalidateHubFetch, setMarketplaceSubView],
+  );
+
+  // 统一资产导出：assets.export → 短效链接下载保存；错误按 ASSET_* 契约码映射 i18n。
+  const handleExportSkill = useCallback(
+    async (skillName: string, skillType?: string) => {
+      if (!skillName || exportingSkill) return;
+      setExportingSkill(true);
+      showMessage('loading', t('skills.actions.exportingSkill', { name: skillName }));
+      try {
+        const result = await exportAssetToLocalFile({
+          kind: skillType === 'skillpack' ? 'skillpack' : 'skill',
+          local_id: skillName,
+        });
+        if (result.outcome === 'cancelled') {
+          showMessage('success', t('skills.actions.exportCancelled'));
+        } else {
+          showMessage('success', t('skills.actions.exportSuccess', { name: skillName }));
+        }
+      } catch (error) {
+        const key =
+          error instanceof AssetTransferError ? assetIssueKey(error.code) : assetIssueKey(error);
+        showMessage('error', t(key, { name: skillName }));
+      } finally {
+        setExportingSkill(false);
+      }
+    },
+    [exportingSkill, showMessage, t],
   );
 
   const handleUninstall = useCallback(
@@ -1605,6 +1733,17 @@ export function SkillPanel({
               }}
             />
           )}
+          {activeTab === 'my' && canUploadSkill && (
+            <button
+              type="button"
+              onClick={() => setUploadSkillModalOpen(true)}
+              className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[16px] bg-control-emphasis px-3.5 text-sm font-medium text-text-inverse transition-opacity hover:opacity-85"
+              data-testid="skill-panel-upload-skill-btn"
+            >
+              <Upload className="h-4 w-4" aria-hidden="true" />
+              {t('skills.actions.uploadLocalSkill')}
+            </button>
+          )}
         </div>
       </PageToolbar>
     </div>
@@ -1654,8 +1793,15 @@ export function SkillPanel({
       {uploadSkillModalOpen && (
         <UploadSkillModal
           actionTarget={actionTarget}
-          onUpload={handleSkillUpload}
+          onUpload={enterpriseEdition ? handleEnterpriseSkillUpload : handleSkillUpload}
           onClose={() => setUploadSkillModalOpen(false)}
+        />
+      )}
+      {overwritePrompt && (
+        <SkillOverwriteConfirmModal
+          message={overwritePrompt}
+          onCancel={() => resolveOverwritePrompt(false)}
+          onConfirm={() => resolveOverwritePrompt(true)}
         />
       )}
       {/* 知识转技能弹窗 */}
@@ -1778,6 +1924,8 @@ export function SkillPanel({
           onBack={handleBackOneLevel}
           onEditSkill={handleEditSkill}
           onUninstall={handleUninstall}
+          onExportSkill={handleExportSkill}
+          exportingSkill={exportingSkill}
           onToggleSkillDisabled={toggleSkillDisabled}
           onGoToChat={handleGoToChat}
           onOpenPackMember={handleOpenPackMember}

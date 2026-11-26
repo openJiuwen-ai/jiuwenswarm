@@ -363,6 +363,13 @@ if (Test-Path "node_modules") {
 npm run build
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 Pop-Location
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+Push-Location (Join-Path $ProjectRoot "packages\jiuwenswarm-office-addin")
+npm ci --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+npm run build:desktop
+if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+Pop-Location
 
 # 3. Run PyInstaller
 Write-Host "`n[3/4] Running PyInstaller..." -ForegroundColor Yellow
@@ -398,6 +405,17 @@ $RsiVerifyProcess = Start-Process `
     -NoNewWindow
 if ($RsiVerifyProcess.ExitCode -ne 0) {
     throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+}
+
+$ExtensionsVerifier = Join-Path $ProjectRoot "scripts\verify_gateway_extensions_bundle.py"
+$ExtensionsVerifyProcess = Start-Process `
+    -FilePath $FrozenExe `
+    -ArgumentList @("`"$ExtensionsVerifier`"") `
+    -Wait `
+    -PassThru `
+    -NoNewWindow
+if ($ExtensionsVerifyProcess.ExitCode -ne 0) {
+    throw "Frozen Gateway extensions bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
 }
 
 $CuaVerifier = Join-Path $ProjectRoot "scripts\verify_computer_use_bundle.py"

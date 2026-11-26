@@ -470,7 +470,7 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
     def message(rid, streaming, **params):
         return Message(
             id=rid, type="req", channel_id="web", session_id=sid, timestamp=0,
-            req_method=ReqMethod.CHAT_SEND, is_stream=streaming, ok=True,
+            req_method=ReqMethod.CHAT_SEND.value, is_stream=streaming, ok=True,
             params={"query": "run the gate", "mode": "agent", **params},
         )
 

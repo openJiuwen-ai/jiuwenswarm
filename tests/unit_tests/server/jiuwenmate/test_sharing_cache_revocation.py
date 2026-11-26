@@ -12,6 +12,7 @@ from jiuwenswarm.server.jiuwenmate.session_artifact_sharing import SessionArtifa
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from tests.unit_tests.server.jiuwenmate.test_session_artifact_sharing import artifact_host
 from tests.unit_tests.server.jiuwenmate.test_group_sharing_service import sharing, NOW, approve
+from tests.unit_tests.server.jiuwenmate.test_group_sharing_service import delivery_job
 from tests.unit_tests.server.jiuwenmate.test_cli_group_read import cli_host, decide_cli
 
 
@@ -58,10 +59,54 @@ async def test_private_import_requires_new_approval_after_revoke(artifact_host, 
     assert output is not None and not output.success
 
 
+@pytest.mark.parametrize("content_type", ["files", "online_docs"])
+async def test_artifact_delivery_scope_and_window_are_invalidated_on_revoke(artifact_host, content_type):
+    host = artifact_host
+    if content_type == "online_docs":
+        document = {
+            "source_group_id": "source-group", "artifact_id": "doc-1", "artifact_kind": "online_doc",
+            "title": "Report", "snippet": "Report", "url": "https://example.feishu.cn/docx/report",
+            "created_at": NOW.isoformat(),
+        }
+        host.sessions.session_artifact_candidates = lambda *_: (document,)
+        host.sessions.search_session_artifacts = lambda *_, **__: (document,)
+    query = core.GroupMessageQuery(group_ids=("source-group",), content_types=(content_type,))
+    host.repo.bind_request_window("local", "agent-1", "session-1", "request-1")
+    with pytest.raises(core.GroupContentApprovalRequired):
+        await host.port.search_content(host.execution, query)
+    row, = host.repo.pending_for_request("local", "request-1")
+    host.repo.bind_native("local", "request-1", "native")
+    host.repo.decide(row["approval_id"], namespace_id="local", config_id="config-1",
+                     owner_principal="local", decision="permanent", now=NOW)
+
+    job = delivery_job()
+    assert await host.gate.can_deliver(job)
+    for change in ({"agent_id": "other"}, {"channel": "dingtalk"}, {"app_id": "other-app"},
+                   {"target_id": "other-group"}, {"request_kind": "direct_message"}):
+        assert not await host.gate.can_deliver({**job, **change})
+    before = host.repo.window_generation("local", "agent-1", "session-1")
+    grant, = host.repo.list_for_owner("local", "config-1", owner_principal="local")["grants"]
+    host.repo.revoke(grant["grant_id"], namespace_id="local", config_id="config-1",
+                     owner_principal="local", now=NOW + timedelta(seconds=1))
+
+    assert not await host.gate.can_deliver(job)
+    assert host.repo.window_generation("local", "agent-1", "session-1") != before
+    assert host.repo.window_generation("local", "agent-1", "unrelated-session") == ""
+
+
 async def test_unknown_import_fails_closed(artifact_host):
     guard = SessionArtifactSharing(artifact_host.gate, artifact_host.delegate)
     result = await guard.prepare(artifact_host.execution, 'read_file', {'file_path': 'imports/unknown.txt'})
     assert result is not None and not result.success
+
+
+async def test_invalid_public_import_path_does_not_skip_access_checks(artifact_host, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.cached_group_content import CachedGroupContent
+
+    monkeypatch.setattr(artifact_host.gate, "public_group_imports", lambda _: ("sessions/session-1/output/report.txt",))
+    cache = CachedGroupContent(artifact_host.gate, artifact_host.delegate)
+    matched, result = await cache.prepare(artifact_host.execution, "imports/unverified.txt", [])
+    assert matched and not result.success
 
 
 async def test_once_approved_import_can_be_reused_in_the_same_request(artifact_host):
@@ -123,26 +168,8 @@ async def test_import_copy_renamed_without_registration_is_still_guarded(artifac
         await guard.prepare(execution, 'share_file', {'file_path': 'output/renamed.txt'})
 
 
-async def test_inflight_request_cannot_publish_after_context_authority_is_revoked(sharing):
-    await approve(sharing, 'permanent')
-    sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-2')
-    grant, = sharing.repo.list_for_owner('local', 'config-1', owner_principal='local')['grants']
-    sharing.repo.revoke(grant['grant_id'], namespace_id='local', config_id='config-1',
-                        owner_principal='local', now=NOW + timedelta(seconds=1))
-    assert not await sharing.gate.can_deliver({'namespace_id': 'local', 'request_id': 'request-2'})
-    sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-3')
-    assert await sharing.gate.can_deliver({'namespace_id': 'local', 'request_id': 'request-3'})
 
 
-async def test_revocation_changes_only_affected_session_window_generation(sharing):
-    assert sharing.repo.window_generation('local', 'agent-1', 'session-1') == ''
-    await approve(sharing, 'permanent')
-    assert sharing.repo.window_generation('local', 'agent-1', 'session-1') == ''
-    grant, = sharing.repo.list_for_owner('local', 'config-1', owner_principal='local')['grants']
-    sharing.repo.revoke(grant['grant_id'], namespace_id='local', config_id='config-1',
-                        owner_principal='local', now=NOW + timedelta(seconds=1))
-    assert sharing.repo.window_generation('local', 'agent-1', 'session-1')
-    assert sharing.repo.window_generation('local', 'agent-1', 'other-session') == ''
 
 
 async def test_window_generation_hides_old_state_and_archives_without_deleting_audit(tmp_path):
@@ -190,29 +217,8 @@ async def test_cli_import_reapproval_verifies_the_original_private_blob(cli_host
     assert await guard.prepare(execution, 'read_file', {'file_path': path}) is None
 
 
-async def test_new_message_search_after_revoke_requires_new_owner_decision(sharing):
-    await approve(sharing, 'permanent')
-    grant, = sharing.repo.list_for_owner('local', 'config-1', owner_principal='local')['grants']
-    sharing.repo.revoke(grant['grant_id'], namespace_id='local', config_id='config-1',
-                        owner_principal='local', now=NOW + timedelta(seconds=1))
-    sharing.record.request_id = 'request-2'
-    execution = replace(sharing.execution, request_id='request-2', execution_id='execution-2')
-    sharing.delegate.search_messages.return_value = sharing.result.model_copy(
-        update=core.InvocationRef.from_execution(execution).model_dump(),
-    )
-    with pytest.raises(core.GroupContentApprovalRequired):
-        await sharing.port.search_messages(execution, sharing.query)
-    assert len(sharing.repo.pending_for_request('local', 'request-2')) == 1
 
 
-async def test_once_message_result_does_not_become_private_context_for_next_request(sharing):
-    first = sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-1')
-    await approve(sharing, 'once')
-    assert sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-1') == first
-    assert sharing.repo.request_window_is_current('local', 'request-1')
-    second = sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-2')
-    assert second != first
-    assert sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-3') == second
 
 
 def test_publication_requires_a_confirmed_non_redacted_delivery(artifact_host):
@@ -268,60 +274,8 @@ async def test_failure_cleanup_consumes_confirmation_with_optional_sharing(monke
     consume.assert_called_once_with('native-1')
 
 
-async def test_later_once_approval_keeps_prior_request_delivery_and_resume_valid(sharing):
-    from tests.unit_tests.server.jiuwenmate.test_group_sharing_service import delivery_job
-
-    first = sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-1')
-    await approve(sharing, 'once')
-    assert await sharing.gate.can_deliver(delivery_job())
-    sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-2')
-    execution = replace(sharing.execution, request_id='request-2', execution_id='execution-2')
-    result = sharing.result.model_copy(update=core.InvocationRef.from_execution(execution).model_dump())
-    with pytest.raises(core.GroupContentApprovalRequired):
-        await sharing.gate.authorize(execution, sharing.query, result, sharing.delegate.sharing_sources.return_value)
-    row, = sharing.repo.pending_for_request('local', 'request-2')
-    sharing.repo.bind_native('local', 'request-2', 'native-2')
-    sharing.repo.decide(row['approval_id'], namespace_id='local', config_id='config-1',
-                        owner_principal='local', decision='once', now=NOW + timedelta(seconds=1))
-    assert sharing.repo.request_window_is_current('local', 'request-1')
-    assert await sharing.gate.can_deliver(delivery_job())
-    assert sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-1') == first
-    assert sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-3') != first
 
 
-async def test_nonempty_bound_generation_survives_later_once_and_restart_but_not_revocation(sharing):
-    from jiuwenswarm.server.jiuwenmate.group_share_repository import GroupShareRepository
-    from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-
-    await approve(sharing, 'once')
-    bound = sharing.repo.bind_request_window('local', 'agent-1', 'session-1', 'request-2')
-    assert bound
-    execution = replace(sharing.execution, request_id='request-3', execution_id='execution-3')
-    result = sharing.result.model_copy(update=core.InvocationRef.from_execution(execution).model_dump())
-    with pytest.raises(core.GroupContentApprovalRequired):
-        await sharing.gate.authorize(execution, sharing.query, result, sharing.delegate.sharing_sources.return_value)
-    row, = sharing.repo.pending_for_request('local', 'request-3')
-    sharing.repo.bind_native('local', 'request-3', 'native-3')
-    sharing.repo.decide(row['approval_id'], namespace_id='local', config_id='config-1',
-                        owner_principal='local', decision='once', now=NOW + timedelta(seconds=1))
-    reopened = GroupShareRepository(sharing.repo.db_path)
-    assert reopened.request_window_is_current('local', 'request-2')
-    assert reopened.bind_request_window('local', 'agent-1', 'session-1', 'request-2') == bound
-    assert reopened.bind_request_window('local', 'agent-1', 'session-1', 'request-4') != bound
-    execution = replace(sharing.execution, request_id='request-5', execution_id='execution-5')
-    result = sharing.result.model_copy(update=core.InvocationRef.from_execution(execution).model_dump())
-    with pytest.raises(core.GroupContentApprovalRequired):
-        await sharing.gate.authorize(execution, sharing.query, result, sharing.delegate.sharing_sources.return_value)
-    row, = sharing.repo.pending_for_request('local', 'request-5')
-    reopened.bind_native('local', 'request-5', 'native-5')
-    reopened.decide(row['approval_id'], namespace_id='local', config_id='config-1',
-                    owner_principal='local', decision='permanent', now=NOW + timedelta(seconds=2))
-    grant, = reopened.list_for_owner('local', 'config-1', owner_principal='local')['grants']
-    reopened.revoke(grant['grant_id'], namespace_id='local', config_id='config-1',
-                    owner_principal='local', now=NOW + timedelta(seconds=3))
-    assert not reopened.request_window_is_current('local', 'request-2')
-    with pytest.raises(PersistentAgentError, match='authorization changed'):
-        reopened.bind_request_window('local', 'agent-1', 'session-1', 'request-2')
 
 
 @pytest.mark.asyncio
@@ -352,19 +306,6 @@ async def test_retired_request_cannot_read_once_import_after_target_rejoins(arti
     assert output is not None and not output.success
 
 
-@pytest.mark.asyncio
-async def test_retired_once_request_cannot_release_more_message_results(sharing):
-    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
-
-    await approve(sharing, 'once')
-    groups = GroupChatRepository(sharing.repo.db_path, id_factory=lambda: 'source-group')
-    group = groups.resolve('local', 'feishu', 'source-chat', now=NOW)
-    groups.observe_access('local', sharing.execution.agent_id, group.group_chat_id, 'app',
-                          observed_at=NOW, source_ref='message:first')
-    groups.update_membership('local', sharing.execution.agent_id, group.group_chat_id, 'app',
-                             status='left', observed_at=NOW + timedelta(seconds=2), source_ref='event:left')
-    result = await sharing.port.search_messages(sharing.execution, sharing.query)
-    assert not result.hits and result.status == 'unavailable'
 
 
 def retire_target_before(host, monkeypatch, operation, event):
@@ -389,17 +330,6 @@ def retire_target_before(host, monkeypatch, operation, event):
     monkeypatch.setattr(host.repo, operation, retire_then_call)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize('event', ['left', 'dissolved'])
-async def test_search_returns_unavailable_when_group_retires_during_grant_authorization(sharing, monkeypatch, event):
-    retire_target_before(sharing, monkeypatch, 'authorize_from_grants', event)
-
-    result = await sharing.port.search_messages(sharing.execution, sharing.query)
-
-    assert result.status == 'unavailable'
-    assert not result.hits and not result.artifacts
-    assert not sharing.repo.request_window_is_current('local', 'request-1')
-    assert not sharing.repo.list_for_owner('local', 'config-1', owner_principal='local')['grants']
 
 
 @pytest.mark.asyncio

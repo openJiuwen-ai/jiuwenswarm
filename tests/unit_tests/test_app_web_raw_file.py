@@ -28,6 +28,8 @@ sys.modules.setdefault(bootstrap_module.__name__, bootstrap_module)
 
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler, _format_ws_diagnostics
 
+_PERSONAL_HOST_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+
 
 def test_format_ws_diagnostics_forwards_parts_and_fields():
     assert _format_ws_diagnostics({"client": "127.0.0.1"}, reason="peer closed") == (
@@ -343,6 +345,280 @@ def test_verified_download_get_and_head_use_conventional_staged_file_handler(
             assert response.read() == (content if method == "GET" else b"")
         finally:
             connection.close()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_inline_verified_download_sandboxes_documents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    source = tmp_path / "report.html"
+    source.write_text("<script>alert(1)</script>", encoding="utf-8")
+    owner = VerifiedDownloadAssetOwner(
+        root=tmp_path / "assets",
+        now_fn=lambda: 100.0,
+        start_sweeper=False,
+    )
+    asset = owner.stage(source, file_name=source.name, expires_at=160.0)
+    manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.file_download_token.time.time",
+        lambda: 100.0,
+    )
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
+    token = manager.generate_verified_asset_token(
+        asset,
+        file_name=source.name,
+        session_id="session-a",
+    )
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = tmp_path
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        api_target = ""
+        ws_target = ""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", f"/file-api/download?token={quote(token)}&inline=1")
+        response = connection.getresponse()
+        try:
+            assert response.status == 200
+            assert response.headers["Content-Disposition"].startswith("inline;")
+            assert response.headers["Content-Type"].startswith("text/html")
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert response.headers["Content-Security-Policy"] == (
+                "sandbox allow-scripts allow-popups"
+            )
+            response.read()
+        finally:
+            connection.close()
+        # Downloading an attachment adds no document-specific sandbox to the host policy.
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", f"/file-api/download?token={quote(token)}")
+        response = connection.getresponse()
+        try:
+            assert response.status == 200
+            assert response.headers["Content-Disposition"].startswith("attachment;")
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert response.headers.get_all("Content-Security-Policy") == [_PERSONAL_HOST_CSP]
+            response.read()
+        finally:
+            connection.close()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    agent_root = tmp_path / "agent"
+    uploads = agent_root / "sessions" / "session-1" / "uploads"
+    uploads.mkdir(parents=True)
+    html_path = uploads / "report.html"
+    html_path.write_text("<script>alert(1)</script>", encoding="utf-8")
+    svg_path = uploads / "chart.svg"
+    svg_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+        encoding="utf-8",
+    )
+    png_path = uploads / "image.png"
+    png_path.write_bytes(b"\x89PNG\r\n\x1a\nimage-data")
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = agent_root
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        api_target = ""
+        ws_target = ""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+
+    def request(method: str, path: Path, headers: dict[str, str] | None = None):
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        try:
+            connection.request(
+                method,
+                f"/file-api/raw-file?path={quote(str(path))}",
+                headers=headers or {},
+            )
+            response = connection.getresponse()
+            return response.status, response.headers, response.read()
+        finally:
+            connection.close()
+
+    try:
+        status, headers, _ = request("GET", html_path)
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/html")
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
+
+        status, headers, _ = request("HEAD", html_path)
+        assert status == 200
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
+
+        status, headers, _ = request("GET", html_path, {"Range": "bytes=0-5"})
+        assert status == 206
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
+
+        status, headers, _ = request("GET", html_path, {"Range": "bytes=999-1000"})
+        assert status == 416
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
+
+        status, headers, _ = request("GET", svg_path)
+        assert status == 200
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
+
+        status, headers, _ = request("GET", png_path)
+        assert status == 200
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        # The PNG receives only the host policy.
+        assert headers.get_all("Content-Security-Policy") == [_PERSONAL_HOST_CSP]
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_raw_file_sandbox_follows_declared_type_over_platform_guess(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+):
+    agent_root = tmp_path / "agent"
+    uploads = agent_root / "sessions" / "session-1" / "uploads"
+    uploads.mkdir(parents=True)
+    html_path = uploads / "report.html"
+    html_path.write_text("<script>alert(1)</script>", encoding="utf-8")
+    # A platform MIME table (the Windows registry can override the builtin one)
+    # may disagree with the type the response actually declares for the
+    # extension. The sandbox CSP must follow the declared type.
+    monkeypatch.setattr(
+        "jiuwenswarm.channels.web.app_web.mimetypes.guess_type",
+        lambda name, strict=True: ("text/plain", None),
+    )
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = agent_root
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        api_target = ""
+        ws_target = ""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", f"/file-api/raw-file?path={quote(str(html_path))}")
+        response = connection.getresponse()
+        try:
+            assert response.status == 200
+            assert response.headers["Content-Type"].startswith("text/html")
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert response.headers["Content-Security-Policy"] == (
+                "sandbox allow-scripts allow-popups"
+            )
+            response.read()
+        finally:
+            connection.close()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_ws_proxy_rejects_foreign_origin(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    agent_root = tmp_path / "agent"
+    agent_root.mkdir()
+    # The Web proxy gate is unconditional and does not read
+    # JIUWENSWARM_ENABLE_ORIGIN_CHECK; that switch only affects the gateway.
+    # Pin the allowlist so the assertions do not inherit the caller's env.
+    monkeypatch.delenv("JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS", raising=False)
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = agent_root
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        api_target = ""
+        ws_target = ""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    port = server.server_port
+    upgrade_headers = {
+        "Upgrade": "websocket",
+        "Connection": "Upgrade",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Version": "13",
+    }
+
+    def handshake(origin: str | None, host: str | None = None) -> int:
+        headers = dict(upgrade_headers)
+        if origin is not None:
+            headers["Origin"] = origin
+        if host is not None:
+            headers["Host"] = host
+        connection = HTTPConnection("127.0.0.1", port)
+        try:
+            connection.request("GET", "/ws", headers=headers)
+            response = connection.getresponse()
+            response.read()
+            return response.status
+        finally:
+            connection.close()
+
+    try:
+        # Rejected before any upstream dial: foreign, opaque, and file origins.
+        assert handshake("http://evil.example") == 403
+        assert handshake("null") == 403
+        assert handshake("file://") == 403
+        # Same-origin and non-browser clients pass the gate; the empty
+        # ``ws_target`` then fails with 500 instead of the 403 above.
+        assert handshake(f"http://127.0.0.1:{port}") == 500
+        assert handshake(f"http://localhost:{port}") == 500
+        # A hostname outside the allowlist falls back to the Host comparison:
+        # the same host on a different port is a different origin, while the
+        # exact host and port passes the gate.
+        assert (
+            handshake(f"http://proxy.example:{port + 1}", f"proxy.example:{port}")
+            == 403
+        )
+        assert (
+            handshake(f"http://proxy.example:{port}", f"proxy.example:{port}") == 500
+        )
+        assert handshake(None) == 500
+        # A reverse proxy that rewrites Host (nginx only sends the upstream
+        # address unless told otherwise) stays usable once its browser-facing
+        # host is allowlisted; other hosts stay rejected.
+        monkeypatch.setenv(
+            "JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS",
+            "app.example.com",
+        )
+        assert handshake("https://app.example.com") == 500
+        assert handshake("https://evil.example") == 403
     finally:
         server.shutdown()
         thread.join()

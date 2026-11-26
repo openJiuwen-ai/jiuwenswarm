@@ -3,11 +3,53 @@
 """Fixtures for tests simulating a process-lifetime Server Worker."""
 
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+
+
+@pytest.fixture
+def ipc_dir(tmp_path: Path):
+    """Directory for Runtime Worker IPC endpoints.
+
+    A Unix socket path must fit in ``sun_path`` (104 bytes on macOS), which the
+    pytest ``tmp_path`` under ``/var/folders/.../pytest-of-<user>/`` exceeds, so
+    the Worker cannot bind there. POSIX tests get a short directory under
+    ``/tmp`` instead; Windows named pipes have no such limit.
+    """
+    if os.name == "nt":
+        yield tmp_path
+        return
+    directory = Path(tempfile.mkdtemp(prefix="jw-ipc-", dir="/tmp"))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _stub_voice_history_sync_for_mocked_adapters(request, monkeypatch):
+    """Image-fallback notice cases drive an adapter with a MagicMock instance.
+
+    ``getattr(agent, "react_agent", None)`` is never ``None`` on a MagicMock,
+    so ``sync_conversation_context`` would run with a mocked history cursor and
+    raise ``HISTORY_RESTORE_CHANGED`` before the notice under test is built.
+    Those cases only cover the notice text, so the sync is stubbed for that
+    module; it is a no-op where the module is absent.
+    """
+    path = getattr(getattr(request.node, "path", None), "name", None)
+    if path != "test_image_fallback_notice_nonstreaming.py":
+        return
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.video_duplex.backend.conversation_context.sync_conversation_context",
+        AsyncMock(return_value=None),
+    )
 
 
 @pytest.fixture

@@ -18,6 +18,7 @@ from typing import Any
 
 _INTEGRATION_TYPES = frozenset({"stdio-mcp", "remote-mcp", "cli", "skill-only"})
 _CREDENTIAL_TYPES = frozenset({"token", "cli-oauth", "oauth"})
+MCP_PACKAGE_ENTRYPOINT_ARG = "${MCP_PACKAGE_ENTRYPOINT}"
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,19 @@ def load_mcp_package(package_dir: Path, *, expected_id: str | None = None) -> Mc
     elif integration.get("file") is not None:
         logger.warning("skill-only integration declares integration.file; ignoring it")
 
+    if "entrypoint" in integration:
+        if integration_type != "stdio-mcp" or server_config is None:
+            raise McpPackageError("manifest integration.entrypoint requires stdio-mcp")
+        entrypoint = _declared_path(root, integration["entrypoint"], "integration.entrypoint")
+        args = server_config.get("args")
+        if not isinstance(args, list) or args.count(MCP_PACKAGE_ENTRYPOINT_ARG) != 1:
+            raise McpPackageError(
+                f"integration.entrypoint requires exactly one {MCP_PACKAGE_ENTRYPOINT_ARG} argument"
+            )
+        server_config["args"] = [
+            str(entrypoint) if arg == MCP_PACKAGE_ENTRYPOINT_ARG else arg for arg in args
+        ]
+
     credentials = raw.get("credentials")
     credentials_type = "none"
     credentials_file: Path | None = None
@@ -225,8 +239,15 @@ def load_mcp_package(package_dir: Path, *, expected_id: str | None = None) -> Mc
                 )
                 _read_json(credentials_file, "credentials.file")
             except McpPackageError as exc:
+                # A token declaration whose file is unreadable/unsafe leaves no
+                # usable token schema. Downgrade the kind as well, otherwise the
+                # downstream detects KIND_TOKEN and prompts for credentials whose
+                # required_tokens schema is empty (load_token_schema returns None).
+                # Keep the "no file" branch above consistent with this outcome.
                 logger.warning("ignoring credentials.file: %s", exc)
                 credentials_file = None
+                if credentials_type == "token":
+                    credentials_type = "none"
 
     icon_file = None
     if raw.get("icon") is not None:

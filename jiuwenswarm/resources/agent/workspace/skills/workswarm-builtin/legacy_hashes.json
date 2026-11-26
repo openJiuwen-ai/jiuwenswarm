@@ -33,5 +33,6 @@
   "skvm-jit": "7fed7087474dfa93d4ac2a703add9c0f6335a82d6c73d42a042a470ae6e06375",
   "swarmskill-creator": "2aaa279b68651836e1e703d7d1a87610b439dfcc7906481a15a3b4bf38cb6148",
   "workswarm-app-builder": "f788294d4f1c7e3a3431484b8aac2747cb392751ac2d04dce5b7a1537123668f",
-  "xlsx": "d54ac08b4ea7ec696c513a1b0bec3a6cf877c805e39ca4eaee6e8d6d164a1bd9"
+  "xlsx": "d54ac08b4ea7ec696c513a1b0bec3a6cf877c805e39ca4eaee6e8d6d164a1bd9",
+  "jiuwen-system-plugin-dev": "13bb81e8aaa78f4276a1701f94d29b3cb99e666548f1156da02f745040270f85"
 }

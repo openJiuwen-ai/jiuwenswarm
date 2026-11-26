@@ -19,7 +19,7 @@ let cacheNoticeToastSeq = 0;
  * 缓存恢复 fresh 时自动收起;同 App.tsx 的连接状态 toast 模式。
  */
 export function CatalogCacheNotice({ cache }: { cache?: CatalogCacheMetadata }) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const notice = catalogCacheNotice(cache);
   const kind = notice?.kind;
   const updatedAt = notice?.updatedAt;
@@ -36,14 +36,9 @@ export function CatalogCacheNotice({ cache }: { cache?: CatalogCacheMetadata }) 
       }
       return;
     }
-    const zh = language.startsWith('zh');
     const text = kind === 'error'
-      ? zh
-        ? '目录刷新失败，继续显示上次可用内容。'
-        : 'Catalog refresh failed. Previously available items are retained.'
-      : zh
-        ? '当前显示旧缓存。'
-        : 'Showing previously cached content.';
+      ? t('marketplace.cache.refreshFailed')
+      : t('marketplace.cache.stale');
     const updatedText = formatCatalogCacheUpdatedAt(updatedAt, language);
     const updatedTimestamp = catalogCacheTimestamp(updatedAt);
     toastKeyRef.current = toast.open({
@@ -53,7 +48,8 @@ export function CatalogCacheNotice({ cache }: { cache?: CatalogCacheMetadata }) 
           {text}
           {updatedText && updatedTimestamp !== null && (
             <time data-testid="marketplace-cache-updated" dateTime={new Date(updatedTimestamp).toISOString()}>
-              {zh ? ` 上次更新时间：${updatedText}` : ` Last updated: ${updatedText}`}
+              {' '}
+              {t('marketplace.cache.updatedAt', { time: updatedText })}
             </time>
           )}
         </>
@@ -61,7 +57,6 @@ export function CatalogCacheNotice({ cache }: { cache?: CatalogCacheMetadata }) 
       variant: 'info',
       position: 'right',
       duration: 0,
-      wide: true,
       testId: CACHE_NOTICE_TOAST_ID,
       // 恢复迁移到 toast 前内联 div 上的 data-variant={kind} 语义（stale/error），
       // 让外部自动化能按状态收窄该常驻提示；其它 toast 不传则仍取内部数字 key。

@@ -1,3 +1,5 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
+import { GatewayImage, GatewayVideo, needsGatewayResource, downloadGatewayResource } from '../../features/webui/client/GatewayResources';
 /**
  * MessageItem 组件
  *
@@ -51,6 +53,7 @@ import { AgentAvatar } from '../AgentAvatar';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
+import { WebUIHost } from '../../features/webui';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
@@ -203,6 +206,7 @@ export function TeamMemberMessageFrame({
 function TeamLeaderPlainTextMessage({
   member = 'team_leader',
   content,
+  renderTextActions,
   messageId,
   timestamp,
   isStreaming = false,
@@ -216,6 +220,7 @@ function TeamLeaderPlainTextMessage({
 }: {
   member?: string;
   content: string;
+  renderTextActions: (text: string) => ReactNode;
   messageId: string;
   timestamp: string;
   isStreaming?: boolean;
@@ -259,6 +264,7 @@ function TeamLeaderPlainTextMessage({
           className="flex items-center gap-1 text-sm mt-2 text-text-meta justify-start"
         >
           <span data-testid="chat-panel-message-timestamp">{formatTimestamp(timestamp)}</span>
+          {renderTextActions(content)}
         </div>
       )}
     </TeamMemberMessageFrame>
@@ -690,7 +696,7 @@ export const MessageItem = memo(function MessageItem({
     }
   }, [audioBase64, audioMime, stopGeneratedAudio]);
 
-  const handleSpeak = useCallback(() => {
+  const handleSpeak = useCallback((text: string) => {
     if (audioBase64) {
       if (isAudioPlaying) {
         stopGeneratedAudio();
@@ -702,8 +708,8 @@ export const MessageItem = memo(function MessageItem({
 
     if (isSpeaking) {
       stop();
-    } else if (content) {
-      const readableContent = a2uiContentToText(content) || content;
+    } else if (text) {
+      const readableContent = a2uiContentToText(text) || text;
       const cleanContent = sanitizeTtsText(readableContent);
       if (cleanContent) {
         speak(cleanContent);
@@ -711,7 +717,6 @@ export const MessageItem = memo(function MessageItem({
     }
   }, [
     audioBase64,
-    content,
     isAudioPlaying,
     isSpeaking,
     playGeneratedAudio,
@@ -720,9 +725,8 @@ export const MessageItem = memo(function MessageItem({
     stopGeneratedAudio,
   ]);
 
-  const handleCopy = useCallback(async () => {
-    if (!content) return;
-    const raw = role === 'user' ? stripUploadDocumentBlocks(stripSwarmflowAdvisory(content)) : content;
+  const handleCopy = useCallback(async (text: string) => {
+    const raw = role === 'user' ? stripUploadDocumentBlocks(stripSwarmflowAdvisory(content)) : text;
     if (!raw) return;
     const copyContent = a2uiContentToText(raw) || raw;
     const ok = await writeClipboard(copyContent);
@@ -746,7 +750,7 @@ export const MessageItem = memo(function MessageItem({
   // 自动朗读新消息（仅助手消息，由父组件通过 autoSpeak 控制）
   useEffect(() => {
     if (autoSpeak && role === 'assistant' && !isStreaming && !hasAutoSpoken && content) {
-      handleSpeak();
+      handleSpeak(content);
       setHasAutoSpoken(true);
     }
   }, [autoSpeak, role, isStreaming, hasAutoSpoken, content, handleSpeak]);
@@ -763,6 +767,59 @@ export const MessageItem = memo(function MessageItem({
       stop();
     });
   }, [stopGeneratedAudio, stop]);
+
+  function renderTextActions(text: string) {
+    if (!text || hideMeta) return null;
+    const showTTS = role !== 'user' && (ttsSupported || audioBase64);
+    const isPlaying = audioBase64 ? isAudioPlaying : isSpeaking;
+    return (
+      <>
+        <div className="relative" data-testid="chat-panel-message-copy">
+          <button
+            data-testid="chat-panel-message-copy-btn"
+            data-tooltip={copied ? t('chatUi.copied') : t('chatUi.copyMessage')}
+            {...tooltipHandlers}
+            onClick={() => void handleCopy(text)}
+            className={clsx(
+              'px-1 py-1.5 rounded-md',
+              copied ? 'text-accent' : 'hover:bg-secondary'
+            )}
+          >
+            {copied ? (
+              <Check className="w-4 h-4" strokeWidth={1.5} />
+            ) : (
+              <Copy className="w-4 h-4" strokeWidth={1.5} />
+            )}
+          </button>
+          {tooltip}
+        </div>
+        {showTTS && (
+          <div className="relative" data-testid="chat-panel-message-tts">
+            <button
+              data-testid="chat-panel-message-tts-btn"
+              data-variant={isPlaying ? 'playing' : 'idle'}
+              data-tooltip={isPlaying ? t('chatUi.stopReading') : t('chatUi.readMessage')}
+              {...tooltipHandlers}
+              onClick={() => handleSpeak(text)}
+              className={clsx(
+                'px-1 py-1.5 rounded-md ',
+                isPlaying
+                  ? 'text-accent bg-accent/10'
+                  : 'hover:bg-secondary'
+              )}
+            >
+              {isPlaying ? (
+                <Square className="w-4 h-4 fill-current" strokeWidth={1.5} />
+              ) : (
+                <Volume2 className="w-4 h-4" strokeWidth={1.5} />
+              )}
+            </button>
+            {tooltip}
+          </div>
+        )}
+      </>
+    );
+  }
 
   // 工具调用/结果消息
   if (role === 'tool') {
@@ -854,7 +911,7 @@ export const MessageItem = memo(function MessageItem({
  	                   </svg>
  	                 </span>
  	                 <span className="font-mono text-sm font-medium text-text" data-testid="chat-panel-session-result-card-title">
- 	                   会话任务：【{description || '未知任务'}】已完成
+	                   {t('chat.sessionTaskCompleted', { description: description || t('chatUi.toolGroup.sessionTaskUnknown') })}
  	                 </span>
  	                 <span className="text-text-muted text-sm">
  	                   {isExpanded ? '▼' : '▶'}
@@ -910,6 +967,7 @@ export const MessageItem = memo(function MessageItem({
                        </div>
                      )}
 	               <TeamLeaderPlainTextMessage
+	                 renderTextActions={renderTextActions}
 	                 member={event.fromMember}
 	                 content={event.content}
 	                 messageId={id}
@@ -970,7 +1028,7 @@ export const MessageItem = memo(function MessageItem({
 	       let messageContent = content;
 	       
 	       if (content.startsWith('team.leader:')) {
-	         const [, jsonStr] = content.split('team.leader:');
+	         const jsonStr = content.slice('team.leader:'.length);
 	         try {
 	           const data = JSON.parse(jsonStr);
 	           messageContent = data.content;
@@ -980,8 +1038,9 @@ export const MessageItem = memo(function MessageItem({
 	       
 	       return (
 	         <TeamLeaderPlainTextMessage
+	           renderTextActions={renderTextActions}
 	           member="team_leader"
-	           content={messageContent || (isStreaming ? '正在接收中...' : '')}
+	           content={messageContent || (isStreaming ? t('chat.receiving') : '')}
 	           messageId={id}
 	           timestamp={timestamp}
 	           isStreaming={isStreaming}
@@ -1002,9 +1061,10 @@ export const MessageItem = memo(function MessageItem({
 	     if (teamMemberName) {
 	       return (
 	         <TeamLeaderPlainTextMessage
+	           renderTextActions={renderTextActions}
 	           member={teamMemberName}
               timestamp={timestamp}
-	           content={content || (isStreaming ? '正在接收中...' : '')}
+	           content={content || (isStreaming ? t('chat.receiving') : '')}
 	           messageId={id}
 	           isStreaming={isStreaming}
 	           showAvatar={showAvatar}
@@ -1027,11 +1087,6 @@ export const MessageItem = memo(function MessageItem({
   // 历史渲染只展示用户真正输入的原文。
   const isUser = role === 'user';
   const displayContent = isUser ? stripSwarmflowAdvisory(stripUploadDocumentBlocks(content)) : content;
-  const showTTS = Boolean(
-    !isUser && !isStreaming && content && (ttsSupported || audioBase64)
-  );
-  const showCopy = Boolean(isUser ? displayContent : content) && !isStreaming;
-  const isPlaying = audioBase64 ? isAudioPlaying : isSpeaking;
   const rawMediaItems = mediaItems?.length ? mediaItems : null;
   // 上传时改过名的文件，历史消息里只存了原始 filename（displayName 不落盘），刷新页面后会
   // 退化成 EMXN1y8qOw....webp。按路径从会话素材表把用户起的名字补回来。
@@ -1133,7 +1188,7 @@ export const MessageItem = memo(function MessageItem({
             data-state={isStreaming ? 'streaming' : 'final'}
           >
             {!isUser && message.presentation === 'tool_result' && (
-              <div className="chat-bubble__result-label">{t('chat.toolResultLabel', '工具结果')} · Jiuwen Core Agent</div>
+              <div className="chat-bubble__result-label">{t('chat.toolResultLabel')} · Jiuwen Core Agent</div>
             )}
             {isStreaming ? (
               isUser ? (
@@ -1181,6 +1236,15 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
 
+        {!isUser && !isStreaming && !hideMeta && message.outputOrder?.requestId ? (
+          <WebUIHost
+            slotId="conversation.session.content.after"
+            sessionId={activeSessionId}
+            instanceKey={message.outputOrder.requestId}
+            className="mt-2 mb-3"
+          />
+        ) : null}
+
         {!isStreaming && !hideMeta && (
           <div
             data-testid="chat-panel-message-meta"
@@ -1210,52 +1274,7 @@ export const MessageItem = memo(function MessageItem({
               </span>
             )}
 
-            {showCopy && (
-              <div className="relative" data-testid="chat-panel-message-copy">
-                <button
-                  data-testid="chat-panel-message-copy-btn"
-                  data-tooltip={copied ? t('chatUi.copied') : t('chatUi.copyMessage')}
-                  {...tooltipHandlers}
-                  onClick={handleCopy}
-                  className={clsx(
-                    'px-1 py-1.5 rounded-md',
-                    copied ? 'text-accent' : 'hover:bg-secondary'
-                  )}
-                >
-                  {copied ? (
-                    <Check className="w-4 h-4" strokeWidth={1.5} />
-                  ) : (
-                    <Copy className="w-4 h-4" strokeWidth={1.5} />
-                  )}
-                </button>
-                {tooltip}
-              </div>
-            )}
-
-            {showTTS && (
-              <div className="relative" data-testid="chat-panel-message-tts">
-                <button
-                  data-testid="chat-panel-message-tts-btn"
-                  data-variant={isPlaying ? 'playing' : 'idle'}
-                  data-tooltip={isPlaying ? t('chatUi.stopReading') : t('chatUi.readMessage')}
-                  {...tooltipHandlers}
-                  onClick={handleSpeak}
-                  className={clsx(
-                    'px-1 py-1.5 rounded-md ',
-                    isPlaying
-                      ? 'text-accent bg-accent/10'
-                      : 'hover:bg-secondary'
-                  )}
-                >
-                  {isPlaying ? (
-                    <Square className="w-4 h-4 fill-current" strokeWidth={1.5} />
-                  ) : (
-                    <Volume2 className="w-4 h-4" strokeWidth={1.5} />
-                  )}
-                </button>
-                {tooltip}
-              </div>
-            )}
+            {renderTextActions(displayContent)}
 
             {showFork && (
               <div className="relative" data-testid="chat-panel-message-fork">
@@ -1277,6 +1296,23 @@ export const MessageItem = memo(function MessageItem({
                 {tooltip}
               </div>
             )}
+
+            {!isUser && message.outputOrder?.requestId ? (
+              <>
+                <WebUIHost
+                  slotId="message.assistant.meta"
+                  sessionId={activeSessionId}
+                  instanceKey={message.outputOrder.requestId}
+                  layout="row"
+                />
+                <WebUIHost
+                  slotId="conversation.turn.footer.actions"
+                  sessionId={activeSessionId}
+                  instanceKey={message.outputOrder.requestId}
+                  layout="row"
+                />
+              </>
+            ) : null}
           </div>
         )}
 
@@ -1348,19 +1384,24 @@ export function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
-      fileDownloadHead(file.download_url)
+      const gatewayResource = needsGatewayResource(file.download_url);
+      const enterpriseDownload = !gatewayResource && isEnterprise();
+      const head = gatewayResource
+        ? gatewayFetch(file.download_url, { method: 'HEAD' })
+        : fileDownloadHead(file.download_url);
+      head
         .then((res) => {
           if (!cancelled) {
             setExpiredSet((prev) => {
               const next = new Set(prev);
-              if (res.ok && isEnterprise()) next.delete(index);
-              else if (!res.ok && (!isEnterprise() || [403, 404, 410].includes(res.status))) next.add(index);
+              if (res.ok && enterpriseDownload) next.delete(index);
+              else if (!res.ok && (!enterpriseDownload || [403, 404, 410].includes(res.status))) next.add(index);
               return next;
             });
           }
         })
         .catch(() => {
-          if (!cancelled && !isEnterprise()) {
+          if (!cancelled && !enterpriseDownload) {
             setExpiredSet((prev) => new Set(prev).add(index));
           }
         });
@@ -1386,6 +1427,11 @@ export function FileDownloadList({
       : '';
     const href = file.download_url || pathHref;
     if (expiredSet.has(index) || !href) return;
+    if (needsGatewayResource(href)) {
+      try { await downloadGatewayResource(href, file.name || 'download'); }
+      catch { window.alert(t('artifacts.downloadFailed', { name: file.name })); }
+      return;
+    }
     if (file.download_url && isEnterprise() && !(await prepareFileDownload(file.download_url))) {
       window.alert(t('artifacts.downloadFailed', { name: file.name }));
       return;
@@ -1500,7 +1546,7 @@ export function FileDownloadList({
               aria-label={onPreview ? t('artifacts.openPreview', { name: displayName }) : undefined}
             >
               {isSkill ? (
-                <img
+                <GatewayImage
                   src={skillPackageIcon}
                   alt=""
                   aria-hidden="true"
@@ -1583,7 +1629,7 @@ export function FileDownloadList({
             )}
             </div>
             {showImagePreview && (
-              <img
+              <GatewayImage
                 src={file.download_url}
                 alt={displayName}
                 className="chat-panel-file-download-image-preview"
@@ -1592,15 +1638,15 @@ export function FileDownloadList({
               />
             )}
             {showVideoPreview && (
-              <video
+              <GatewayVideo
+                src={file.download_url}
                 controls
                 preload="metadata"
                 className="chat-panel-file-download-video-preview"
                 data-testid="chat-panel-file-download-video-preview"
                 onClick={(event) => event.stopPropagation()}
               >
-                <source src={file.download_url} type={file.mime_type} />
-              </video>
+              </GatewayVideo>
             )}
           </div>
         );

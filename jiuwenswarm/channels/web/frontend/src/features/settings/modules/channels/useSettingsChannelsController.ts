@@ -203,8 +203,8 @@ export function useSettingsChannelsController({
     void loadChannels();
   }, [loadChannels]);
 
-  useEffect(() => {
-    void Promise.all([
+  const loadConfigurations = useCallback(async () => {
+    await Promise.all([
       xiaoyi.load(),
       feishu.load(),
       dingtalk.load(),
@@ -214,6 +214,14 @@ export function useSettingsChannelsController({
       whatsapp.load(),
     ]);
   }, [dingtalk.load, discord.load, feishu.load, slack.load, telegram.load, whatsapp.load, xiaoyi.load]);
+
+  const reloadChannels = useCallback(async () => {
+    await Promise.all([loadChannels(), loadConfigurations()]);
+  }, [loadChannels, loadConfigurations]);
+
+  useEffect(() => {
+    void loadConfigurations();
+  }, [loadConfigurations]);
 
   useEffect(() => {
     onHasChangesChange?.(hasActiveDialogChanges);
@@ -401,10 +409,24 @@ export function useSettingsChannelsController({
     if (deleted) setPendingDeletion(null);
   };
 
+  // Page-level toast only covers failures that have no better surface: the configuration load
+  // failures are shown by the persistent configurationsError banner, and a save failure for the
+  // open dialog is shown by the dialog status bar. Everything else (enable toggle, unbind) stays
+  // on the toast, which the panel keeps transient.
   const errorNotice = Array.from(
     new Set(
+      Object.entries(controllers)
+        .map(([channelId, controller]) =>
+          controller.loaded && !(dialogOpen && channelId === activeChannelId) ? controller.error : null,
+        )
+        .filter((message): message is string => Boolean(message)),
+    ),
+  ).join(t('common.and'));
+
+  const configurationsError = Array.from(
+    new Set(
       Object.values(controllers)
-        .map((controller) => controller.error)
+        .map((controller) => (!controller.loaded ? controller.error : null))
         .filter((message): message is string => Boolean(message)),
     ),
   ).join(t('common.and'));
@@ -426,9 +448,12 @@ export function useSettingsChannelsController({
     channelEnabled,
     channelConfigured,
     channelSaving,
-    configurationsLoading: Object.values(controllers).some((controller) => !controller.loaded || controller.loading),
+    configurationsLoading: Object.values(controllers).some(
+      (controller) => (!controller.loaded && controller.error === null) || controller.loading,
+    ),
+    configurationsError,
     errorNotice,
-    loadChannels,
+    reloadChannels,
     selectChannel,
     editChannel,
     addFeishuConfiguration,

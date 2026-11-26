@@ -1,4 +1,12 @@
-export type PublishAssetKind = 'skill' | 'skillpack' | 'agent_template' | 'agent_group' | 'plugin' | 'mcp';
+export type PublishAssetKind =
+  | 'skill'
+  | 'skillpack'
+  | 'agent_template'
+  | 'agent_group'
+  | 'plugin'
+  | 'mcp'
+  | 'system_plugin'
+  | 'app';
 export type PackPublishMember = {
   name: string;
   version?: string;

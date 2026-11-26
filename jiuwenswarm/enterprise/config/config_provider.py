@@ -158,13 +158,22 @@ def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
     from jiuwenswarm.enterprise.config.effective.apply_permissions import (
         apply_enterprise_permissions_to_config,
     )
+    from jiuwenswarm.enterprise.config.effective.apply_execution_guard import (
+        apply_enterprise_execution_guard_to_config,
+    )
+    from jiuwenswarm.enterprise.config.effective.apply_react import (
+        apply_enterprise_react_to_config,
+    )
 
     merged, _, _ = apply_enterprise_models_and_mcp(base, loaded)
+    # 执行护栏在模型之后整段替换，避免模型 retry_count 旧逻辑盖掉护栏开关和重试次数。
+    merged, _ = apply_enterprise_execution_guard_to_config(merged, loaded)
     # MCP 动态 token 实例凭据：Manager 挂在 Agent 模板 data.custom_config 对象
     # 数组里，合并时提取并整份替换给动态 token 模块（未携带则清除）。
     apply_dispatched_credentials(loaded)
     merged = merge_memory_config_into_config(merged)
     merged, _ = apply_enterprise_permissions_to_config(merged, loaded)
+    merged, _ = apply_enterprise_react_to_config(merged, loaded)
     # advanced_config（含 a4p_enabled）→ config.a4p.enabled 等
     merged, _ = apply_enterprise_advanced_config_to_config(merged, loaded)
     return merged

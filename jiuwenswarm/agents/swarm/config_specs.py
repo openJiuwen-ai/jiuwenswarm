@@ -103,6 +103,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.RESPONSE_PROMPT,
     registry.SYS_OPERATION,
     registry.STREAM_EVENT,
+    registry.WORKSPACE_QUOTA,
     registry.TASK_PLANNING,
     registry.SECURITY,
     registry.MODEL_ANOMALY_DETECTION,
@@ -419,15 +420,8 @@ def _skill_mode(config: dict[str, Any]) -> str:
 
 def _retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether agentic skill retrieval is enabled for this config."""
-    env_value = os.getenv("SYMPHONY_SKILL_RETRIEVAL_ENABLED")
-    if env_value is not None and env_value.strip():
-        return env_value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
-
-    symphony = _config_section(config or {}, "symphony")
-    retrieval = symphony.get("skill_retrieval")
-    if isinstance(retrieval, dict):
-        return bool(retrieval.get("enabled", False))
-    return False
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    return load_symphony_config(config or {}).retrieval.enabled
 
 
 def _team_skill_use_rail_spec(config: dict[str, Any], role: str) -> RailSpec:
@@ -827,6 +821,10 @@ def build_member_capability_specs(
         rails, tools = _build_team_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
+    from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+    if uses_jiuwen_team_memory(config, mode):
+        rails = [rail for rail in rails if rail.type != registry.CODE_CODING_MEMORY]
+        rails.append(RailSpec(type=registry.TEAM_MEMORY))
     # OpenCode Go models need a member-scoped session header; the rail is a
     # no-op for every other vendor, so mounting it needs no config gate.
     rails.append(RailSpec(type=registry.OPENCODE_SESSION))
@@ -859,7 +857,15 @@ def _subagent_language(mode: str, role: str, config: dict[str, Any]) -> str:
     openjiuwen sub-agent providers stay free of swarm mode/role policy.
     """
     if is_team_plan_mode(mode) and role == "leader":
-        return resolve_language((config or {}).get("preferred_language", "zh"))
+        from jiuwenswarm.common.i18n import to_runtime_language
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
+        mapped = to_runtime_language(resolve_preferred_language())
+        if mapped is None:
+            mapped = to_runtime_language((config or {}).get("preferred_language"))
+        return resolve_language(mapped)
     return "en"
 
 
@@ -1018,6 +1024,7 @@ def build_member_deep_agent_spec(
     *,
     enable_permissions: bool = False,
     mcp_configs: list[McpServerConfig] | None = None,
+    disable_code_todo_reminder: bool = False,
 ) -> DeepAgentSpec:
     """Fold the member capability specs onto *base_spec*.
 
@@ -1035,6 +1042,7 @@ def build_member_deep_agent_spec(
         base_spec: The base member ``DeepAgentSpec`` to extend.
         enable_permissions: Effective team permission toggle from TeamAgentSpec.
         mcp_configs: MCP server configs inherited from ``config.yaml``.
+        disable_code_todo_reminder: Suppress periodic Todo reminders for scheduled Code agents.
 
     Returns:
         A new ``DeepAgentSpec`` with the capability specs applied.
@@ -1048,6 +1056,12 @@ def build_member_deep_agent_spec(
 
     merged_rails = list(base_spec.rails or [])
     merged_rails.extend(rails_specs)
+    if disable_code_todo_reminder and _is_code_mode(mode):
+        merged_rails = [
+            rail.model_copy(update={"params": {**(rail.params or {}), "enable_task_reminders": False}})
+            if rail.type == registry.CODE_TASK_PLANNING else rail
+            for rail in merged_rails
+        ]
     merged_tools = list(base_spec.tools or [])
     merged_tools.extend(tool_specs)
     merged_mcps = _merge_mcp_configs(base_spec.mcps, mcp_configs)
@@ -1072,6 +1086,16 @@ def build_member_deep_agent_spec(
         # Written only when enabled so a disabled switch keeps the base spec
         # byte-identical (a YAML base spec may carry its own value).
         update["progressive_tool"] = ProgressiveToolSpec(enabled=True)
+    # New agent-core routes only the supported core startup providers through
+    # tool.register. Keep the update capability-gated so a rolling upgrade can
+    # construct against an older Core; that combination intentionally retains
+    # the legacy direct-registration path, including all swarm.* providers.
+    if registry.supports_tool_registration_event():
+        update["tool_registration_mode"] = registry.TOOL_REGISTRATION_MODE
+        update["event_tool_types"] = list(registry.EVENT_TOOL_TYPES)
+    if registry.supports_subagent_registration_event():
+        update["subagent_registration_mode"] = registry.SUBAGENT_REGISTRATION_MODE
+        update["event_subagent_types"] = list(registry.EVENT_SUBAGENT_TYPES)
     if role == "leader":
         # Leaders use the team task board (create_task / view_task / update_task).
         # Force off agent-core's enable_task_planning auto-inject path so a YAML

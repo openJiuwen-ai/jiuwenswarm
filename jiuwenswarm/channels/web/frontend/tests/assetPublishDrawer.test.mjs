@@ -84,6 +84,27 @@ test('all five RPCs send the current token and provider without frontend identit
   assert.equal(calls[0].params.user_id, undefined);
   webClient.request = original;
 });
+test('app publishing previews the storefront identity and uses the default project requirement', async () => {
+  const describe = assetPublishApi.describe;
+  assetPublishApi.describe = async () => description;
+  try {
+    await act(async () => root.render(React.createElement(AssetPublishHost)));
+    await act(async () => openAssetPublish({ kind: 'app', local_id: 'demo-app', avatar_url: '/demo-app.png' }));
+    await tick();
+    assert.equal(find('asset-publish-resource-summary').dataset.variant, 'app');
+    assert.equal(find('asset-publish-resource-avatar-image').getAttribute('src'), '/demo-app.png');
+    assert.equal(find('asset-publish-resource-name').textContent, 'Demo');
+    assert.equal(find('asset-publish-resource-version').textContent, 'v1.0.0');
+    assert.equal(find('asset-publish-resource-description').textContent, 'Example');
+    assert.equal(find('asset-publish-resource-id'), null);
+    assert.ok(document.querySelector('[data-testid="asset-publish-form-section"][data-variant="publish"]'));
+    assert.equal(find('asset-publish-app-requires-project'), null);
+  } finally {
+    assetPublishApi.describe = describe;
+    if (find('asset-publish-close')) await act(async () => find('asset-publish-close').click());
+  }
+});
+
 test('publish form uses compact resource, account, grouped settings, and folded secondary content', async () => {
   sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
   sessionStorage.setItem('marketplace_oauth_provider', 'gitcode');

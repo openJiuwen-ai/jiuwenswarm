@@ -279,6 +279,11 @@ class SendFileInput(ConstructionInput):
         attr="team_ws_root",
         description="Internal team collaboration workspace root.",
     )
+    language: str = context_field(
+        attr="language",
+        default="cn",
+        description="Member UI language (cn/en); mapped to zh/en for catalog copy.",
+    )
 
 
 @harness_element(
@@ -316,6 +321,10 @@ def build_send_file_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> lis
         return []
 
     try:
+        from jiuwenswarm.common.i18n import try_normalize_preferred_language
+
+        # Catalog uses zh/en; team harness language is cn/en.
+        send_lang = try_normalize_preferred_language(inp.language) or "en"
         toolkit = SendFileToolkit(
             request_id=inp.request_id,
             session_id=inp.session_id,
@@ -324,6 +333,7 @@ def build_send_file_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> lis
             user_id=inp.user_id,
             project_dir=inp.project_dir,
             team_workspace_root=inp.team_workspace_root,
+            language=send_lang,
         )
         tools = list(toolkit.get_tools())
         logger.info(

@@ -20,6 +20,7 @@ from typing import Any
 
 from openjiuwen.agent_teams import paths as ojw_paths
 from openjiuwen.agent_teams.schema.build_context import BuildContext
+from openjiuwen.core.sys_operation.execution_environment import ExecutionEnvironment
 
 
 _heartbeat_job_service: Any | None = None
@@ -94,7 +95,7 @@ class SwarmBuildContext(BuildContext):
             reacquired from the receiving JiuwenSwarm process.
         config: The resolved ``config.yaml`` mapping (``get_config()``).
         skill_retrieval_toolkit: Per-member, non-serializable Symphony
-            discovery runtime shared by skill_index and its prompt rail.
+            discovery runtime shared by capability_search and its prompt rail.
 
     Note:
         Backward incompatible: the ``team_skills_dir`` field and its seed key
@@ -103,6 +104,24 @@ class SwarmBuildContext(BuildContext):
         the member document as the only visibility authority.
     """
 
+    async def resolve_execution_environment(self) -> ExecutionEnvironment:
+        """Read committed session policy for this member at each tool boundary."""
+        from openjiuwen.agent_teams.rails.team_context import get_team_backend
+        from jiuwenswarm.server.runtime.session.execution_settings import member_environment
+
+        backend = get_team_backend(self)
+        if not self.execution_settings_managed:
+            return ExecutionEnvironment()
+        if backend is None:
+            raise RuntimeError("Team execution environment requires a member backend")
+        if not self.mode.startswith("team"):
+            return ExecutionEnvironment()
+        current = await backend.db.session_settings.get(self.session_id)
+        if current is None:
+            raise RuntimeError("Team session execution settings are not initialized")
+        return member_environment(current["settings"], self.member_name)
+
+    execution_settings_managed: bool = False
     session_id: str = ""
     request_id: str | None = None
     user_id: str | None = None
@@ -114,6 +133,11 @@ class SwarmBuildContext(BuildContext):
     trusted_dirs: list[str] | None = None
     disable_teammate_worktree: bool = False
     team_id: str = ""
+    memory_agent_name: str = ""
+    memory_project: str = "default"
+    memory_team: str = ""
+    memory_group: str = ""
+    memory_experts: tuple[str, ...] = ()
     team_ws_root: str | None = None
     task_workspace_root: str | None = None
     team_outputs_dir: str | None = None
@@ -138,6 +162,18 @@ class SwarmBuildContext(BuildContext):
         """
         if (self.request_metadata or {}).get("cron"):
             self.extras["is_cron"] = True
+        if self.memory_team:
+            self.bind_memory_membership_hook()
+
+    def bind_memory_membership_hook(self) -> None:
+        if not self.memory_team:
+            return
+        from jiuwenswarm.agents.harness.common.memory.team_memory_members import change_expert_membership
+
+        async def change(member_name: str, template_ref: dict, added: bool) -> None:
+            await change_expert_membership(self, member_name, template_ref, added)
+
+        self.extras["team.on_explicit_member_change"] = change
 
     def resolve_member_skill_visibility_path(self) -> str | None:
         """Resolve the current member's Skill visibility metadata file path.
@@ -201,13 +237,15 @@ class SwarmBuildContext(BuildContext):
         plus locally-sourced non-serializable handles. Per-member fields
         (``member_name`` / ``role`` / ``language`` / ``workspace`` /
         ``member_card_id``) are intentionally excluded — ``setup_agent`` fills
-        them per member through ``derive()``. The live ``config`` and
-        ``trajectory_span_processor`` are excluded too: the receiver supplies them.
+        them per member through ``derive()``. The live ``config``,
+        ``trajectory_span_processor`` and ``extension_bus`` are excluded too:
+        the receiver supplies them.
 
         Returns:
             A plain mapping of serializable primitives.
         """
         return {
+            "execution_settings_managed": self.execution_settings_managed,
             "session_id": self.session_id,
             "request_id": self.request_id,
             "user_id": self.user_id,
@@ -219,6 +257,12 @@ class SwarmBuildContext(BuildContext):
             "trusted_dirs": list(self.trusted_dirs) if self.trusted_dirs else None,
             "disable_teammate_worktree": self.disable_teammate_worktree,
             "team_id": self.team_id,
+            "memory_agent_name": self.memory_agent_name,
+            "memory_project": self.memory_project,
+            "memory_team": self.memory_team,
+            "memory_group": self.memory_group,
+            "memory_experts": list(self.memory_experts),
+            "memory_members_ready": self.extras.get("team.memory_members_ready"),
             "team_ws_root": self.team_ws_root,
             "task_workspace_root": self.task_workspace_root,
             "team_outputs_dir": self.team_outputs_dir,
@@ -233,6 +277,7 @@ class SwarmBuildContext(BuildContext):
         *,
         config: dict[str, Any] | None,
         trajectory_span_processor: Any,
+        extension_bus: Any = None,
     ) -> "SwarmBuildContext":
         """Rebuild a context from a :meth:`to_seed` mapping plus local handles.
 
@@ -240,34 +285,55 @@ class SwarmBuildContext(BuildContext):
             seed: The serializable mapping produced by :meth:`to_seed`.
             config: The receiving process's resolved ``config.yaml`` mapping.
             trajectory_span_processor: The process-level Team trajectory processor.
+            extension_bus: The receiving process's live extension bus, when
+                supported by the installed agent-core.
 
         Returns:
             A ``SwarmBuildContext`` with the seed fields restored and the
             non-serializable handles sourced from the receiving process.
         """
-        return cls(
-            session_id=seed.get("session_id", ""),
-            request_id=seed.get("request_id"),
-            user_id=seed.get("user_id"),
-            channel_id=seed.get("channel_id"),
-            channel=seed.get("channel") or "default",
-            request_metadata=seed.get("request_metadata"),
-            mode=seed.get("mode") or "team",
-            project_dir=seed.get("project_dir"),
-            trusted_dirs=seed.get("trusted_dirs"),
-            disable_teammate_worktree=bool(
+        from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+
+        memory_agent_name = seed.get("memory_agent_name", "")
+        if uses_jiuwen_team_memory(config, seed.get("mode") or "team"):
+            memory_agent_name = "main_agent"
+        context_kwargs = {
+            "execution_settings_managed": seed.get("execution_settings_managed", False),
+            "session_id": seed.get("session_id", ""),
+            "request_id": seed.get("request_id"),
+            "user_id": seed.get("user_id"),
+            "channel_id": seed.get("channel_id"),
+            "channel": seed.get("channel") or "default",
+            "request_metadata": seed.get("request_metadata"),
+            "mode": seed.get("mode") or "team",
+            "project_dir": seed.get("project_dir"),
+            "trusted_dirs": seed.get("trusted_dirs"),
+            "disable_teammate_worktree": bool(
                 seed.get("disable_teammate_worktree", False)
             ),
-            team_id=seed.get("team_id", ""),
-            team_ws_root=seed.get("team_ws_root"),
-            task_workspace_root=seed.get("task_workspace_root"),
-            team_outputs_dir=seed.get("team_outputs_dir"),
-            team_skill_visibility_path=seed.get("team_skill_visibility_path"),
-            global_skills_dir=seed.get("global_skills_dir"),
-            trajectory_span_processor=trajectory_span_processor,
-            heartbeat_job_service=get_heartbeat_job_service(),
-            config=config,
-        )
+            "team_id": seed.get("team_id", ""),
+            "memory_agent_name": memory_agent_name,
+            "memory_project": seed.get("memory_project", "default"),
+            "memory_team": seed.get("memory_team", ""),
+            "memory_group": seed.get("memory_group", ""),
+            "memory_experts": tuple(seed.get("memory_experts") or ()),
+            "team_ws_root": seed.get("team_ws_root"),
+            "task_workspace_root": seed.get("task_workspace_root"),
+            "team_outputs_dir": seed.get("team_outputs_dir"),
+            "team_skill_visibility_path": seed.get("team_skill_visibility_path"),
+            "global_skills_dir": seed.get("global_skills_dir"),
+            "trajectory_span_processor": trajectory_span_processor,
+            "heartbeat_job_service": get_heartbeat_job_service(),
+            "config": config,
+        }
+        if extension_bus is not None:
+            context_kwargs["extras"] = {"team.extension_bus": extension_bus}
+        memory_members_ready = seed.get("memory_members_ready")
+        if isinstance(memory_members_ready, bool):
+            context_kwargs.setdefault("extras", {})["team.memory_members_ready"] = memory_members_ready
+        if "extension_bus" in getattr(cls, "__dataclass_fields__", {}):
+            context_kwargs["extension_bus"] = extension_bus
+        return cls(**context_kwargs)
 
 
 __all__ = [

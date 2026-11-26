@@ -132,13 +132,25 @@ interface TrajectoryRequestBase {
 /** One purpose-discriminated request paired with its display number. */
 export type TrajectoryRequest = TrajectoryRequestBase & (
   | { purpose?: 'assistant'; turn: number; step: number }
-  | { purpose: 'compaction'; turn: number; step: number }
+  | { purpose: 'compaction' | 'goal_assessment'; turn: number; step: number }
 )
+
+/** An isolated assessment of a goal, owned by an agent but outside its conversation. */
+export interface TrajectoryGoalAssessment {
+  id: string
+  goalId?: string
+  attempt?: number
+  strategy?: string
+  result?: 'continue' | 'complete' | 'blocked'
+  request: TrajectoryRequest
+  turns: readonly TrajectoryTurnModel[]
+}
 
 /** Snapshot consumed atomically by `TrajectoryExplorer`. */
 export interface TrajectorySnapshot {
   turns: readonly TrajectoryTurnModel[]
   requests?: readonly TrajectoryRequest[]
+  goalAssessments?: readonly TrajectoryGoalAssessment[]
   diagnostics?: readonly TrajectoryDiagnostic[]
 }
 

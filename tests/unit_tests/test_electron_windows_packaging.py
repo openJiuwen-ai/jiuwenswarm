@@ -30,7 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_inno_setup_bootstrap_reuses_shared_installer(tmp_path, scenario, expected):
     source = (ROOT / "scripts/build-electron-exe.ps1").read_text(encoding="utf-8")
     start = source.index("$Iscc = Resolve-InnoSetupCompiler")
-    fragment = source[start:source.index('Write-Host "Using ISCC: $Iscc"', start)]
+    # Payload construction has separate helpers and is not part of compiler discovery.
+    fragment = source[start:source.index("$PayloadRoot =", start)]
     assert "Install-InnoSetup7" in fragment
     script = tmp_path / "bootstrap.ps1"
     script.write_text(
@@ -165,6 +166,19 @@ def test_normal_upgrade_does_not_run_uninstall_config_cleanup():
     assert 'RunOnceId: "ResetExternalCliConfig"' in uninstall_run
     prepare = electron[electron.index("function PrepareToInstall"):]
     assert '--desktop-reset-external-cli-config' not in prepare
+
+
+def test_uninstall_takes_the_office_add_ins_back_out():
+    old = (ROOT / "scripts/installer.iss").read_text(encoding="utf-8")
+    electron = (ROOT / "scripts/installer-electron.iss").read_text(encoding="utf-8")
+    entry = (ROOT / "scripts/jiuwenswarm_exe_entry.py").read_text(encoding="utf-8")
+    for script in (old, electron):
+        uninstall_run = script[script.index("[UninstallRun]"):script.index("[Icons]")]
+        assert "--desktop-remove-office-addins" in uninstall_run
+        assert 'RunOnceId: "RemoveOfficeAddins"' in uninstall_run
+    prepare = electron[electron.index("function PrepareToInstall"):]
+    assert "--desktop-remove-office-addins" not in prepare
+    assert "_pop_flag(_DESKTOP_REMOVE_OFFICE_ADDINS)" in entry and "remove_all(get_user_workspace_dir())" in entry
 
 
 @pytest.mark.parametrize("receipt_state", ["ok", "missing", "pending", "failed"])

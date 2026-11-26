@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+  body { font: 13px system-ui; color: var(--color-text-primary, CanvasText); }
+  #pet { height: 76px; display: grid; place-content: center; text-align: center; cursor: grab;
+    touch-action: none; user-select: none; background: var(--color-surface-muted, Canvas); border-radius: 18px; }
+  #pet span { font-size: 28px; }
+  button { cursor: pointer; }
+</style>
+<div id="pet" data-testid="pet-drag"><span>🐝</span><label id="status">Drag</label></div>
+<button id="send" data-testid="pet-send">Send</button><button id="workspace" data-testid="pet-workspace">Open</button>
+<script>
+  const protocol = 'workswarm.presentation';
+  let nextId = 0, state = null, pointer = null;
+  const pending = new Map();
+  function request(action, params) {
+    const id = ++nextId;
+    const promise = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+    parent.postMessage({ protocol, version: 1, type: 'request', id, action, params }, '*');
+    return promise;
+  }
+  const pet = document.getElementById('pet');
+  function report(error) { document.body.dataset.error = error.message; }
+  addEventListener('message', (event) => {
+    const message = event.data;
+    if (event.source !== parent || message?.protocol !== protocol || message.version !== 1) return;
+    if (message.type === 'state') {
+      state = message.state;
+      document.documentElement.lang = state.locale;
+      for (const [name, value] of Object.entries(state.theme)) document.body.style.setProperty(name, value);
+      document.getElementById('status').textContent = (state.locale.startsWith('zh') ? '拖动 · ' : 'Drag · ') + state.selectedConversationKey;
+      document.getElementById('send').textContent = state.locale.startsWith('zh') ? '发送' : 'Send';
+      document.getElementById('workspace').textContent = state.locale.startsWith('zh') ? '打开会话' : 'Open';
+      document.body.dataset.areaWidth = message.host?.workArea.width;
+      document.body.dataset.areaHeight = message.host?.workArea.height;
+      document.body.dataset.mode = message.host?.mode;
+    }
+    if (message.type === 'result') {
+      const operation = pending.get(message.id);
+      if (!operation) return;
+      pending.delete(message.id);
+      if (message.ok) operation.resolve(message.value);
+      else operation.reject(new Error(message.error.code));
+    }
+  });
+  pet.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    pet.setPointerCapture(event.pointerId);
+    pointer = { id: event.pointerId, x: event.screenX, y: event.screenY, sentX: 0, sentY: 0 };
+    event.preventDefault();
+  });
+  function movePointer(event) {
+    if (!pointer || pointer.id !== event.pointerId) return;
+    const totalX = Math.round(event.screenX - pointer.x), totalY = Math.round(event.screenY - pointer.y);
+    const deltaX = totalX - pointer.sentX, deltaY = totalY - pointer.sentY;
+    pointer.sentX = totalX; pointer.sentY = totalY;
+    if (deltaX || deltaY) request('move', { deltaX, deltaY }).catch(report);
+  }
+  pet.addEventListener('pointermove', movePointer);
+  pet.addEventListener('pointerup', (event) => { movePointer(event); pointer = null; });
+  pet.addEventListener('pointercancel', () => { pointer = null; });
+  pet.addEventListener('lostpointercapture', () => { pointer = null; });
+  document.getElementById('send').onclick = () => request('send', { conversationKey: state.selectedConversationKey, text: 'Hello' }).catch(report);
+  document.getElementById('workspace').onclick = () => request('workspace', { conversationKey: state.selectedConversationKey }).catch(report);
+  window.testRequest = request;
+  parent.postMessage({ protocol, version: 1, type: 'ready' }, '*');
+</script>
+</html>

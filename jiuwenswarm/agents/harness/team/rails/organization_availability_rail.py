@@ -8,6 +8,7 @@ import json
 import logging
 from typing import Any
 
+from openjiuwen.agent_teams.organization.schema import OrgTaskAggregationMode
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.harness.rails.base import DeepAgentRail
@@ -18,6 +19,10 @@ from jiuwenswarm.server.runtime.organization_packages import team_package_availa
 logger = logging.getLogger(__name__)
 _SECTION = "organization_package_availability"
 _GROUP_MEMBER_CAPABILITY = "group-member:"
+_SUMMARY_EXECUTION_GUIDANCE = (
+    "For a SUMMARY_TEAM root, use org_create_summary_execution with the root_task_id and the accepted "
+    "contribution task IDs in source_task_ids. Do not create, claim, or delegate an ordinary summary task."
+)
 
 
 def resolve_required_claim_capabilities(
@@ -153,8 +158,7 @@ class OrganizationAvailabilityRail(DeepAgentRail):
     async def _spec_capabilities(self, team_id: str) -> list[str]:
         return _capability_values((await self._spec_metadata(team_id)).get("capabilities"))
 
-    async def _claim_members(self) -> list[dict[str, Any]] | None:
-        """Return registered members, or None when the organization cannot be read."""
+    async def _task_manager(self) -> Any:
         from openjiuwen.core.runner.runner import GLOBAL_RUNNER
 
         runtime = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
@@ -163,7 +167,11 @@ class OrganizationAvailabilityRail(DeepAgentRail):
         entry = await runtime.pool.get(self.team_id)
         if entry is None or entry.current_session_id != self.session_id:
             return None
-        manager = getattr(getattr(entry.agent, "team_backend", None), "org_task_manager", None)
+        return getattr(getattr(entry.agent, "team_backend", None), "org_task_manager", None)
+
+    async def _claim_members(self) -> list[dict[str, Any]] | None:
+        """Return registered members, or None when the organization cannot be read."""
+        manager = await self._task_manager()
         if manager is None:
             return None
         try:
@@ -189,16 +197,10 @@ class OrganizationAvailabilityRail(DeepAgentRail):
             })
         return members
 
-    async def _align_create_task_capabilities(self, ctx: AgentCallbackContext, inputs: ToolCallInputs) -> bool:
+    async def _align_create_task_capabilities(
+        self, ctx: AgentCallbackContext, inputs: ToolCallInputs, args: dict[str, Any],
+    ) -> bool:
         """Rewrite a package-id claim filter. Return True when the call is rejected."""
-        args = inputs.tool_args
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except (ValueError, TypeError):
-                return False
-        if not isinstance(args, dict):
-            return False
         requested = args.get("required_capabilities")
         if not isinstance(requested, list) or not requested:
             return False
@@ -217,6 +219,30 @@ class OrganizationAvailabilityRail(DeepAgentRail):
             )
             inputs.tool_args = {**args, "required_capabilities": rewritten}
         return False
+
+    async def _is_ordinary_summary_for_summary_root(self, tool_name: str, args: dict[str, Any]) -> bool:
+        """Guard the dedicated summary path without changing hierarchical work."""
+        if tool_name == "org_create_task":
+            if "summary" not in _capability_values(args.get("required_capabilities")):
+                return False
+            task_id = str(args.get("parent_task_id") or "").strip()
+        else:
+            task_id = str(args.get("task_id") or "").strip()
+        if not task_id:
+            return False
+        manager = await self._task_manager()
+        if manager is None:
+            return False
+        task = await manager.get_task(task_id)
+        if task is None:
+            return False
+        if tool_name != "org_create_task" and (
+            task.task_type == "organization.summary"
+            or "summary" not in _capability_values(task.required_capabilities)
+        ):
+            return False
+        root = task if task.root_task_id == task.task_id else await manager.get_task(task.root_task_id)
+        return root is not None and getattr(root.aggregation, "mode", None) == OrgTaskAggregationMode.SUMMARY_TEAM
 
     @staticmethod
     def _reject_tool_call(ctx: AgentCallbackContext, inputs: ToolCallInputs, error: str) -> None:
@@ -239,9 +265,8 @@ class OrganizationAvailabilityRail(DeepAgentRail):
         }
         if not isinstance(inputs, ToolCallInputs):
             return
-        if inputs.tool_name == "org_create_task" and await self._align_create_task_capabilities(ctx, inputs):
-            return
-        if inputs.tool_name not in target_fields:
+        tool_name = inputs.tool_name
+        if tool_name not in target_fields and tool_name != "org_claim_task":
             return
         args = inputs.tool_args
         if isinstance(args, str):
@@ -251,7 +276,21 @@ class OrganizationAvailabilityRail(DeepAgentRail):
                 return
         if not isinstance(args, dict):
             return
-        target = str(args.get(target_fields[inputs.tool_name]) or "")
+        if tool_name in {"org_create_task", "org_delegate_task", "org_claim_task"}:
+            try:
+                reserved_summary = await self._is_ordinary_summary_for_summary_root(tool_name, args)
+            except Exception as exc:
+                logger.warning("Cannot verify organization task dispatch for %s: %s", tool_name, exc)
+                self._reject_tool_call(ctx, inputs, "Cannot verify the organization task. Read it and retry.")
+                return
+            if reserved_summary:
+                self._reject_tool_call(ctx, inputs, _SUMMARY_EXECUTION_GUIDANCE)
+                return
+        if tool_name == "org_create_task" and await self._align_create_task_capabilities(ctx, inputs, args):
+            return
+        if tool_name not in target_fields:
+            return
+        target = str(args.get(target_fields[tool_name]) or "")
         if not target:
             return
         status = await self._team_availability(target)
@@ -349,6 +388,7 @@ class OrganizationAvailabilityRail(DeepAgentRail):
                 "is installed again, not that its Team is necessarily idle or already loaded. "
                 "A child wakes a member only when required_capabilities is exactly [claim_capability]. "
                 "agent_group_name is the package id and is not a capability.\n"
+                + _SUMMARY_EXECUTION_GUIDANCE + "\n"
                 + json.dumps(availability, ensure_ascii=False)
             )
             self.builder.add_section(PromptSection(

@@ -1,13 +1,21 @@
 import json
 import zipfile
+from email.parser import BytesParser
+from email.policy import default
+from io import BytesIO
 
+import httpx
 import pytest
+import yaml
 
+from jiuwenswarm.extensions.app_market.app_market.models import AppManifest
+from jiuwenswarm.extensions.app_market.app_market.storage import MarketStorage
 from jiuwenswarm.server.runtime.marketplace.asset_publish_api import (
     AssetPublishAPI,
     PublishAPIError,
 )
 from jiuwenswarm.server.runtime.marketplace.asset_publish_models import PublishResult
+from jiuwenswarm.server.runtime.marketplace.hub_publish_client import HubPublishClient
 from tests.unit_tests.agentserver.mcp.manifest_helpers import write_canva_oauth_package
 
 
@@ -54,6 +62,122 @@ def params(**kwargs):
         "auth": {"access_token": "synthetic-user-token", "oauth_provider": "gitcode"},
         **kwargs,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declares_roles", [False, True])
+async def test_local_app_publishes_wrapped_snapshot_with_owner_and_version_checks(tmp_path, monkeypatch, declares_roles):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.marketplace.asset_publish_api.get_app_market_dir",
+        lambda: tmp_path / "app_market",
+    )
+    app_dir = tmp_path / "demo"
+    app_dir.mkdir()
+    html = (
+        '<head><meta name="application-version" content="1.2-beta.1">'
+        '<meta name="description" content="Local app description"></head><body>Demo</body>'
+    )
+    (app_dir / "main.htm").write_text(html, encoding="utf-8")
+    (app_dir / ".env").write_text("EXAMPLE_SECRET=demo", encoding="utf-8")
+    for relative in ("data/state.json", "scripts/start.sh", "out/bundle.js", "app.log", "logs/runtime.log"):
+        path = app_dir / relative
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("demo", encoding="utf-8")
+    storage = MarketStorage(str(tmp_path / "app_market"))
+    storage.save_manifest("demo", AppManifest(
+        app_id="demo", name="demo--app", version="1.2-beta.1", run_type="static",
+        page_entry_path="main.htm", work_dir=str(app_dir), owner_id="browser-user",
+        permissions=[] if declares_roles else ["ai"],
+    ))
+    declaration = {
+        "schema_version": 1,
+        "session_groups": [{
+            "id": "guide",
+            "mode": "agent",
+            "session_description": "A new session for each game.",
+            "roles": [{"id": "guide", "name": "Guide", "description": "Helps players"}],
+        }],
+    }
+    role_file = app_dir / "app-ai-roles.json"
+    uploaded = []
+
+    async def upload(request):
+        body = await request.aread()
+        message = BytesParser(policy=default).parsebytes(
+            f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode() + body
+        )
+        fields = {
+            part.get_param("name", header="content-disposition"): part.get_payload(decode=True)
+            for part in message.iter_parts()
+        }
+        uploaded.append(fields)
+        return httpx.Response(200, json={"code": 200, "data": {
+            "asset_id": "app-asset", "asset_type": "app", "plugin_type": "app",
+            "name": "demo--app", "version": "1.2-beta.1", "visibility": "public",
+            "publish_result": "pending_moderation",
+        }})
+
+    server = AssetPublishAPI(
+        tmp_path / "state",
+        publisher=HubPublishClient(base_url="https://example.invalid", transport=httpx.MockTransport(upload)),
+        hub_url="https://example.invalid",
+    )
+    owner = "browser-user"
+    ref = {"kind": "app", "local_id": "demo"}
+    try:
+        with pytest.raises(PublishAPIError, match="RESOURCE_NOT_FOUND"):
+            await server.call("describe", ref, gateway_user="other-user")
+        defaults = (await server.call("describe", ref, gateway_user=owner))["defaults"]
+        assert defaults["asset_name"] == defaults["display_name"] == "demo--app"
+        assert defaults["version"] == "1.2-beta.1"
+        assert defaults["description"] == "Local app description"
+        assert "requires_project" not in defaults
+        metadata = defaults
+        with pytest.raises(PublishAPIError, match="APP_VERSION_MISMATCH"):
+            await server.call(
+                "prepare", params(**ref, metadata={**metadata, "version": "2.0"}), gateway_user=owner,
+            )
+        if declares_roles:
+            role_file.write_text('{"schema_version": 1, "session_groups": []}', encoding="utf-8")
+            with pytest.raises(PublishAPIError, match="INVALID_PACKAGE") as exc:
+                await server.call("prepare", params(**ref, metadata=metadata), gateway_user=owner)
+            assert exc.value.field == "app-ai-roles.json"
+            role_file.write_text(json.dumps(declaration), encoding="utf-8")
+        draft = await server.call("prepare", params(**ref, metadata=metadata), gateway_user=owner)
+        assert draft["can_submit"]
+        assert set(draft["excluded"]) == {
+            ".env", "data/", "scripts/start.sh", "app.log", "logs/runtime.log",
+        }
+        assert uploaded == []
+        operation = await server.call(
+            "commit", params(draft_id=draft["draft_id"], request_id="app-publish"), gateway_user=owner,
+        )
+        await server.service.wait_idle()
+        status = await server.call("status", params(operation_id=operation["operation_id"]), gateway_user=owner)
+        assert status["execution_status"] == "completed"
+        fields, = uploaded
+        assert fields["asset_name"] == b"demo--app"
+        assert fields["plugin_version"] == b"1.2-beta.1"
+        assert not {"tags", "description", "display_name"} & fields.keys()
+        with zipfile.ZipFile(BytesIO(fields["file"])) as archive:
+            wrapper = yaml.safe_load(archive.read("demo--app/plugin.yaml"))
+            assert wrapper["runtime"] == {"type": "app"}
+            assert wrapper["description"] == defaults["description"]
+            assert wrapper["metadata"]["app"] == {"permissions": ["ai"], "requires_project": True}
+            expected_files = {
+                "demo--app/plugin.yaml", "demo--app/demo--app/index.html",
+                "demo--app/demo--app/main.htm", "demo--app/demo--app/out/bundle.js",
+            }
+            if declares_roles:
+                bundled_roles = "demo--app/demo--app/app-ai-roles.json"
+                expected_files.add(bundled_roles)
+                assert json.loads(archive.read(bundled_roles)) == declaration
+                assert storage.load_manifest("demo").permissions == []
+            assert set(archive.namelist()) == set(draft["files"]) == expected_files
+            assert archive.read("demo--app/demo--app/index.html").decode() == html
+        assert not (app_dir / "index.html").exists()
+    finally:
+        await server.close()
 
 
 @pytest.mark.asyncio
@@ -270,7 +394,7 @@ def test_real_equipment_resolver_accepts_installed_package(
     )
 
     monkeypatch.setattr(packages, "get_agent_workspace_dir", lambda: tmp_path)
-    monkeypatch.setattr(packages, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(packages, "get_workspace_root_dir", lambda: tmp_path)
     root = (
         tmp_path / ".agent_teams" / directory / "local" / "demo"
         if kind == "agent_group"
@@ -299,7 +423,7 @@ def test_agent_group_publish_resolves_installed_hub_asset_id(tmp_path, monkeypat
         HubInstallStateStore,
     )
 
-    monkeypatch.setattr(packages, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(packages, "get_workspace_root_dir", lambda: tmp_path)
     root = tmp_path / ".agent_teams" / "agent_groups" / "local" / "business-planning"
     root.mkdir(parents=True)
     (root / "manifest.json").write_text(
@@ -496,7 +620,7 @@ async def test_pack_describe_retains_local_defaults_when_identity_check_fails(tm
     )
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config",
-        lambda: {"symphony": {"evolution": {"flow": {"enabled": True}}}},
+        lambda: {"symphony": {"orchestration": {"experience": {"enabled": True}}}},
     )
     server = AssetPublishAPI(
         tmp_path / "state", resolver=lambda kind, local_id: root,

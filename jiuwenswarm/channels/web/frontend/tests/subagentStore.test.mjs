@@ -24,6 +24,7 @@ import {
   normalizeSubagentStatusEvent,
   normalizeSubagentToolStatusUpdates,
   normalizeSubagentWaitResults,
+  resolveSubagentDisplayName,
 } from '../node_modules/.cache/subagent-store/subagentNormalizer.mjs';
 
 const sessionId = 'session-a';
@@ -67,6 +68,62 @@ function activity(activityId, sequence, overrides = {}) {
     ...overrides,
   };
 }
+
+test('subagent expert appearance stays attached to its task through heartbeats', () => {
+  const names = { zh: '调研专家', en: 'Research Expert' };
+  const avatar = 'data:image/webp;base64,YXZhdGFy';
+  const first = normalizeSubagentStatusEvent(subagent({
+    display_name: names.zh,
+    display_name_i18n: names,
+    avatar,
+  }));
+  const second = normalizeSubagentStatusEvent(subagent({
+    subagent_id: 'agent-b',
+    display_name: names.zh,
+    display_name_i18n: names,
+    avatar,
+    task_description: 'Check citations',
+  }));
+  const heartbeat = normalizeSubagentStatusEvent(subagent({
+    display_name: names.zh,
+    display_name_i18n: names,
+    task_description: '',
+    updated_at: 1100,
+    revision: 2,
+  }));
+  let runtime = createEmptySubagentRuntime(sessionId);
+  runtime = applySubagentUpdated(runtime, first);
+  runtime = applySubagentUpdated(runtime, second);
+  runtime = applySubagentUpdated(runtime, heartbeat);
+
+  const { 'agent-a': research, 'agent-b': citations } = runtime.subagentsById;
+  for (const item of [research, citations]) {
+    assert.equal(resolveSubagentDisplayName(item, 'zh-CN'), names.zh);
+    assert.equal(resolveSubagentDisplayName(item, 'en-US'), names.en);
+    assert.equal(item.avatar, avatar);
+  }
+  assert.equal(research.task_description, 'Research the topic');
+  assert.equal(citations.task_description, 'Check citations');
+
+  // A heartbeat can arrive before the browser loads the initial event from history.
+  let restored = applySubagentUpdated(createEmptySubagentRuntime(sessionId), heartbeat);
+  restored = applySubagentHistoryUpdated(restored, first);
+  assert.equal(restored.subagentsById['agent-a'].avatar, avatar);
+  assert.equal(restored.subagentsById['agent-a'].revision, 2);
+});
+
+test('subagent presentation handles missing translations, legacy names and invalid avatar sources', () => {
+  const legacy = normalizeSubagentStatusEvent(subagent()).subagent;
+  assert.equal(resolveSubagentDisplayName(legacy, 'en'), 'Agent A');
+  assert.equal(legacy.avatar, undefined);
+
+  const expert = normalizeSubagentStatusEvent(subagent({
+    display_name_i18n: { en: 'Research Expert' },
+    avatar: 'file:///private/expert.png',
+  })).subagent;
+  assert.equal(resolveSubagentDisplayName(expert, 'zh'), 'Research Expert');
+  assert.equal(expert.avatar, undefined);
+});
 
 test('subagent status updates are revision-idempotent and keep terminal history', () => {
   let runtime = createEmptySubagentRuntime(sessionId);

@@ -34,6 +34,7 @@ def test_verifier_resolves_lazy_exports_before_backend_import(monkeypatch, missi
         verifier.verify_gateway_adapter_bundle()
         assert imports[0] == "jiuwenswarm.server.agent_ws_server"
         assert "agent_gateway.channel_manager.im_platforms.welink.welink_runtime" in imports
+        assert "jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers" in imports
         assert imports[-1] == "extensions"
 
 
@@ -43,13 +44,30 @@ def test_spec_collects_lazy_gateway_adapters():
     assert 'collect_submodules("jiuwenswarm.server.runtime.gateway_adapter")' in compact
     assert compact.count("gateway_adapter_submodules=") == 1
     assert "+gateway_adapter_submodules" in compact
+    assert '"jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers",' in compact
+
+
+def test_verifier_rejects_missing_rea_handler(monkeypatch):
+    monkeypatch.setattr(verifier.sys, "frozen", True, raising=False)
+    missing = "jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers"
+
+    def import_module(name):
+        if name == "jiuwenswarm.server.runtime.gateway_adapter":
+            return SimpleNamespace(__all__=[])
+        if name == missing:
+            raise ModuleNotFoundError(f"No module named '{name}'", name=name)
+
+    monkeypatch.setattr(verifier, "import_module", import_module)
+    with pytest.raises(ModuleNotFoundError) as error:
+        verifier.verify_gateway_adapter_bundle()
+    assert error.value.name == missing
 
 
 @pytest.fixture
 def gateway_extensions(tmp_path, monkeypatch):
     from agent_gateway.extensions.loader import ExtensionLoader
 
-    for name in ("adx", "agentos", "agent_client"):
+    for name in ("adx", "agentos", "runtime_management_extension"):
         root = tmp_path / "extensions" / name
         root.mkdir(parents=True)
         (root / "extension.yaml").write_text(f"name: {name}\n", encoding="utf-8")
@@ -81,7 +99,7 @@ def test_verifier_loads_physical_extensions_with_relative_imports(gateway_extens
         for name in verifier.sys.modules
         if name.startswith(prefix) and "." not in name.removeprefix(prefix)
     }
-    assert loaded == {"adx", "agentos", "agent_client"}
+    assert loaded == {"adx", "agentos", "runtime_management_extension"}
     for name in loaded:
         module = verifier.sys.modules[prefix + name]
         assert Path(module.__file__) == gateway_extensions / name / "extension.py"
@@ -150,12 +168,12 @@ def test_launcher_isolates_before_windows_entry_imports(tmp_path, monkeypatch, c
         "from agent_gateway.common.paths import get_config_dir\n"
         "root = Path(os.environ['JIUWENSWARM_DATA_DIR'])\n"
         "assert get_user_workspace_dir() == root\n"
-        "assert get_config_dir() == root / 'infra/config'\n"
+        "assert get_config_dir() == root / 'config'\n"
         "assert Path.cwd() == root\n"
-        "assert not (root / 'infra/config/logging.yaml').exists()\n"
-        "(root / 'infra/config/.env').write_text('MIGRATED=1')\n"
-        "(root / 'infra/logs/agent').mkdir(parents=True, exist_ok=True)\n"
-        "(root / 'infra/logs/agent/probe.log').write_text('isolated failure evidence')\n"
+        "assert not (root / 'config/logging.yaml').exists()\n"
+        "(root / 'config/.env').write_text('MIGRATED=1')\n"
+        "(root / 'logs/agent').mkdir(parents=True, exist_ok=True)\n"
+        "(root / 'logs/agent/probe.log').write_text('isolated failure evidence')\n"
         f"Path({str(report)!r}).write_text(str(root))\n"
         f"raise SystemExit({exit_code})\n",
         encoding="utf-8",

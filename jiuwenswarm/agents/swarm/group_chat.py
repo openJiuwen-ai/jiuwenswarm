@@ -116,6 +116,17 @@ def assemble_group_members(spec, members: list[dict]) -> None:
             raise ValueError("group member_name must be valid and unique")
         names.add(name)
         kind, definition = item.get("kind"), item.get("id")
+        if kind == "colleague":
+            # Identity comes from the saved roster. Availability is checked when the
+            # colleague joins and before each execution, so a disabled or deleted
+            # colleague never prevents the rest of the group from starting.
+            member = TeamMemberSpec(
+                member_name=name, display_name=item.get("display_name") or name,
+                desc=item.get("description") or "AI colleague", prompt="",
+                role_type=TeamRole.HOST_MANAGED,
+            )
+            prepared.append((name, None, member))
+            continue
         if kind == "agent_template":
             template = load_agent_template_package(
                 resolve_agent_template_dir(definition) / "manifest.json"
@@ -169,6 +180,8 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                 "and loads the context from its earlier child task. "
                 "Results are posted automatically; do not post or submit them twice. "
                 "For a message mentioning only multiple expert teams, the first mentioned team is the Owner. "
+                "An unmentioned message may also be assigned to several expert teams with a named Owner; "
+                "it follows the same rules. "
                 "Only the Owner decides: ordinary conversation uses group_send_message; "
                 "substantive work uses run_team; "
                 "missing requirements use ask_user. A mention alone does not require an organization task. "
@@ -196,7 +209,8 @@ def assemble_group_members(spec, members: list[dict]) -> None:
             install_execution_policy(agent)
         prepared.append((name, agent, member))
     for name, agent, member in prepared:
-        spec.agents[name] = agent
+        if agent is not None:
+            spec.agents[name] = agent
         spec.predefined_members = [*spec.predefined_members, member]
     spec.metadata = {**spec.metadata, "group_members": members}
     spec.team_mode = "hybrid"

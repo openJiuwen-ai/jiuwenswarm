@@ -1,3 +1,4 @@
+import { gatewayFetch } from './gatewayFetch';
 /**
  * 华为账号（Account Kit）登录客户端：只做 HTTP 调用，状态在 `stores/authStore.ts`。
  *
@@ -6,6 +7,7 @@
  */
 
 import { getGatewayHttpBase } from '../utils/env';
+import i18n from '../i18n';
 
 /**
  * 没有 cookie 的环境回落到请求头带会话 id。
@@ -122,15 +124,15 @@ async function readError(response: Response, fallback: string): Promise<AuthApiE
 
 /** 发起登录：拿到浏览器要打开的授权地址。 */
 export async function authorize(): Promise<AuthorizeResponse> {
-  const response = await fetch(authUrl('/authorize'), {
+  const response = await gatewayFetch(authUrl('/authorize'), {
     method: 'POST',
     credentials: 'include',
     headers: stateChangingHeaders(),
   });
-  if (!response.ok) throw await readError(response, '获取授权地址失败');
+  if (!response.ok) throw await readError(response, i18n.t('auth.errors.authorizeFailed'));
   const data = (await response.json()) as AuthorizeResponse;
   if (!data?.authorizeUrl || !data?.state || !data?.claimToken) {
-    throw new AuthApiError('授权地址返回不完整', 'authorize_malformed', 500);
+    throw new AuthApiError(i18n.t('auth.errors.authorizeMalformed'), 'authorize_malformed', 500);
   }
   return data;
 }
@@ -142,14 +144,14 @@ export type ClaimOutcome = { kind: 'pending' } | { kind: 'done'; status: AuthSta
  * 成功后存下 session id：桌面 WebView 拿不到种在系统浏览器里的 cookie，只能靠请求头带会话。
  */
 export async function claim(state: string, claimToken: string): Promise<ClaimOutcome> {
-  const response = await fetch(authUrl('/claim'), {
+  const response = await gatewayFetch(authUrl('/claim'), {
     method: 'POST',
     credentials: 'include',
     headers: stateChangingHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ state, claimToken }),
   });
   if (response.status === 202) return { kind: 'pending' };
-  if (!response.ok) throw await readError(response, '登录失败，请重试');
+  if (!response.ok) throw await readError(response, i18n.t('auth.errors.loginFailed'));
   const headerSession = response.headers.get(SESSION_HEADER);
   const data = (await response.json()) as AuthStatus;
   writeStoredSessionId(headerSession || data.sessionId || '');
@@ -163,7 +165,7 @@ export async function claim(state: string, claimToken: string): Promise<ClaimOut
  */
 export async function cancelLogin(state: string, claimToken: string): Promise<void> {
   try {
-    await fetch(authUrl('/cancel'), {
+    await gatewayFetch(authUrl('/cancel'), {
       method: 'POST',
       credentials: 'include',
       keepalive: true,
@@ -189,12 +191,12 @@ export function openExternal(url: string): Window | null {
 
 /** 查询当前登录状态。后端未开启登录时返回 `enabled: false`。 */
 export async function status(): Promise<AuthStatus> {
-  const response = await fetch(authUrl('/status'), {
+  const response = await gatewayFetch(authUrl('/status'), {
     method: 'GET',
     credentials: 'include',
     headers: authHeaders({ Accept: 'application/json' }),
   });
-  if (!response.ok) throw await readError(response, '获取登录状态失败');
+  if (!response.ok) throw await readError(response, i18n.t('auth.errors.statusFailed'));
   const data = (await response.json()) as AuthStatus;
   // 会话确实过期了才丢掉本地句柄：它的优先级高于 cookie，留着会把还能用的 cookie 挡住。
   // 未登录状态不算，活动下线时也是未登录，那时清掉，活动恢复后还需要重登一次
@@ -210,12 +212,12 @@ export interface LoginModelInfo {
 
 /** 登录后自动获得的模型。它们同时也并进了普通模型列表，这里是给账号面板看的。 */
 export async function listLoginModels(): Promise<LoginModelInfo[]> {
-  const response = await fetch(authUrl('/models'), {
+  const response = await gatewayFetch(authUrl('/models'), {
     method: 'GET',
     credentials: 'include',
     headers: authHeaders({ Accept: 'application/json' }),
   });
-  if (!response.ok) throw await readError(response, '获取模型列表失败');
+  if (!response.ok) throw await readError(response, i18n.t('auth.errors.modelsFailed'));
   const data = (await response.json()) as { models?: LoginModelInfo[] };
   return data.models ?? [];
 }
@@ -245,18 +247,18 @@ export interface QuotaResult {
 
 /** 查免费积分。积分用完了也是正常返回（`exhausted=true`），不是错误。 */
 export async function fetchQuota(): Promise<QuotaResult> {
-  const response = await fetch(authUrl('/quota'), {
+  const response = await gatewayFetch(authUrl('/quota'), {
     method: 'GET',
     credentials: 'include',
     headers: authHeaders({ Accept: 'application/json' }),
   });
-  if (!response.ok) throw await readError(response, '获取额度失败');
+  if (!response.ok) throw await readError(response, i18n.t('auth.errors.quotaFailed'));
   const data = (await response.json()) as QuotaResult;
   return { available: Boolean(data?.available), quota: data?.quota ?? null };
 }
 
 export async function logout(): Promise<void> {
-  await fetch(authUrl('/logout'), {
+  await gatewayFetch(authUrl('/logout'), {
     method: 'POST',
     credentials: 'include',
     headers: stateChangingHeaders(),

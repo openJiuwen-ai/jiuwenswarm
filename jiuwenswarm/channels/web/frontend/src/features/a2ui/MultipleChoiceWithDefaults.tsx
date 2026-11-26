@@ -1,6 +1,7 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import { useCallback, useId, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { CSSProperties, ChangeEvent } from 'react';
 import {
   classMapToString,
@@ -64,6 +65,7 @@ export function MultipleChoiceWithDefaults({
   surfaceId,
 }: A2UIComponentProps<MultipleChoiceNodeLike>) {
   const { theme, resolveString, setValue, getValue } = useA2UIComponent(node, surfaceId);
+  const { t } = useTranslation();
   const props = node.properties;
   const id = useId();
   const selectionsPath = props.selections?.path;
@@ -143,8 +145,8 @@ export function MultipleChoiceWithDefaults({
   // Build label text with multi-select hint
   const labelText = useMemo(() => {
     if (isSingleSelect || maxAllowedSelections === undefined) return description;
-    return `${description}（最多选 ${maxAllowedSelections} 项）`;
-  }, [description, isSingleSelect, maxAllowedSelections]);
+    return t('a2ui.multipleChoice.maxSelections', { description, count: maxAllowedSelections });
+  }, [description, isSingleSelect, maxAllowedSelections, t]);
 
   // Render chips UI
   if (type === 'chips') {
@@ -160,7 +162,7 @@ export function MultipleChoiceWithDefaults({
           {shouldShowFilter && (
             <input
               type="search"
-              placeholder="搜索选项"
+              placeholder={t('a2ui.multipleChoice.searchPlaceholder')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="mb-2 px-3 py-1 border border-gray-300 rounded text-sm w-full"
@@ -216,7 +218,7 @@ export function MultipleChoiceWithDefaults({
           {shouldShowFilter && (
             <input
               type="search"
-              placeholder="搜索选项"
+              placeholder={t('a2ui.multipleChoice.searchPlaceholder')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="mb-2 px-3 py-1 border border-gray-300 rounded text-sm w-full"

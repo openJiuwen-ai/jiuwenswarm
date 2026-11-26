@@ -130,6 +130,10 @@ async def _start_worker_runtime(
     )
     if runtime is None:
         raise RuntimeError("Runtime construction did not publish its cleanup owner")
+    from jiuwenswarm.extensions_v2.assembly import install_extensions
+
+    await install_extensions(server)
+    measurements.stage("extensions_v2_installed")
     runtime_bootstrap.bind_runtime_signals(server, signals)
     # Prewarm exec: credential references once per process BEFORE the server
     # accepts traffic: fill the in-memory store so the first get_config() of

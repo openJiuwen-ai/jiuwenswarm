@@ -257,7 +257,7 @@ def _settings(params: Mapping[str, Any]) -> ColleagueSettings:
 
 
 def _default_manager(service: PersistentAgentService, *, on_event: Callable[[AgentEvent], None]) -> AgentManager:
-    return AgentManager.create_default(service, on_event=on_event, approval_channels=frozenset({"web"}))
+    return AgentManager.create_default(service, on_event=on_event, approval_channels=frozenset({"web", "swarmchat"}))
 
 
 def _coalesce(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -411,11 +411,16 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 if self._stream is not None:
                     self._stream.start()
                 await manager.start()
+                await manager.start_swarmchat()
                 # Feishu routes continue on the fanout runtime, which can verify group membership.
                 await manager.recover(WEB_NAMESPACE, channels=frozenset({"web"}), include_unrouted=True)
                 self._conversations = await asyncio.to_thread(WebConversationStore, manager.db_path)
                 self._manager = manager
             return self._manager
+
+    async def stop_swarmchat_group(self, group_id: str, *, user_id: str, channel_id: str) -> None:
+        manager = await self._runtime()
+        await manager.stop_swarmchat_group(group_id, user_id=user_id, channel_id=channel_id)
 
     async def refresh_models(self, config_payload: dict[str, Any] | None = None) -> bool:
         async with self._model_refresh_lock:
@@ -434,9 +439,10 @@ class JiuwenMateWebAdapter(GatewayAdapter):
     async def _refresh_models(self, config_payload: dict[str, Any] | None = None) -> bool:
         """Refresh published models for future Web and Feishu Requests, without starting either runtime."""
         from jiuwenswarm.common.config import get_default_models
-        from jiuwenswarm.server.jiuwenmate.service import ConfiguredModelProvider, default_data_dir
+        from jiuwenswarm.common.paths import get_jiuwenmate_dir
+        from jiuwenswarm.server.jiuwenmate.service import ConfiguredModelProvider
 
-        if self._service is None and not (default_data_dir() / "agents.sqlite3").is_file():
+        if self._service is None and not (get_jiuwenmate_dir() / "agents.sqlite3").is_file():
             return True
         try:
             service = await asyncio.to_thread(self._colleagues)

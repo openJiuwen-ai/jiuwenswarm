@@ -28,6 +28,7 @@ from agent_gateway.common.mode_matrix import (
 
 from e2a.acp.protocol import build_acp_initialize_result
 from jiuwenswarm.common.config import get_available_models, get_config
+from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     is_auto_permission_enabled,
@@ -245,6 +246,9 @@ class AgentManager:
         # 上一次默认模型的连接身份快照 (diff_key -> ModelClientConfig), 用于
         # 模型热更新后关闭"已被删除/改掉凭证"的 LLM 连接 (增量关闭)。
         self._last_model_conn_configs: dict[tuple, Any] = {}
+        # create_token 幂等表容量帽(FIFO):保证 ack 丢失后同 token 重投仍命中
+        # 原 claim,同时内存上界 8192 条 ≈ 12MB(issue#5240 残余 + MR#8528 检视)。
+        self._session_create_tokens_max = 8192
         self._session_create_tokens: dict[tuple[str, str], tuple[Any, Any]] = {}
         self._session_create_token_lock = asyncio.Lock()
         from jiuwenswarm.server.runtime.agent_warm_pool import AgentWarmPool
@@ -1294,6 +1298,7 @@ class AgentManager:
         execution_profile: str = "default",
         role_instructions: str = "",
         npc_team: dict | None = None,
+        npc_session: bool = False,
     ):
         token = str(create_token or "").strip()
         key = self.warm_pool.make_key(
@@ -1307,6 +1312,8 @@ class AgentManager:
         # Session，避免为布尔开关复制预热槽。但它属于 session.create 的幂等
         # 身份，同一 create_token 不允许用不同值重试。
         create_signature = (key, bool(prewarm_eligible), bool(persist_session), bool(moa_enabled))
+        if npc_session:
+            create_signature += ("npc_session",)
         if execution_profile != "default":
             create_signature += (execution_profile, role_instructions)
             # The roster definition is part of the same
@@ -1339,6 +1346,14 @@ class AgentManager:
                     "bypassed",
                 )
             if token:
+                # 容量帽而非消费式弹出:幂等窗口必须覆盖「ack 丢失/超时后的
+                # 同 token 重投」(网关接口契约),而会话激活发生在回 ack 之前,
+                # 激活即弹会令重投生成重复会话。FIFO 逐最旧保证内存有界
+                # (issue#5240 残余 + MR#8528 检视)。
+                if len(self._session_create_tokens) >= self._session_create_tokens_max:
+                    self._session_create_tokens.pop(
+                        next(iter(self._session_create_tokens)), None
+                    )
                 self._session_create_tokens[token_key] = (create_signature, claim)
             return claim
 
@@ -1503,6 +1518,20 @@ class AgentManager:
         """Borrow ``agent`` while it is still cached; None once it was retired or recreated."""
         if any(agent is cached for channel_agents in self.agents.values() for cached in channel_agents.values()):
             return self._borrow_agent(agent)
+        return None
+
+    def get_session_workspace_paths(self, channel_id: str, session_id: str) -> RuntimeWorkspacePaths | None:
+        """Inspect cached session paths without borrowing or allocating an Agent."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        channel_agents = self.agents.get(_normalize_channel_id(channel_id), {})
+        for agent in channel_agents.values():
+            getter = getattr(agent, "get_session_workspace_paths", None)
+            if callable(getter):
+                paths = getter(sid)
+                if paths is not None:
+                    return paths
         return None
 
     def get_auto_permission_agent_for_session_nowait(

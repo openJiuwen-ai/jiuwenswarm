@@ -105,6 +105,8 @@ Type: files; Name: "{app}\logo-*.ico"; Check: IsExistingPerUserInstallDir
 ; 卸载前重置外部 CLI 开关（与 installer.iss 一致；Web UI 也能安装外部 CLI，
 ; 其配置在用户目录，需要后端 exe 显式清理）。FrontendOnly 包无后端，跳过。
 Filename: "{app}\resources\backend\{#BackendExecutableName}"; Parameters: "--desktop-reset-external-cli-config"; Flags: runhidden waituntilterminated; RunOnceId: "ResetExternalCliConfig"
+; 撤销 Office 加载项的注册与 localhost 证书信任（都在用户目录与注册表里，卸载程序看不到）。
+Filename: "{app}\resources\backend\{#BackendExecutableName}"; Parameters: "--desktop-remove-office-addins"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveOfficeAddins"
 #endif
 
 [Icons]
@@ -321,3 +323,35 @@ begin
     FinishCliProgress;
   end;
 end;
+
+#ifndef ELECTRON_FRONTEND_ONLY
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep <> usUninstall then
+    Exit;
+
+  if not FileExists(ExpandConstant('{app}\resources\backend\runtime\node-runtime\node.exe')) then
+  begin
+    Log('Bundled Node executable is missing. Skipping email-mcp cleanup.');
+    Exit;
+  end;
+
+  // UninstallRun would continue deleting files even on a nonzero exit code.
+  if not Exec(ExpandConstant('{app}\resources\backend\{#BackendExecutableName}'),
+    '--desktop-stop-bundled-email-mcp', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log(Format('Could not start email-mcp cleanup (%d): %s', [ResultCode, SysErrorMessage(ResultCode)]));
+    SuppressibleMsgBox('Could not start email-mcp cleanup. Reinstall WorkSwarm in the same folder and retry uninstalling.',
+      mbError, MB_OK, IDOK);
+    Abort;
+  end;
+  if ResultCode = 0 then
+    Exit;
+
+  Log(Format('Bundled email-mcp cleanup failed (code %d). Uninstall stopped before deleting files.', [ResultCode]));
+  SuppressibleMsgBox('Could not confirm that email-mcp exited. Close it and retry uninstalling.', mbError, MB_OK, IDOK);
+  Abort;
+end;
+#endif

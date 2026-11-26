@@ -5,6 +5,7 @@
  */
 
 import { create } from 'zustand';
+import i18n from '../i18n';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import {
   buildConversationModelPayload,
@@ -391,7 +392,7 @@ function saveModeToStorage(mode: AgentMode) {
 
 const DEFAULT_MODE: AgentMode = 'agent';
 
-function normalizeAgentMode(mode: unknown): AgentMode {
+export function normalizeAgentMode(mode: unknown): AgentMode {
   if (typeof mode !== 'string') return DEFAULT_MODE;
   if (isTeamAgentMode(mode)) return 'team';
   // 后端 session.mode 可能是新命名 `agent.{work|code}.plan`，先剥掉 plan 后缀
@@ -553,6 +554,16 @@ export type TeamTaskStatus =
   | 'completed'
   | 'cancelled';
 
+const RUNNING_TEAM_BOARD_STATUSES: ReadonlySet<TeamTaskStatus> = new Set([
+  'planning',
+  'in_progress',
+  'in_review',
+]);
+
+function isRunningTeamBoardStatus(status: TeamTaskStatus): boolean {
+  return RUNNING_TEAM_BOARD_STATUSES.has(status);
+}
+
 export interface TeamTask {
   task_id: string;
   title?: string;
@@ -565,6 +576,10 @@ export interface TeamTask {
   files?: string[];
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
+  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
+  progress_frozen?: boolean;
+  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
+  progress_frozen_at?: number;
   // Truncation observability flags — set by the backend on team.task.created/
   // updated events when title/content exceeded the wire limit. Carried through
   // the normalize/upsert pipeline; a status-only event MUST NOT reset these
@@ -713,6 +728,11 @@ export interface SessionRuntime {
   /** 本会话 swarmflow token 上限（留空=不限） */
   swarmflowBudget: number | null;
   /**
+   * 本会话 team 成员是否使用独立 Git 身份（会话级，code 模式随 chat.send 下发）。
+   * undefined = 用户未拨过：不随请求发送，后端沿用已提交的会话设置。
+   */
+  independentGitIdentity?: boolean;
+  /**
    * 本会话团队的任务调度模式（会话级，随 chat.send 下发并持久化到会话 metadata）。
    * undefined = 用户未拨过：开关默认关闭（自主模式）。团队建好后不可再改。
    */
@@ -852,6 +872,10 @@ interface SessionState {
   setTaskProgressEstimates: (sessionId: string, estimates: Record<string, number>) => void;
   upsertTeamTask: (sessionId: string, task: TeamTaskUpsert) => void;
   updateTeamTask: (sessionId: string, taskId: string, patch: Partial<TeamTask>) => void;
+  /** Team pause：冻结仍在跑的任务板行，立刻停转圈（不改 status，便于续跑）。 */
+  freezeRunningTeamTasks: (sessionId: string, frozenAt?: number) => void;
+  /** Team resume / 新一轮 processing：解冻此前因 pause 冻结的任务板行。 */
+  thawRunningTeamTasks: (sessionId: string) => void;
   setTeamMembers: (sessionId: string, members: TeamMember[]) => void;
   setTeamDepartedMembers: (sessionId: string, members: TeamMember[]) => void;
   /** 成员离队时把它的身份记进离队目录（同 member_id 覆盖）。 */
@@ -922,6 +946,7 @@ interface SessionState {
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
   setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
+  setIndependentGitIdentity: (sessionId: string, enabled: boolean) => void;
   /** 设置本会话团队的任务调度模式（显式值，随 chat.send 下发并持久化到会话 metadata） */
   setTeamDispatchMode: (sessionId: string, mode: TeamDispatchMode) => void;
   /** 设置本会话团队的建队方式（调度模式子开关；显式值，随 chat.send 下发并持久化到会话 metadata） */
@@ -1431,11 +1456,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // leaving an empty title. Fall back to a placeholder built from the
       // task_id tail so the card is not rendered with a bare empty title
       // (matches the precedent in features/teamHistoryPanelRestore.ts upsertTask).
-      const tasks: TeamTask[] = [{
-        ...task,
-        status: task.status ?? 'pending',
-        title: task.title ?? `任务 ${String(task.task_id || '').slice(-6)}`,
-      }, ...runtime.teamTasks];
+      // Prepend so the newest card stays on top.
+      const tasks: TeamTask[] = [
+        {
+          ...task,
+          status: task.status ?? 'pending',
+          title: task.title ?? i18n.t('team.taskFallback', { id: String(task.task_id || '').slice(-6) }),
+        },
+        ...runtime.teamTasks,
+      ];
       return {
         runtimes: {
           ...state.runtimes,
@@ -1478,6 +1507,57 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             teamTasks: updatedTasks,
             taskProgressEstimates: retainTaskProgressEstimates(runtime, updatedTasks),
           },
+        },
+      };
+    });
+  },
+
+  freezeRunningTeamTasks: (sessionId, frozenAt) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const at = frozenAt ?? Date.now();
+      let changed = false;
+      const updatedTasks = runtime.teamTasks.map((task) => {
+        if (!isRunningTeamBoardStatus(task.status) || task.progress_frozen) {
+          return task;
+        }
+        changed = true;
+        return {
+          ...task,
+          progress_frozen: true,
+          progress_frozen_at: at,
+        };
+      });
+      if (!changed) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamTasks: updatedTasks },
+        },
+      };
+    });
+  },
+
+  thawRunningTeamTasks: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      let changed = false;
+      const updatedTasks = runtime.teamTasks.map((task) => {
+        if (!task.progress_frozen) return task;
+        changed = true;
+        return {
+          ...task,
+          progress_frozen: false,
+          progress_frozen_at: undefined,
+        };
+      });
+      if (!changed) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamTasks: updatedTasks },
         },
       };
     });
@@ -2300,6 +2380,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           },
         },
       };
+    });
+  },
+
+  setIndependentGitIdentity: (sessionId, enabled) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...rt, independentGitIdentity: enabled } } };
     });
   },
 

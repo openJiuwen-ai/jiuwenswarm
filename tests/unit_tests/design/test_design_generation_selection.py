@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Design generation uses the multimodal catalogue, not the agent tool binding."""
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -12,7 +13,9 @@ from jiuwenswarm.common.config_panel.config_set_handlers import (
 )
 from jiuwenswarm.common.design_generation_selection import (
     DesignSelectionError,
+    catalogue_generation_model,
     generation_selection_view,
+    reuse_catalogue_snapshot,
     set_generation_selection,
 )
 from jiuwenswarm.common.multimodal_models import CAPABILITIES
@@ -53,7 +56,13 @@ def _prepare(monkeypatch: pytest.MonkeyPatch) -> MultimodalStore:
 
 
 def _create(store: MultimodalStore, model: dict) -> dict:
-    store.mutate("models.upsert", {"mode": "create", "model": model})
+    tools = store.read()["tools"]
+    activation_tools = [tool for tool in model["capabilities"] if not tools[tool]["enabled"]]
+    store.mutate("models.upsert", {
+        "mode": "create",
+        "model": model,
+        "tool_activation": {"tools": activation_tools, "enabled": True},
+    })
     return model
 
 
@@ -187,3 +196,114 @@ def test_vllm_omni_catalogue_model_needs_only_the_url(monkeypatch: pytest.Monkey
     assert mg.generation_problem("video") is None
     assert mg.slot_settings("video").backend == "vllm-omni"
     assert mg.slot_settings("video").api_key == ""
+
+
+def _count_catalogue_yaml_reads(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Count YAML reads performed by MultimodalStore catalogue loads."""
+    import jiuwenswarm.common.multimodal_store as multimodal_store
+
+    counts = {"n": 0}
+    original = multimodal_store.load_yaml_round_trip
+
+    def _counted(*args: object, **kwargs: object):
+        counts["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(multimodal_store, "load_yaml_round_trip", _counted)
+    return counts
+
+
+def test_catalogue_resolution_parses_the_file_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _prepare(monkeypatch)
+    _create(store, _model("video_gen", "wan-once"))
+    counts = _count_catalogue_yaml_reads(monkeypatch)
+    found = catalogue_generation_model("video_gen")
+    assert found.present
+    assert found.model is not None
+    assert counts["n"] == 1
+
+
+def test_prompt_budget_wave_reuses_one_catalogue_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _prepare(monkeypatch)
+    _create(store, _model("video_gen", "wan-wave"))
+    _create(store, _model("visual_gen", "qwen-wave"))
+    counts = _count_catalogue_yaml_reads(monkeypatch)
+    from jiuwenswarm.server.runtime.designer.pipeline.media_prompt_limits import (
+        media_prompt_limit_packet,
+        resolve_prompt_limit,
+    )
+
+    with reuse_catalogue_snapshot():
+        for _ in range(120):
+            resolve_prompt_limit("image")
+            resolve_prompt_limit("video")
+            media_prompt_limit_packet()
+    assert counts["n"] == 1
+
+    with reuse_catalogue_snapshot():
+        resolve_prompt_limit("video")
+    assert counts["n"] == 2
+
+
+def test_enforce_leaf_agents_loads_the_catalogue_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _prepare(monkeypatch)
+    _create(store, _model("video_gen", "wan-leaf"))
+    _create(store, _model("visual_gen", "qwen-leaf"))
+    counts = _count_catalogue_yaml_reads(monkeypatch)
+    from jiuwenswarm.server.runtime.designer.orchestration import Director
+
+    graph = {
+        "nodes": [
+            {"id": f"clip_{index}", "config": {"role": "clip"}}
+            for index in range(120)
+        ]
+    }
+    Director._enforce_leaf_agents(graph)
+    assert counts["n"] == 1
+    assert "media_prompt_limits" in graph["nodes"][0]["config"]
+    assert graph["nodes"][0]["config"]["prompt_char_limit"]
+
+
+def test_stale_multimodal_journal_resolves_as_catalogue_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _prepare(monkeypatch)
+    _create(store, _model("video_gen", "wan-journal"))
+    get_config_file().with_name(".multimodal-transaction.json").write_text(
+        json.dumps({
+            "transaction_id": "deadbeef",
+            "old_yaml_hash": "0" * 64,
+            "new_yaml_hash": "1" * 64,
+            "old_env": "",
+            "new_env": "",
+        }),
+        encoding="utf-8",
+    )
+    found = catalogue_generation_model("video_gen")
+    assert found.present is True
+    assert found.model is None
+    assert generation_selection_view() == {"video_gen": None, "visual_gen": None}
+    with reuse_catalogue_snapshot():
+        nested = catalogue_generation_model("video_gen")
+        assert nested.present is True
+        assert nested.model is None
+
+
+def test_config_lock_timeout_resolves_as_catalogue_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import jiuwenswarm.common.design_generation_selection as selection
+
+    store = _prepare(monkeypatch)
+    _create(store, _model("video_gen", "wan-lock"))
+
+    class _TimeoutLock:
+        def __call__(self, **_kwargs: object):
+            return self
+
+        def __enter__(self):
+            raise TimeoutError("config write lock timed out")
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(selection, "config_write_lock", _TimeoutLock())
+    found = catalogue_generation_model("video_gen")
+    assert found.present is True
+    assert found.model is None

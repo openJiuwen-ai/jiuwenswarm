@@ -1,4 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { colleaguePortrait } from '../jiuwenmate/colleaguePortraits';
+import { createJiuwenMateApi } from '../jiuwenmate/jiuwenmateApi';
+import { webRequest } from '../../services/webClient';
 import { Check, ChevronLeft, Search, Trash2, Users, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Dialog } from '../../components/ui/Dialog/Dialog';
@@ -35,13 +38,21 @@ export function MemberPicker({ group, onClose, onSaved }: {
       const results = await Promise.allSettled([
         createAgentManagementClient().listCatalog({ filter: 'mine', includeTeamCompatibility: true }),
         createAgentGroupManagementClient().listGroups({ filter: 'all' }),
+        createJiuwenMateApi((method, params) => webRequest(method, params)).loadColleagues(),
       ]);
       if (!active) return;
       const agents: AgentCatalogItem[] = results[0].status === 'fulfilled' ? results[0].value : [];
       const teams: AgentGroupCatalogItem[] = results[1].status === 'fulfilled' ? results[1].value : [];
       setGroups(teams);
-      setCandidates(groupMemberCandidates(agents, teams));
-      const failure = results.find((result) => result.status === 'rejected');
+      const colleagues = results[2].status === 'fulfilled' ? results[2].value : [];
+      setCandidates([
+        ...groupMemberCandidates(agents, teams),
+        ...colleagues.filter((item) => !item.disabled).map((item): Candidate => ({
+          id: item.id, packageId: item.id, kind: 'colleague', name: item.name,
+          description: item.description, avatar: colleaguePortrait(item),
+        })),
+      ]);
+      const failure = results.slice(0, 2).find((result) => result.status === 'rejected');
       if (failure?.status === 'rejected') setError(String(failure.reason));
       setLoading(false);
     }
@@ -169,10 +180,10 @@ export function MemberPicker({ group, onClose, onSaved }: {
         </section> : <div className="group-chat-picker-body">
           <section className="group-chat-catalog" data-testid="group-chat-catalog">
             <div className="group-chat-tabs" role="tablist" aria-label={t('groupChat.members')}>
-              {(['agent_template', 'agent_group'] as const).map((kind) => <button type="button" role="tab"
+              {(['agent_template', 'agent_group', 'colleague'] as const).map((kind) => <button type="button" role="tab"
                 key={kind} aria-selected={tab === kind} onClick={() => setTab(kind)} disabled={busy}
                 data-testid="group-chat-catalog-tab" data-variant={kind}>
-                {t(kind === 'agent_template' ? 'groupChat.experts' : 'groupChat.teams')}
+                {t(kind === 'colleague' ? 'groupChat.colleagues' : kind === 'agent_template' ? 'groupChat.experts' : 'groupChat.teams')}
               </button>)}
             </div>
             <label className="group-chat-search"><Search size={15} aria-hidden />

@@ -11,6 +11,15 @@ test('personal edition hides the left team page and enterprise keeps it', () => 
   assert.equal(ENTERPRISE_HIDDEN_NAV_ITEMS.includes('teams'), false);
 });
 
+test('only enterprise hides reverse engineering and apps, and both editions expose extensions', () => {
+  for (const key of ['rea', 'appMarket']) {
+    assert.ok(ENTERPRISE_HIDDEN_NAV_ITEMS.includes(key), key);
+    assert.equal(PERSONAL_HIDDEN_NAV_ITEMS.includes(key), false, key);
+  }
+  assert.equal(ENTERPRISE_HIDDEN_NAV_ITEMS.includes('connectorMarket'), false);
+  assert.equal(PERSONAL_HIDDEN_NAV_ITEMS.includes('connectorMarket'), false);
+});
+
 test('the shell applies the personal hide list and does not mount the team page', () => {
   const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   assert.match(app, /isEnterprise\(\) \? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS/);

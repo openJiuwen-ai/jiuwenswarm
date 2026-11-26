@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -12,7 +14,11 @@ from jiuwenswarm.agents.harness.common.rails.permissions.audit import (
     emit_permission_audit,
     logger as audit_logger,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit import PersistentAuditWriter
+from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import ReviewerRecommendation
+from jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit import (
+    LocalAuditDetails,
+    PersistentAuditWriter,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import build_tool_decision_facts
 
 
@@ -59,6 +65,38 @@ def test_audit_has_no_raw_args_or_argument_digest(
     assert "args_digest" not in caplog.text
     assert "normalized_args_hash" not in caplog.text
     assert '"accesses_known":true' in caplog.text
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux owner-only audit file check")
+def test_model_recommendation_is_only_available_to_native_local_writer(tmp_path, caplog, monkeypatch):
+    _capture(caplog, monkeypatch)
+    details = LocalAuditDetails(
+        "tiv_local",
+        ReviewerRecommendation("allow_once", "task_aligned", "任务需要读取当前文件。"),
+    )
+    facts = _facts(tmp_path)
+    extra = {"record_kind": "permission_reviewer_assessment"}
+    writer = PersistentAuditWriter(data_root=tmp_path)
+    emit_permission_audit(
+        facts, decision="allow", reason="reviewer_allow_once", degraded=False,
+        extra=extra, persistent_writer=writer, local_details=details,
+    )
+    record = json.loads(writer.audit_path.read_text(encoding="utf-8"))
+    assert record["model_recommendation"]["rationale"] == "任务需要读取当前文件。"
+    class CustomWriter(PersistentAuditWriter):
+        write = Mock()
+
+    for custom_writer in (Mock(), Mock(spec=PersistentAuditWriter), CustomWriter(data_root=tmp_path)):
+        emit_permission_audit(
+            facts, decision="allow", reason="reviewer_allow_once", degraded=False,
+            extra=extra, persistent_writer=custom_writer, local_details=details,
+        )
+        custom_writer.write.assert_called_once_with(
+            facts, decision="allow", reason="reviewer_allow_once", degraded=False,
+            grant_id="", grant_reason="", extra=extra,
+        )
+    assert "model_recommendation" not in caplog.text
+    assert "tiv_local" not in caplog.text
 
 
 def test_audit_persists_only_compact_record(tmp_path: Path) -> None:

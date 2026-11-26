@@ -23,6 +23,14 @@ Desktop process-tree cleanup continues for proven service branches when another 
 
 `jiuwenswarm-stop` manages the state created by `jiuwenswarm-start debug`. Failed cleanup preserves that state for retry; no debug state remains a no-op.
 
+Debug shutdown defaults to separate budgets: 15 seconds for the Front and 35 seconds for the Worker. The Worker budget covers its internal 30-second cleanup deadline plus IPC and process-exit observation. These phases run sequentially; their budgets do not impose a single total command timeout.
+An explicit `--timeout N` still assigns N seconds to each phase. `--worker-timeout N` overrides only the Worker phase and can be combined with `--timeout`. Timeout values must be positive and finite.
+`make stop`, `make restart-debug`, and `make restart-debug-fast` forward `STOP_ARGS` to the stop command. A failed stop prevents the restart. For example, adjust only the Worker budget:
+
+```bash
+make restart-debug-fast STOP_ARGS="--worker-timeout 45"
+```
+
 Wheel launchers `jiuwenswarm-start all/app/dev`, named instances, and standalone `jiuwenswarm-app` stop Fronts and then retire their Worker on final exit. `--stop <name>` and a full instance `--restart <name>` also complete final shutdown. Named-instance shutdown loads the selected workspace's bootstrap and runtime environment in a separate lifecycle process. It holds the startup lock through Worker exit confirmation, deleting the PID record only after success and retaining it on failure. Windows service-tree cleanup preserves Worker branches for the final IPC operation. A web-only launcher leaves its external backend running.
 
 Python desktop final exit checks existing Workers and verifiable historical endpoints even before registering its first service. When a Worker process is still booting before IPC exists, final shutdown waits for HELLO within the same deadline and then validates ownership. Command-line observations authorize waiting, never retirement.
@@ -46,7 +54,9 @@ If first-time Runtime preparation exceeds the default 30-second shutdown budget,
 An old Python Worker without deployment identity cannot be attributed to an installation solely from its shared interpreter. Startup isolates that old endpoint and continues, logging the old PID. After checking its interpreter, command line, installation, and data directory, an operator can select it explicitly:
 
 ```bash
-jiuwenswarm-stop --legacy-worker-pid 12345 --timeout 30
+jiuwenswarm-stop --legacy-worker-pid 12345
+# After verifying the old Worker's installation, select it during restart:
+make restart-debug STOP_ARGS="--legacy-worker-pid 12345"
 ```
 
 Selection still verifies the user, interpreter, Worker module, IPC argument, and process creation time; a declared different deployment is refused. Timeout or changed process identity reports failure. Stop its Front first so that another supervisor cannot restart it.
@@ -61,6 +71,18 @@ If both IPC send and close fail, Front retains the original recovery waiters. A 
 
 ## Worker output logs
 
-Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `worker-logs/runtime-worker-*.stderr.log`. Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
+Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `logs/worker-logs/runtime-worker-*.stderr.log`. Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
 
 The Supervisor does not read and relabel individual Worker output lines or create a separate stdout log file. Stderr can contain ordinary INFO records. Diagnose failures using the original log levels, exception tracebacks, and process exit code.
+
+Worker stderr reuses the application logging limits: rotate at 20 MiB and retain at most 20 archives. A Worker-owned background thread checks every five seconds, copies the output into archives, and truncates the original file without replacing its descriptor. A resident Worker continues rotation after its Front exits. Archives are named `runtime-worker-<UUID>[-<owner>].stderr_<UTC-date>_<UTC-time>_<nanoseconds>.log`, with a strictly increasing per-Worker suffix and each at most 20 MiB. Chunk boundaries preserve complete UTF-8 characters. Bursts spanning multiple chunks produce multiple archives. Older output is dropped beyond the full archive budget, retaining at most the most recent 400 MiB. The active file can temporarily exceed the threshold between checks.
+
+The Worker maintenance thread cleans up historical files on its first run and every 60 seconds. Front startup does not wait for a directory scan:
+
+- Worker outputs confirmed closed and their completed archives share a limit of the newest 20 eligible files and 400 MiB.
+- `supervisor-<PID>-<timestamp>.txt` snapshots separately retain the newest 20 files and at most 400 MiB.
+- Temporary archives left by interrupted rotation are removed once confirmed closed and past the 60-second protection period, preserving their complete source log.
+- New Linux/macOS base filenames include an ownership token. Linux derives it from the kernel boot UUID, PID/user namespaces, namespace init start time, and effective UID; macOS uses the kernel boot-session UUID and effective UID. POSIX cleanup requires a matching local token and a complete local handle scan before deleting a base log or temporary archive. It retains foreign tokens, legacy files without tokens, and files whose ownership cannot be established, including logs from previous boots or namespaces; these files remain outside the cleanup budget. A local scan or an old modification time cannot prove that a remote Pod has closed its file. Completed archives remain eligible regardless of their token.
+- Files modified within the last 60 seconds are temporarily protected. Windows probes file delete sharing to protect inherited stderr handles without enumerating system processes. POSIX matches numeric real, effective, and saved UIDs before inspecting open files, so unresolved usernames and inaccessible files in other users' processes do not block cleanup. If process ownership or handles remain inaccessible, or the scan exceeds two seconds, base logs are retained with a warning; a partial scan is never treated as proof of closure. Completed archives can still be pruned. Archives that cannot be deleted while open in a viewer are retried later without blocking active-file rotation.
+
+Copy/truncate follows the application logger's existing policy; writes concurrent with the interval between the copied snapshot and truncation can be lost. Maintenance runs outside the business event loop, failures produce warnings, and shutdown waits at most 0.2 seconds for the maintenance thread. When a configured stderr file cannot be validated at startup, rotation stays disabled and emits a warning; missing parent configuration remains an expected silent skip. Limits reuse `_LOG_FILE_MAX_BYTES` and `_LOG_FILE_BACKUP_COUNT` in `common/utils.py`; no `config.yaml` option is added.

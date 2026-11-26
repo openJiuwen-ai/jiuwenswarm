@@ -10,6 +10,7 @@
 - 普通下载 payload: path, sid；可选 exp（省略则不过期，用于 send_file_to_user 交付产物）
 - Skill 正文图片 / 上传等短期令牌仍携带 exp
 - Skill 正文图片 payload: purpose=skill_content_image, name, version, relative_path, exp, sid（无 path）
+- 导出资产 payload: 普通下载字段 + purpose=asset_export，下载端点按 purpose 强制校验 exp
 - 受管资产令牌额外绑定: asset_id, size, digest, name
 - 密钥来源: 环境变量 JIUWENSWARM_FILE_DOWNLOAD_SECRET 或自动生成并写入共享文件
 """
@@ -48,13 +49,15 @@ _ROUTED_DOWNLOAD_TOKEN_KEYS = frozenset(
     {"path", "sid", "download_http_base"}
 )
 PURPOSE_SKILL_CONTENT_IMAGE = "skill_content_image"
+PURPOSE_ASSET_EXPORT = "asset_export"
 
 
 def _get_secret_file_path() -> Path:
+    # 密钥文件随业务配置目录（数据根 config/，真目录；老 infra/ 分区已废弃）
     workspace = os.getenv("JIUWENSWARM_WORKSPACE")
     if workspace:
-        return Path(workspace) / "infra" / "config" / _SECRET_FILE_NAME
-    return Path.home() / ".jiuwenswarm" / "infra" / "config" / _SECRET_FILE_NAME
+        return Path(workspace) / "config" / _SECRET_FILE_NAME
+    return Path.home() / ".jiuwenswarm" / "config" / _SECRET_FILE_NAME
 
 
 def _load_or_create_secret() -> str:
@@ -154,6 +157,7 @@ class WebFileDownloadManager:
         *,
         agent_http_base: str | None = None,
         agent_http_base_key: str = "",
+        purpose: str = "",
     ) -> str:
         payload: dict[str, Any] = {
             "path": file_path,
@@ -162,6 +166,10 @@ class WebFileDownloadManager:
         # expires_in=None：不写入 exp，校验侧视为不过期（send_file 交付产物）。
         if expires_in is not None:
             payload["exp"] = int(time.time()) + int(expires_in)
+        # purpose 标记短时效用途（如资产导出）；下载端点据此强制校验 exp。
+        # 不传时 payload 与旧格式逐字节一致。
+        if purpose:
+            payload["purpose"] = str(purpose)
         # AgentOS 下 token 由目标 AgentServer 签发。将部署注入的、可访问该
         # sandbox 的 HTTP bridge 基址随 token 返回，使独立运行的 Web 静态进程
         # 不必持有用户态目录或 AgentOS Router 对象也能代理到正确用户。
@@ -267,11 +275,13 @@ def generate_file_download_token(
     file_path: str,
     session_id: str = "",
     expires_in: int | None = None,
+    purpose: str = "",
 ) -> str:
     """签发文件下载令牌。
 
     ``expires_in=None``（默认）表示不过期，供 ``send_file_to_user`` 等持久交付使用；
-    需要短期有效时显式传入秒数。
+    需要短期有效时显式传入秒数。``purpose`` 标记短时效用途（如
+    ``PURPOSE_ASSET_EXPORT``），下载端点对带 purpose 的令牌强制校验过期。
     """
     return WebFileDownloadManager.get_instance().generate_token(
         file_path,
@@ -282,6 +292,7 @@ def generate_file_download_token(
             or os.getenv(_LEGACY_HTTP_BASE_ENV_KEY)
         ),
         agent_http_base_key="download_http_base",
+        purpose=purpose,
     )
 
 
@@ -331,12 +342,13 @@ def build_file_download_info(
     session_id: str = "",
     expires_in: int | None = None,
     user_id: str = "",
+    purpose: str = "",
 ) -> dict[str, Any]:
     """构建可投递的文件下载信息。
 
     默认签发不过期令牌（``expires_in=None``），与 ``send_file_to_user`` 产物语义一致。
     """
-    token = generate_file_download_token(file_path, session_id, expires_in)
+    token = generate_file_download_token(file_path, session_id, expires_in, purpose)
     download_url = WebFileDownloadManager.get_instance().generate_download_url(token, user_id)
 
     file_size = 0

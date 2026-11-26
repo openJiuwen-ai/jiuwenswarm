@@ -19,7 +19,7 @@ import pytest
 from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
     VerifiedDownloadAssetOwner,
 )
-from jiuwenswarm.common import utils, verified_download_assets
+from jiuwenswarm.common import paths, utils, verified_download_assets
 
 
 def _owner(root: Path, now: list[float]) -> VerifiedDownloadAssetOwner:
@@ -39,7 +39,7 @@ def test_windows_default_root_is_stable_and_follows_user_data(
     monkeypatch.setattr(verified_download_assets, "os", simulated_os)
     first_data = tmp_path / "first-data"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(first_data))
-    monkeypatch.setattr(utils, "_workspace_base_dir", None)
+    monkeypatch.setattr(paths, "_workspace_base_dir", None)
     first_root = verified_download_assets._default_asset_root()
     assert first_root == first_data / "download-assets"
     simulated_os.getpid = lambda: 456
@@ -47,7 +47,7 @@ def test_windows_default_root_is_stable_and_follows_user_data(
 
     second_data = tmp_path / "second-data"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(second_data))
-    monkeypatch.setattr(utils, "_workspace_base_dir", None)
+    monkeypatch.setattr(paths, "_workspace_base_dir", None)
     second_root = verified_download_assets._default_asset_root()
     assert second_root == second_data / "download-assets"
     assert second_root != first_root
@@ -131,6 +131,13 @@ print(json.dumps(result))
     assert second["digest"] == "sha256:" + hashlib.sha256(b"approved").hexdigest()
 
 
+def _symlink(link: Path, target: Path, *, directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks are unavailable on this platform")
+
+
 def test_stage_is_durable_private_and_commit_keeps_same_asset(
     tmp_path: Path,
 ) -> None:
@@ -147,8 +154,9 @@ def test_stage_is_durable_private_and_commit_keeps_same_asset(
     )
 
     assert asset.sealed_path.read_text(encoding="utf-8") == "approved"
-    assert stat.S_IMODE(root.stat().st_mode) == 0o700
-    assert stat.S_IMODE(asset.sealed_path.stat().st_mode) == 0o400
+    if os.name != "nt":
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(asset.sealed_path.stat().st_mode) == 0o400
     assert owner.is_active(
         asset_id=asset.asset_id,
         sealed_path=asset.sealed_path,
@@ -254,8 +262,10 @@ def test_symlink_claim_is_never_active_or_followed(tmp_path: Path) -> None:
         file_name=source.name,
         expires_at=160.0,
     )
+    if os.name == "nt":
+        asset.sealed_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     asset.sealed_path.unlink()
-    asset.sealed_path.symlink_to(source)
+    _symlink(asset.sealed_path, source)
 
     assert not owner.is_active(
         asset_id=asset.asset_id,
@@ -292,7 +302,7 @@ def test_asset_owner_rejects_symlink_root(tmp_path: Path) -> None:
     real_root = tmp_path / "real-assets"
     real_root.mkdir()
     symlink_root = tmp_path / "asset-link"
-    symlink_root.symlink_to(real_root, target_is_directory=True)
+    _symlink(symlink_root, real_root, directory=True)
 
     with pytest.raises(ValueError, match="download_asset_root_invalid"):
         VerifiedDownloadAssetOwner(
@@ -313,7 +323,7 @@ def test_stage_rejects_non_regular_source_without_residue(
     if source_kind == "symlink":
         target = tmp_path / "target"
         target.write_bytes(b"data")
-        source.symlink_to(target)
+        _symlink(source, target)
     elif source_kind == "directory":
         source.mkdir()
     else:
@@ -415,3 +425,53 @@ def test_reference_expiry_is_explicit_and_zero_only(tmp_path: Path, expires_at) 
         with pytest.raises(ValueError, match="download_asset_reference_expiry_invalid"):
             owner.stage(source, file_name=source.name, expires_at=expires_at, reference_only=True)
     assert not owner.root.exists()
+
+
+def test_stage_uses_authorized_descriptor_instead_of_reopening_path(tmp_path: Path) -> None:
+    approved = tmp_path / "approved.bin"
+    content = b"approved\r\nbinary\x1acontent"
+    approved.write_bytes(content)
+    replacement = tmp_path / "replacement.bin"
+    replacement.write_bytes(b"outside the authorized file")
+    owner = _owner(tmp_path / "assets", [100.0])
+
+    with approved.open("rb") as stream:
+        stream.read(3)
+        asset = owner.stage(
+            replacement, file_name=approved.name, expires_at=160.0, source_fd=stream.fileno(),
+        )
+        assert not stream.closed
+
+    assert asset.sealed_path.read_bytes() == content
+    assert asset.size_bytes == len(content)
+
+
+def test_stage_rejects_non_regular_descriptor_without_closing_caller(tmp_path: Path) -> None:
+    owner = _owner(tmp_path / "assets", [100.0])
+    read_fd, write_fd = os.pipe()
+    try:
+        with pytest.raises(ValueError, match="download_asset_source_not_file"):
+            owner.stage(
+                tmp_path / "source.bin", file_name="source.bin", expires_at=160.0,
+                source_fd=read_fd,
+            )
+        assert stat.S_ISFIFO(os.fstat(read_fd).st_mode)
+        assert list(owner.root.iterdir()) == []
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_reference_rejects_descriptor_before_creating_registration(tmp_path: Path) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"approved")
+    owner = _owner(tmp_path / "assets", [100.0])
+    with source.open("rb") as stream:
+        with pytest.raises(ValueError, match="download_asset_reference_descriptor_unsupported"):
+            owner.stage(
+                source, file_name=source.name, expires_at=0, reference_only=True,
+                source_fd=stream.fileno(),
+            )
+        assert stream.read() == b"approved"
+    assert not owner.root.exists()
+    assert source.read_bytes() == b"approved"

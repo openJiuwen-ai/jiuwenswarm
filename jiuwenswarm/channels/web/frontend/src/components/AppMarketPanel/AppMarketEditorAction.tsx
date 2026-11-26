@@ -9,7 +9,11 @@ import { appMarketStartTimeoutMs, openAppMarketView, type InstanceInfo } from '.
 import { AppMarketResources } from './AppMarketResources';
 import './AppMarketPanel.css';
 
-type EditorApp = { app_id: string; name: string; editor_session_id: string; startup_timeout_seconds?: number };
+type EditorApp = {
+  app_id: string;
+  name: string;
+  startup_timeout_seconds?: number;
+};
 
 export function AppMarketEditorAction({ sessionId, onOpen }: {
   sessionId: string;
@@ -22,8 +26,8 @@ export function AppMarketEditorAction({ sessionId, onOpen }: {
   useEffect(() => {
     active.current = true;
     let current = true;
-    void webRequest<{ apps: EditorApp[] }>('app_market.list').then(({ apps }) => {
-      if (current) setApp(apps.find(item => item.editor_session_id === sessionId) ?? null);
+    void webRequest<{ app: EditorApp | null }>('app_market.editor_app', { editor_session_id: sessionId }).then(({ app }) => {
+      if (current) setApp(app);
     }).catch(() => undefined);
     return () => { current = false; active.current = false; };
   }, [sessionId]);
@@ -39,9 +43,24 @@ export function AppMarketEditorAction({ sessionId, onOpen }: {
       void (async () => {
         const { instances } = await webRequest<{ instances: InstanceInfo[] }>('app_market.instances');
         let instance = instances.find(item => item.app_id === app.app_id && item.state === 'running');
-        if (!instance) instance = await webRequest<InstanceInfo>('app_market.start', { app_id: app.app_id }, {
-          timeoutMs: appMarketStartTimeoutMs(app.startup_timeout_seconds),
-        });
+        if (!instance) {
+          const options = { timeoutMs: appMarketStartTimeoutMs(app.startup_timeout_seconds) };
+          try {
+            instance = await webRequest<InstanceInfo>('app_market.start', { app_id: app.app_id }, options);
+          } catch (error) {
+            const code = (error as { code?: string }).code;
+            const sha = (error as { payload?: { artifact_sha256?: string } }).payload?.artifact_sha256;
+            if (code !== 'app_run_consent_required' || !sha) throw error;
+            if (!window.confirm(t('appMarket.runConsentConfirm', { name: app.name }))) {
+              throw new Error(t('appMarket.runConsentDeclined'));
+            }
+            instance = await webRequest<InstanceInfo>(
+              'app_market.start',
+              { app_id: app.app_id, run_consent: { artifact_sha256: sha } },
+              options,
+            );
+          }
+        }
         if (!active.current) return;
         if (instance.state !== 'running' || !await openAppMarketView(instance, app.name, true)) throw new Error('Preview unavailable');
         if (active.current) onOpen({ appId: app.app_id, name: app.name, instanceId: instance.instance_id });

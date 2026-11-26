@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
+import { isEnterprise } from '../../edition';
 import { useChatStore, useSessionStore } from '../../stores';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
@@ -42,15 +43,17 @@ interface ExtensionPickerPanelProps {
  * "+"菜单"扩展"项的二级面板：插件/MCP 两个 tab + 搜索 + 列表，已连接/已安装显示会话内开关
  * （切换 sessionStore.enabledPlugins/enabledMcps，不随 chat.send 清空，见该 store 头部注释），
  * 未连接/未安装显示连接icon（点击走 mcp.connect 三态流程或 plugin_packages.install）。
+ * 企业版隐藏插件页签，只保留连接器（与连接器广场对齐）。
  * 渲染在"+"菜单内部，与智能体/技能面板同款定位（见 ChatPanel.css .chat-agent-picker 规则）。
  */
 export function ExtensionPickerPanel({ onClose, panelRef, direction }: ExtensionPickerPanelProps) {
   const { t, i18n } = useTranslation();
+  const enterprise = isEnterprise();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const workMode = useWorkspaceStore((s) => s.workMode);
   const enabledPlugins = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enabledPlugins ?? []);
   const enabledMcps = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enabledMcps ?? []);
-  const [tab, setTab] = useState<'plugin' | 'mcp'>('plugin');
+  const [tab, setTab] = useState<'plugin' | 'mcp'>(enterprise ? 'mcp' : 'plugin');
   const [searchQuery, setSearchQuery] = useState('');
 
   const packages = usePluginPackageStore((s) => s.localPackages);
@@ -127,7 +130,9 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   // 才用非静默调用走正常的 loading 态，避免用户盯着一片空白却看不出到底是"真没数据"还是"正在
   // 加载中"。
   useEffect(() => {
-    void loadPluginList('mine', { silent: packages.length > 0 });
+    if (!enterprise) {
+      void loadPluginList('mine', { silent: packages.length > 0 });
+    }
     void loadConnectorList('local', { silent: myConnectors.length > 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -194,7 +199,6 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
         ),
         variant: 'info',
         duration: 6,
-        wide: true,
         closable: true,
         testId: 'chat-panel-ttse-work-mode-notice',
       });
@@ -263,19 +267,32 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
         rowHeight={LIST_ROW_HEIGHT}
         itemCount={Math.max(filteredPlugins.length, filteredMcps.length)}
         tabs={
-          <Tabs
-            role="tablist"
-            wrapperTestId="chat-panel-extension-picker-tabs"
-            itemTestId="chat-panel-extension-picker-tab"
-            bordered
-            className="mb-4 text-sm"
-            value={tab}
-            onChange={setTab}
-            items={[
-              { value: 'plugin', label: t('connectorMarket.tabs.plugin') },
-              { value: 'mcp', label: t('connectorMarket.tabs.mcp') },
-            ]}
-          />
+          enterprise ? (
+            <Tabs
+              role="tablist"
+              wrapperTestId="chat-panel-extension-picker-tabs"
+              itemTestId="chat-panel-extension-picker-tab"
+              bordered
+              className="mb-4 text-sm"
+              value="mcp"
+              onChange={() => setTab('mcp')}
+              items={[{ value: 'mcp', label: t('connectorMarket.tabs.mcp') }]}
+            />
+          ) : (
+            <Tabs
+              role="tablist"
+              wrapperTestId="chat-panel-extension-picker-tabs"
+              itemTestId="chat-panel-extension-picker-tab"
+              bordered
+              className="mb-4 text-sm"
+              value={tab}
+              onChange={setTab}
+              items={[
+                { value: 'plugin', label: t('connectorMarket.tabs.plugin') },
+                { value: 'mcp', label: t('connectorMarket.tabs.mcp') },
+              ]}
+            />
+          )
         }
         search={
           <PickerSearchInput

@@ -1075,6 +1075,7 @@ async def test_recovered_root_is_complete_without_the_new_wait_clock():
 
 def _clear_queued_plan_claims() -> None:
     for plan_id in ("plan-1", "plan-2", "plan-next"):
+        bootstrap._plan_events.pop((SESSION, plan_id), None)
         for member_name in ("business", "insight", "architecture"):
             bootstrap.release_organization_plan_claim(SESSION, plan_id, member_name)
             bootstrap._proxy_backends.pop((SESSION, member_name), None)
@@ -1166,6 +1167,52 @@ async def test_a_later_plan_waits_instead_of_joining_the_older_run(monkeypatch, 
     waiter = bootstrap._queued_plans[(SESSION, "plan-2", "business")]
     await waiter
     assert calls == ["plan-1", "plan-2"]
+
+
+@pytest.mark.asyncio
+async def test_waiting_on_a_signalled_but_live_plan_yields_to_the_loop(monkeypatch):
+    """A set event whose plan still reads live must not spin the waiter.
+
+    ``event.wait()`` on a set event returns without suspending, so a waiter that
+    kept awaiting it would never yield and would starve every other task. This
+    happens when a plan's status write fails after its event was set.
+    """
+    _clear_queued_plan_claims()
+    monkeypatch.setattr(bootstrap, "POLL_SECONDS", 0.05)
+    now = bootstrap._now_ms()
+    older = {
+        "plan_id": "plan-1",
+        "members": ["business", "insight"],
+        "owner_member": "business",
+        "status": "running",
+        "created_at": now,
+        "organization_id": ORG,
+    }
+    newer = {
+        "plan_id": "plan-2",
+        "members": ["business", "insight"],
+        "owner_member": "business",
+        "status": "pending",
+        "created_at": now + 1,
+        "organization_id": "gorg-new",
+    }
+    group = _MemoryGroup(monkeypatch, organization_plans=[older, newer])
+    bootstrap._plan_event(SESSION, "plan-1").set()
+
+    waiter = asyncio.create_task(
+        bootstrap.wait_for_earlier_organization_plans(SESSION, "business", newer)
+    )
+    try:
+        await asyncio.wait_for(asyncio.sleep(0.2), timeout=2)
+        assert not waiter.done()
+
+        group.state["organization_plans"][0]["status"] = "done"
+        bootstrap._plan_event(SESSION, "plan-1").set()
+        await asyncio.wait_for(waiter, timeout=2)
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+        _clear_queued_plan_claims()
 
 
 @pytest.mark.asyncio

@@ -76,8 +76,8 @@ advanced-daily-report/
 **脚本会自动采集以下数据**：
 - **Git 提交记录**：通过 `git log` 命令读取 `D:/Download/jiuwenswarm` 仓库的提交历史
 - **邮箱邮件统计**：通过 IMAP 协议连接 `.env` 中配置的邮箱账户读取邮件统计（需要邮箱授权码）
-- **记忆系统**：读取 `~/.jiuwenswarm/agent/workspace/memory/` 目录下的每日记忆文件
-- **待办事项**：读取 `~/.jiuwenswarm/agent/sessions/` 下各会话的 `todo.md` 文件
+- **记忆系统**：读取 `~/.jiuwenswarm/profile/agent/workspace/memory/` 目录下的每日记忆文件
+- **待办事项**：读取 `~/.jiuwenswarm/profile/agent/workspace/todo/` 下各会话的 `todo.json`（兼容旧版 `sessions/*/todo.md`）
 
 ### 手动触发
 
@@ -85,19 +85,19 @@ advanced-daily-report/
 
 ```bash
 # 生成今日日报（记忆/待办/Git 等；Git 在仓库根目录统计）
-python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/run_report.py daily --save
+python ~/.jiuwenswarm/profile/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/run_report.py daily --save
 
 # 生成指定日期日报
-python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/run_report.py daily --date 2026-03-06 --save
+python ~/.jiuwenswarm/profile/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/run_report.py daily --date 2026-03-06 --save
 
 # 生成周报（聚合一周数据）
-python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/run_report.py weekly --save
+python ~/.jiuwenswarm/profile/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/run_report.py weekly --save
 
 # 生成月报（聚合一月数据，包含每日Git提交统计）
-python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/run_report.py monthly --save
+python ~/.jiuwenswarm/profile/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/run_report.py monthly --save
 
 # 生成月报（指定月份）
-python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/run_report.py monthly --year 2026 --month 3 --save
+python ~/.jiuwenswarm/profile/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/run_report.py monthly --year 2026 --month 3 --save
 ```
 
 ### 执行步骤
@@ -108,7 +108,7 @@ python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabi
    - Git: 执行 `git log` 获取提交记录、代码变更统计
    - 邮箱: 通过 IMAP 连接获取邮件统计（如果配置了邮箱）
    - 记忆: 读取记忆文件获取工作记录
-   - 待办: 解析 todo.md 获取任务状态
+   - 待办: 解析 `workspace/todo/{session_id}/todo.json` 获取任务状态
 4. 脚本执行完成后，输出格式为 `REPORT_FILE:/path/to/report.md`
 5. **⚠️ 重要：使用 read_file 工具读取报告文件，然后将完整内容发送给用户**
    - 脚本输出包含 `REPORT_FILE:` 前缀，后面是文件路径
@@ -127,8 +127,8 @@ python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabi
 |--------|----------|----------|
 | **Git 仓库** | `git log` 命令 | 仓库路径: `D:/Download/jiuwenswarm` |
 | **网易邮箱** | IMAP 协议 | `.env`: `EMAIL_ADDRESS`, `EMAIL_TOKEN` |
-| **记忆系统** | 读取 MD 文件 | `~/.jiuwenswarm/agent/workspace/memory/YYYY-MM-DD.md` |
-| **待办事项** | 解析 todo.md | `~/.jiuwenswarm/agent/sessions/*/todo.md` |
+| **记忆系统** | 读取 MD 文件 | `~/.jiuwenswarm/profile/agent/workspace/memory/YYYY-MM-DD.md` |
+| **待办事项** | 解析 todo.json | `~/.jiuwenswarm/profile/agent/workspace/todo/*/todo.json`（兼容旧版 `sessions/*/todo.md`） |
 
 ### 定时触发
 
@@ -304,7 +304,7 @@ monthly = generator.generate_monthly(2026, 3)
 1. **Git 仓库**: 确保仓库路径正确且有访问权限
 2. **邮箱授权**: 使用授权码而非登录密码
 3. **定时任务**: 修改调度后由系统的定时任务机制自动生效，无需重启服务
-4. **数据存储**: 报告保存到 `~/.jiuwenswarm/agent/reports/`
+4. **数据存储**: 报告保存到 `~/.jiuwenswarm/profile/agent/reports/`
 
 ## 更新日志
 

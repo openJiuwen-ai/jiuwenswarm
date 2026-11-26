@@ -43,7 +43,7 @@ export function SkillToasts({
           className="fixed right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4"
           style={{
             backgroundColor: 'var(--color-feedback-success-toast)',
-            width: '564px',
+            maxWidth: '564px',
             height: '40px',
             top: knowledgeTaskCount > 0 ? '4.5rem' : '1rem',
           }}
@@ -55,11 +55,11 @@ export function SkillToasts({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
             </svg>
           </span>
-          {cleanMessage}
+          <span className="truncate">{cleanMessage}</span>
           <button
             type="button"
             onClick={onCloseMessage}
-            className="ml-auto w-5 h-5 flex items-center justify-center hover:bg-card/30 rounded-full "
+            className="ml-auto w-5 h-5 flex-shrink-0 flex items-center justify-center hover:bg-card/30 rounded-full "
             data-testid="skill-panel-toast-close-btn"
           >
             <svg className="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">

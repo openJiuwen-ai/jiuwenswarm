@@ -134,11 +134,10 @@ class _CronToolsCronBackend(CronToolBackend):
     ) -> dict[str, Any]:
         """创建 cron 时直接复用创建它的 chat-session 的模型配置。
 
-        用户通过对话（chat-session）创建定时任务时，会话当前使用的模型（如免费模型
-        ``mimo-v2.5-free``）已写入会话 metadata 的 ``model`` 字段；这里无条件用该
-        值覆盖 ``model_name``，保证 cron 执行与创建它的会话使用同一模型配置，而不是
-        回退到 config 默认模型（用户自配 key 失效时会 401）。会话无模型 / 模型校验
-        不过时保持原 payload（此时显式传入的 model_name 仍生效），不阻断创建。
+        Prefer the session's stable model_selection so duplicate model names keep
+        their identity. Legacy name-only sessions (including free models) retain
+        the existing name validation and fallback behavior. Model groups are passed
+        through to the shared job builder, which enforces single-model-only cron.
         """
         if context is None:
             return payload
@@ -154,6 +153,23 @@ class _CronToolsCronBackend(CronToolBackend):
             if not isinstance(meta, dict):
                 return payload
             inherited = str(meta.get("model") or "").strip()
+            raw_selection = meta.get("model_selection")
+            if raw_selection is not None:
+                from agent_gateway.common.model_selection import ModelSelection
+
+                try:
+                    selection = ModelSelection.model_validate(raw_selection)
+                except ValueError:
+                    logger.warning(
+                        "[CronRuntimeBridge] invalid session model selection; "
+                        "trying legacy model inheritance: session=%s", session_id,
+                    )
+                else:
+                    out = dict(payload)
+                    out["model_selection"] = selection.model_dump()
+                    if inherited:
+                        out["model_name"] = inherited
+                    return out
             if not inherited:
                 return payload
             from jiuwenswarm.enterprise import is_enterprise
@@ -588,6 +604,11 @@ def _extract_legacy_params(
         model_name_raw = data.get("model_name") or payload_block.get("model_name")
         if model_name_raw is not None and str(model_name_raw).strip():
             out["model_name"] = str(model_name_raw).strip()
+
+        for block in (data, payload_block):
+            if "model_selection" in block:
+                out["model_selection"] = block["model_selection"]
+                break
 
         # mcp：透传会话级 MCP 选择（顶层或随 payload 传入）；未显式传时由
         # 调用方继承会话 MCP 快照。保留显式空列表，避免继承覆盖或无法清除选择；

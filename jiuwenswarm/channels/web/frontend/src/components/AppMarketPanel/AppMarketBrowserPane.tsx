@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Maximize2, Minimize2, Minus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/Button/Button';
-import { AppMarketResources } from './AppMarketResources';
 import { webAppViews } from './webAppViews';
 
 export function AppMarketBrowserPane({ appId, name, controls, onError }: {
@@ -76,7 +75,6 @@ export function AppMarketBrowserPane({ appId, name, controls, onError }: {
     <section className="app-market-browser-pane" aria-label={name} data-testid="app-market-browser-pane" data-variant={appId}>
       <div className="app-market-browser-toolbar" data-testid="app-market-browser-toolbar">
         <span className="min-w-0 flex-1 truncate" data-testid="app-market-browser-title">{name} · WorkSwarm</span>
-        <AppMarketResources appId={appId} />
         {controls && <>
         <Button size="sm" variant="quiet" icon={controls.expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
           aria-label={t(controls.expanded ? 'appMarket.restorePane' : 'appMarket.expandPane')}
