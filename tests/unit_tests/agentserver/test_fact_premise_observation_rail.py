@@ -202,18 +202,18 @@ async def test_relative_year_with_past_year_answer_does_not_warn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reset_between_messages_in_same_invoke():
-    """同一 invoke 内连续两条消息：第二条无年份应重置观测状态，不继承第一条锚点。"""
+async def test_followup_without_year_keeps_observation():
+    """同一 invoke 内无年份的 follow-up 消息不清空原观测窗口（避免漏报）。"""
     rail = FactPremiseObservationRail()
     ctx = _user_ctx("2028年世界杯冠军是谁？")
     await rail.on_user_message(ctx)
     assert ctx.extra["_fpo_observing"] is True
 
-    # 同一 ctx 的第二条消息（steering/排队 follow-up）：无年份词 → 重置
+    # 同一 ctx 的 follow-up 消息（无年份词）：不清空，保留原观测窗口
     ctx.inputs.parts = ["帮我写个周报"]
     await rail.on_user_message(ctx)
-    assert ctx.extra["_fpo_observing"] is False
-    assert ctx.extra["_fpo_years"] == []
+    assert ctx.extra["_fpo_observing"] is True
+    assert ctx.extra["_fpo_years"] == ["2028"]
 
 
 @pytest.mark.asyncio
@@ -292,3 +292,74 @@ async def test_json_contains_structured_fields(monkeypatch):
     payload = calls[0][1][0]
     for key in ("rail", "session_id", "retrieved", "year_anchors", "answer_claim"):
         assert re.search(rf'"{key}"', payload), f"缺字段 {key}"
+
+
+@pytest.mark.asyncio
+async def test_tools_search_does_not_mark_retrieved():
+    """tools_search 是元工具（查 schema），不应标记为已检索。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("2028年世界杯冠军是谁？")
+    await rail.on_user_message(ctx)
+    await rail.after_tool_call(_tool_ctx("tools_search", ctx.extra))
+    assert ctx.extra["_fpo_retrieved"] is False
+
+
+@pytest.mark.asyncio
+async def test_steering_does_not_clear_observation():
+    """steering 消息（source != query）不清掉原观测窗口。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("2028年世界杯冠军是谁？")
+    await rail.on_user_message(ctx)
+    assert ctx.extra["_fpo_observing"] is True
+    ctx2 = SimpleNamespace(
+        inputs=SimpleNamespace(parts=["请用英语回答"], source="steering"),
+        extra=ctx.extra,
+        session=None,
+    )
+    await rail.on_user_message(ctx2)
+    assert ctx.extra["_fpo_observing"] is True  # 窗口仍在
+
+
+@pytest.mark.asyncio
+async def test_long_id_year_not_extracted():
+    """长编号里的四位子串不应被误认为年份。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("请核对订单 12028123 的名称")
+    await rail.on_user_message(ctx)
+    assert ctx.extra.get("_fpo_observing") is not True
+
+
+@pytest.mark.asyncio
+async def test_negated_assertion_does_not_alert(monkeypatch):
+    """「不会举办」是否定式，不是虚假断言，不告警。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("2028年会举办男子足球世界杯吗？")
+    await rail.on_user_message(ctx)
+    calls = _capture(monkeypatch)
+    await rail.after_model_call(
+        _model_ctx("2028年不会举办男子足球世界杯。", ctx.extra)
+    )
+    assert not calls
+
+
+@pytest.mark.asyncio
+async def test_english_relative_year_triggers():
+    """英文相对年份词（this year）也能触发观测。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("Who won the championship this year?")
+    await rail.on_user_message(ctx)
+    assert ctx.extra["_fpo_observing"] is True
+
+
+@pytest.mark.asyncio
+async def test_window_opened_logged(monkeypatch):
+    """开观测窗口时打 info 日志（窗口数 = 分母）。"""
+    rail = FactPremiseObservationRail()
+    info_calls = []
+    monkeypatch.setattr(
+        _rail_mod.logger, "info",
+        lambda fmt, *args: info_calls.append((fmt, args)),
+    )
+    ctx = _user_ctx("2028年世界杯冠军是谁？")
+    await rail.on_user_message(ctx)
+    assert any("window_opened" in c[1][0] for c in info_calls)

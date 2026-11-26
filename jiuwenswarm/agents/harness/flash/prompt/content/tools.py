@@ -80,7 +80,7 @@ _SELECTION_CN = """# 工具选择总则
 - 独立命令尽量并行调用；多步依赖才用 && 串联（仅在不关心前序失败时才用 ;）
 - 长时间运行命令使用 background: true，不用 sleep 轮询等待
 - 相同参数不重复调用同一工具（除非文件或环境状态已变化）；上轮结果为空或无匹配时调整参数或换用其他工具，禁止盲目复读重试
-- 只读探索操作（web_flash、read_file、glob、grep 等）可以并行多发、多读多查：需要核实前提、跨源比对、理解多文件时，宁可多读多查再动手——探索阶段"小心"指的是不急着写，不是少读少查
+- 只读探索操作（web_flash 搜索/抓取、read_file、glob、grep 等）可以并行多发、多读多查：需要核实前提、跨源比对、理解多文件时，宁可多读多查再动手——探索阶段"小心"指的是不急着写，不是少读少查
 - 有副作用的操作（write_file、edit_file、bash 写等）保持精准：一次只做一件目标明确的事；目标已确认时，不同文件的写操作可并行，同一文件必须串行（避免后写覆盖前写）——执行阶段可以"大胆"
 - 判断工具是否"发散"的标准是"和当前目标是否相关"，不是"调了几个"
 """
@@ -91,7 +91,7 @@ _SELECTION_EN = """# Tool Selection Principles
 - Run independent commands in parallel; chain with && only for dependent steps (use ; only when you don't care about prior-step failure)
 - Use background: true for long-running commands instead of polling with sleep
 - Do not repeat the same tool with identical arguments (unless the file or environment state has changed); when the previous result is empty or has no match, adjust parameters or switch tools, and never blindly retry verbatim
-- Read-only exploration calls (web_flash, read_file, glob, grep, …) may be issued in parallel and repeated as needed: when you need to verify a premise, cross-check sources, or understand multiple files, read and search as much as needed before acting. "Careful" exploration means not writing too early, not reading too little.
+- Read-only exploration calls (web_flash search/fetch, read_file, glob, grep, …) may be issued in parallel and repeated as needed: when you need to verify a premise, cross-check sources, or understand multiple files, read and search as much as needed before acting. "Careful" exploration means not writing too early, not reading too little.
 - Side-effecting calls (write_file, edit_file, bash writes, …) stay precise: one clearly-scoped write at a time; once the target is confirmed, writes to different files may run in parallel, but writes to the same file must stay sequential (to avoid one overwriting another) — execution may be bold.
 - Judge whether a call is "unrelated" by relevance to the current goal, not by count.
 """

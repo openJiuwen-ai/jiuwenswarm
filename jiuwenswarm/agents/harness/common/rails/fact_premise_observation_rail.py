@@ -30,15 +30,18 @@ _OBSERVING = "_fpo_observing"
 _RETRIEVED = "_fpo_retrieved"
 _YEARS = "_fpo_years"
 
-# 输入侧粗触发：年份 + 届次词。
-_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+# 输入侧粗触发：年份 + 届次词。数字边界防止长编号（订单 12028123）截出四位年份。
+_YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 # 时间窗口：当前年 - 1 以内的年份才算「时间敏感」；已定论的过去事实（如 2015 奥斯卡）
 # 零检索不一定是问题，不触发观测。
 _PAST_YEAR_SLACK = 1
 # 事件型届次词（足够事件特异，进锚点、参与输出侧匹配）。
 _EDITION_RE = re.compile(r"本届|这届|上届|上一届|下一届|最近一届")
 # 相对年份词（今年/去年…）：仅触发观测窗口，不进锚点——太通用，拿它匹配答案噪声极大。
-_RELATIVE_RE = re.compile(r"今年|明年|去年|前年|后年")
+_RELATIVE_RE = re.compile(
+    r"今年|明年|去年|前年|后年|this year|last year|next year|the year before|the year after",
+    re.IGNORECASE,
+)
 
 # 检索工具（观测「是否检索过」）。browser_agent 是 subagent_type 非工具名，deepresearch 真名
 # 是 deepresearch_execute / deepresearch_stream，故不在此列（见 _is_proxied_retrieval）。
@@ -54,11 +57,14 @@ _ASSERTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 否认 / 无法确认是正确行为，不是虚假断言。
+# 否认 / 无法确认 / 否定式断言（「不会举办」）是正确行为，不是虚假断言。
 _REFUSAL_RE = re.compile(
     r"无法确认|无法核实|未能确认|查不到|没有查到|没有找到|不存在|没有这个|待核实|不确定"
+    r"|不会(?:举办|举行|召开|开幕|闭幕|夺冠|当选|荣获)"
+    r"|未(?:举办|举行|召开|开幕|闭幕)"
     r"|cannot confirm|can't confirm|unable to (?:confirm|verify)|could(?: not|n't) find"
-    r"|no such|does not exist|not exist",
+    r"|no such|does not exist|not exist"
+    r"|will not (?:hold|host|take place)|has not (?:held|taken place)",
     re.IGNORECASE,
 )
 
@@ -97,6 +103,8 @@ def _resolve_session_id(ctx: AgentCallbackContext) -> str:
 
 def _is_retrieval_tool(name: str) -> bool:
     lowered = str(name or "").strip().lower()
+    if lowered == "tools_search":  # 元工具：只查 deferred schema，不检索
+        return False
     return (
         lowered in _RETRIEVAL_TOOL_NAMES
         or lowered.startswith("web_")
@@ -132,8 +140,15 @@ def _is_proxied_retrieval(inputs: Any) -> bool:
 
 
 def _has_user_visible_answer(response: Any) -> bool:
-    """无 tool_calls 且 content 非空 → 本轮终稿答案。"""
+    """无 tool_calls 且 content 非空且非截断 → 本轮终稿答案。"""
     if response is None or getattr(response, "tool_calls", None):
+        return False
+    # 截断重试的中间输出不算终稿：finish_reason/stop_reason 为 length/max_tokens 时
+    # SDK 还会重试并可能检索纠正，此刻告警是误报。
+    finish_reason = getattr(response, "finish_reason", None) or getattr(
+        response, "stop_reason", None
+    )
+    if finish_reason in ("length", "max_tokens"):
         return False
     content = getattr(response, "content", None)
     if isinstance(content, str):
@@ -171,21 +186,17 @@ class FactPremiseObservationRail(DeepAgentRail):
     async def on_user_message(self, ctx: AgentCallbackContext) -> None:
         """粗触发：用户消息含年份 / 届次词则开启本轮观测窗口。"""
         try:
-            extra = _shared_extra(ctx)
-            # 先重置本轮观测状态：同一 invoke 内多条用户消息（steering/排队 follow-up）
-            # 会多次进本钩子，不复位会继承上一条的锚点。
-            if extra is not None:
-                extra[_OBSERVING] = False
-                extra[_RETRIEVED] = False
-                extra[_YEARS] = []
             inputs = getattr(ctx, "inputs", None)
             parts = getattr(inputs, "parts", None)
             if not isinstance(parts, list) or not parts:
                 return
             if str(getattr(inputs, "source", "query")) != "query":
-                return
-            text = "\n".join(str(p) for p in parts if isinstance(p, str))
-            text = retrieval_text(text)
+                return  # steering/非 query：不清状态，保留原观测窗口
+            # 逐条解信封再合并：retrieval_text 的 raw_decode 只读第一封 JSON，
+            # 多封排队消息里第二封的年份会漏。
+            text = "\n".join(
+                retrieval_text(str(p)) for p in parts if isinstance(p, str)
+            )
             # 年份加时间窗口：只留当前年 - 1 以内的年份，已定论的过去事实不触发观测。
             current_year = date.today().year
             anchors = [
@@ -196,11 +207,24 @@ class FactPremiseObservationRail(DeepAgentRail):
             if edition:
                 anchors.append(edition.group(0))
             if not anchors and not _RELATIVE_RE.search(text):
-                return
+                return  # 无锚点：不清状态，保留原观测窗口
+            # 只在确定开启新观测窗口时才重置（覆盖）状态，并记录窗口数（分母）。
+            extra = _shared_extra(ctx)
             if extra is not None:
                 extra[_OBSERVING] = True
                 extra[_RETRIEVED] = False
                 extra[_YEARS] = anchors
+            logger.info(
+                "fact_premise_observation %s",
+                json.dumps(
+                    {
+                        "event": "window_opened",
+                        "session_id": _resolve_session_id(ctx),
+                        "year_anchors": anchors,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
         except Exception:  # noqa: BLE001 — fail-open
             pass
 
@@ -223,39 +247,45 @@ class FactPremiseObservationRail(DeepAgentRail):
             extra = getattr(ctx, "extra", None)
             if not isinstance(extra, dict) or not extra.get(_OBSERVING):
                 return
-            if extra.get(_RETRIEVED):
-                return
             response = getattr(getattr(ctx, "inputs", None), "response", None)
             if not _has_user_visible_answer(response):
-                return
-            answer = _answer_text(response)
-            if _REFUSAL_RE.search(answer):
-                return
-            # 输出侧重新扫答案里的窗口内年份/届次词，不依赖输入侧锚点：相对年份词
-            # （今年/去年…）只触发观测、不进锚点；过去年份（已定论事实）同样排除。
-            current_year = date.today().year
-            has_window_year = any(
-                int(y[:4]) >= current_year - _PAST_YEAR_SLACK
-                for y in _YEAR_RE.findall(answer)
-            )
-            if not has_window_year and not _EDITION_RE.search(answer):
-                return
-            if not _ASSERTION_RE.search(answer):
-                return
-            years = extra.get(_YEARS) or []
-            logger.warning(
-                "fact_premise_observation %s",
-                json.dumps(
-                    {
-                        "rail": "fact_premise_observation",
-                        "session_id": _resolve_session_id(ctx),
-                        "retrieved": False,
-                        "year_anchors": years,
-                        "answer_claim": preview_text(answer),
-                    },
-                    ensure_ascii=False,
-                ),
-            )
+                return  # 中间轮（有 tool_calls / 截断重试），不清空窗口
+            # 终稿轮：结算并关闭窗口
+            try:
+                if extra.get(_RETRIEVED):
+                    return  # 已检索，不告警
+                answer = _answer_text(response)
+                if _REFUSAL_RE.search(answer):
+                    return
+                # 输出侧重新扫答案里的窗口内年份/届次词，不依赖输入侧锚点：相对年份词
+                # （今年/去年…）只触发观测、不进锚点；过去年份（已定论事实）同样排除。
+                current_year = date.today().year
+                has_window_year = any(
+                    int(y[:4]) >= current_year - _PAST_YEAR_SLACK
+                    for y in _YEAR_RE.findall(answer)
+                )
+                if not has_window_year and not _EDITION_RE.search(answer):
+                    return
+                if not _ASSERTION_RE.search(answer):
+                    return
+                years = extra.get(_YEARS) or []
+                logger.warning(
+                    "fact_premise_observation %s",
+                    json.dumps(
+                        {
+                            "event": "hit",
+                            "rail": "fact_premise_observation",
+                            "session_id": _resolve_session_id(ctx),
+                            "retrieved": False,
+                            "year_anchors": years,
+                            "answer_claim": preview_text(answer),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            finally:
+                # 终稿结算后关闭观测窗口，避免同一 invoke 下一条消息复用旧状态
+                extra[_OBSERVING] = False
         except Exception:  # noqa: BLE001 — fail-open
             pass
 

@@ -301,7 +301,7 @@ def _build_llm_retry_rail(config_base: dict[str, Any] | None = None) -> Notifyin
         config_base = config_base or get_config()
         guard_cfg = config_base.get("execution_guard", {}) if isinstance(config_base, dict) else {}
         retry_cfg = guard_cfg.get("llm_retry_rail", {}) if isinstance(guard_cfg, dict) else {}
-        if not _config_bool(retry_cfg.get("enabled"), False):
+        if retry_cfg.get("enabled", False) is not True:
             logger.info("[JiuWenSwarmDeepAdapter] LLMRetryRail disabled by config")
             return None
         rail = NotifyingLLMRetryRail(
