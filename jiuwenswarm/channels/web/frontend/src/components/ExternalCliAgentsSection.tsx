@@ -714,7 +714,14 @@ export function ExternalCliAgentsSection({
         draftValues[externalCliKey(cliAgent, 'path_histories')],
       ).slice().reverse();
       for (const candidate of historyPaths) {
-        const historyProbe = await onDetect?.(cliAgent, candidate, false);
+        // 单条历史探测失败（传输错误等）视为不可用，继续下一条，
+        // 不得中断整个启用流程丢掉内置兜底（!10678 第二轮检视）。
+        let historyProbe;
+        try {
+          historyProbe = await onDetect?.(cliAgent, candidate, false);
+        } catch {
+          continue;
+        }
         if (historyProbe?.path && isInstalledStatus(historyProbe)) {
           return { enabled: true, useBuiltin: false, cliPath: historyProbe.path };
         }

@@ -1000,31 +1000,37 @@ def _detect_custom_agent_cli(cli_agent: str, cli_path: str) -> dict[str, Any]:
 
 
 def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = False) -> dict[str, Any]:
-    # 所有探测统一以"内置 SDK 是否可用"为前提（集群模式拉成员依赖 SDK，
-    # PATH 上的裸 CLI 不算数——!10678 讨论）：runtime 清单 required_modules
-    # 全部可导入 + reference_version 非空，任一不满足即 missing（卡片出
-    # "一键安装"入口）——显式配置的自定义路径同样受此门控，SDK 缺失时
-    # 自定义 CLI 单独存在并不能让成员被拉起。SDK 就绪后再按路径来源判
-    # CLI：显式路径 → 校验该路径；无显式路径 → 内置托管 CLI 文件存在。
+    # 内置 agent（claude/codex）的所有探测统一以"内置 SDK 是否可用"为前提
+    # （集群模式拉成员依赖 SDK，PATH 上的裸 CLI 不算数——!10678 讨论）：
+    # runtime 清单 required_modules 全部可导入 + reference_version 非空，
+    # 任一不满足即 missing（卡片出"一键安装"入口）——显式配置的自定义路径
+    # 同样受此门控，SDK 缺失时自定义 CLI 单独存在并不能让成员被拉起。
+    # SDK 就绪后再按路径来源判 CLI：显式路径 → 校验该路径；无显式路径 →
+    # 内置托管 CLI 文件存在。
+    # 自定义（上传）agent 不在 runtime 清单里，missing_external_cli_sdk_modules
+    # 会对它们抛 ValueError、reference_version 也恒为空——门控只对清单覆盖
+    # 的内置 agent 生效，自定义 agent 的可用性由上传 CLI 自身的探测校验
+    # （!10678 第二轮检视）。
     reference_version = external_cli_reference_version(normalized_agent)
-    missing_modules = missing_external_cli_sdk_modules(normalized_agent)
-    if missing_modules or not reference_version:
-        return {
-            "cli_agent": normalized_agent,
-            "status": "missing",
-            "path": "",
-            "version": "",
-            "reference_version": reference_version,
-            "reason": "builtin_not_installed",
-            "message": f"{normalized_agent} builtin sdk not installed"
-            + (
-                f": missing modules {', '.join(missing_modules)}"
-                if missing_modules
-                else "; reference version unavailable"
-            ),
-        }
+    if normalized_agent in EXTERNAL_CLI_AGENT_KINDS:
+        missing_modules = missing_external_cli_sdk_modules(normalized_agent)
+        if missing_modules or not reference_version:
+            return {
+                "cli_agent": normalized_agent,
+                "status": "missing",
+                "path": "",
+                "version": "",
+                "reference_version": reference_version,
+                "reason": "builtin_not_installed",
+                "message": f"{normalized_agent} builtin sdk not installed"
+                + (
+                    f": missing modules {', '.join(missing_modules)}"
+                    if missing_modules
+                    else "; reference version unavailable"
+                ),
+            }
     effective_cli_path = cli_path.strip()
-    if not effective_cli_path:
+    if normalized_agent in EXTERNAL_CLI_AGENT_KINDS and not effective_cli_path:
         managed = external_cli_managed_cli_path(normalized_agent)
         if not managed:
             return {

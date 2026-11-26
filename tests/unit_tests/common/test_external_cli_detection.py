@@ -21,6 +21,9 @@ def test_detect_checks_program_identity(tmp_path, monkeypatch, agent, output, ex
     # reference_version 桩为非空低版本：SDK 门控要求其非空（!10678 讨论），
     # 且低于探测版本不触发 warning，保持身份校验断言的确定性。
     monkeypatch.setattr(handlers, "external_cli_reference_version", lambda _: "0.1.0")
+    # SDK 门控桩：清单模块视为齐备，结果不依赖运行环境是否装了 SDK
+    # （!10678 第二轮检视）。
+    monkeypatch.setattr(handlers, "missing_external_cli_sdk_modules", lambda _agent: [])
     monkeypatch.setattr(handlers, "run_external_cli_version_command", lambda *_: (output, ""))
     result = handlers.detect_external_cli_agent(agent, str(executable))
     assert result["status"] == expected
@@ -36,6 +39,9 @@ def test_saving_rejects_another_agents_executable(tmp_path, monkeypatch, agent, 
     # reference_version 桩为非空低版本：SDK 门控要求其非空（!10678 讨论），
     # 且低于探测版本不触发 warning，保持身份校验断言的确定性。
     monkeypatch.setattr(handlers, "external_cli_reference_version", lambda _: "0.1.0")
+    # SDK 门控桩：清单模块视为齐备，结果不依赖运行环境是否装了 SDK
+    # （!10678 第二轮检视）。
+    monkeypatch.setattr(handlers, "missing_external_cli_sdk_modules", lambda _agent: [])
     monkeypatch.setattr(handlers, "run_external_cli_version_command", lambda *_: (output, ""))
     raw = {"modes": {"team": {"jiuwen_team": {"external_cli_agents": []}}}}
     params = {
