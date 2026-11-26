@@ -2819,12 +2819,20 @@ def test_language_change_invalidates_pool_identity():
 
 def test_recommendation_language_normalizes_preferred_language(monkeypatch):
     from jiuwenswarm.agents.harness.common.recommendation import topic_controls
+    from jiuwenswarm.common.i18n import normalize_preferred_language
+    from jiuwenswarm.enterprise.config import preferred_language as pref
 
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.edition.is_enterprise",
+        lambda: False,
+    )
     for raw, expected in (
-        ("en", "en"), ("EN", "en"), ("zh", "zh"), ("fr", "zh"), (None, "zh"),
+        ("en", "en"), ("EN", "en"), ("zh", "zh"), ("fr", "en"), (None, "en"),
     ):
         monkeypatch.setattr(
-            topic_controls, "get_config", lambda _raw=raw: {"preferred_language": _raw},
+            pref,
+            "_yaml_or_en",
+            lambda _raw=raw: normalize_preferred_language(_raw),
         )
         topic_controls.clear_recommendation_language_cache()
         assert topic_controls.recommendation_language() == expected

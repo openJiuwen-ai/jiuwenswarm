@@ -50,7 +50,7 @@ if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []):
                 # The simulated v1 peer has no startup-permission handshake.
                 self.hello = dict(message)
                 message['protocol'] = 1
-                for key in ['data_scope', 'deployment_scope', 'process_created', 'code_identity', 'shutdown_ack']:
+                for key in ['data_scope', 'deployment_scope', 'process_created', 'process_started', 'code_identity', 'shutdown_ack']:
                     message.pop(key, None)
             if message.get('kind') != 'shutdown.done':
                 await self.connection.send(message)

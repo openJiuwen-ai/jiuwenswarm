@@ -169,6 +169,9 @@ def _rail(adapter):
 
 @pytest.fixture
 async def environment(tmp_path, monkeypatch, ttse_plugin_source):
+    from jiuwenswarm.agents.harness import observability_runtime
+
+    monkeypatch.setattr(observability_runtime, "_export_overrides", {})
     package = tmp_path / "ttse"
     archive_path = package_ttse_plugin(tmp_path / "ttse.zip", source=ttse_plugin_source)
     with zipfile.ZipFile(archive_path) as archive:
@@ -185,7 +188,7 @@ async def environment(tmp_path, monkeypatch, ttse_plugin_source):
     monkeypatch.setattr(observability, "_agent_observability_active", False)
     monkeypatch.setattr(observability, "_force_ever_enabled", False)
     monkeypatch.setattr(observability, "_plugin_trajectory_demands", set())
-    monkeypatch.setattr(observability, "acquire_observability", lambda cfg: acquired.append(cfg) or False)
+    monkeypatch.setattr(observability, "acquire_observability", lambda cfg, export=True: acquired.append(cfg) or False)
     monkeypatch.setattr(observability, "release_observability", lambda: released.append(True))
     monkeypatch.setattr(observability, "sync_trajectory_runtime", lambda *a, **kw: None)
     monkeypatch.setattr(observability, "shutdown_trajectory_runtime", lambda **kw: True)
@@ -256,7 +259,7 @@ async def test_provider_failure_releases_failed_construction_requirement(environ
     env = environment
     adapter = await env.make_adapter()
 
-    def fail(_config):
+    def fail(_config, **kwargs):
         raise OSError("provider unavailable")
 
     monkeypatch.setattr(observability, "acquire_observability", fail)

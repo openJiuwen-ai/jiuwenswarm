@@ -386,6 +386,7 @@ async def test_memory_rail_rebuilds_for_web_media_settings_and_permission_change
     monkeypatch.setattr(deep, "is_memory_enabled", lambda _mode, _config: True)
 
     adapter = object.__new__(deep.JiuWenSwarmDeepAdapter)
+    adapter._memory_rail_lock = asyncio.Lock()
     adapter._instance = SimpleNamespace(register_rail=AsyncMock(), unregister_rail=AsyncMock())
     adapter._instance_overrides = {}
     adapter._enable_auto_permission = False

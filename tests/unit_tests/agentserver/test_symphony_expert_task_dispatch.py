@@ -287,7 +287,10 @@ async def test_three_platform_launch_compose_and_dispatch(tmp_path, monkeypatch,
     host_config = SimpleNamespace(
         capability=SimpleNamespace(sources=[]), orchestration=core.config,
     )
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
+    )
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: host_config)
     monkeypatch.setattr(host, "_runtime_for", lambda _config: SimpleNamespace(orchestration=SymphonyGraphEngine(core)))
 

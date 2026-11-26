@@ -96,7 +96,12 @@ async def _serve_one(
     instance: str,
     code_identity_value: str | None = None,
 ) -> bool:
-    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+    from jiuwenswarm.server.supervisor.identity import (
+        code_identity,
+        data_scope,
+        deployment_scope,
+        process_start_marker,
+    )
     import psutil
 
     send = getattr(conn, "send")
@@ -114,6 +119,7 @@ async def _serve_one(
             "shutdown_ack": True,
             "heartbeat_probe": True,
             "process_created": psutil.Process().create_time(),
+            "process_started": process_start_marker(psutil.Process()),
             "code_identity": code_identity_value if code_identity_value is not None else code_identity(),
         }
     await send(hello)

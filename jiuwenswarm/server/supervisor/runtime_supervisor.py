@@ -1003,7 +1003,12 @@ class RuntimeSupervisor:
                     raise RuntimeError("runtime ipc protocol mismatch")
                 if type(hello.get("generation")) is not int or hello["generation"] != self._launch_generation:
                     raise RuntimeError("runtime_ipc=front_loopback stage=hello generation mismatch")
-                from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+                from jiuwenswarm.server.supervisor.identity import (
+                    code_identity,
+                    data_scope,
+                    deployment_scope,
+                    hello_matches_process,
+                )
 
                 identity = launch_identity or await asyncio.to_thread(code_identity)
                 if (hello.get("data_scope") != data_scope() or hello.get("code_identity") != identity
@@ -1022,7 +1027,7 @@ class RuntimeSupervisor:
                     raise RuntimeError("attached Worker returned an invalid PID")
                 validated_process = psutil.Process(pid)
                 validated_created = validated_process.create_time()
-                if hello.get("process_created") not in (None, validated_created):
+                if not hello_matches_process(hello, validated_process):
                     raise RuntimeError("attached Worker PID identity changed")
                 if self._stopping or self._terminating:
                     raise RuntimeError("Worker startup cancelled by supervisor stop")

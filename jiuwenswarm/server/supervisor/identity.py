@@ -156,6 +156,73 @@ def read_launch_payload() -> dict:
         raise RuntimeError("Invalid Worker parent identity") from exc
 
 
+# A pre-``process_started`` Worker reports psutil's wall-clock create_time(),
+# which psutil shifts by the clock adjustments seen since that process imported
+# psutil. Accept a small drift for those peers only.
+LEGACY_PROCESS_CREATED_TOLERANCE = 3.0
+
+
+def process_start_marker(process) -> float:
+    """Return a process start time that is stable across processes and clock changes.
+
+    ``psutil.Process.create_time()`` is wall-clock based. On macOS and NetBSD
+    psutil corrects it with the boot time cached when the *calling* process
+    imported psutil, and on Linux it adds the current boot time, so two
+    processes can report different values for the same peer after NTP or a
+    manual clock change. Where psutil exposes the boot-relative start time
+    (the value it uses for its own process identity), use that instead.
+
+    Args:
+        process: The ``psutil.Process`` to inspect.
+
+    Returns:
+        A float that two processes on the same host compute identically for
+        the same process, and that differs for a reused PID.
+
+    Raises:
+        psutil.Error: The process cannot be inspected.
+    """
+    import psutil
+
+    if psutil.LINUX or psutil.OSX or psutil.NETBSD:
+        native = getattr(process, "_proc", None)
+        if native is not None:
+            try:
+                return float(native.create_time(monotonic=True))
+            except TypeError:
+                # psutil without the monotonic keyword: fall back below.
+                pass
+    # Windows and the other BSDs do not apply a per-process clock correction.
+    return float(process.create_time())
+
+
+def hello_matches_process(hello: dict, process) -> bool:
+    """Check that a Worker HELLO was sent by ``process`` rather than a reused PID.
+
+    Args:
+        hello: The Worker HELLO frame.
+        process: The ``psutil.Process`` looked up from the HELLO PID.
+
+    Returns:
+        True when the start time the Worker reported matches the process.
+        HELLOs without any start time (oldest Workers) are accepted, as before.
+
+    Raises:
+        psutil.Error: The process cannot be inspected.
+    """
+    started = hello.get("process_started")
+    if started is not None:
+        if isinstance(started, bool) or not isinstance(started, (int, float)):
+            return False
+        return float(started) == process_start_marker(process)
+    created = hello.get("process_created")
+    if created is None:
+        return True
+    if isinstance(created, bool) or not isinstance(created, (int, float)):
+        return False
+    return abs(float(created) - process.create_time()) < LEGACY_PROCESS_CREATED_TOLERANCE
+
+
 def data_scope() -> str:
     from jiuwenswarm.common.utils import get_user_workspace_dir
 

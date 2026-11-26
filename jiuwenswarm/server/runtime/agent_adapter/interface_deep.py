@@ -147,6 +147,7 @@ from agent_gateway.common.mode_matrix import (
     NEW_AGENT_WORK_PLAN,
     deprecate_mode,
     is_code_profile_mode,
+    is_single_agent_mode,
     is_team_mode,
 )
 
@@ -211,6 +212,7 @@ from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConfli
 from jiuwenswarm.server.runtime.agent_adapter.deferred_capabilities import deferred
 
 if TYPE_CHECKING:
+    from opentelemetry.trace import Span
     from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
     from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
@@ -2817,6 +2819,7 @@ class JiuWenSwarmDeepAdapter:
         # AgentSSAS: 安全态势感知 Rail
         self._ssas_rail: "AgentSSASSecurityRail | None" = None
         self._memory_rail: MemoryRail | None = None
+        self._memory_rail_lock = asyncio.Lock()
         self._external_memory_rail: Any = None
         self._external_memory_rail_registered: bool = False
         self._external_memory_session_finalized: bool = False
@@ -8738,6 +8741,40 @@ class JiuWenSwarmDeepAdapter:
             return hint.strip()[:500]
         return "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
 
+    def _set_main_agent_trace_name(self, request: AgentRequest, run_span: Span | None) -> None:
+        """Bind the matching session snapshot's template name to this recorded turn."""
+        try:
+            if run_span is None or not self._is_session_scoped_adapter or not run_span.is_recording():
+                return
+            policy = self._enterprise_config
+            params = request.params
+            if policy is None or not isinstance(params, dict):
+                return
+            if not is_single_agent_mode(deprecate_mode(params.get("mode", "agent"))) or is_team_params(params):
+                return
+            if (
+                self._session_instance_agent_definition is not None
+                or getattr(self, "_session_instance_spec", None) is not None
+                or "agent_name" in self._instance_overrides
+            ):
+                return
+            from jiuwenswarm.agents.harness.agent_observability import MainAgentObservabilityRail
+            from jiuwenswarm.common.request_identity import web_routing_identity
+
+            bot_id = web_routing_identity(request.metadata).get("bot_id")
+            if not bot_id or getattr(policy, "resource_id", None) != bot_id:
+                return
+            template = getattr(policy, "agent_template", None)
+            name = template.get("template_name") if isinstance(template, dict) else None
+            if not isinstance(name, str) or not name.strip():
+                return
+            for rail in self._instance.configured_rails():
+                if isinstance(rail, MainAgentObservabilityRail):
+                    rail.bind_template_name(run_span, name.strip())
+                    return
+        except Exception:  # Telemetry must not interrupt a chat.
+            logger.warning("Could not set the Agent template name for tracing", exc_info=True)
+
     def _model_config_error(self, request: AgentRequest) -> tuple[str, str] | None:
         if _is_attach_only_subscription(request.params):
             # An attach-only subscription submits no input and creates no
@@ -11363,10 +11400,22 @@ class JiuWenSwarmDeepAdapter:
         # The harness rail is the whole agent tier here: the team contribution
         # (agentteam.* identity) is a separate rail the team blueprint mounts,
         # and a single agent has no team to describe.
+        trace_rail = None
         try:
-            from openjiuwen.harness.observability import AgentObservabilityRail
+            from jiuwenswarm.enterprise import is_enterprise
 
-            rails_list.append(AgentObservabilityRail())
+            if is_enterprise() and self._parent_session_id:
+                from jiuwenswarm.agents.harness.agent_observability import MainAgentObservabilityRail
+
+                trace_rail = MainAgentObservabilityRail(self._parent_session_id)
+        except Exception as exc:
+            logger.warning("%s Using the default observability rail after template tracing failed: %s", log_prefix, exc)
+        try:
+            if trace_rail is None:
+                from openjiuwen.harness.observability import AgentObservabilityRail
+
+                trace_rail = AgentObservabilityRail()
+            rails_list.append(trace_rail)
         except Exception as exc:
             logger.warning("%s Failed to attach AgentObservabilityRail: %s", log_prefix, exc)
         stage_timer.mark("observability_rail")
@@ -16273,8 +16322,7 @@ class JiuWenSwarmDeepAdapter:
         return parse_input_guard_config(react_config.get("input_guard_config"))
 
     def _input_guard_language(self) -> str:
-        config_base = self._config_base_cache if isinstance(self._config_base_cache, dict) else {}
-        return str(config_base.get("preferred_language") or "zh").strip().lower()
+        return self._resolve_prompt_language()
 
     async def _input_guard_budget(
         self,
@@ -18403,6 +18451,12 @@ class JiuWenSwarmDeepAdapter:
     async def _process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AgentResponse:
+        with ExitStack() as trace_scope:
+            return await self._run_message(request, inputs, trace_scope)
+
+    async def _run_message(
+        self, request: AgentRequest, inputs: dict[str, Any], trace_scope: ExitStack,
+    ) -> AgentResponse:
         """Execute a single non-streaming request and return the response.
 
         Args:
@@ -18629,6 +18683,7 @@ class JiuWenSwarmDeepAdapter:
         )
 
         from jiuwenswarm.agents.harness.agent_observability import (  # noqa: E402
+            main_agent_trace_turn,
             sync_agent_observability,
         )
         inputs = self._with_symphony_request_model(inputs, resolved_model)
@@ -18712,6 +18767,7 @@ class JiuWenSwarmDeepAdapter:
                 else mode
             )
             _turn = self._resolve_trajectory_turn(request.params)
+            trace_scope.enter_context(main_agent_trace_turn(self._parent_session_id))
             _run_span = open_agent_run_span(
                 session_id=session_id,
                 mode=_trajectory_mode,
@@ -18720,6 +18776,7 @@ class JiuWenSwarmDeepAdapter:
                 turn_id=_turn.turn_id,
                 turn_number=_turn.turn_number,
             )
+            self._set_main_agent_trace_name(request, _run_span)
             # Reuse the host-owned trajectory turn number for inference-side
             # affinity. The UUID remains an observability identity; the wire
             # protocol deliberately carries the 1-based integer sequence.
@@ -19127,6 +19184,14 @@ class JiuWenSwarmDeepAdapter:
     async def _process_message_stream_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AsyncIterator[AgentResponseChunk]:
+        with ExitStack() as trace_scope:
+            async with aclosing(self._run_message_stream(request, inputs, trace_scope)) as stream:
+                async for chunk in stream:
+                    yield chunk
+
+    async def _run_message_stream(
+        self, request: AgentRequest, inputs: dict[str, Any], trace_scope: ExitStack,
+    ) -> AsyncIterator[AgentResponseChunk]:
         """Execute a streaming request; yield response chunks.
 
         Args:
@@ -19315,7 +19380,10 @@ class JiuWenSwarmDeepAdapter:
         # Team 模式处理
         if is_team_mode(mode):
             from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
-            if uses_jiuwen_team_memory(get_config(), mode):
+            if (
+                not _is_attach_only_subscription(request.params)
+                and uses_jiuwen_team_memory(get_config(), mode)
+            ):
                 await self._handle_memory_rail_by_config(mode)
 
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
@@ -19854,6 +19922,7 @@ class JiuWenSwarmDeepAdapter:
         )
 
         from jiuwenswarm.agents.harness.agent_observability import (  # noqa: E402
+            main_agent_trace_turn,
             sync_agent_observability,
         )
         inputs = self._with_symphony_request_model(inputs, resolved_model)
@@ -19975,6 +20044,7 @@ class JiuWenSwarmDeepAdapter:
                 else _debug_trace_mode
             )
             _turn = self._resolve_trajectory_turn(request.params)
+            trace_scope.enter_context(main_agent_trace_turn(self._parent_session_id))
             _run_span = open_agent_run_span(
                 session_id=session_id,
                 mode=_trajectory_mode,
@@ -19983,6 +20053,7 @@ class JiuWenSwarmDeepAdapter:
                 turn_id=_turn.turn_id,
                 turn_number=_turn.turn_number,
             )
+            self._set_main_agent_trace_name(request, _run_span)
             # Propagate the host-owned turn number explicitly; ContextVars from
             # this request do not cross the long-lived Agent Core scheduler.
             inputs = dict(inputs)
@@ -21675,12 +21746,19 @@ class JiuWenSwarmDeepAdapter:
         SUBAGENT_PROJECTION.clear()
 
     async def _handle_memory_rail_by_config(self, mode: str):
+        # Requests and config reloads share this adapter's Rail lifecycle.
+        async with self._memory_rail_lock:
+            await self._apply_memory_rail_config(mode)
+
+    async def _apply_memory_rail_config(self, mode: str):
+        """Reconcile memory while holding the adapter's lifecycle lock."""
         config = get_config()
+        rail = self._memory_rail
         from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
         if uses_jiuwen_team_memory(config, mode):
-            if self._memory_rail is not None:
-                await self._drain_jiuwen_memory_rail(self._memory_rail)
-                await self._instance.unregister_rail(self._memory_rail)
+            if rail is not None:
+                await self._drain_jiuwen_memory_rail(rail)
+                await self._instance.unregister_rail(rail)
                 self._memory_rail = None
             return
 
@@ -21702,12 +21780,12 @@ class JiuWenSwarmDeepAdapter:
                     )
                     new_embed_fp = f"{jiuwen_config_fp}|project={self._jiuwen_memory_project_key()}"
                 previous_embed_fp = self._memory_embedding_fingerprint
-                if self._memory_rail is not None:
+                if rail is not None:
                     cur_memory_type = is_proactive_memory(mode, config)
                     if self._is_proactive_memory != cur_memory_type:
                         # 当前记忆类型（主动/被动）和之前注册的不一致，重新注册
-                        await self._drain_jiuwen_memory_rail(self._memory_rail)
-                        await self._instance.unregister_rail(self._memory_rail)
+                        await self._drain_jiuwen_memory_rail(rail)
+                        await self._instance.unregister_rail(rail)
                         self._memory_rail = None
                     elif self._memory_embedding_fingerprint != new_embed_fp:
                         # 记忆类型没变，但记忆配置指纹变了（embedding 或 jiuwen 配置）：
@@ -21716,8 +21794,8 @@ class JiuWenSwarmDeepAdapter:
                         logger.info(
                             "[JiuWenSwarmDeepAdapter] memory config changed, rebuilding memory rail"
                         )
-                        await self._drain_jiuwen_memory_rail(self._memory_rail)
-                        await self._instance.unregister_rail(self._memory_rail)
+                        await self._drain_jiuwen_memory_rail(rail)
+                        await self._instance.unregister_rail(rail)
                         self._memory_rail = None
                     else:
                         # 已经注册，且记忆类型与配置指纹均未变，无需其他操作
@@ -21756,9 +21834,9 @@ class JiuWenSwarmDeepAdapter:
                             and not is_jiuwen_builtin_memory(config)
                         ):
                             self._schedule_memory_reindex()
-            elif not builtin_on and self._memory_rail is not None:
-                await self._drain_jiuwen_memory_rail(self._memory_rail)
-                await self._instance.unregister_rail(self._memory_rail)
+            elif not builtin_on and rail is not None:
+                await self._drain_jiuwen_memory_rail(rail)
+                await self._instance.unregister_rail(rail)
                 self._memory_rail = None
                 logger.info("[JiuWenSwarmDeepAdapter] MemoryRail unregistered for %s mode", mode)
 

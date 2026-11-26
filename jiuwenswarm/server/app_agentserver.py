@@ -117,6 +117,9 @@ async def _run(host: str, port: int) -> None:
         # Enterprise DB/logging policies keep their established startup ordering.
         from jiuwenswarm.server.front.sdk_logging import ensure_configured
         ensure_configured()
+        from jiuwenswarm.common.config import start_config_warm_up
+
+        start_config_warm_up()
     from jiuwenswarm.server.runtime.mcp.cli_env_patch import install_shell_patch
 
     install_shell_patch()
