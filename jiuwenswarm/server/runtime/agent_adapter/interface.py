@@ -2940,8 +2940,10 @@ class JiuWenSwarm:
 
         params = dict(request.params) if isinstance(request.params, dict) else {}
         try:
-            # 打包/解包为同步磁盘操作，移出事件循环；与 HTTP 北向
-            # （dispatch.HANDLERS → handlers/assets.py）共用同一编排层。
+            # 打包/解包为同步磁盘操作，移出事件循环；assets.export /
+            # assets.import 另有 HTTP 北向入口（dispatch.HANDLERS →
+            # handlers/assets.py）共用同一编排层，assets.stage_local
+            # 仅有本 WS 入口（有意不注册 HTTP 北向，见 dispatch.py 注释）。
             if request.req_method == ReqMethod.ASSETS_EXPORT:
                 payload = await asyncio.to_thread(
                     service.export_asset,

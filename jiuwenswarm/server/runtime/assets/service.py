@@ -9,7 +9,8 @@
   ``{kind, id, pending_connectors?}``；
 - 桌面暂存：``assets.stage_local`` 把桌面壳给出的本机绝对路径复制进
   与 upload-temp 相同的受控暂存根（同防护），返回 ``{path}``，前端
-  两通道统一走 ``assets.import``。
+  两通道统一走 ``assets.import``；仅 WS 入口，有意不注册 HTTP 北向
+  （见 ``stage_local_asset`` docstring）。
 
 本层向上抛出的异常由入口 handler 收敛：``AssetError`` 透传、带 ``.code``
 的内部异常（SafeArchiveError 等）查表映射、无内部码的 ``ValueError``
@@ -207,6 +208,9 @@ def stage_local_asset(params: Any, *, limits: ArchiveLimits = ArchiveLimits()) -
     文件读取等既有 RPC 同样按客户端给出的路径读服务端文件），未引入既有
     RPC 面之外的新能力；且此处只收紧不放松——仅 .zip、拒符号链接、限额、
     复制入受控暂存根后 ``assets.import`` 只读暂存根，不再触碰原路径。
+    暴露面在构造上收敛为 WS-only：本方法有意不注册 dispatch.HANDLERS、
+    pod_rest_map 不声明 REST 路由，HTTP 北向不可达（旧
+    ``agent_templates.import_local`` 同为 WS-only，暴露面持平）。
     远程部署若需收口「任意路径」类入参，应作为覆盖整个管理面 RPC 的
     统一加固任务（来源门控/白名单），不在本入口单点处理。
     """
