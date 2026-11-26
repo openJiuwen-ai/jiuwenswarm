@@ -1,5 +1,7 @@
 # Memory
 
+For SDK/HTTP access to the management page, see [Memory Portal](Memory-Portal.md).
+
 Memory gives JiuwenSwarm **persistent, cross-session recall**: important facts are written to files and retrieved with semantic search (plus optional BM25).
 
 **External Memory Providers**, supporting third-party memory services (OpenJiuwen LTM, Mem0, OpenViking) or custom plugins.

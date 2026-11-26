@@ -318,7 +318,7 @@ test('registry definition preserves module order and fails invalid registrations
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
-    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule,\s*appearanceModule,\s*systemPluginRecoveryModule/,
+    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*memoryModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule,\s*appearanceModule,\s*systemPluginRecoveryModule/,
   );
   assert.doesNotMatch(definition, /securityModule/);
   assert.doesNotMatch(definition, /extensionsModule/);
@@ -328,7 +328,6 @@ test('registry definition preserves module order and fails invalid registrations
     'src/features/settings/modules/security/index.ts',
     'src/assets/settings/navigation/security.svg',
     'src/features/settings/modules/memory/MemorySettings.tsx',
-    'src/features/settings/modules/memory/definition.ts',
     'src/features/settings/modules/memory/index.ts',
     'src/assets/settings/navigation/memory.svg',
   ]) {
@@ -1246,6 +1245,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'music_gen_protocol',
     'music_gen_provider',
     'progressive_tool_optimize',
+    'rea_enabled',
     'rsi_enabled',
     'symphony_evolution_enabled',
     'task_asr_enabled',
@@ -1260,6 +1260,12 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'trajectory_ui_diagnosis_enabled',
     'trajectory_ui_enabled',
   ]);
+
+  assert.deepEqual([...contractByCategory('memory')], ['memory_portal_enabled']);
+  assert.deepEqual(
+    findSettingDefinitionKeys(parseTsx('src/features/settings/modules/memory/definition.ts')),
+    ['memory_portal_enabled'],
+  );
 
   const channelCatalogFile = parseTsx('src/features/settings/modules/channels/channelCatalog.ts');
   assert.deepEqual(findVariableArrayStrings(channelCatalogFile, 'SETTINGS_CHANNEL_IDS'), [
