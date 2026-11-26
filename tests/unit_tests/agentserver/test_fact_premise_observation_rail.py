@@ -377,3 +377,47 @@ async def test_window_opened_logged(monkeypatch):
     ctx = _user_ctx("2028年世界杯冠军是谁？")
     await rail.on_user_message(ctx)
     assert any("window_opened" in c[1][0] for c in info_calls)
+
+
+@pytest.mark.asyncio
+async def test_relative_year_offset_window(monkeypatch):
+    """前年（-2，窗口外）等价于绝对年份 2024，都不告警。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("前年谁夺冠？")
+    await rail.on_user_message(ctx)
+    calls = _capture(monkeypatch)
+    await rail.after_model_call(_model_ctx("2024年是巴西队夺冠。", ctx.extra))
+    assert len(calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_relative_year_previous_relative_word_no_alert(monkeypatch):
+    """相对词「前年」换算成 2024（窗口外），与绝对年份一致，不告警。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("前年谁夺冠？")
+    await rail.on_user_message(ctx)
+    calls = _capture(monkeypatch)
+    await rail.after_model_call(_model_ctx("前年是巴西队夺冠。", ctx.extra))
+    assert len(calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_negated_then_affirmed_still_alerts(monkeypatch):
+    """否认后另给肯定结论（阿根廷未夺冠，冠军是巴西）应命中后半句肯定断言。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("2028年世界杯冠军是谁？")
+    await rail.on_user_message(ctx)
+    calls = _capture(monkeypatch)
+    await rail.after_model_call(_model_ctx("2028年阿根廷未夺冠，冠军是巴西队。", ctx.extra))
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_pure_negation_no_alert(monkeypatch):
+    """纯否认（没有世界杯）仍不告警。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("2028年有世界杯吗？")
+    await rail.on_user_message(ctx)
+    calls = _capture(monkeypatch)
+    await rail.after_model_call(_model_ctx("2028年没有世界杯。", ctx.extra))
+    assert len(calls) == 0

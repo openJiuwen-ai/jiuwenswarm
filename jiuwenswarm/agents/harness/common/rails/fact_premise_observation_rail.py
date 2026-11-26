@@ -42,6 +42,12 @@ _RELATIVE_RE = re.compile(
     r"今年|明年|去年|前年|后年|this year|last year|next year|the year before|the year after",
     re.IGNORECASE,
 )
+# 相对年份词 → 相对当前年的偏移量（输出侧按偏移换算绝对年份再过窗口，「前年」= -2 在窗口外）。
+_RELATIVE_YEAR_OFFSETS = {
+    "今年": 0, "this year": 0,
+    "明年": 1, "next year": 1, "后年": 2, "the year after": 2,
+    "去年": -1, "last year": -1, "前年": -2, "the year before": -2,
+}
 
 # 检索工具（观测「是否检索过」）：只收网络/事实检索。browser_agent 是 subagent_type 非工具名，
 # deepresearch 真名是 deepresearch_execute / deepresearch_stream（见 _is_proxied_retrieval）。
@@ -65,12 +71,17 @@ _ASSERTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 否认 / 无法确认 / 否定式断言（「不会举办」「没有举办」）是正确行为，不是虚假断言。
+# 纯拒绝（整个答案不告警）：无法确认 / 不存在 / cannot confirm 等。
 _REFUSAL_RE = re.compile(
     r"无法确认|无法核实|未能确认|查不到|没有查到|没有找到|不存在|没有这个|待核实|不确定"
-    r"|(?:尚未|从未|并未|不会|没有|未)(?:举办|举行|召开|开幕|闭幕|夺冠|当选|荣获)"
     r"|cannot confirm|can't confirm|unable to (?:confirm|verify)|could(?: not|n't) find"
-    r"|no such|does not exist|not exist"
+    r"|no such|does not exist|not exist",
+    re.IGNORECASE,
+)
+# 否定式断言（只排除被否定的那部分，不能遮掉同句的肯定断言）：
+# 「阿根廷未夺冠，冠军是巴西」应命中后半句「冠军是巴西」。
+_NEGATED_ASSERTION_RE = re.compile(
+    r"(?:尚未|从未|并未|不会|没有|未)(?:举办|夺冠|冠军|主办|承办|当选|荣获|开幕|闭幕|揭幕|揭晓)"
     r"|(?:will not|won't|did not|didn't|does not|doesn't|has not|hasn't|have not|haven't)"
     r"\s+(?:hold|held|host|hosted|win|won|elect|elected|take place|taken place|exist)"
     r"|(?:not yet|never)\s+(?:hold|held|host|hosted|win|won|elect|elected|taken place|exist)",
@@ -267,22 +278,28 @@ class FactPremiseObservationRail(DeepAgentRail):
                     return  # 已检索，不告警
                 answer = _answer_text(response)
                 if _REFUSAL_RE.search(answer):
-                    return
-                # 输出侧扫答案里的窗口内年份数字 / 届次词 / 相对年份词（this year、今年…）。
-                # 相对词答案也要判，否则「今年谁夺冠→今年夺冠的是巴西」这类零检索断言会漏。
-                # 过去年份（已定论事实）仍排除。
+                    return  # 纯拒绝（无法确认/不存在），整个答案不告警
+                # 去掉否定式断言，再检查肯定断言——避免「阿根廷未夺冠，冠军是巴西」
+                # 被「未夺冠」遮掉后半句的肯定结论。
+                stripped = _NEGATED_ASSERTION_RE.sub("", answer)
+                # 输出侧扫答案里的窗口内年份数字 / 届次词 / 相对年份词（按偏移量换算窗口）。
                 current_year = date.today().year
                 has_window_year = any(
                     int(y[:4]) >= current_year - _PAST_YEAR_SLACK
-                    for y in _YEAR_RE.findall(answer)
+                    for y in _YEAR_RE.findall(stripped)
+                )
+                has_window_relative = any(
+                    current_year + offset >= current_year - _PAST_YEAR_SLACK
+                    for word, offset in _RELATIVE_YEAR_OFFSETS.items()
+                    if word.lower() in stripped.lower()
                 )
                 if (
                     not has_window_year
-                    and not _EDITION_RE.search(answer)
-                    and not _RELATIVE_RE.search(answer)
+                    and not has_window_relative
+                    and not _EDITION_RE.search(stripped)
                 ):
                     return
-                if not _ASSERTION_RE.search(answer):
+                if not _ASSERTION_RE.search(stripped):
                     return
                 years = extra.get(_YEARS) or []
                 logger.warning(
