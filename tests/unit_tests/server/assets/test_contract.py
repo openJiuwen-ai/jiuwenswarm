@@ -9,6 +9,7 @@ import pytest
 from jiuwenswarm.server.runtime.assets.contract import (
     AssetKind,
     build_export_filename,
+    is_windows_reserved_stem,
     normalize_asset_kind,
     parse_export_params,
     parse_import_params,
@@ -113,6 +114,19 @@ def test_build_export_filename() -> None:
     # 保证不含特殊字符（一一对应），不再依赖有损映射。
     assert sanitize_export_stem('a:b*c?"d') == "a_b_c_d"
     assert sanitize_export_stem("lead..trail..") == "lead..trail"
+
+
+def test_is_windows_reserved_stem() -> None:
+    """保留设备名只看首个点号前片段，大小写不敏感。"""
+    assert is_windows_reserved_stem("NUL")
+    assert is_windows_reserved_stem("con")
+    assert is_windows_reserved_stem("Con.txt")  # 点号前片段命中，扩展名无关
+    assert is_windows_reserved_stem("com1")
+    assert is_windows_reserved_stem("LPT9")
+    assert not is_windows_reserved_stem("CONN")
+    assert not is_windows_reserved_stem("con-v1")
+    assert not is_windows_reserved_stem("专家")
+    assert not is_windows_reserved_stem("")
 
 
 def test_build_export_filename_rejects_degenerate() -> None:

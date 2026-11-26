@@ -38,6 +38,7 @@ from jiuwenswarm.common.safe_archive import (
 from jiuwenswarm.server.runtime.assets.contract import (
     AssetKind,
     build_export_filename,
+    is_windows_reserved_stem,
     parse_export_params,
     parse_import_params,
     parse_stage_local_params,
@@ -119,10 +120,15 @@ def export_asset(
     # 下载文件名主干优先取 UI 显示名（与界面列表一致），缺省回退 asset_id；
     # 显示名先经 sanitize 清洗、再按字节预算截断，产物不含路径分隔符与文件名
     # 特殊字符、不超文件名单段长度上限，必然通过 build_export_filename 内部的
-    # 安全校验。包内顶层目录仍为 asset_id（root_name 单独传入），不受下载
-    # 文件名影响。
+    # 安全校验。显示名命中 Windows 保留设备名（NUL、CON.txt 等）时视同不可
+    # 用：否则 Windows 部署到落盘才抛 OSError（非 AssetError，兜底成
+    # INTERNAL_ERROR）；asset_id 是既有包目录名，在当前文件系统必然可写。
+    # 包内顶层目录仍为 asset_id（root_name 单独传入），不受下载文件名影响。
+    display_stem = _truncate_export_stem(sanitize_export_stem(source.display_name))
     filename_stem = (
-        _truncate_export_stem(sanitize_export_stem(source.display_name)) or asset_id
+        asset_id
+        if not display_stem or is_windows_reserved_stem(display_stem)
+        else display_stem
     )
     filename = build_export_filename(filename_stem, source.version or version)
     # 每次导出落独立子目录：并发导出同一资产不互相覆盖；子目录名随机，

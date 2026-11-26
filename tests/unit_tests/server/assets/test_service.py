@@ -291,6 +291,14 @@ def test_export_filename_version_and_display_name_matrix(
     assert export('专家A:B*C?"<>|', None) == "专家A_B_C.zip"
     # 显示名清洗后为空：回退 asset_id，版本后缀照常
     assert export("***", "2.0") == "my-expert-2.0.zip"
+    # 显示名命中 Windows 保留设备名：回退 asset_id（否则 Windows 部署
+    # 落盘抛 OSError 收敛成 INTERNAL_ERROR）；带版本时同样保守回退
+    assert export("NUL", None) == "my-expert.zip"
+    assert export("con.txt", None) == "my-expert.zip"
+    assert export("nul", "1.0") == "my-expert-1.0.zip"
+    # 形似保留名但不命中（首个点号前片段不是设备名）：照常使用
+    assert export("CONN", None) == "CONN.zip"
+    assert export("con-v1", None) == "con-v1.zip"
 
 
 def test_export_filename_truncates_overlong_display_name(

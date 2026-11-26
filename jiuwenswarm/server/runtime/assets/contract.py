@@ -112,6 +112,25 @@ def sanitize_export_stem(value: str) -> str:
     return cleaned.strip(" ._")
 
 
+# Windows 保留设备名：文件名首个点号前的片段命中即非法（大小写不敏感、
+# 与其后扩展名无关），如 NUL.zip / CON.txt.zip；此类名字在 Windows 上落盘
+# 抛 OSError。保留段取经典集合（CON/PRN/AUX/NUL/COM0-9/LPT0-9）。
+_WINDOWS_RESERVED_STEM_RE = re.compile(
+    r"^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)", re.IGNORECASE
+)
+
+
+def is_windows_reserved_stem(stem: str) -> bool:
+    """判断文件名主干是否命中 Windows 保留设备名（跨平台保守口径）。
+
+    只看首个点号前的片段：``NUL`` / ``con.txt`` 命中；``CONN`` / ``con-v1``
+    不命中。命中时调用方应回退到其他主干而不是照常落盘——否则 Windows
+    部署上导出到写盘才失败（OSError 非 AssetError，被兜底成
+    INTERNAL_ERROR），非 Windows 部署则产出无法在 Windows 使用的文件名。
+    """
+    return bool(_WINDOWS_RESERVED_STEM_RE.match(stem))
+
+
 def build_export_filename(asset_id: str, version: str | None = None) -> str:
     """构造导出文件名 ``<id>[-<version>].zip``。
 
