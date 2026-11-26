@@ -110,6 +110,12 @@ async def _start_worker_runtime(
     measurements: telemetry.StartupTelemetry | None = None,
 ) -> WorkerRuntime:
     measurements = measurements or telemetry.StartupTelemetry()
+    # The first config read imports openjiuwen.symphony (tens of seconds on a
+    # cold cache). Start it before Runtime construction so it overlaps startup
+    # instead of blocking the event loop on the first request.
+    from jiuwenswarm.common.config import start_config_warm_up
+
+    start_config_warm_up()
     await _cold_load_logging_levels()
     await asyncio.to_thread(runtime_backend.preload_runtime_backend)
     await asyncio.sleep(0)
@@ -142,7 +148,10 @@ async def _start_worker_runtime(
     from jiuwenswarm.common.config import get_config_raw
     from jiuwenswarm.common.credentials import prewarm_from_config
 
-    await asyncio.to_thread(prewarm_from_config, get_config_raw())
+    def _prewarm_credentials() -> None:
+        prewarm_from_config(get_config_raw())
+
+    await asyncio.to_thread(_prewarm_credentials)
     await server.start(bind_transport=False)
     measurements.stage("runtime_started")
     telemetry.install_runtime_observability(server)

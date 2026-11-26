@@ -301,6 +301,36 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     return {}
 
 
+_CONFIG_WARMED = threading.Event()
+
+
+def warm_up_config() -> None:
+    """Import the Symphony layer and build the config once, off the request path.
+
+    The first ``get_config`` imports ``openjiuwen.symphony`` (tens of seconds on a
+    cold cache) and runs the Symphony validation. Startup calls this in a daemon
+    thread so the import overlaps service construction instead of blocking the
+    event loop when the first settings request arrives.
+    """
+    if _CONFIG_WARMED.is_set():
+        return
+    started = time.monotonic()
+    try:
+        from jiuwenswarm.common import symphony_config  # noqa: F401 - warm the heavy import
+
+        get_config()
+    except Exception:  # noqa: BLE001 - a broken config must not stop warm-up retries elsewhere
+        logger.warning("[Config] warm-up failed", exc_info=True)
+    finally:
+        _CONFIG_WARMED.set()
+        logger.info("[Config] warm-up finished in %.2fs", time.monotonic() - started)
+
+
+def start_config_warm_up() -> None:
+    """Start the one-shot config warm-up in a daemon thread."""
+    threading.Thread(target=warm_up_config, name="config-warmup", daemon=True).start()
+
+
 def get_config():
     """读取并解析 config.yaml（锁保护 + 跨进程降级重试）。"""
     config_base = _read_with_retry(get_config_file())
@@ -1696,7 +1726,8 @@ def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """为模型条目列表推断 is_default 字段。
 
     规则：
-    - 同 model_name 组内仅一个条目 → is_default = True
+    - 同 model_name 组内仅一个条目 → 未显式声明 is_default 时推断为 True；
+      显式 false 原样保留，调用方可以新增模型而不把它设成该组的默认（#6853）
     - 同 model_name 组内多个条目 → 第一个为 True，其余为 False
     - 已有 is_default 字段且为 True 的条目保留，同组内其余置 False
     """
@@ -1717,7 +1748,12 @@ def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     for name, indices in groups.items():
         if len(indices) == 1:
-            result[indices[0]]["is_default"] = True
+            single = result[indices[0]]
+            # Explicit false is a caller decision, not something to normalise away:
+            # model selection falls back to the first usable entry when a group has
+            # no default (select_default_model_entry).
+            if "is_default" not in single:
+                single["is_default"] = True
             continue
 
         has_explicit = False

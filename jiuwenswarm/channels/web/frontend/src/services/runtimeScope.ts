@@ -4,6 +4,8 @@ export interface RuntimeScope {
   userId?: string;
   groupId?: string;
   botId?: string;
+  /** Agent 配置模板 id：本次上传门禁只需要该字段 */
+  agentTemplateId?: string;
 }
 
 function pickString(value: unknown): string | undefined {
@@ -23,7 +25,7 @@ function pickQueryAlias(query: URLSearchParams, ...keys: string[]): string | und
 }
 
 /**
- * 从嵌入页 URL 解析 runtime 路由身份（group/bot/user）。
+ * 从嵌入页 URL 解析 runtime 路由身份（group/bot/user）与 Agent 模板 id。
  * 个人版可仅有 user_id；企业版由宿主注入完整三元组。
  */
 export function parseRuntimeScope(search: string): RuntimeScope {
@@ -32,6 +34,7 @@ export function parseRuntimeScope(search: string): RuntimeScope {
     userId: pickQueryAlias(query, 'user_id', 'X-User-Id'),
     groupId: pickQueryAlias(query, 'group_id', 'X-Group-Id'),
     botId: pickQueryAlias(query, 'bot_id', 'X-Bot-Id'),
+    agentTemplateId: pickQueryAlias(query, 'agent_template_id', 'X-Agent-Template-Id'),
   };
 }
 
@@ -43,6 +46,7 @@ export function setRuntimeScope(scope: RuntimeScope): void {
     userId: scope.userId?.trim() || undefined,
     groupId: scope.groupId?.trim() || undefined,
     botId: scope.botId?.trim() || undefined,
+    agentTemplateId: scope.agentTemplateId?.trim() || undefined,
   };
 }
 
@@ -55,6 +59,7 @@ export function getRuntimeScope(): RuntimeScope {
     userId: current.userId ?? runtimeScope.userId,
     groupId: current.groupId ?? runtimeScope.groupId,
     botId: current.botId ?? runtimeScope.botId,
+    agentTemplateId: current.agentTemplateId ?? runtimeScope.agentTemplateId,
   };
   // 个人版兼容：URL/内存均无 user_id 时回落 localStorage
   if (!runtimeScope.userId) {
@@ -81,6 +86,7 @@ export function buildRuntimeIdentityHeaders(
   const userId = scope.userId ?? pickString(params.user_id);
   const groupId = scope.groupId ?? pickString(params.group_id);
   const botId = scope.botId ?? pickString(params.bot_id);
+  const agentTemplateId = scope.agentTemplateId;
   const sessionId = pickString(params.session_id);
   const token = typeof localStorage === 'undefined'
     ? ''
@@ -88,6 +94,7 @@ export function buildRuntimeIdentityHeaders(
   if (userId && isByteString(userId)) headers['X-User-Id'] = userId;
   if (groupId && isByteString(groupId)) headers['X-Group-Id'] = groupId;
   if (botId && isByteString(botId)) headers['X-Bot-Id'] = botId;
+  if (agentTemplateId && isByteString(agentTemplateId)) headers['X-Agent-Template-Id'] = agentTemplateId;
   if (token && isByteString(token)) headers.Authorization = `Bearer ${token}`;
   if (typeof localStorage !== 'undefined' && userId) {
     try {
@@ -109,7 +116,7 @@ export function buildRuntimeIdentityHeaders(
   return headers;
 }
 
-/** 把当前 runtime scope 写入 WebSocket 握手 query（最小三元组下发）。 */
+/** 把当前 runtime scope 写入 WebSocket 握手 query（最小三元组 + Agent 模板 id）。 */
 export function appendRuntimeScopeQuery(
   query: URLSearchParams,
   scope: RuntimeScope = getRuntimeScope(),
@@ -117,5 +124,6 @@ export function appendRuntimeScopeQuery(
   if (scope.userId) query.set('user_id', scope.userId);
   if (scope.groupId) query.set('group_id', scope.groupId);
   if (scope.botId) query.set('bot_id', scope.botId);
+  if (scope.agentTemplateId) query.set('agent_template_id', scope.agentTemplateId);
   return query;
 }

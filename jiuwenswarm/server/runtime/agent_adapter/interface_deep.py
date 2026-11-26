@@ -2790,6 +2790,7 @@ class JiuWenSwarmDeepAdapter:
         # AgentSSAS: 安全态势感知 Rail
         self._ssas_rail: "AgentSSASSecurityRail | None" = None
         self._memory_rail: MemoryRail | None = None
+        self._memory_rail_lock = asyncio.Lock()
         self._external_memory_rail: Any = None
         self._external_memory_rail_registered: bool = False
         self._external_memory_session_finalized: bool = False
@@ -22100,7 +22101,10 @@ class JiuWenSwarmDeepAdapter:
         # Team 模式处理
         if is_team_mode(mode):
             from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
-            if uses_jiuwen_team_memory(get_config(), mode):
+            if (
+                not _is_attach_only_subscription(request.params)
+                and uses_jiuwen_team_memory(get_config(), mode)
+            ):
                 await self._handle_memory_rail_by_config(mode)
 
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
@@ -24698,12 +24702,19 @@ class JiuWenSwarmDeepAdapter:
             cls._subagent_progress_batches.clear()
 
     async def _handle_memory_rail_by_config(self, mode: str):
+        # Requests and config reloads share this adapter's Rail lifecycle.
+        async with self._memory_rail_lock:
+            await self._apply_memory_rail_config(mode)
+
+    async def _apply_memory_rail_config(self, mode: str):
+        """Reconcile memory while holding the adapter's lifecycle lock."""
         config = get_config()
+        rail = self._memory_rail
         from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
         if uses_jiuwen_team_memory(config, mode):
-            if self._memory_rail is not None:
-                await self._drain_jiuwen_memory_rail(self._memory_rail)
-                await self._instance.unregister_rail(self._memory_rail)
+            if rail is not None:
+                await self._drain_jiuwen_memory_rail(rail)
+                await self._instance.unregister_rail(rail)
                 self._memory_rail = None
             return
 
@@ -24725,12 +24736,12 @@ class JiuWenSwarmDeepAdapter:
                     )
                     new_embed_fp = f"{jiuwen_config_fp}|project={self._jiuwen_memory_project_key()}"
                 previous_embed_fp = self._memory_embedding_fingerprint
-                if self._memory_rail is not None:
+                if rail is not None:
                     cur_memory_type = is_proactive_memory(mode, config)
                     if self._is_proactive_memory != cur_memory_type:
                         # 当前记忆类型（主动/被动）和之前注册的不一致，重新注册
-                        await self._drain_jiuwen_memory_rail(self._memory_rail)
-                        await self._instance.unregister_rail(self._memory_rail)
+                        await self._drain_jiuwen_memory_rail(rail)
+                        await self._instance.unregister_rail(rail)
                         self._memory_rail = None
                     elif self._memory_embedding_fingerprint != new_embed_fp:
                         # 记忆类型没变，但记忆配置指纹变了（embedding 或 jiuwen 配置）：
@@ -24739,8 +24750,8 @@ class JiuWenSwarmDeepAdapter:
                         logger.info(
                             "[JiuWenSwarmDeepAdapter] memory config changed, rebuilding memory rail"
                         )
-                        await self._drain_jiuwen_memory_rail(self._memory_rail)
-                        await self._instance.unregister_rail(self._memory_rail)
+                        await self._drain_jiuwen_memory_rail(rail)
+                        await self._instance.unregister_rail(rail)
                         self._memory_rail = None
                     else:
                         # 已经注册，且记忆类型与配置指纹均未变，无需其他操作
@@ -24779,9 +24790,9 @@ class JiuWenSwarmDeepAdapter:
                             and not is_jiuwen_builtin_memory(config)
                         ):
                             self._schedule_memory_reindex()
-            elif not builtin_on and self._memory_rail is not None:
-                await self._drain_jiuwen_memory_rail(self._memory_rail)
-                await self._instance.unregister_rail(self._memory_rail)
+            elif not builtin_on and rail is not None:
+                await self._drain_jiuwen_memory_rail(rail)
+                await self._instance.unregister_rail(rail)
                 self._memory_rail = None
                 logger.info("[JiuWenSwarmDeepAdapter] MemoryRail unregistered for %s mode", mode)
 

@@ -7,7 +7,17 @@ from copy import deepcopy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import sys
+
+
+RESTORE_CONFIG_FLAG = "--desktop-restore-upgrade-config"
+
+
+def is_windows_installer_restore() -> bool:
+    """The frozen installer helper only needs the config transaction and its locks."""
+    return os.name == "nt" and getattr(sys, "frozen", False) and sys.argv[1:2] == [RESTORE_CONFIG_FLAG]
 
 
 def _decrypt_snapshot(encrypted: str) -> bytes:

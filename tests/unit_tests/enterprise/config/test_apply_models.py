@@ -1,6 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Enterprise model template → config.yaml apply (retry → anomaly rail)."""
+"""Enterprise model template → config apply.
+
+模型 ``retry_count`` 不再写入执行护栏，也不再强制打开模型异常检测。
+"""
 
 from __future__ import annotations
 
@@ -38,8 +41,8 @@ def _enterprise_with_default_model(*, retry_count: int | None = 3) -> EffectiveE
     )
 
 
-def test_sync_writes_retry_count_zero() -> None:
-    """retry_count=0 须写入（防 falsy 漏写），并强制开启已禁用的 rail。"""
+def test_model_retry_does_not_change_anomaly_rail() -> None:
+    """retry_count 只留在模型客户端兼容字段，不改护栏开关和重试次数。"""
     base = {
         "models": {},
         "execution_guard": {
@@ -55,14 +58,16 @@ def test_sync_writes_retry_count_zero() -> None:
     )
     assert applied is True
     rail = merged["execution_guard"]["model_anomaly_detection_rail"]
-    assert rail["enabled"] is True
-    assert rail["transient_max_retries"] == 0
+    assert rail["enabled"] is False
+    assert rail["transient_max_retries"] == 3
     assert rail["max_retries"] == 2
+    assert merged["models"]["default"]["model_client_config"]["max_retries"] == 0
+    assert "transient_max_retries" not in merged["models"]["default"]
     assert base["execution_guard"]["model_anomaly_detection_rail"]["transient_max_retries"] == 3
 
 
-def test_sync_skips_when_retry_count_absent() -> None:
-    """缺省 retry_count 不覆盖 yaml 已有 rail 值。"""
+def test_model_apply_keeps_yaml_rail_when_retry_count_absent() -> None:
+    """缺省 retry_count 时 yaml 护栏原样保留。"""
     base = {
         "models": {},
         "execution_guard": {
@@ -77,16 +82,17 @@ def test_sync_skips_when_retry_count_absent() -> None:
     )
     assert applied is True
     rail = merged["execution_guard"]["model_anomaly_detection_rail"]
+    assert rail["enabled"] is True
     assert rail["transient_max_retries"] == 7
+    assert "max_retries" not in merged["models"]["default"]["model_client_config"]
 
 
-def test_sync_creates_rail_when_execution_guard_missing() -> None:
-    """execution_guard 缺失时新建段、写入 retries，并 enabled=True。"""
+def test_model_apply_does_not_create_execution_guard() -> None:
+    """没有 yaml 护栏段时，模型套用也不新建。"""
     base: dict = {"models": {}}
     merged, applied = apply_enterprise_models_to_config(
         base, _enterprise_with_default_model(retry_count=3)
     )
     assert applied is True
-    rail = merged["execution_guard"]["model_anomaly_detection_rail"]
-    assert rail == {"enabled": True, "transient_max_retries": 3}
+    assert "execution_guard" not in merged
     assert "execution_guard" not in base

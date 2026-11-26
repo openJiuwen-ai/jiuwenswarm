@@ -64,10 +64,13 @@ export function useChannelForm<TValues extends FormValues>({
       const payload = await request<{ config?: unknown }>(getMethod);
       form.reset(readValues(payload?.config));
       setConfigured(isConfigured(payload?.config));
+      // A concurrent failing load may have written an error before this success lands; clear it so
+      // a stale error is not left behind once the latest outcome is a success.
+      setError(null);
       setLoaded(true);
       return true;
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : loadErrorMessage);
+      setError(loadError instanceof Error && loadError.message ? loadError.message : loadErrorMessage);
       return false;
     } finally {
       setLoading(false);
@@ -90,7 +93,7 @@ export function useChannelForm<TValues extends FormValues>({
       } catch (saveError) {
         const code = saveError && typeof saveError === 'object' && 'code' in saveError ? saveError.code : undefined;
         const localizedError = typeof code === 'string' ? saveErrorByCode?.[code] : undefined;
-        setError(localizedError ?? (saveError instanceof Error ? saveError.message : saveErrorMessage));
+        setError(localizedError ?? (saveError instanceof Error && saveError.message ? saveError.message : saveErrorMessage));
         return false;
       } finally {
         setSaving(false);
@@ -116,12 +119,6 @@ export function useChannelForm<TValues extends FormValues>({
     setError(null);
     setSuccess(null);
   }, [formState.hasUnsavedChanges]);
-
-  useEffect(() => {
-    if (!error) return;
-    const timer = window.setTimeout(() => setError(null), 2000);
-    return () => window.clearTimeout(timer);
-  }, [error]);
 
   return {
     form,

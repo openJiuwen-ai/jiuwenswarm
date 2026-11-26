@@ -185,6 +185,7 @@
     "serverResourceHint": "Whole-machine CPU and memory usage on the server running the backend, including every process on that machine; it is not WorkSwarm's own usage. A local connection usually targets this computer, but proxies and port forwarding may target a remote server; containers may report host statistics. Updates every 3 seconds. Warns after 3 samples at or above 85% CPU or memory; clears when both are below 75%.",
     "highResourceUsage": "High system usage. Consider stopping unused apps or other tasks.",
     "title": "Apps",
+    "subtitle": "Manage and monitor Swarm apps",
     "myApps": "My Apps",
     "market": "App Plaza",
     "marketLoadFailed": "Failed to load the App Plaza",
@@ -202,6 +203,7 @@
       "loadFailed": "Failed to load AI roles",
       "agent": "Single-role session",
       "team": "Team session",
+      "teamBadge": "Team",
       "leader": "Leader"
     },
     "backToMyApps": "Back to My Apps",
@@ -2842,6 +2844,26 @@
     "stagePending": "Pending",
     "stageMessage": "Message",
     "inputPlaceholder": "Enter optimization goal...",
+    "status": {
+      "success": "Completed",
+      "running": "In progress",
+      "failed": "Failed",
+      "timeout": "Timed out",
+      "skipped": "Skipped",
+      "rejected": "Rejected",
+      "waiting": "Awaiting confirmation",
+      "pending": "Not started"
+    },
+    "extension": {
+      "implement": "Implement extension",
+      "verify": "Verify extension"
+    },
+    "summary": {
+      "gapItem": "Key gap",
+      "gapEmpty": "No gap summary yet",
+      "designItem": "Design proposal",
+      "designEmpty": "No design summary yet"
+    },
     "stages": {
       "assess": "Assess",
       "plan": "Plan",
@@ -3060,6 +3082,7 @@
   },
   "channels": {
     "fetchFailed": "Fetch failed",
+    "configLoadFailed": "Failed to load configuration",
     "retry": "Retry",
     "hideValue": "Hide value",
     "showValue": "Show value",
@@ -3850,6 +3873,19 @@
       "collectionStoppingHint": "Collection is stopping. Wait until it has stopped and try again.",
       "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
       "stateFailed": "Failed",
+      "failureStage": {
+        "scan": "Failed at: directory scan",
+        "fetch": "Failed at: data fetching",
+        "pipeline": "Failed at: content processing (chunking and embedding)",
+        "publish": "Failed at: index writing",
+        "config": "Failed at: configuration validation",
+        "state": "Failed at: state check",
+        "timeout": "Failed at: execution timeout",
+        "unknown": "Failed at: unknown stage"
+      },
+      "failureCode": "Error code {{code}}",
+      "failureCounts": "Scanned {{total}} · succeeded {{completed}} · failed {{failed}}",
+      "failureOmitted": "{{count}} more failed items are not shown; check the run log for details",
       "stateWaiting": "Waiting",
       "stateStopped": "Stopped",
       "stateStopping": "Stopping",
@@ -4694,6 +4730,8 @@
       "skillNetInstallFailedHint": "SkillNet install failed. Check the skill URL or dependencies.",
       "importFailed": "Import failed",
       "importFailedHint": "Import failed. Check the path or permissions.",
+      "localSkillUploadDisabled": "Local Skill upload is not enabled for this Agent template.",
+      "localSkillUploadUnavailable": "Could not verify the current Agent configuration. Please try again later.",
       "knowledgeSkillExists": "Skill \"{{name}}\" already exists. Use another name or uninstall it first.",
       "knowledgeSkillExistsGeneric": "A skill with this name already exists. Use another name or uninstall it first.",
       "uploadFailed": "File upload failed. Please try again.",
@@ -5376,6 +5414,12 @@
       "acceptAll": "Accept all",
       "submit": "Submit",
       "entryCount": "{{count}} entries total"
+    },
+    "activateConfirm": {
+      "header": "Extension Activation",
+      "question": "Activate extension **{{extensionName}}**?",
+      "accept": "Activate",
+      "reject": "Reject"
     }
   },
   "share": {
@@ -5840,7 +5884,8 @@
         "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
         "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again.",
         "archiveSessionFinalizing": "This conversation is still finishing up. Try archiving again shortly.",
-        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly."
+        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly.",
+        "pinCronNoIdentity": "This scheduled-task session has no job identity; pinning it would hide it from the sidebar, so the pin was cancelled"
       },
       "cancel": "Cancel",
       "confirm": "Confirm"
