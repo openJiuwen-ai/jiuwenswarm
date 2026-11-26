@@ -40,10 +40,10 @@ def login_model(monkeypatch):
     seen: list = []
     monkeypatch.setattr(
         "agent_gateway.auth.model_catalog.get_models",
-        lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
+        lambda session_id=None, allow_refresh=True, service=None: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
 
-    def _live(session_id=None, allow_refresh=True):
+    def _live(session_id=None, allow_refresh=True, *, service=None):
         seen.append((session_id, allow_refresh))
         return SimpleNamespace(user_id=f"openid-{session_id}", credential=SimpleNamespace(id_token=f"id-{session_id}"))
 
@@ -137,7 +137,7 @@ def test_no_injection_without_model_name(apig_env, login_model):
 def test_expired_session_injects_nothing_instead_of_raising(apig_env, monkeypatch, login_model):
     from agent_gateway.auth.service import ModelAuthRequired
 
-    def _expired(session_id=None, allow_refresh=True):
+    def _expired(session_id=None, allow_refresh=True, *, service=None):
         raise ModelAuthRequired("登录已过期", "session_expired")
 
     monkeypatch.setattr("agent_gateway.auth.service.live_session", _expired)
@@ -149,7 +149,7 @@ def test_expired_session_injects_nothing_instead_of_raising(apig_env, monkeypatc
 def test_catalog_lookup_never_triggers_a_network_refresh(apig_env, monkeypatch):
     seen: dict = {}
 
-    def _get_models(session_id=None, allow_refresh=True):
+    def _get_models(session_id=None, allow_refresh=True, *, service=None):
         seen["allow_refresh"] = allow_refresh
         return []
 
@@ -172,7 +172,7 @@ def test_request_without_session_gets_nothing_even_if_someone_is_logged_in(apig_
     monkeypatch.setattr(service_mod, "_service", service_mod.AuthService(store=store))
     monkeypatch.setattr(
         "agent_gateway.auth.model_catalog.get_models",
-        lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
+        lambda session_id=None, allow_refresh=True, service=None: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
     session = store.create(LoginOutcome(
         credential=Credential(id_token="id-owner", refresh_token="rt", expires_at=time.time() + 3600),
@@ -201,7 +201,7 @@ def test_logging_in_again_keeps_the_credential_ref(apig_env, monkeypatch, tmp_pa
     monkeypatch.setattr(service_mod, "_service", service_mod.AuthService(store=store))
     monkeypatch.setattr(
         "agent_gateway.auth.model_catalog.get_models",
-        lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
+        lambda session_id=None, allow_refresh=True, service=None: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
 
     def _login(token):
@@ -235,7 +235,7 @@ def test_first_message_after_idle_gets_a_refreshed_token(apig_env, monkeypatch, 
     monkeypatch.setattr(service_mod, "_service", auth)
     monkeypatch.setattr(
         "agent_gateway.auth.model_catalog.get_models",
-        lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
+        lambda session_id=None, allow_refresh=True, service=None: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
     refreshed: list = []
 
