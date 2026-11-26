@@ -1074,6 +1074,12 @@ def _migrate_absorb(old: Path, new: Path) -> None:
         and not new.is_symlink()
     )
     if both_dirs:
+        if old.resolve() == new.resolve():
+            # 自吸收守卫（与 _absorb_tree 对齐）：老树内含指回 new 的兼容链
+            # （Windows junction 的 is_symlink 恒为 False）时，递归归并会沿
+            # 链把 new 里"同内容"的正本当重复删除（部分迁移中断 + 兼容链
+            # 已建的场景可达）。
+            return
         for entry in sorted(old.iterdir()):
             _migrate_absorb(entry, new / entry.name)
         try:
@@ -1091,7 +1097,8 @@ def _move_if_absent(old: Path, new: Path) -> None:
 
     - 老位置已是兼容软链（前次迁移产物）→ 静默跳过；
     - 老位置解析后就是目标本身（Windows junction 兼容链，``is_symlink``
-      恒为 False）→ 静默跳过，避免沿链把正本当"重复"删除；
+      恒为 False）→ 静默跳过，避免沿链把正本当"重复"删除（递归归并分支
+      的沿链防护见 ``_migrate_absorb``）；
     - 目标不存在 → 整体剪切（rename）；
     - 目标已存在（骨架先行 / 并发部分迁移 / 上次迁移中断）→ 递归归并：
       正本不覆盖，同名异内容源改名 ``.migrated`` 备份，源侧空树剪除——

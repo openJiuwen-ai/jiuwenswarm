@@ -149,6 +149,51 @@ def test_junction_compat_links_do_not_absorb_bucket(data_root: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows junction 兼容链")
+def test_migrate_absorb_guard_stops_junction_recursion_in_partial_migration(
+    data_root: Path,
+) -> None:
+    """递归归并分支（_migrate_absorb）沿老树内兼容链归并时不自吸收。
+
+    部分迁移中断场景（第 2 轮检视发现）：``root/agent`` 仍是真目录（部分
+    数据滞留）但树内 ``.logs`` 已是前次运行留下的兼容链（junction →
+    ``logs/agent``），且 ``profile/agent`` 骨架已先行建立（``.logs`` 兼容链
+    已就位）——第 2 步 ``_move(root/agent, profile/agent)`` 进入递归归并，
+    递归到 ``.logs``（junction：``is_symlink()`` 恒 False、``is_dir()`` 为
+    True）且目标同名位置已存在时沿链归并，把 ``logs/agent`` 桶内正本当
+    "内容一致的重复"删除。``_absorb_tree`` 已有守卫，``_migrate_absorb``
+    目录分支须对齐（old.resolve() == new.resolve() 即跳过）。
+    """
+    logs = data_root / "logs"
+    agent_bucket = logs / "agent"
+    agent_bucket.mkdir(parents=True)
+    (agent_bucket / "ws-dev.log").write_text("bucket log\n", encoding="utf-8")
+
+    # 部分迁移中断：root/agent 仍是真目录（滞留 sessions 数据），
+    # 树内 .logs 已是前次运行留下的兼容链（junction → logs/agent）
+    stray_agent = data_root / "agent"
+    stray_agent.mkdir()
+    (stray_agent / "sessions").mkdir()
+    (stray_agent / "sessions" / "h.json").write_text("[]", encoding="utf-8")
+    assert _make_junction(stray_agent / ".logs", agent_bucket)
+
+    # 骨架先行：profile/agent 已就位，且 .logs 兼容链已建（前次运行产物）
+    profile_agent = data_root / "profile" / "agent"
+    profile_agent.mkdir(parents=True)
+    assert _make_junction(profile_agent / ".logs", agent_bucket)
+    (profile_agent / "sessions").mkdir()
+    (profile_agent / "sessions" / "sk.json").write_text("{}", encoding="utf-8")
+
+    _run_migration()
+
+    assert (agent_bucket / "ws-dev.log").is_file(), (
+        "递归归并沿老树内兼容链把 logs/agent 桶内正本当重复删除"
+    )
+    # 滞留数据仍正常合入骨架（守卫不阻断正常归并）
+    assert (profile_agent / "sessions" / "h.json").is_file(), "滞留数据未合入骨架"
+    assert (profile_agent / "sessions" / "sk.json").is_file(), "骨架数据被误动"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction 兼容链")
 def test_junction_compat_links_do_not_absorb_business_data(data_root: Path) -> None:
     """业务数据/运行态/process_cli 的 junction 兼容链同样不被自吸收。
 
