@@ -3100,9 +3100,17 @@ class JiuWenSwarm:
                             et = str(data.payload.get("event_type"))
                             if et in ("chat.delta", "chat.final"):
                                 # 恢复产出清除错误收执（team_helpers 语义边界：错误通知后
-                                # 恢复产出的 chat.delta/chat.final 才是错误的语义边界）——
-                                # 重试成功/续跑产出覆盖此前错误，终帧回归成功回执
-                                stream_error_payload = None
+                                # 重试成功/续跑产出覆盖此前错误，终帧回归成功回执）。
+                                # 清除只认「content 非空的 chat.final」：恢复产出必有
+                                # 正文；失败轮次自己的收尾帧（终态错误之后紧跟的空
+                                # content chat.final，TC-CHAT_SEND-STREAM-013 实证）
+                                # 不是恢复——清除会把 sticky 终态错误抹掉，失败终态
+                                # 回落 {"is_complete": True}（假完成回归）。
+                                if (
+                                    et == "chat.final"
+                                    and str(data.payload.get("content") or "").strip()
+                                ):
+                                    stream_error_payload = None
                             should_record = et.startswith("chat.")
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
@@ -3322,8 +3330,13 @@ class JiuWenSwarm:
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
                         et = str(data.get("event_type"))
                         if et in ("chat.delta", "chat.final"):
-                            # 与 chunk 分支同规：恢复产出清除错误收执
-                            stream_error_payload = None
+                            # 与 chunk 分支同规：恢复产出清除错误收执——只认 content
+                            # 非空的 chat.final（失败轮次空尾帧不清 sticky 错误）。
+                            if (
+                                et == "chat.final"
+                                and str(data.get("content") or "").strip()
+                            ):
+                                stream_error_payload = None
                         should_record = et.startswith("chat.")
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
