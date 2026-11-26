@@ -132,6 +132,73 @@ def _fake_list_records_with_refs(template_ref: dict):
 
 
 @pytest.mark.asyncio
+async def test_load_degrades_when_execution_guard_query_fails(monkeypatch) -> None:
+    """execution_guard_template 表未建时跳过该槽位，其余槽位仍加载。"""
+    _stub_db(monkeypatch)
+
+    async def _guard_query_boom(slot: str, template_ids: list[str]):
+        if slot == "execution_guard":
+            raise RuntimeError("no such table: execution_guard_template")
+        if slot == "mcp":
+            return [{"template_id": "m1", "data": {}}]
+        return []
+
+    monkeypatch.setattr(loader.db_queries, "fetch_templates_by_slot", _guard_query_boom)
+    monkeypatch.setattr(
+        loader.db_queries,
+        "list_records",
+        _fake_list_records_with_refs({"execution_guard": ["g1"], "mcp": ["m1"]}),
+    )
+
+    result = await load_effective_enterprise_config(
+        _request(), DEFAULT_AGENT_LOAD_SLOTS
+    )
+
+    assert result is not None
+    assert result.execution_guard is None
+    assert result.mcp == [{"template_id": "m1", "data": {}}]
+
+
+@pytest.mark.asyncio
+async def test_load_execution_guard_slot_returns_template_row(monkeypatch) -> None:
+    """execution_guard 裸字符串槽位进入加载链路，实体落到 result.execution_guard。
+
+    降级用例在槽位被 normalize 或 load_slots 丢掉时也会得到 None。
+    这里要求查询确实以该槽位被调用，并带回模板行。
+    """
+    _stub_db(monkeypatch)
+    guard_row = {
+        "template_id": "g1",
+        "enabled": True,
+        "body": {
+            "model_anomaly_detection_rail": {"transient_max_retries": 9},
+        },
+    }
+    calls: list[tuple[str, list[str]]] = []
+
+    async def _fetch(slot: str, template_ids: list[str]):
+        calls.append((slot, list(template_ids)))
+        if slot == "execution_guard":
+            return [guard_row]
+        return []
+
+    monkeypatch.setattr(loader.db_queries, "fetch_templates_by_slot", _fetch)
+    monkeypatch.setattr(
+        loader.db_queries,
+        "list_records",
+        _fake_list_records_with_refs({"execution_guard": ["g1"]}),
+    )
+
+    result = await load_effective_enterprise_config(
+        _request(), DEFAULT_AGENT_LOAD_SLOTS
+    )
+
+    assert result is not None
+    assert ("execution_guard", ["g1"]) in calls
+    assert result.execution_guard == [guard_row]
+
+
+@pytest.mark.asyncio
 async def test_load_with_mixed_enum_and_str_slots(monkeypatch) -> None:
     """混合槽位集合（枚举 + react 裸字符串）能完整走通加载流程。
 
@@ -150,6 +217,7 @@ async def test_load_with_mixed_enum_and_str_slots(monkeypatch) -> None:
     assert result.resource_id == "b1"
     # load_slots 已收敛为字符串集合
     assert "react" in result.debug["load_slots"]
+    assert "execution_guard" in result.debug["load_slots"]
 
 
 @pytest.mark.asyncio

@@ -54,6 +54,7 @@ generated: true
 | [jiuwenswarm/common/e2a](#module-jiuwenswarm-common-e2a) |
 | [jiuwenswarm/common/schema](#module-jiuwenswarm-common-schema) |
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
+| [jiuwenswarm/enterprise](#module-jiuwenswarm-enterprise) |
 | [jiuwenswarm/enterprise/team](#module-jiuwenswarm-enterprise-team) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
@@ -532,6 +533,14 @@ generated: true
 |---|---|---|---|---|
 | [B_20261120_1958_debug-worker-shutdown-budget](bugfix/jiuwenswarm/B_20261120_1958_debug-worker-shutdown-budget.md) | B | Debug 重启提前终止正常清理中的 Worker | alan_cheng | 无独立 D：用户确认经真实子进程对照验证的局部修复；保留已有生命周期和身份保护，无独立设计文档。 |
 | [S_01_debug-shutdown](specs/jiuwenswarm/debug_launcher/S_01_debug-shutdown.md) | S | Debug 服务最终停止的预算与旧 Worker 选择 | alan_cheng | — |
+
+<a id="module-jiuwenswarm-enterprise"></a>
+
+## jiuwenswarm/enterprise
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261126_0957_enterprise-execution-guard](features/F_20261126_0957_enterprise-execution-guard.md) | F | 企业级执行护栏改为独立模板槽位 | hanjiahui | 无独立 D：2026-11-25 已确认的企业执行护栏配置方案。本仓没有对应 D 编号。 |
 
 <a id="module-jiuwenswarm-enterprise-team"></a>
 
