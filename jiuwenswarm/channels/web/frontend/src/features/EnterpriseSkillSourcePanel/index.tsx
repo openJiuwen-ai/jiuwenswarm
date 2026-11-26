@@ -5,7 +5,7 @@
  * skills.update 通用接口，仅 UI 与展示字段更贴合企业形态：补齐所属空间、作者、
  * 评分、下载量、更新时间、标签，以及分页。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
 import { getSkillAvatar } from '../../utils/skillAvatar';
@@ -160,6 +160,8 @@ export function EnterpriseSkillSourcePanel({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(PAGE_SIZE_DEFAULT);
   const [loadState, setLoadState] = useState<LoadState>('idle');
+  // Latest-wins sequence: responses from superseded searches must not write state.
+  const searchSeqRef = useRef(0);
   const { toast, showToast, clearToast } = useToast();
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [updateStatuses, setUpdateStatuses] = useState<Map<string, UpdateStatus>>(new Map());
@@ -259,6 +261,7 @@ export function EnterpriseSkillSourcePanel({
   const runSearch = useCallback(
     async (targetPage: number, options?: { preferCache?: boolean; pageSize?: number }) => {
       if (!sourceId) return;
+      const seq = ++searchSeqRef.current;
       const q = query.trim();
       const effectivePageSize = options?.pageSize ?? pageSize;
       const cacheKey = searchCacheKey(sessionId, sourceId, q, targetPage, effectivePageSize);
@@ -289,6 +292,7 @@ export function EnterpriseSkillSourcePanel({
             page_size: effectivePageSize,
           }),
         );
+        if (seq !== searchSeqRef.current) return;
         if (!data.success) throw new Error(data.error_message || t('skills.source.errors.searchFailed'));
         const items = data.items || [];
         const newTotal = data.total ?? items.length;
@@ -298,6 +302,7 @@ export function EnterpriseSkillSourcePanel({
         setPage(targetPage);
         setLoadState('success');
       } catch (error) {
+        if (seq !== searchSeqRef.current) return;
         const cached = searchCache.get(cacheKey);
         if (cached) {
           setResults(cached.items);
@@ -618,7 +623,7 @@ export function EnterpriseSkillSourcePanel({
               <input
                 value={query}
                 onChange={e => setQuery(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && void runSearch(1)}
+                onKeyDown={e => e.key === 'Enter' && loadState !== 'loading' && void runSearch(1)}
                 placeholder={t('skills.source.searchPlaceholder')}
                 className="flex-1 min-w-0 px-3 py-1.5 rounded-lg text-sm bg-secondary border border-border text-text placeholder:text-text-muted"
               />
