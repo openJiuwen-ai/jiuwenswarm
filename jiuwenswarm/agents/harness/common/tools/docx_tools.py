@@ -208,13 +208,13 @@ def _read_docx_sync(req: ReadDocxRequest) -> str:
             f"({paragraph_count} paragraphs, {table_count} tables). "
             f"Call read_docx with `start_element={last_processed_idx + 1}` to continue reading.]"
         )
-    elif not output_body and req.start_element > total_elements:
+    elif not output_body and total_elements and req.start_element > total_elements:
         output_body = (
             f"[start_element={req.start_element} is past the end of the document, which has "
             f"{total_elements} body elements ({paragraph_count} paragraphs, {table_count} tables). "
             f"Call read_docx with `start_element<={total_elements}` to read it again.]"
         )
-    elif not output_body and (paragraph_count or table_count):
+    elif not output_body and req.start_element > 1 and (paragraph_count or table_count):
         output_body = (
             f"[No readable text or tables at or after element {req.start_element}. "
             f"The document is not empty ({paragraph_count} paragraphs, {table_count} tables, "
