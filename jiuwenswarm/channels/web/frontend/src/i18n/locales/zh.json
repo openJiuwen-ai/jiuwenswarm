@@ -2845,6 +2845,26 @@
     "stagePending": "等待中",
     "stageMessage": "消息",
     "inputPlaceholder": "输入优化目标...",
+    "status": {
+      "success": "已完成",
+      "running": "进行中",
+      "failed": "失败",
+      "timeout": "超时",
+      "skipped": "已跳过",
+      "rejected": "已拒绝",
+      "waiting": "等待确认",
+      "pending": "未开始"
+    },
+    "extension": {
+      "implement": "实现扩展",
+      "verify": "验证扩展"
+    },
+    "summary": {
+      "gapItem": "关键 gap",
+      "gapEmpty": "暂无 gap 摘要",
+      "designItem": "设计方案",
+      "designEmpty": "暂无设计摘要"
+    },
     "stages": {
       "assess": "评估当前状态",
       "plan": "制定优化计划",
@@ -5392,6 +5412,12 @@
       "acceptAll": "全部接收",
       "submit": "确认提交",
       "entryCount": "共 {{count}} 条演进经验"
+    },
+    "activateConfirm": {
+      "header": "扩展激活确认",
+      "question": "是否激活扩展 **{{extensionName}}**？",
+      "accept": "激活",
+      "reject": "拒绝"
     }
   },
   "share": {
