@@ -182,6 +182,40 @@ def test_registration_rolls_back_an_incomplete_publication(tmp_path, monkeypatch
     assert snapshot_path.is_file()
 
 
+def test_registration_recovers_a_matching_orphan_snapshot(tmp_path):
+    report = tmp_path / "report.md"
+    report.write_bytes(b"Research report\n")
+    args = {"workspace_root": tmp_path, "report_path": report.name}
+    document_rewrite.register_main_agent_report(**args)
+    snapshot_path = report.with_suffix(".final-result.json")
+    snapshot = snapshot_path.read_bytes()
+    provenance_path = report.with_suffix(".provenance.json")
+    # Model an interruption after the snapshot was published.
+    provenance_path.unlink()
+
+    registered = document_rewrite.register_main_agent_report(**args)
+
+    assert registered["report_path"] == str(report)
+    provenance = json.loads(provenance_path.read_bytes())
+    assert provenance["revision_id"] == registered["revision_id"]
+    assert provenance["final_result_sha256"] == hashlib.sha256(snapshot).hexdigest()
+    assert snapshot_path.read_bytes() == snapshot
+
+
+def test_registration_preserves_a_conflicting_orphan_snapshot(tmp_path):
+    report = tmp_path / "report.md"
+    report.write_bytes(b"Research report\n")
+    snapshot_path = report.with_suffix(".final-result.json")
+    snapshot_path.write_bytes(b"unrelated snapshot")
+
+    with pytest.raises(document_rewrite.RewriteError) as exc:
+        document_rewrite.register_main_agent_report(workspace_root=tmp_path, report_path=report.name)
+
+    assert exc.value.code == "REVISION_CONFLICT"
+    assert snapshot_path.read_bytes() == b"unrelated snapshot"
+    assert not report.with_suffix(".provenance.json").exists()
+
+
 _INVOKE_LIFECYCLE_EVENTS = (
     ToolCallEvents.TOOL_INVOKE_INPUT,
     ToolCallEvents.TOOL_CALL_STARTED,

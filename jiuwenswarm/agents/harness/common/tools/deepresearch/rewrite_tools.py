@@ -221,12 +221,8 @@ def _error(exc: RewriteError) -> str:
 async def deepresearch_register_report(report_path: str) -> str:
     route = _deepresearch_route_ctx.get() or {}
     output_dir = route.get("output_dir")
-    if (
-        not route.get("request_id")
-        or not route.get("session_id")
-        or not isinstance(output_dir, str)
-        or not output_dir
-    ):
+    has_active_request = bool(route.get("request_id") and route.get("session_id"))
+    if not has_active_request or not isinstance(output_dir, str) or not output_dir:
         return _error(RewriteError("BAD_REQUEST", "report registration requires an active workspace request"))
     try:
         result = register_main_agent_report(workspace_root=Path(output_dir), report_path=report_path)
