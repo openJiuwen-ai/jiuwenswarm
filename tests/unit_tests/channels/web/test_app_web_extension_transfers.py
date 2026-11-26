@@ -12,6 +12,8 @@ from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
+
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
 from jiuwenswarm.common import system_plugin_recovery
 from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
@@ -142,14 +144,15 @@ def test_remote_clients_can_import_and_export(tmp_path):
     assert seen == [{"method": "PUT", "path": UPLOAD_PATH, "body": body}, {"method": "GET", "path": DOWNLOAD_PATH}]
 
 
-def test_remote_http_can_open_and_preview_recovery_without_configuring_credentials(tmp_path, monkeypatch):
+@pytest.mark.parametrize("public_host", ["203.0.113.10:5173", "app.example:5173"])
+def test_remote_http_can_restore_without_configuring_credentials(tmp_path, monkeypatch, public_host):
     monkeypatch.delenv("JIUWENSWARM_REMOTE_RECOVERY_PASSWORD", raising=False)
+    monkeypatch.delenv(system_plugin_recovery._RESTART_SIGNAL_PATH_ENV, raising=False)
     recovery = SystemPluginRecovery(tmp_path / "plugins", tmp_path / "recovery")
     monkeypatch.setattr(system_plugin_recovery, "SystemPluginRecovery", lambda: recovery)
     record_id = recovery.begin_session("test-session")["id"]
     token = "test-private-sidecar-token"
     mount = "/system-plugin-recovery"
-    public_host = "203.0.113.10:5173"
 
     with _recovery_sidecar(recovery, token) as sidecar_port:
         recovery.publish_endpoint(f"http://127.0.0.1:{sidecar_port}{mount}?token={token}", "test-session")
@@ -182,15 +185,23 @@ def test_remote_http_can_open_and_preview_recovery_without_configuring_credentia
             assert response.status == 405
             response.read()
 
-            connection.request("POST", f"{mount}/api/restore", headers={
-                "Host": public_host, "Origin": f"http://{public_host}", "Content-Type": "application/json",
-            })
+            connection.request(
+                "POST", f"{mount}/api/restore",
+                body=json.dumps({"record_id": record_id}),
+                headers={
+                    "Host": public_host, "Origin": f"http://{public_host}",
+                    "Content-Type": "application/json",
+                },
+            )
             response = connection.getresponse()
-            assert response.status == 403
-            response.read()
+            payload = response.read()
+            assert response.status == 200
+            assert json.loads(payload)["restart_requested"] is True
+            assert token.encode() not in payload
 
-    assert [record["id"] for record in recovery.records()] == [record_id]
-    assert not recovery.restart_path.exists()
+    records = recovery.records()
+    assert [record["action"] for record in records] == ["restore", "startup"]
+    assert recovery.restart_path.exists()
 
 
 def test_standalone_recovery_restores_and_requests_a_restart_without_spa_or_gateway(tmp_path, monkeypatch):
