@@ -15,6 +15,8 @@ generated: true
 | 模块 |
 |---|
 | [agent-core/openjiuwen/agent_teams](#module-agent-core-openjiuwen-agent_teams) |
+| [agent-gateway/channel_manager/web](#module-agent-gateway-channel_manager-web) |
+| [agent-gateway/extensions/runtime_management_extension](#module-agent-gateway-extensions-runtime_management_extension) |
 | [agent_gateway/channel_manager/im_platforms/xiaoyi](#module-agent_gateway-channel_manager-im_platforms-xiaoyi) |
 | [agent_gateway/message_handler](#module-agent_gateway-message_handler) |
 | [agent_teams](#module-agent_teams) |
@@ -57,6 +59,7 @@ generated: true
 | [jiuwenswarm/enterprise](#module-jiuwenswarm-enterprise) |
 | [jiuwenswarm/enterprise/team](#module-jiuwenswarm-enterprise-team) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
+| [jiuwenswarm/extensions/runtime_management_extension](#module-jiuwenswarm-extensions-runtime_management_extension) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
 | [jiuwenswarm/extensions/video_duplex](#module-jiuwenswarm-extensions-video_duplex) |
 | [jiuwenswarm/extensions_v2](#module-jiuwenswarm-extensions_v2) |
@@ -100,6 +103,22 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | D | SwarmChat 群成员自动判断是否回复设计方案 | weichenhao | — |
+
+<a id="module-agent-gateway-channel_manager-web"></a>
+
+## agent-gateway/channel_manager/web
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
+
+<a id="module-agent-gateway-extensions-runtime_management_extension"></a>
+
+## agent-gateway/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-agent_gateway-channel_manager-im_platforms-xiaoyi"></a>
 
@@ -489,9 +508,10 @@ generated: true
 | [B_20261112_2025_permission-profile-refresh](bugfix/jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
 | [B_20261119_1416_builtin-extension-discovery](bugfix/jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 | [B_20261120_1735_upsert-empty-temperature](bugfix/jiuwenswarm/common/B_20261120_1735_upsert-empty-temperature.md) | B | models.upsert 将空串 temperature 原样落库，与文档约定的空串转 null 不符 | openjiuwen_ai | 无独立 D：仅统一 upsert 与 replace_all 对空串 temperature 的归一化口径，不改模型配置结构与合并语义；无独立设计。 |
+| [B_20261120_2339_singleton-model-is-default](bugfix/jiuwenswarm/common/B_20261120_2339_singleton-model-is-default.md) | B | models.upsert 对单条 model_name 强制 is_default=true，请求 false 被静默改写 | openjiuwen_ai | 无独立 D：仅调整 is_default 的读取推断规则，不改变写入契约、模型分组结构与选择兜底；无独立设计。 |
 | [B_20261121_0108_pypi-update-version-baseline](bugfix/jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
 | [B_20261124_2201_rea-npx-readiness](bugfix/jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
-| [B_20261120_2339_singleton-model-is-default](bugfix/jiuwenswarm/common/B_20261120_2339_singleton-model-is-default.md) | B | models.upsert 对单条 model_name 强制 is_default=true，请求 false 被静默改写 | openjiuwen_ai | 无独立 D：仅调整 is_default 的读取推断规则，不改变写入契约、模型分组结构与选择兜底；无独立设计。 |
+| [B_20261126_1818_log-migration-self-absorb-guard](bugfix/jiuwenswarm/common/B_20261126_1818_log-migration-self-absorb-guard.md) | B | 启动布局迁移自吸收每次清空数据根 logs 顶层日志 | CharlesWang2030 | 无独立 D：对既有 profile 数据根布局迁移的局部缺陷修复，修复遵循"解析同路径即跳过"的既有守卫模式，不新增架构方案，无独立设计。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 
@@ -571,6 +591,14 @@ generated: true
 | [S_01_app-session-project](specs/jiuwenswarm/extensions/app_market/app-session-project.md) | S | 应用角色会话的项目归属 | kdgmpw | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
 | [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
+
+<a id="module-jiuwenswarm-extensions-runtime_management_extension"></a>
+
+## jiuwenswarm/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-jiuwenswarm-extensions-sdk"></a>
 
@@ -702,6 +730,7 @@ generated: true
 | [B_20261031_1042_pr9317-review](bugfix/jiuwenswarm/server/B_20261031_1042_pr9317-review.md) | B | PR 9317 插件模式校验与 Front 遗留启动链清理 | xinyang_bali | 无独立 D：根据 openJiuwen-bot 检视意见清理现有实现，不引入新接口或架构方案，无独立 D。 |
 | [B_20261116_1540_interrupt-intent-contract](bugfix/jiuwenswarm/server/B_20261116_1540_interrupt-intent-contract.md) | B | chat.interrupt 未知 intent 静默假成功：WS/HTTP 双入口统一契约校验 | ZHANGPP_ | 无独立 D：依据联调现场与 PR 检视意见定位，无独立设计文档；修复限定 intent 契约校验范围，并补回归测试。 |
 | [B_20261125_1412_personal-edition-enterprise-team-methods](bugfix/jiuwenswarm/server/B_20261125_1412_personal-edition-enterprise-team-methods.md) | B | 个人版收到企业 team 控制面方法时落入聊天分支：服务端入口补 edition 闸门 | mingo007 | 无独立 D：依据代码逐跳核实定位，无独立设计文档；修复只在服务端入口补一次 edition 判定，不改企业 handler 与协议枚举。 |
+| [B_20261125_1658_unhandled-known-method-no-chat-fallback](bugfix/jiuwenswarm/server/B_20261125_1658_unhandled-known-method-no-chat-fallback.md) | B | 枚举内未接 handler 的方法落入聊天分支：runtime 两个入口补通用兜底 | mingo007 | 无独立 D：静态审计全部枚举成员的认领层，确认只有 4 个聊天入口方法允许落入 chat 执行器；兜底不维护 175 方法白名单，而是挂在两个入口的收口点上。 |
 
 <a id="module-jiuwenswarm-server-control"></a>
 
