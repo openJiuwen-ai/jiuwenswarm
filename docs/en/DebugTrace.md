@@ -37,12 +37,12 @@ Routine application logs (see [Logging System](Logs.md)) target system operation
 
 ### 1.3 Mode support
 
-Both modes support debug tracing; they differ only in the dump directory and the config block used:
+Both modes support debug tracing. `debug_trace` controls local text dumps; `observability.enabled` is their shared OTel export switch:
 
-| Mode | `/debug` | Local dump file | OTel config block |
+| Mode | `/debug` | Local dump file | OTel export switch |
 |------|----------|-----------------|-------------------|
-| `agent.plan` / `agent.fast` | ✅ | `~/.jiuwenswarm/.agent/traces/dump-agent-<session>.txt` | `observability.agent` |
-| `code.normal` / `code.plan` | ✅ | `~/.jiuwenswarm/.code/traces/dump-code-<session>.txt` | `observability.agent` |
+| `agent.plan` / `agent.fast` | ✅ | `~/.jiuwenswarm/.agent/traces/dump-agent-<session>.txt` | `observability.enabled` |
+| `code.normal` / `code.plan` | ✅ | `~/.jiuwenswarm/.code/traces/dump-code-<session>.txt` | `observability.enabled` |
 
 > Both modes share the same OTel backend stack (OTel Collector + Langfuse). See [Section 5](#5-local-file-mode-offline-upload-to-langfuse) and `deploy/observability/`.
 
@@ -142,12 +142,11 @@ cd deploy/observability
 docker-compose up -d
 ```
 
-Then configure (`observability.agent` for Agent/Code):
+Then configure (Agent/Code shares the `observability.enabled` switch):
 
 ```yaml
 observability:
-  agent:
-    enabled: true
+  enabled: true
   exporter: otlp_grpc
   endpoint: http://localhost:4317
   sample_rate: 1.0
@@ -157,8 +156,7 @@ observability:
 
 ```yaml
 observability:
-  agent:
-    enabled: true
+  enabled: true
   exporter: otlp_http
   endpoint: https://cloud.langfuse.com/api/public/otel/v1/traces
   langfuse_public_key: "pk-lf-xxx"
@@ -173,8 +171,7 @@ For when you cannot stay connected to a backend, or want to accumulate a batch o
 
 ```yaml
 observability:
-  agent:
-    enabled: true
+  enabled: true
   exporter: console
 ```
 
@@ -203,12 +200,11 @@ When you cannot (or don't want to) stay connected to a Collector, use the `file`
 
 ### 5.2 Step 1 — configure the file exporter
 
-Edit `~/.jiuwenswarm/config/config.yaml` (`observability.agent` covers both Agent and Code):
+Edit `~/.jiuwenswarm/config/config.yaml` (the `observability` section covers both Agent and Code):
 
 ```yaml
 observability:
-  agent:
-    enabled: true
+  enabled: true
   exporter: file
   traces_dir: ""               # empty → default ~/.jiuwenswarm/.trace
   file_retention_days: 7       # stale .jsonl files are lazily pruned
@@ -386,8 +382,7 @@ debug_trace:
 
 ```yaml
 observability:
-  agent:
-    enabled: false                  # single-agent switch (Team uses observability.team.enabled)
+  enabled: false                   # OTel export switch (shared by Team / Agent / Code)
   exporter: file                    # otlp_grpc / otlp_http / file / console
   endpoint: http://localhost:4317   # OTLP endpoint (not needed for file/console)
   service_name: jiuwenswarm         # OTel resource service.name
@@ -403,7 +398,7 @@ observability:
 
 > The export fields (exporter / endpoint / sampling / redaction, ...) are shared by Team and Agent/Code. Legacy `agent_observability` / `team_observability` sections are migrated into this section automatically on upgrade.
 
-> **How the two blocks relate**: `debug_trace` governs Agent/Code local text dumps; `observability` (switch: `observability.agent.enabled`) governs Agent/Code OTel spans. Both share the same `deploy/observability` backend stack. The OTel provider is not gated by `observability.agent.enabled` alone: `debug_trace.<mode>.otel_enabled` lets a `/debug` run temporarily pull up Agent/Code OTel, and `trajectory_ui.enabled=true` also acts as an extra demand that pulls up the OTel provider while fully reusing the exporter / endpoint / sampling settings shared in the `observability` section (see the `trajectory_ui` section comments in `jiuwenswarm/resources/config.yaml`).
+> **How the two blocks relate**: `debug_trace` controls Agent/Code local text dumps; `observability.enabled` controls export for Team, Agent and Code in the same process. UI and evolution request span capture without enabling export. SQLite writing is enabled when either `trajectory_ui.enabled` or `trajectory_ui.diagnosis_enabled` is true; disable both to stop it. Sampling and redaction still apply during capture. A debug run with `debug_trace.<mode>.otel_enabled=true` explicitly forces capture **and export**, even when `observability.enabled=false`. This override remains active until Agent observability shuts down, so it does not end with that debug request. File/OTLP/Langfuse destinations use the shared exporter settings; text dumps are local files and do not require the observability backend stack.
 
 ### 7.3 Resolution rules (debug_trace)
 
