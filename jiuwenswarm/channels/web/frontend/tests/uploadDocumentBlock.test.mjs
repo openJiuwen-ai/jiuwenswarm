@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   stripUploadDocumentBlocks,
   toDisplaySessionTitle,
+  toQueueContentPreview,
   toUploadDocumentHints,
   withUploadDocumentBlock,
 } from '../node_modules/.cache/upload-document-block/utils/documentMessage.js';
@@ -101,6 +102,43 @@ test('toDisplaySessionTitle strips collapsed bad titles for the sidebar', () => 
     toDisplaySessionTitle('总结 【上传文档】 @/uploads/spec.txt'),
     '总结',
   );
+});
+
+test('toQueueContentPreview prefers stripped query text over the protocol block', () => {
+  assert.equal(
+    toQueueContentPreview('总结这份文档\n【上传文档】\n@/uploads/spec.txt'),
+    '总结这份文档',
+  );
+  assert.equal(
+    toQueueContentPreview('总结 【上传文档】 @/uploads/spec.txt'),
+    '总结',
+  );
+});
+
+test('toQueueContentPreview falls back to media filename for pure uploads', () => {
+  assert.equal(
+    toQueueContentPreview('【上传文档】\n@/uploads/todo.json', {
+      mediaItems: [{ filename: 'todo.json' }],
+      fallbackLabel: 'Uploaded document',
+    }),
+    'todo.json',
+  );
+});
+
+test('toQueueContentPreview falls back to @path basename then localized label', () => {
+  assert.equal(
+    toQueueContentPreview('【上传文档】\n@/uploads/todo.json'),
+    'todo.json',
+  );
+  assert.equal(
+    toQueueContentPreview('【上传文档】\n@"/u/my brief.pdf"'),
+    'my brief.pdf',
+  );
+  assert.equal(
+    toQueueContentPreview('【上传文档】', { fallbackLabel: 'Uploaded document' }),
+    'Uploaded document',
+  );
+  assert.equal(toQueueContentPreview('【上传文档】'), '');
 });
 
 test('toUploadDocumentHints keeps only document records with a filename', () => {

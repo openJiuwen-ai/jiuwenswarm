@@ -5242,6 +5242,7 @@
     "paused": "Paused",
     "waitingTasks": "Waiting Tasks",
     "messageQueue": "Message Queue",
+    "queuedUploadDocument": "Uploaded document",
     "crossSessionMessageQueue": "Cross-session messages",
     "localMessageQueue": "Local messages",
     "turnStarting": "Starting…",
