@@ -416,7 +416,13 @@ async def preflight_mcp_server_reachable(
                 resp = await http.send(request, stream=True)
                 try:
                     if resp.status_code in (401, 403):
-                        return False, f"auth rejected (HTTP {resp.status_code})"
+                        snippet = ""
+                        try:
+                            await resp.aread()
+                            snippet = resp.text or ""
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return False, _auth_rejected_probe_reason(resp.status_code, snippet)
                     if resp.status_code >= 400:
                         snippet = ""
                         try:
@@ -439,7 +445,12 @@ async def preflight_mcp_server_reachable(
         return False, f"probe failed: {type(exc).__name__}: {exc}"
 
     if resp.status_code in (401, 403):
-        return False, f"auth rejected (HTTP {resp.status_code})"
+        snippet = ""
+        try:
+            snippet = resp.text or ""
+        except Exception:  # noqa: BLE001
+            pass
+        return False, _auth_rejected_probe_reason(resp.status_code, snippet)
     # Other 4xx/5xx (e.g. malformed-auth 400) is just as fatal at cold-start
     # as 401: raise_for_status() corrupts the anyio task group either way.
     # Gate strictly — a healthy server answers 2xx/3xx to a well-formed probe.
@@ -568,6 +579,36 @@ async def fill_mcp_tools_fallback(item: dict[str, Any], name: str) -> None:
         logger.debug("[mcp-config] show tools fallback for '%s' failed: %s", name, fetch_exc)
 
 
+def _is_jsonrpc_result_body(body_text: str) -> bool:
+    """True when ``body_text`` is a well-formed JSON-RPC response with a result.
+
+    Some gateways answer 403 to the probe while the initialize handshake has
+    already passed auth (the body carries a JSON-RPC ``result``) — the refusal
+    is about capability/quota, not the token. Such a body proves the stored
+    credentials were accepted, so the answer must not be classified as an
+    auth rejection.
+    """
+    try:
+        parsed = json.loads(body_text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(parsed, dict) and "result" in parsed
+
+
+def _auth_rejected_probe_reason(status_code: int, body_text: str) -> str:
+    """Build the probe reason for a 401/403 answer.
+
+    401 is always a credential rejection (auth challenge). 403 doubles as a
+    capability/quota answer: when the body is a well-formed JSON-RPC result,
+    auth already passed and the credentials are valid — report a plain HTTP
+    error instead so the rollback keeps the stored credentials.
+    """
+    if status_code == 403 and _is_jsonrpc_result_body(body_text):
+        snippet = (body_text or "")[:120].replace("\n", " ")
+        return f"http 403 from server{(': ' + snippet) if snippet else ''}"
+    return f"auth rejected (HTTP {status_code})"
+
+
 # Probe reasons proven (not guessed) to mean the stored tokens were rejected
 # by the server's auth layer. Only these justify wiping stored credentials on
 # rollback; anything else (timeout / unreachable / 5xx / local env) never
@@ -580,10 +621,13 @@ def probe_failure_is_auth_rejected(reason: str) -> bool:
 
     ``preflight_mcp_server_reachable`` returns ``auth rejected (HTTP 401/403)``
     only when the server itself answered and rejected the credentials — the one
-    failure class where the stored tokens are known bad. Network-layer failures
-    (timeout, ConnectError/NetworkError, HTTP 5xx) never reached the auth
-    layer, so their reason strings do not match and the caller must keep the
-    stored credentials so a retry can reuse them.
+    failure class where the stored tokens are known bad. A 403 whose body is a
+    well-formed JSON-RPC result is a capability/quota answer with auth already
+    passed, so ``preflight`` reports it as a plain ``http 403 from server``
+    instead; it does not match here and the stored credentials are kept.
+    Network-layer failures (timeout, ConnectError/NetworkError, HTTP 5xx)
+    never reached the auth layer, so their reason strings do not match and the
+    caller must keep the stored credentials so a retry can reuse them.
     """
     text = str(reason or "")
     return any(marker in text for marker in _AUTH_REJECTED_REASON_MARKERS)

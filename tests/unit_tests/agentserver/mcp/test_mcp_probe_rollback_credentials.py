@@ -43,6 +43,9 @@ def test_auth_rejected_reasons_are_classified_credential(reason: str) -> None:
         "unreachable: ConnectError: [Errno 111] Connection refused",
         "http 502 from server: Bad Gateway",
         "http 400 from server: auth fail:token fail",
+        # 403 + JSON-RPC result body = auth already passed (capability/quota
+        # refusal): preflight reports a plain http error, credentials kept.
+        "http 403 from server: {\"jsonrpc\": \"2.0\", \"id\": 0, \"result\": {}}",
         "command 'npx' not found on PATH (install it or add to PATH)",
         "invalid url: empty",
         "mcp server connect failed, server_config={...}, error='timed out'",

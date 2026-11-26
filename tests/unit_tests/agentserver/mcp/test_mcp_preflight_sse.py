@@ -115,6 +115,45 @@ async def test_sse_401_is_auth_rejected() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["sse", "streamable-http"])
+async def test_403_with_jsonrpc_result_body_is_not_auth_rejected(transport: str) -> None:
+    """A 403 whose body is a well-formed JSON-RPC result means auth already
+    passed (capability/quota refusal — e.g. API not enabled for the plan).
+    The token is valid, so the reason must NOT be ``auth rejected`` — the
+    rollback classifier then keeps the stored credentials (issue #7029)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={"jsonrpc": "2.0", "id": 0, "result": {"tools": []}},
+        )
+
+    with patch("httpx.AsyncClient", _ClientFactory(handler)):
+        ok, reason = await preflight_mcp_server_reachable(
+            _cfg(transport=transport, url="https://api.example.com/mcp/")
+        )
+    assert ok is False
+    assert "auth rejected" not in reason
+    assert "http 403 from server" in reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["sse", "streamable-http"])
+async def test_403_without_jsonrpc_result_body_stays_auth_rejected(transport: str) -> None:
+    """A plain 403 (auth layer refusal — no JSON-RPC result body) is still a
+    proven credential rejection: the reason keeps the ``auth rejected`` marker
+    so the rollback wipes the stored credentials."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="forbidden")
+
+    with patch("httpx.AsyncClient", _ClientFactory(handler)):
+        ok, reason = await preflight_mcp_server_reachable(
+            _cfg(transport=transport, url="https://api.example.com/mcp/")
+        )
+    assert ok is False
+    assert "auth rejected (HTTP 403)" in reason
+
+
+@pytest.mark.asyncio
 async def test_streamable_http_still_probes_with_post() -> None:
     """Regression guard: the streamable-http probe must keep POSTing the
     initialize body (GitHub Copilot-style gateways answer 2xx to that)."""
