@@ -43,11 +43,19 @@ _RELATIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 检索工具（观测「是否检索过」）。browser_agent 是 subagent_type 非工具名，deepresearch 真名
-# 是 deepresearch_execute / deepresearch_stream，故不在此列（见 _is_proxied_retrieval）。
-_RETRIEVAL_TOOL_NAMES = frozenset(
-    {"web_flash", "web_search", "fetch_webpage", "deepresearch_execute", "deepresearch_stream"}
-)
+# 检索工具（观测「是否检索过」）：只收网络/事实检索。browser_agent 是 subagent_type 非工具名，
+# deepresearch 真名是 deepresearch_execute / deepresearch_stream（见 _is_proxied_retrieval）。
+_RETRIEVAL_TOOL_NAMES = frozenset({
+    # web 检索
+    "web_flash", "web_search", "web_free_search", "web_paid_search", "web_image_search",
+    # 抓网页
+    "fetch_webpage", "mcp_fetch_webpage",
+    # 深度研究
+    "deepresearch_execute", "deepresearch_stream",
+    # 其它搜索引擎（mcp 代理 / 直接）
+    "image_search", "free_search", "paid_search", "petal_search",
+    "mcp_free_search", "mcp_paid_search", "mcp_petal_search",
+})
 
 # 输出侧：事件性断言词（表示在陈述一个带年份的事实结论）。砍掉「发布/宣布/确定/成立于/
 # 举行/召开/亚军」这类办公高频词，只留事件特异词；不用「是 / 为」——太宽。
@@ -57,14 +65,15 @@ _ASSERTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 否认 / 无法确认 / 否定式断言（「不会举办」）是正确行为，不是虚假断言。
+# 否认 / 无法确认 / 否定式断言（「不会举办」「没有举办」）是正确行为，不是虚假断言。
 _REFUSAL_RE = re.compile(
     r"无法确认|无法核实|未能确认|查不到|没有查到|没有找到|不存在|没有这个|待核实|不确定"
-    r"|不会(?:举办|举行|召开|开幕|闭幕|夺冠|当选|荣获)"
-    r"|未(?:举办|举行|召开|开幕|闭幕)"
+    r"|(?:尚未|从未|并未|不会|没有|未)(?:举办|举行|召开|开幕|闭幕|夺冠|当选|荣获)"
     r"|cannot confirm|can't confirm|unable to (?:confirm|verify)|could(?: not|n't) find"
     r"|no such|does not exist|not exist"
-    r"|will not (?:hold|host|take place)|has not (?:held|taken place)",
+    r"|(?:will not|won't|did not|didn't|does not|doesn't|has not|hasn't|have not|haven't)"
+    r"\s+(?:hold|held|host|hosted|win|won|elect|elected|take place|taken place|exist)"
+    r"|(?:not yet|never)\s+(?:hold|held|host|hosted|win|won|elect|elected|taken place|exist)",
     re.IGNORECASE,
 )
 
@@ -103,13 +112,15 @@ def _resolve_session_id(ctx: AgentCallbackContext) -> str:
 
 def _is_retrieval_tool(name: str) -> bool:
     lowered = str(name or "").strip().lower()
-    if lowered == "tools_search":  # 元工具：只查 deferred schema，不检索
-        return False
+    if lowered in _RETRIEVAL_TOOL_NAMES:
+        return True
+    # 前缀兜底：web_* / deepresearch* / mcp_*_search / *_fetch_webpage。
+    # 刻意不用 endswith("_search")——会误命中 tools_search（元工具）、memory_search/ltm_search
+    # （查记忆）、beam_search（解码算法）等非事实检索工具，从而抑制零检索告警。
     return (
-        lowered in _RETRIEVAL_TOOL_NAMES
-        or lowered.startswith("web_")
+        lowered.startswith("web_")
         or lowered.startswith("deepresearch")
-        or lowered.endswith("_search")
+        or (lowered.startswith("mcp_") and lowered.endswith("_search"))
         or lowered.endswith("fetch_webpage")
     )
 
