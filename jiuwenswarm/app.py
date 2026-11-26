@@ -161,11 +161,9 @@ def main() -> None:
         SUPERVISOR_PID_ENV: str(os.getpid()),
         "JIUWENSWARM_RECOVERY_SESSION_ID": recovery_session_id,
     }
-    prepare_local_gateway_config(child_env)
-    gateway_env = {
-        **child_env,
-        "JIUWENSWARM_GATEWAY_CONFIG_DIR": str(gateway_config_dir),
-    }
+    gateway_env = child_env.copy()
+    prepare_local_gateway_config(gateway_env)
+    gateway_env.setdefault("JIUWENSWARM_GATEWAY_CONFIG_DIR", str(gateway_config_dir))
     agent_env = {
         key: value
         for key, value in child_env.items()

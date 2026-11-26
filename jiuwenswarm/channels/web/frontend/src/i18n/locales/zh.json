@@ -190,6 +190,7 @@
     "market": "应用广场",
     "marketLoadFailed": "加载应用广场失败",
     "noMarketApps": "应用广场暂无应用",
+    "searchPlaceholder": "搜索应用",
     "moreActions": "更多操作：{{name}}",
     "pin": "置顶",
     "unpin": "取消置顶",
