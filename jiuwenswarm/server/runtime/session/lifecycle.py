@@ -642,7 +642,7 @@ def _runtime_owner_record(pid: int) -> dict[str, Any]:
     owner: dict[str, Any] = {"pid": pid}
     try:
         owner["started_at"] = psutil.Process(pid).create_time()
-    except psutil.Error as exc:
+    except (psutil.Error, OSError) as exc:
         start_ticks = _proc_start_ticks(pid)
         if start_ticks is not None:
             owner["start_ticks"] = start_ticks
@@ -697,7 +697,9 @@ def runtime_owner_alive(owner: dict) -> bool:
             try:
                 if abs(process.create_time() - owner_started_at) >= 0.01:
                     return False
-            except psutil.AccessDenied:
+            except psutil.NoSuchProcess:
+                raise
+            except (psutil.Error, OSError):
                 if owner_start_ticks is None:
                     raise
         if owner_start_ticks is not None or owner_started_at is not None:
@@ -711,7 +713,7 @@ def runtime_owner_alive(owner: dict) -> bool:
         )
     except psutil.NoSuchProcess:
         return False
-    except psutil.AccessDenied as exc:
+    except (psutil.Error, OSError) as exc:
         raise LifecycleError("OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner") from exc
 
 

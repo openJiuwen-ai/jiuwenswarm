@@ -62,6 +62,47 @@ def test_normal_creation_time_is_preserved(monkeypatch):
     assert identity.read_process_identity(123, process=process) == 123.5
 
 
+@pytest.mark.parametrize("protocol", [1, 2])
+def test_hello_birth_fields_are_optional_only_for_protocol_one(restricted_process, protocol):
+    hello = {"protocol": protocol, "process_created": None, "process_start_ticks": None}
+    if protocol == 1:
+        assert identity.validate_process_identity(123, hello) == "proc_start_ticks:4242"
+    else:
+        with pytest.raises(RuntimeError, match="protocol 2 HELLO requires a process identity"):
+            identity.validate_process_identity(123, hello)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["resident", "front_loopback"])
+async def test_protocol_two_without_birth_fields_is_refused_by_supervisor(
+    monkeypatch, restricted_process, transport,
+):
+    from jiuwenswarm.server.supervisor.identity import data_scope, deployment_scope
+
+    hello = {"kind": "hello", "protocol": 2, "generation": 7, "pid": 123,
+             "deployment_scope": deployment_scope(), "data_scope": data_scope(),
+             "code_identity": "a" * 64, "stub": False, "instance": "worker"}
+    if transport == "resident":
+        with pytest.raises(RuntimeError, match="protocol 2 HELLO requires a process identity"):
+            resident_lifecycle.worker_process(hello, "worker")
+        return
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", transport)
+    front = RuntimeSupervisor(Readiness(), stub=False)
+    front._launch_generation = 7
+    peer = SimpleNamespace(recv=AsyncMock(return_value=hello), close=AsyncMock())
+
+    async def connect():
+        front._conn = peer
+        return "a" * 64
+
+    monkeypatch.setattr(front, "_connect_attached", connect)
+    with pytest.raises(RuntimeError, match="protocol 2 HELLO requires a process identity"):
+        await front._bring_up()
+    assert front.worker_pid is None and front._validated_conn is None
+    peer.close.assert_awaited_once()
+
+
 @pytest.mark.parametrize("error", [psutil.AccessDenied(123), PermissionError("/proc/stat")])
 def test_creation_time_failure_falls_back_to_tagged_ticks(monkeypatch, error):
     process = SimpleNamespace(create_time=Mock(side_effect=error))
@@ -279,9 +320,9 @@ def test_resident_validation_and_reconnect_use_ticks(monkeypatch, restricted_pro
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kernel_identity", [False, True])
-async def test_replacement_reclaims_timestamp_drift_but_refuses_changed_ticks(
-    monkeypatch, tmp_path, restricted_process, kernel_identity,
+@pytest.mark.parametrize("identity_case", ["timestamp_drift", "changed_ticks", "missing_identity"])
+async def test_replacement_reclaims_timestamp_drift_but_refuses_unverified_identity(
+    monkeypatch, tmp_path, restricted_process, identity_case,
 ):
     from jiuwenswarm.server.supervisor import identity as deployment_identity
     from jiuwenswarm.server.supervisor import runtime_supervisor
@@ -299,8 +340,10 @@ async def test_replacement_reclaims_timestamp_drift_but_refuses_changed_ticks(
     old_hello = {"kind": "hello", "protocol": 2, "pid": 123, "stub": True,
                  "deployment_scope": "deployment", "data_scope": "data",
                  "code_identity": "old-build", "process_created": 1.0}
-    if kernel_identity:
+    if identity_case == "changed_ticks":
         old_hello["process_start_ticks"] = 4243
+    elif identity_case == "missing_identity":
+        old_hello.pop("process_created")
     new_hello = {**old_hello, "code_identity": "new-build", "process_created": 2.0,
                  "process_start_ticks": 4242}
     old = SimpleNamespace(recv=AsyncMock(return_value=old_hello), close=AsyncMock())
@@ -311,8 +354,12 @@ async def test_replacement_reclaims_timestamp_drift_but_refuses_changed_ticks(
     front = RuntimeSupervisor(Readiness(), stub=True, socket_path=socket_path)
     monkeypatch.setattr(front, "_migrate_legacy_workers", AsyncMock())
 
-    if kernel_identity:
-        with pytest.raises(RuntimeError, match="Worker PID identity changed"):
+    if identity_case != "timestamp_drift":
+        expected_error = {
+            "missing_identity": "requires a process identity",
+            "changed_ticks": "PID identity changed",
+        }[identity_case]
+        with pytest.raises(RuntimeError, match=expected_error):
             await front._connect_resident()
         force_retire.assert_not_awaited()
         assert front._fatal

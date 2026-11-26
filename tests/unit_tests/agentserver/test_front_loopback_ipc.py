@@ -285,6 +285,10 @@ async def test_auth_connection_limit_logs_once_and_preserves_credentials(monkeyp
 
 
 async def test_stopping_during_auth_reclaims_worker_and_listener(monkeypatch, harmony_runtime):
+    from jiuwenswarm.server.supervisor.identity import code_identity
+
+    # Observe authentication after computing the real dependency fingerprint.
+    await asyncio.to_thread(code_identity)
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
     monkeypatch.setattr(worker_process, "build_worker_command", lambda *args, **kwargs:
                         [sys.executable, "-c", "import time; time.sleep(20)"])

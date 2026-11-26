@@ -71,6 +71,14 @@ The 90-second budget applies to transport recovery, not normal execution time. C
 
 If both IPC send and close fail, Front retains the original recovery waiters. A failed recovery subscription retires that connection before all preserved streams resume. Service stop cleans up waiters and background tasks even when IPC close raises.
 
+## Process identity
+
+IPC protocol 2 HELLO messages must include a valid creation timestamp or process start counter. Missing or null values for both fields reject the handshake. Protocol 1 retains compatibility with missing birth fields and still requires OS ownership checks. Timestamps and start counters retain separate units; booleans and nonpositive values are invalid.
+
+Debug service state and new DingTalk OAuth PID records retain an OS process identity, including start counters on restricted systems. An unreadable identity remains unknown: debug stop refuses the signal, and OAuth cancellation reports incomplete cleanup while retaining pending state and credentials. Legacy timestamp records remain readable where their identity can be verified.
+
+When debug service identity cannot be verified, an explicit `--legacy-worker-pid` can still enter independent Worker ownership validation and cleanup. No signal is sent to the unverified Front, debug state is retained, and a nonzero exit code reports that overall service shutdown remains unconfirmed. If OAuth timeout cleanup fails during identity revalidation or exit waiting, status queries return `authorization_cleanup_failed`, retain pending records and credentials, and do not write an `expired` exit marker. Later queries continue to check the process state.
+
 ## Worker output logs
 
 For both resident and `front_loopback` Workers, stdout inherits the launching process's output, while stderr is appended directly to a separate `runtime-worker-<UUID>[-<owner>].stderr.log` for each launch. Set `JIUWEN_WORKER_LOG_DIR` before starting the application or Supervisor to select its directory. If unset or empty, it defaults to `worker-logs` under the Worker socket path's parent directory. This setting does not change the IPC endpoint.
