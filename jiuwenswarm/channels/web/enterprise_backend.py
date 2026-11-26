@@ -237,10 +237,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = await current_user(request)
         try:
             async with asyncio.timeout(5), db.connect() as connection:
-                result = await catalog.contexts(connection, user)
+                items, matched = await catalog.contexts(connection, user)
         except (SQLAlchemyError, TimeoutError):
             raise HTTPException(503, "user access data unavailable") from None
-        return {"code": 200, "message": "success", "data": {"contexts": result}}
+        empty_reason = None
+        if not items:
+            empty_reason = "no_agent_template" if matched else "no_grant"
+        return {
+            "code": 200, "message": "success",
+            "data": {"contexts": items, "empty_reason": empty_reason},
+        }
 
     @console.post("/active-cluster")
     async def active_cluster(body: ActiveCluster, request: Request, response: Response):
