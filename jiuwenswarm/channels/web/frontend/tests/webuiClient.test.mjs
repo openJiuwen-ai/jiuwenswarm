@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { createClientCapabilityHost, createGatewayFetch, isPluginResourceURL, resolvePluginResourceURL, browserClientCapabilities, webClient, gitWatchClient, systemPluginApi } from '../node_modules/.cache/webui-client/client.mjs';
+import { createClientCapabilityHost, createGatewayFetch, isPluginResourceURL, resolvePluginResourceURL, browserClientCapabilities, webClient, gitWatchClient, systemPluginApi, useSystemPluginStore } from '../node_modules/.cache/webui-client/client.mjs';
 
 class Storage {
   data = new Map(); reads = 0;
@@ -656,6 +656,93 @@ test('management receipts survive declaration changes caused by their own comple
     socket.receive({ type: 'res', id, ok: true, payload: { reports: [{ package_id: 'pkg.one', status: 'SUCCESS' }] } });
     await pending;
     assert.equal(socket.sent.length, 1);
+  });
+});
+
+const installedPlugin = {
+  id: 'probe-asset', packageId: 'pkg.one', version: '2.0.0', installedVersion: '2.0.0',
+  versions: ['1.0.0', '2.0.0', '3.0.0'], installed: true, enabled: true, active: true,
+};
+
+async function confirmVersionUninstall(socket, mineResponse) {
+  useSystemPluginStore.setState({
+    catalog: [installedPlugin], mine: [installedPlugin], busyIds: {}, error: null,
+    detailCache: { 'probe-asset': installedPlugin, 'pkg.one': installedPlugin },
+  });
+  const uninstalling = useSystemPluginStore.getState().uninstall('pkg.one', '2.0.0', 'probe-asset');
+  await turn();
+  assert.equal(socket.sent[0].method, 'extensions.v2.uninstall');
+  assert.deepEqual(socket.sent[0].params, { package_id: 'pkg.one', version: '2.0.0' });
+  socket.receive({ type: 'res', id: socket.sent[0].id, ok: true,
+    payload: { reports: [{ package_id: 'pkg.one', status: 'SUCCESS' }] } });
+  await turn();
+  const mine = socket.sent.find(request => request.method === 'extensions.v2.catalog' && request.params.scope === 'mine');
+  const catalog = socket.sent.find(request => request.method === 'extensions.v2.catalog' && request.params.scope === 'catalog');
+  assert.ok(mine);
+  assert.ok(catalog);
+  socket.receive({ type: 'res', id: catalog.id, ok: true, payload: {
+    packages: [{ ...installedPlugin, installed: false, installedVersion: '', active: false, enabled: false }],
+  } });
+  socket.receive({ type: 'res', id: mine.id, ...mineResponse });
+  return { uninstalling };
+}
+
+test('uninstalling the last installed version closes the detail even when Hub still lists it', async () => {
+  await withPluginClient(async socket => {
+    const { uninstalling } = await confirmVersionUninstall(socket, { ok: true, payload: { packages: [] } });
+    assert.deepEqual(await uninstalling, { ok: true, detail: 'removed' });
+    assert.equal(socket.sent.length, 3);
+    const { catalog, mine, detailCache, error } = useSystemPluginStore.getState();
+    assert.equal(catalog[0].id, 'probe-asset');
+    assert.deepEqual(mine, []);
+    assert.deepEqual(detailCache, {});
+    assert.equal(error, null);
+  });
+});
+
+test('version uninstall refreshes a remaining installed version once using its package ID', async () => {
+  await withPluginClient(async socket => {
+    const remaining = {
+      ...installedPlugin, version: '1.0.0', installedVersion: '1.0.0', enabled: false, active: false,
+    };
+    const { uninstalling } = await confirmVersionUninstall(socket, { ok: true, payload: { packages: [remaining] } });
+    await turn();
+    assert.equal(socket.sent.length, 4);
+    assert.equal(socket.sent[3].method, 'extensions.v2.show');
+    assert.deepEqual(socket.sent[3].params, { package_id: 'pkg.one' });
+    socket.receive({ type: 'res', id: socket.sent[3].id, ok: true, payload: { package: remaining } });
+    assert.deepEqual(await uninstalling, { ok: true, detail: 'updated' });
+    assert.equal(socket.sent.length, 4);
+    assert.deepEqual(useSystemPluginStore.getState().detailCache['probe-asset'], remaining);
+    assert.equal(useSystemPluginStore.getState().error, null);
+  });
+});
+
+for (const [response, errorMessage] of [
+  [{ ok: false, code: 'AUTH_REQUIRED', error: 'login required' }, 'login required'],
+  [{ ok: true, payload: {} }, 'INVALID_CATALOG_RESPONSE'],
+]) {
+  test(`a failed installed-list refresh keeps the detail open (${errorMessage})`, async () => {
+    await withPluginClient(async socket => {
+      const { uninstalling } = await confirmVersionUninstall(socket, response);
+      assert.deepEqual(await uninstalling, { ok: true, detail: 'unavailable' });
+      assert.equal(socket.sent.length, 3);
+      assert.deepEqual(useSystemPluginStore.getState().detailCache, {});
+      assert.equal(useSystemPluginStore.getState().error, errorMessage);
+    });
+  });
+}
+
+test('a remaining plugin detail read failure invalidates stale detail without failing the uninstall', async () => {
+  await withPluginClient(async socket => {
+    const remaining = { ...installedPlugin, installedVersion: '1.0.0' };
+    const { uninstalling } = await confirmVersionUninstall(socket, { ok: true, payload: { packages: [remaining] } });
+    await turn();
+    assert.equal(socket.sent[3].method, 'extensions.v2.show');
+    socket.receive({ type: 'res', id: socket.sent[3].id, ok: false, code: 'AUTH_REQUIRED', error: 'login required' });
+    assert.deepEqual(await uninstalling, { ok: true, detail: 'unavailable' });
+    assert.deepEqual(useSystemPluginStore.getState().detailCache, {});
+    assert.equal(useSystemPluginStore.getState().error, 'login required');
   });
 });
 

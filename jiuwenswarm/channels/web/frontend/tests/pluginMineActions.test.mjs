@@ -350,6 +350,52 @@ test('system plugin detail install continues when conflict discovery fails', asy
   });
 });
 
+for (const [confirmation, version, outcome, fallback, expectedNavigation] of [
+  ['secondary', '2.0.0', { ok: true, detail: 'removed' }, false, ['deleted']],
+  ['ok', undefined, { ok: true, detail: 'removed' }, false, ['deleted']],
+  ['secondary', '2.0.0', { ok: true, detail: 'removed' }, true, ['back']],
+  ['secondary', '2.0.0', { ok: true, detail: 'updated' }, false, []],
+  ['secondary', '2.0.0', { ok: true, detail: 'unavailable' }, false, []],
+  ['secondary', '2.0.0', { ok: false, error: 'uninstall denied' }, false, []],
+]) {
+  test(`system plugin uninstall handles ${outcome.detail ?? 'failure'} (${confirmation}, fallback ${fallback})`, async () => {
+    resetState();
+    const state = globalThis.systemPluginActionState;
+    state.detailCache['target-asset'] = {
+      id: 'target-asset', assetId: 'target-asset', packageId: 'target-plugin', version: '2.0.0',
+      versions: ['1.0.0', '2.0.0'], installedVersion: '2.0.0', displayName: { zh: '目标插件', en: 'Target plugin' },
+      displayDescription: '', details: '', readme: '', tags: [], avatar: null, preview: null, events: [],
+      installed: true, active: true, enabled: true, source: 'hub', origin: 'hub',
+    };
+    const detailCalls = [];
+    state.loadDetail = async (...args) => { detailCalls.push(args); return true; };
+    const uninstallCalls = [];
+    state.uninstall = async (...args) => {
+      uninstallCalls.push(args);
+      if (outcome.detail === 'unavailable') state.detailCache = {};
+      return outcome;
+    };
+    const navigation = [];
+    await render(SystemPluginDetailPage, {
+      id: 'target-asset', onBack: () => navigation.push('back'),
+      onDeleted: fallback ? undefined : () => navigation.push('deleted'),
+    }, async host => {
+      await act(async () => host.querySelector('[data-testid="connector-market-system-plugin-detail-uninstall"]').click());
+      const dialog = document.querySelector('[data-testid="connector-market-confirm-dialog"]');
+      await act(async () => dialog.querySelector(`[data-testid="connector-market-confirm-${confirmation}"]`).click());
+      assert.deepEqual(uninstallCalls, [['target-plugin', version, 'target-asset']]);
+      assert.deepEqual(navigation, expectedNavigation);
+      assert.deepEqual(detailCalls, [['target-asset']]);
+      const error = host.querySelector('[data-testid="connector-market-system-plugin-detail-error"]');
+      assert.equal(error?.textContent, outcome.error);
+      if (outcome.detail === 'unavailable') {
+        assert.ok(host.querySelector('[data-testid="connector-market-system-plugin-detail-state-body"] button'));
+        assert.equal(host.querySelector('[data-testid="connector-market-system-plugin-detail-uninstall"]'), null);
+      }
+    });
+  });
+}
+
 for (const fromMy of [true, false]) {
   test(`${fromMy ? 'my' : 'marketplace'} uninstalled plugin detail respects the page action scope`, async () => {
     const calls = resetState();

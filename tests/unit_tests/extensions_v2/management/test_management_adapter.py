@@ -34,6 +34,7 @@ from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
     ExtensionInstallRecord,
     ExtensionInstallState,
 )
+from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
 from tests.unit_tests.extensions_v2.core_compat import requires_rooted_startup
 
 from .support import EMPTY_EXTENSION, METADATA_EXTENSION, archive_package, make_bus, write_package
@@ -1055,6 +1056,36 @@ async def test_uninstall_removes_every_stored_version(
 
     assert removed.ok
     assert not (manager.install_dir / "webui.demo").exists()
+
+
+async def test_uninstall_last_local_version_removes_package_from_mine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: manager.install_dir)
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: tmp_path / "examples")
+    monkeypatch.setattr(
+        adapter_module, "get_hub_system_plugin", AsyncMock(side_effect=HubNotFoundError("asset not found")),
+    )
+    adapter = PackageManagementAdapter()
+    package_id = "webui.demo"
+    version = "1.0.0"
+    source = archive_package(write_package(tmp_path / "source", package_id=package_id, version=version))
+    installed = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(source)]}))
+    assert installed.ok and installed.payload["reports"][0]["status"] == "SUCCESS"
+
+    removed = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_UNINSTALL, {"package_id": package_id, "version": version})
+    )
+
+    assert removed.ok and removed.payload["reports"][0]["status"] == "SUCCESS"
+    assert not (manager.install_dir / package_id).exists()
+    assert (await manager.query()).active == ()
+    assert ExtensionInstallState.for_install_dir(manager.install_dir).get(package_id) is None
+    mine = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_CATALOG, {"scope": "mine"}))
+    assert mine.ok and mine.payload["packages"] == []
+    detail = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": package_id}))
+    assert not detail.ok and detail.payload["code"] == "PACKAGE_NOT_FOUND"
 
 
 async def test_uninstall_one_version_keeps_the_other_stored_versions(

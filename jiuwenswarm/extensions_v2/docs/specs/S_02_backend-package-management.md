@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | spec / S_02 |
-| 最近修订 | 2026-11-25 |
+| 最近修订 | 2026-11-26 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
 | 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md)、[F_35](../features/F_35_system-plugin-recovery.md) |
 
@@ -101,6 +101,7 @@ Core 解析并校验 `package.domain`；`expose`、`display`、`ui`、`client` �
 | 文件内容 | true | `{path, content, download_url?}` |
 | 取得写操作结果 | true | `reports`：Core ActivationReport 数组 |
 | 方法或参数错误 | false | `code=INVALID_PARAMS`、`error` |
+| 本地及 SkillHub 查无该包 | false | `code=PACKAGE_NOT_FOUND`、`error` |
 | 门面尚不可用 | false | `code=EXTENSION_MANAGER_NOT_INITIALIZED`、`error` |
 | 调用抛错 | false | `code`、`error`，不得伪造成功 Report |
 
