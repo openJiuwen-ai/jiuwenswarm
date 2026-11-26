@@ -407,6 +407,51 @@ async def test_recovery_via_final_content_only_clears(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("as_dict", [False, True])
+async def test_new_error_collection_invalidates_prior_recovery_signal(monkeypatch, as_dict):
+    """恢复信号位必须在「新错误收集」时复位：错误A → 恢复delta → 错误B → 空
+    final 的序列，B 之后的恢复证据必须重新累计——不得沿用 A 期间的信号把 B
+    清掉（否则终端失败被误判为恢复成功，假成功回归）。"""
+
+    def _events():
+        yield {"event_type": "chat.error", "error": "瞬时错误A", "code": "TRANSIENT_A"}
+        yield {"event_type": "chat.delta", "content": "A 之后的中间产出"}
+        yield {"event_type": "chat.error", "error": "最终失败B", "code": "TERMINAL_B"}
+        yield {"event_type": "chat.final", "content": ""}
+
+    class FakeAdapter:
+        @staticmethod
+        async def process_message_stream_impl(*_args, **_kwargs):
+            for payload in _events():
+                if as_dict:
+                    yield payload
+                else:
+                    yield AgentResponseChunk(
+                        request_id="req-rec-reset", channel_id="desktop",
+                        payload=payload, is_complete=False,
+                    )
+
+    monkeypatch.setattr(interface_module.JiuWenSwarm, "_ensure_adapter", lambda *_a, **_k: FakeAdapter())
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"memory": {"mode": "disabled"}})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **record: None)
+    monkeypatch.setattr(interface_module, "_schedule_symphony_session_feedback", lambda *_args: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.expert.expert_service.history_expert_identity_extra",
+        lambda _session_id: {},
+    )
+
+    chunks = [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(_make_request("req-rec-reset"))]
+
+    terminals = [chunk for chunk in chunks if chunk.is_complete]
+    assert len(terminals) == 1
+    payload = terminals[0].payload
+    assert isinstance(payload, dict)
+    assert payload.get("event_type") == "chat.error"
+    assert payload.get("error") == "最终失败B"
+
+
+@pytest.mark.asyncio
 async def test_success_path_terminal_unchanged(monkeypatch):
     """正常成功路径：终帧仍为裸 {"is_complete": True}，行为零变化。"""
 

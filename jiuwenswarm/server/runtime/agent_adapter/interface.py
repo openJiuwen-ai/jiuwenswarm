@@ -3061,6 +3061,7 @@ class JiuWenSwarm:
                     if error_message:
                         error_payload["message"] = error_message
                     stream_error_payload = error_payload
+                    stream_recovery_output_seen = False
                     append_history_record(
                         session_id=session_id,
                         request_id=rid,
@@ -3151,6 +3152,7 @@ class JiuWenSwarm:
                                 if data.payload.get("code"):
                                     _round_err_payload["code"] = data.payload.get("code")
                                 stream_error_payload = _round_err_payload
+                                stream_recovery_output_seen = False
                                 yield AgentResponseChunk(
                                     request_id=rid,
                                     channel_id=cid,
@@ -3288,6 +3290,10 @@ class JiuWenSwarm:
                                 and not is_retry_notice_payload(data.payload)
                             ):
                                 stream_error_payload = data.payload
+                                # 新错误收集使此前恢复信号失效：恢复证据必须
+                                # 晚于最近一次错误（否则 错误A→delta→错误B→
+                                # 空final 会被 A 期间的信号误判为 B 已恢复）。
+                                stream_recovery_output_seen = False
                             if should_record:
                                 payload_dict = dict(data.payload)
                                 # role/error/rid 等事件路由键不能进 extra：
@@ -3507,6 +3513,7 @@ class JiuWenSwarm:
                             and not is_retry_notice_payload(data)
                         ):
                             stream_error_payload = data
+                            stream_recovery_output_seen = False
                         yield AgentResponseChunk(
                             request_id=rid,
                             channel_id=cid,
