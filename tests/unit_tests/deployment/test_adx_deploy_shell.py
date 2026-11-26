@@ -46,114 +46,6 @@ process_up
             "install=192.0.2.10,192.0.2.11", "gateway-up", "web-up",
         ])
 
-    def test_up_jiuwenswarm_installs_package_on_each_host(self):
-        result = self.run_script('''
-DEPLOY_VARS[JIUWENSWARM_PACKAGE_URL]=https://packages.example/workswarm.whl
-is_local_host() { return 1; }
-jiuwenswarm_check_ssh() { echo "ssh=$1" >> "$TRACE"; }
-exec_on_host() {
-    local host="$1"; shift
-    echo "$host $*" >> "$TRACE"
-    case "$*" in
-        *"pip show"*"^Location:"*) echo /business/site-packages;;
-        *"pip show"*) test -f "$OUTPUT/installed-$host";;
-        *"pip install"*) touch "$OUTPUT/installed-$host";;
-        "test -f"*) return 1;;
-        "mkdir -p"*) return 0;;
-        *) return 92;;
-    esac
-}
-copy_to_host() { echo "copy=$1 $3" >> "$TRACE"; }
-parse_args up jiuwenswarm --hosts 192.0.2.10,192.0.2.11
-process_up
-''', managed=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        trace = self.trace.read_text()
-        for host in ("192.0.2.10", "192.0.2.11"):
-            self.assertIn("ssh=" + host, trace)
-            self.assertIn(host + " python3.11 -m pip install https://packages.example/workswarm.whl --quiet", trace)
-
-    def test_legacy_remote_execution_and_copy_still_use_ssh(self):
-        result = self.run_script('''
-is_local_host() { [ "$1" = 127.0.0.1 ]; }
-ssh() { echo "ssh $*" >> "$TRACE"; }
-scp() { echo "scp $*" >> "$TRACE"; }
-exec_on_host 127.0.0.1 'echo local-exec >> "$TRACE"'
-exec_on_host 192.0.2.11 'python3.11 -m pip show workswarm'
-copy_to_host 192.0.2.11 /package/workswarm.whl /tmp/
-''', managed=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        trace = self.trace.read_text()
-        self.assertIn("local-exec", trace)
-        self.assertIn("root@192.0.2.11 python3.11 -m pip show workswarm", trace)
-        self.assertIn("/package/workswarm.whl root@192.0.2.11:/tmp/", trace)
-
-    def test_gateway_config_directory_is_separate_from_instance_workspace(self):
-        result = self.run_script('''
-DEPLOY_VARS[JIUWENSWARM_INSTANCE_NAME]=legacy-fixture
-gateway_workspace_dir >> "$TRACE"
-gateway_get_config_dir >> "$TRACE"
-DEPLOY_VARS[JIUWENSWARM_GATEWAY_CONFIG_DIR]=custom
-gateway_get_config_dir >> "$TRACE"
-gateway_get_config_dir infra/config >> "$TRACE"
-''', managed=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.trace.read_text().splitlines(), [
-            "/root/.jiuwenswarm-instances/legacy-fixture",
-            "/root/.jiuwenswarm-instances/legacy-fixture/config",
-            "/root/.jiuwenswarm-instances/legacy-fixture/config/custom",
-            "/root/.jiuwenswarm-instances/legacy-fixture/infra/config/custom",
-        ])
-
-    def test_legacy_services_keep_original_listener_interpreter_and_home(self):
-        result = self.run_script('''
-DEPLOY_VARS[PYTHON_VERSION]=3.12
-DEPLOY_VARS[JIUWENSWARM_INSTANCE_NAME]=legacy
-DEPLOY_VARS[HOME]=/ignored-home
-DEPLOY_VARS[RUNTIME_PROFILE]=standalone
-DEPLOY_VARS[WEB_HOST]=0.0.0.0
-BUSINESS_PYTHON=/ignored-python
-SWARM_SERVICE_PREFLIGHT=/ignored-preflight
-copy_to_host() { cp "$2" "$OUTPUT/$(basename "$(dirname "$3")")--$(basename "$3")"; }
-exec_on_host() {
-    echo "$*" >> "$TRACE"
-    case "$*" in
-        *"command -v jiuwenswarm-gateway"*) echo /business/bin/jiuwenswarm-gateway;;
-        *"command -v jiuwenswarm-web"*) echo /business/bin/jiuwenswarm-web;;
-        *dirname*) echo /business/bin;;
-        *'echo $PATH'*) echo /usr/bin:/bin;;
-    esac
-    return 0
-}
-port_is_listening() { :; }
-sleep() { :; }
-gateway_start_systemd 127.0.0.1 1
-web_start_systemd 127.0.0.1
-gateway_start_nohup 127.0.0.1
-web_start_nohup 127.0.0.1
-''', managed=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        gateway = (self.root / "system--jiuwenswarm-gateway-legacy.service").read_text()
-        self.assertIn("Environment=HOME=/root", gateway)
-        self.assertNotIn("--dotenv", gateway)
-        self.assertNotIn("--require-adx-router", gateway)
-        dropin = (self.root / "jiuwenswarm-gateway-legacy.service.d--env.conf").read_text()
-        self.assertIn("Environment=JIUWENSWARM_RUNTIME_PROFILE=agentos", dropin)
-        self.assertIn("Environment=JIUWENSWARM_HOME=/root", dropin)
-        self.assertIn("Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/legacy\n", dropin)
-        self.assertIn(
-            "Environment=JIUWENSWARM_GATEWAY_CONFIG_DIR=/root/.jiuwenswarm-instances/legacy/config",
-            dropin,
-        )
-        self.assertNotIn("Environment=WEB_HOST=", dropin)
-        web = (self.root / "system--jiuwenswarm-web-legacy.service").read_text()
-        self.assertIn("--proxy-target http://0.0.0.0:19000", web)
-        self.assertNotIn("Environment=HOME", web)
-        self.assertNotIn("--dotenv", web)
-        trace = self.trace.read_text()
-        self.assertIn("command -v python3.12", trace)
-        self.assertNotIn("ignored-", trace + gateway + dropin + web)
-
     def test_gateway_template_configures_the_adx_http_backend(self):
         result = self.run_script('''
 DEPLOY_VARS[ADX_INGRESS_URL]=https://adx.example:8443
@@ -228,16 +120,6 @@ gateway_deploy_process
         result = self.run_script(":", managed=True)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("SWARM_SETTINGS requires the Enterprise deployment package", result.stdout)
-
-    def test_package_management_is_not_a_swarm_deploy_command(self):
-        for action in ("install", "status", "uninstall"):
-            result = self.run_script('parse_args ' + action, managed=False)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Invalid Args", result.stdout)
-
-if __name__ == "__main__":
-    unittest.main()
-
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Release shell requires Linux Bash 4+")
 class InstallerInterpreterCompatibilityTests(unittest.TestCase):

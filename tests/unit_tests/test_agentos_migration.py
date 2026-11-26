@@ -336,6 +336,9 @@ def test_migrate_preserves_previous_gateway_config(tmp_path: Path) -> None:
     previous_config = _write(workspace / "infra" / "config" / "config.yaml", previous)
     rendered = _write(tmp_path / "rendered.yaml", _rendered_template())
 
+    user_env = shared_config.with_name('.env')
+    user_env.write_text('MODEL_NAME=prepared\n')
+    shared_config.chmod(0o600)
     report = migrate(workspace=workspace, rendered_template=rendered)
 
     assert report["status"] == "migrated"
@@ -345,3 +348,5 @@ def test_migrate_preserves_previous_gateway_config(tmp_path: Path) -> None:
     assert migrated["gateway"]["agentos"]["registry"]["endpoint"] == "http://new-vip:4003"
     assert _read(shared_config) == _legacy_config()
     assert _read(previous_config) == previous
+    assert shared_config.stat().st_mode & 0o777 == 0o600
+    assert user_env.read_text() == 'MODEL_NAME=prepared\n'
