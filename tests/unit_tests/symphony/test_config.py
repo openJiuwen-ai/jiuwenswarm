@@ -289,7 +289,7 @@ def test_explicit_values_override_product_and_context_defaults(monkeypatch, tmp_
     assert symphony_config.symphony_config_from_dict({}, context_window_tokens=4000).retrieval.prompt.context_window_tokens == 4000
 
 
-@pytest.mark.parametrize("path", ["jiuwenswarm/resources/config.yaml", "deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml"])
+@pytest.mark.parametrize("path", ["jiuwenswarm/resources/config.yaml", "deploy/adx/conf/gateway-config.template.yaml"])
 def test_real_templates_validate_and_keep_explicit_build_limits(path):
     data = yaml.safe_load(Path(path).read_text())
     cfg = symphony_config.load_symphony_config(data)
