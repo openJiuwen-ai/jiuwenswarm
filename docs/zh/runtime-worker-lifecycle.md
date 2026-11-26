@@ -78,6 +78,8 @@ IPC protocol 2 的 HELLO 必须携带有效的创建时间或进程启动计数�
 
 debug 服务状态和新的钉钉 OAuth PID 记录保存操作系统进程身份，受限系统可使用启动计数。身份不可读时保留未知状态：debug 停止拒绝发送信号，OAuth 取消报告清理未完成，并保留 pending 状态及凭据。旧时间戳记录在身份仍可验证时继续兼容。
 
+debug 服务身份不可验证时，显式指定的 `--legacy-worker-pid` 仍可进入 Worker 独立归属校验及清理流程；不向未知身份的 Front 发送信号，保留 debug 状态，并以非零退出码报告服务整体停止尚未确认。OAuth 超时清理在二次校验或退出等待中失败时，状态查询返回 `authorization_cleanup_failed`，保留 pending 记录及凭据，不写入 `expired` 退出标记；后续查询继续校验进程状态。
+
 ## Worker 输出日志
 
 resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<UUID>[-<owner>].stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，目录为 Worker socket 路径父目录下的 `worker-logs`。该设置不改变 IPC 端点位置。

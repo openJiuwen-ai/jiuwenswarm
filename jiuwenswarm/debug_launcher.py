@@ -126,7 +126,6 @@ class DebugState:
         command: Argv of the spawned process, kept for PID-reuse verification.
         cwd: Working directory the process was spawned in.
         process_identity: Verified creation time or tagged kernel start ticks.
-        process_identity: Verified creation time or tagged kernel start ticks.
     """
 
     pid: int
@@ -853,15 +852,22 @@ def _stop_process_tree(
             return True
         time.sleep(0.3)
 
-    logging.info(
-        f"[debug] Process group {pgid} did not exit within {timeout}s; sending SIGKILL."
-    )
     if expected_created is not None:
         try:
             if not process_identity_matches(pid, expected_created):
+                logging.error(
+                    "[debug] Service PID identity changed before forced termination pid=%s; refusing SIGKILL.", pid,
+                )
                 return False
-        except (psutil.Error, OSError):
+        except (psutil.Error, OSError) as exc:
+            logging.error(
+                "[debug] Service process identity could not be verified before forced termination pid=%s: %s",
+                pid, exc,
+            )
             return False
+    logging.info(
+        f"[debug] Process group {pgid} did not exit within {timeout}s; sending SIGKILL."
+    )
     try:
         os.killpg(pgid, signal.SIGKILL)
     except OSError:
@@ -884,8 +890,10 @@ def _stop_resident_worker(
 
     The Worker is spawned in its own session so it outlives Front restarts,
     which also puts it outside the process group ``_stop_process_tree``
-    signals. Call this only after the service tree is gone: a live Front
-    would respawn the Worker as soon as it disconnects.
+    signals. Normally call this after the service tree is gone: a live Front
+    would respawn the Worker as soon as it disconnects. An explicitly selected
+    legacy Worker may be validated independently when Front identity is unknown;
+    the caller must still retain Front state and report incomplete service shutdown.
 
     Args:
         timeout: Seconds to wait for a graceful exit before force-killing.
@@ -944,7 +952,15 @@ def stop_debug_service(
 
     alive = is_debug_service_alive(state)
     if alive is None:
-        logging.error("[debug] Cannot verify the recorded service; stop refused and state retained.")
+        logging.error("[debug] Cannot verify the recorded service; service stop refused and state retained.")
+        if legacy_worker_pid is not None:
+            if stop_worker():
+                logging.info(
+                    "[debug] Selected legacy Worker cleanup completed pid=%s; service shutdown remains unconfirmed.",
+                    legacy_worker_pid,
+                )
+            else:
+                logging.error("[debug] Selected legacy Worker cleanup incomplete pid=%s.", legacy_worker_pid)
         return 1
     if not alive:
         logging.info(

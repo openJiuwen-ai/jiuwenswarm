@@ -2327,7 +2327,16 @@ class LocalDingTalkCliRuntime:
                         "error_code": "authorization_process_unverified"}
             if expired:
                 if running:
-                    self._stop_oauth_process(pid_path)
+                    try:
+                        self._stop_oauth_process(pid_path)
+                    except PersistentAgentError:
+                        logger.warning(
+                            "DingTalk authorization timeout cleanup failed; pending state retained", exc_info=True,
+                        )
+                        return {
+                            "status": "error", "cli_version": _CLI_VERSION,
+                            "error_code": "authorization_cleanup_failed",
+                        }
                     exit_path.write_text('expired', encoding='utf-8')
                 return {'status': 'error', 'cli_version': _CLI_VERSION, 'error_code': 'authorization_expired'}
             if error or not running:
