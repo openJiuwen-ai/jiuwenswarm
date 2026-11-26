@@ -583,6 +583,21 @@ def _attach_xiaoyi_device_route(
     return out
 
 
+def _xiaoyi_phone_tools_enabled() -> bool:
+    """读 channels.xiaoyi.phone_tools_enabled（缺省/异常均按关闭处理）。"""
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        cfg = get_config() or {}
+        return bool(
+            cfg.get("channels", {})
+            .get("xiaoyi", {})
+            .get("phone_tools_enabled", False)
+        )
+    except Exception:
+        return False
+
+
 async def _run_xiaoyi_privilege_preflight(
     payload: dict[str, Any],
     *,
@@ -591,6 +606,13 @@ async def _run_xiaoyi_privilege_preflight(
 ) -> None:
     context_channel = str((context.channel_id if context else "") or "").strip()
     if context_channel != "xiaoyi":
+        payload.pop("required_device_intents", None)
+        payload.pop("xiaoyi_push_id", None)
+        return
+    # 手机设备工具默认关闭时，定时任务不做设备意图规划：跳过 CronDeviceToolPlanner
+    # （避免空跑一次 LLM、prompt 里出现全套设备工具 schema、以及 required_intents
+    # 与执行侧混淆），按普通定时任务处理。
+    if not _xiaoyi_phone_tools_enabled():
         payload.pop("required_device_intents", None)
         payload.pop("xiaoyi_push_id", None)
         return
