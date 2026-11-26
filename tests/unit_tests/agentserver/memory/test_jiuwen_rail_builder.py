@@ -18,7 +18,7 @@ sdk 模式的内核配置优先级（2026-10-17 起 builder 不再自行缝合�
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -57,6 +57,7 @@ class _FakeJiuwenRail:
 
 class _FakeAgentMemoryProvider:
     name = "fake-agent-memory"
+    is_initialized = False
     last_init_kwargs = None
     available = True
 
@@ -136,8 +137,8 @@ def _cfg(jiuwen: dict) -> dict:
 # mode resolution
 # ---------------------------------------------------------------------------
 
-def test_default_mode_is_http():
-    assert jrb.get_jiuwen_builtin_mode(_cfg({})) == "http"
+def test_default_mode_is_sdk():
+    assert jrb.get_jiuwen_builtin_mode(_cfg({})) == "sdk"
 
 
 def test_sdk_mode_selected_from_config():
@@ -149,8 +150,8 @@ def test_sdk_mode_env_override(monkeypatch):
     assert jrb.get_jiuwen_builtin_mode(_cfg({})) == "sdk"
 
 
-def test_unknown_mode_falls_back_to_http():
-    assert jrb.get_jiuwen_builtin_mode(_cfg({"mode": "socks"})) == "http"
+def test_unknown_mode_falls_back_to_sdk():
+    assert jrb.get_jiuwen_builtin_mode(_cfg({"mode": "socks"})) == "sdk"
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +159,7 @@ def test_unknown_mode_falls_back_to_http():
 # ---------------------------------------------------------------------------
 
 def test_http_mode_builds_network_provider():
-    rail = jrb.build_jiuwen_memory_rail(_cfg({"base_url": "http://127.0.0.1:8137"}))
+    rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "http", "base_url": "http://127.0.0.1:8137"}))
     assert isinstance(rail, _FakeJiuwenRail)
     init = _FakeAgentMemoryProvider.last_init_kwargs
     assert init["base_url"] == "http://127.0.0.1:8137"
@@ -167,6 +168,35 @@ def test_http_mode_builds_network_provider():
     # rail wiring: cross-session sharing default
     assert _FakeJiuwenRail.last_args["session_id"] == ""
     assert _FakeJiuwenRail.last_args["session_end_extract"] is False
+
+
+@pytest.mark.parametrize("settings,env_key,expected", [
+    ({}, "env-test-key", "env-test-key"),
+    ({"api_key": ""}, "env-test-key", "env-test-key"),
+    ({"api_key": None}, "env-test-key", "env-test-key"),
+    ({"api_key": "encrypted-test-key"}, "env-test-key", "config-test-key"),
+    ({"api_key": "plaintext-test-key"}, "env-test-key", "plaintext-test-key"),
+    ({"api_key": ""}, "", ""),
+])
+def test_http_provider_preserves_key_fallback_and_decryption(monkeypatch, caplog, settings, env_key, expected):
+    monkeypatch.setenv("JIUWEN_MEMORY_API_KEY", env_key)
+
+    def decrypt(value):
+        if value == "encrypted-test-key":
+            return "config-test-key"
+        raise ValueError(f"Cannot decrypt {value}")
+
+    crypto = SimpleNamespace(decrypt=Mock(side_effect=decrypt))
+    monkeypatch.setattr("jiuwenswarm.common.security.base_crypto.get_crypto_provider", lambda: crypto)
+
+    rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "http", **settings}))
+
+    assert isinstance(rail, _FakeJiuwenRail)
+    assert _FakeAgentMemoryProvider.last_init_kwargs["api_key"] == expected
+    if not settings.get("api_key"):
+        crypto.decrypt.assert_not_called()
+    assert "Cannot decrypt" not in caplog.text
+    assert "plaintext-test-key" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

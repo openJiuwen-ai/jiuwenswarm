@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:memory-portal": "node --test tests/memoryPortal.test.mjs",
     "test:entity-header-tags": "esbuild src/components/ui/EntityHeader/EntityHeader.tsx --bundle --packages=external --platform=node --format=esm --jsx=automatic --loader:.css=empty --outfile=node_modules/.cache/entity-header/EntityHeader.mjs && node --test tests/entityHeaderTags.test.mjs",
     "test:expert-team-batch": "node --test tests/expertTeamBatch.test.mjs",
     "test:video-duplex": "node ../../../extensions/video_duplex/tests/frontend/testSupport.mjs",
