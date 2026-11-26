@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from types import SimpleNamespace
 
 import pytest
@@ -97,7 +98,9 @@ async def test_fixed_review_and_terminal_share_invocation_id(audited_rail, tmp_p
 
 
 @pytest.mark.parametrize("approved", [True, False])
-async def test_host_manual_and_exact_resume_keep_original_local_recommendation(audited_rail, tmp_path, approved):
+async def test_host_manual_and_exact_resume_keep_original_local_recommendation(
+    audited_rail, tmp_path, monkeypatch, approved,
+):
     rail, policy, reviewer = audited_rail
     args = send_arguments(policy, tmp_path, 4)
     session = _Session()
@@ -110,7 +113,10 @@ async def test_host_manual_and_exact_resume_keep_original_local_recommendation(a
     channel = TOOL_PERMISSION_CHANNEL_ID.set("web")
     request = TOOL_PERMISSION_REQUEST_ID.set("request-a")
     try:
-        await entry.before_tool_call(ctx)
+        # These bytes used to generate an ID that matched the audit secret filter.
+        with monkeypatch.context() as entropy:
+            entropy.setattr(secrets, "token_bytes", lambda size: bytes.fromhex("b24f80").ljust(size, b"\0"))
+            await entry.before_tool_call(ctx)
         key = tool_invocation_key_from_context(ctx)
         with pytest.raises(AbortError) as paused:
             await rail.before_tool_call(ctx)
