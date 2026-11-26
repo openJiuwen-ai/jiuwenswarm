@@ -2,8 +2,9 @@
 
 """将 ``EffectiveEnterpriseConfig`` 中的执行护栏模板写入 config 快照。
 
-有启用模板且 ``body`` 通过校验时，用 body **整段替换** ``config.execution_guard``。
-未绑定、行未启用、body 不是对象或校验失败时保留从 ``config.yaml`` 读入的值。
+企业版不依赖 ``config.yaml`` 的 ``execution_guard``：先套用代码写死的
+``DEFAULT_EXECUTION_GUARD_BODY``（数值对齐包内 yaml，但不读取 yaml），再在有
+启用模板且 body 合法时用 body **整段替换**。个人版不进入本函数。
 不写回 ``config.yaml``。
 """
 
@@ -13,25 +14,40 @@ import copy
 import logging
 from typing import Any
 
-from .execution_guard_body import validate_execution_guard_body
+from .execution_guard_body import (
+    DEFAULT_EXECUTION_GUARD_BODY,
+    validate_execution_guard_body,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _code_default_body() -> dict[str, Any]:
+    return copy.deepcopy(DEFAULT_EXECUTION_GUARD_BODY)
 
 
 def apply_enterprise_execution_guard_to_config(
     config_base: dict[str, Any],
     enterprise: Any | None,
 ) -> tuple[dict[str, Any], bool]:
-    """深拷贝 ``config_base`` 并在 body 合法时整段替换 ``execution_guard``。
+    """深拷贝 ``config_base``，用代码默认铺底，再用合法模板 body 整段替换。
 
     Returns:
-        ``(merged, applied)``：``applied=True`` 表示已用企业 body 覆盖。
+        ``(merged, applied)``：企业路径总会写入 ``execution_guard``，``applied``
+        恒为 ``True``。
     """
+    merged = copy.deepcopy(config_base)
     entities = (
         getattr(enterprise, "execution_guard", None) if enterprise is not None else None
     )
+
     if not entities:
-        return config_base, False
+        merged["execution_guard"] = _code_default_body()
+        logger.info(
+            "[enterprise_execution_guard] applied code defaults "
+            "(no execution_guard template)"
+        )
+        return merged, True
 
     if isinstance(entities, (list, tuple)) and len(entities) > 1:
         logger.warning(
@@ -45,20 +61,25 @@ def apply_enterprise_execution_guard_to_config(
         )
     entity = entities[0] if isinstance(entities, (list, tuple)) else entities
     if not isinstance(entity, dict) or entity.get("enabled") is False:
-        return config_base, False
+        merged["execution_guard"] = _code_default_body()
+        logger.info(
+            "[enterprise_execution_guard] applied code defaults "
+            "(template missing or disabled)"
+        )
+        return merged, True
 
     try:
         body = validate_execution_guard_body(entity.get("body"))
     except ValueError:
         logger.error(
             "[enterprise_execution_guard] invalid body for template_id=%s; "
-            "keeping config.yaml execution_guard",
+            "falling back to code defaults",
             entity.get("template_id"),
             exc_info=True,
         )
-        return config_base, False
+        merged["execution_guard"] = _code_default_body()
+        return merged, True
 
-    merged = copy.deepcopy(config_base)
     merged["execution_guard"] = body
     logger.info(
         "[enterprise_execution_guard] applied execution guard body: "

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 
-"""企业执行护栏：未绑定保留 yaml，合法 body 整段替换，非法 body 回落且不写文件。"""
+"""企业执行护栏：代码默认铺底；合法 body 整段替换；非法 body 回落代码默认且不写文件。"""
 
 from __future__ import annotations
 
@@ -43,7 +43,8 @@ def _enterprise(*, execution_guard) -> EffectiveEnterpriseConfig:
     )
 
 
-def _yaml_guard() -> dict:
+def _stale_base_guard() -> dict:
+    """模拟 base 里残留的非默认值（企业路径应忽略）。"""
     return {
         "model_anomaly_detection_rail": {"enabled": False, "transient_max_retries": 1},
         "circuit_breaker": {"enabled": True, "warning_threshold": 2},
@@ -54,14 +55,18 @@ def test_default_load_slots_include_execution_guard() -> None:
     assert "execution_guard" in DEFAULT_AGENT_LOAD_SLOTS
 
 
-def test_unbound_keeps_yaml() -> None:
-    base = {"execution_guard": _yaml_guard()}
-    merged, applied = apply_enterprise_execution_guard_to_config(
-        base, _enterprise(execution_guard=None)
-    )
-    assert applied is False
-    assert merged is base
-    assert merged["execution_guard"]["model_anomaly_detection_rail"]["transient_max_retries"] == 1
+def test_unbound_applies_code_defaults() -> None:
+    base = {"execution_guard": _stale_base_guard()}
+    for enterprise in (None, _enterprise(execution_guard=None), _enterprise(execution_guard=[])):
+        merged, applied = apply_enterprise_execution_guard_to_config(base, enterprise)
+        assert applied is True
+        assert merged is not base
+        assert merged["execution_guard"] == DEFAULT_EXECUTION_GUARD_BODY
+        assert (
+            merged["execution_guard"]["model_anomaly_detection_rail"]["transient_max_retries"]
+            == 3
+        )
+        assert base["execution_guard"]["model_anomaly_detection_rail"]["transient_max_retries"] == 1
 
 
 def test_valid_body_replaces_execution_guard(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -73,7 +78,7 @@ def test_valid_body_replaces_execution_guard(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(Path, "write_text", _refuse_write)
     monkeypatch.setattr(Path, "write_bytes", _refuse_write)
-    base = {"execution_guard": _yaml_guard(), "models": {"default": {"keep": True}}}
+    base = {"execution_guard": _stale_base_guard(), "models": {"default": {"keep": True}}}
     body = copy.deepcopy(DEFAULT_EXECUTION_GUARD_BODY)
     body["model_anomaly_detection_rail"]["transient_max_retries"] = 9
     body["circuit_breaker"]["enabled"] = True
@@ -91,8 +96,8 @@ def test_valid_body_replaces_execution_guard(monkeypatch: pytest.MonkeyPatch) ->
     assert base["execution_guard"]["model_anomaly_detection_rail"]["transient_max_retries"] == 1
 
 
-def test_invalid_body_keeps_yaml_and_logs(caplog: pytest.LogCaptureFixture) -> None:
-    base = {"execution_guard": _yaml_guard()}
+def test_invalid_body_falls_back_to_code_defaults(caplog: pytest.LogCaptureFixture) -> None:
+    base = {"execution_guard": _stale_base_guard()}
     body = copy.deepcopy(DEFAULT_EXECUTION_GUARD_BODY)
     body["model_anomaly_detection_rail"]["backoff_seconds"] = [1]
     with caplog.at_level(logging.ERROR):
@@ -100,14 +105,15 @@ def test_invalid_body_keeps_yaml_and_logs(caplog: pytest.LogCaptureFixture) -> N
             base,
             _enterprise(execution_guard=[{"template_id": "g1", "enabled": True, "body": body}]),
         )
-    assert applied is False
-    assert merged is base
-    assert merged["execution_guard"]["model_anomaly_detection_rail"]["transient_max_retries"] == 1
+    assert applied is True
+    assert merged is not base
+    assert merged["execution_guard"] == DEFAULT_EXECUTION_GUARD_BODY
     assert "invalid body" in caplog.text
+    assert "code defaults" in caplog.text
 
 
-def test_disabled_row_keeps_yaml() -> None:
-    base = {"execution_guard": _yaml_guard()}
+def test_disabled_row_applies_code_defaults() -> None:
+    base = {"execution_guard": _stale_base_guard()}
     merged, applied = apply_enterprise_execution_guard_to_config(
         base,
         _enterprise(
@@ -118,8 +124,9 @@ def test_disabled_row_keeps_yaml() -> None:
             }]
         ),
     )
-    assert applied is False
-    assert merged["execution_guard"]["circuit_breaker"]["enabled"] is True
+    assert applied is True
+    assert merged["execution_guard"] == DEFAULT_EXECUTION_GUARD_BODY
+    assert merged["execution_guard"]["circuit_breaker"]["enabled"] is False
 
 
 def test_multiple_entities_use_first_and_warn(caplog: pytest.LogCaptureFixture) -> None:
@@ -129,7 +136,7 @@ def test_multiple_entities_use_first_and_warn(caplog: pytest.LogCaptureFixture) 
     second["model_anomaly_detection_rail"]["transient_max_retries"] = 8
     with caplog.at_level(logging.WARNING):
         merged, applied = apply_enterprise_execution_guard_to_config(
-            {"execution_guard": _yaml_guard()},
+            {"execution_guard": _stale_base_guard()},
             _enterprise(execution_guard=[
                 {"template_id": "first", "enabled": True, "body": first},
                 {"template_id": "second", "enabled": True, "body": second},
@@ -158,9 +165,9 @@ def test_guard_body_wins_after_model_apply(monkeypatch: pytest.MonkeyPatch) -> N
         _noop_credentials,
     )
 
-    yaml_guard = copy.deepcopy(DEFAULT_EXECUTION_GUARD_BODY)
-    yaml_guard["model_anomaly_detection_rail"]["enabled"] = False
-    yaml_guard["model_anomaly_detection_rail"]["transient_max_retries"] = 1
+    stale_guard = copy.deepcopy(DEFAULT_EXECUTION_GUARD_BODY)
+    stale_guard["model_anomaly_detection_rail"]["enabled"] = False
+    stale_guard["model_anomaly_detection_rail"]["transient_max_retries"] = 1
     body = copy.deepcopy(DEFAULT_EXECUTION_GUARD_BODY)
     body["model_anomaly_detection_rail"]["enabled"] = True
     body["model_anomaly_detection_rail"]["transient_max_retries"] = 9
@@ -182,7 +189,7 @@ def test_guard_body_wins_after_model_apply(monkeypatch: pytest.MonkeyPatch) -> N
         execution_guard=[{"template_id": "g1", "enabled": True, "body": body}],
     )
     out = _apply_enterprise_policy(
-        {"models": {}, "execution_guard": yaml_guard},
+        {"models": {}, "execution_guard": stale_guard},
         loaded,
     )
     rail = out["execution_guard"]["model_anomaly_detection_rail"]
@@ -204,7 +211,7 @@ async def test_yaml_source_does_not_apply_enterprise(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(config_provider, "_apply_enterprise_policy", _boom)
     result = await DefaultConfigProvider().load_agent_config(
         AgentConfigContext(),
-        base={"execution_guard": _yaml_guard()},
+        base={"execution_guard": _stale_base_guard()},
     )
     assert result is None
     assert called is False

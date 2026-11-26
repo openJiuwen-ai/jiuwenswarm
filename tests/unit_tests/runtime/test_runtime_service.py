@@ -4542,7 +4542,11 @@ async def test_agent_server_drain_cancellation_still_closes_runtime(monkeypatch)
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_model_provider
 
-    monkeypatch.setattr(kv_cache_model_provider, "is_kv_cache_affinity_enabled", lambda: True)
+    monkeypatch.setattr(
+        kv_cache_model_provider,
+        "is_kv_cache_affinity_enabled",
+        lambda *args, **kwargs: True,
+    )
 
     server = AgentWebSocketServer()
     previous_runtime = server.get_runtime()
@@ -4570,7 +4574,11 @@ async def test_agent_server_close_does_not_schedule_remote_kvc_cleanup(
         kv_cache_model_provider,
     )
 
-    monkeypatch.setattr(kv_cache_model_provider, "is_kv_cache_affinity_enabled", lambda: affinity_enabled)
+    monkeypatch.setattr(
+        kv_cache_model_provider,
+        "is_kv_cache_affinity_enabled",
+        lambda *args, **kwargs: affinity_enabled,
+    )
     events: list[str] = []
 
     async def record(event: str) -> None:
@@ -4651,13 +4659,13 @@ async def test_agent_server_stop_does_not_recreate_kvc_runtime(monkeypatch) -> N
     monkeypatch.setattr(
         kv_cache_model_provider,
         "is_kv_cache_affinity_enabled",
-        lambda: True,
+        lambda *args, **kwargs: True,
     )
     kvc_runtime = object()
     monkeypatch.setattr(
         kv_cache_application_runtime,
         "get_kv_cache_runtime",
-        lambda: runtime_lookups.append("get") or kvc_runtime,
+        lambda *args, **kwargs: runtime_lookups.append("get") or kvc_runtime,
     )
     close_kvc = AsyncMock()
     monkeypatch.setattr(kv_cache_application_runtime, "close_kv_cache_runtime", close_kvc)
@@ -4685,7 +4693,11 @@ async def test_agent_server_stop_retains_runtime_when_close_is_rejected(
         kv_cache_model_provider,
     )
 
-    monkeypatch.setattr(kv_cache_model_provider, "is_kv_cache_affinity_enabled", lambda: True)
+    monkeypatch.setattr(
+        kv_cache_model_provider,
+        "is_kv_cache_affinity_enabled",
+        lambda *args, **kwargs: True,
+    )
 
     class FakeWebSocketServer:
         def __init__(self) -> None:

@@ -38,7 +38,6 @@ from jiuwenswarm.agents.harness.common.a4p.file_scope import (
     read_scope_matches,
 )
 from jiuwenswarm.agents.harness.common.a4p.token_expiry import token_expired
-from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.permission_mode import is_auto_permission_mode
 from jiuwenswarm.common.utils import get_config_dir, logger
 
@@ -149,7 +148,13 @@ def get_a4p_config(
     if gate is not None:
         a4p_cfg = gate.get("a4p")
         return dict(a4p_cfg) if isinstance(a4p_cfg, dict) else {}
-    cfg = get_config()
+    # Enterprise: no session bind yet → code defaults (not yaml).
+    # Personal: continue reading config.yaml via get_config().
+    from jiuwenswarm.enterprise.config.effective.apply_advanced_config import (
+        resolve_runtime_config_for_advanced_switches,
+    )
+
+    cfg = resolve_runtime_config_for_advanced_switches()
     a4p_cfg = cfg.get("a4p") if isinstance(cfg, dict) else None
     if not isinstance(a4p_cfg, dict):
         return {}
@@ -172,8 +177,8 @@ def is_a4p_preauthorization_active(
     """Enable preauthorization only for the default permission profile.
 
     Session bind wins when present (enterprise config_base). Otherwise use the
-    provided ``config`` so callers/tests that monkeypatch ``get_config`` still
-    work; only then fall back to process ``get_config()``.
+    provided ``config``; bare calls resolve via enterprise code defaults or
+    personal ``config.yaml``.
     """
     gate = _session_a4p_gate(session_id)
     if gate is not None:
@@ -181,7 +186,11 @@ def is_a4p_preauthorization_active(
     elif isinstance(config, dict):
         cfg = dict(config)
     else:
-        base = get_config()
+        from jiuwenswarm.enterprise.config.effective.apply_advanced_config import (
+            resolve_runtime_config_for_advanced_switches,
+        )
+
+        base = resolve_runtime_config_for_advanced_switches()
         cfg = dict(base) if isinstance(base, dict) else {}
     permissions = cfg.get("permissions")
     permissions = permissions if isinstance(permissions, dict) else {}

@@ -3824,11 +3824,13 @@ async def test_a4p_config_disabled_partial_update_and_get(monkeypatch):
     from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
     config = {"enabled": False, "require_user_signature": True, "server_id": "private"}
     events = []
-    monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: dict(config))
+    monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda *args, **kwargs: dict(config))
+    monkeypatch.setattr(a4p_rpc, "get_config", lambda: {"a4p": dict(config)})
+    monkeypatch.setattr(a4p_rpc, "is_enterprise", lambda: False)
     def persist(updates):
         events.append("persist")
         config.update(updates)
-    async def apply():
+    async def apply(*, config=None):
         events.append("apply")
     monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", persist)
     monkeypatch.setattr(a4p_rpc, "reconfigure_a4p_runtime", apply)
@@ -3909,11 +3911,13 @@ async def test_a4p_config_serializes_updates_and_reads(monkeypatch):
     def persist(updates):
         events.append(dict(updates))
         config.update(updates)
-    async def apply():
+    async def apply(*, config=None):
         entered.set()
         await release.wait()
     monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", persist)
-    monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: dict(config))
+    monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda *args, **kwargs: dict(config))
+    monkeypatch.setattr(a4p_rpc, "get_config", lambda: {"a4p": dict(config)})
+    monkeypatch.setattr(a4p_rpc, "is_enterprise", lambda: False)
     monkeypatch.setattr(a4p_rpc, "reconfigure_a4p_runtime", apply)
     first = asyncio.create_task(a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", {"enabled": True})))
     await entered.wait()
@@ -3974,11 +3978,13 @@ async def test_a4p_config_round_trip_uses_persisted_values(monkeypatch, tmp_path
     path = tmp_path / "config.yaml"
     path.write_text("a4p:\n  enabled: false\n  require_user_signature: false\n  server_id: private\nother: preserved\n")
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", path)
-    monkeypatch.setattr(a4p_runtime, "get_config", config_module.get_config_raw)
+    # rpc 直接从 common.config 读 get_config，不再经 a4p.runtime.get_config。
+    monkeypatch.setattr(a4p_rpc, "get_config", config_module.get_config_raw)
+    monkeypatch.setattr(a4p_rpc, "is_enterprise", lambda: False)
     applied = []
 
-    async def apply():
-        applied.append(a4p_runtime.get_a4p_config())
+    async def apply(*, config=None):
+        applied.append(a4p_runtime.get_a4p_config(config=config))
 
     monkeypatch.setattr(a4p_rpc, "reconfigure_a4p_runtime", apply)
     response = await a4p_rpc.dispatch_a4p_request(

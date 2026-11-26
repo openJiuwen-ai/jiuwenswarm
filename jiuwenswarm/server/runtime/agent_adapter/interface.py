@@ -4299,8 +4299,16 @@ class JiuWenSwarm:
 
                 # auto memory: extract memories after conversation ends
                 # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
+                # 企业版读 adapter config_base（DB/代码默认）；个人版回落 config.yaml
                 mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
-                config = get_config()
+                from jiuwenswarm.enterprise.config.effective.apply_advanced_config import (
+                    resolve_runtime_config_for_advanced_switches,
+                )
+
+                config = resolve_runtime_config_for_advanced_switches(
+                    adapter=adapter,
+                    session_id=session_id,
+                )
                 if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                     _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
 
@@ -6369,8 +6377,16 @@ class JiuWenSwarm:
 
         # auto memory: extract memories after conversation ends
         # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
+        # 企业版读 adapter config_base（DB/代码默认）；个人版回落 config.yaml
         mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
-        config = get_config()
+        from jiuwenswarm.enterprise.config.effective.apply_advanced_config import (
+            resolve_runtime_config_for_advanced_switches,
+        )
+
+        config = resolve_runtime_config_for_advanced_switches(
+            adapter=adapter,
+            session_id=session_id,
+        )
         if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
             _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=True)
 

@@ -174,7 +174,7 @@ def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
     merged = merge_memory_config_into_config(merged)
     merged, _ = apply_enterprise_permissions_to_config(merged, loaded)
     merged, _ = apply_enterprise_react_to_config(merged, loaded)
-    # advanced_config（含 a4p_enabled）→ config.a4p.enabled 等
+    # 高级配置：先代码默认铺底，有启用模板再用 DB 列覆盖（企业不依赖 yaml 五开关）
     merged, _ = apply_enterprise_advanced_config_to_config(merged, loaded)
     return merged
 

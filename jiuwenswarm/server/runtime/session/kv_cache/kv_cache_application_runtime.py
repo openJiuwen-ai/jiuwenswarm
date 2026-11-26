@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from openjiuwen.core.kv_cache.kv_cache_config import KVC_TERMINAL_CLEANUP_TIMEOUT_SECONDS
 from openjiuwen.core.kv_cache.kv_cache_runtime import KVCacheRuntime
@@ -33,20 +34,26 @@ def _get_default_model():
     return _default_model
 
 
-def get_kv_cache_runtime() -> KVCacheRuntime | None:
+def get_kv_cache_runtime(config: dict[str, Any] | None = None) -> KVCacheRuntime | None:
+    """Return the process-local KVC runtime when affinity is enabled.
+
+    Pass agent ``config_base`` when available so enterprise DB overlays win.
+    When affinity resolves to off, always return ``None`` — do not reuse a
+    process-level runtime created for another agent/session.
+    """
+    global _runtime
     try:
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider import (
             is_kv_cache_affinity_enabled,
         )
 
-        affinity_enabled = is_kv_cache_affinity_enabled()
+        affinity_enabled = is_kv_cache_affinity_enabled(config)
     except Exception as exc:
         logger.warning("KVC runtime configuration failed; keep KVC disabled: %s", exc)
         return None
     if not affinity_enabled:
         return None
 
-    global _runtime
     try:
         if _runtime is None or _runtime.closed:
             _runtime = KVCacheRuntime(binding_provider=_get_default_model)

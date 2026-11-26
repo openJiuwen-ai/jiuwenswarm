@@ -12,6 +12,8 @@ from agent_gateway.storage.backends.db import reader as _db_reader
 
 from jiuwenswarm.common.utils import logger
 from .schemas import (
+    ADVANCED_CONFIG_ENTITY_TABLE,
+    ADVANCED_CONFIG_SLOT,
     EXECUTION_GUARD_ENTITY_TABLE,
     EXECUTION_GUARD_SLOT,
     REACT_ENTITY_TABLE,
@@ -28,6 +30,9 @@ def _resolve_slot_storage(slot: str) -> tuple[str, str]:
     if slot == EXECUTION_GUARD_SLOT:
         # e2a 协议包尚未登记 EXECUTION_GUARD 槽位，仓内字符串接线。
         return EXECUTION_GUARD_ENTITY_TABLE, "template_id"
+    if slot == ADVANCED_CONFIG_SLOT:
+        # e2a 协议包尚未登记 ADVANCED_CONFIG 槽位，仓内字符串接线。
+        return ADVANCED_CONFIG_ENTITY_TABLE, "template_id"
     try:
         slot_key = TemplateRefSlot(slot)
     except ValueError as exc:
@@ -95,25 +100,7 @@ async def list_records(
     return await _db_reader.list_records(table, query=filters, order_by=order_by)
 
 
-async def fetch_advanced_config(
-    agent_template_id: str,
-) -> dict[str, Any] | None:
-    """按 ``agent_template_id`` 读取 advanced_config 一行。"""
-    tid = str(agent_template_id or "").strip()
-    if not tid:
-        return None
-    rows = await list_records(
-        "advanced_config",
-        filters={"agent_template_id": tid},
-    )
-    if not rows:
-        return None
-    row = rows[0]
-    return dict(row) if isinstance(row, dict) else None
-
-
 __all__ = (
-    "fetch_advanced_config",
     "fetch_template_by_slot",
     "fetch_templates_by_slot",
     "list_records",
