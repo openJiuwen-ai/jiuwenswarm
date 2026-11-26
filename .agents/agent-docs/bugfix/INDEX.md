@@ -268,6 +268,7 @@ generated: true
 | [B_20261126_1420_channel-settings-failure-feedback](jiuwenswarm/channels/web/frontend/B_20261126_1420_channel-settings-failure-feedback.md) | B | 渠道设置页保存/加载失败反馈缺失——保存失败零提示、单渠道加载失败整列表永久骨架 | gunner_beat | 无独立 D：交互反馈层缺陷修复，复用 FormDialog 既有 status 插槽与骨架/横幅/toast 三层反馈位，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [B_20261126_2000_agent-mgmt-confirm-dialog-i18n](jiuwenswarm/channels/web/frontend/B_20261126_2000_agent-mgmt-confirm-dialog-i18n.md) | B | 专家团卸载与专家删除确认框原生 window.confirm 按钮文案无法随应用 i18n 切换 | whds5279 | 无独立 D：交互层缺陷修复，复用既有 ConfirmDialog 组件与 agentManagement.confirm / common.cancel\|confirm\|loading 文案契约，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [B_20261126_1628_upload-doc-block-auto-title](jiuwenswarm/B_20261126_1628_upload-doc-block-auto-title.md) | B | 会话自动标题被【上传文档】协议块污染 | whds5279 | 无独立 D：修复既有标题生成与上传协议块注入的跨层契约冲突，不引入新方案。 |
+| [B_20261126_1940_enterprise-agent-switch-route](jiuwenswarm/channels/web/B_20261126_1940_enterprise-agent-switch-route.md) | B | Open a new conversation after an enterprise Agent switch | linda | 无独立 D：Minimal fix explicitly approved in the task; no separate design document. |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 

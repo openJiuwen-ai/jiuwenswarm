@@ -7,6 +7,8 @@ import { createRoot } from 'react-dom/client';
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
+const appBase = process.env.TEST_APP_BASE ?? '';
+
 await i18n.use(initReactI18next).init({
   lng: 'en',
   resources: {
@@ -36,20 +38,31 @@ await build({
   platform: 'node',
   jsx: 'automatic',
   loader: { '.css': 'empty' },
-  external: ['react', 'react/jsx-runtime', 'react-i18next', 'lucide-react'],
-  define: { 'import.meta.env': '{}' },
+  external: ['react', 'react/jsx-runtime', 'react-i18next', 'i18next', 'lucide-react'],
+  define: { 'import.meta.env': JSON.stringify({ BASE_URL: appBase || '/' }) },
   alias: { 'virtual:login-auth-simulate-provider': './src/auth/simulate/available.ts' },
   outfile: 'node_modules/.cache/enterprise/userEntry.mjs',
 });
 const { EnterpriseEntry, useEnterpriseContext } = await import('../node_modules/.cache/enterprise/userEntry.mjs');
 const context = { user_id: 'u', group_id: 'g', bot_id: 'b', jiuwenclaw_id: 'cluster' };
 
-async function render(backend, run, enterprise = true, simulate = false) {
-  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/chat/new?user_id=forged' });
+async function render(backend, run, enterprise = true, simulate = false, pathname = '/chat/new') {
+  const dom = new JSDOM('<div id="root"></div>', { url: `http://localhost${appBase}${pathname}?user_id=forged` });
+  const navigations = [];
+  const location = new Proxy({}, {
+    get(_target, key) {
+      return key === 'replace' ? (url) => navigations.push(url) : Reflect.get(dom.window.location, key);
+    },
+  });
+  const browser = new Proxy(dom.window, {
+    get(target, key) {
+      return key === 'location' ? location : Reflect.get(target, key, target);
+    },
+  });
   dom.window.__JIUWENSWARM_EDITION__ = enterprise ? 'enterprise' : 'personal';
   dom.window.__JIUWEN_LOGIN_AUTH_SIMULATE__ = String(simulate);
   Object.assign(globalThis, {
-    window: dom.window,
+    window: browser,
     document: dom.window.document,
     localStorage: dom.window.localStorage,
     sessionStorage: dom.window.sessionStorage,
@@ -63,8 +76,10 @@ async function render(backend, run, enterprise = true, simulate = false) {
     const [status, body] = backend(url, init);
     return new Response(JSON.stringify(body), { status });
   };
+  let enterpriseContext;
   function Probe() {
     const value = useEnterpriseContext();
+    enterpriseContext = value;
     return React.createElement(
       'div',
       { 'data-testid': 'probe' },
@@ -76,7 +91,7 @@ async function render(backend, run, enterprise = true, simulate = false) {
     await act(async () => {
       root.render(React.createElement(EnterpriseEntry, null, React.createElement(Probe)));
     });
-    await run(calls);
+    await run(calls, () => enterpriseContext, navigations);
   } finally {
     await act(() => root.unmount());
     dom.window.close();
@@ -99,6 +114,50 @@ test('raw Identity user and Manager context win over query; initial active clust
     assert.deepEqual(JSON.parse(active[1].body), { jiuwenclaw_id: 'cluster' });
     assert.match(window.location.search, /user_id=u/);
   });
+});
+
+test('bootstrap preserves an existing session deep link', async () => {
+  await render(success, (_calls, _getContext, navigations) => {
+    assert.equal(window.location.pathname, `${appBase}/chat/existing-session`);
+    assert.equal(navigations.length, 0);
+  }, true, false, '/chat/existing-session');
+});
+
+for (const pathname of ['/chat/existing-session', '/chat/new']) {
+  test(`Agent switch from ${pathname} opens a new conversation with the target identity`, async () => {
+    const target = { user_id: 'u', group_id: 'g2', bot_id: 'b2', jiuwenclaw_id: 'cluster2' };
+    await render((url) => url.endsWith('/agent-contexts')
+      ? [200, { code: 200, data: { contexts: [context, target] } }]
+      : success(url), async (calls, getContext, navigations) => {
+      await act(async () => {
+        getContext().onContextChange(['b2', 'g2', 'u', 'cluster2'].join('\u0001'));
+      });
+      assert.equal(navigations.length, 1);
+      const destination = new URL(navigations[0], 'http://localhost');
+      assert.equal(destination.pathname, `${appBase}/chat/new`);
+      for (const [key, value] of Object.entries(target)) assert.equal(destination.searchParams.get(key), value);
+      assert.equal(destination.searchParams.get('debug_context'), null);
+      const active = calls.filter(([url]) => url.endsWith('/active-cluster')).at(-1);
+      assert.deepEqual(JSON.parse(active[1].body), { jiuwenclaw_id: 'cluster2' });
+    }, true, false, pathname);
+  });
+}
+
+test('failed Agent switch preserves the current conversation and exposes the error', async () => {
+  const target = { user_id: 'u', group_id: 'g2', bot_id: 'b2', jiuwenclaw_id: 'cluster2' };
+  await render((url, init) => {
+    if (url.endsWith('/agent-contexts')) return [200, { code: 200, data: { contexts: [context, target] } }];
+    if (url.endsWith('/active-cluster') && JSON.parse(init.body).jiuwenclaw_id === 'cluster2') return [503, {}];
+    return success(url);
+  }, async (_calls, getContext, navigations) => {
+    await act(async () => {
+      getContext().onContextChange(['b2', 'g2', 'u', 'cluster2'].join('\u0001'));
+    });
+    assert.equal(navigations.length, 0);
+    assert.equal(window.location.pathname, `${appBase}/chat/existing-session`);
+    assert.ok(getContext().contextError);
+    assert.equal(getContext().contextSwitching, false);
+  }, true, false, '/chat/existing-session');
 });
 
 test('Identity outage does not turn URL identity into a logged-in user', async () => {

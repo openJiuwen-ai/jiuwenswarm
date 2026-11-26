@@ -446,6 +446,7 @@ generated: true
 | [B_20261126_1420_channel-settings-failure-feedback](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_1420_channel-settings-failure-feedback.md) | B | 渠道设置页保存/加载失败反馈缺失——保存失败零提示、单渠道加载失败整列表永久骨架 | gunner_beat | 无独立 D：交互反馈层缺陷修复，复用 FormDialog 既有 status 插槽与骨架/横幅/toast 三层反馈位，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [B_20261126_2000_agent-mgmt-confirm-dialog-i18n](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_2000_agent-mgmt-confirm-dialog-i18n.md) | B | 专家团卸载与专家删除确认框原生 window.confirm 按钮文案无法随应用 i18n 切换 | whds5279 | 无独立 D：交互层缺陷修复，复用既有 ConfirmDialog 组件与 agentManagement.confirm / common.cancel\|confirm\|loading 文案契约，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [B_20261126_1628_upload-doc-block-auto-title](bugfix/jiuwenswarm/B_20261126_1628_upload-doc-block-auto-title.md) | B | 会话自动标题被【上传文档】协议块污染 | whds5279 | 无独立 D：修复既有标题生成与上传协议块注入的跨层契约冲突，不引入新方案。 |
+| [B_20261126_1940_enterprise-agent-switch-route](bugfix/jiuwenswarm/channels/web/B_20261126_1940_enterprise-agent-switch-route.md) | B | Open a new conversation after an enterprise Agent switch | linda | 无独立 D：Minimal fix explicitly approved in the task; no separate design document. |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
