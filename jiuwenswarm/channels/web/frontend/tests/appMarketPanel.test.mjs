@@ -25,9 +25,14 @@ const { createRoot } = await import('react-dom/client');
 window.requestAnimationFrame = globalThis.requestAnimationFrame;
 window.cancelAnimationFrame = globalThis.cancelAnimationFrame;
 const resources = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url)));
+const zhResources = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url)));
 await i18next
   .use(initReactI18next)
-  .init({ lng: 'en', showSupportNotice: false, resources: { en: { translation: resources } } });
+  .init({
+    lng: 'en',
+    showSupportNotice: false,
+    resources: { en: { translation: resources }, zh: { translation: zhResources } },
+  });
 const { AppMarketPanel } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/index.mjs');
 const { AppMarketPage } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/AppMarketPage.mjs');
 const { webClient } = await import('../node_modules/.cache/app-market-panel/services/webClient.mjs');
@@ -1644,7 +1649,7 @@ const editEnd = appSource.indexOf('\n    },\n    [', editStart);
 const editCode = appSource.slice(editStart, editEnd) + '}';
 const compiledEdit = (await transform(`export default ${editCode}`, { loader: 'tsx', format: 'cjs' })).code;
 function editHandler(dependencies) {
-  dependencies = { appEditTokensRef: { current: new Map() }, generateUuidV4: randomUUID, ...dependencies };
+  dependencies = { appEditTokensRef: { current: new Map() }, generateUuidV4: randomUUID, isEnterprise: () => false, ...dependencies };
   return new Function(...Object.keys(dependencies), `const module = { exports: {} }; ${compiledEdit}; return module.exports.default;`)(...Object.values(dependencies));
 }
 
@@ -1770,15 +1775,34 @@ test('unbound conversation has no app header action and canceled restore cannot 
 });
 
 const { useChatStore } = await import('../node_modules/.cache/app-market-panel/stores/chatStore.mjs');
-function firstEditHarness(request) {
+function firstEditHarness(request, language = 'en') {
   const sidRef = { current: 'new' };
   const restores = [];
   const requests = { current: new Map() };
+  const reveals = [];
+  const modeChanges = [];
+  const projectLoads = [];
+  const workspace = {
+    workMode: 'code',
+    projects: [{ project_id: 'game-project' }],
+    expandedProjectIds: { 'game-project': false },
+    setWorkMode: async (mode) => {
+      modeChanges.push(mode);
+      workspace.workMode = mode;
+      workspace.expandedProjectIds = {};
+    },
+    toggleProjectExpanded: (id) => {
+      workspace.expandedProjectIds[id] = !workspace.expandedProjectIds[id];
+    },
+    loadProjectSessions: async (id) => projectLoads.push(id),
+  };
   const handler = editHandler({
     pendingAppEditsRef: requests, creatingSessionRef: { current: false }, sessionIdRef: sidRef,
     request, useChatStore, toast: { open: () => {} },
     useSessionStore: { getState: () => ({ getModelSelectionPayload: () => ({}), setAppMarketPreview: () => {} }) },
-    t: (key, params) => `${key}:${params?.entryPath ?? ''}`,
+    t: i18next.getFixedT(language),
+    useWorkspaceStore: { getState: () => workspace },
+    setAppEditSessionToReveal: (id) => reveals.push(id),
     closeSidebarPeek: () => {},
     handleRestoreSession: async (id, mode, session, seedUserMessage, options) => {
       if (!options.canActivate()) return;
@@ -1788,17 +1812,19 @@ function firstEditHarness(request) {
     setHeartbeatPanelOpen: () => {}, setToolPanelHidden: () => {},
     setSingleAgentPanelActiveTab: () => {}, setSingleAgentPanelExpanded: () => {},
   });
-  return { handler, restores, requests };
+  return { handler, restores, requests, reveals, workspace, modeChanges, projectLoads };
 }
 const editTarget = { appId: 'gomoku', name: 'Gomoku', entryPath: '/game/index.html', instanceId: 'active' };
-const editSession = { session_id: 'first-editor', mode: 'agent', message_count: 0 };
+const editSession = {
+  session_id: 'first-editor', mode: 'agent', message_count: 0, project_id: 'game-project', work_mode: 'code',
+};
 
 for (const desktop of [false, true]) {
   test(`${desktop ? 'Electron' : 'Web'} repeated first-edit clicks share one request and keep the source prompt`, async () => {
     useChatStore.getState().removeRuntime(editSession.session_id);
     const pending = deferred();
     let calls = 0;
-    const h = firstEditHarness(() => { calls++; return pending.promise; });
+    const h = firstEditHarness(() => { calls++; return pending.promise; }, desktop ? 'zh' : 'en');
     if (desktop) window.jiuwenDesktop = { isElectron: true, openMarketApp: async () => true, closeMarketApp: async () => true, setMarketAppViewport: async () => true };
     const ctx = await mount(method => method === 'app_market.list'
       ? { apps: [{ ...app, entry_path: editTarget.entryPath }] } : response(method, [running]), { onEdit: h.handler });
@@ -1809,7 +1835,12 @@ for (const desktop of [false, true]) {
       await act(async () => pending.resolve({ session: editSession, created: true }));
       await tick();
       assert.deepEqual(h.restores, [editSession.session_id]);
-      assert.equal(useChatStore.getState().getRuntime(editSession.session_id).inputValue, 'appMarket.editPrompt:/game/index.html');
+      const draft = useChatStore.getState().getRuntime(editSession.session_id).inputValue;
+      assert.ok(draft.includes(editTarget.entryPath));
+      assert.match(draft, /workswarm-app-builder/);
+      assert.match(draft, desktop ? /应用开发技能/ : /WorkSwarm built-in capabilities catalog/);
+      assert.equal(h.workspace.expandedProjectIds[editSession.project_id], true);
+      assert.deepEqual(h.reveals, [editSession.session_id]);
       assert.equal(h.requests.current.size, 0);
     } finally { await ctx.close(); useChatStore.getState().removeRuntime(editSession.session_id); delete window.jiuwenDesktop; }
   });
@@ -1828,9 +1859,11 @@ test('canceling first edit preserves its prompt for later bound-session reentry 
   pending.resolve({ session: editSession, created: true });
   await first;
   assert.deepEqual(h.restores, []);
+  assert.equal(h.workspace.expandedProjectIds[editSession.project_id], false);
+  assert.deepEqual(h.reveals, []);
   await h.handler(editTarget, () => true);
   assert.deepEqual(h.restores, [editSession.session_id]);
-  assert.equal(useChatStore.getState().getRuntime(editSession.session_id).inputValue, 'appMarket.editPrompt:/game/index.html');
+  assert.match(useChatStore.getState().getRuntime(editSession.session_id).inputValue, /\/game\/index\.html/);
   assert.equal(useChatStore.getState().getRuntime('unrelated-draft').inputValue, 'keep my new task');
   useChatStore.getState().removeRuntime(editSession.session_id);
   useChatStore.getState().removeRuntime('unrelated-draft');
@@ -1861,6 +1894,7 @@ test('a failed coalesced edit releases its request so retry can succeed', async 
     tokens.push(params.edit_token);
     return tokens.length === 1 ? failure.promise : Promise.resolve({ session: editSession, created: true });
   });
+  h.workspace.workMode = 'work';
   const first = h.handler(editTarget, () => false);
   const second = h.handler(editTarget, () => true);
   failure.reject(new Error('offline'));
@@ -1872,8 +1906,12 @@ test('a failed coalesced edit releases its request so retry can succeed', async 
   assert.ok(tokens[0]);
   assert.equal(tokens[1], tokens[0]);
   assert.deepEqual(h.restores, [editSession.session_id]);
+  assert.deepEqual(h.modeChanges, ['code']);
+  assert.equal(h.workspace.expandedProjectIds[editSession.project_id], true);
   await h.handler(editTarget, () => true);
   assert.notEqual(tokens[2], tokens[0]);
+  assert.equal(h.workspace.expandedProjectIds[editSession.project_id], true);
+  assert.deepEqual(h.projectLoads, [editSession.project_id]);
   useChatStore.getState().removeRuntime(editSession.session_id);
 });
 
