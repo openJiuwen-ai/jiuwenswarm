@@ -1013,7 +1013,22 @@ def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = Fal
     # （!10678 第二轮检视）。
     reference_version = external_cli_reference_version(normalized_agent)
     if normalized_agent in EXTERNAL_CLI_AGENT_KINDS:
-        missing_modules = missing_external_cli_sdk_modules(normalized_agent)
+        try:
+            missing_modules = missing_external_cli_sdk_modules(normalized_agent)
+        except RuntimeError as exc:
+            # 清单缺失/损坏/schema 不符是环境级错误，与 _verify_installed_runtime
+            # 的验收失败同语义：按"内置 SDK 未就绪"降级为 missing（卡片出
+            # 一键安装入口），不让清单错误穿透到探测/保存接口——保存管线只把
+            # ValueError 转 BadRequest，RuntimeError 会变成 500（!10678 检视）。
+            return {
+                "cli_agent": normalized_agent,
+                "status": "missing",
+                "path": "",
+                "version": "",
+                "reference_version": reference_version,
+                "reason": "builtin_not_installed",
+                "message": f"{normalized_agent} builtin sdk not installed: manifest unavailable: {exc}",
+            }
         if missing_modules or not reference_version:
             return {
                 "cli_agent": normalized_agent,
