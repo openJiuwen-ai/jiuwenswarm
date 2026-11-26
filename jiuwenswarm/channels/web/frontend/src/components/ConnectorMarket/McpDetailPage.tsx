@@ -8,7 +8,7 @@ import { Unlink2, Trash2, Wrench, Terminal, AlertCircle, Info, ExternalLink, Pen
 // "卸载"（彻底删除，见 mcp.delete_custom），配图标也要换成垃圾桶——Unlink2 是"解绑"语义的图标，
 // 用在"删除"上不对，见下方按钮渲染处的 icon 条件。
 import { detailCacheKey, useConnectorStore } from '../../stores/connectorStore';
-import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
+import { Button, DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -17,6 +17,10 @@ import { canCancelConnect, deriveCardState, deriveMcpAvailability } from './mcpS
 import type { ConnectorConnectResponse, ConnectorIntegrationType } from '../../types/connector';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
+
+const MEMORY_CONNECTION = 'connectorMarket.detail.memoryConnection';
+const MEMORY_MCP_URL = 'AGENT_MEMORY_MCP_URL';
+const MEMORY_API_KEY = 'AGENT_MEMORY_API_KEY';
 
 // integrationType 决定了这个 MCP 的接入方式（要不要走 CLI OAuth、有没有"连接"按钮），之前
 // mcp.show 下发了这个字段但详情页完全没展示，用户看不出"为什么这个要跳浏览器授权""为什么那个
@@ -197,6 +201,28 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const isCustomize = connector.source === 'customize';
   const isHub = connector.source === 'hub';
   const isDeleteMode = isHub || (isCustomize && !linked);
+  const canConfigureMemory =
+    connectorInstalled && !isCustomize && runtimeName === 'agent-memory' && connector.integrationType === 'remote-mcp';
+
+  function editMemoryConnection() {
+    setTokenTarget({
+      type: 'credentials_required',
+      requiredTokens: [MEMORY_MCP_URL, MEMORY_API_KEY],
+      title: t(`${MEMORY_CONNECTION}.edit`),
+      description: t(`${MEMORY_CONNECTION}.hint`),
+      fields: {
+        [MEMORY_MCP_URL]: {
+          label: t(`${MEMORY_CONNECTION}.url`),
+          placeholder: 'http://127.0.0.1:8138/mcp',
+          type: 'text',
+        },
+        [MEMORY_API_KEY]: {
+          label: t(`${MEMORY_CONNECTION}.key`),
+          type: 'password',
+        },
+      },
+    });
+  }
 
   async function handleInstall() {
     setInstalling(true);
@@ -497,6 +523,25 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   />
                 ),
               )}
+            </div>
+          </DetailSection>
+        )}
+
+        {canConfigureMemory && (
+          <DetailSection
+            title={t('connectorMarket.detail.sections.connectionConfig')}
+            titleTestId="connector-market-memory-connection-title"
+          >
+            <div className="flex flex-col items-start gap-2">
+              <p className="text-text-muted">{t(`${MEMORY_CONNECTION}.hint`)}</p>
+              <Button
+                size="sm"
+                onClick={editMemoryConnection}
+                disabled={busy || installing || cardState === 'connecting'}
+                data-testid="connector-market-memory-connection-edit-button"
+              >
+                {t(`${MEMORY_CONNECTION}.edit`)}
+              </Button>
             </div>
           </DetailSection>
         )}

@@ -1187,6 +1187,7 @@ def init_session_metadata(
     npc_member: dict[str, Any] | None = None,
     npc_member_sessions: dict[str, str] | None = None,
     npc_session: bool = False,
+    session_equipment: dict[str, Any] | None = None,
 ) -> None:
     """初始化会话元数据(同步写,确保创建后立即可读)
 
@@ -1250,6 +1251,8 @@ def init_session_metadata(
             }
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
+    if session_equipment is not None:
+        metadata["session_equipment"] = copy.deepcopy(session_equipment)
     # 配额门禁：metadata.json 落盘前检查（对齐 !7494；覆盖 designer/rename 等
     # 不经 session.create bootstrap 预检的调用方）。
     try:

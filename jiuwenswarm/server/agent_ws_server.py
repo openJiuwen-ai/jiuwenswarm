@@ -128,6 +128,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.runtime import AgentRuntime
+from jiuwenswarm.runtime.service import is_stateless_method_request
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES, RuntimeEvent
 from jiuwenswarm.runtime.host_services import (
     install_runtime_push_handler,
@@ -1827,6 +1828,16 @@ class AgentWebSocketServer:
         # 端口已 listen, 后台预热 checkpointer, 不阻塞启动与握手.
         # _checkpointer_warmup_task 供 shutdown 时 cancel, 避免任务悬挂.
         async def _start_runtime() -> None:
+            from jiuwenswarm.server.runtime.managed_memory_http import start_bundled_memory_http
+
+            memory_start = asyncio.create_task(asyncio.to_thread(start_bundled_memory_http))
+            try:
+                await asyncio.shield(memory_start)
+            except asyncio.CancelledError:
+                await asyncio.gather(memory_start, return_exceptions=True)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] built-in memory HTTP startup failed (%s)", type(exc).__name__)
             retry_delay = 1.0
             while True:
                 try:
@@ -2434,6 +2445,12 @@ class AgentWebSocketServer:
             # unfinished two-phase provision still needs its original owner to
             # commit or abort it before shutdown can be retried.
             if runtime_close_completed or closing_runtime.closed:
+                from jiuwenswarm.server.runtime.managed_memory_http import managed_memory_http
+
+                try:
+                    await asyncio.to_thread(managed_memory_http.stop)
+                except Exception:  # noqa: BLE001
+                    logger.warning("[AgentWebSocketServer] managed memory HTTP shutdown failed")
                 # AgentRuntime is intentionally one-shot for process-style CLI
                 # commands. AgentServer historically supports start after stop,
                 # so prepare a fresh Runtime, manager and plan-state owner for
@@ -4405,14 +4422,8 @@ class AgentWebSocketServer:
 
     @staticmethod
     def _is_stateless_method_request(request: AgentRequest) -> bool:
-        """Return True for prefix-matched read-only RPCs that skip adapter setup."""
-        return (
-            request.req_method is not None
-            and request.req_method.value.startswith(
-                ("skills.", "skilldev.", "plugins.", "symphony.",
-                 "agent_groups.", "agent_templates.", "plugin_packages.")
-            )
-        )
+        """Return True for RPCs that skip session adapter setup."""
+        return is_stateless_method_request(request)
 
     # Skill plaza / catalog reads that must work even when the chat session
     # attached by the UI has been permanently deleted (#5886). Write RPCs such
@@ -14436,6 +14447,8 @@ class AgentWebSocketServer:
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
+            if result.session_equipment is not None:
+                payload["session_equipment"] = result.session_equipment
             if result.execution_profile != "default":
                 payload["execution_profile"] = result.execution_profile
                 payload["mode"] = result.canonical_mode
