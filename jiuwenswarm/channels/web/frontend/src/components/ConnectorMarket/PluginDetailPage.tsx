@@ -143,6 +143,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   }
 
   const title = localizedText(detail.displayName, i18n.language);
+  const memoryHttp = detail.memoryAccess?.managed_http;
   const linked = connectionState === 'connected';
   const installBusy = installing || storeBusy || installFlow.active;
 
@@ -302,6 +303,17 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           title={t('connectorMarket.detail.sections.basicInfo')}
         >
           <p>{localizedText(detail.displayDescription, i18n.language)}</p>
+          {memoryHttp && (
+            <div className="flex flex-col gap-1">
+              <strong>{t('connectorMarket.detail.memoryAccess.managedHttp')}</strong>
+              <div>
+                {t(memoryHttp.running
+                  ? 'connectorMarket.detail.memoryAccess.serviceRunning'
+                  : 'connectorMarket.detail.memoryAccess.serviceStopped')}
+              </div>
+              {memoryHttp.running && <div>{memoryHttp.base_url}</div>}
+            </div>
+          )}
         </DetailSection>
 
         {/* "试试这样用"——照抄 McpDetailPage.tsx 同款示例区，2026-08-21 后端 show 接口新增

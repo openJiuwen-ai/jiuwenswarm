@@ -369,6 +369,29 @@ async def test_create_prepares_metadata_and_commits_kvc_after_delivery(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_opt_out", [False, True])
+async def test_new_session_persists_default_memory_selection(monkeypatch, tmp_path, legacy_opt_out):
+    from jiuwenswarm.agents.harness.common.memory import plugin
+    from jiuwenswarm.common import paths
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_equipment
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(plugin, "get_config", lambda: {"memory": {"engine": "none"}} if legacy_opt_out else {})
+    monkeypatch.setattr(plugin, "is_enterprise", lambda: False)
+    plugin.ensure_memory_plugin_installed()
+    provisioner = _provisioner(state)
+    prepared = await provisioner.prepare_session_create(_input())
+    try:
+        expected = [plugin.MEMORY_PLUGIN_ID]
+        assert get_session_equipment(prepared.result.session_id).get("plugin_names") == expected
+        assert (prepared.result.session_equipment or {}).get("plugin_names") == expected
+    finally:
+        await provisioner.abort_session_provision(prepared)
+
+
+@pytest.mark.asyncio
 async def test_moa_create_persists_selection_and_bypasses_normal_warm_pool(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 

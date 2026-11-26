@@ -3822,8 +3822,10 @@ function AppContent({
       );
       moveConversationDraft(NEW_CONVERSATION_ID, newSid);
 
+      if (created.session_equipment) restoreSessionEquipment(newSid, created.session_equipment);
       (pendingRuntime?.selectedSkills ?? []).forEach((skill) => sessionStore.addSelectedSkill(newSid, skill));
       (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
+      (pendingRuntime?.draftDisabledPlugins ?? []).forEach((id) => sessionStore.removeEnabledPlugin(newSid, id));
       (pendingRuntime?.enabledMcps ?? []).forEach((name) => sessionStore.addEnabledMcp(newSid, name));
       if (pendingRuntime?.metadata) sessionStore.setSessionMetadata(newSid, pendingRuntime.metadata);
       if (pendingRuntime?.teamGroupIdentity) {
@@ -4083,8 +4085,10 @@ function AppContent({
         // 同样搬家：欢迎页（'new'）上如果已经通过"+"菜单"扩展"面板开了某些插件/MCP 的会话内
         // 开关（或者是"使用"按钮带过来的 initialEnabledPlugins/initialEnabledMcps），真实
         // session_id 创建后要跟着过去，否则下面 removeRuntime('new') 会把这些选择直接冲掉。
+        if (created.session_equipment) restoreSessionEquipment(newSid, created.session_equipment);
         const pendingEnabledPlugins = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.enabledPlugins ?? [];
         pendingEnabledPlugins.forEach((id) => useSessionStore.getState().addEnabledPlugin(newSid, id));
+        (newRuntime?.draftDisabledPlugins ?? []).forEach((id) => useSessionStore.getState().removeEnabledPlugin(newSid, id));
         useSessionStore.getState().clearEnabledPlugins(NEW_CONVERSATION_ID);
         const pendingEnabledMcps = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.enabledMcps ?? [];
         pendingEnabledMcps.forEach((name) => useSessionStore.getState().addEnabledMcp(newSid, name));

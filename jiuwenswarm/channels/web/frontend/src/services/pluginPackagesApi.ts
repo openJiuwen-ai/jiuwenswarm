@@ -5,6 +5,7 @@ import type {
   LocalizedText,
   PluginCapabilityRef,
   PluginConnectionState,
+  MemoryPluginAccess,
   PluginPackageDetail,
   PluginPackageSource,
   PluginPackageSummary,
@@ -83,6 +84,7 @@ interface RawPluginPackageSummary {
   source?: PluginPackageSource;
   avatar?: string;
   installed?: boolean;
+  default_enabled?: boolean;
   // v2 §3.1：connection_state 是 snake_case（跟这个接口族其余字段的驼峰写法不一致，但文档
   // 原文就是这么给的，如实照抄，不擅自"统一"成驼峰再要求后端改）。
   connection_state?: PluginConnectionState;
@@ -99,6 +101,7 @@ function fromRawSummary(raw: RawPluginPackageSummary): PluginPackageSummary {
     source: normalizeEquipmentSource(raw.source, 'local'),
     avatar: raw.avatar,
     installed: raw.installed ?? false,
+    ...(raw.default_enabled === undefined ? {} : { defaultEnabled: raw.default_enabled }),
     // 未提供时按"未就绪"兜底（不是像旧 connected 占位那样恒 true）——connectionState 现在是
     // 真实门禁判断依据（installed && connectionState==='connected' 才能发消息，见 v2 §1.3），
     // 数据缺失时宁可让 UI 走"需要连接"分支，也不要在没有真实信号时假装已就绪。
@@ -108,6 +111,7 @@ function fromRawSummary(raw: RawPluginPackageSummary): PluginPackageSummary {
 }
 
 interface RawPluginPackageDetail extends RawPluginPackageSummary {
+  memory_access?: MemoryPluginAccess;
   version?: string;
   details?: string;
   tags: LocalizedText[];
@@ -126,6 +130,7 @@ function fromRawDetail(raw: RawPluginPackageDetail): PluginPackageDetail {
     ...fromRawSummary(raw),
     version: raw.version,
     details: raw.details,
+    memoryAccess: raw.memory_access,
     tags: raw.tags ?? [],
     skills: raw.skills ?? [],
     tools: raw.tools ?? [],
