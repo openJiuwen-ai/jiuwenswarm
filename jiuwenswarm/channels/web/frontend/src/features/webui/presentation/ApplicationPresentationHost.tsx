@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore, useWorkspaceStore } from '../../../stores/index.ts';
@@ -14,7 +15,7 @@ import { useOptionalWebUIAppContext, useWebUIRuntime } from '../react/WebUIProvi
 import { createPresentationStartHandler, PRESENTATION_START_EVENT, PRESENTATION_RESULT_METHOD } from './start.ts';
 import {
   createPresentationRequests, parsePresentationRequest, PRESENTATION_SLOT,
-  type PresentationConversation, type PresentationRequest, type PresentationState, type PresentationNativeApi,
+  type PresentationConversation, type PresentationRequest, type PresentationState, type PresentationNativeApi, type PresentationChild,
 } from './protocol.ts';
 
 export interface ApplicationPresentationHostProps {
@@ -76,6 +77,9 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
   const closing = useRef<{
     api: PresentationNativeApi; key: string; pending: Promise<unknown> | null;
   } | null>(null);
+  const childWindows = useRef(new Map<string, { generation: string; parentGeneration: string }>());
+  const childSync = useRef<Promise<unknown> | null>(null);
+  const requestLedgers = useRef(new Map<string, ReturnType<typeof createPresentationRequests>>());
   const pendingStart = useRef<PresentationDeclaration | null>(null);
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState('');
@@ -150,6 +154,9 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
     presentationId.current = null;
     activation.current = null;
     pendingStart.current = null;
+    childWindows.current.clear();
+    childSync.current = null;
+    requestLedgers.current.clear();
     setIsActive(false);
   }, []);
   const closePendingSurface = useCallback((): Promise<unknown> => {
@@ -217,7 +224,8 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
           if (activation.current !== pending) fail('STALE_REQUEST');
           const conversation = latest.current!.conversations.find((item) => item.conversationKey === selected.current);
           if (conversation && conversation.conversationKey !== callbacks.current.sessionId) {
-            await callbacks.current.onSelect(conversation);
+            await callbacks.current.onSelect(conversation.sessionId === 'new'
+              ? { ...conversation, mode: 'agent' } : conversation);
           }
           if (activation.current !== pending) fail('STALE_REQUEST');
           return opened;
@@ -314,6 +322,9 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
     activation.current = null;
     pendingStart.current = null;
     presentationId.current = null;
+    childWindows.current.clear();
+    childSync.current = null;
+    requestLedgers.current.clear();
     const shutdown = declaration && api ? closeSurface(api, declaration.key) : closePendingSurface();
     void shutdown.catch((error) => console.error('Presentation shutdown failed', error));
     overlay.dispose();
@@ -331,19 +342,65 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
   }, [desktopApi, i18n, port, runtime]);
 
   useEffect(() => {
-    let ledgerGeneration: string | null = null;
-    let ledger: ReturnType<typeof createPresentationRequests> | null = null;
+    const ledgers = requestLedgers.current;
     const sending = new Set<string>();
     const changing = new Set<string>();
-    const execute = async (request: PresentationRequest, requestGeneration: string, api: PresentationNativeApi) => {
+    let creatingConversation = false;
+    // A request is current on the active parent window or on a child whose parent generation still matches.
+    const currentRequest = (windowKey: string, requestGeneration: string) =>
+      (active.current?.key === windowKey && generation.current === requestGeneration)
+      || (childWindows.current.get(windowKey)?.generation === requestGeneration
+        && childWindows.current.get(windowKey)?.parentGeneration === generation.current);
+    const execute = async (request: PresentationRequest, requestGeneration: string, windowKey: string, api: PresentationNativeApi) => {
       const declaration = active.current;
       if (!declaration || !latest.current!.connected) return fail('DISCONNECTED');
-      if (generation.current !== requestGeneration) fail('STALE_REQUEST');
+      if (!currentRequest(windowKey, requestGeneration)) fail('STALE_REQUEST');
       const p = request.params;
       const key = p.conversationKey as string | undefined;
       const conversation = key ? latest.current!.conversations.find((item) => item.conversationKey === key) : null;
       if (key && !conversation) fail('TARGET_INACTIVE');
       switch (request.action) {
+        case 'createConversation': {
+          if (windowKey !== declaration!.key) fail('TARGET_INACTIVE');
+          if (creatingConversation || sending.has('new') || changing.has('new')) fail('REQUEST_BUSY');
+          const draft = latest.current!.conversations.find((item) => item.sessionId === 'new');
+          if (!draft?.canSend) fail('CONVERSATION_BUSY');
+          creatingConversation = true;
+          sending.add('new');
+          try {
+            const target = { ...draft!, mode: p.mode as string };
+            await callbacks.current.onSelect(target);
+            if (!currentRequest(windowKey, requestGeneration)) fail('STALE_REQUEST');
+            useChatStore.getState().ensureRuntime('new');
+            useChatStore.getState().setInputValue('new', p.text as string);
+            const sent = await callbacks.current.onSend(target, p.text as string);
+            if (!currentRequest(windowKey, requestGeneration)) fail('STALE_REQUEST');
+            if (sent.conversationKey && sent.conversationKey !== 'new') selected.current = sent.conversationKey;
+            latest.current = readSnapshotRef.current();
+            setRevision((value) => value + 1);
+            if (!sent.accepted || !sent.conversationKey || sent.conversationKey === 'new') fail('SEND_FAILED');
+            return { conversationKey: sent.conversationKey };
+          } finally { creatingConversation = false; sending.delete('new'); }
+        }
+        case 'children': {
+          if (windowKey !== declaration!.key) fail('TARGET_INACTIVE');
+          // Only the native desktop source implements child windows; in-app overlays stay single-surface.
+          if (!api.children) fail('WINDOWS_UNSUPPORTED');
+          if (childSync.current) fail('REQUEST_BUSY');
+          const sync = api.children!(declaration!.key, requestGeneration, p.windows as PresentationChild[]).then((result) => {
+            if (!currentRequest(windowKey, requestGeneration)) fail('STALE_REQUEST');
+            const previous = childWindows.current;
+            childWindows.current = new Map(result.windows.map((item) => [item.key,
+              { generation: item.generation, parentGeneration: requestGeneration }]));
+            for (const item of previous.values()) {
+              if (!result.windows.some((entry) => entry.generation === item.generation)) ledgers.delete(item.generation);
+            }
+            return result;
+          });
+          childSync.current = sync;
+          try { return await sync; }
+          finally { if (childSync.current === sync) childSync.current = null; }
+        }
         case 'reply':
           if (selected.current !== key) fail('STALE_REQUEST');
           return replyReader.current.read(useChatStore.getState().runtimes[key!], p.replyId as number, p.offset as number, p.role as 'user' | 'assistant' | undefined);
@@ -358,8 +415,9 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
           } finally { changing.delete(key!); }
         }
         case 'select':
-          await callbacks.current.onSelect(conversation!);
-          if (generation.current !== requestGeneration) fail('STALE_REQUEST');
+          if (creatingConversation) fail('REQUEST_BUSY');
+          await callbacks.current.onSelect(key === 'new' ? { ...conversation!, mode: 'agent' } : conversation!);
+          if (!currentRequest(windowKey, requestGeneration)) fail('STALE_REQUEST');
           if (!latest.current!.conversations.some((item) => item.conversationKey === key)) fail('TARGET_INACTIVE');
           selected.current = key!;
           setRevision((value) => value + 1);
@@ -375,7 +433,7 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
           try {
             const sent = await callbacks.current.onSend(conversation!, p.text as string);
             if (!sent.accepted) fail('SEND_FAILED');
-            if (conversation!.sessionId === 'new' && generation.current === requestGeneration) selected.current = sent.conversationKey;
+            if (conversation!.sessionId === 'new' && currentRequest(windowKey, requestGeneration)) selected.current = sent.conversationKey;
             // Preserve edits made while waiting for the existing send receipt.
             if (useChatStore.getState().runtimes[key!]?.inputValue === p.text) {
               useChatStore.getState().setInputValue(key!, '');
@@ -389,43 +447,53 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
           if (!await callbacks.current.onStop(conversation!)) fail('ACTION_FAILED');
           return true;
         case 'workspace':
+          if (creatingConversation) fail('REQUEST_BUSY');
           if (declaration.mode === 'overlay' && p.transition) fail('UNSUPPORTED_ACTION');
           await callbacks.current.onWorkspace(conversation ?? null);
-          if (generation.current !== requestGeneration) fail('STALE_REQUEST');
+          if (!currentRequest(windowKey, requestGeneration)) fail('STALE_REQUEST');
           if (declaration.mode === 'overlay') return true;
           if (p.transition && !latest.current!.reducedMotion) {
             await api.transitionWorkspace(declaration!.key, p.transition as { durationMs: number });
           } else await api.close(declaration!.key);
           return true;
-        case 'resize': return api.resize(declaration!.key, p.width as number, p.height as number);
-        case 'move': return api.move(declaration!.key, p.deltaX as number, p.deltaY as number);
-        case 'hitTest': return api.hitTest(declaration!.key, p.interactive as boolean);
+        case 'resize': return api.resize(windowKey, p.width as number, p.height as number);
+        case 'move': return api.move(windowKey, p.deltaX as number, p.deltaY as number);
+        case 'hitTest': return api.hitTest(windowKey, p.interactive as boolean);
       }
     };
     const sources = desktopApi ? [desktopApi, overlay.api] : [overlay.api];
     const releases = sources.map((api) => {
       const offRequest = api.onRequest(async (envelope) => {
-        if (activeApi.current !== api || !active.current || active.current.key !== envelope.key) return;
+        if (activeApi.current !== api || !active.current) return;
+        const isChild = envelope.parentKey === active.current.key && envelope.parentGeneration === generation.current;
+        if (active.current.key !== envelope.key && !isChild) return;
         // Wait for surface readiness; queued messages never choose their own activation generation.
         const pending = activation.current;
         if (!pending) return;
         try { await pending; } catch { return; }
-        if (activation.current !== pending || activeApi.current !== api || !active.current || active.current.key !== envelope.key) return;
-        if (generation.current !== envelope.generation) return;
+        if (isChild && childSync.current) { try { await childSync.current; } catch { return; } }
+        if (activation.current !== pending || activeApi.current !== api || !active.current
+          || !currentRequest(envelope.key, envelope.generation)) return;
         const request = parsePresentationRequest(envelope.request);
         if (!request) return;
-        if (ledgerGeneration !== envelope.generation) {
-          ledgerGeneration = envelope.generation;
-          ledger = createPresentationRequests((request) => execute(request, envelope.generation, api), (error) => {
+        let ledger = ledgers.get(envelope.generation);
+        if (!ledger) {
+          ledger = createPresentationRequests((request) => execute(request, envelope.generation, envelope.key, api), (error) => {
             const code = error instanceof Error ? error.message : 'ACTION_FAILED';
             const message = words.current(`webuiPresentation.errors.${code}`, { defaultValue: words.current('webuiPresentation.actionFailed') });
             return { code, message };
           });
+          ledgers.set(envelope.generation, ledger);
         }
         void ledger!(request).then((result) => api.respond(envelope.generation, result))
           .catch(() => setNotice(words.current('webuiPresentation.actionFailed')));
       });
       const offClosed = api.onClosed(async (event) => {
+        if (childWindows.current.get(event.key)?.generation === event.generation) {
+          childWindows.current.delete(event.key);
+          ledgers.delete(event.generation);
+          return;
+        }
         const pending = activation.current;
         if (generation.current === null && pending) {
           try { await pending; } catch { return; }
