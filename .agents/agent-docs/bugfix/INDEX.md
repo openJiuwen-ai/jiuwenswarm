@@ -109,6 +109,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261117_2001_deferred-memory-failure](jiuwenswarm/agents/harness/common/rails/B_20261117_2001_deferred-memory-failure.md) | B | 延迟调用记忆工具时传播失败状态 | ToNy_St4rk | 无独立 D：修复 Issue 6151 中已有工具结果契约的状态传播，无独立设计。 |
+| [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
 
 <a id="module-jiuwenswarm-agents-harness-common-rsi"></a>
 
@@ -144,6 +145,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
+| [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
 
 <a id="module-jiuwenswarm-channels-desktop"></a>
 
@@ -370,6 +372,7 @@ generated: true
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 | [B_20261119_2249_deep-adapter-sync-build](jiuwenswarm/server/runtime/agent_adapter/B_20261119_2249_deep-adapter-sync-build.md) | B | DeepAdapter 冷启动同步构建阻塞事件循环 | yangzequ | 无独立 D：本次是对现有 DeepAdapter 创建链路的局部阻塞修复，无独立设计文档。 |
 | [B_20261121_1545_team-pause-teardown-admission-race](jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
+| [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 

@@ -53,8 +53,8 @@ generated: true
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
 | [jiuwenswarm/common/e2a](#module-jiuwenswarm-common-e2a) |
 | [jiuwenswarm/common/schema](#module-jiuwenswarm-common-schema) |
-| [jiuwenswarm/enterprise/team](#module-jiuwenswarm-enterprise-team) |
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
+| [jiuwenswarm/enterprise/team](#module-jiuwenswarm-enterprise-team) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
 | [jiuwenswarm/extensions/video_duplex](#module-jiuwenswarm-extensions-video_duplex) |
@@ -231,6 +231,7 @@ generated: true
 | [F_20261027_2015_bilingual-progressive-tool-discovery](features/jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [B_20261117_2001_deferred-memory-failure](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261117_2001_deferred-memory-failure.md) | B | 延迟调用记忆工具时传播失败状态 | ToNy_St4rk | 无独立 D：修复 Issue 6151 中已有工具结果契约的状态传播，无独立设计。 |
+| [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
@@ -311,6 +312,7 @@ generated: true
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
+| [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 
@@ -519,13 +521,6 @@ generated: true
 |---|---|---|---|---|
 | [F_20261116_2021_local-req-method](features/F_20261116_2021_local-req-method.md) | F | ReqMethod 本地维护与 E2A 字符串边界 | mingo007 | 无独立 D：按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。 |
 
-<a id="module-jiuwenswarm-enterprise-team"></a>
-
-## jiuwenswarm/enterprise/team
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 <a id="module-jiuwenswarm-debug_launcher-py"></a>
 
 ## jiuwenswarm/debug_launcher.py
@@ -534,6 +529,14 @@ generated: true
 |---|---|---|---|---|
 | [B_20261120_1958_debug-worker-shutdown-budget](bugfix/jiuwenswarm/B_20261120_1958_debug-worker-shutdown-budget.md) | B | Debug 重启提前终止正常清理中的 Worker | alan_cheng | 无独立 D：用户确认经真实子进程对照验证的局部修复；保留已有生命周期和身份保护，无独立设计文档。 |
 | [S_01_debug-shutdown](specs/jiuwenswarm/debug_launcher/S_01_debug-shutdown.md) | S | Debug 服务最终停止的预算与旧 Worker 选择 | alan_cheng | — |
+
+<a id="module-jiuwenswarm-enterprise-team"></a>
+
+## jiuwenswarm/enterprise/team
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 
 <a id="module-jiuwenswarm-extensions-app_market"></a>
 
@@ -763,6 +766,7 @@ generated: true
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 | [B_20261119_2249_deep-adapter-sync-build](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261119_2249_deep-adapter-sync-build.md) | B | DeepAdapter 冷启动同步构建阻塞事件循环 | yangzequ | 无独立 D：本次是对现有 DeepAdapter 创建链路的局部阻塞修复，无独立设计文档。 |
 | [B_20261121_1545_team-pause-teardown-admission-race](bugfix/jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
+| [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
