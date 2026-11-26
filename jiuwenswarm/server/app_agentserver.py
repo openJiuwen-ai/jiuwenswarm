@@ -160,6 +160,12 @@ async def _run(host: str, port: int) -> None:
     from jiuwenswarm.server.front.server import AgentServerFront
 
     _configure_openjiuwen_logging()
+    # The first config read imports openjiuwen.symphony (tens of seconds on a
+    # cold cache). Warm it in a daemon thread so front requests do not pay for
+    # the import on their event loop.
+    from jiuwenswarm.common.config import start_config_warm_up
+
+    start_config_warm_up()
     from jiuwenswarm.server.runtime.mcp.cli_env_patch import install_shell_patch
 
     install_shell_patch()
