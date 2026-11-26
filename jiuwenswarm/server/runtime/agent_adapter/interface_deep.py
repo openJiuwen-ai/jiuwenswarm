@@ -18318,13 +18318,8 @@ class JiuWenSwarmDeepAdapter:
         react_config = self._config_cache if isinstance(self._config_cache, dict) else {}
         return parse_input_guard_config(react_config.get("input_guard_config"))
 
-    @staticmethod
-    def _input_guard_language() -> str:
-        from jiuwenswarm.enterprise.config.preferred_language import (
-            resolve_preferred_language,
-        )
-
-        return resolve_preferred_language()
+    def _input_guard_language(self) -> str:
+        return self._resolve_prompt_language()
 
     async def _input_guard_budget(
         self,

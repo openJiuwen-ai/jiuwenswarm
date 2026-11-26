@@ -628,15 +628,13 @@ def _apply_swarmflow_budget(spec_dict: dict[str, Any], raw_value: Any) -> None:
     spec_dict["swarmflow_budget"] = budget_value
 
 
-def _resolve_team_runtime_language(config_base: dict[str, Any] | None) -> str:
+def _resolve_team_runtime_language() -> str:
     """Map UI preferred language to team harness ``cn`` / ``en``.
 
-    Same resolution source as single-agent / framework copy: prefer
-    ``resolve_preferred_language()`` (request memo with ``ui_language``
-    override, else yaml / ``en``), then ``config_base["preferred_language"]``
-    for callers that only pass a dict and never bind the memo, then ``en``.
-    Never passes bare ``zh`` into harness ``resolve_language`` (``cn`` / ``en``
-    only).
+    Always ``resolve_preferred_language()`` (memo after bind, else yaml / ``en``),
+    then ``to_runtime_language``. Does not read ``config_base`` — that would
+    reintroduce yaml/dict overriding request memo. Never passes bare ``zh``
+    into harness ``resolve_language`` (``cn`` / ``en`` only).
     """
     from jiuwenswarm.common.i18n import to_runtime_language
     from jiuwenswarm.enterprise.config.preferred_language import (
@@ -644,10 +642,6 @@ def _resolve_team_runtime_language(config_base: dict[str, Any] | None) -> str:
     )
 
     mapped = to_runtime_language(resolve_preferred_language())
-    if mapped is not None:
-        return mapped
-    cfg = config_base if isinstance(config_base, dict) else {}
-    mapped = to_runtime_language(cfg.get("preferred_language"))
     return mapped if mapped is not None else "en"
 
 
@@ -737,7 +731,7 @@ def load_team_spec_dict(
             raise ValueError("leader.goal is not supported for a CLI leader")
 
     spec_dict["agents"] = agents
-    spec_dict["language"] = _resolve_team_runtime_language(config_base)
+    spec_dict["language"] = _resolve_team_runtime_language()
 
     workspace_spec = _build_workspace_spec(team_raw)
     if workspace_spec is not None:
