@@ -713,7 +713,13 @@ export function ExternalCliAgentsSection({
       const historyPaths = parseExternalCliPathHistories(
         draftValues[externalCliKey(cliAgent, 'path_histories')],
       ).slice().reverse();
+      const builtinPath = builtinPaths[cliAgent] || '';
       for (const candidate of historyPaths) {
+        // 托管路径不得经历史回退固化成自定义 cli_path（!10307）：内置模式的
+        // cli_path 恒为空串，历史里的托管路径是旧版本残留，跳过它继续兜底。
+        if (builtinPath && candidate === builtinPath) {
+          continue;
+        }
         // 单条历史探测失败（传输错误等）视为不可用，继续下一条，
         // 不得中断整个启用流程丢掉内置兜底（!10678 第二轮检视）。
         let historyProbe;
@@ -730,7 +736,7 @@ export function ExternalCliAgentsSection({
       // draftValues 必须入依赖：path_histories 在关闭开关时才写入草稿，缺失会让
       // 本回调持有挂载时快照，同会话内关闭→重开读到空历史而回退内置（#6753）。
     },
-    [draftValues, onDetect],
+    [builtinPaths, draftValues, onDetect],
   );
 
   // Force dependency repair even when the executable choice is unchanged.

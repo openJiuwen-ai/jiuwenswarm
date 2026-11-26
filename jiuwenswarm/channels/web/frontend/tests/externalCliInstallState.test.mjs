@@ -905,6 +905,49 @@ test('re-enable restores the local path from histories written in the same sessi
   }
 });
 
+test('history fallback never promotes the builtin managed path into cli_path', async () => {
+  // !10678 检视：旧版本配置可能把内置托管路径写进 path_histories。托管路径由
+  // 安装器管理（升级/重装会挪位置），经历史回退固化成自定义 cli_path 与内置
+  // 语义相悖（!10307 同款约束）——回退必须跳过它，落到真正的本地路径。
+  const initial = {
+    external_cli_agent_claude_enabled: 'true',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+    // 历史按写入顺序：托管路径是最新一条（回退时最先被探测到）
+    external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude', '/bundled/claude']),
+  };
+  const BUILTIN = '/bundled/claude';
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: path === '/local/claude' || path === BUILTIN ? 'ok' : 'missing',
+    path: path === '/local/claude' || path === BUILTIN ? path : '',
+    builtin_path: BUILTIN,
+    message: path === '/local/claude' || path === BUILTIN ? '' : 'not found',
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: path === '/local/claude' || path === BUILTIN ? '0.171.0' : '',
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    await env.click(toggle);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: false, useBuiltin: false, cliPath: '/local/claude' }]);
+    // 配置回显：禁用态 cli_path 清空（一键安装曾翻内置的典型现场），历史保留
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'false',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '',
+    });
+    await env.click('[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]');
+    const last = env.commits.at(-1);
+    assert.equal(last[1].enabled, true, '重开应恢复启用');
+    assert.equal(last[1].useBuiltin, false, '历史里仍有可用本地路径，不应回退内置 CLI');
+    assert.equal(last[1].cliPath, '/local/claude', '托管路径必须被跳过，恢复真正的本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
 test('uploaded custom agents are listed after Claude and Codex', async () => {
   const section = await import('../node_modules/.cache/external-cli-section/components/ExternalCliAgentsSection.mjs');
   const customAgents = section.parseExternalCliCustomAgents(
