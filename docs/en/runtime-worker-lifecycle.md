@@ -69,7 +69,21 @@ The 90-second budget applies to transport recovery, not normal execution time. C
 
 If both IPC send and close fail, Front retains the original recovery waiters. A failed recovery subscription retires that connection before all preserved streams resume. Service stop cleans up waiters and background tasks even when IPC close raises.
 
-## Worker output logs
+## Automatic continuation of persistent Teams
+
+Normal persistent Teams record execution intent in the existing Session lifecycle resource when work starts. After a Worker exits, its replacement Runtime acquires only orphaned intents for its own deployment that should still execute. No browser connection or user “continue” message is required. Historical busy rows alone never authorize recovery.
+
+Recovery preserves the session, Team and checkpoint through the SDK's no-input start API. A replacement does not impersonate an old dispatch, replay the original Query or tools, or answer approvals. Missing checkpoints or bindings fail instead of creating a new Team.
+
+After `team.recovered`, an executing leader continues and an interrupted approval remains waiting. If the restored leader is idle, the application sends at most one attributed Runtime recovery notice per generation, quoting original human instructions from the existing transcript and asking it to reconcile saved context, tasks, files and effects before continuing. Missing instructions or an exceeded context budget fail explicitly rather than silently losing the task. This is not a new user task or a guarantee of exactly-once arbitrary effects. Unknown results require reconciliation or an explicit boundary.
+
+The Session Coordinator owns recovered work as `TEAM_BACKGROUND` for normal cancellation and close. Paused, cancelled, archived, deleted or ended work is not resurrected. Lifecycle locks, process creation times and recovery tokens fence ownership and wakeups. At most three consecutive admissions are attempted, with 10 and 20 seconds of backoff after the first two failures. Tool activity after ten stable minutes resets the failure count; exhaustion records `recovery_failed`.
+
+`team.snapshot.recovery` and `team.recovery` expose queryable and live facts. `restored` means the runtime was rebuilt; new tool activity is separate progress evidence. Worker `agent_ready` alone is not Team recovery. Pre-upgrade tasks without intent need one normal same-session submission to arm this mechanism. Bounded jobs and organization/group-chat recovery remain outside this scanner.
+
+A recovery stream that ends before emitting an admission event fails explicitly and releases its waiter; it does not imply successful recovery. A final recovery-snapshot read failure does not skip terminal notifications or runtime cleanup.
+
+## Worker output logs and incident evidence
 
 Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `logs/worker-logs/runtime-worker-*.stderr.log`. Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
 
@@ -86,3 +100,9 @@ The Worker maintenance thread cleans up historical files on its first run and ev
 - Files modified within the last 60 seconds are temporarily protected. Windows probes file delete sharing to protect inherited stderr handles without enumerating system processes. POSIX matches numeric real, effective, and saved UIDs before inspecting open files, so unresolved usernames and inaccessible files in other users' processes do not block cleanup. If process ownership or handles remain inaccessible, or the scan exceeds two seconds, base logs are retained with a warning; a partial scan is never treated as proof of closure. Completed archives can still be pruned. Archives that cannot be deleted while open in a viewer are retried later without blocking active-file rotation.
 
 Copy/truncate follows the application logger's existing policy; writes concurrent with the interval between the copied snapshot and truncation can be lost. Maintenance runs outside the business event loop, failures produce warnings, and shutdown waits at most 0.2 seconds for the maintenance thread. When a configured stderr file cannot be validated at startup, rotation stays disabled and emits a warning; missing parent configuration remains an expected silent skip. Limits reuse `_LOG_FILE_MAX_BYTES` and `_LOG_FILE_BACKUP_COUNT` in `common/utils.py`; no `config.yaml` option is added.
+
+Real Workers also write fatal and stalled-loop Python stacks to `get_agent_logs_dir()/runtime_diagnostics/worker-<pid>-<time>.fault.log`, separate from stderr. Eight files are retained; healthy heartbeats truncate the current stall log above 5 MiB, with a fatal stack potentially appending more data. These are not native OS minidumps and cannot replace native access-violation stack analysis.
+
+The Worker process owns the fault file. Repeated enabling does not reopen it. Normal exit disables diagnostic timers and handlers before closing the file; failed enabling also releases any opened file.
+
+Supervisor incidents include observation time, Worker instance, available exit code, RSS, thread count and available system memory. Twelve snapshots are retained. No command lines, model inputs or queued business payloads are collected. Evidence failures do not block recovery; these improvements do not prove the underlying heartbeat or crash cause is fixed.

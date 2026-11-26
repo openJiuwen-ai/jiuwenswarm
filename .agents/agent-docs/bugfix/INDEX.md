@@ -14,6 +14,8 @@ generated: true
 
 | 模块 |
 |---|
+| [agent-gateway/channel_manager/web](#module-agent-gateway-channel_manager-web) |
+| [agent-gateway/extensions/runtime_management_extension](#module-agent-gateway-extensions-runtime_management_extension) |
 | [agent_gateway/channel_manager/im_platforms/xiaoyi](#module-agent_gateway-channel_manager-im_platforms-xiaoyi) |
 | [agent_gateway/message_handler](#module-agent_gateway-message_handler) |
 | [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
@@ -41,6 +43,7 @@ generated: true
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
 | [jiuwenswarm/enterprise/config](#module-jiuwenswarm-enterprise-config) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
+| [jiuwenswarm/extensions/runtime_management_extension](#module-jiuwenswarm-extensions-runtime_management_extension) |
 | [jiuwenswarm/observability](#module-jiuwenswarm-observability) |
 | [jiuwenswarm/resources](#module-jiuwenswarm-resources) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
@@ -68,6 +71,22 @@ generated: true
 | [tests/unit_tests/server](#module-tests-unit_tests-server) |
 | [tests/unit_tests/server/extensions](#module-tests-unit_tests-server-extensions) |
 | [未分类](#module-unclassified) |
+
+<a id="module-agent-gateway-channel_manager-web"></a>
+
+## agent-gateway/channel_manager/web
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
+
+<a id="module-agent-gateway-extensions-runtime_management_extension"></a>
+
+## agent-gateway/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-agent_gateway-channel_manager-im_platforms-xiaoyi"></a>
 
@@ -110,6 +129,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261124_1602_issue-4327-observability](observability/B_20261124_1602_issue-4327-observability.md) | B | issue 4327：统一可观测性配置并分离轨迹存储与导出 | hh0205 | 无独立 D：依据 GitCode jiuwenswarm issue 4327，统一 observability 开关并分离轨迹存储、演进采集和可观测性导出的职责，无独立 D 文档。 |
+| [B_20261124_1717_main-agent-template-trace](jiuwenswarm/server/runtime/agent_adapter/B_20261124_1717_main-agent-template-trace.md) | B | 企业版 Work、Code 的主 Agent Trace 显示默认名 | 垚垚 | 无独立 D：本次修复企业版 Work、Code 主 Agent 的 Trace 展示名，沿用现有会话配置与观测接口，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-code-rails-heartbeat"></a>
 
@@ -288,8 +308,9 @@ generated: true
 | [B_20261121_0108_pypi-update-version-baseline](jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
 | [B_20261124_1602_issue-4327-observability](observability/B_20261124_1602_issue-4327-observability.md) | B | issue 4327：统一可观测性配置并分离轨迹存储与导出 | hh0205 | 无独立 D：依据 GitCode jiuwenswarm issue 4327，统一 observability 开关并分离轨迹存储、演进采集和可观测性导出的职责，无独立 D 文档。 |
 | [B_20261124_2201_rea-npx-readiness](jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
-| [B_20261125_2150_windows-installer-restore-bootstrap](scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
 | [B_20261125_1146_design-shared-path-regressions](jiuwenswarm/channels/web/B_20261125_1146_design-shared-path-regressions.md) | B | Design 公共路径历史回归防护 | Huang, Zeyu | 无独立 D：依据历史 issue 和当前公共路径契约补回归测试，无独立设计方案；不重构产品代码。 |
+| [B_20261125_2150_windows-installer-restore-bootstrap](scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
+| [B_20261126_1725_profile-migration-self-alias](jiuwenswarm/common/B_20261126_1725_profile-migration-self-alias.md) | B | 防止 profile 布局迁移经兼容路径删除自身持久数据 | MengHan18 | 无独立 D：修复重启恢复回归暴露的数据迁移幂等缺陷，不改变既有 profile 布局。 |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 
@@ -327,6 +348,14 @@ generated: true
 | [B_20261105_1459_web-url-host-403](jiuwenswarm/extensions/app_market/web-url-host-403.md) | B | Web 应用入口 403：静态服务未放行应用专属 localhost 主机 | kdgmpw | 无独立 D：依据 S_02_app-market-stop-and-page-lifecycle 的 Web 入口与来源隔离契约；本次修复使实现重新满足既有契约，无独立 D。 |
 | [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 | [B_20261124_1429_local-app-removal-and-conversion](jiuwenswarm/extensions/app_market/B_20261124_1429_local-app-removal-and-conversion.md) | B | 应用市场本地清理和 Hub 转换的一致性 | kdgmpw | 无独立 D：本次修正应用市场登记、目录归属与转换行为，沿用 S_03 契约和现有项目接口，无独立设计。 |
+
+<a id="module-jiuwenswarm-extensions-runtime_management_extension"></a>
+
+## jiuwenswarm/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-jiuwenswarm-observability"></a>
 
@@ -453,8 +482,9 @@ generated: true
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 | [B_20261119_2249_deep-adapter-sync-build](jiuwenswarm/server/runtime/agent_adapter/B_20261119_2249_deep-adapter-sync-build.md) | B | DeepAdapter 冷启动同步构建阻塞事件循环 | yangzequ | 无独立 D：本次是对现有 DeepAdapter 创建链路的局部阻塞修复，无独立设计文档。 |
 | [B_20261121_1545_team-pause-teardown-admission-race](jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
-| [B_20261126_1052_team-memory-rail-race](jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
+| [B_20261124_1717_main-agent-template-trace](jiuwenswarm/server/runtime/agent_adapter/B_20261124_1717_main-agent-template-trace.md) | B | 企业版 Work、Code 的主 Agent Trace 显示默认名 | 垚垚 | 无独立 D：本次修复企业版 Work、Code 主 Agent 的 Trace 展示名，沿用现有会话配置与观测接口，无独立设计文档。 |
 | [B_20261126_1045_ui-lang-over-yaml-zh](jiuwenswarm/enterprise/config/B_20261126_1045_ui-lang-over-yaml-zh.md) | B | 企业版 UI 语言被 AgentServer yaml preferred_language zh 盖过 | whds5279 | 无独立 D：无独立 D；依据 issue |
+| [B_20261126_1052_team-memory-rail-race](jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 

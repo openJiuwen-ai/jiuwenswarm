@@ -3770,9 +3770,15 @@ class JiuWenSwarm:
                 if cancel_source == E2A_CANCEL_SOURCE_CLIENT_DISCONNECT
                 else "stop"
             )
+            recovery_stopped = False
+            if workflow_disposition == "stop":
+                from jiuwenswarm.server.runtime.team_recovery import stop as stop_recovery
+
+                recovery_stopped = await asyncio.to_thread(stop_recovery, session_id, "cancelled")
             cancelled = await team_manager.cancel_session_runtime(
                 session_id, reason=reason, workflow_disposition=workflow_disposition
             )
+            cancelled = cancelled or recovery_stopped
             if workflow_disposition == "stop":
                 from jiuwenswarm.enterprise.team.session_live import (
                     stop_team_session_live,

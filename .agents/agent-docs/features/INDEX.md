@@ -58,6 +58,8 @@ generated: true
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
+| [jiuwenswarm/server/supervisor](#module-jiuwenswarm-server-supervisor) |
+| [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
 | [scripts](#module-scripts) |
 | [tests](#module-tests) |
 
@@ -159,6 +161,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261104_1225_npc-team-member-sessions](F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](../designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261111_1755_team-leader-goal](F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](../designs/active/D-20261111-1722-team-goal-config/design.md) |
+| [F_20261123_1801_team-worker-automatic-recovery](F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-team-rails"></a>
 
@@ -389,6 +392,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261103_1501_app-role-session](app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](../designs/active/D-20261103-1444-app-role-session/design.md) |
 | [F_20261104_1225_npc-team-member-sessions](F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](../designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
+| [F_20261123_1801_team-worker-automatic-recovery](F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 
 <a id="module-jiuwenswarm-server"></a>
 
@@ -427,6 +431,7 @@ generated: true
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261117_1752_colleague-swarmchat](F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261121_0906_swarmchat-auto-reply](F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](../designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
+| [F_20261123_1801_team-worker-automatic-recovery](F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 
 <a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 
@@ -471,6 +476,22 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261103_1149_builtin-skill-catalog](builtin-skill-catalog.md) | F | 内置能力总目录实施记录 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](../designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
+
+<a id="module-jiuwenswarm-server-supervisor"></a>
+
+## jiuwenswarm/server/supervisor
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261123_1801_team-worker-automatic-recovery](F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
+
+<a id="module-jiuwenswarm-server-worker"></a>
+
+## jiuwenswarm/server/worker
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261123_1801_team-worker-automatic-recovery](F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 
 <a id="module-scripts"></a>
 

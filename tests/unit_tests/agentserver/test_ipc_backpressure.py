@@ -416,6 +416,14 @@ async def test_worker_process_inherits_stdout_and_persists_stderr(
             await listener.close()
 
 
+def _native_fault_dump(worker_pid: int) -> Path:
+    from jiuwenswarm.common.paths import get_agent_logs_dir
+
+    matches = list((get_agent_logs_dir() / "runtime_diagnostics").glob(f"worker-{worker_pid}-*.fault.log"))
+    assert len(matches) == 1, "The fault-injection Worker must own exactly one native stack file"
+    return matches[0]
+
+
 @asynccontextmanager
 async def _worker(mode, tmp_path, monkeypatch, *, max_restarts=0):
     fixture = Path(__file__).parent / "fixtures" / "diagnostic_worker.py"
@@ -898,8 +906,9 @@ async def test_real_missing_heartbeats_triggers_transport_watchdog(
                 )
                 failure = json.loads(await asyncio.wait_for(receive_business_frame(client), 3))
                 assert "WORKER_CLOSED" in json.dumps(failure)
-                stderr = process.stderr_path.read_text(encoding="utf-8")
-                assert "Timeout (0:00:25)" in stderr
+                fault_path = _native_fault_dump(worker_pid)
+                fault = fault_path.read_text(encoding="utf-8")
+                assert "Timeout (0:00:25)" in fault
                 dump = supervisor._last_dump_path.read_text(encoding="utf-8")
                 assert "ASYNCIO TASKS" in dump and "THREAD STACKS" in dump
                 snapshot = json.loads(dump.splitlines()[0])
@@ -916,6 +925,7 @@ async def test_real_missing_heartbeats_triggers_transport_watchdog(
                             "worker_exit_code": process.returncode,
                             "watchdog_seconds": time.monotonic() - started,
                             "native_stack_dump": "passed",
+                            "native_fault_file": str(fault_path),
                             "async_stack_dump": "passed",
                             "stderr": str(process.stderr_path),
                             "diagnostic_dump": str(supervisor._last_dump_path),
@@ -975,14 +985,16 @@ async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
                     assert supervisor._restart_count == 0
                     assert "heartbeat timed out" not in caplog.text
                     assert not any("runtime worker closed" in json.dumps(frame) for frame in frames)
-                    stderr = process.stderr_path.read_text(encoding="utf-8")
-                    assert "Timeout (0:00:25)" in stderr and "dispatch_parsed_request" in stderr
+                    fault_path = _native_fault_dump(pid)
+                    fault = fault_path.read_text(encoding="utf-8")
+                    assert "Timeout (0:00:25)" in fault and "dispatch_parsed_request" in fault
                     (tmp_path / "acceptance.json").write_text(json.dumps({
                         "case": "queued_sessions_during_stall", "pid": pid,
                         "transport": transport,
                         "stall_seconds": 60, "heartbeat_timeout": 30, "sessions": 4,
                         "later_requests_completed": 3, "restarts": 0,
                         "stderr": str(process.stderr_path), "native_stack_dump": True,
+                        "native_fault_file": str(fault_path),
                     }, indent=2), encoding="utf-8")
                 finally:
                     receiver.cancel()

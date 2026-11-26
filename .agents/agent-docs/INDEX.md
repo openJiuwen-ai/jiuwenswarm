@@ -15,6 +15,8 @@ generated: true
 | 模块 |
 |---|
 | [agent-core/openjiuwen/agent_teams](#module-agent-core-openjiuwen-agent_teams) |
+| [agent-gateway/channel_manager/web](#module-agent-gateway-channel_manager-web) |
+| [agent-gateway/extensions/runtime_management_extension](#module-agent-gateway-extensions-runtime_management_extension) |
 | [agent_gateway/channel_manager/im_platforms/xiaoyi](#module-agent_gateway-channel_manager-im_platforms-xiaoyi) |
 | [agent_gateway/message_handler](#module-agent_gateway-message_handler) |
 | [agent_teams](#module-agent_teams) |
@@ -58,6 +60,7 @@ generated: true
 | [jiuwenswarm/enterprise/config](#module-jiuwenswarm-enterprise-config) |
 | [jiuwenswarm/enterprise/team](#module-jiuwenswarm-enterprise-team) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
+| [jiuwenswarm/extensions/runtime_management_extension](#module-jiuwenswarm-extensions-runtime_management_extension) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
 | [jiuwenswarm/extensions/video_duplex](#module-jiuwenswarm-extensions-video_duplex) |
 | [jiuwenswarm/extensions_v2](#module-jiuwenswarm-extensions_v2) |
@@ -101,6 +104,22 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | D | SwarmChat 群成员自动判断是否回复设计方案 | weichenhao | — |
+
+<a id="module-agent-gateway-channel_manager-web"></a>
+
+## agent-gateway/channel_manager/web
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
+
+<a id="module-agent-gateway-extensions-runtime_management_extension"></a>
+
+## agent-gateway/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-agent_gateway-channel_manager-im_platforms-xiaoyi"></a>
 
@@ -188,6 +207,7 @@ generated: true
 | [F_20261111_1528_unified-observability-config](features/F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 | [F_20261117_2300_conflict-free-tool-registry](features/F_20261117_2300_conflict-free-tool-registry.md) | F | 内置工具声明式自发现注册表与文档索引无冲突合并机制 | zhuxiangju | 无独立 D：架构级消除多分支并行开发工具与文档时的中心注册表及索引冲突热点。 |
 | [B_20261124_1602_issue-4327-observability](bugfix/observability/B_20261124_1602_issue-4327-observability.md) | B | issue 4327：统一可观测性配置并分离轨迹存储与导出 | hh0205 | 无独立 D：依据 GitCode jiuwenswarm issue 4327，统一 observability 开关并分离轨迹存储、演进采集和可观测性导出的职责，无独立 D 文档。 |
+| [B_20261124_1717_main-agent-template-trace](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261124_1717_main-agent-template-trace.md) | B | 企业版 Work、Code 的主 Agent Trace 显示默认名 | 垚垚 | 无独立 D：本次修复企业版 Work、Code 主 Agent 的 Trace 展示名，沿用现有会话配置与观测接口，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-code-rails-heartbeat"></a>
 
@@ -291,12 +311,14 @@ generated: true
 | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) | D | Swarm 团队 Goal 配置接入方案 | alan_cheng | — |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
+| [F_20261123_1801_team-worker-automatic-recovery](features/F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 | [B_20261112_1405_stop-btn-stuck-after-skip](bugfix/jiuwenswarm/B_20261112_1405_stop-btn-stuck-after-skip.md) | B | 集群模式跳过后停止按钮永久卡死：interrupt 收尾窗口护栏 | xiajing | 无独立 D：依据现场日志与轨迹定位，无独立设计文档；修复范围限定前端状态机护栏，并补后端判据不变量测试。 |
 | [B_20261121_1545_team-pause-teardown-admission-race](bugfix/jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
 | [B_20261121_1817_parked-team-busy-snapshot-reseed](bugfix/jiuwenswarm/B_20261121_1817_parked-team-busy-snapshot-reseed.md) | B | 暂停后页面持续转圈：挂起团队忙闲快照读到内存名册残留 | zhanglongmin | 无独立 D：依据运行日志与逐跳代码核实定位，无独立设计文档；修复走 Core 既有公开契约，不修改 agent-core。 |
 | [B_20261126_1045_ui-lang-over-yaml-zh](bugfix/jiuwenswarm/enterprise/config/B_20261126_1045_ui-lang-over-yaml-zh.md) | B | 企业版 UI 语言被 AgentServer yaml preferred_language zh 盖过 | whds5279 | 无独立 D：无独立 D；依据 issue |
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
+| [S_02_team-automatic-recovery](specs/jiuwenswarm/server/runtime/S_02_team-automatic-recovery.md) | S | 普通持久 Team 的 Worker 换代自动续跑 | MengHan18 | — |
 
 <a id="module-jiuwenswarm-agents-harness-team-rails"></a>
 
@@ -499,8 +521,9 @@ generated: true
 | [B_20261121_0108_pypi-update-version-baseline](bugfix/jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
 | [B_20261124_1602_issue-4327-observability](bugfix/observability/B_20261124_1602_issue-4327-observability.md) | B | issue 4327：统一可观测性配置并分离轨迹存储与导出 | hh0205 | 无独立 D：依据 GitCode jiuwenswarm issue 4327，统一 observability 开关并分离轨迹存储、演进采集和可观测性导出的职责，无独立 D 文档。 |
 | [B_20261124_2201_rea-npx-readiness](bugfix/jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
-| [B_20261125_2150_windows-installer-restore-bootstrap](bugfix/scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
 | [B_20261125_1146_design-shared-path-regressions](bugfix/jiuwenswarm/channels/web/B_20261125_1146_design-shared-path-regressions.md) | B | Design 公共路径历史回归防护 | Huang, Zeyu | 无独立 D：依据历史 issue 和当前公共路径契约补回归测试，无独立设计方案；不重构产品代码。 |
+| [B_20261125_2150_windows-installer-restore-bootstrap](bugfix/scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
+| [B_20261126_1725_profile-migration-self-alias](bugfix/jiuwenswarm/common/B_20261126_1725_profile-migration-self-alias.md) | B | 防止 profile 布局迁移经兼容路径删除自身持久数据 | MengHan18 | 无独立 D：修复重启恢复回归暴露的数据迁移幂等缺陷，不改变既有 profile 布局。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 
@@ -550,6 +573,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261126_0957_enterprise-execution-guard](features/F_20261126_0957_enterprise-execution-guard.md) | F | 企业级执行护栏改为独立模板槽位 | hanjiahui | 无独立 D：2026-11-25 已确认的企业执行护栏配置方案。本仓没有对应 D 编号。 |
+
 <a id="module-jiuwenswarm-enterprise-config"></a>
 
 ## jiuwenswarm/enterprise/config
@@ -587,6 +611,14 @@ generated: true
 | [S_01_app-session-project](specs/jiuwenswarm/extensions/app_market/app-session-project.md) | S | 应用角色会话的项目归属 | kdgmpw | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
 | [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
+
+<a id="module-jiuwenswarm-extensions-runtime_management_extension"></a>
+
+## jiuwenswarm/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-jiuwenswarm-extensions-sdk"></a>
 
@@ -702,10 +734,12 @@ generated: true
 | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) | D | NPC 主从会话与按需搜索工具 | kdgmpw | — |
 | [F_20261103_1501_app-role-session](features/app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
+| [F_20261123_1801_team-worker-automatic-recovery](features/F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 | [B_20261120_0927_unknown-answer-source-hang](bugfix/jiuwenswarm/runtime/B_20261120_0927_unknown-answer-source-hang.md) | B | 未知 source 的 answers 请求在团队会话中排队死锁、无终止帧 | openjiuwen_ai | 无独立 D：仅收紧既有 chat.send answers 校验的适用条件，不改变交互恢复协议、source 白名单与会话 lane 语义；无独立设计。 |
 | [B_20261121_1545_team-pause-teardown-admission-race](bugfix/jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
 | [B_20261121_1817_parked-team-busy-snapshot-reseed](bugfix/jiuwenswarm/B_20261121_1817_parked-team-busy-snapshot-reseed.md) | B | 暂停后页面持续转圈：挂起团队忙闲快照读到内存名册残留 | zhanglongmin | 无独立 D：依据运行日志与逐跳代码核实定位，无独立设计文档；修复走 Core 既有公开契约，不修改 agent-core。 |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
+| [S_02_team-automatic-recovery](specs/jiuwenswarm/server/runtime/S_02_team-automatic-recovery.md) | S | 普通持久 Team 的 Worker 换代自动续跑 | MengHan18 | — |
 
 <a id="module-jiuwenswarm-server"></a>
 
@@ -783,11 +817,13 @@ generated: true
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
+| [F_20261123_1801_team-worker-automatic-recovery](features/F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 | [B_20261110_1849_group-lock-cancellation](bugfix/jiuwenswarm/server/runtime/B_20261110_1849_group-lock-cancellation.md) | B | 群任务取消期间等待文件锁清理完成 | ShowHsiang | 无独立 D：修复现有群锁的取消清理契约，不新增管理器或调整任务并发策略。 |
 | [B_20261116_1701_my-plugin-installed-only](bugfix/jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
+| [S_02_team-automatic-recovery](specs/jiuwenswarm/server/runtime/S_02_team-automatic-recovery.md) | S | 普通持久 Team 的 Worker 换代自动续跑 | MengHan18 | — |
 
 <a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 
@@ -814,8 +850,9 @@ generated: true
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 | [B_20261119_2249_deep-adapter-sync-build](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261119_2249_deep-adapter-sync-build.md) | B | DeepAdapter 冷启动同步构建阻塞事件循环 | yangzequ | 无独立 D：本次是对现有 DeepAdapter 创建链路的局部阻塞修复，无独立设计文档。 |
 | [B_20261121_1545_team-pause-teardown-admission-race](bugfix/jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
-| [B_20261126_1052_team-memory-rail-race](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
+| [B_20261124_1717_main-agent-template-trace](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261124_1717_main-agent-template-trace.md) | B | 企业版 Work、Code 的主 Agent Trace 显示默认名 | 垚垚 | 无独立 D：本次修复企业版 Work、Code 主 Agent 的 Trace 展示名，沿用现有会话配置与观测接口，无独立设计文档。 |
 | [B_20261126_1045_ui-lang-over-yaml-zh](bugfix/jiuwenswarm/enterprise/config/B_20261126_1045_ui-lang-over-yaml-zh.md) | B | 企业版 UI 语言被 AgentServer yaml preferred_language zh 盖过 | whds5279 | 无独立 D：无独立 D；依据 issue |
+| [B_20261126_1052_team-memory-rail-race](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
@@ -868,6 +905,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [F_20261123_1801_team-worker-automatic-recovery](features/F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 | [B_20261107_1505_6226-forwarding-replay](bugfix/jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 | [B_20261110_1042_issue6191-ipc-recovery](bugfix/jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
 
@@ -877,6 +915,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [F_20261123_1801_team-worker-automatic-recovery](features/F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 | [B_20261105_1518_worker-dispatch-slot-accounting](bugfix/jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
 
 <a id="module-openjiuwen-agent_teams"></a>

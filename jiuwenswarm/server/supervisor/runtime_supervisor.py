@@ -1269,11 +1269,17 @@ class RuntimeSupervisor:
             return {"diagnostics_error": type(exc).__name__}
 
     def _write_diagnostics(self, reason: str) -> None:
+        from jiuwenswarm.server.supervisor.diagnostics import process_resources
+
         now = time.monotonic()
         stderr_path = getattr(self._process, "stderr_path", None)
         snapshot = {
             "reason": reason,
+            "observed_at": time.time(),
             "pid": self._worker_pid,
+            "worker_instance": self._worker_instance,
+            "worker_exit_code": getattr(self._process, "returncode", None),
+            "resources": process_resources(self._worker_pid),
             "generation": self._generation,
             "last_rx_age": now - self._last_rx,
             "ipc": self._diagnostic_stats(self._conn),
