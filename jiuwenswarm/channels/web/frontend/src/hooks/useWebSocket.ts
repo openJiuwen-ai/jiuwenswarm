@@ -27,6 +27,7 @@ import { registerApplicationQuestionController } from '../applicationPlugins/tas
 import { toast } from '../components/ui/Toast/toastStore';
 import { isSkillPackagePrompt } from '../components/InteractionSlot/promptRouting';
 import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
 import {
   ConnectionAckPayload,
   WebConnectOptions,
@@ -3090,7 +3091,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             agentSelectionIntent,
           );
         } else if (effectiveSource === 'activate_confirm') {
-          const action = answers[0]?.selected_options[0] === '拒绝' ? 'reject' : 'accept';
+          // activate_confirm 卡片的选项带协议 value（accept/reject），按 value 匹配；
+          // 兼容旧记录里只有中文 label 的取值。
+          const selected = answers[0]?.selected_options[0];
+          const action = selected === 'reject' || selected === '拒绝' ? 'reject' : 'accept';
           const interactionId = requestId || useHarnessStore.getState().getRuntime(sessionId)?.activateInteraction?.interactionId || '';
           if (!interactionId) {
             throw new Error('missing activate interaction id');
@@ -6266,10 +6270,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           request_id: interactionId,
           source: 'activate_confirm',
           questions: [{
-            header: '扩展激活确认',
-            question: `是否激活扩展 **${extensionName}**？`,
+            header: i18n.t('chatUi.activateConfirm.header'),
+            question: i18n.t('chatUi.activateConfirm.question', { extensionName }),
             options: options.map((opt: string) => ({
-              label: opt === 'accept' ? '激活' : opt === 'reject' ? '拒绝' : opt,
+              label: opt === 'accept'
+                ? i18n.t('chatUi.activateConfirm.accept')
+                : opt === 'reject'
+                  ? i18n.t('chatUi.activateConfirm.reject')
+                  : opt,
+              // 协议取值固定为后端语义值，答案消费（selected_options）按 value 匹配，
+              // 不随界面语言变化。
+              value: opt,
               description: '',
             })),
           }],

@@ -2844,6 +2844,26 @@
     "stagePending": "Pending",
     "stageMessage": "Message",
     "inputPlaceholder": "Enter optimization goal...",
+    "status": {
+      "success": "Completed",
+      "running": "In progress",
+      "failed": "Failed",
+      "timeout": "Timed out",
+      "skipped": "Skipped",
+      "rejected": "Rejected",
+      "waiting": "Awaiting confirmation",
+      "pending": "Not started"
+    },
+    "extension": {
+      "implement": "Implement extension",
+      "verify": "Verify extension"
+    },
+    "summary": {
+      "gapItem": "Key gap",
+      "gapEmpty": "No gap summary yet",
+      "designItem": "Design proposal",
+      "designEmpty": "No design summary yet"
+    },
     "stages": {
       "assess": "Assess",
       "plan": "Plan",
@@ -5394,6 +5414,12 @@
       "acceptAll": "Accept all",
       "submit": "Submit",
       "entryCount": "{{count}} entries total"
+    },
+    "activateConfirm": {
+      "header": "Extension Activation",
+      "question": "Activate extension **{{extensionName}}**?",
+      "accept": "Activate",
+      "reject": "Reject"
     }
   },
   "share": {
