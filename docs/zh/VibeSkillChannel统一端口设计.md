@@ -2,7 +2,6 @@
 
 > 状态：方案 A（aiohttp）已实现，默认启用统一端口 19003，保留双端口兼容回退  
 > 关联代码：`jiuwenclaw/channel/vibeskill_channel.py`、`jiuwenclaw/app_gateway.py`  
-> 关联文档：[VibeSkill Channel 架构与接口](VibeSkillChannel架构与接口.md)
 
 ## 0. 实现状态
 
