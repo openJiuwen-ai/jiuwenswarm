@@ -699,7 +699,9 @@ def _read_metadata_with_status(
             _evict_metadata_cache_locked()
             _METADATA_CACHE[cache_key] = data.copy()
             _METADATA_CACHE_GENERATIONS[cache_key] = generation
-            _CACHE_DISK_STAMPS[cache_key] = _disk_stamp(session_id)
+            # Bind the decoded bytes to their read version. An external writer
+            # may replace the file after parsing and before cache publication.
+            _CACHE_DISK_STAMPS[cache_key] = read_stamp
     return data, False
 
 

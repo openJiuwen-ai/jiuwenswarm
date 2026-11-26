@@ -317,10 +317,6 @@ async def test_proxied_model_save_notifies_persistent_agents_with_the_saved_conf
 
 @pytest.mark.asyncio
 async def test_partial_persistent_reload_does_not_retry_or_restart_the_gateway():
-    # Execute the real nested save callback without constructing the Gateway.
-    source = Path(find_spec("agent_gateway.app_gateway").origin)
-    tree = ast.parse(source.read_text(encoding="utf-8"))
-    callback = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_on_config_saved")
     response = parse_agent_server_wire_unary(encode_agent_response_for_wire(AgentResponse(
         request_id="model-reload", channel_id="web", ok=False,
         payload={"code": "PERSISTENT_MODELS_NOT_APPLIED", "error": "unpublished edits"},
@@ -330,13 +326,28 @@ async def test_partial_persistent_reload_does_not_retry_or_restart_the_gateway()
         send_request=AsyncMock(return_value=response),
     )
     restart = Mock()
-    scope = {
-        "Any": object, "client": client, "ReqMethod": ReqMethod, "uuid_module": uuid,
-        "e2a_from_agent_fields": lambda **fields: fields, "logger": logging.getLogger(__name__),
-        "_schedule_gateway_restart": restart, "restart_request": object(), "asyncio": asyncio,
-    }
-    exec(compile(ast.Module(body=[callback], type_ignores=[]), str(source), "exec"), scope)
+    source = Path(find_spec("agent_gateway.app_gateway").origin)
+    if (source.parent / "application/config_saved_effects.py").is_file():
+        from agent_gateway.application.config_saved_effects import ConfigSavedEffectCoordinator
 
-    assert await scope["_on_config_saved"]({"models.defaults"}, config_payload=model_payload(131072)) is False
+        # Current Gateway exposes the extracted save coordinator directly.
+        on_saved = ConfigSavedEffectCoordinator(
+            client=client, schedule_prewarm=Mock(), sync_proactive_tick=AsyncMock(),
+            schedule_channel_snapshot=Mock(), schedule_restart=restart,
+            spawn_background=Mock(),
+        )
+    else:
+        # The locked release still nests this callback in its entry point.
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        callback = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_on_config_saved")
+        scope = {
+            "Any": object, "client": client, "ReqMethod": ReqMethod, "uuid_module": uuid,
+            "e2a_from_agent_fields": lambda **fields: fields, "logger": logging.getLogger(__name__),
+            "_schedule_gateway_restart": restart, "restart_request": object(), "asyncio": asyncio,
+        }
+        exec(compile(ast.Module(body=[callback], type_ignores=[]), str(source), "exec"), scope)
+        on_saved = scope["_on_config_saved"]
+
+    assert await on_saved({"models.defaults"}, config_payload=model_payload(131072)) is False
     assert client.send_request.await_count == 1
     restart.assert_not_called()
