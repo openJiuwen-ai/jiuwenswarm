@@ -10,6 +10,7 @@ import { useReactFlow } from '@xyflow/react';
 import {
   DESIGNER_ADD_TEMPLATES,
   buildManualDesignerNode,
+  isDesignerAddTemplateVisible,
   offsetCanvasPosition,
   type DesignerAddTemplate,
 } from '../designerCanvasNodes';
@@ -117,7 +118,8 @@ export function DesignerCanvasDock() {
   return (
     <div className="designer-canvas-dock" data-testid="designer-canvas-dock">
       <div className="designer-canvas-dock__bar" role="toolbar" aria-label={t('designer.dock.label')}>
-        {DESIGNER_ADD_TEMPLATES.map((item) => (
+        {/* 当前版本不引入该特性：过滤掉 BGM / 音乐生成节点入口。 */}
+        {DESIGNER_ADD_TEMPLATES.filter(isDesignerAddTemplateVisible).map((item) => (
           <button
             key={item.id}
             type="button"
