@@ -20,9 +20,11 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.document_rewrit
     commit_rewrite,
     prepare_html_export,
     prepare_rewrite,
+    register_main_agent_report,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.tools import (
     _build_related_artifact_bundle,
+    _deepresearch_route_ctx,
     _generate_report_html,
     _get_route,
     _get_effective_request_output_dir,
@@ -203,6 +205,34 @@ def _error(exc: RewriteError) -> str:
         {"status": "error", "error_code": exc.code, "error": str(exc)},
         ensure_ascii=False,
     )
+
+
+@_safe_input_tool(
+    name="deepresearch_register_report",
+    description="将当前深度研究任务由主 Agent 写入工作区的最终 Markdown 登记为可改写报告，返回原文件路径。",
+    input_params={
+        "type": "object",
+        "properties": {"report_path": {"type": "string", "minLength": 1, "maxLength": 4096}},
+        "required": ["report_path"],
+        "additionalProperties": False,
+    },
+    input_error_code="BAD_REQUEST",
+)
+async def deepresearch_register_report(report_path: str) -> str:
+    route = _deepresearch_route_ctx.get() or {}
+    output_dir = route.get("output_dir")
+    has_active_request = bool(route.get("request_id") and route.get("session_id"))
+    if not has_active_request or not isinstance(output_dir, str) or not output_dir:
+        return _error(RewriteError("BAD_REQUEST", "report registration requires an active workspace request"))
+    try:
+        result = register_main_agent_report(workspace_root=Path(output_dir), report_path=report_path)
+    except RewriteError as exc:
+        logger.info("deepresearch report registration rejected: code=%s", exc.code)
+        return _error(exc)
+    return json.dumps({"status": "registered", **result}, ensure_ascii=False)
+
+
+deepresearch_register_report.card.properties["required_skill"] = "deepresearch"
 
 
 def _validate_prepare_contract(

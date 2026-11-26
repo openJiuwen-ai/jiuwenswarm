@@ -18,6 +18,7 @@ harness 目录下辖 claw / code / common / flash / team / work 七个子树（�
 | 事件流（正向发射通道：底层 stream 队列、六类事件发射、sid 解析、cwd rebind、symphony 桥接、装配挂载、消费判定 / 暂停检查点与上下文修复：pause-resume-abort 状态机、早 checkpoint、取消结果收集、占位检测、call_goal 注入剥离、HITL 改写） | [[S_20]] ~ [[S_21]] | 第五批 |
 | DeepResearch SDK 与 runner 日志（服务日志根、完整 stderr、调用关联与降级） | [[S_24]] | 日志诊断 |
 | 运行时技能目录（内部存储与加载目录语义、实时目录回调、宿主安装职责） | [[S_25]] | 技能目录提示 |
+| 主 Agent 深度研究报告登记（Markdown 版本与改写） | [[S_26]] | 报告交付 |
 
 ## 目录用途
 
