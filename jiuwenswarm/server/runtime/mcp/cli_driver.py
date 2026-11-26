@@ -53,6 +53,9 @@ _PENDING_AUTH_PROCS: dict[str, Any] = {}
 # How long to watch an authWaitForExit CLI for the URL it prints before
 # handing control back to the frontend.
 _AUTH_URL_WAIT_S = 8.0
+# Domain-only steps need the URL captured (the frontend opens it), so keep
+# the old synchronous-runner cap.
+_AUTH_URL_WAIT_DOMAIN_S = 120.0
 
 
 def _cleanup_stale_auth_proc(name: str) -> None:
@@ -709,7 +712,8 @@ class CliDriver:
         # they must start non-blocking even without authWaitForExit.
         if wait_for_exit or domain:
             return self._start_auth_proc(
-                index, cmd, domain, fail_on_early_exit=not wait_for_exit
+                index, cmd, domain,
+                url_wait_s=_AUTH_URL_WAIT_S if wait_for_exit else _AUTH_URL_WAIT_DOMAIN_S,
             )
         res = self._runner(cmd)
         url = _extract_url(res.combined_output, domain) if domain else None
@@ -723,17 +727,15 @@ class CliDriver:
         )
 
     def _start_auth_proc(
-        self, index: int, cmd: str, domain: str, *, fail_on_early_exit: bool = False,
+        self, index: int, cmd: str, domain: str, *,
+        url_wait_s: float | None = None,
     ) -> AuthStepResult:
         """Start a blocking auth command non-blocking, capture its auth URL.
 
         The subprocess keeps running (blocking until OAuth completes); we read
-        stdout for up to a few seconds to surface the auth URL, then return an
+        stdout until the URL appears or the wait window closes, then return an
         auth_required sentinel. The proc is stashed in ``_PENDING_AUTH_PROCS``
         for :meth:`auth_proc_done` / :meth:`status` to poll.
-
-        ``fail_on_early_exit`` turns a non-zero exit before any auth URL into
-        a failed step; ``authWaitForExit`` steps stay lenient.
         """
         if self._proc_runner is not None:
             # Test path: injector returns (proc, initial_output_string).
@@ -747,7 +749,7 @@ class CliDriver:
                 auth_url=url, auth_domain=domain, output=out
             )
         if self._sandbox_runner is not None:
-            return self._start_sandbox_auth_proc(index, cmd, domain)
+            return self._start_sandbox_auth_proc(index, cmd, domain, url_wait_s=url_wait_s)
         import time
         try:
             proc = subprocess.Popen(  # noqa: S603 - command from trusted cli.json
@@ -777,10 +779,12 @@ class CliDriver:
             except (OSError, ValueError):
                 pass  # pipe closed during teardown
 
+        drain: threading.Thread | None = None
         if proc.stdout is not None:
             # readline() would block past the deadline on a silent login.
-            threading.Thread(target=_drain, daemon=True).start()
-        deadline = time.time() + _AUTH_URL_WAIT_S
+            drain = threading.Thread(target=_drain, daemon=True)
+            drain.start()
+        deadline = time.time() + (_AUTH_URL_WAIT_S if url_wait_s is None else url_wait_s)
         url: str | None = None
         while time.time() < deadline:
             if domain:
@@ -788,30 +792,28 @@ class CliDriver:
             if url or proc.poll() is not None:
                 break
             time.sleep(0.1)
+        if drain is not None:
+            drain.join(timeout=0.5)
         out = "".join(chunks)
-        rc = proc.poll()
-        if fail_on_early_exit and rc is not None and rc != 0 and not url:
-            _PENDING_AUTH_PROCS.pop(self.name, None)
-            return AuthStepResult(
-                name=self.name, step_index=index, command=cmd,
-                succeeded=False, needs_user_action=False,
-                error=f"rc={rc}: {out}",
-                output=out,
-            )
+        if domain:
+            url = _extract_url(out, domain) or url
         return AuthStepResult(
             name=self.name, step_index=index, command=cmd,
             succeeded=True, needs_user_action=True,
             auth_url=url, auth_domain=domain, output=out
         )
 
-    def _start_sandbox_auth_proc(self, index: int, cmd: str, domain: str) -> AuthStepResult:
+    def _start_sandbox_auth_proc(
+        self, index: int, cmd: str, domain: str, *,
+        url_wait_s: float | None = None,
+    ) -> AuthStepResult:
         """Start an authWaitForExit command detached inside the tool sandbox.
 
         A sandbox ``execute_cmd`` blocks until the process exits, so the login
         is launched with :func:`cli_sandbox.start_detached` (own session, pid
         file, log file) instead of being streamed. The auth URL is read back
-        from the log for a few seconds; liveness afterwards comes from the pid,
-        which keeps :meth:`auth_proc_done` and the cancel path unchanged.
+        from the log within the wait window; liveness afterwards comes from the
+        pid, which keeps :meth:`auth_proc_done` and the cancel path unchanged.
         """
         import time
 
@@ -840,7 +842,7 @@ class CliDriver:
         url: str | None = None
         out = ""
         exited = False
-        deadline = time.time() + _AUTH_URL_WAIT_S
+        deadline = time.time() + (_AUTH_URL_WAIT_S if url_wait_s is None else url_wait_s)
         while time.time() < deadline:
             text = cli_sandbox.read_text(log_path)
             if text:
