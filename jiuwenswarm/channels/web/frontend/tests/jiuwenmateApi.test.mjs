@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -72,6 +73,12 @@ for (const code of ['authorization_process_unverified', 'authorization_cleanup_f
     assert.deepEqual(calls.map(({ method }) => method), [
       'jiuwenmate.dingtalk_auth.status', 'jiuwenmate.dingtalk_auth.poll',
     ]);
+    for (const language of ['zh', 'en']) {
+      const locale = JSON.parse(readFileSync(new URL(`../src/i18n/locales/${language}.json`, import.meta.url), 'utf8'));
+      const message = locale.jiuwenmate.profile.dingtalkAuth.failures[status.error_code];
+      assert.equal(typeof message, 'string', `${language} must describe the returned authorization error`);
+      assert.ok(message.trim());
+    }
     assert.ok(calls.every(({ params }) => params.agent_id === 'agent-1' && params.connection_key === 'ding-app'));
     assert.equal(calls[1].params.operation_id, 'operation');
   });
