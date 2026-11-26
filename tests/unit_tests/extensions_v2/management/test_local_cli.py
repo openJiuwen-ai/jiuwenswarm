@@ -20,6 +20,8 @@ from openjiuwen.core.events import Event
 
 from jiuwenswarm.channels.cli import extension as cli
 from jiuwenswarm.common import extension_cli as transport
+from jiuwenswarm.common.schema.agent import AgentRef, AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.management import adapter as adapter_module
 from jiuwenswarm.extensions_v2.management.local_cli import handle
 from jiuwenswarm.extensions_v2.management.registry import ExtensionManager
@@ -80,6 +82,94 @@ async def test_cli_real_zip_install_reload_uninstall(tmp_path: Path, monkeypatch
         result, code = await invoke("uninstall", PACKAGE_ID)
         assert code == 0 and not result["active"] and not root.exists()
         notify.assert_awaited_once_with([PACKAGE_ID])
+    finally:
+        await service.close()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cli_installs_new_version_and_preserves_stored_copies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = ExtensionManager(tmp_path / "installed", report_path=tmp_path / "report.yaml")
+    await manager.init(make_bus())
+    monkeypatch.setattr(adapter_module, "get_extension_manager", lambda: manager)
+    monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_extension_manager", lambda: manager)
+    monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime", lambda: None)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: manager.install_dir)
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
+    service = transport.LocalControl("agent_server", handle)
+    await service.start()
+    try:
+        archives = {}
+        for version in ("1.0.0", "1.0.1"):
+            source = write_package(tmp_path / f"source-{version}", version=version, module_source=METADATA_EXTENSION)
+            archives[version] = archive_package(source)
+            result, code = await invoke("install", str(archives[version]))
+            assert code == 0 and result["verification_status"] == "SUCCESS", result
+            assert result["version"] == version
+            assert Path(result["install_path"]) == manager.install_dir / PACKAGE_ID / version
+            observed = await manager.registry.context.bus.trigger(Event("test.event", {}))
+            assert observed[:2] == (PACKAGE_ID, version)
+        state, code = await invoke("query", PACKAGE_ID)
+        assert code == 0
+        assert {item["version"] for item in state["state"]["installed_packages"]} == {"1.0.0", "1.0.1"}
+        original = manager.install_dir / PACKAGE_ID / "1.0.0"
+        current = manager.install_dir / PACKAGE_ID / "1.0.1"
+        assert json.loads((original / "manifest.json").read_text())["enable"] is False
+        assert json.loads((current / "manifest.json").read_text())["enable"] is True
+        # The web version selector uses the adapter's install request with a version.
+        adapter = adapter_module.PackageManagementAdapter()
+        for version in ("1.0.0", "1.0.1"):
+            response = await adapter.handle(AgentRequest(
+                request_id="version-switch", channel_id="web",
+                req_method=ReqMethod.EXTENSIONS_V2_INSTALL,
+                params={"package_ids": [PACKAGE_ID], "version": version},
+                metadata={}, agent_ref=AgentRef.default(),
+            ))
+            assert response.ok, response
+            observed = await manager.registry.context.bus.trigger(Event("test.event", {}))
+            assert observed[:2] == (PACKAGE_ID, version)
+            assert manager.active_packages()[0].version == version
+        for version, archive in archives.items():
+            before = (manager.install_dir / PACKAGE_ID / version / "extension.py").read_bytes()
+            result, code = await invoke("install", str(archive))
+            assert code == 2 and result["error"]["code"] == "PACKAGE_ALREADY_PRESENT", result
+            assert (manager.install_dir / PACKAGE_ID / version / "extension.py").read_bytes() == before
+        assert manager.active_packages()[0].version == "1.0.1"
+    finally:
+        await service.close()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cli_failed_new_version_keeps_previous_activation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = ExtensionManager(tmp_path / "installed", report_path=tmp_path / "report.yaml")
+    await manager.init(make_bus())
+    monkeypatch.setattr(adapter_module, "get_extension_manager", lambda: manager)
+    monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_extension_manager", lambda: manager)
+    monkeypatch.setattr("jiuwenswarm.extensions_v2.assembly.get_webui_runtime", lambda: None)
+    service = transport.LocalControl("agent_server", handle)
+    await service.start()
+    try:
+        original = write_package(tmp_path / "original", version="1.0.0", module_source=METADATA_EXTENSION)
+        result, code = await invoke("install", str(archive_package(original)))
+        assert code == 0, result
+        broken = write_package(
+            tmp_path / "broken", version="1.0.1", module_source="raise RuntimeError('broken version')",
+        )
+        result, code = await invoke("install", str(archive_package(broken)))
+        assert code == 1 and result["operation_status"] == "FAILED", result
+        state, code = await invoke("query", PACKAGE_ID)
+        assert code == 0 and state["state"]["active"][0]["version"] == "1.0.0"
+        assert {item["version"] for item in state["state"]["installed_packages"]} == {"1.0.0"}
+        assert not (manager.install_dir / PACKAGE_ID / "1.0.1").exists()
+        observed = await manager.registry.context.bus.trigger(Event("test.event", {}))
+        assert observed[:2] == (PACKAGE_ID, "1.0.0")
     finally:
         await service.close()
         await manager.shutdown()
@@ -375,13 +465,16 @@ async def test_manifest_selects_gateway_host(archive: Path) -> None:
 def test_frozen_entry_dispatches_before_single_instance_lock(
     monkeypatch: pytest.MonkeyPatch, frozen: bool,
 ) -> None:
+    from jiuwenswarm.common.windows_upgrade_config import RESTORE_CONFIG_FLAG
+
     tree = ast.parse((ROOT / "scripts/jiuwenswarm_exe_entry.py").read_text(encoding="utf-8"))
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_dispatch")
     calls: list[list[str]] = []
     monkeypatch.setattr(cli, "main", lambda argv: calls.append(argv) or 3)
     monkeypatch.setattr(sys, "argv", ["workswarm", "extension", "query", "--json"])
     monkeypatch.setattr(sys, "frozen", frozen, raising=False)
-    namespace = {"sys": sys, "_pop_flag": lambda flag: False, "_ensure_stdio": lambda: None,
+    namespace = {"sys": sys, "RESTORE_CONFIG_FLAG": RESTORE_CONFIG_FLAG,
+                 "_pop_flag": lambda flag: False, "_ensure_stdio": lambda: None,
                  "_DESKTOP_INSTALL_EXTERNAL_CLI": "install-cli", "_DESKTOP_RESET_EXTERNAL_CLI_CONFIG": "reset-cli",
                  "_DESKTOP_REMOVE_OFFICE_ADDINS": "remove-office-addins",
                  "_DESKTOP_STOP_BUNDLED_EMAIL_MCP": "stop-bundled-email-mcp"}

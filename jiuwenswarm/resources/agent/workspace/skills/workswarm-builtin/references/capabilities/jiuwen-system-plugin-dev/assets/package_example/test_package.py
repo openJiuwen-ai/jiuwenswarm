@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from jiuwenswarm.extensions_v2.webui.transport import RenderTransport
 
 PACKAGE_ID = "example.greeting-panel"
 SLOT_ID = "conversation.input.above"
-SOURCE = Path(__file__).resolve().parent / "greeting_package"
+SOURCE = Path(os.environ.get("JIUWEN_SYSTEM_PLUGIN_SOURCE", Path(__file__).resolve().parent / "greeting_package"))
 GREETING = "你好，系统插件已生效"
 
 
@@ -71,7 +72,11 @@ async def host_fixture(tmp_path: Path) -> AsyncIterator[Host]:
 
 
 def load_script(name: str) -> Any:
-    path = Path(__file__).resolve().parents[2] / "scripts" / f"{name}.py"
+    supplied_root = os.environ.get("JIUWEN_SYSTEM_PLUGIN_SKILL_ROOT")
+    skill_root = Path(supplied_root) if supplied_root else Path(__file__).resolve().parents[2]
+    path = skill_root / "scripts" / f"{name}.py"
+    if not path.is_file():
+        raise ValueError("Run copied tests through finalize_package.py or provide JIUWEN_SYSTEM_PLUGIN_SKILL_ROOT")
     module_name = f"package_example_{name}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None and spec.loader is not None
@@ -82,7 +87,14 @@ def load_script(name: str) -> Any:
 
 
 def package_zip(tmp_path: Path) -> Path:
-    # 加载和渲染测试使用正式打包脚本的产物，与最终交付布局保持一致。
+    # Final validation must exercise exactly the archive that will be delivered.
+    supplied = os.environ.get("JIUWEN_SYSTEM_PLUGIN_ZIP")
+    if supplied is not None:
+        archive = Path(supplied).resolve()
+        if not archive.is_file():
+            raise ValueError("JIUWEN_SYSTEM_PLUGIN_ZIP must point to the final validation ZIP")
+        return archive
+    # Standalone execution of the bundled example remains supported.
     return load_script("build_package").build_package(SOURCE, tmp_path / "greeting.zip")
 
 

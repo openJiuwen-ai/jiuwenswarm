@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createWebUIRuntime } from '../node_modules/.cache/webui-runtime/runtime/index.js';
-import { createMockTransport } from '../node_modules/.cache/webui-runtime/transport/index.js';
+import { createMockTransport, createWebClientTransport } from '../node_modules/.cache/webui-runtime/transport/index.js';
 import { DEMO_COMPONENT, DEMO_SLOT, DEMO_SLOT_SINGLE, demoCatalog } from '../node_modules/.cache/webui-runtime/testing/demoCatalog.js';
 import {
   demoClearFrame,
@@ -546,4 +546,51 @@ test('appearance survives a reconnect only when a provider re-applies it', async
   assert.equal(runtime.getAppearance(), null, 'no provider re-applied after the reconnect readies settled');
   handle.release();
   runtime.dispose();
+});
+
+
+test('application notice cannot suppress immediate session ready after install or reload', async () => {
+  const handlers = new Map();
+  const requests = [];
+  const client = {
+    on(name, handler) {
+      const subscriptions = handlers.get(name) ?? new Set();
+      subscriptions.add(handler);
+      handlers.set(name, subscriptions);
+      return () => subscriptions.delete(handler);
+    },
+    onStateChange() { return () => {}; },
+    getState() { return 'ready'; },
+    async request(method, params) {
+      requests.push({ method, ...params });
+      return { accepted: true, status: 'ready' };
+    },
+  };
+  const runtime = createWebUIRuntime({ transport: createWebClientTransport(client), catalog: demoCatalog });
+  runtime.start();
+  const owner = runtime.mountSlot('sess-1', DEMO_SLOT);
+  await flush();
+  const before = requests.length;
+  const notify = (sessionId) => {
+    handlers.get('extensions.v2.installed').forEach((handler) => handler({
+      payload: { package_ids: ['pkg.install-reload'], session_id: sessionId },
+    }));
+  };
+  const originalNow = Date.now;
+  Date.now = () => 20000;
+  try {
+    notify('');
+    notify('sess-1');
+    await flush();
+    notify('sess-1');
+    await flush();
+    const readies = requests.slice(before);
+    assert.equal(readies.length, 2);
+    assert.ok(readies.every((request) => request.event === 'ui.ready'
+      && request.target.package_id === 'pkg.install-reload' && request.session_id === 'sess-1'));
+  } finally {
+    Date.now = originalNow;
+    owner.release();
+    runtime.dispose();
+  }
 });

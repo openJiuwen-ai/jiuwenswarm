@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.events import Event
 from openjiuwen.core.extension import ExtensionFailure
 from openjiuwen.core.extension.bundle import bundle_version_dir
 
@@ -940,6 +941,100 @@ async def test_standalone_newer_version_takes_over_a_bundle_member(
     member = _member(store, "demo.bundle", "1.0.0", "demo.base")
     assert member is not None and member.status == "standby" and member.active is False
     assert store.active_instance("demo.base").kind == "standalone"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("domain", "reload_active"),
+    [("agentserver", False), ("agentserver", True), ("gateway", False)],
+)
+async def test_standalone_version_switch_reuses_installed_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, domain: str, reload_active: bool,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    package_id = "probe.dev-version"
+    digests = {}
+    for version in ("0.0.3", "0.0.4"):
+        source = _write_member(tmp_path / version, package_id, domain, version=version)
+        await containers.install_sources(manager, store, [source], origin="user")
+        digests[version] = store.get(package_id, version).digest
+        if domain == "gateway":
+            store.mark(package_id, version=version, active=True, enabled=True, status="active")
+    adapter = PackageManagementAdapter()
+    installed = manager.install_dir / package_id
+    if reload_active:
+        module = installed / "0.0.4" / "extension.py"
+        module.write_text(METADATA_EXTENSION + "\n# reviewed feedback\n", encoding="utf-8")
+        response = await adapter.handle(
+            _request(ReqMethod.EXTENSIONS_V2_RELOAD, {"package_id": package_id}),
+        )
+        assert response.ok
+
+    for version in ("0.0.3", "0.0.4", "0.0.3"):
+        response = await adapter.handle(
+            _request(
+                ReqMethod.EXTENSIONS_V2_INSTALL,
+                {"package_ids": [package_id], "version": version},
+            ),
+        )
+        assert response.ok, response
+        assert store.active_instance(package_id).version == version
+        assert store.get(package_id, version).digest == digests[version]
+        if domain == "agentserver":
+            assert [record.version for record in manager.active_packages()] == [version]
+            other = "0.0.4" if version == "0.0.3" else "0.0.3"
+            assert json.loads((installed / version / "manifest.json").read_text())["enable"] is True
+            assert json.loads((installed / other / "manifest.json").read_text())["enable"] is False
+        else:
+            store.mark(package_id, version=version, active=True, enabled=True, status="active")
+    assert (installed / "0.0.3").is_dir()
+    assert (installed / "0.0.4").is_dir()
+    if reload_active:
+        assert "# reviewed feedback" in (installed / "0.0.4" / "extension.py").read_text()
+
+    changed = _write_member(
+        tmp_path / "store-copy" / package_id / "0.0.3", package_id, domain, version="0.0.3",
+    )
+    (changed / "extension.py").write_text(METADATA_EXTENSION + "\n# different build\n", encoding="utf-8")
+    with pytest.raises(ExtensionFailure) as error:
+        await containers.install_sources(manager, store, [changed], origin="user")
+    assert error.value.status is StatusCode.EXTENSION_PACKAGE_EXISTS
+    assert store.active_instance(package_id).version == "0.0.3"
+
+
+@pytest.mark.asyncio
+async def test_switching_legacy_standalone_does_not_create_an_original_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    package_id = "probe.legacy-version"
+    old_root = _write_member(manager.install_dir / package_id / "1.0.0", package_id, "agentserver")
+    store.upsert(ExtensionInstallRecord(
+        package_id=package_id, version="1.0.0", domain="agentserver",
+        origin="user", install_path=str(old_root),
+    ))
+    (old_root / "extension.py").write_text(METADATA_EXTENSION + "\n# user adjustment\n", encoding="utf-8")
+    newer = _write_member(tmp_path / "new", package_id, "agentserver", version="1.0.1")
+    await containers.install_sources(manager, store, [newer], origin="user")
+
+    response = await PackageManagementAdapter().handle(_request(
+        ReqMethod.EXTENSIONS_V2_INSTALL, {"package_ids": [package_id], "version": "1.0.0"},
+    ))
+
+    assert response.ok, response
+    assert store.active_instance(package_id).version == "1.0.0"
+    assert store.get(package_id, "1.0.0").digest == ""
+    assert "# user adjustment" in (old_root / "extension.py").read_text(encoding="utf-8")
+    assert (await manager.registry.context.bus.trigger(Event("test.event", {})))[:2] == (package_id, "1.0.0")
+
+    original = _write_member(tmp_path / "original", package_id, "agentserver")
+    with pytest.raises(ExtensionFailure) as error:
+        await containers.install_sources(manager, store, [original], origin="user")
+    assert error.value.status is StatusCode.EXTENSION_PACKAGE_EXISTS
+    assert "different content" in error.value.message
+    assert store.get(package_id, "1.0.0").digest == ""
 
 
 @pytest.mark.asyncio

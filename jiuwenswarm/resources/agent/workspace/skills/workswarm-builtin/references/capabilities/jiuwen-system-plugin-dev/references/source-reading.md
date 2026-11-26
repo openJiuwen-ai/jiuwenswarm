@@ -2,6 +2,7 @@
 
 需要克隆源码或扩大检出范围时读第 1 节；查找平台接口、设计说明或示例时读第 2 节。
 源码优先级、固定分支和仓库地址沿用 [开发流程](package-workflow.md#12-获取固定分支的源码)，不因此改变来源。
+修改已有系统插件且没有新增接口时，先复用安装副本中的实现和能力记录；只有当前问题需要核对平台接口时，才执行本页的获取和搜索步骤。
 
 ## 1. 按域选择并复用稀疏缓存
 
@@ -19,6 +20,8 @@
 | Core 事件、Matcher 和 Ops | `openjiuwen/core/events` |
 | Core manifest、Registrar 和系统插件生命周期 | `openjiuwen/core/extension` |
 | Swarm 的 AgentServer 事件、Ops 和管理适配 | `jiuwenswarm/extensions_v2` |
+| Swarm 前端槽位及组件参数 | `jiuwenswarm/channels/web/frontend/src/features/webui/catalog` |
+| Swarm 前端组件与槽位规范 | `jiuwenswarm/channels/web/frontend/src/features/webui/docs/specs` |
 | Gateway 系统插件、事件、Ops 和 WebUI | `agent_gateway/extensions_v2` |
 
 克隆使用浅克隆、部分克隆和稀疏检出：`--depth 1` 只取当前分支的一层历史，
@@ -64,6 +67,8 @@ git -C "<缓存目录>" sparse-checkout add "<确认需要的目录>"
 - **获取受限：** 服务器不支持文件内容过滤时，尝试另一平台的同一分支，或按文件获取所需内容，不自动退回完整 clone。
 - **搜索范围：** 关键词搜索限定在已检出的相关目录；不对整个 `HEAD` 执行内容搜索，避免部分克隆为此补取全仓文件。
 
+查询前端槽位时，直接读取 `catalog/slots.ts` 中对应项；组件参数查 `catalog/componentCatalog.ts` 和 `catalog/components/`。只有需要核对实际挂载或通知时，再追加同级的 `react/`、`runtime/` 或 `transport/`；不为查一个槽位检出或搜索整个前端。
+
 ## 2. 集中搜索，再批量读取必要上下文
 
 读取适用的 `AGENTS.md` 和本地规则后，围绕本次需求查阅设计文档与代码：
@@ -92,5 +97,5 @@ rg -n -C 8 -F "<已确认的符号>" "<命中文件>"
 
 - **换用真实名称：** 先从相近示例取得事件、方法、组件和槽位名称，再用名称及业务同义词搜索。UI 能力可能属于 Gateway，不要只查 AgentServer。
 - **确认已检出：** 本地没有命中时，用 `git ls-tree` 核对目录树；只追加缺少的目录。团队事件与 Ops 从 Core 的 `openjiuwen/agent_teams/extensions/`、`openjiuwen/extensions/ops_build_handlers/` 进入。
-- **核对两端：** 前端组件查 Swarm 的 `jiuwenswarm/channels/web/frontend/src/features/webui/` 目录、组件和槽位清单；再查所属域的后端规则及直接测试。需要时才追加这一目录及其适用规则。
+- **核对两端：** 前端槽位查 Swarm 的 `jiuwenswarm/channels/web/frontend/src/features/webui/catalog/slots.ts`，组件查同目录的 `componentCatalog.ts` 和 `components/`；再查所属域的后端规则及直接测试。只追加缺少的相关目录和适用规则。
 - **分清缺口：** 区分接口不存在、运行版本较旧、权限尚未声明、外部网页拒绝嵌入和环境依赖未准备。说明已查过的位置和具体阻塞，不用一处未命中就断言平台不能做。

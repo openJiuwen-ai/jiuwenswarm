@@ -577,11 +577,22 @@ async def _install_single(
         )
     _reject_domain_conflict(store, package_id, domain)
     digest = await asyncio.to_thread(_package_digest, root)
-    await asyncio.to_thread(
-        _reject_digest_conflict, store, package_id, version, digest,
-    )
-
     target = Path(manager.install_dir) / package_id / version
+    record = store.get(package_id, version)
+    if (
+        record is not None
+        and record.domain == domain
+        and record.install_path
+        and root.resolve() == target.resolve() == Path(record.install_path).resolve()
+    ):
+        # The installed copy may have been edited or had its enable flag
+        # changed. Preserve the original fingerprint, including an unknown one.
+        digest = record.digest
+    else:
+        await asyncio.to_thread(
+            _reject_digest_conflict, store, package_id, version, digest,
+        )
+
     claim = store.active_instance(package_id)
     same_owner = claim is not None and claim.kind == "standalone"
     same_version_standalone = (

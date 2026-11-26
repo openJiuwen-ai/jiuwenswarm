@@ -73,6 +73,14 @@
     {
       "digest": "7cc4b4bf5263342a9d27095b82ad774f108d93ac256c7797d44ae093264f1e79",
       "revision": "ed48877baf8cfc988b06f8bcbcaa9e978d203ff9"
+    },
+    {
+      "digest": "5e785a1f588781366cb40e6d27fddce6f8fea9430636895c6a4e39e8ad6688f3",
+      "revision": "54b1a83736a5bc358417be6b539b785d84d95515"
+    },
+    {
+      "digest": "9806597e3af7848e1badf2b89a5fc18c7cc8cc47acd690a9721263acc3e092dc",
+      "revision": "b83ab2c2e6ba30d98c781cd9852b5f6e08c3b3df"
     }
   ],
   "huawei-cloud-maas-setup": [
@@ -97,6 +105,14 @@
     {
       "digest": "251910f70c977d457205ba2a7c898b3b9f04172a392660e6bac6e14fa45fb0e8",
       "revision": "07ffd29b928f97ba8dea2e476fc9d5131ecec5d9"
+    },
+    {
+      "digest": "13bb81e8aaa78f4276a1701f94d29b3cb99e666548f1156da02f745040270f85",
+      "revision": "54b1a83736a5bc358417be6b539b785d84d95515"
+    },
+    {
+      "digest": "db36b7b00f8750c009eff431bd236ee069f4e4539404f0533afadd93e1f07f46",
+      "revision": "b83ab2c2e6ba30d98c781cd9852b5f6e08c3b3df"
     }
   ],
   "plugin-creator": [
