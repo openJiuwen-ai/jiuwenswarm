@@ -418,7 +418,7 @@ In PowerShell, use `& $env:JIUWENSWARM_EXECUTABLE extension ...`.
   a package-ID query, reload, or removal routes to the host that owns the installed copy. Use `--domain gateway` or
   `--domain agentserver` only when an explicit host selection is needed.
 - Commands affect the selected host process. The ZIP must be readable by that host; the CLI does not upload files.
-- Existing copies are not automatically replaced. Reload reads the installed copy, not the original ZIP.
+- A new version of the same package ID is installed in its own version directory, keeping older copies and verifying the new activation. An already installed version is not overwritten. Reload reads the current installed copy, not the original ZIP, and is not a version upgrade operation.
 - Successful installation notifies mounted WebUI owners. Notification delivery does not prove the UI or business effect was verified.
 - Exit codes: 0 success; 1 confirmed failure or state mismatch; 2 failure before mutation; 3 uncertain operation or verification.
   For an uncertain outcome, query state without repeating the mutation.

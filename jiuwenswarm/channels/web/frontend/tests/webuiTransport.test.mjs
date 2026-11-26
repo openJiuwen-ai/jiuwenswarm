@@ -273,3 +273,32 @@ test('package change subscription coexists with client capability validation and
   off();
   assert.equal(client.offCalls, 8);
 });
+
+
+test('package notices preserve every session, subscriber and consecutive update', () => {
+  const client = createFakeClient();
+  const received = [[], []];
+  const subscriptions = received.map((events) => createWebClientTransport(client).subscribe({
+    onRenderFrame() {},
+    onClearFrame() {},
+    onErrorFrame() {},
+    onConnectionStateChange() {},
+    onPackagesChanged: (ids, sessionId) => events.push([ids, sessionId]),
+  }));
+  const originalNow = Date.now;
+  Date.now = () => 10000;
+  try {
+    client.emit('extensions.v2.installed', { package_ids: ['pkg.updated', 'pkg.updated'], session_id: '' });
+    client.emit('extensions.v2.installed', { package_ids: ['pkg.updated'], session_id: 's1' });
+    client.emit('extensions.v2.installed', { package_ids: ['pkg.updated'], session_id: 's2' });
+    client.emit('extensions.v2.installed', { package_ids: ['pkg.updated'], session_id: 's1' });
+    const expected = [
+      [['pkg.updated'], ''], [['pkg.updated'], 's1'], [['pkg.updated'], 's2'], [['pkg.updated'], 's1'],
+    ];
+    assert.deepEqual(received[0], expected);
+    assert.deepEqual(received[1], expected);
+  } finally {
+    Date.now = originalNow;
+    subscriptions.forEach((off) => off());
+  }
+});

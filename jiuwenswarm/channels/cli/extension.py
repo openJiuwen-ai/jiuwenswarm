@@ -172,9 +172,10 @@ def active_record(state: dict[str, Any], package_id: str) -> dict[str, Any] | No
     return records[0] if records else None
 
 
-def has_installed_copy(state: dict[str, Any], package_id: str) -> bool:
+def has_installed_copy(state: dict[str, Any], package_id: str, *, version: str | None = None) -> bool:
     return any(
         isinstance(item, dict) and item.get("package_id") == package_id
+        and (version is None or item.get("version") == version)
         for item in state.get("installed_packages", [])
     )
 
@@ -312,8 +313,11 @@ async def perform(
             result.update(ok=True, status="SUCCESS")
             return 0
         record = active_record(before, package_id)
-        if action == "install" and (record or has_installed_copy(before, package_id)):
-            raise ClientError("PACKAGE_ALREADY_PRESENT", "已有同 ID 包或安装副本；请先确定更新方式，不会自动卸载或覆盖。")
+        if action == "install" and (
+            (record is not None and record.get("version") == result["version"])
+            or has_installed_copy(before, package_id, version=result["version"])
+        ):
+            raise ClientError("PACKAGE_ALREADY_PRESENT", "已有同 ID、同版本的安装副本；请使用新版本 ZIP 或重载当前版本。")
         if action == "reload" and record is None:
             raise ClientError("PACKAGE_NOT_ACTIVE", "包尚未激活，不能执行热重载。")
         if action == "uninstall" and record is None and not has_installed_copy(before, package_id):

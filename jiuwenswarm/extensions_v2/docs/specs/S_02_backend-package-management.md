@@ -35,6 +35,10 @@ Plan 或修改安装目录的参数。
 外部安装请求先校验绝对路径、`.zip` 后缀和文件类型，再交给 Core 校验归档、manifest 与依赖。
 此限制只在外部请求入口生效；启动通过 `load_installed()` 加载安装目录内的解压副本，不受影响。
 
+选择已安装版本时，直接重新启用该版本目录，不重新导入文件。启停操作会改写 `manifest.json.enable`，
+不会因此拒绝切回旧版本。安装记录保留原内容摘要；从外部导入相同 ID、相同版本但内容不同的系统插件时，仍拒绝安装。
+旧记录没有原内容摘要时，切换版本不会将安装副本当前内容记作原摘要；外部导入仍与现有安装副本比较，不能据此确认原始 ZIP 的内容。
+
 `extensions.v2.import` 面向未定域的上传入口，由 Gateway 读取包根 `manifest.json` 后分流：
 `package_type` 为 `extension` 的包按 `package.domain` 归属，`gateway` 在 Gateway 安装，`agentserver` 转为
 `extensions.v2.install`；其余包（如 `package_type: plugin`）转为 `plugin_packages.import_local`。
@@ -115,6 +119,7 @@ AgentServer 在包进入可重新就绪状态后，将本次 `SUCCESS` 包 ID �
 安装和成功启用由公共管理适配器发送；热重载由旧代际的视图清理回调在下发 `webui.render.clear` 后发送，避免异步 clear 擦掉新视图。
 网页 `/extension install`、本机 CLI 和其它调用该适配器的入口共用安装通知，CLI 不重复通知。
 前端收到 `extensions.v2.installed` 后，为仍挂载且允许 ready 的槽位重新发送 `ui.ready`，无需手动刷新页面。
+单条通知中的重复包 ID 和同一目标可去重；不同会话、不同订阅者及连续安装或重载的通知必须分别处理，不能按包 ID 在时间窗口内丢弃后续通知。
 安装完成、成功启用和热重载清理完成后，`extensions.v2.installed` 都表示指定包需要重新发送 `ui.ready`。
 Gateway 下发该事件时保留完整结构，包括 `package_ids` 和 `session_id`（应用级通知为空字符串），
 不得按聊天消息只提取 `content`；通知继续按 `metadata.ws_id` 定向发送。
@@ -250,7 +255,8 @@ uninstall 先检查 Gateway 是否拥有安装副本，否则由 AgentServer 处
 
 ### 5.2 结果与失败
 
-CLI 安装前查询同 ID 状态；已有副本时不自动覆盖、卸载或重装。成功 Report 后再次核对版本、generation 与目录。
+CLI 安装前查询同 ID 状态；同 ID、同版本已有激活记录或安装副本时返回 `PACKAGE_ALREADY_PRESENT`，不覆盖或重装。
+同 ID 的其他版本交给宿主安装到独立版本目录，保留旧副本并按宿主规则切换；成功 Report 后再次核对目标版本、generation 与目录。
 输出保留 `reports`、`before_state`、`state`，并分别记录 `operation_status`、`verification_status` 与总体 `status`。
 `business_verification` 固定为 `not_run`；有页面通知时附 `ui_notified`，不将通知送达解释为页面已验收。
 
