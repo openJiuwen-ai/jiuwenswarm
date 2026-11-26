@@ -510,6 +510,7 @@ from jiuwenswarm.agents.harness.common.tools.archive_tools import (
 )
 from jiuwenswarm.agents.harness.common.tools.diff_tools import diff_files
 from jiuwenswarm.agents.harness.common.tools.docx_tools import read_docx
+from jiuwenswarm.agents.harness.common.tools.email_tools import read_email
 from jiuwenswarm.agents.harness.common.tools.pdf_tools import read_pdf
 from jiuwenswarm.agents.harness.common.tools.pptx_tools import read_pptx
 from jiuwenswarm.agents.harness.common.tools.spreadsheet_tools import read_spreadsheet
@@ -14452,6 +14453,7 @@ class JiuWenSwarmDeepAdapter:
             read_docx,
             read_spreadsheet,
             read_pptx,
+            read_email,
             inspect_archive,
             extract_archive,
             diff_files,

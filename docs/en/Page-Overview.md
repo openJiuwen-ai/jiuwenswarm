@@ -134,6 +134,8 @@ The input area at the bottom of the chat page provides several controls:
 
 ![Input area with controls](../assets/images/current-ui-en/14-Input-Area-Controls.png)
 
+In a web Agent conversation, use **Add file** to upload an `.eml` file. With a Linux or macOS server, you can ask the agent to summarize the message, identify its sender and date, or list attachment names. The reader accepts `.eml` files up to 20 MiB, including any attachments encoded in the file. On a Windows server, email file reading is unavailable. You can paste the message body into the chat. To analyze an attachment's contents, save and upload it separately.
+
 ---
 
 ## FAQ
