@@ -137,6 +137,9 @@ function MentionKindIcon({ type }: { type: string }) {
 
 const EMPTY_MESSAGES: Message[] = [];
 
+/** 当前版本不引入该特性：关闭设计对话中通过 @ 提及画布节点/已生成素材的前端入口。 */
+const DESIGNER_CHAT_MENTIONS_ENABLED = false;
+
 export function DesignerChatPanel() {
   const { t } = useTranslation();
   const domainGraph = useDesignerStore((state) => state.domainGraph);
@@ -292,6 +295,10 @@ export function DesignerChatPanel() {
   const onDraftChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     const { value } = event.target;
     setDraft(value);
+    if (!DESIGNER_CHAT_MENTIONS_ENABLED) {
+      setAtMenu(null);
+      return;
+    }
     const token = detectMentionQuery(value, event.target.selectionStart ?? value.length, allMentionOptions);
     setAtMenu(token ? { ...token, index: 0 } : null);
   }, [allMentionOptions]);
@@ -376,7 +383,8 @@ export function DesignerChatPanel() {
       return;
     }
     // One execution runs at a time, so one message may change one referenced node.
-    if (collectMentionedNodes(domainGraph, content).length > 1) {
+    // 当前版本不引入该特性：不拦截、不处理 @ 提及多个节点。
+    if (DESIGNER_CHAT_MENTIONS_ENABLED && collectMentionedNodes(domainGraph, content).length > 1) {
       toast.open({ content: t('designer.chat.multipleMentions'), variant: 'error' });
       return;
     }
@@ -501,7 +509,7 @@ export function DesignerChatPanel() {
       // through candidates and Escape cancels: none of them is meant for the
       // "@" menu or for sending (Firefox and some WebKit report key "Enter" here).
       if (isImeCompositionKey(event.nativeEvent, composingRef.current)) return;
-      if (atMenu && atCandidates.length > 0) {
+      if (DESIGNER_CHAT_MENTIONS_ENABLED && atMenu && atCandidates.length > 0) {
         const count = atCandidates.length;
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
           event.preventDefault();
@@ -572,7 +580,7 @@ export function DesignerChatPanel() {
             removeLabel={t('designer.chat.removeAttachment')}
           />
         ) : null}
-        {draftMentions.length > 0 ? (
+        {DESIGNER_CHAT_MENTIONS_ENABLED && draftMentions.length > 0 ? (
           <ReferenceChips
             items={draftMentions.map((item) => ({
               kind: item.type === 'video' ? 'video' : 'image',
@@ -619,7 +627,7 @@ export function DesignerChatPanel() {
         ) : null}
         {/* Canvas chat sidebar: hide attach control; landing prompt keeps its own attach UI. */}
         <div className="designer-chat-panel__composer-box">
-          {atMenu && atCandidates.length > 0 ? (
+          {DESIGNER_CHAT_MENTIONS_ENABLED && atMenu && atCandidates.length > 0 ? (
             <ul className="designer-chat-panel__at-menu" role="listbox" data-testid="designer-chat-panel-at-menu">
               {atCandidates.map((item, index) => {
                 const preview = item.type === 'image' ? designerAssetPreviewUrl(item.uri) : null;

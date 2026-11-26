@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Handle, Position } from '@xyflow/react';
 import {
   buildManualDesignerNode,
+  isDesignerAddTemplateVisible,
   positionLeftOfNode,
   portAddTemplatesFor,
   positionRightOfNode,
@@ -30,7 +31,11 @@ export function DesignerNodePortControl({ nodeId, side }: DesignerNodePortContro
   const nodeType = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.type ?? '',
   );
-  const templates = useMemo(() => portAddTemplatesFor(nodeType, side), [nodeType, side]);
+  // 当前版本不引入该特性：端口加号菜单不提供 BGM / 音乐生成节点入口。
+  const templates = useMemo(
+    () => portAddTemplatesFor(nodeType, side).filter(isDesignerAddTemplateVisible),
+    [nodeType, side],
+  );
   const hasOptions = templates.length > 0;
   const addNode = useDesignerStore((state) => state.addNode);
   const nodePortMenu = useDesignerUiStore((state) => state.nodePortMenu);
