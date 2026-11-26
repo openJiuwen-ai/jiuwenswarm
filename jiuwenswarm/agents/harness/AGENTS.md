@@ -227,8 +227,10 @@ agents/harness/
     先想清楚属于哪类。
 13. **per-call 重试预算挂在请求 ctx**：重试计数存 `ctx.extra["_llm_retry_counts"]`，
     rail 实例跨请求复用不带状态；peek 与 consume 分离，改预算口径必须保持这一归属 [[S_07]]。
-14. **溢出恢复无论 compact 成败一律 request_retry(0)**：禁止"compact 失败就不重试"；
-    同名键识别 processor 用非 isinstance 判定，连续溢出计数在实例级 [[S_07]]。
+14. **溢出恢复首次盲重试保留，之后未变小即熔断**：首个 413/溢出仍 `request_retry(0)`
+    并把 compact 标志置上；重试 payload 与上次相同（压缩没产生替换）直接熔断，
+    不再耗完 `max_recovery_attempts`。同名键识别 processor 用非 isinstance 判定，
+    连续溢出计数在实例级 [[S_07]]。
 15. **断路器默认关且只断不恢复**：`execution_guard.circuit_breaker` 默认 false，
     与 agent_ras 双挂互斥；命中即 force-finish 会话，无 OPEN/HALF_CLOSED 恢复态——
     别把它当恢复型熔断器用 [[S_08]]。

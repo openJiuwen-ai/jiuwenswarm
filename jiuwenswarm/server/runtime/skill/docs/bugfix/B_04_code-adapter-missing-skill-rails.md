@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 类型 | bugfix |
-| 编号 / slug | B_03 / code-adapter-missing-skill-rails |
+| 编号 / slug | B_04 / code-adapter-missing-skill-rails |
 | 关联模块 | `jiuwenswarm/server/runtime/agent_adapter/interface_code.py`（`_build_agent_rails` / `_FIXED_RAIL_NAMES`）；观测前缀：`interface_deep.py`（两个 skill rail builder 日志） |
 | 归档日期 | 2026-11-26 |
 | 关联 spec | S_05_agent-skill-rails.md（装配全景 / 热重载原位更新约定）、模块 AGENTS.md 铁律 5、7 |
