@@ -250,14 +250,16 @@ def _required_skill_requirement(tool: Any) -> tuple[bool, str | None]:
 
 
 def _hoist_mcp_app_block(safe_result: Any, payload: dict[str, Any]) -> None:
-    """MCP Apps：内层工具结果携带的 mcp_app 块提升到 InvokeTool 帧顶层。
+    """MCP Apps：内层工具结果携带的 mcp_app 块**移动**到 InvokeTool 帧顶层。
 
     ProgressiveToolRail 的 InvokeTool 间接调用（dev-stable 独有路径）把
     工具结果嵌在 result 一层，而前端契约读 raw_output.mcp_app 顶层键
-    （develop 直调路径无此嵌套）。
+    （develop 直调路径无此嵌套）。移动语义（pop-then-set）：嵌套层不再
+    保留副本——能力提取会把整个 payload 序列化进模型上下文，复制语义
+    会让模型可见面出现两份（评审 CR-10997-03）。
     """
     if isinstance(safe_result, dict) and isinstance(safe_result.get("mcp_app"), dict):
-        payload.setdefault("mcp_app", safe_result["mcp_app"])
+        payload["mcp_app"] = safe_result.pop("mcp_app")
 
 
 class ProgressiveToolRail(DeepAgentRail):

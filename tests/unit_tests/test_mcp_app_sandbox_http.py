@@ -28,6 +28,8 @@ def test_sandbox_page_sends_csp_header_from_query():
     header = response.headers["content-security-policy"]
     assert "connect-src https://api.test" in header
     assert "worker-src blob: https://cdn.test" in header
+    # 代理页防嵌入：仅宿主 UI（loopback）可嵌入，其余来源拒绝
+    assert "frame-ancestors 'self' http://localhost:* http://127.0.0.1:*" in header
     assert "sandbox-proxy-ready" in response.text
     assert "doc.write(params.html)" in response.text
     # OpenStreetMap-style usage policies reject requests without a Referer.
@@ -36,10 +38,13 @@ def test_sandbox_page_sends_csp_header_from_query():
 
 def test_sandbox_csp_never_allows_self_or_injected_keywords():
     header = build_mcp_app_csp(
-        {"connectDomains": ["'self'", "https://ok.test; script-src *", "*", "http://127.0.0.1:19000"]}
+        {"connectDomains": ["'self'", "https://ok.test; script-src *", "*", "http://127.0.0.1:19000"]},
+        own_origin="http://127.0.0.1:19000",
     )
     connect = next(d for d in header.split("; ") if d.startswith("connect-src"))
-    assert connect == "connect-src http://127.0.0.1:19000"
+    # 自身 origin 被拒（内层 iframe 在服务 origin 上 allow-same-origin，
+    # 否则 server 可声明 connect 打穿 "connect-src never includes self"）
+    assert connect == "connect-src 'none'"
     assert "'self'" not in header
     assert header.count("script-src") == 1
 

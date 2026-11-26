@@ -85,6 +85,7 @@ export function McpAppView({
   const [approval, setApproval] = useState<PendingApproval | null>(null);
   const [pendingMessage, setPendingMessage] = useState<PendingMessage | null>(null);
   const pendingMessageRef = useRef<PendingMessage | null>(null);
+  const approvalResolveRef = useRef<((approved: ApprovalDecision) => void) | null>(null);
   // Latest tool input/result, read when the app initializes. Store updates can
   // hand us an equal-but-new object; that must not remount the app.
   const appRef = useRef(app);
@@ -130,6 +131,7 @@ export function McpAppView({
     const target = iframe?.contentWindow;
     if (!resource || sandboxUrl === undefined || !iframe || !target) return;
     let disposed = false;
+    let sandboxReadyTimer: ReturnType<typeof setTimeout> | null = null;
     const documentOptions = { forwardConsoleInfo: import.meta.env.DEV, inlineCsp: !sandboxUrl };
 
     const bridge = new AppBridge(
@@ -157,6 +159,10 @@ export function McpAppView({
     );
 
     bridge.onsandboxready = () => {
+      if (sandboxReadyTimer) {
+        clearTimeout(sandboxReadyTimer);
+        sandboxReadyTimer = null;
+      }
       void bridge.sendSandboxResourceReady({
         html: buildAppDocument(resource, documentOptions),
         csp: resource.csp,
@@ -215,8 +221,10 @@ export function McpAppView({
       if (!alwaysAllowedRef.current.has(name)) {
         const claimsReadOnly = await appToolClaimsReadOnly(app.server, name);
         const decision = await new Promise<ApprovalDecision>((resolve) => {
+          approvalResolveRef.current = resolve;
           setApproval({ tool: name, args: args ?? {}, claimsReadOnly, resolve });
         });
+        approvalResolveRef.current = null;
         setApproval(null);
         if (decision === 'always') alwaysAllowedRef.current.add(name);
         if (decision === 'deny') {
@@ -226,8 +234,15 @@ export function McpAppView({
           };
         }
       }
-      const result = await callAppTool(app.server, name, args);
-      return result as Awaited<ReturnType<NonNullable<AppBridge['oncalltool']>>>;
+      try {
+        const result = await callAppTool(app.server, name, args);
+        return result as Awaited<ReturnType<NonNullable<AppBridge['oncalltool']>>>;
+      } catch (err: unknown) {
+        // webRequest 在 ok=false / 断连时 reject：rejection 逃逸进 bridge
+        // 会让 App 端 tools/call 悬挂——转成显式 isError 结果。
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text', text: message }], isError: true };
+      }
     };
 
     void bridge
@@ -245,8 +260,30 @@ export function McpAppView({
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
 
+    // CR-3：代理页加载失败/被拒（HOST_PATTERN 拒绝、瞬时故障）时 bridge
+    // 可能永远不 ready——超时回退 srcdoc，避免 App 永久空白无提示。
+    if (sandboxUrl) {
+      sandboxReadyTimer = setTimeout(() => {
+        if (disposed) return;
+        console.warn('[mcp-app] sandbox proxy not ready within 10s, falling back to srcdoc');
+        setSandboxUrl(null);
+      }, 10000);
+    }
+
     return () => {
       disposed = true;
+      if (sandboxReadyTimer) {
+        clearTimeout(sandboxReadyTimer);
+        sandboxReadyTimer = null;
+      }
+      // 卸载兜底：审批 Promise resolve(false)、待确认消息释放——避免
+      // 审批期间卸载导致 Promise 悬挂（bridge 侧一直等到自身超时）。
+      approvalResolveRef.current?.('deny');
+      approvalResolveRef.current = null;
+      pendingMessageRef.current?.release();
+      pendingMessageRef.current = null;
+      setPendingMessage(null);
+      setApproval(null);
       void bridge.teardownResource({}).catch(() => undefined).finally(() => bridge.close());
     };
   }, [resource, sandboxUrl, app.server, app.tool, identity]);

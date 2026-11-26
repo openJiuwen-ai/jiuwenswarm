@@ -93,7 +93,7 @@ MCP Apps servers can display interactive views inside Web chat tool results with
 - When an App requests a text message, the host previews it and sends it through normal chat only after the user selects Send. Cancel sends nothing. App messages are rejected while the session is processing or its queue is paused.
 - An App can update model context, such as a selected map location or edited budget. Each mounted instance retains only its latest state, attached to the next ordinary chat send in that session. Updating context neither invokes the model nor replaces the user's input.
 - Multiple tool calls may share one UI resource while retaining separate instance state. State is session-scoped, removed on unmount, and not restored as persistent session data.
-- Context accepts text and JSON objects, bounded to 32 KiB per instance, 64 KiB per session, and JSON depth 16. The backend validates it again and labels it untrusted application state, not user authorization or system instructions.
+- Context accepts text and JSON objects, bounded to 32 KiB per instance, 64 KiB per session, and JSON depth 16 (enforced on the frontend). Once attached to a message, the context is not yet consumed or labeled as untrusted by the backend in the current release (known limitation, to be addressed in a future version); it does not represent user authorization or system instructions.
 - Direct App tool calls still require user approval. A server's read-only annotation is only a hint and cannot bypass approval.
 
 ---

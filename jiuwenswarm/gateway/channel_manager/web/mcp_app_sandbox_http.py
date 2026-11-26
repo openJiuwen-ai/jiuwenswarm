@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -44,16 +45,31 @@ def _sources(value: Any) -> str:
     return " ".join(item for item in value if isinstance(item, str) and _CSP_SOURCE.match(item))
 
 
-def build_mcp_app_csp(csp: Any) -> str:
+def _origin_key(source: str) -> str:
+    """Scheme://netloc of a CSP source string (path/query stripped)."""
+    parts = urlsplit(source)
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}"
+
+
+def build_mcp_app_csp(csp: Any, own_origin: str | None = None) -> str:
     """Content-Security-Policy for an app, from its resource ``_meta.ui.csp``.
 
     Script/worker allowances match the ext-apps reference host (basic-host):
     bundled and WebGL apps (CesiumJS, Three.js) need eval, WebAssembly and
-    blob: workers. ``connect-src`` stays limited to declared domains.
+    blob: workers. ``connect-src`` stays limited to declared domains, and a
+    source matching the serving origin is dropped: the inner iframe is
+    allow-same-origin on that origin, so a server could otherwise declare
+    its way past the "connect-src never includes 'self'" claim
+    (PR !10997 CR-5).
     """
     csp = csp if isinstance(csp, dict) else {}
+    own_key = _origin_key(own_origin) if own_origin else None
     resources = _sources(csp.get("resourceDomains"))
     connect = _sources(csp.get("connectDomains"))
+    if own_key:
+        connect = " ".join(
+            source for source in connect.split(" ") if source and _origin_key(source) != own_key
+        )
     frames = _sources(csp.get("frameDomains"))
     bases = _sources(csp.get("baseUriDomains"))
     directives = [
@@ -154,7 +170,8 @@ def register_mcp_app_sandbox_routes(app: FastAPI) -> None:
         )
 
     @app.get(SANDBOX_PATH, include_in_schema=False)
-    async def mcp_app_sandbox(csp: str = Query(default="")) -> HTMLResponse:
+    async def mcp_app_sandbox(request: Request, csp: str = Query(default="")) -> HTMLResponse:
+        own_origin = _server_origin(request)
         try:
             parsed = json.loads(csp) if csp else None
         except ValueError:
@@ -162,7 +179,12 @@ def register_mcp_app_sandbox_routes(app: FastAPI) -> None:
         return HTMLResponse(
             _SANDBOX_HTML,
             headers={
-                "Content-Security-Policy": build_mcp_app_csp(parsed),
+                # frame-ancestors 与脚本内 HOST_PATTERN 同语义（宿主 UI 须
+                # loopback）；非 loopback/HTTPS 泛化随 origin 策略任务处理。
+                "Content-Security-Policy": (
+                    build_mcp_app_csp(parsed, own_origin=own_origin)
+                    + "; frame-ancestors 'self' http://localhost:* http://127.0.0.1:*"
+                ),
                 "Cache-Control": "no-store",
                 # Apps inherit this policy. Send the (local) origin: some tile/
                 # asset servers, e.g. OpenStreetMap, reject requests without a

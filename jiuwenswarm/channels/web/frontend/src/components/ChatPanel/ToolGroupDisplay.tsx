@@ -11,6 +11,8 @@ import { McpAppView } from './McpAppView';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
+  /** MCP Apps：交付物折叠分组传 false——主内容分支已常驻渲染并注册实例，避免同实例双挂载互删（PR !10997 评审）。 */
+  renderMcpApps?: boolean;
   sessionId?: string | null;
   notices?: string[];
   showAvatar?: boolean;
@@ -347,6 +349,7 @@ export { formatDurationPrecise, useNow } from './chatTimelineClock';
 export function ToolGroupDisplay({
   executions,
   sessionId = null,
+  renderMcpApps = true,
   notices = [],
   showAvatar = true,
   teamLayout = false,
@@ -452,7 +455,7 @@ export function ToolGroupDisplay({
           })}
         </div>
 
-        {mcpAppExecutions.map((execution) => (
+        {renderMcpApps && mcpAppExecutions.map((execution) => (
           <McpAppView
             key={execution.toolCallId}
             app={execution.result!.mcpApp!}

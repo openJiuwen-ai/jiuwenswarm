@@ -37,6 +37,9 @@ from jiuwenswarm.gateway.channel_manager.web.web_http_server import (
 from jiuwenswarm.gateway.channel_manager.web.trajectory_http import (
     attach_trajectory_routes,
 )
+from jiuwenswarm.gateway.channel_manager.web.mcp_app_sandbox_http import (
+    register_mcp_app_sandbox_routes,
+)
 from jiuwenswarm.gateway.channel_manager.web.diagnose_http import (
     attach_diagnose_routes,
 )
@@ -765,6 +768,10 @@ def create_web_http_app(channel: Any) -> FastAPI:
     register_special_http_routes(app, channel)
     trajectory_service = attach_trajectory_routes(app, channel)
     attach_diagnose_routes(app, channel, trajectory_service=trajectory_service)
+    # MCP Apps 沙箱代理页与探测端点：前端 loadSandboxUrl 走 /api/v1/*（本
+    # app 是部署形态中 /api/v1/* 的实际出口，WebChannel 19000 在多数部署
+    # 形态下不可达——PR !10997 CR-10997-01）。
+    register_mcp_app_sandbox_routes(app)
     return app
 
 

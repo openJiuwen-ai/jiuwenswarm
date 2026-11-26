@@ -581,6 +581,7 @@ export function ChatTimelineList({
                   key={`${item.key}-deliverable`}
                   executions={deliverables}
                   sessionId={sessionId}
+                  renderMcpApps={false}
                   notices={[]}
                   showAvatar={false}
                   teamLayout={isTeamMode}

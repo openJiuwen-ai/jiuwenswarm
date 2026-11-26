@@ -103,5 +103,10 @@ export async function openAppLink(url: string): Promise<boolean> {
   const desktopOpen = window.pywebview?.api?.open_app_link;
   if (desktopOpen) return Boolean(await desktopOpen(parsed.href));
   if (window.__JIUWEN_DESKTOP__) return false;
-  return Boolean(window.open(parsed.href, '_blank', 'noopener,noreferrer'));
+  // noopener 特性串会让 window.open 恒返回 null（HTML 规范），无法区分
+  // "已打开"与"被拦截"——改为打开后清空 opener，等价安全且返回可用句柄。
+  const opened = window.open(parsed.href, '_blank');
+  if (!opened) return false;
+  opened.opener = null;
+  return true;
 }
