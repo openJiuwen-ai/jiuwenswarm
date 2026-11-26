@@ -1087,12 +1087,14 @@ body.workspace-resize-active iframe {
     overflow-wrap: anywhere;
     word-break: break-word;
     color: var(--color-text-primary);
-    line-height: 22px;
+    font-size: var(--font-size-base);
+    line-height: calc(22em / 14);
     white-space: pre-wrap;
   }
 
   .chat-markdown {
     @apply prose prose-sm max-w-none;
+    font-size: var(--font-size-base);
     max-width: 100%;
     min-width: 0;
     --tw-prose-body: var(--color-text-primary);
@@ -1222,7 +1224,7 @@ body.workspace-resize-active iframe {
   .chat-bubble.assistant.streaming .chat-text {
     @apply prose-sm max-w-none;
     color: var(--color-text-chat);
-    font-size: 0.875rem;
+    font-size: var(--font-size-base);
     line-height: 1.7142857;
   }
 
@@ -1798,14 +1800,13 @@ body.workspace-resize-active iframe {
   .team-group-chat-message-list .team-event-group-chip--broadcast {
     background: transparent;
     color: var(--color-text-link);
-    font-size: 14px;
+    font-size: var(--font-size-base);
     font-weight: 400;
   }
 
-  /* 群聊消息正文：14px / 28px 行高 */
   .team-group-chat-message-list .team-message-markdown {
-    font-size: 14px;
-    line-height: 22px;
+    font-size: var(--font-size-base);
+    line-height: calc(22em / 14);
   }
 
   .chat-timeline {

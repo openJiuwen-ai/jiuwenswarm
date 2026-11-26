@@ -899,7 +899,7 @@
       "customFontPlaceholder": "字体名称，多个字体用英文逗号分隔",
       "customFontHint": "将按顺序匹配本机已安装的字体；也可以填写 sans-serif、monospace 等通用字体族。",
       "fontSize": "界面字号",
-      "fontSizeDescription": "按比例调整界面文字大小，默认 100% 与当前版本一致。",
+      "fontSizeDescription": "调整聊天正文、输入区、会话列表和设置项等文字的大小。更改即时生效并保存在当前浏览器或桌面客户端中。",
       "fontSizeSmaller": "较小（90%）",
       "fontSizeDefault": "默认（100%）",
       "fontSizeLarger": "较大（110%）",
