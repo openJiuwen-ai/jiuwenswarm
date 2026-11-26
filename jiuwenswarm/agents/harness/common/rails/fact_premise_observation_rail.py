@@ -66,7 +66,7 @@ _RETRIEVAL_TOOL_NAMES = frozenset({
 # 输出侧：事件性断言词（表示在陈述一个带年份的事实结论）。砍掉「发布/宣布/确定/成立于/
 # 举行/召开/亚军」这类办公高频词，只留事件特异词；不用「是 / 为」——太宽。
 _ASSERTION_RE = re.compile(
-    r"举办|夺冠|冠军|主办|承办|当选|荣获|开幕|闭幕|揭幕|揭晓"
+    r"举办|夺冠|冠军(?:是|为|属于|得主)|主办|承办|当选|荣获|开幕|闭幕|揭幕|揭晓"
     r"|\b(?:won|elected|held|champion|host|hosted)\b",
     re.IGNORECASE,
 )
@@ -125,12 +125,13 @@ def _is_retrieval_tool(name: str) -> bool:
     lowered = str(name or "").strip().lower()
     if lowered in _RETRIEVAL_TOOL_NAMES:
         return True
-    # 前缀兜底：web_* / deepresearch* / mcp_*_search / *_fetch_webpage。
+    # 前缀兜底：web_* / mcp_*_search / *_fetch_webpage。
     # 刻意不用 endswith("_search")——会误命中 tools_search（元工具）、memory_search/ltm_search
     # （查记忆）、beam_search（解码算法）等非事实检索工具，从而抑制零检索告警。
+    # 也刻意不用 startswith("deepresearch")——deepresearch_register_report/prepare_rewrite
+    # 只登记报告/准备改写，非实际执行研究检索；deepresearch 只认精确集合里的 execute/stream。
     return (
         lowered.startswith("web_")
-        or lowered.startswith("deepresearch")
         or (lowered.startswith("mcp_") and lowered.endswith("_search"))
         or lowered.endswith("fetch_webpage")
     )

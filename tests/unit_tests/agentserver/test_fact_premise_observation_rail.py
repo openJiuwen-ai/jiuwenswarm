@@ -421,3 +421,24 @@ async def test_pure_negation_no_alert(monkeypatch):
     calls = _capture(monkeypatch)
     await rail.after_model_call(_model_ctx("2028年没有世界杯。", ctx.extra))
     assert len(calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_deepresearch_report_tool_not_retrieval():
+    """deepresearch_register_report/prepare_rewrite 只登记报告/准备改写，不算检索。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("2028年世界杯冠军是谁？")
+    await rail.on_user_message(ctx)
+    await rail.after_tool_call(_tool_ctx("deepresearch_register_report", ctx.extra))
+    assert ctx.extra["_fpo_retrieved"] is False
+
+
+@pytest.mark.asyncio
+async def test_pure_negated_event_name_no_alert(monkeypatch):
+    """纯否定赛事名称（不会举办世界冠军赛）不告警——「冠军」是赛事名称不是断言。"""
+    rail = FactPremiseObservationRail()
+    ctx = _user_ctx("2028年有世界冠军赛吗？")
+    await rail.on_user_message(ctx)
+    calls = _capture(monkeypatch)
+    await rail.after_model_call(_model_ctx("2028年不会举办世界冠军赛。", ctx.extra))
+    assert len(calls) == 0
