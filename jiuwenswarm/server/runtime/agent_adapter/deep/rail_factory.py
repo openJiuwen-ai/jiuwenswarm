@@ -323,6 +323,92 @@ def _build_llm_retry_rail(config_base: dict[str, Any] | None = None) -> Notifyin
         return None
 
 
+def _config_bool(value: Any, default: bool) -> bool:
+    """Strict boolean parsing for deployment-overridable config.
+
+    ``config.yaml`` is merged with config-center / env overlays, where a value
+    like ``force_first_retrieval: "false"`` is a common quoting mistake.
+    ``bool("false")`` is True, which would silently enable the forced
+    ``tool_choice`` and turn a provider that rejects it into a 400 on the whole
+    turn. Only real booleans and explicit whitelist strings count; anything
+    else falls back to ``default``.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _build_fact_premise_rail(
+    config_base: dict[str, Any] | None = None,
+    *,
+    language: str = "cn",
+) -> Any | None:
+    """Build the input-side guard for year-scoped factual questions.
+
+    Config lives under ``execution_guard.fact_premise_guard``. ``enabled``
+    defaults to true (the guard is cheap and only fires on matching questions);
+    ``force_first_retrieval`` defaults to false because it makes the request
+    carry ``tool_choice``, which some providers reject.
+    """
+    try:
+        if config_base is None:
+            config_base = get_config()
+        guard_cfg = (
+            config_base.get("execution_guard", {})
+            if isinstance(config_base, dict)
+            else {}
+        )
+        fact_cfg = (
+            guard_cfg.get("fact_premise_guard", {})
+            if isinstance(guard_cfg, dict)
+            else {}
+        )
+        if not isinstance(fact_cfg, dict):
+            fact_cfg = {}
+        if not _config_bool(fact_cfg.get("enabled"), True):
+            logger.info("[JiuWenSwarmDeepAdapter] FactPremiseRail disabled by config")
+            return None
+        from jiuwenswarm.agents.harness.common.rails.fact_premise_rail import (
+            FactPremiseRail,
+        )
+
+        tool_names = fact_cfg.get("force_tool_names") or ("web_flash", "web_search")
+        if isinstance(tool_names, str):
+            tool_names = (tool_names,)
+        force_first_retrieval = _config_bool(
+            fact_cfg.get("force_first_retrieval"), False
+        )
+        rail = FactPremiseRail(
+            language=language,
+            force_tool_names=tuple(tool_names),
+            force_first_retrieval=force_first_retrieval,
+            log_when_unverified=_config_bool(
+                fact_cfg.get("log_when_unverified"), True
+            ),
+            log_unclassified_claims=_config_bool(
+                fact_cfg.get("log_unclassified_claims"), True
+            ),
+        )
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] FactPremiseRail create success "
+            "force_first_retrieval=%s",
+            force_first_retrieval,
+        )
+        return rail
+    except Exception as exc:
+        logger.warning("[JiuWenSwarmDeepAdapter] FactPremiseRail create failed: %s", exc)
+        return None
+
+
 def _build_work_plan_approval_rail() -> Any | None:
     """构建 work plan 的审批 rail（``exit_plan_mode`` 即时弹窗）。"""
     try:
