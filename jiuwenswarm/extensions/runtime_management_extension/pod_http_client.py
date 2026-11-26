@@ -28,6 +28,7 @@ from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled,
+    RestAssemblyError,
     assemble_rest_request,
     normalize_agent_http_base,
 )
@@ -88,6 +89,27 @@ def _http_method_not_handled_chunk(
         request_id=str(envelope.request_id or ""),
         channel_id=str(envelope.channel or "web"),
         payload={"error": message, "code": "HTTP_METHOD_NOT_HANDLED"},
+        is_complete=True,
+    )
+
+
+def _rest_assembly_bad_request(envelope: E2AEnvelope, message: str) -> AgentResponse:
+    """路径占位符缺失等入参错误：返回 BAD_REQUEST，由 Web HTTP 映射为 400。"""
+    return AgentResponse(
+        request_id=str(envelope.request_id or ""),
+        channel_id=str(envelope.channel or "web"),
+        ok=False,
+        payload={"error": message, "code": "BAD_REQUEST"},
+    )
+
+
+def _rest_assembly_bad_request_chunk(
+    envelope: E2AEnvelope, message: str
+) -> AgentResponseChunk:
+    return AgentResponseChunk(
+        request_id=str(envelope.request_id or ""),
+        channel_id=str(envelope.channel or "web"),
+        payload={"error": message, "code": "BAD_REQUEST"},
         is_complete=True,
     )
 
@@ -367,6 +389,14 @@ class HttpSseAgentServerClient(AgentServerClient):
                 envelope.method,
             )
             return _http_method_not_handled(envelope, str(exc))
+        except RestAssemblyError as exc:
+            logger.info(
+                "[E2A][out][http][unary] request_id=%s method=%s REST 组装失败: %s",
+                envelope.request_id,
+                envelope.method,
+                exc,
+            )
+            return _rest_assembly_bad_request(envelope, str(exc))
         http = self._ensure_http()
         channel_id = str(envelope.channel or "web")
         rid = str(envelope.request_id or "")
@@ -434,6 +464,15 @@ class HttpSseAgentServerClient(AgentServerClient):
                 envelope.method,
             )
             yield _http_method_not_handled_chunk(envelope, str(exc))
+            return
+        except RestAssemblyError as exc:
+            logger.info(
+                "[E2A][out][http][stream] request_id=%s method=%s REST 组装失败: %s",
+                envelope.request_id,
+                envelope.method,
+                exc,
+            )
+            yield _rest_assembly_bad_request_chunk(envelope, str(exc))
             return
         http = self._ensure_http()
         channel_id = str(envelope.channel or "web")

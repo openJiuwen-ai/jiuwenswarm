@@ -15,6 +15,8 @@ from jiuwenswarm.common.utils import logger
 from . import db_queries
 from .schemas import (
     DEFAULT_AGENT_LOAD_SLOTS,
+    EXECUTION_GUARD_ENTITY_TABLE,
+    EXECUTION_GUARD_SLOT,
     MODEL_SLOT_KEYS,
     REACT_ENTITY_TABLE,
     REACT_SLOT,
@@ -58,6 +60,8 @@ def _apply_slot_entities(
         result.permissions = entities
     elif slot == REACT_SLOT:
         result.react = entities
+    elif slot == EXECUTION_GUARD_SLOT:
+        result.execution_guard = entities
     elif slot == TemplateRefSlot.A2A_ACCESS_POLICY:
         result.a2a_access_policy = entities
 
@@ -80,6 +84,8 @@ def _any_requested_slot_loaded(
         if slot == TemplateRefSlot.PERMISSIONS and result.permissions:
             return True
         if slot == REACT_SLOT and result.react is not None:
+            return True
+        if slot == EXECUTION_GUARD_SLOT and result.execution_guard is not None:
             return True
         if (
             slot == TemplateRefSlot.A2A_ACCESS_POLICY
@@ -234,6 +240,9 @@ class TemplateEntityCache:
         if slot == REACT_SLOT:
             # e2a 协议包尚未登记 REACT 槽位，仓内字符串接线。
             table = REACT_ENTITY_TABLE
+        elif slot == EXECUTION_GUARD_SLOT:
+            # e2a 协议包尚未登记 EXECUTION_GUARD 槽位，仓内字符串接线。
+            table = EXECUTION_GUARD_ENTITY_TABLE
         else:
             try:
                 slot_key = TemplateRefSlot(slot)
@@ -488,10 +497,14 @@ async def load_effective_enterprise_config(
         try:
             entities = await _fetch_slot_entities(slot, template_ids)
         except Exception as exc:
-            # A2A 策略与 react 失败降级（warning 后跳过该槽位，不拖垮其余槽位）：
-            # react_template 表随 gateway 建表 PR 发版，当前 pin 的 agent-gateway
-            # 未建表时查询会抛错，不能让配置了 react 引用的实例整体加载失败。
-            if slot not in (TemplateRefSlot.A2A_ACCESS_POLICY, REACT_SLOT):
+            # A2A 策略、react 与执行护栏失败降级（warning 后跳过该槽位，不拖垮其余槽位）：
+            # 对应表随 gateway 建表发版，当前环境未建表时查询会抛错，不能让配置了这些
+            # 引用的实例整体加载失败。
+            if slot not in (
+                TemplateRefSlot.A2A_ACCESS_POLICY,
+                REACT_SLOT,
+                EXECUTION_GUARD_SLOT,
+            ):
                 raise
             logger.warning(
                 "[enterprise_config] %s slot load failed: resource_id=%r "

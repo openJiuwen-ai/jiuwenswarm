@@ -29,6 +29,7 @@ from agent_gateway.common.session_message import (
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
 
+from jiuwenswarm.server.edition_gate import enterprise_only_denial
 from jiuwenswarm.server.heartbeat_push import merge_heartbeat_push_metadata, should_skip_heartbeat_push
 from jiuwenswarm.server.interrupt_intent import (
     normalized_intent_request, reject_interrupt_result_payload, unknown_interrupt_intent_error,
@@ -330,6 +331,18 @@ class ExecutionRequests:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        denial = enterprise_only_denial(request.req_method)
+        if denial is not None:
+            response = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=False, payload={"error": denial, "code": "FORBIDDEN"},
+                metadata=request.metadata, agent_ref=request.agent_ref,
+            )
+            async with send_lock:
+                await self.services.send(
+                    ws, self.services.encode_response(response, response_id=request.request_id)
+                )
+            return
         if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
             params = request.params if isinstance(request.params, dict) else {}
             channels = params.get("channels")

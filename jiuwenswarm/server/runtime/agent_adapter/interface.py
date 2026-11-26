@@ -120,6 +120,9 @@ from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+from jiuwenswarm.server.runtime.agent_adapter.method_guard import (
+    is_chat_turn_method, method_not_found_response, req_method_value,
+)
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.prompt_context import prepare_prompt_context
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillRpcError
@@ -2997,6 +3000,13 @@ class JiuWenSwarm:
         package_catalog_response = await self._handle_package_catalog_request(request)
         if package_catalog_response is not None:
             return package_catalog_response
+
+        if not is_chat_turn_method(request.req_method):
+            logger.warning(
+                "[JiuWenSwarm] Unhandled method: request_id=%s method=%s",
+                request.request_id, req_method_value(request.req_method),
+            )
+            return method_not_found_response(request)
 
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         validator = getattr(adapter, "validate_auto_permission_workspace_request", None)

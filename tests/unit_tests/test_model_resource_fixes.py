@@ -92,6 +92,34 @@ def test_upsert_preserves_omitted_secret_and_encrypts_rotation(catalog_state, mo
     assert saved["model_client_config"]["api_key"] == "enc:new"
 
 
+def test_upsert_honours_explicit_non_default_on_singleton_group(catalog_state):
+    """#6853: is_default:false must survive the models.upsert round trip."""
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_new",
+        "is_default": False,
+        "model_client_config": {
+            "model_name": "gpt-test",
+            "api_base": "https://example.com/v1",
+            "api_key": "k",
+            "client_provider": "OpenAI",
+        },
+    })
+    assert saved["is_default"] is False
+    assert ModelCatalog().get_public_model_detail("mdl_new")["is_default"] is False
+
+    # Omission still means the only entry of a model_name is its default.
+    config_module.upsert_model_resource({
+        "model_id": "mdl_other",
+        "model_client_config": {
+            "model_name": "gpt-other",
+            "api_base": "https://example.com/v1",
+            "api_key": "k",
+            "client_provider": "OpenAI",
+        },
+    })
+    assert ModelCatalog().get_public_model_detail("mdl_other")["is_default"] is True
+
+
 @pytest.mark.asyncio
 async def test_upsert_treats_blank_temperature_as_unset(catalog_state, monkeypatch):
     """#6856: models.upsert must not persist or echo a literal empty string."""

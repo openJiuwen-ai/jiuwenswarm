@@ -450,13 +450,13 @@ class AgentWebSocketServer(WorkerExecutionHost):
                     ),
                 )
             return
-        from jiuwenswarm.server.front.protocol import unsupported_method_wire
+        from jiuwenswarm.server.front.protocol import rejected_method_wire
 
         if isinstance(data, dict):
             method = data.get("method")
             if method is None:
                 method = data.get("req_method")
-            error_wire = unsupported_method_wire(
+            error_wire = rejected_method_wire(
                 method, request_id=data.get("request_id"),
                 channel_id=data.get("channel") or data.get("channel_id"),
             )
@@ -481,7 +481,7 @@ class AgentWebSocketServer(WorkerExecutionHost):
                 )
                 if not isinstance(legacy, dict):
                     raise ValueError("legacy_agent_request missing or not a dict")
-                error_wire = unsupported_method_wire(
+                error_wire = rejected_method_wire(
                     legacy.get("req_method"),
                     request_id=legacy.get("request_id"),
                     channel_id=legacy.get("channel_id"),

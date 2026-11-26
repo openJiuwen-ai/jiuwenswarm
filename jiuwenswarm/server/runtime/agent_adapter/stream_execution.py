@@ -22,6 +22,9 @@ from typing import Any, AsyncIterator, Callable
 
 from agent_gateway.common.mode_matrix import is_team_mode as is_team_runtime_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from jiuwenswarm.server.runtime.agent_adapter.method_guard import (
+    is_chat_turn_method, method_not_found_stream_payload, req_method_value,
+)
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session.model import TEAM_EXECUTION_CONTEXT_METADATA_KEY
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY
@@ -179,6 +182,7 @@ class StreamExecutionService:
         # skilldev 已由上面的流式分支处理，这里不会再命中。
         for stateless_handler in (
             facade._handle_skills_request,
+            facade._handle_session_asset_request,
             facade._handle_plugins_request,
             facade._handle_package_catalog_request,
             facade._handle_assets_package_request,
@@ -204,6 +208,19 @@ class StreamExecutionService:
                     is_complete=True,
                 )
                 return
+
+        if not is_chat_turn_method(request.req_method):
+            logger.warning(
+                "[JiuWenSwarm] Unhandled stream method: request_id=%s method=%s",
+                request.request_id, req_method_value(request.req_method),
+            )
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload=method_not_found_stream_payload(request.req_method),
+                is_complete=True,
+            )
+            return
 
         adapter = facade._ensure_adapter(mode=facade._adapter_mode_for_request(request))
         validator = getattr(adapter, "validate_auto_permission_workspace_request", None)

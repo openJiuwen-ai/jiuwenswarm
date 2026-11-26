@@ -27,6 +27,7 @@ from agent_gateway.common.mode_matrix import (
     is_team_mode,
 )
 
+from jiuwenswarm.common.cron_session import cron_session_has_job_identity
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
 from jiuwenswarm.server.runtime.session.work_mode import (
@@ -1992,6 +1993,42 @@ def get_session_equipment(
     }
 
 
+class SessionPinRejection(RuntimeError):
+    """置顶被拒绝：该会话置顶后将落入侧边栏可见性盲区。
+
+    置顶区准入（``load_pinned_sessions``）只接纳 ``web`` 渠道会话与带 job
+    身份（``cron_id`` 非空或目录名嵌 job id）的 cron 执行会话；cron 分组
+    与项目普通列表均排除 pinned。不满足准入的会话置顶后三个列表无一可见，
+    用户在 UI 上无法再触达该会话取消置顶。置顶前直接拒绝，``code`` 供
+    handler 映射为 FORBIDDEN 错误码。
+    """
+
+    code = "FORBIDDEN"
+
+
+def pinned_session_admitted(session_id: str, meta: dict[str, Any]) -> bool:
+    """Whether the pinned area would list this session once pinned.
+
+    Single source of truth for the sidebar visibility contract, shared in both
+    directions: ``load_pinned_sessions`` admits by this predicate and
+    ``set_session_pinned`` rejects on its negation, so the two can never
+    disagree (a disagreement reopens the black hole where a pinned session
+    appears in no sidebar list).
+
+    The admission set mirrors what the sidebar can actually show: ``web``
+    channel sessions (the project list), plus any session carrying a cron job
+    identity (``cron_session_has_job_identity``) — the cron group lists those
+    by ``cron_id`` or job-shaped directory name regardless of ``channel_id``,
+    so a blank/missing channel value on a cron-named session must not flip its
+    visibility (``channel_id or ""`` write paths can legitimately leave it
+    empty on disk). Everything else (blank/TUI sessions without job identity)
+    is invisible in every list once pinned and must be rejected at pin time.
+    """
+    if str(meta.get("channel_id") or "").strip() == "web":
+        return True
+    return cron_session_has_job_identity(session_id, meta.get("cron_id"))
+
+
 # 会话级 pin 重编号全局序列化锁:保障「设置目标 → 收集所有置顶 → 重编号 → 写回」全过程原子性。
 # Gateway 为会话级 pin 的唯一写入方(仅经 Web 本地 handler 处理,不转发 AgentServer)。
 _SESSION_PIN_LOCK = threading.Lock()
@@ -2020,6 +2057,12 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
     Returns:
         ``(操作后的 pinned, 操作后的 pin_order)``;会话不存在(metadata 缺失)时返回 ``None``。
         取消置顶时 ``pin_order`` 恒为 0。
+
+    Raises:
+        SessionPinRejection: 置顶(``pinned=True``)一个置顶区不会接纳的会话
+        (``pinned_session_admitted`` 为 False:非 ``web`` 渠道且不带 cron job
+        身份,含 ``channel_id`` 落空的执行会话)。这类会话置顶后三个侧边栏
+        列表均不可见(见类 docstring);取消置顶不受影响。
     """
     started = time.perf_counter()
     lock_ms = read_ms = scan_ms = write_ms = 0.0
@@ -2036,6 +2079,15 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
                 return None
 
             current_order = int(meta.get("pin_order", 0))
+            if pinned and not pinned_session_admitted(session_id, meta):
+                # Pin would drop this session into the sidebar visibility
+                # black hole (pinned area rejects it, cron group and project
+                # list exclude pinned). Refuse before any write.
+                outcome = "rejected_cron_without_identity"
+                raise SessionPinRejection(
+                    "cron execution session without cron_id cannot be pinned: "
+                    "it would disappear from every sidebar list"
+                )
             if bool(meta.get("pinned")) == pinned and (
                 current_order > 0 if pinned else current_order == 0
             ):
