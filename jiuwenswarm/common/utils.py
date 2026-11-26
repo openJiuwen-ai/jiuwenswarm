@@ -828,14 +828,20 @@ def cleanup_stale_openjiuwen_descs() -> None:
         )
         return
 
-    try:
-        import openjiuwen
-    except ModuleNotFoundError as exc:
-        if exc.name == "openjiuwen":
-            return
-        raise
+    loaded = sys.modules.get("openjiuwen")
+    package_file = getattr(loaded, "__file__", None)
+    if package_file is None:
+        # Top-level package discovery does not execute the SDK's __init__.
+        # Cleanup must still finish before any SDK description index is built.
+        from importlib.util import find_spec
 
-    package_file = getattr(openjiuwen, "__file__", None)
+        try:
+            spec = find_spec("openjiuwen")
+        except ModuleNotFoundError as exc:
+            if exc.name == "openjiuwen":
+                return
+            raise
+        package_file = spec.origin if spec is not None else None
     if not package_file:
         return
 

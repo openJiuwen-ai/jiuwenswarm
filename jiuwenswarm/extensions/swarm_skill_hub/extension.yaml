@@ -1,3 +1,4 @@
+requires_sdk: false
 id: swarm_skill_hub
 name: swarm_skill_hub
 version: 0.1.0
