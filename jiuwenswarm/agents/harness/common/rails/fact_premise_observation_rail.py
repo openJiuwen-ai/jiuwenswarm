@@ -268,14 +268,19 @@ class FactPremiseObservationRail(DeepAgentRail):
                 answer = _answer_text(response)
                 if _REFUSAL_RE.search(answer):
                     return
-                # 输出侧重新扫答案里的窗口内年份/届次词，不依赖输入侧锚点：相对年份词
-                # （今年/去年…）只触发观测、不进锚点；过去年份（已定论事实）同样排除。
+                # 输出侧扫答案里的窗口内年份数字 / 届次词 / 相对年份词（this year、今年…）。
+                # 相对词答案也要判，否则「今年谁夺冠→今年夺冠的是巴西」这类零检索断言会漏。
+                # 过去年份（已定论事实）仍排除。
                 current_year = date.today().year
                 has_window_year = any(
                     int(y[:4]) >= current_year - _PAST_YEAR_SLACK
                     for y in _YEAR_RE.findall(answer)
                 )
-                if not has_window_year and not _EDITION_RE.search(answer):
+                if (
+                    not has_window_year
+                    and not _EDITION_RE.search(answer)
+                    and not _RELATIVE_RE.search(answer)
+                ):
                     return
                 if not _ASSERTION_RE.search(answer):
                     return
