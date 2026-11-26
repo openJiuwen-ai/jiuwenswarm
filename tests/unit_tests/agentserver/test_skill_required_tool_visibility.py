@@ -28,6 +28,10 @@ from jiuwenswarm.agents.harness.common.rails.skill_active_state import (
 from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
     deepresearch_execute,
 )
+from jiuwenswarm.agents.harness.common.tools.deepresearch.rewrite_tools import (
+    deepresearch_register_report,
+)
+from jiuwenswarm.agents.harness.common.tools.deepresearch.tools import _get_route
 from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
     InvokeToolInput,
 )
@@ -111,6 +115,48 @@ def test_main_progressive_builder_does_not_force_skill_gated_tool_eager() -> Non
 
 def test_deepresearch_tool_declares_its_required_skill() -> None:
     assert deepresearch_execute.card.properties["required_skill"] == "deepresearch"
+
+
+@pytest.mark.asyncio
+async def test_report_registration_tool_requires_skill_and_binds_request_workspace(tmp_path):
+    active_skill = {"name": None}
+    card = deepresearch_register_report.card
+    agent = _agent([card])
+    report = tmp_path / "report.md"
+    report.write_bytes(b"Research report")
+    rail = ProgressiveToolRail(
+        eager_tools=[],
+        active_skill_provider=lambda: active_skill["name"],
+        deepresearch_context_provider=lambda: {
+            "request_id": "report-registration-request",
+            "session_id": "report-registration-session",
+            "output_dir": str(tmp_path),
+        },
+    )
+    rail.init(agent)
+    hidden = _model_ctx(agent, [card])
+    await rail.before_model_call(hidden)
+    assert card not in hidden.inputs.tools
+    denied = _tool_call_ctx(agent, card.name)
+    await rail.before_tool_call(denied)
+    assert denied.extra["_skip_tool"] is True
+
+    active_skill["name"] = "deepresearch"
+    visible = _model_ctx(agent, [card])
+    await rail.before_model_call(visible)
+    assert [tool.name for tool in visible.inputs.tools] == [card.name]
+
+    previous_route = _get_route()
+    allowed = _tool_call_ctx(agent, card.name)
+    await rail.before_tool_call(allowed)
+    try:
+        assert "_skip_tool" not in allowed.extra
+        assert _get_route()["session_id"] == "report-registration-session"
+        await deepresearch_register_report.invoke({"report_path": str(report)})
+        assert report.with_suffix(".provenance.json").is_file()
+    finally:
+        await rail.after_tool_call(allowed)
+    assert _get_route() == previous_route
 
 
 @pytest.mark.asyncio

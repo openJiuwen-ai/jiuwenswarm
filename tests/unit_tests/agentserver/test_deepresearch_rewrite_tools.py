@@ -11,6 +11,12 @@ from openjiuwen.core.runner.callback import get_callback_framework
 from openjiuwen.core.runner.callback.events import ToolCallEvents
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch import rewrite_tools as rt
+from jiuwenswarm.agents.harness.common.tools.deepresearch import get_deepresearch_tools
+from jiuwenswarm.agents.harness.common.tools.deepresearch.tools import (
+    push_deepresearch_route,
+    reset_deepresearch_route,
+)
+from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin import document_rewrite
 
 
 def _document(root: Path, citation_artifacts: dict[str, str] | None = None):
@@ -77,6 +83,103 @@ def _structured_result(prepared: dict, text: str = "新句。") -> dict:
         ],
         "facts_added": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_main_agent_report_can_be_rewritten_after_registration(tmp_path):
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    report = projects / "研究报告.md"
+    body = "原句。\r\n\r\n[来源](https://example.test/source)\r\n".encode("utf-8")
+    report.write_bytes(body)
+    token = push_deepresearch_route("R1", "officeclaw", "S1", output_dir=str(tmp_path))
+    try:
+        payload = {"report_path": str(report), "action": "polish", "selection": _selection()}
+        unregistered = json.loads(await rt.deepresearch_prepare_rewrite.invoke(payload))
+        assert unregistered["error_code"] == "DOCUMENT_NOT_FOUND"
+
+        tools = {tool.card.name: tool for tool in get_deepresearch_tools()}
+        assert "deepresearch_register_report" in tools
+        register = tools["deepresearch_register_report"]
+        assert register.card.properties["required_skill"] == "deepresearch"
+        registered = json.loads(await register.invoke({"report_path": str(report)}))
+        assert registered["status"] == "registered"
+        assert registered["report_path"] == str(report)
+        assert json.loads(await register.invoke({"report_path": str(report)})) == registered
+        assert report.read_bytes() == body
+
+        prepared = json.loads(await rt.deepresearch_prepare_rewrite.invoke(payload))
+        assert prepared["status"] == "prepared"
+        rewritten = document_rewrite.commit_rewrite(
+            context_token=prepared["context_token"], session_id="S1",
+            structured_result=_structured_result(prepared),
+        )
+        assert rewritten["parent_revision_id"] == registered["revision_id"]
+        assert Path(rewritten["report_path"]).read_bytes() == body.replace(
+            "原句。".encode("utf-8"), "新句。".encode("utf-8")
+        )
+        assert report.read_bytes() == body
+        report.write_bytes(body + b"changed")
+        conflict = json.loads(await register.invoke({"report_path": str(report)}))
+        assert conflict["error_code"] == "REVISION_CONFLICT"
+    finally:
+        reset_deepresearch_route(token)
+
+
+@pytest.mark.asyncio
+async def test_registration_is_limited_to_the_current_workspace_request(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    adjacent = tmp_path / "adjacent.md"
+    adjacent.write_bytes(b"other workspace")
+    register = rt.deepresearch_register_report
+    args = {"report_path": str(adjacent)}
+
+    no_request = json.loads(await register.invoke(args))
+    assert no_request["error_code"] == "BAD_REQUEST"
+
+    token = push_deepresearch_route("R1", "officeclaw", "S1")
+    try:
+        unbound = json.loads(await register.invoke(args))
+        assert unbound["error_code"] == "BAD_REQUEST"
+    finally:
+        reset_deepresearch_route(token)
+
+    token = push_deepresearch_route("R1", "officeclaw", "S1", output_dir=str(workspace))
+    try:
+        outside = json.loads(await register.invoke(args))
+        assert outside["error_code"] == "BAD_REQUEST"
+        assert not adjacent.with_suffix(".provenance.json").exists()
+    finally:
+        reset_deepresearch_route(token)
+
+
+def test_registration_rolls_back_an_incomplete_publication(tmp_path, monkeypatch):
+    report = tmp_path / "report.md"
+    report.write_bytes(b"Research report\n")
+    provenance_path = report.with_suffix(".provenance.json")
+    snapshot_path = report.with_suffix(".final-result.json")
+    publish = document_rewrite._publish_create
+
+    def fail_provenance(path, payload, **kwargs):
+        if path == provenance_path:
+            raise OSError("publication failure")
+        return publish(path, payload, **kwargs)
+
+    args = {"workspace_root": tmp_path, "report_path": report.name}
+    with monkeypatch.context() as patcher:
+        patcher.setattr(document_rewrite, "_publish_create", fail_provenance)
+        with pytest.raises(document_rewrite.RewriteError) as exc:
+            document_rewrite.register_main_agent_report(**args)
+    assert exc.value.code == "REPORT_REGISTRATION_FAILED"
+    assert not provenance_path.exists()
+    assert not snapshot_path.exists()
+    assert report.read_bytes() == b"Research report\n"
+
+    registered = document_rewrite.register_main_agent_report(**args)
+    assert registered["report_path"] == str(report)
+    assert provenance_path.is_file()
+    assert snapshot_path.is_file()
 
 
 _INVOKE_LIFECYCLE_EVENTS = (
