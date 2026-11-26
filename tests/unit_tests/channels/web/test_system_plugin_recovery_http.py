@@ -170,23 +170,31 @@ def test_web_recovery_redirects_legacy_url_to_standalone_mount(monkeypatch, pref
     discover.assert_not_called()
 
 
-@pytest.mark.parametrize("proxied_https", [False, True])
-def test_web_remote_recovery_denies_restore_by_default(monkeypatch, proxied_https):
+@pytest.mark.parametrize("authority,proxied_https", [
+    (f"localhost:{_PORT}", False),
+    ("203.0.113.10", False),
+    ("203.0.113.10", True),
+    ("[2001:db8::10]", False),
+    ("app.example", False),
+    ("app.example", True),
+])
+def test_web_restore_without_password_accepts_same_origin(monkeypatch, authority, proxied_https):
     endpoint = Mock(return_value="http://127.0.0.1:19634/system-plugin-recovery?token=test-only")
     monkeypatch.setattr(system_plugin_recovery, "SystemPluginRecovery", lambda: SimpleNamespace(endpoint=endpoint))
     monkeypatch.delenv("JIUWENSWARM_REMOTE_RECOVERY_PASSWORD", raising=False)
     monkeypatch.setattr(_SpaStaticHandler, "log_message", lambda *args: None)
     server = SimpleNamespace(server_address=("127.0.0.1", _PORT))
-    headers = ["Host: app.example"]
+    headers = [f"Host: {authority}"]
     if proxied_https:
-        headers.extend(["Origin: https://app.example", "X-Forwarded-Proto: https"])
+        headers.extend([f"Origin: https://{authority}", "X-Forwarded-Proto: https"])
     else:
-        headers.append("Origin: http://app.example")
-    status, head, payload = _request(
+        headers.append(f"Origin: http://{authority}")
+    # Authorized requests advance to JSON body validation (415 here).
+    actual, head, payload = _request(
         _SpaStaticHandler, server, "POST", "/system-plugin-recovery/api/restore", headers,
     )
 
-    assert status == 403
+    assert actual == 415
     assert b"WWW-Authenticate" not in head
     assert b"test-only" not in payload
     endpoint.assert_not_called()

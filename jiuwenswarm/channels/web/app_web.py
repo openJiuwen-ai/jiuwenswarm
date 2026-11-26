@@ -1543,9 +1543,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def _allow_remote_recovery_request(self, route: str, trusted_https: bool) -> bool:
         password = os.getenv(self._REMOTE_RECOVERY_PASSWORD_ENV, "")
-        if not password and route != "/api/restore":
+        if not password:
             return True
-        if not trusted_https or not password:
+        if not trusted_https:
             self._write_json(403, {"error": "remote_recovery_disabled"})
             return False
         if self._has_remote_recovery_credentials(password):

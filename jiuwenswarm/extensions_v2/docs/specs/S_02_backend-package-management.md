@@ -145,8 +145,9 @@ generation 保留为内部校验字段，不出现在命令结果中。目录和
 不出现在远程浏览器的 URL 和 HTML 中。
 
 个人版 Web 未设置 `JIUWENSWARM_REMOTE_RECOVERY_PASSWORD` 时，远程同源 `GET` 和 `HEAD` 可读取恢复页、恢复入口、存档列表和预览。
-该模式下，远程 `POST /system-plugin-recovery/api/restore` 返回 `403`。设置密码后，远程读写均须由同机 HTTPS 代理接入，并通过独立的
-HTTP Basic 校验。代理保留公网 `Host`，覆盖 `X-Forwarded-Proto` 为 `https`。用户名为 `recovery`，密码来自 Web 服务的该环境变量。
+通过 IP 地址或域名访问时，远程同源 `POST /system-plugin-recovery/api/restore` 均可执行还原。能访问恢复入口的客户端可发起还原并请求重启，
+部署应限制入口的网络可达范围，或设置恢复密码。设置密码后，远程读写均须由同机 HTTPS 代理接入，并通过独立的 HTTP Basic 校验。
+代理保留公网 `Host`，覆盖 `X-Forwarded-Proto` 为 `https`。用户名为 `recovery`，密码来自 Web 服务的该环境变量。
 通过该 HTTPS 入口但凭证缺失或无效的请求返回 `401`，独立页在此响应中发出 HTTP Basic 认证挑战。
 本机直连校验回环连接及实际服务端口。写操作还须与恢复入口同源，并使用 `application/json`。
 Web 服务故障时，持有启动器登记的本机恢复地址的管理员可直连仍在运行的子进程。
