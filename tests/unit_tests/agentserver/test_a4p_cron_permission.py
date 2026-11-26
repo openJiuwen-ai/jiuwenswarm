@@ -295,4 +295,11 @@ async def test_smart_approval_does_not_consume_a4p_tokens(monkeypatch, channel):
     )
     rail = build_permission_rail({"permissions": permissions})
     response = await rail._host.request_permission_confirmation(_permission_request())
-    assert response == "interrupt"
+    # Web Smart Approval may interrupt for the LLM rail; cron has no such rail and
+    # must fail closed (deny) without touching A4P tokens.
+    if channel == "__cron__":
+        assert response.approved is False
+        assert response.auto_confirm is False
+        assert "[A4P_CRON_SCOPE_DENIED]" in response.feedback
+    else:
+        assert response == "interrupt"
