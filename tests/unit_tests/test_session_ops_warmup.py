@@ -75,13 +75,22 @@ async def test_warmup_passes_configured_context_processors_to_create_context(mon
 
 
 @pytest.mark.asyncio
-async def test_warmup_omits_processors_when_none_configured(monkeypatch):
+@pytest.mark.parametrize("processors", [
+    pytest.param([], id="empty"),
+    pytest.param([("FullCompactProcessor", object()), ("invalid",)], id="mixed-entry-lengths"),
+    pytest.param(["ab"], id="string-entry"),
+    pytest.param([(None, object())], id="invalid-name"),
+])
+async def test_warmup_restores_history_without_processors_for_empty_or_malformed_config(monkeypatch, processors):
     deep_agent, context_engine = _deep_agent_with_empty_context()
+    deep_agent.react_agent._config.context_processors = processors
     _warmup_with_single_history_message(monkeypatch, deep_agent=deep_agent)
 
     assert await _warmup(deep_agent) is True
 
-    assert "processors" not in context_engine.create_context.await_args.kwargs
+    kwargs = context_engine.create_context.await_args.kwargs
+    assert "processors" not in kwargs
+    assert [message.content for message in kwargs["history_messages"]] == ["旧问题", "旧回答"]
 
 
 @pytest.mark.asyncio
@@ -92,14 +101,12 @@ async def test_warmup_context_keeps_processors_when_pool_is_hit_later(monkeypatc
     只能在 warmup 这一次创建机会里挂上。
     """
     from openjiuwen.core.context_engine.context_engine import ContextEngine
-    from openjiuwen.core.context_engine.processor import forked
     from openjiuwen.core.context_engine.processor.compressor import (
         FullCompactProcessorConfig,
     )
     from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
     from openjiuwen.core.foundation.llm.schema.message import UserMessage
 
-    forked.activate()
     engine = ContextEngine(ContextEngineConfig(enable_tiktoken_counter=False))
     configured = [("FullCompactProcessor", FullCompactProcessorConfig())]
     react_agent = SimpleNamespace(context_engine=engine, _config=SimpleNamespace(context_processors=configured))

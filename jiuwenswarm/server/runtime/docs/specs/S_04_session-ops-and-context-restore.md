@@ -76,6 +76,8 @@ checkpointer（DeepAgentState / HITL 状态）、file_ops 日志 + 工作区文�
 - **N11 回灌建 context 必须带 processor**：warmup / rewind 的 `create_context`
   统一经 `_restore_context_processors_kwargs(react_agent)` 传入
   `react_agent._config.context_processors`（与 `ReactAgent._init_context` 同源）。
+  配置为空，或任一项不符合“字符串名称、配置对象”二元结构时，省略
+  `processors` 参数，继续回灌历史。
   agent-core `ContextEngine.create_context` 的池命中分支**不补挂** processor，
   `SessionModelContext._processors` 只在构造时赋值——回灌若裸建 context，该对象
   在池内的整个生命周期都没有压缩器，溢出恢复轨找不到 FullCompactProcessor。

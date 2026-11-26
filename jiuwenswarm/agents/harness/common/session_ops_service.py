@@ -1139,6 +1139,10 @@ def _restore_context_processors_kwargs(react_agent: Any) -> dict[str, Any]:
     processors = getattr(config, "context_processors", None)
     if not isinstance(processors, (list, tuple)) or not processors:
         return {}
+    for entry in processors:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2 or not isinstance(entry[0], str):
+            logger.warning("Ignoring malformed context_processors during session restore")
+            return {}
     logger.info(
         "restore context with configured processors: %s",
         [name for name, _processor_config in processors],
