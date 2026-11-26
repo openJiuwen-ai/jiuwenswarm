@@ -5033,25 +5033,26 @@ class SkillManager:
         """Register a transaction without hiding index generation failures."""
         from jiuwenswarm.server.runtime.skill.archive_store import atomic_write_json
 
-        self.reload_state()
-        new_names = {record["name"] for record in records if record["action"] == "download"}
-        local = [item for item in self._state.get("local_skills", []) if item.get("name") not in new_names]
-        plugins = [item for item in self._state.get("installed_plugins", []) if item.get("name") not in new_names]
-        for record in records:
-            if record["action"] != "download":
-                continue
-            local.append({
-                "name": record["name"], "source": "teamskillshub",
-                "origin": f"teamskillshub:{record['asset_id']}",
-                "installed_at": datetime.now(timezone.utc).isoformat(),
-            })
-            plugins.append({
-                "name": record["name"], "source": "teamskillshub",
-                "marketplace": "teamskillshub", "commit": "", "enabled": True,
-            })
-        self._state["local_skills"] = local
-        self._state["installed_plugins"] = plugins
-        atomic_write_json(self._state_file, self._state)
+        with _get_local_state_lock(self._state_file):
+            self.reload_state()
+            new_names = {record["name"] for record in records if record["action"] == "download"}
+            local = [item for item in self._state.get("local_skills", []) if item.get("name") not in new_names]
+            plugins = [item for item in self._state.get("installed_plugins", []) if item.get("name") not in new_names]
+            for record in records:
+                if record["action"] != "download":
+                    continue
+                local.append({
+                    "name": record["name"], "source": "teamskillshub",
+                    "origin": f"teamskillshub:{record['asset_id']}",
+                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                })
+                plugins.append({
+                    "name": record["name"], "source": "teamskillshub",
+                    "marketplace": "teamskillshub", "commit": "", "enabled": True,
+                })
+            self._state["local_skills"] = local
+            self._state["installed_plugins"] = plugins
+            atomic_write_json(self._state_file, self._state)
         self._generate_agent_data_for_workspace(self._agent_root)
 
     async def handle_skills_team_skills_hub_publish(self, params: dict) -> dict:
@@ -10182,14 +10183,15 @@ class SkillManager:
 
     async def handle_plugins_reload(self, params: dict) -> dict:
         """重载插件：根据 enabled 状态物理移动技能目录，然后统计摘要."""
-        # 规范化所有插件记录
-        for p in self._get_installed_plugins():
-            self._normalize_plugin(p)
-        self._save_state()
+        # 规范化所有插件记录并在锁内快照，避免与工作线程状态写竞争
+        with _get_local_state_lock(self._state_file):
+            for p in self._get_installed_plugins():
+                self._normalize_plugin(p)
+            self._save_state()
+            all_plugins = [dict(p) for p in self._get_installed_plugins()]
 
         # 根据 enabled 状态物理移动技能目录
         disabled_cache = self._skills_dir / "_disabled_plugins"
-        all_plugins = self._get_installed_plugins()
 
         for p in all_plugins:
             name = p.get("name", "")
@@ -10277,16 +10279,17 @@ class SkillManager:
             return
         tmp: Path | None = None
         try:
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._state_file.with_name(
-                f".{self._state_file.name}.{uuid.uuid4().hex[:8]}.tmp"
-            )
-            tmp.write_text(
-                json.dumps(self._state, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            os.replace(tmp, self._state_file)
-            tmp = None
+            with _get_local_state_lock(self._state_file):
+                self._state_file.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self._state_file.with_name(
+                    f".{self._state_file.name}.{uuid.uuid4().hex[:8]}.tmp"
+                )
+                tmp.write_text(
+                    json.dumps(self._state, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                os.replace(tmp, self._state_file)
+                tmp = None
         except Exception:
             logger.error("保存 skills_state.json 失败")
         finally:
@@ -10297,53 +10300,58 @@ class SkillManager:
                     pass
 
     def _get_marketplaces(self) -> list[dict]:
-        marketplaces = self._state.get("marketplaces", [])
-        normalized = self.normalize_marketplaces(marketplaces)
-        # 仅当结构发生变化时写回，避免每次读取都触盘。
-        if normalized != marketplaces:
-            self._state["marketplaces"] = normalized
-            self._save_state()
-        return normalized
+        with _get_local_state_lock(self._state_file):
+            marketplaces = self._state.get("marketplaces", [])
+            normalized = self.normalize_marketplaces(marketplaces)
+            # 仅当结构发生变化时写回，避免每次读取都触盘。
+            if normalized != marketplaces:
+                self._state["marketplaces"] = normalized
+                self._save_state()
+            return normalized
 
     def _add_marketplace(self, marketplace: dict) -> None:
-        self._state.setdefault("marketplaces", []).append(marketplace)
-        self._state["marketplaces"] = self.normalize_marketplaces(self._state.get("marketplaces", []))
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            self._state.setdefault("marketplaces", []).append(marketplace)
+            self._state["marketplaces"] = self.normalize_marketplaces(self._state.get("marketplaces", []))
+            self._save_state()
 
     def _remove_marketplace(self, name: str) -> bool:
-        marketplaces = self._state.get("marketplaces", [])
-        kept = [m for m in marketplaces if m.get("name") != name]
-        if len(kept) == len(marketplaces):
-            return False
-        self._state["marketplaces"] = self.normalize_marketplaces(kept)
-        self._save_state()
-        return True
+        with _get_local_state_lock(self._state_file):
+            marketplaces = self._state.get("marketplaces", [])
+            kept = [m for m in marketplaces if m.get("name") != name]
+            if len(kept) == len(marketplaces):
+                return False
+            self._state["marketplaces"] = self.normalize_marketplaces(kept)
+            self._save_state()
+            return True
 
     def _set_marketplace_enabled(self, name: str, enabled: bool) -> bool:
-        marketplaces = self.normalize_marketplaces(self._state.get("marketplaces", []))
-        updated = False
-        for marketplace in marketplaces:
-            if marketplace.get("name") == name:
-                marketplace["enabled"] = bool(enabled)
-                updated = True
-                break
-        if updated:
-            self._state["marketplaces"] = marketplaces
-            self._save_state()
-        return updated
+        with _get_local_state_lock(self._state_file):
+            marketplaces = self.normalize_marketplaces(self._state.get("marketplaces", []))
+            updated = False
+            for marketplace in marketplaces:
+                if marketplace.get("name") == name:
+                    marketplace["enabled"] = bool(enabled)
+                    updated = True
+                    break
+            if updated:
+                self._state["marketplaces"] = marketplaces
+                self._save_state()
+            return updated
 
     def _set_marketplace_last_updated(self, name: str) -> bool:
-        marketplaces = self.normalize_marketplaces(self._state.get("marketplaces", []))
-        updated = False
-        for marketplace in marketplaces:
-            if marketplace.get("name") == name:
-                marketplace["last_updated"] = datetime.now(timezone.utc).isoformat()
-                updated = True
-                break
-        if updated:
-            self._state["marketplaces"] = marketplaces
-            self._save_state()
-        return updated
+        with _get_local_state_lock(self._state_file):
+            marketplaces = self.normalize_marketplaces(self._state.get("marketplaces", []))
+            updated = False
+            for marketplace in marketplaces:
+                if marketplace.get("name") == name:
+                    marketplace["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    updated = True
+                    break
+            if updated:
+                self._state["marketplaces"] = marketplaces
+                self._save_state()
+            return updated
 
     @staticmethod
     def normalize_marketplaces(raw_marketplaces: Any) -> list[dict]:
@@ -10608,12 +10616,14 @@ class SkillManager:
         return get_skill_enabled(self._state, skill_name)
 
     def set_skill_enabled(self, skill_name: str, enabled: bool) -> None:
-        set_skill_enabled(self._state, skill_name, enabled)
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            set_skill_enabled(self._state, skill_name, enabled)
+            self._save_state()
 
     def remove_skill_config(self, skill_name: str) -> None:
-        if remove_skill_config(self._state, skill_name):
-            self._save_state()
+        with _get_local_state_lock(self._state_file):
+            if remove_skill_config(self._state, skill_name):
+                self._save_state()
 
     def reload_state(self) -> None:
         """重新从 skills_state.json 加载状态。
@@ -10715,23 +10725,24 @@ class SkillManager:
 
     def _set_plugin_enabled(self, name: str, enabled: bool, origin: str | None = None) -> bool:
         """设置插件的启用/禁用状态。传入 origin 时按来源精确匹配。"""
-        plugins = self._state.get("installed_plugins", [])
-        updated = False
-        for p in plugins:
-            if origin is not None:
-                rec_origin = str(p.get("origin") or "").strip()
-                if rec_origin and rec_origin == origin and p.get("name") == name:
+        with _get_local_state_lock(self._state_file):
+            plugins = self._state.get("installed_plugins", [])
+            updated = False
+            for p in plugins:
+                if origin is not None:
+                    rec_origin = str(p.get("origin") or "").strip()
+                    if rec_origin and rec_origin == origin and p.get("name") == name:
+                        p["enabled"] = bool(enabled)
+                        updated = True
+                        break
+                elif p.get("name") == name:
                     p["enabled"] = bool(enabled)
                     updated = True
                     break
-            elif p.get("name") == name:
-                p["enabled"] = bool(enabled)
-                updated = True
-                break
-        if not updated:
-            return False
-        self._save_state()
-        return True
+            if not updated:
+                return False
+            self._save_state()
+            return True
 
     @staticmethod
     def _normalize_plugin(p: dict) -> dict:
@@ -10775,8 +10786,9 @@ class SkillManager:
 
     def _set_clawhub_token(self, token: str) -> None:
         """设置 ClawHub CLI token（掩码处理）。"""
-        self._state.setdefault("clawhub", {})["token"] = token.strip() if token.strip() else ""
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            self._state.setdefault("clawhub", {})["token"] = token.strip() if token.strip() else ""
+            self._save_state()
 
     @staticmethod
     def _mask_clawhub_token(token: str) -> str:
@@ -12981,16 +12993,19 @@ class SkillManager:
         ``skills_state.json``. Holds a cross-pod file lock (portalocker) on the
         workspace ledger so concurrent AgentServer pods sharing one workspace
         never lose each other's writes. Non-enterprise or non-persistent
-        instances yield immediately (no lock, no reload).
+        instances acquire the per-state-file RLock without reloading from disk;
+        enterprise transactions also acquire that RLock inside ``skill_state_lock``
+        so every in-process state writer serializes on one lock hierarchy.
         """
         if not is_enterprise() or not self._persist_skills_state:
             with _get_local_state_lock(self._state_file):
                 yield
             return
         with skill_state_lock(self._state_file) as outermost:
-            if outermost:
-                self._state = self._load_state()
-            yield
+            with _get_local_state_lock(self._state_file):
+                if outermost:
+                    self._state = self._load_state()
+                yield
 
     def _download_http_archive_bytes_sync(self, download_url: str) -> bytes:
         """同步下载 HTTPS 直链 zip/tar 归档（预置 URL 路径）。"""

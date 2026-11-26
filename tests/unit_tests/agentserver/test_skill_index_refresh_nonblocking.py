@@ -664,3 +664,53 @@ async def test_create_from_knowledge_cancellation_waits_before_deleting_output_d
 
     assert output_alive_at_end == [True]
     assert not out_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_marketplace_and_import_upload_preserve_all_state_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent marketplace/config/reload writes and worker-thread import_upload must persist all records."""
+    from jiuwenswarm.server.runtime.skill import skill_manager as sm_module
+
+    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    zip_path = tmp_path / "concurrent-upload.zip"
+    zip_path.write_bytes(_skill_zip_bytes("concurrent-upload"))
+
+    save_errors: list[str] = []
+    original_error = sm_module.logger.error
+
+    def _capture_error(msg: Any, *args: Any, **kwargs: Any) -> Any:
+        save_errors.append(str(msg))
+        return original_error(msg, *args, **kwargs)
+
+    monkeypatch.setattr(sm_module.logger, "error", _capture_error)
+
+    async def _run_marketplace_and_config_writes() -> None:
+        for idx in range(20):
+            res = await manager.handle_skills_marketplace_add(
+                {"name": f"mkt-{idx}", "url": f"https://example.com/mkt-{idx}.git"},
+            )
+            assert res["success"] is True
+            manager.set_skill_enabled(f"cfg-skill-{idx}", idx % 2 == 0)
+            manager._set_clawhub_token(f"tok-{idx}")
+        reload_res = await manager.handle_plugins_reload({})
+        assert reload_res["success"] is True
+
+    upload_res, _ = await asyncio.gather(
+        manager.handle_skills_import_upload({"path": str(zip_path), "force": True}),
+        _run_marketplace_and_config_writes(),
+    )
+    assert upload_res["success"] is True
+    assert save_errors == []
+
+    persisted = json.loads(manager._state_file.read_text(encoding="utf-8"))
+    local_names = {entry.get("name") for entry in persisted.get("local_skills", [])}
+    marketplace_names = {entry.get("name") for entry in persisted.get("marketplaces", [])}
+    skill_configs = persisted.get("skill_configs", {})
+
+    assert "concurrent-upload" in local_names
+    assert {f"mkt-{idx}" for idx in range(20)}.issubset(marketplace_names)
+    assert "cfg-skill-19" in skill_configs
+    assert persisted.get("clawhub", {}).get("token") == "tok-19"
