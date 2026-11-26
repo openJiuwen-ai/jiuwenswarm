@@ -80,12 +80,8 @@ def process_identity_fields(pid: int) -> dict[str, float | int | None]:
     identity = read_process_identity(pid)
     if isinstance(identity, str):
         return {"process_created": None, "process_start_ticks": int(identity[len(_TICKS_PREFIX):])}
-    fields: dict[str, float | int | None] = {"process_created": identity}
-    ticks = proc_start_ticks(pid)
-    if ticks is not None:
-        # A peer may have stricter permissions than this process.
-        fields["process_start_ticks"] = ticks
-    return fields
+    # A peer may have stricter permissions than this process.
+    return {"process_created": identity, "process_start_ticks": proc_start_ticks(pid)}
 
 
 def validate_process_identity(
@@ -94,9 +90,13 @@ def validate_process_identity(
     """Validate HELLO identity fields and retain the identity actually checked."""
     identity = read_process_identity(pid, process=process)
     created, ticks = hello.get("process_created"), hello.get("process_start_ticks")
+    if hello.get("protocol") == 2 and created is None and ticks is None:
+        raise RuntimeError("Worker protocol 2 HELLO requires a process identity")
     if created is not None:
         invalid_type = isinstance(created, bool) or not isinstance(created, (int, float))
-        if invalid_type or not math.isfinite(created):
+        if invalid_type:
+            raise RuntimeError("Worker returned an invalid process creation time")
+        if not math.isfinite(created) or created <= 0:
             raise RuntimeError("Worker returned an invalid process creation time")
     if ticks is not None:
         if type(ticks) is not int or ticks <= 0:
@@ -115,5 +115,5 @@ def validate_process_identity(
             return tick_identity
     if created is not None and not process_identity_matches(pid, created, process=process):
         raise RuntimeError("Worker PID identity changed")
-    # Old Workers omitted birth fields; retain their OS-validated identity.
+    # Protocol 1 Workers omitted birth fields; retain their OS-validated identity.
     return identity

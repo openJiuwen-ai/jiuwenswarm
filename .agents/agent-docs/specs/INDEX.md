@@ -300,6 +300,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 | [S_02_colleague-swarmchat](jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 
 <a id="module-jiuwenswarm-server-runtime"></a>

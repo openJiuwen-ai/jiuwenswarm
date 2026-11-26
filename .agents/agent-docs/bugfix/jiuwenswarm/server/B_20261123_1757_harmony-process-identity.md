@@ -11,6 +11,7 @@ modules:
   - jiuwenswarm/server/runtime/session
   - jiuwenswarm/agents/swarm
   - jiuwenswarm/instance_manager
+  - jiuwenswarm/server/jiuwenmate
 files:
   - jiuwenswarm/common/process_identity.py
   - jiuwenswarm/common/process_supervision.py
@@ -23,6 +24,10 @@ files:
   - jiuwenswarm/server/supervisor/resident_lifecycle.py
   - jiuwenswarm/server/supervisor/shutdown.py
   - jiuwenswarm/server/runtime/session/lifecycle.py
+  - jiuwenswarm/debug_launcher.py
+  - jiuwenswarm/server/jiuwenmate/dingtalk_cli_local_provider.py
+  - pyproject.toml
+  - uv.lock
   - jiuwenswarm/agents/swarm/group_route.py
   - jiuwenswarm/start_services.py
   - jiuwenswarm/instance_manager/status.py
@@ -266,6 +271,42 @@ Windows resident 与 front_loopback 两组实进程启动、resident 同 Worker 
 原始证据位于 `D:/work_space/.codex-temp/harmony-process-identity-0210-conflicts-20261125/` 的
 `ticks-before.xml`、`related.xml`、`latest-related.xml`、`csp-baseline.xml`、`csp-candidate.xml`、
 `native-verified.json` 和 `harmony-controlled/verified.json`。
+
+## 2026-11-26 附件契约对齐到 0.2.10
+
+原 PR !10933 已合入。本轮从 releases/0.2.10 的 c33b158dc 建立后续分支，移植 develop 对齐提交 2e8d4a2ca，
+依据用户明确采用的 worker-process-identity-changes.md 收紧 protocol 2：HELLO 至少提供一种有效出生身份；
+仅 protocol 1 保留省略身份字段的兼容。两种字段始终分开传输，不可读者为 null，非法类型和非正数拒绝。
+本节替代此前不区分协议版本的缺字段兼容；内部继续使用公共模块的浮点时间/带类型字符串表示，保持已有调用方和持久记录兼容。
+
+补齐 debug、钉钉 OAuth 和 runtime owner 的权限拒绝兜底。debug 与新 OAuth PID 记录保存 OS 出生身份；
+无法验证时保留未知状态，拒绝终止或取消清理，保留状态及凭据；终止与强制结束前重验身份。
+runtime owner 同时处理 psutil.Error 与 OSError，保留既有 owner 格式、可读 ticks 回退及受控生命周期错误。
+
+保留 0.2.10 的 pid_exists 检查、已退出服务树处理和旧 Worker 身份漂移回收。
+新增回归明确验证：旧时间戳漂移可以回收，ticks 变化和 protocol 2 缺少身份均不能触发强制回收。
+日志默认仍位于 socket 父目录的 worker-logs，保留显式目录、诊断与 stderr 同目录、追加句柄及目标已有的轮转；
+不引入 develop 的 common.paths/profile 迁移。AGENTS.md 无改动，长期约束继续维护在 S_01_process-identity。
+
+Harmony extra 补入 a4p、openjiuwen-e2a、agent-gateway，声明与本分支主依赖保持同一版本或 Git 提交；
+附件旧包名 openjiuwen-agent-gateway 按当前分支分发名适配。锁文件重新生成后，全部既有包版本与来源不变。
+独立 Python 3.11.15 环境安装并核对了 release 的 openjiuwen 31171fb02、agent-gateway befc32e15、
+openjiuwen-e2a 10ad4a2ee，实际导入来自本任务环境；没有复用 develop 的私有源码依赖。
+uv lock --locked --offline 通过，实际依赖记录保存在 dependencies-verified.json。
+
+未修改的 c33b158dc 对原始 12 项契约复现得到 5 failed、7 passed；移植后这些复现与新增契约共 35 项通过。
+完整定向回归最终为 **632 passed、10 skipped**，覆盖协议、身份漂移回收、旧 owner、debug、钉钉、编码、
+IPC、停机 deadline、Worker 入口、诊断、日志轮转、进程监督、导入隔离和真实异常退出；跳过均为平台专用路径。
+首轮两项失败来自新测试未声明模拟 PID 存在；fixture 补齐 pid_exists 后通过，保留并重验 release 的已退出 PID 处理。
+
+原生 Windows resident 与 front_loopback 两组均完成请求，resident Front 重连复用同一 Worker；
+最终进程、IPC、端口及 owner/startup 锁完成清理。另验证真实 Windows debug 子进程的身份持久化、停止返回 0、
+进程退出和状态删除；resident Worker 阶段由前两组独立覆盖。
+resident/loopback 创建时间拒绝回退及双来源拒绝三组受控实验全部通过，使用 Windows 注入权限错误与模拟 start ticks。
+本轮未执行全仓 UT、静态检查或 HarmonyOS 真机验收，远端 CI 结果按新 PR 提交另行核对。
+
+证据位于 D:/work_space/.codex-temp/harmony-attachment-0210-20261126/：release-verified.xml、baseline-contract.xml、
+contract-verified.xml、native-verified.json、harmony-controlled/verified.json、native-debug-verified.json。
 
 ## 遗留与重验条件
 
