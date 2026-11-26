@@ -26,10 +26,10 @@ FROM ${NGINX_IMAGE}
 
 USER root
 
-COPY docker/openshift/web.nginx.conf.template /etc/nginx/templates/default.conf.template
-COPY docker/web-optional-upstreams.sh /docker-entrypoint.d/40-optional-upstreams.sh
-COPY docker/openshift/web-nginx-start.sh /app/jiuwenswarm/docker/openshift/web-nginx-start.sh
-RUN chmod +x /docker-entrypoint.d/40-optional-upstreams.sh /app/jiuwenswarm/docker/openshift/web-nginx-start.sh \
+COPY docker/jiuwenswarm-ee/web.nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/jiuwenswarm-ee/web-optional-upstreams.sh /docker-entrypoint.d/40-optional-upstreams.sh
+COPY docker/jiuwenswarm-ee/web-nginx-start.sh /app/jiuwenswarm/docker/jiuwenswarm-ee/web-nginx-start.sh
+RUN chmod +x /docker-entrypoint.d/40-optional-upstreams.sh /app/jiuwenswarm/docker/jiuwenswarm-ee/web-nginx-start.sh \
     && mkdir -p /opt/app-root/etc/nginx/optional-upstreams \
     && ln -sfn /opt/app-root/etc/nginx/optional-upstreams /etc/nginx/optional-upstreams \
     && chown -R 1001:0 /opt/app-root/etc/nginx/optional-upstreams \
@@ -44,6 +44,6 @@ RUN getent passwd nginx >/dev/null || useradd -M -s /sbin/nologin nginx \
 COPY --from=web-builder /build/jiuwenswarm/channels/web/frontend/dist \
      /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/dist
 
-CMD ["/app/jiuwenswarm/docker/openshift/web-nginx-start.sh"]
+CMD ["/app/jiuwenswarm/docker/jiuwenswarm-ee/web-nginx-start.sh"]
 
 EXPOSE 5173

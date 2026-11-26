@@ -140,7 +140,7 @@ def _appearance_providers() -> bool:
 
 def _get_agent_root_dir() -> Path:
     # profile 契约：agent 子树挂 profile/agent（个人版 Web 进程无租户上下文，
-    # 企业版用户面经 user-backend 代理，不走本进程的这条链）。
+    # 企业版用户面经 web-server 代理，不走本进程的这条链）。
     return _get_user_workspace_dir() / "profile" / "agent"
 
 
