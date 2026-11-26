@@ -102,7 +102,7 @@ files:
 
 ## 兼容性
 
-- 本地命令行、Python 桌面和 Electron 开发版/打包版启动共用 Swarm 的 Gateway 配置准备逻辑。Gateway 未指定独立配置且默认配置文件缺失时，使用 Swarm 实例的配置。Swarm 默认配置先扫描 `EXTENSION_DIRS` 中的自定义目录，再扫描包内 `jiuwenswarm/extensions`。旧的 Swarm 默认值随配置模板迁移。已有的 Gateway 默认配置若仍使用旧版内置目录表达式，Swarm 启动时会追加包内目录。显式的 Gateway 配置、扩展目录设置及 AgentOS 部署配置沿用各自规则。
+- 本地命令行、Python 桌面和 Electron 开发版/打包版启动共用 Swarm 的 Gateway 配置准备逻辑。本地 Gateway 优先使用实例的 `infra/config/config.yaml`，该文件缺失时回退到 Swarm 实例配置。初始化生成的 Gateway 默认配置先扫描 `EXTENSION_DIRS` 中的自定义目录，再扫描包内 `jiuwenswarm/extensions`。启动时在 Gateway 实际读取的配置中补齐旧默认值遗漏的包内目录。显式的 Gateway 配置、扩展目录设置及 AgentOS 部署配置沿用各自规则。
 - 本地应用 `app_market.publish/list/start/stop/delete/edit_session` 入口保持不变；个人版空所有者重复 `start` 复用同一运行实例（避免重复静态服务），同一应用按所有者各保留一份运行实例；`publish_app` 重新登记本地应用时保留来源、摘要、项目绑定字段，以及置顶状态与原始注册时间 `created_at`，Hub 来源登记不继承旧副本的项目和编辑会话绑定。打包到 Hub 的 `plugin.yaml` 不包含本地项目或编辑会话信息。
 - 个人版允许空身份启动已有所有者的本地应用，清单中已记录的所有者在启动成功或失败时均保留。企业版和 Hub 应用继续按原所有者校验。
 - 既有插件/MCP/Agent 资产的 Hub 客户端、下载器与安装器调用默认参数不变。

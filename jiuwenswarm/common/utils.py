@@ -41,6 +41,7 @@ import stat
 import threading
 import time
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -71,6 +72,8 @@ _JSONL_LOG_LOCK = threading.Lock()
 # 默认不启用（gateway.log 与其它日志同目录），由环境变量 AGENTOS_GATEWAY_LOG_DIR 指定，
 # Linux 部署脚本（deploy/yuanrong/gateway_handler.sh）注入 /var/log/agentos。
 _GATEWAY_LOG_DIR_ENV = "AGENTOS_GATEWAY_LOG_DIR"
+_GATEWAY_CONFIG_DIR_ENV = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
+_STOCK_GATEWAY_EXTENSION_DIRS = "${EXTENSION_DIRS:-agent_gateway/extensions}"
 
 
 @dataclass
@@ -1164,6 +1167,14 @@ def _merge_existing_gateway_config(gateway_dest: Path, template_path: Path) -> N
     migrate_config_from_template(template_path, gateway_dest, prune=False)
 
 
+def _include_swarm_gateway_extensions(config: Any) -> bool:
+    extensions = config.get("extensions") if isinstance(config, dict) else None
+    if not isinstance(extensions, dict) or extensions.get("extension_dirs") != _STOCK_GATEWAY_EXTENSION_DIRS:
+        return False
+    extensions["extension_dirs"] = f"{_STOCK_GATEWAY_EXTENSION_DIRS};jiuwenswarm/extensions"
+    return True
+
+
 def _install_gateway_config(
     workspace_dir: Path,
     legacy_config: Path | None,
@@ -1188,6 +1199,8 @@ def _install_gateway_config(
     generated = _project_gateway_config(template, legacy)
     _merge_gateway_hooks(generated, legacy)
     _copy_gateway_owned_config(generated, legacy)
+    if not (os.getenv(_GATEWAY_CONFIG_DIR_ENV) or "").strip():
+        _include_swarm_gateway_extensions(generated)
 
     with TrackCopyDiff(
         dest=gateway_dest,
@@ -1702,13 +1715,10 @@ def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
     """Add Swarm's built-ins to the old stock Gateway search path."""
     from agent_gateway.common.config import config_write_lock, dump_yaml_round_trip, load_yaml_round_trip
 
-    legacy_dirs = "${EXTENSION_DIRS:-agent_gateway/extensions}"
     try:
         with config_write_lock(config_path=config_path):
             config = load_yaml_round_trip(config_path)
-            extensions = config.get("extensions") if isinstance(config, dict) else None
-            if isinstance(extensions, dict) and extensions.get("extension_dirs") == legacy_dirs:
-                extensions["extension_dirs"] = f"{legacy_dirs};jiuwenswarm/extensions"
+            if _include_swarm_gateway_extensions(config):
                 dump_yaml_round_trip(config_path, config)
     except (OSError, YAMLError, portalocker.exceptions.LockException) as exc:
         logger.warning("Could not migrate local Gateway extension directories in %s: %s", config_path, exc)
@@ -1716,15 +1726,18 @@ def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
 
 def prepare_local_gateway_config(env: dict[str, str]) -> None:
     """Prepare the effective Gateway config for a local Swarm launcher."""
-    key = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
-    if env.get(key, "").strip() or is_agentos_runtime():
+    key = _GATEWAY_CONFIG_DIR_ENV
+    gateway_dir = get_gateway_config_dir(env=env)
+    if env.get(key, "").strip():
+        env[key] = str(gateway_dir)
+        return
+    if is_agentos_runtime():
         return
 
-    from agent_gateway.common.paths import get_config_file as get_agent_gateway_config_file
-
-    gateway_config = get_agent_gateway_config_file()
+    gateway_config = gateway_dir / "config.yaml"
     if gateway_config.is_file():
         _migrate_local_gateway_extension_dirs(gateway_config)
+        env[key] = str(gateway_dir)
         return
     env[key] = str(get_config_dir())
 
@@ -1967,10 +1980,13 @@ def get_config_dir() -> Path:
     return _config_dir
 
 
-def get_gateway_config_dir(workspace_dir: Path | None = None) -> Path:
+def get_gateway_config_dir(
+    workspace_dir: Path | None = None, *, env: Mapping[str, str] | None = None,
+) -> Path:
     """Get the Gateway-only config directory, honoring the env override."""
     base = Path(workspace_dir) if workspace_dir is not None else get_user_workspace_dir()
-    override = (os.getenv("JIUWENSWARM_GATEWAY_CONFIG_DIR") or "").strip()
+    source = os.environ if env is None else env
+    override = source.get(_GATEWAY_CONFIG_DIR_ENV, "").strip()
     if override:
         path = Path(override).expanduser()
         if not path.is_absolute():
