@@ -183,8 +183,7 @@ async def test_read_docx_start_element_past_document_end(tmp_path: Path) -> None
 async def test_read_docx_empty_body_is_not_reported_as_out_of_range(tmp_path: Path) -> None:
     """A document with an empty body must report emptiness instead of an out-of-range start."""
     doc = docx.Document()
-    for child in list(doc.element.body):
-        doc.element.body.remove(child)
+    doc.element.body.clear_content()
     empty_file = tmp_path / "empty_body.docx"
     doc.save(str(empty_file))
 
