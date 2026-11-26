@@ -235,6 +235,8 @@ export interface ToolCall {
   call_goal?: string;
   /** @deprecated 仅用于兼容旧事件，不参与标题渲染 */
   display_name?: string;
+  /** 触发该工具时激活的技能名（由后端 current_skill 归因）。 */
+  source_skill?: string;
   memberName?: string;
   reviewer?: AutoReviewerMetadata;
 }

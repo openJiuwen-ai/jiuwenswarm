@@ -2214,6 +2214,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
           formatted_args: n.formatted_args,
           call_goal: n.call_goal,
           display_name: n.display_name,
+          source_skill: n.source_skill,
           memberName: n.memberName,
           reviewer: n.reviewer,
         },

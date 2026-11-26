@@ -5334,6 +5334,8 @@
       "pending": "已接受，执行中...",
       "running": "执行中...",
       "toolName": "工具名称",
+      "sourceSkill": "来源技能",
+      "sourceSkillInline": "{{label}}（技能：{{skill}}）",
       "arguments": "参数",
       "result": "结果",
       "flowchart": "流程图",

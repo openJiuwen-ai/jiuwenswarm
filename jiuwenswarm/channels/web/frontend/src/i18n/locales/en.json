@@ -5337,6 +5337,8 @@
       "pending": "Accepted, running...",
       "running": "Running...",
       "toolName": "Tool name",
+      "sourceSkill": "Source skill",
+      "sourceSkillInline": "{{label}} (skill: {{skill}})",
       "arguments": "Arguments",
       "result": "Result",
       "flowchart": "Flowchart",

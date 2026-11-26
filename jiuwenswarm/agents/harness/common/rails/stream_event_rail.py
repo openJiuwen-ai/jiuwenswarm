@@ -38,6 +38,12 @@ from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
 
+try:
+    from openjiuwen.harness.rails.skills.skill_use_rail import get_current_skill_name
+except ImportError:  # pragma: no cover - older openjiuwen pins without the API
+    def get_current_skill_name(session: Any = None) -> Optional[str]:
+        return None
+
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     build_verified_permission_ask_user_question,
     convert_interactions_to_ask_user_question,
@@ -90,6 +96,25 @@ _TOOL_RESULT_TEXT_LIMIT = 60000
 # AgentServer WebSocket send budget (6 MiB, gateway/common/ws_limits.py);
 # an oversized frame is replaced by a response_too_large error.
 _RAW_OUTPUT_WIRE_BUDGET_BYTES = 2**20
+
+
+def _resolve_source_skill(session: Any = None) -> str:
+    """Return active skill name for tool-call attribution, or empty string.
+
+    Enterprise-only: personal edition never attributes tools to a source skill.
+    Prefer session-backed binding (set by skill_tool); ContextVar alone does
+    not propagate across tool execution contexts.
+    """
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if not is_enterprise():
+        return ""
+    try:
+        name = get_current_skill_name(session)
+    except Exception:
+        logger.debug("resolve source_skill failed", exc_info=True)
+        return ""
+    return str(name or "").strip()
 
 
 def _structured_tool_result_payload(result: Any) -> Any | None:
@@ -1408,6 +1433,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             goal = (call_goal or "").strip()
             if goal:
                 tool_call_payload["call_goal"] = goal
+            source_skill = _resolve_source_skill(session)
+            if source_skill:
+                tool_call_payload["source_skill"] = source_skill
             await session.write_stream(
                 OutputSchema(
                     type="tool_call",
@@ -1521,6 +1549,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 raw_output,
                 reviewer_metadata,
             )
+            source_skill = _resolve_source_skill(session)
+            if source_skill:
+                tool_result_payload["source_skill"] = source_skill
             await session.write_stream(
                 OutputSchema(
                     type="tool_result",
@@ -1633,6 +1664,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "arguments": getattr(tool_call, "arguments", {}) if tool_call else {},
                 "status": str(status or "").strip() or "in_progress",
             }
+            source_skill = _resolve_source_skill(session)
+            if source_skill:
+                payload["source_skill"] = source_skill
             await session.write_stream(
                 OutputSchema(
                     type="tool_update",

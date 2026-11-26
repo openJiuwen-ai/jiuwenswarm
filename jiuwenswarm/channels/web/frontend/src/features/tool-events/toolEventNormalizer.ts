@@ -230,6 +230,8 @@ export interface NormalizedToolCall {
   call_goal?: string;
   /** @deprecated 仅用于兼容旧事件，不参与标题渲染 */
   display_name?: string;
+  /** 触发该工具时激活的技能名（ContextVar / session 归因）。 */
+  source_skill?: string;
   memberName?: string;
   reviewer?: AutoReviewerMetadata;
 }
@@ -295,6 +297,11 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
     (typeof toolCallPayload.displayName === 'string' && toolCallPayload.displayName) ||
     '';
   const display_name = displayNameRaw.trim() || undefined;
+  const sourceSkillRaw =
+    (typeof toolCallPayload.source_skill === 'string' && toolCallPayload.source_skill) ||
+    (typeof toolCallPayload.sourceSkill === 'string' && toolCallPayload.sourceSkill) ||
+    '';
+  const source_skill = sourceSkillRaw.trim() || undefined;
   const memberName = resolveMemberName(toolCallPayload, payload);
 
   return {
@@ -306,6 +313,7 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
     formatted_args,
     call_goal,
     display_name,
+    source_skill,
     memberName,
     reviewer: normalizeReviewerMetadata(payload),
   };
