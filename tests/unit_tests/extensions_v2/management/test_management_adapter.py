@@ -34,6 +34,7 @@ from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
     ExtensionInstallRecord,
     ExtensionInstallState,
 )
+from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
 from tests.unit_tests.extensions_v2.core_compat import requires_rooted_startup
 
 from .support import EMPTY_EXTENSION, METADATA_EXTENSION, archive_package, make_bus, write_package
@@ -994,6 +995,36 @@ async def test_install_forwards_requested_version_to_hub(
     assert (manager.install_dir / "webui.demo" / "0.9.0").is_dir()
 
 
+@pytest.mark.parametrize("query_fails", [False, True])
+async def test_install_missing_hub_package_preserves_recovery_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query_fails: bool,
+) -> None:
+    query = AsyncMock(return_value=QueryResult(), side_effect=RuntimeError("query failed") if query_fails else None)
+    manager = SimpleNamespace(initialized=True, query=query)
+    lookup = AsyncMock(side_effect=HubNotFoundError("asset not found"))
+    monkeypatch.setattr(adapter_module, "get_extension_manager", lambda: manager)
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: tmp_path / "examples")
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: tmp_path / "installed")
+    monkeypatch.setattr(adapter_module, "get_hub_system_plugin", lookup)
+
+    response = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_INSTALL, {"package_ids": ["asset-1"], "version": "0.9.0"})
+    )
+
+    assert not response.ok
+    assert response.payload["code"] == "INTERNAL_ERROR"
+    assert response.payload["error"] == "V2 package management failed"
+    assert response.payload["outcome"] == "unknown"
+    if query_fails:
+        assert response.payload["query_error"] == "Current package state could not be confirmed"
+        assert "state" not in response.payload
+    else:
+        assert response.payload["state"]["package_ids"] == []
+        assert "query_error" not in response.payload
+    lookup.assert_awaited_once_with("asset-1", "0.9.0")
+    query.assert_awaited_once_with(None)
+
+
 async def test_switch_version_of_an_installed_hub_package_uses_its_asset_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1055,6 +1086,37 @@ async def test_uninstall_removes_every_stored_version(
 
     assert removed.ok
     assert not (manager.install_dir / "webui.demo").exists()
+
+
+async def test_uninstall_last_local_version_removes_package_from_mine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: manager.install_dir)
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: tmp_path / "examples")
+    monkeypatch.setattr(
+        adapter_module, "get_hub_system_plugin", AsyncMock(side_effect=HubNotFoundError("asset not found")),
+    )
+    adapter = PackageManagementAdapter()
+    package_id = "webui.demo"
+    version = "1.0.0"
+    source = archive_package(write_package(tmp_path / "source", package_id=package_id, version=version))
+    installed = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(source)]}))
+    assert installed.ok and installed.payload["reports"][0]["status"] == "SUCCESS"
+
+    removed = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_UNINSTALL, {"package_id": package_id, "version": version})
+    )
+
+    assert removed.ok and removed.payload["reports"][0]["status"] == "SUCCESS"
+    assert not (manager.install_dir / package_id).exists()
+    assert (await manager.query()).active == ()
+    assert ExtensionInstallState.for_install_dir(manager.install_dir).get(package_id) is None
+    mine = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_CATALOG, {"scope": "mine"}))
+    assert mine.ok and mine.payload["packages"] == []
+    detail = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": package_id}))
+    assert not detail.ok and detail.payload["code"] == "PACKAGE_NOT_FOUND"
+    assert "outcome" not in detail.payload
 
 
 async def test_uninstall_one_version_keeps_the_other_stored_versions(

@@ -83,7 +83,9 @@ export const systemPluginApi = {
       ...(refresh ? { refresh: true } : {}),
     });
     const payload = result as { packages?: SystemPluginSummary[]; cache?: CatalogCacheMetadata } | null;
-    return withCatalogCache(Array.isArray(payload?.packages) ? payload.packages : [], payload?.cache);
+    const packages = Array.isArray(payload?.packages) ? payload.packages : null;
+    if (!packages && scope === 'mine') throw new Error('INVALID_CATALOG_RESPONSE');
+    return withCatalogCache(packages ?? [], payload?.cache);
   },
 
   async show(packageId: string, version?: string): Promise<SystemPluginDetail | null> {
