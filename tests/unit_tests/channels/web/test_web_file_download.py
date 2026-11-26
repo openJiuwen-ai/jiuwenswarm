@@ -14,6 +14,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, urlsplit
+from functools import partial
+from http.client import HTTPConnection
+import http.client
+import socket
+import struct
 
 import pytest
 
@@ -826,3 +831,282 @@ def test_expired_upload_remains_invalid_after_artifact_download(monkeypatch, tmp
     encoded, signature = artifact.split(".")
     altered = encoded + "." + ("0" if signature[0] != "0" else "1") + signature[1:]
     assert web_file_download.validate_file_download_token(altered, check_expiry=False) is None
+
+
+class _BrokenWriteStream(io.BytesIO):
+    """下游连接中断的 wfile 替身：响应头已发出后 body 写入即失败。"""
+
+    def write(self, data) -> int:
+        raise BrokenPipeError("client went away mid-download")
+
+
+def test_download_proxy_mid_stream_failure_does_not_append_second_response(
+    monkeypatch: pytest.MonkeyPatch, fake_agent_server, tmp_path: Path
+) -> None:
+    """响应头已写出后 body 中途写失败：不得在残响应上追加第二条响应。
+
+    基线缺陷：``_proxy_file_download`` 在 copyfileobj 抛错后统一返回 False，
+    调用方随即回退补写本地文件或 503 JSON——同一 socket 上出现第二个 HTTP
+    响应，浏览器按声明 Content-Length 收到损坏文件。修复后标记连接关闭并
+    返回 True（响应已终止），截断本身就是客户端可见的失败信号。
+    """
+    monkeypatch.setattr(
+        web_file_download,
+        "validate_file_download_token",
+        lambda _token, **_kwargs: None,
+    )
+    file_path = tmp_path / "payload.bin"
+    file_path.write_bytes(b"persistent-download-body")
+    _FakeAgentDownloadServer.file_path = file_path
+    monkeypatch.setattr(
+        app_web,
+        "_resolve_agent_http_base",
+        lambda: f"http://127.0.0.1:{fake_agent_server.server_address[1]}",
+    )
+    handler = _DownloadHandlerStub(command="GET")
+    handler.wfile = _BrokenWriteStream()
+    second_responses: list[tuple[int, dict]] = []
+    handler._write_json = lambda status, payload: second_responses.append((status, payload))
+
+    _SpaStaticHandler._handle_file_download(handler, {"token": "tok"})
+
+    assert handler.status == 200
+    assert handler.headers_ended is True
+    # 修复语义：连接标记关闭，调用方不再补写第二条响应（基线在此追加 503）。
+    assert getattr(handler, "close_connection", False) is True
+    assert second_responses == []
+
+
+def test_download_proxy_unreachable_upstream_still_reports_retryable_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """上游网络级不可达（响应头未写出）仍返回 False，保留回退/503 契约。"""
+    probe = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    unreachable_port = probe.server_address[1]
+    probe.server_close()
+    monkeypatch.setattr(
+        app_web,
+        "_resolve_agent_http_base",
+        lambda: f"http://127.0.0.1:{unreachable_port}",
+    )
+    handler = _DownloadHandlerStub(command="GET")
+
+    result = _SpaStaticHandler._proxy_file_download(handler, "tok")
+
+    assert result is False
+    assert handler.headers_ended is False
+    assert getattr(handler, "close_connection", False) is not True
+
+
+def test_agentos_download_proxy_streams_upstream_body(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """AgentOS 下载分支走流式转发：上游未写完时下游已开始接收。
+
+    上游写出第一段后等待下游确认才继续写第二段——流式实现下客户端在
+    上游结束前就能收到数据；整包 ``resp.read()`` 实现会互相等待直至
+    客户端读超时（红）。客户端用标准库 ``http.client``（其按
+    Content-Length 短读；httpx/h11 对 HTTP/1.0 响应按连接关闭读体，
+    与本用例的流式断言语义不兼容）。
+    """
+    monkeypatch.setattr(app_web, "_uses_agentos_routing", lambda: True)
+    part1 = b"A" * 16384
+    part2 = b"B" * 16384
+    release = threading.Event()
+    upstream_requests: list[str] = []
+
+    class StreamingUpstream(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            upstream_requests.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(part1) + len(part2)))
+            self.end_headers()
+            self.wfile.write(part1)
+            self.wfile.flush()
+            if not release.wait(timeout=5):
+                raise AssertionError("client never received the first streamed chunk")
+            self.wfile.write(part2)
+            self.wfile.flush()
+
+        def log_message(self, format, *args) -> None:  # noqa: A002
+            pass
+
+    (tmp_path / "index.html").write_text("<html>SPA entry</html>", encoding="utf-8")
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), StreamingUpstream)
+    upstream.daemon_threads = True
+    upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    upstream_thread.start()
+    try:
+        class FrontendHandler(_SpaStaticHandler):
+            api_target = f"http://127.0.0.1:{upstream.server_address[1]}"
+
+            def log_message(self, format, *args) -> None:  # noqa: A002
+                pass
+
+        frontend = ThreadingHTTPServer(
+            ("127.0.0.1", 0), partial(FrontendHandler, directory=str(tmp_path))
+        )
+        frontend.daemon_threads = True
+        frontend_thread = threading.Thread(target=frontend.serve_forever, daemon=True)
+        frontend_thread.start()
+        connection = HTTPConnection("127.0.0.1", frontend.server_address[1], timeout=10)
+        try:
+            connection.request("GET", "/file-api/download?token=tok&user_id=u1")
+            response = connection.getresponse()
+            assert response.status == 200
+            assert response.getheader("Content-Type") == "application/octet-stream"
+            head = response.read(1024)
+            release.set()
+            tail = response.read()
+        finally:
+            connection.close()
+            frontend.shutdown()
+            frontend_thread.join(timeout=5)
+            frontend.server_close()
+        assert head + tail == part1 + part2
+        assert "user_id=u1" in upstream_requests[0]
+    finally:
+        upstream.shutdown()
+        upstream_thread.join(timeout=5)
+        upstream.server_close()
+
+
+def _agentos_streaming_frontend(
+    tmp_path: Path, upstream: ThreadingHTTPServer
+) -> tuple[ThreadingHTTPServer, threading.Thread]:
+    """AgentOS 下载链路端到端台架：真实 `_SpaStaticHandler` + api_target 指向 mock 上游。"""
+    (tmp_path / "index.html").write_text("<html>SPA entry</html>", encoding="utf-8")
+
+    class FrontendHandler(_SpaStaticHandler):
+        api_target = f"http://127.0.0.1:{upstream.server_address[1]}"
+
+        def log_message(self, format, *args) -> None:  # noqa: A002
+            pass
+
+    frontend = ThreadingHTTPServer(
+        ("127.0.0.1", 0), partial(FrontendHandler, directory=str(tmp_path))
+    )
+    frontend.daemon_threads = True
+    thread = threading.Thread(target=frontend.serve_forever, daemon=True)
+    thread.start()
+    return frontend, thread
+
+
+def test_agentos_download_proxy_mid_stream_upstream_reset_is_observable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """AgentOS 流式下载中途上游硬断开：失败可观测，且不追加第二条响应。
+
+    基线缺陷：``_proxy_http`` 流式转发分支把 body 中途的
+    OSError/HTTPException 静默吞掉——无日志、无 close_connection 标记，与
+    同 PR ``_proxy_file_download`` 的修复语义（warning + 截断即失败信号）
+    不一致。上游用 SO_LINGER(0) 发 RST 模拟"头已透传后 body 中途断开"
+    （干净 EOF 不抛错、走不到该分支）。修复后：记 warning 并标记连接
+    关闭；客户端恰好收到已转发的字节，短读可见，无 503 JSON 粘包。
+    """
+    monkeypatch.setattr(app_web, "_uses_agentos_routing", lambda: True)
+    part1 = b"A" * 16384
+    release = threading.Event()
+
+    class ResettingUpstream(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(part1) + 8))
+            self.end_headers()
+            self.wfile.write(part1)
+            self.wfile.flush()
+            assert release.wait(timeout=5), "client never received the streamed chunk"
+            # Hard mid-body failure: RST so the gateway's read loop raises
+            # instead of treating the truncation as a normal end of stream.
+            self.connection.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+            )
+            self.connection.close()
+
+        def log_message(self, format, *args) -> None:  # noqa: A002
+            pass
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), ResettingUpstream)
+    upstream.daemon_threads = True
+    upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    upstream_thread.start()
+    frontend, frontend_thread = _agentos_streaming_frontend(tmp_path, upstream)
+    connection = HTTPConnection("127.0.0.1", frontend.server_address[1], timeout=10)
+    try:
+        with caplog.at_level(logging.WARNING):
+            connection.request("GET", "/file-api/download?token=tok&user_id=u1")
+            response = connection.getresponse()
+            assert response.status == 200
+            head = response.read(1024)
+            release.set()
+            with pytest.raises(http.client.IncompleteRead) as incomplete:
+                response.read()
+    finally:
+        connection.close()
+        frontend.shutdown()
+        frontend_thread.join(timeout=5)
+        frontend.server_close()
+        upstream.shutdown()
+        upstream_thread.join(timeout=5)
+        upstream.server_close()
+
+    received = head + incomplete.value.partial
+    assert received == part1, "client must get exactly the bytes forwarded (no second response)"
+    assert any(
+        "流式代理中断" in record.getMessage() for record in caplog.records
+    ), "mid-stream download failure must be logged"
+
+
+def test_agentos_download_proxy_upstream_truncation_appends_no_second_response(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """AgentOS 流式下载上游干净截断（EOF）：恰好收到已转发字节，无粘包。
+
+    上游声明 Content-Length 后只写出部分 body 即正常关闭：read1 循环按
+    EOF 正常结束，客户端短读可见（IncompleteRead），响应流上不出现第二条
+    HTTP 响应——issue #7191 的粘包形态不在该路径复现。守护用例：修复前
+    后均应通过。
+    """
+    monkeypatch.setattr(app_web, "_uses_agentos_routing", lambda: True)
+    part1 = b"A" * 16384
+
+    class TruncatingUpstream(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(part1) + 8))
+            self.end_headers()
+            # Write only part of the declared body, then close cleanly (EOF).
+            self.wfile.write(part1)
+            self.wfile.flush()
+
+        def log_message(self, format, *args) -> None:  # noqa: A002
+            pass
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), TruncatingUpstream)
+    upstream.daemon_threads = True
+    upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    upstream_thread.start()
+    frontend, frontend_thread = _agentos_streaming_frontend(tmp_path, upstream)
+    connection = HTTPConnection("127.0.0.1", frontend.server_address[1], timeout=10)
+    try:
+        connection.request("GET", "/file-api/download?token=tok&user_id=u1")
+        response = connection.getresponse()
+        assert response.status == 200
+        head = response.read(1024)
+        with pytest.raises(http.client.IncompleteRead) as incomplete:
+            response.read()
+    finally:
+        connection.close()
+        frontend.shutdown()
+        frontend_thread.join(timeout=5)
+        frontend.server_close()
+        upstream.shutdown()
+        upstream_thread.join(timeout=5)
+        upstream.server_close()
+
+    assert head + incomplete.value.partial == part1
