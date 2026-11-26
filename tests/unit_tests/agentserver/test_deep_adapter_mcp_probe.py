@@ -23,6 +23,7 @@ The full spawn/handshake path lives in the integration layer (openjiuwen's
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -76,6 +77,40 @@ async def test_probe_empty_name_returns_failure() -> None:
     ok, reason = await probe_mcp_live_connection("   ")
     assert ok is False
     assert "required" in reason
+
+
+@pytest.mark.asyncio
+async def test_probe_times_out_a_stalled_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stalled connect fails at the stall bound instead of holding install."""
+    import asyncio
+
+    from openjiuwen.core.runner import Runner
+
+    async def _stall(cfg, *, tag=None):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr("jiuwenswarm.common.mcp_config._PROBE_STALL_TIMEOUT_S", 0.05)
+    # Hand-swap the descriptor: monkeypatch would restore the resolved manager.
+    original = Runner.__dict__["resource_mgr"]
+    Runner.resource_mgr = SimpleNamespace(add_mcp_server=_stall)
+    try:
+        entry = {
+            "name": "slow",
+            "transport": "streamable-http",
+            "url": "https://example.com/mcp",
+        }
+        with patch(
+            "jiuwenswarm.common.mcp_config.get_mcp_server_config",
+            return_value=entry,
+        ), patch(
+            "jiuwenswarm.common.mcp_config.preflight_mcp_server_reachable",
+            return_value=(True, ""),
+        ):
+            ok, reason = await probe_mcp_live_connection("slow")
+    finally:
+        Runner.resource_mgr = original
+    assert ok is False
+    assert "stalled" in reason
 
 
 @pytest.mark.asyncio
