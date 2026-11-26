@@ -201,6 +201,25 @@ _REMINDER_CREATE_SUFFIX = (
 )
 
 
+def core_todo_container_key() -> str:
+    """探测已安装 Core 的待办容器键：键统一合入后为 todos，旧版为 tasks。
+
+    跨仓键统一存在发布窗口——本仓可能先于 Core 落地。模型面始终是 todos，
+    向 Core 传参前按实际安装版本的契约取名，避免窗口期内 todo 全链路失败。
+    """
+    try:
+        from openjiuwen.harness.prompts.tools.todo import TODO_CREATE_PARAMS
+
+        return "todos" if "todos" in TODO_CREATE_PARAMS else "tasks"
+    except Exception:  # noqa: BLE001 - 探测失败按旧契约处理，保持可用
+        return "tasks"
+
+
+def with_core_container_key(items: Any) -> dict[str, Any]:
+    """把条目数组包成当前 Core 接受的 create 入参。"""
+    return {core_todo_container_key(): items}
+
+
 def _session_id_of(session: Any) -> str | None:
     getter = getattr(session, "get_session_id", None)
     if not callable(getter):
@@ -318,9 +337,10 @@ async def merge_persistent_list_items(tool: Any, session: Any, result: Any) -> A
     session_id = _session_id_of(session)
     if session_id is None:
         return result
-    tasks = result.get("tasks")
-    if not isinstance(tasks, list):
-        tasks = []
+    # 跟随 Core 实际返回的容器名：键统一存在发布窗口，写回必须与读入同键，
+    # 否则合并结果会同时出现 tasks/todos 两份列表。
+    key = "todos" if isinstance(result.get("todos"), list) else "tasks"
+    tasks = result.get(key) or []
     seen: set[str] = set()
     for item in tasks:
         if isinstance(item, dict) and isinstance(item.get("id"), str):
@@ -336,7 +356,7 @@ async def merge_persistent_list_items(tool: Any, session: Any, result: Any) -> A
     if not extras:
         return result
     merged = dict(result)
-    merged["tasks"] = [*tasks, *extras]
+    merged[key] = [*tasks, *extras]
     return merged
 
 

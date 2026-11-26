@@ -83,7 +83,7 @@ def tool_context(name, args, session_id="session-a", call_id="call-1"):
         ),
         (
             "todo",
-            {"action": "create", "tasks": [{"id": "1", "content": "fixture"}]},
+            {"action": "create", "todos": [{"id": "1", "content": "fixture"}]},
             "todo_create",
         ),
     ],
@@ -379,7 +379,7 @@ async def test_same_card_search_allow_fetch_deny(permission_adapter):
 @pytest.mark.parametrize(
     "action,legacy,extra",
     [
-        ("create", "todo_create", {"tasks": [{"id": "a"}]}),
+        ("create", "todo_create", {"todos": [{"id": "a"}]}),
         ("list", "todo_list", {}),
         ("get", "todo_get", {"id": "a"}),
         ("modify", "todo_modify", {"modify_action": "update", "todos": [{"id": "a"}]}),
@@ -415,7 +415,7 @@ async def test_todo_missing_modify_action_fails_without_skipping_sibling(
     from jiuwenswarm.agents.harness.flash.tools.flash_todo import UnifiedTodoTool
 
     modify = AsyncMock()
-    list_tasks = AsyncMock(return_value={"tasks": []})
+    list_tasks = AsyncMock(return_value={"todos": []})
     tool = UnifiedTodoTool(
         {"modify": SimpleNamespace(invoke=modify), "list": SimpleNamespace(invoke=list_tasks)},
         language="en",

@@ -38,7 +38,7 @@ def _unified_todo_description(language: str) -> str:
         return (
             "Unified todo management tool. Select the operation via `action`:\n"
             "- create: create a task list; active plans require explicit plan_action=new/rebuild. "
-            "`tasks` is a JSON array; "
+            "`todos` is a JSON array; "
             "each item requires content / activeForm / description and a short unique `id` "
             "(the id is the sole key for cross-turn status updates; do not use random strings). "
             "The first task is auto-set to in_progress; only one task can be in_progress at a time.\n"
@@ -63,7 +63,7 @@ def _unified_todo_description(language: str) -> str:
         )
     return (
         "待办任务统一管理工具，通过 action 指定操作：\n"
-        "- create：创建任务列表；活动计划须明确传 plan_action=new/rebuild 才能替换。tasks 为 JSON 数组，每项必含 content / "
+        "- create：创建任务列表；活动计划须明确传 plan_action=new/rebuild 才能替换。todos 为 JSON 数组，每项必含 content / "
         "activeForm / description，并提供简短唯一的 id（id 是跨轮更新状态的唯一依据，"
         "禁止随机字符串或 UUID）。首个任务自动设为 in_progress，同一时间仅一个 in_progress。\n"
         "- list：列出全部未完成（非 completed/cancelled）任务的 id/content/status 概要。\n"
@@ -101,19 +101,27 @@ def _unified_todo_input_params(language: str) -> dict:
                 "description": d("要执行的操作", "Operation to execute"),
             },
             "plan_action": {"type": "string", "enum": ["new", "rebuild"]},
-            "tasks": {
+            "todos": {
                 "type": "array",
-                "minItems": 1,
-                "items": {"type": "object", "required": ["content"], "properties": {
-                    "id": {"type": "string"}, "content": {"type": "string", "minLength": 1},
-                    "activeForm": {"type": "string"}, "description": {"type": "string"},
-                    "selected_model_id": {"type": "string"},
-                }},
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "content": {"type": "string", "minLength": 1},
+                        "activeForm": {"type": "string"},
+                        "description": {"type": "string"},
+                        "status": {"type": "string"},
+                        "selected_model_id": {"type": "string"},
+                    },
+                },
                 "description": d(
-                    "create 必填：任务数组 [{id, content, activeForm, description, "
-                    "selected_model_id?}]；活动计划默认不覆盖",
-                    "create: task array [{id, content, activeForm, description, "
-                    "selected_model_id?}]; preserves an active plan by default",
+                    "create 必填：任务数组，每项含 content（可带 id/activeForm/description/"
+                    "selected_model_id），活动计划默认不覆盖；modify_action=update 时每项为 "
+                    "id + 变化字段（如 {id: env, status: completed}），append 时每项含 id/content/status",
+                    "required for create: task array, each item needs content (optionally "
+                    "id/activeForm/description/selected_model_id); preserves an active plan by "
+                    "default. For modify_action=update each item is id plus changed fields "
+                    "(e.g. {id: env, status: completed}); append needs id/content/status",
                 ),
             },
             "id": {
@@ -129,26 +137,6 @@ def _unified_todo_input_params(language: str) -> dict:
                 "description": d(
                     "modify 必填：具体修改操作",
                     "modify: the mutation to apply",
-                ),
-            },
-            "todos": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["id"],
-                    "properties": {
-                        "id": {"type": "string"},
-                        "status": {"type": "string"},
-                        "content": {"type": "string"},
-                        "activeForm": {"type": "string"},
-                        "description": {"type": "string"},
-                    },
-                },
-                "description": d(
-                    "modify_action=update/append 必填，单项更新也必须使用数组；"
-                    "update 示例 [{id: env, status: completed}, {id: build, status: in_progress}]",
-                    "required for modify_action=update/append, including a single update; "
-                    "example [{id: env, status: completed}, {id: build, status: in_progress}]",
                 ),
             },
             "ids": {
@@ -180,6 +168,75 @@ def _unified_todo_input_params(language: str) -> dict:
             },
         },
     }
+
+
+def _resolve_create_container(data: dict) -> tuple[list | None, str | None]:
+    """解析 create 的条目数组：规范键 todos，旧键 tasks 回落，双键同传视为歧义。
+
+    flash 卡在分发前就读取容器键，Core 侧装饰器入口的搬运到不了这里；
+    两条入口对旧键与双键的处理必须一致，否则同一会话在不同入口分叉。
+    """
+    # 冲突按键存在性判定：todos=None 与有效 tasks 同传时也属于歧义输入，
+    # 不能因为规范键取不到值就静默采用旧键落盘。
+    if "todos" in data and "tasks" in data:
+        return None, (
+            "'todos' and 'tasks' are the same container; pass exactly one of them. "
+            "This call did not modify the todo list."
+        )
+    container = data.get("todos")
+    if container is None:
+        container = data.get("tasks")
+    if not container or not isinstance(container, list):
+        return None, (
+            "'todos' is required for action=create and must be a JSON array "
+            "(the same list 'todos' uses for modify). This call did not modify the todo list."
+        )
+    return container, None
+
+
+def _validate_item_shape(action: str, modify_action: str | None, items) -> str | None:
+    """按动作校验条目形态：create 项需 content，update/append 项需 id。
+
+    单容器键在 simple schema 约定下（工具卡禁用 if/then/allOf，见
+    tests/unit_tests/agentserver/test_todo_schema_compatibility.py）无法按外层动作
+    区分必填，故在分发层补一道，让模型拿到即时结构化错误而不是等引擎报错。
+    """
+    if not isinstance(items, list):
+        return None
+    if action == "create":
+        missing = "content"
+    elif action == "modify" and modify_action in ("update", "append"):
+        missing = "id"
+    else:
+        return None
+    for index, item in enumerate(items):
+        value = item.get(missing) if isinstance(item, dict) else None
+        if not str(value or "").strip():
+            return (
+                f"'todos[{index}]' is missing '{missing}' for action={action}"
+                + (f"/{modify_action}" if modify_action else "")
+                + ". create items need content; update/append items need id. "
+                "This call did not modify the todo list."
+            )
+    return None
+
+
+def _normalize_list_result(result):
+    """列表出口统一为 todos：旧 Core 返回 tasks，模型与下游按新契约读 todos。"""
+    if isinstance(result, dict) and "todos" not in result and isinstance(result.get("tasks"), list):
+        result["todos"] = result.pop("tasks")
+    return result
+
+
+def _create_container_key() -> str:
+    """按已装配 Core 的契约选容器名（新 Core 为 todos，旧 Core 为 tasks）。
+
+    跨仓键统一存在发布窗口：本仓可能先于 Core 落地，此时引擎仍按旧键校验，
+    分发层必须跟随实际安装的 Core，而不是假定新契约已生效。
+    """
+    from jiuwenswarm.agents.harness.common.tools.todo_compat import core_todo_container_key
+
+    return core_todo_container_key()
 
 
 class UnifiedTodoTool(Tool):
@@ -215,18 +272,19 @@ class UnifiedTodoTool(Tool):
             return ToolOutput(success=False, error=str(exc))
 
         if action == "create":
-            tasks = data.get("tasks")
-            if not tasks or not isinstance(tasks, list):
-                return ToolOutput(
-                    success=False,
-                    error="'tasks' is required for action=create and must be a JSON array",
-                )
-            return await self._engines["create"].invoke(
-                {"tasks": tasks, "plan_action": data.get("plan_action")}, **kwargs
+            todos, error = _resolve_create_container(data)
+            if error:
+                return ToolOutput(success=False, error=error)
+            error = _validate_item_shape("create", None, todos)
+            if error:
+                return ToolOutput(success=False, error=error)
+            engine = self._engines["create"]
+            return await engine.invoke(
+                {_create_container_key(): todos, "plan_action": data.get("plan_action")}, **kwargs
             )
 
         if action == "list":
-            return await self._engines["list"].invoke({}, **kwargs)
+            return _normalize_list_result(await self._engines["list"].invoke({}, **kwargs))
 
         if action == "get":
             task_id = str(data.get("id") or "").strip()
@@ -239,6 +297,9 @@ class UnifiedTodoTool(Tool):
             for key in ("todos", "ids", "todo_data"):
                 if data.get(key) is not None:
                     inner[key] = data[key]
+            error = _validate_item_shape("modify", modify_action, inner.get("todos"))
+            if error:
+                return ToolOutput(success=False, error=error)
             try:
                 return await self._engines["modify"].invoke(inner, **kwargs)
             except BaseError as exc:
@@ -249,7 +310,10 @@ class UnifiedTodoTool(Tool):
                 hint = ""
                 try:
                     listing = await self._engines["list"].invoke({}, **kwargs)
-                    active = [row["id"] for row in listing["tasks"] if row.get("status") == "in_progress"]
+                    rows = listing.get("todos")
+                    if not isinstance(rows, list):
+                        rows = listing.get("tasks")
+                    active = [row["id"] for row in (rows or []) if row.get("status") == "in_progress"]
                     hint = f" Current in_progress task IDs: {active}."
                 except Exception:
                     logger.debug("Could not read active tasks for Todo validation feedback", exc_info=True)

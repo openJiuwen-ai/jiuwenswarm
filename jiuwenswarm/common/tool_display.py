@@ -268,8 +268,8 @@ def build_tool_display_name(name: str, arguments: Any) -> str:
     if verb in _SKILL_VERBS and skill:
         return f"{verb} {skill}"
     if verb == "创建待办":
-        tasks = args.get("tasks")
-        count = len(tasks) if isinstance(tasks, list) else 0
+        todos = args.get("todos", args.get("tasks"))
+        count = len(todos) if isinstance(todos, list) else 0
         return f"{verb} {count}" if count else verb
     if verb == "更新待办":
         action = args.get("action")

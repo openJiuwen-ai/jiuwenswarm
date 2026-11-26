@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_05 |
 | 状态 | 当前实现的真实描述（含未装配遗留的登记） |
-| 修订日期 | 2026-11-18 |
+| 修订日期 | 2026-11-24 |
 | 关联模块 | `jiuwenswarm/agents/harness/code/rails/code_task_planning_rail.py`（code 侧装配 rail，~290 行）<br>`jiuwenswarm/agents/harness/code/tools/code_todo_tools.py`（四子类，115 行）<br>`jiuwenswarm/agents/harness/code/prompt/code_todo_tool_prompts.py`（CC 对齐描述与 schema，174 行）<br>`jiuwenswarm/agents/harness/flash/tools/flash_todo.py`（UnifiedTodoTool 4 合 1，222 行）<br>`jiuwenswarm/agents/harness/flash/rails/flash_todo_rail.py`（flash 侧挂载 rail，310 行）<br>`jiuwenswarm/agents/harness/flash/permissions/tool_policy_projection.py`（统一名权限投影，~95-126）<br>`jiuwenswarm/agents/harness/common/tools/todo_compat.py`（openjiuwen 兼容 shim + 持久提醒，404 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_resume.py`（持久提醒 / 代际 token / 续跑词汇层，476 行）<br>`jiuwenswarm/agents/harness/common/tools/user_todo_tool.py`（用户个人待办，400 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_toolkits.py`（markdown 行式工具链，**未装配遗留**，367 行） |
 | 装配点 | code：`server/runtime/agent_adapter/interface_code.py` `_build_code_task_planning_rail()`（~885）+ `agents/swarm/providers/code_rails.py`（~434，swarm 编排路径）<br>flash：`server/runtime/agent_adapter/interface_flash.py` `_build_task_planning_rail()`（~994，替换 stock `TaskPlanningRail` 的 4→1 位点）<br>compat：`interface_deep.py` 模块级 `install_todo_modify_compat_patch()`（~744，import 时执行，详见 [[S_01]]）<br>user_todos：`interface_code.py` 工具构建映射 `"user_todos" → _build_user_todos_tool`（~309/~1593）+ `agents/swarm/providers/tools.py` `build_user_todos`（~565）+ `resources/config*.yaml` 三份的工具清单 |
 | 消费点 | 前端 `channels/web/frontend/src/utils/toolProtocol.ts`（工具名白名单 + `todo_` 前缀兜底）、`AvatarPermEditor.tsx`（权限编辑器列五个历史名）、subagent 展示层（`includes('todo')` 宽匹配） |
@@ -51,7 +51,7 @@
 **N6 UnifiedTodoTool 必须是 Tool 子类**
 不能做成 LocalFunction：`invoke` 需要接收 `session` kwarg 并透传给四个引擎（todo.json 按 session 键控）；LocalFunction 没有 session 通道，会静默写错 / 读错 session 的文件。模块 docstring 登记了这条硬约束。
 
-create 的 tasks 项要求非空 content，id 可选：模型提供时保留，省略时沿用 Core 生成 ID 的兼容行为。推荐稳定 ID 的提示不应升级为拒绝旧调用的必填约束；后续增量修改仍使用实际持久化的 ID。
+create 的 todos 项要求非空 content，id 可选：模型提供时保留，省略时沿用 Core 生成 ID 的兼容行为。容器键与 modify 的 update/append 统一为 `todos`（Core 装饰器入口在校验前搬运历史 `tasks` 键，双键同传拒绝；flash/code 分发层另按已安装 Core 的契约选择边界键名，兼容键统一未落地的部署窗口）。工具卡保持 simple schema（禁用 `if/then/else/oneOf/allOf`，见 `test_todo_schema_compatibility`），单容器键无法在卡片层按动作区分必填，故条目形态由分发层校验：create 项缺 content、update/append 项缺 id 均在转发前返回结构化错误。推荐稳定 ID 的提示不应升级为拒绝旧调用的必填约束；后续增量修改仍使用实际持久化的 ID。
 
 **N7 统一名 `todo` 与 `todo_` 前缀钩子的共生约束**
 `_UNIFIED_TODO_NAME = "todo"`（不带前缀）。外层 task-loop 钩子（TaskExecutionRail 系）按 `todo_` 前缀识别 todo 调用，统一名**有意绕过**这些钩子；同时 flash 前端的 todo 刷新链路工具名常量已包含 `todo`（docstring 登记）。改动统一名或拆回四工具，必须同步核对这些前缀判定与前端常量，否则外层钩子会静默漏判 / 误判。前端 `toolProtocol.ts` 的内联协议清洗白名单列五个**历史名**（todo_create/complete/insert/remove/list）+ `todo_` 前缀兜底（review 意见：新增 `todo_*` 工具无需同步白名单）。
