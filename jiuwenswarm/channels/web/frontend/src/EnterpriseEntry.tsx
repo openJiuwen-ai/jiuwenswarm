@@ -29,7 +29,9 @@ function normalizeContext(raw: Partial<EnterpriseAgentContext> | null | undefine
     jiuwenclaw_id: String(raw?.jiuwenclaw_id || '').trim(),
     jiuwenclaw_name: String(raw?.jiuwenclaw_name || '').trim(),
     agent_name: String(raw?.agent_name || '').trim(),
-    agent_template_id: String(raw?.agent_template_id || '').trim(),
+    agent_id: String(raw?.agent_id || '').trim() || undefined,
+    runtime_template_id: String(raw?.runtime_template_id || '').trim() || undefined,
+    agent_template_id: String(raw?.agent_template_id || '').trim() || undefined,
     allow_local_skill_upload: raw?.allow_local_skill_upload === true,
     group_name: String(raw?.group_name || '').trim(),
   };
@@ -67,6 +69,9 @@ function applyScope(selected: EnterpriseAgentContext): void {
     userId: selected.user_id,
     groupId: selected.group_id,
     botId: selected.bot_id,
+    agentName: selected.agent_name,
+    agentId: selected.agent_id,
+    runtimeTemplateId: selected.runtime_template_id,
     agentTemplateId: selected.agent_template_id,
   });
 }
@@ -93,6 +98,7 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
   const [context, setContext] = useState<EnterpriseContextSnapshot | null>(null);
   const [contextError, setContextError] = useState('');
   const [contextSwitching, setContextSwitching] = useState(false);
+  const [emptyReason, setEmptyReason] = useState<'no_grant' | 'no_agent_template' | null>(null);
 
   const logout = useCallback(() => {
     if (provider) void provider.logout();
@@ -121,7 +127,9 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
           return;
         }
         const listed = await provider.listAgentContexts();
-        const contexts = listed
+        const rawContexts = Array.isArray(listed) ? listed : listed.contexts;
+        if (!Array.isArray(listed)) setEmptyReason(listed.emptyReason ?? null);
+        const contexts = rawContexts
           .map((item) => normalizeContext(item))
           .filter((item): item is EnterpriseAgentContext => item !== null);
         if (cancelled) return;
@@ -208,37 +216,6 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
             setContextError(switchError instanceof Error ? switchError.message : t('enterpriseEntry.switchFailed'));
           });
       },
-      onCustomContextApply: (input) => {
-        if (contextSwitching) return;
-        const botId = input.botId.trim();
-        const groupId = input.groupId.trim();
-        const userId = input.userId.trim();
-        const jiuwenclawId = input.jiuwenclawId.trim();
-        if (!botId || !groupId || !userId || !jiuwenclawId) {
-          setContextError(t('sessionSidebar.enterpriseContext.customRequired'));
-          return;
-        }
-        const matched = context.contexts.find((item) => item.jiuwenclaw_id === jiuwenclawId);
-        setContextSwitching(true);
-        setContextError('');
-        const selected: EnterpriseAgentContext = {
-          bot_id: botId,
-          group_id: groupId,
-          user_id: userId,
-          jiuwenclaw_id: jiuwenclawId,
-          jiuwenclaw_name: matched?.jiuwenclaw_name || jiuwenclawId,
-          agent_name: botId,
-          group_name: groupId,
-        };
-        void ensureActiveCluster(provider, jiuwenclawId)
-          .then(() => {
-            window.location.replace(contextUrl(selected, true));
-          })
-          .catch((switchError) => {
-            setContextSwitching(false);
-            setContextError(switchError instanceof Error ? switchError.message : t('enterpriseEntry.switchFailed'));
-          });
-      },
       onLogout: logout,
     };
   }, [context, contextError, contextSwitching, logout, provider, t]);
@@ -288,9 +265,15 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
           </div>
           <div className="enterprise-entry-empty__eyebrow" lang="en">ENTERPRISE WORKSPACE</div>
           <h1 id="enterprise-entry-empty-title" data-testid="enterprise-entry-title">
-            {t('enterpriseEntry.emptyTitle')}
+            {emptyReason === 'no_agent_template'
+              ? t('enterpriseEntry.emptyTitleNoTemplate')
+              : t('enterpriseEntry.emptyTitle')}
           </h1>
-          <p data-testid="enterprise-entry-status">{t('enterpriseEntry.noContext')}</p>
+          <p data-testid="enterprise-entry-status">
+            {emptyReason === 'no_agent_template'
+              ? t('enterpriseEntry.noContextNoTemplate')
+              : t('enterpriseEntry.noContext')}
+          </p>
           <button
             className="enterprise-entry-empty__login"
             type="button"

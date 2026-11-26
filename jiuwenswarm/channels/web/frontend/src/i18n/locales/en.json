@@ -25,6 +25,8 @@
     "backToLogin": "Back to Sign in",
     "language": "Interface language",
     "noContext": "No Agent is available for this account. Please grant access in the Manager console first.",
+    "emptyTitleNoTemplate": "No Agent",
+    "noContextNoTemplate": "No Agent is available for this account. Please ask your administrator to add Agent Templates in the Manager console.",
     "loadFailed": "Failed to load Agent contexts.",
     "switchFailed": "Failed to switch context.",
     "errorTitle": "Unable to enter workspace",
@@ -3047,6 +3049,8 @@
     "enterpriseContext": {
       "user": "User",
       "userContext": "User context",
+      "agentNameLabel": "Agent name",
+      "agentNameHint": "Agent Name",
       "modeAria": "Context mode",
       "selectAgent": "Select agent",
       "custom": "Custom",
