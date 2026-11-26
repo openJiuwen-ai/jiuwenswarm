@@ -5241,6 +5241,7 @@
     "paused": "已暂停",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
+    "queuedUploadDocument": "上传文档",
     "crossSessionMessageQueue": "跨会话消息",
     "localMessageQueue": "本地消息",
     "turnStarting": "正在启动…",

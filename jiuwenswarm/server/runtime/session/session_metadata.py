@@ -225,6 +225,17 @@ _INJECTED_TAG_RE = re.compile(
 _INJECTED_TAG_START_RE = re.compile(
     r"<[a-z][\w-]*(?:\s[^>]*)?>?"
 )
+# 用户面注入的【上传文档】提示块（独占一行，或 _auto_title 收成单行后的形态）
+_UPLOAD_DOC_BLOCK_RE = re.compile(
+    r"(?:^|\n)【上传文档】(?:\n|$)[\s\S]*$"
+)
+_UPLOAD_DOC_NAMED_BLOCK_RE = re.compile(
+    r"(?:^|\n)【上传文档[:：][^\n]*(?:\n|$)[\s\S]*$"
+)
+_UPLOAD_DOC_COLLAPSED_RE = re.compile(
+    r"(?:^|\s)【上传文档】\s+@[\s\S]*$"
+)
+_AT_PATH_RE = re.compile(r'@(?:"([^"]+)"|(\S+))')
 
 
 def _has_valid_work_mode(value: Any) -> bool:
@@ -1173,6 +1184,28 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
             _refresh_written_cache(session_id, written, options)
 
 
+def _strip_upload_document_blocks_for_title(content: str) -> str:
+    """从标题候选中去掉【上传文档】提示块（含收成单行后的形态）。"""
+    if "【上传文档" not in content:
+        return content
+    cleaned = _UPLOAD_DOC_BLOCK_RE.sub("", content)
+    cleaned = _UPLOAD_DOC_NAMED_BLOCK_RE.sub("", cleaned)
+    cleaned = _UPLOAD_DOC_COLLAPSED_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _title_from_upload_at_path(content: str) -> str:
+    """纯上传消息：取首个 @path / @\"path\" 的 basename 作标题。"""
+    match = _AT_PATH_RE.search(content)
+    if not match:
+        return ""
+    path = (match.group(1) or match.group(2) or "").strip()
+    if not path:
+        return ""
+    name = Path(path).name
+    return name if name and name not in (".", "..") else ""
+
+
 def _auto_title(content: str) -> str:
     """从首条用户消息自动生成会话标题"""
     # 先剥离所有小写 XML 注入标签，
@@ -1181,10 +1214,14 @@ def _auto_title(content: str) -> str:
     cleaned, _ = strip_debug_directive(cleaned)
     if not cleaned:
         return ""
-    title = cleaned.replace("\n", " ")
-    if len(title) > _TITLE_MAX_LEN:
-        title = title[:_TITLE_MAX_LEN] + "..."
-    return title
+    without_upload = _strip_upload_document_blocks_for_title(cleaned)
+    if without_upload:
+        title = without_upload.replace("\n", " ")
+        if len(title) > _TITLE_MAX_LEN:
+            title = title[:_TITLE_MAX_LEN] + "..."
+        return title
+    # 纯上传：不把协议标记当标题，改用文件名；无可用路径则空串交给侧栏 fallback
+    return _title_from_upload_at_path(cleaned)
 
 
 def init_session_metadata(

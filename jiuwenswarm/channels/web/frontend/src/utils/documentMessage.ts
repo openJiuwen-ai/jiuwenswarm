@@ -28,6 +28,9 @@ export function stripUploadDocumentBlocks(content: string): string {
     // keeps ordinary query text containing the marker intact.
     .replace(/(?:^|\r?\n)【上传文档】(?:\r?\n|$)[\s\S]*$/u, '')
     .replace(/(?:^|\r?\n)【上传文档[:：][^\r\n]*(?:\r?\n|$)[\s\S]*$/u, '')
+    // `_auto_title` collapses newlines to spaces before persist; also cover
+    // already-written bad titles: `【上传文档】 @...` or `query 【上传文档】 @...`.
+    .replace(/(?:^|\s)【上传文档】\s+@[\s\S]*$/u, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -35,6 +38,49 @@ export function stripUploadDocumentBlocks(content: string): string {
 /** Session / header title: strip document hints and collapse whitespace. */
 export function toDisplaySessionTitle(title: string): string {
   return stripUploadDocumentBlocks(title).replace(/\s+/g, ' ').trim();
+}
+
+const AT_PATH_RE = /@(?:"([^"]+)"|(\S+))/;
+
+/** Basename of the first `@path` / `@"path"` in an upload-document block. */
+function basenameFromUploadAtPath(content: string): string {
+  const match = AT_PATH_RE.exec(content);
+  if (!match) return '';
+  const path = (match[1] || match[2] || '').trim();
+  if (!path) return '';
+  const parts = path.split(/[\\/]/);
+  const name = parts[parts.length - 1] || '';
+  return name && name !== '.' && name !== '..' ? name : '';
+}
+
+export interface QueueContentPreviewOptions {
+  /** Queued task attachments; first document/image filename wins when text is empty. */
+  mediaItems?: Array<{ filename?: string } | null | undefined>;
+  /** Localized label when the turn is upload-only and no filename is available. */
+  fallbackLabel?: string;
+}
+
+/**
+ * Message-queue row preview: never show the agent-facing `【上传文档】` protocol
+ * block. Prefer stripped user text, then a media filename, then `@path`
+ * basename, then an optional localized fallback.
+ */
+export function toQueueContentPreview(
+  content: string,
+  options?: QueueContentPreviewOptions,
+): string {
+  const stripped = stripUploadDocumentBlocks(content || '').replace(/\s+/g, ' ').trim();
+  if (stripped) return stripped;
+
+  const fromMedia = (options?.mediaItems ?? [])
+    .map((item) => (item && typeof item.filename === 'string' ? item.filename.trim() : ''))
+    .find(Boolean);
+  if (fromMedia) return fromMedia;
+
+  const fromPath = basenameFromUploadAtPath(content || '');
+  if (fromPath) return fromPath;
+
+  return (options?.fallbackLabel || '').trim();
 }
 
 /**
