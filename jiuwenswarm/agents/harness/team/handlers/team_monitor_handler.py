@@ -414,17 +414,47 @@ class TeamMonitorHandler(BaseMonitorHandler):
             # 快照三读合一：优先走单连接快照探针（同一读事务
             # 取齐 团队信息/成员/任务，1 次 checkout 替代串行 3 次）；旧版
             # openjiuwen 无该 API 时回退三读，行为与旧实现一致。
+            # 探针是新增依赖面：调用异常或返回形态不符只降级到三读，
+            # 不能让整个快照变 None——否则新依赖一旦漂移，旧版三读明明
+            # 可用却整体失效（跨仓无编译期校验，只能运行期兜底）。
             get_snapshot = getattr(self._monitor, "get_snapshot", None)
+            snapshot = None
             if get_snapshot is not None:
-                data = await get_snapshot()
-                if data is None:
+                try:
+                    snapshot = await get_snapshot()
+                except Exception as exc:
                     logger.warning(
-                        "[TeamMonitorHandler] get_team_snapshot probe unavailable: session_id=%s",
+                        "[TeamMonitorHandler] get_snapshot probe failed, "
+                        "falling back to 3 reads: session_id=%s, error=%s",
                         self._session_id,
+                        exc,
                     )
-                    return None
-                team_info, members, tasks = data
-            else:  # pragma: no cover - 旧版 openjiuwen 兼容路径
+                else:
+                    if snapshot is None:
+                        # 探针读确定不可得（重试耗尽）：保持整体 None，
+                        # 调用方按"快照不可得"处理。
+                        logger.warning(
+                            "[TeamMonitorHandler] get_team_snapshot probe unavailable: session_id=%s",
+                            self._session_id,
+                        )
+                        return None
+                    if not (isinstance(snapshot, (tuple, list)) and len(snapshot) == 3):
+                        # 形态不符（dataclass/dict/二元组等）≠ 读失败：
+                        # 回退三读，兼容承诺覆盖到"API 存在但形态漂移"。
+                        logger.warning(
+                            "[TeamMonitorHandler] get_snapshot returned unexpected "
+                            "shape %s, falling back to 3 reads: session_id=%s",
+                            type(snapshot).__name__,
+                            self._session_id,
+                        )
+                        snapshot = None
+            if snapshot is not None:
+                team_info, members, tasks = snapshot
+                # 与三读路径的 ``or []`` 归一契约一致：None 视为"无成员/
+                # 无任务"，否则下方推导 TypeError 会被外层吞成整体 None。
+                members = members or []
+                tasks = tasks or []
+            else:
                 members = await self._monitor.get_members()
                 team_info = await self._monitor.get_team_info()
                 tasks = await self._monitor.get_tasks() or []

@@ -370,6 +370,65 @@ async def test_get_team_snapshot_returns_none_when_probe_unavailable() -> None:
     assert await handler.get_team_snapshot() is None
 
 
+class _BrokenSnapshotMonitor(_FakeMonitor):
+    """探针存在但调用即抛（签名/协程形态漂移等中间版本）。"""
+
+    async def get_snapshot(self):
+        raise TypeError("get_snapshot() takes 1 positional argument but 0 were given")
+
+
+@pytest.mark.anyio
+async def test_get_team_snapshot_falls_back_when_probe_raises() -> None:
+    """探针存在但调用抛错 → 回退既有三读，而不是整体 None。"""
+    monitor = _BrokenSnapshotMonitor(
+        members=[_FakeMember("team_leader"), _FakeMember("worker-1")],
+        leader_member_name="team_leader",
+        tasks=[_FakeTask(task_id="task-1", title="research", status="created", assignee="worker-1")],
+    )
+    handler = TeamMonitorHandler(monitor, "sess-snap-raise")
+
+    snapshot = await handler.get_team_snapshot()
+
+    assert snapshot is not None
+    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1"]
+    assert [t["task_id"] for t in snapshot["tasks"]] == ["task-1"]
+
+
+@pytest.mark.anyio
+async def test_get_team_snapshot_falls_back_on_unexpected_probe_shape() -> None:
+    """探针返回形态不符（非三元组）→ 回退三读，不把快照整体降级为 None。"""
+    monitor = _SnapshotMonitor(
+        ("only-team-info", ["members"]),
+        members=[_FakeMember("worker-1")],
+        leader_member_name=None,
+        tasks=[_FakeTask(task_id="task-1", title="research", status="created", assignee="worker-1")],
+    )
+    handler = TeamMonitorHandler(monitor, "sess-snap-shape")
+
+    snapshot = await handler.get_team_snapshot()
+
+    assert monitor.snapshot_calls == 1
+    assert snapshot is not None
+    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1"]
+    assert [t["task_id"] for t in snapshot["tasks"]] == ["task-1"]
+
+
+@pytest.mark.anyio
+async def test_get_team_snapshot_normalizes_none_members_and_tasks_from_probe() -> None:
+    """探针三元组的 members/tasks 为 None → 与三读路径一致归一到 []。"""
+    monitor = _SnapshotMonitor(
+        (SimpleNamespace(leader_member_name="team_leader", team_name="team-1"), None, None),
+        members=[_FakeMember("team_leader")],
+        leader_member_name="team_leader",
+    )
+    handler = TeamMonitorHandler(monitor, "sess-snap-null-parts")
+
+    snapshot = await handler.get_team_snapshot()
+
+    assert monitor.snapshot_calls == 1
+    assert snapshot == {"members": [], "tasks": [], "team_id": "team-1"}
+
+
 @pytest.mark.anyio
 async def test_get_team_snapshot_keeps_members_when_team_info_unavailable() -> None:
     handler = TeamMonitorHandler(
