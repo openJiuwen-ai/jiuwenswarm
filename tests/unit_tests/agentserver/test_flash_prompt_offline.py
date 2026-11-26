@@ -102,6 +102,21 @@ def test_thinking_discipline_three_contradictions_applied() -> None:
     assert "严禁誊写产物" in text
 
 
+def test_tool_selection_exploration_vs_execution() -> None:
+    """300 段：只读探索放开并行、有副作用写精准；旧的「一个问题一个工具」一刀切已删。"""
+    cn = build_prompt_snapshot(assemble("cn"), language="cn")
+    cn_text = {s.name: s.text for s in cn.sections}["tool_selection"]
+    assert "只读探索操作" in cn_text
+    assert "有副作用的操作" in cn_text
+    assert "默认一个问题一个工具" not in cn_text
+
+    en = build_prompt_snapshot(assemble("en"), language="en")
+    en_text = {s.name: s.text for s in en.sections}["tool_selection"]
+    assert "Read-only exploration calls" in en_text
+    assert "Side-effecting calls" in en_text
+    assert "Default to one tool per question" not in en_text
+
+
 def test_snapshot_domains_match_declaration() -> None:
     assert tuple(SNAPSHOT_DOMAINS) == (
         "safety",

@@ -125,6 +125,7 @@ _EXEC_PRINCIPLES_CN = """# 执行质量准则
 - **交付前自检**：交付前逐条核对全部条件是否满足——有无错纳漏纳、时间/数值/单位是否精确、既有数据是否完好、格式是否与模板一致。不过关先修正再交付。
 - **拒绝盲信写入**：写文件工具返回 success 不代表文件内容真写对了，以 read_file 读回来的实际内容为准。
   若 read_file 只显示默认空表头（如 ## Sheet1）而无实际数据行，即使工具调用未报错、你认为任务"应该"成功了，也必须如实判定生成失败并重新构建。切勿凭空脑补文件内容。
+- **时间锚点对齐**：回答任何涉及具体年份/届次的事实题前，先把目标时间与当前时间、该事件的可推算周期对齐（如世界杯、奥运每 4 年一届；赛事、会议、产品版本等有固定周期或本身可能不存在的事件同理）。目标年份/届次对不上、被取消、或本身不存在时，先检索核实或直接说明无法确认，不要用相邻时间的事实填空。
 
 ## 场景化准则
 
@@ -159,6 +160,7 @@ The following principles apply to any task and are the basic baseline for delive
 - **Self-check before delivery**: Before delivering, check item by item that all conditions hold — no wrong inclusion/omission, time/number/unit exact, existing data intact, and format matching the template. Fix first before delivering.
 - **Reject blind writes**: A write-file tool returning success does not mean the file content is actually correct; the actual content read back via read_file is authoritative.
   If read_file only shows a default empty header (e.g. `## Sheet1`) with no actual data rows, even if the tool call reported no error and you think the task "should" have succeeded, you must truthfully judge it a generation failure and rebuild. Never fabricate file content from your imagination.
+- **Time-anchor alignment**: Before answering any factual question about a specific year/edition, align the target time with the current time and the event's derivable cycle (e.g. the World Cup and the Olympics are held every four years; the same applies to events, conferences, or product versions that follow a fixed cycle or may not exist at all). When the target year/edition does not line up, has been cancelled, or does not exist, verify by search first or say plainly that you cannot confirm; do not fill in facts from an adjacent time.
 
 ## Scenario-based principles
 

@@ -1087,6 +1087,12 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # 纯观测 rail（只测不治）：时间敏感事实题的零检索率尺子。
+  # 只打结构化告警、不改行为，用于度量「该检索没检索」的发生率。
+  # 注意：本 rail 刻意不支持 force_first_retrieval 等「治」的配置项，治请另建 rail。
+  # 灰度期间默认关闭（false），确认日志量可控后再开 true，避免上线即刷屏。
+  fact_premise_observation:
+    enabled: false
   # 策略级鉴权失败 / 凭证探测断路器（单 agent / flash）。
   stalled_access:
     enabled: true

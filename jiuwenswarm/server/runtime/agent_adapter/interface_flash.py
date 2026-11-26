@@ -315,6 +315,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_security_rail",
         "_heartbeat_rail",
         "_request_summary_rail",
+        # 纯观测 rail（只测不治）：时间敏感事实题零检索率尺子。B_09 线上复现就是
+        # flash 会话（web_flash 工具面），flash 是 relay-claw 默认聊天路径，必须挂。
+        "_fact_premise_observation_rail",
         "_stalled_access_circuit_rail",
         "_last_iteration_finalize_rail",
         "_subagent_rail",

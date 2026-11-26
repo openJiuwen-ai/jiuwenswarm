@@ -444,6 +444,7 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.adapter_statics import (
 from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import (
     _build_avatar_rail,
     _build_extension_config_debug_rail,
+    _build_fact_premise_observation_rail,
     _build_heartbeat_rail,
     _build_llm_retry_rail,
     _build_skill_protocol_prompt_rail,
@@ -8861,6 +8862,13 @@ class JiuWenSwarmDeepAdapter:
             # 保证 ON_USER_MESSAGE 投影替换发生在上下文初始化链路之后。
             _RailBuildInfo(
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
+            # 纯观测 rail（只测不治）：时间敏感事实题的零检索率尺子。
+            # 状态放 ctx.extra，不改行为，可安全挂在 deep/flash 全通道。
+            _RailBuildInfo(
+                "_fact_premise_observation_rail",
+                _build_fact_premise_observation_rail,
+                {"config_base": config_base},
             ),
         ]
 
