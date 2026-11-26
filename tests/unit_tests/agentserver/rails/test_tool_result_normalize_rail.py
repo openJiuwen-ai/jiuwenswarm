@@ -544,7 +544,8 @@ def test_render_keeps_sibling_keys() -> None:
     assert '"warnings":["w"]' in rendered
 
 
-_IMAGE_DATA_URL = "data:image/png;base64," + "A" * 4096
+_IMAGE_BASE64 = "A" * 4096
+_IMAGE_DATA_URL = f"data:image/png;base64,{_IMAGE_BASE64}"
 
 
 def _multi_file_image_result() -> SimpleNamespace:
@@ -577,7 +578,7 @@ def test_render_strips_image_base64_copies_from_text() -> None:
     # 同一份 base64 在 files[i] 与顶层各一份；文本视图必须两份都换成占位符
     normalized = normalize_tool_result(_multi_file_image_result())
     rendered = render_tool_result_for_llm(normalized)
-    assert "data:image/" not in rendered
+    assert _IMAGE_BASE64 not in rendered
     assert rendered.count("data_url") == 2
     # 结构化载荷一个字节都不动：像素靠 data.multimodal 送 image 块
     assert normalized["data"]["multimodal"][0]["data_url"] == _IMAGE_DATA_URL
@@ -681,7 +682,8 @@ async def test_rail_strips_image_base64_from_msg_but_keeps_payload() -> None:
     rail = ToolResultNormalizeRail(normalize_enabled=True, llm_render_enabled=True)
     ctx = _make_ctx(_multi_file_image_result())
     await rail.after_tool_call(ctx)
-    assert "data:image/" not in ctx.inputs.tool_msg.content
+    assert _IMAGE_BASE64 not in ctx.inputs.tool_msg.content
+    assert ctx.inputs.tool_msg.content.count("data:image/png;base64,<multimodal payload omitted>") == 2
     # 结构化 data 不动，react_agent 仍能从中提升出 1 个 image 块
     assert ctx.inputs.tool_result.data["multimodal"][0]["data_url"] == _IMAGE_DATA_URL
 

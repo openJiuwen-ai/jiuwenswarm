@@ -36,8 +36,6 @@ import json
 import re
 from typing import Any
 
-from openjiuwen.core.context_engine.content_sanitize import sanitize_value_for_text
-
 STATUS_SUCCESS = "success"
 STATUS_ERROR = "error"
 STATUS_TIMEOUT = "timeout"
@@ -421,27 +419,6 @@ def normalize_tool_result(result: Any) -> dict[str, Any]:
         return _normalize_tool_output(result)
     # 其余对象退化为文本路径
     return _normalize_text(str(result))
-
-
-def _carries_image_payload(normalized: dict[str, Any]) -> bool:
-    """归一结果是否携带结构化多模态载荷（图片像素另有 image 块通道）。
-
-    只看 ``data.multimodal`` / ``data.files[].multimodal`` / 平铺到顶层的
-    ``multimodal``：这些是 react_agent 提升 image 块的来源。bash/HTML 文本里的
-    data URI 不属于多模态载荷，渲染必须原样保留。
-    """
-    data = normalized.get("data")
-    if isinstance(data, dict):
-        multimodal = data.get("multimodal")
-        if isinstance(multimodal, list) and multimodal:
-            return True
-        files = data.get("files")
-        if isinstance(files, list):
-            for item in files:
-                if isinstance(item, dict) and item.get("multimodal"):
-                    return True
-    multimodal = normalized.get("multimodal")  # _flatten_data 会平铺一份到顶层
-    return isinstance(multimodal, list) and bool(multimodal)
 
 
 def render_tool_result_for_llm(normalized: dict[str, Any]) -> str:
