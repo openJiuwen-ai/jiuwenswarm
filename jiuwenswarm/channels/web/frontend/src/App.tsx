@@ -867,6 +867,10 @@ function AppContent({
   const creatingSessionRef = useRef(false);
   const pendingAppEditsRef = useRef(new Map<string, Promise<Session>>());
   const appEditTokensRef = useRef(new Map<string, string>());
+  const [appEditSessionToReveal, setAppEditSessionToReveal] = useState<string | null>(null);
+  const handleAppEditSessionRevealed = useCallback((id: string) => {
+    setAppEditSessionToReveal((pendingId) => pendingId === id ? null : pendingId);
+  }, []);
   /** 离开新建任务页后，仍未发送的临时会话可以被再次打开。 */
   const pendingNewConversationRef = useRef(route.kind === 'chat-new');
   const sessionIdsCreatedInThisPageRef = useRef(new Set<string>());
@@ -4831,6 +4835,24 @@ function AppContent({
       closeSidebarPeek();
       await handleRestoreSession(session.session_id, session.mode, session, undefined, { canActivate: isCurrent });
       if (sessionIdRef.current !== session.session_id) return;
+      const projectId = session.project_id;
+      if (projectId) {
+        const workspace = useWorkspaceStore.getState();
+        const workMode = session.work_mode;
+        const switchMode = !isEnterprise() && workMode && workMode !== workspace.workMode;
+        if (switchMode) {
+          void workspace.setWorkMode(workMode);
+        } else if (!workspace.projects.some((project) => project.project_id === projectId)) {
+          void workspace.loadProjects();
+        }
+        // Switching modes clears expansion state synchronously before fetching projects.
+        if (!useWorkspaceStore.getState().expandedProjectIds[projectId]) {
+          workspace.toggleProjectExpanded(projectId);
+        } else {
+          void workspace.loadProjectSessions(projectId);
+        }
+        setAppEditSessionToReveal(session.session_id);
+      }
       useSessionStore.getState().setAppMarketPreview(session.session_id, {
         appId: target.appId, name: target.name, instanceId: target.instanceId,
       });
@@ -5415,6 +5437,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 activeSessionId={route.kind === 'group-chat'
                   ? route.groupId ?? null
                   : activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                revealSessionId={activeNav === 'chat' ? appEditSessionToReveal : null}
+                onSessionRevealed={handleAppEditSessionRevealed}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}
@@ -5447,6 +5471,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 activeSessionId={route.kind === 'group-chat'
                   ? route.groupId ?? null
                   : sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                revealSessionId={appEditSessionToReveal}
+                onSessionRevealed={handleAppEditSessionRevealed}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}

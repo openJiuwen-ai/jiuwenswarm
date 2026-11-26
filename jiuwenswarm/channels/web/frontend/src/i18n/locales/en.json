@@ -292,7 +292,7 @@
     "editSessionTitle": "Edit {{name}}",
     "reloadPreview": "Reload app preview",
     "reloadFailed": "Failed to reload app preview",
-    "editPrompt": "Help me modify the app “{{name}}” (v{{version}}).\nAbout the app: {{description}}\nSource entry: {{entryPath}}\n\nPlease review the existing code and data first and keep existing data and saves. Suggested steps:\n1. Explain the current implementation, entry file, and key data;\n2. Make the smallest change for my request and test it;\n3. Tell me when a new version should be published.\nChanges I want: ",
+    "editPrompt": "Help me modify the app “{{name}}” (v{{version}}).\nAbout the app: {{description}}\nSource entry: {{entryPath}}\n\nConsult the workswarm-app-builder skill in the WorkSwarm built-in capabilities catalog, then review the existing code and data and keep existing data and saves. Suggested steps:\n1. Explain the current implementation, entry file, and key data;\n2. Make the smallest change for my request and test it;\n3. Tell me when a new version should be published.\nChanges I want: ",
     "noDescription": "No description yet",
     "expandPane": "Expand app panel",
     "restorePane": "Restore split view",
