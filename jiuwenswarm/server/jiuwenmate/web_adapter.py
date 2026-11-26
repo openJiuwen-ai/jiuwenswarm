@@ -422,6 +422,12 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         manager = await self._runtime()
         await manager.stop_swarmchat_group(group_id, user_id=user_id, channel_id=channel_id)
 
+    async def cancel_swarmchat_member(
+        self, group_id: str, agent_id: str, member_name: str | None = None,
+    ) -> None:
+        if self._manager is not None:
+            await self._manager.cancel_swarmchat_member(group_id, agent_id, member_name)
+
     async def refresh_models(self, config_payload: dict[str, Any] | None = None) -> bool:
         async with self._model_refresh_lock:
             return await self._refresh_models(config_payload)
