@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 
-def test_adx_tool_card_uses_shared_agentos_workspace(monkeypatch, tmp_path):
+@pytest.mark.parametrize('runtime', ['conch', 'runsc'])
+def test_adx_tool_card_uses_shared_agentos_workspace(monkeypatch, tmp_path, runtime):
     from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
 
     home = tmp_path / 'agentos'
@@ -16,16 +17,29 @@ def test_adx_tool_card_uses_shared_agentos_workspace(monkeypatch, tmp_path):
     monkeypatch.setattr(builder, '_resolve_workspace_dir', lambda: workspace)
     monkeypatch.setattr(builder, 'get_projectless_tasks_dir', lambda: tasks)
     monkeypatch.setattr(builder, '_sandbox_isolation_custom_id', lambda _: 'project-test')
-    monkeypatch.setattr(builder, 'get_sandbox_endpoint', lambda: {
-        'type': 'adx-environment', 'url': 'https://adx.example', 'image': 'tools:v1',
-        'runtime': 'conch', 'idle_timeout': 60, 'user': '1000', 'group': '1000',
-    })
+    source = {'type': 'adx-environment', 'url': 'https://adx.example', 'image': 'tools:v1',
+              'runtime': runtime, 'idle_timeout': 60, 'user': '1000', 'group': '1000',
+              'cpu': 750, 'memory': 1024, 'restart_policy': None,
+              'network': {'block_network': True}, 'connection': {'token': 'previous-node-token'}}
+    if runtime == 'runsc':
+        source['rootfs'] = {'type': 'local', 'path': '/objects/prepared/rootfs'}
+    monkeypatch.setenv('ADX_TOKEN', 'node-token')
+    monkeypatch.setattr(builder, 'get_sandbox_endpoint', lambda: source)
     card = builder.create_sandbox_sysop_card('https://adx.example', 'adx-environment')
     assert card is not None
     assert card.gateway_config.isolation.custom_id == 'project-test'
     launch = card.gateway_config.launcher_config
     assert launch.sandbox_type == 'adx-environment'
-    assert launch.extra_params['runtime'] == 'conch'
+    extra = launch.extra_params
+    assert card.gateway_config.auth_headers == {}
+    assert extra['token_env'] == 'ADX_TOKEN'
+    assert extra['network'] == {'blockNetwork': True}
+    assert extra['restart_policy'] is None
+    assert (extra['runtime'], extra['cpu'], extra['memory']) == (runtime, 750, 1024)
+    if runtime == 'runsc':
+        assert extra['rootfs'] == source['rootfs'] and 'image' not in extra
+    else:
+        assert extra['image'] == 'tools:v1'
     assert launch.extra_params['idle_timeout'] == 60
     assert launch.extra_params['user'] == '1000'
     assert launch.extra_params['group'] == '1000'

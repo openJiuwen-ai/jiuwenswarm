@@ -3,15 +3,21 @@
 import asyncio
 import copy
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+
 from agent_gateway.extensions.agentos.config_updater.client import FetchResult
 from agent_gateway.extensions.agentos.config_updater.service import ConfigUpdaterApplier, ConfigUpdaterService
 
+from jiuwenswarm.common import config
+from jiuwenswarm.common.runtime_settings import prepare_runtime_environment
+from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.common.etcd.client import EtcdError, _extract_watch_kvs
 
 
@@ -288,6 +294,68 @@ class CodeGraphTest(unittest.IsolatedAsyncioTestCase):
             await adapter._sync_code_graph(child_graph)
             await asyncio.sleep(0)
             self.assertEqual(warm.await_count, 4)
+
+
+@pytest.fixture
+def managed_workspace(monkeypatch):
+    binding = {'type': 'adx-environment', 'managed_connection': {
+        'url_env': 'NODE_URL', 'context_file_env': 'NODE_CONTEXT',
+        'replace_connection_fields': ['server_address', 'token'],
+        'credential_fields': ['ADX_TOKEN'],
+    }}
+    monkeypatch.setenv('JIUWENSWARM_AGENTOS_SANDBOX_CONFIG', json.dumps(binding))
+    monkeypatch.setenv('JIUWENSWARM_RUNTIME_PROFILE', 'agentos')
+    monkeypatch.delenv('NODE_CONTEXT', raising=False)
+
+
+@pytest.mark.parametrize('runtime', ['runsc', 'conch'])
+def test_launch_binding_preserves_workspace_and_refreshes_node(tmp_path, monkeypatch, managed_workspace, runtime):
+    stored = {'type': 'adx-environment', 'runtime': runtime, 'image': 'tools:v1',
+              'cpu': 750, 'mounts': [], 'connection': {'server_address': 'old', 'timeout': 19},
+              'env': {'ADX_TOKEN': 'stale', 'LANG': 'C'}}
+    if runtime == 'runsc':
+        stored['rootfs'] = {'type': 'local', 'path': '/objects/prepared/rootfs'}
+    monkeypatch.setattr(config, '_read_with_retry', lambda _: {'sandbox': stored.copy()})
+    context = tmp_path / 'node.json'
+    context.write_text(json.dumps({'ingress_url': 'https://current:8443'}))
+    monkeypatch.setenv('NODE_CONTEXT', str(context))
+    monkeypatch.setenv('NODE_URL', 'https://old:8443')
+    bound = config.get_config()['sandbox']
+    for key, value in stored.items():
+        if key not in ('env', 'connection'):
+            assert bound[key] == value
+    assert bound['url'] == 'https://current:8443' and bound['endpoint_file'] == str(context)
+    assert bound['connection'] == {'timeout': 19, 'use_tls': True, 'verify_tls': True}
+    assert bound['env'] == {'LANG': 'C'} and stored['env']['ADX_TOKEN'] == 'stale'
+    context.write_text('{}')
+    with pytest.raises(ValueError, match='launcher-injected'):
+        config.get_config()
+
+
+@pytest.mark.parametrize('kind,reason', [('yuanrong', 'deployment migration'), ('adx-environment', 'launcher-injected')])
+def test_invalid_workspace_cannot_use_stale_connection(monkeypatch, managed_workspace, kind, reason):
+    monkeypatch.delenv('NODE_URL', raising=False)
+    monkeypatch.setattr(config, '_read_with_retry', lambda _: {'sandbox': {'type': kind, 'url': 'http://old'}})
+    with pytest.raises(ValueError, match=reason):
+        config.get_config()
+
+
+@pytest.mark.parametrize('profile,expected', [('agentos', 'worker'), ('standalone', 'shared')])
+def test_dotenv_respects_launcher_owned_credentials(tmp_path, monkeypatch, profile, expected):
+    monkeypatch.setenv('JIUWENSWARM_RUNTIME_PROFILE', profile)
+    monkeypatch.setenv('JIUWENSWARM_RUNTIME_SETTINGS', json.dumps({
+        'credentials': {'LAUNCH_TOKEN': 'ADX_TOKEN'}, 'preserve_env': ['ADX_TOKEN', 'NODE_URL']}))
+    monkeypatch.setenv('LAUNCH_TOKEN', 'worker')
+    monkeypatch.setenv('NODE_URL', 'worker')
+    monkeypatch.delenv('ADX_TOKEN', raising=False)
+    monkeypatch.delenv('MODEL_NAME', raising=False)
+    dotenv = tmp_path / '.env'
+    dotenv.write_text('ADX_TOKEN=shared\nNODE_URL=shared\nMODEL_NAME=new\n')
+    prepare_runtime_environment()
+    load_dotenv_runtime(dotenv, override=True)
+    assert os.environ['ADX_TOKEN'] == os.environ['NODE_URL'] == expected
+    assert ('LAUNCH_TOKEN' in os.environ) == (profile == 'standalone')
+    assert os.environ['MODEL_NAME'] == 'new'
 
 
 if __name__ == "__main__":

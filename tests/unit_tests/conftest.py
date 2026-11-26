@@ -38,33 +38,6 @@ def ttse_plugin_source(tmp_path: Path) -> Path:
     return Path(shutil.copytree(source, tmp_path / "ttse-source"))
 
 
-@pytest.fixture
-def adx_workspace_binding():
-    """Managed sandbox configuration supplied to AgentServer by its launcher."""
-    return {
-        'type': 'adx-environment',
-        'managed_connection': {
-            'url_env': 'JIUWENSWARM_ADX_NODE_INGRESS_URL',
-            'context_file_env': 'JIUWENSWARM_ADX_NODE_CONTEXT_FILE',
-            'replace_connection_fields': [
-                'server_address', 'gateway_address', 'token', 'token_provider',
-                'use_tls', 'gateway_use_tls', 'verify_tls',
-            ],
-            'credential_fields': ['ADX_TOKEN', 'ADX_GATEWAY_TOKEN', 'JIUWENSWARM_ADX_API_TOKEN'],
-        },
-        'launcher_config': {'workspace_mounts': True, 'shared_scope': 'default'},
-    }
-
-
-@pytest.fixture
-def adx_environment_binding():
-    """Runtime credential and node environment mapping supplied by the launcher."""
-    return {
-        'credentials': {'JIUWENSWARM_ADX_API_TOKEN': 'ADX_TOKEN'},
-        'preserve_env': ['JIUWENSWARM_ADX_NODE_INGRESS_URL', 'JIUWENSWARM_ADX_NODE_CONTEXT_FILE', 'ADX_TOKEN'],
-    }
-
-
 _REAL_GET_CONFIG_FILE = _utils.get_config_file
 _REAL_GET_AGENT_WORKSPACE_DIR = _utils.get_agent_workspace_dir
 

@@ -2712,3 +2712,15 @@ channels:
         assert f"push_id: {token}" in text
         assert f"push_id: '{token}'" not in text
         assert f'push_id: "{token}"' not in text
+
+
+@pytest.mark.parametrize('mode', [0o600, 0o640])
+def test_agentos_config_updates_keep_the_prepared_mode(tmp_path, monkeypatch, mode):
+    from jiuwenswarm.common.config import dump_yaml_round_trip
+
+    monkeypatch.setenv('JIUWENSWARM_RUNTIME_PROFILE', 'agentos')
+    path = tmp_path / 'config.yaml'
+    path.write_text('models: {}\n')
+    path.chmod(mode)
+    dump_yaml_round_trip(path, {'models': {'defaults': []}})
+    assert path.stat().st_mode & 0o777 == mode
