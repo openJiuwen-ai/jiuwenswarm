@@ -321,8 +321,25 @@ def test_swarmflow_worker_slots_use_quota_notice(monkeypatch):
 
 
 def test_predefined_team_size_message_is_not_user_request_wording():
-    assert member_limits.predefined_team_size_user_message(7, 5) == (
-        "无法创建：该团队预设 7 人（含 Leader），超过该团队最多 5 人。"
+    from jiuwenswarm.common.i18n import t
+
+    assert member_limits.predefined_team_size_user_message(7, 5, language="zh") == t(
+        "enterprise.team.predefined_size_over",
+        language="zh",
+        team_size=7,
+        limit=5,
+    )
+    assert member_limits.predefined_team_size_user_message(7, 5, language="en") == t(
+        "enterprise.team.predefined_size_over",
+        language="en",
+        team_size=7,
+        limit=5,
+    )
+    assert "asked for" not in member_limits.predefined_team_size_user_message(
+        7, 5, language="en"
+    ).lower()
+    assert "你要求" not in member_limits.predefined_team_size_user_message(
+        7, 5, language="zh"
     )
 
 
