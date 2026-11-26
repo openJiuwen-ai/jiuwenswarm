@@ -263,6 +263,37 @@ class TestConfigFunctions:
 
         assert get_evolution_signal_trigger_enabled(config, fallback=fallback) is expected
 
+    @staticmethod
+    def test_evolution_signal_trigger_env_fallback_applies_only_while_unbound(
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Characterize the OfficeClaw 1.9.0 prewarm/bound trigger divergence.
+
+        Unbound (session prewarm, ``user_id=null``) falls through to os.environ,
+        so a legacy ``EVOLUTION_AUTO_SCAN=false`` from .env wins. A bound overlay
+        seals the lookup: a missing key means "unset", so config wins and the two
+        phases resolve different ``signal_trigger`` values for the same adapter.
+        ``_ensure_active_evolution_rails_registered`` must tolerate that change
+        (see test_flash_adapter_rails.py). Update this test if the lookup
+        semantics are ever unified.
+        """
+        from jiuwenswarm.common.local_env_config import (
+            bind_task_env_overlay,
+            reset_task_env_overlay,
+        )
+
+        monkeypatch.delenv("EVOLUTION_SIGNAL_TRIGGER", raising=False)
+        monkeypatch.setenv("EVOLUTION_AUTO_SCAN", "false")
+        config = {"react": {"evolution": {"signal_trigger": True}}}
+
+        assert get_evolution_signal_trigger_enabled(config) is False
+
+        token = bind_task_env_overlay({"OFFICE_CLAW_UNRELATED_TRACK_B_KEY": "x"})
+        try:
+            assert get_evolution_signal_trigger_enabled(config) is True
+        finally:
+            reset_task_env_overlay(token)
+
     @pytest.mark.parametrize(
         ("config", "expected_signal", "expected_review"),
         [
