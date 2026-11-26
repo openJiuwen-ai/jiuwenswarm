@@ -12,7 +12,6 @@ junction 的 ``is_symlink()`` 恒为 False 但 ``is_dir()`` 为 True，沿链吸
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -149,44 +148,89 @@ def test_junction_compat_links_do_not_absorb_bucket(data_root: Path) -> None:
     assert (logs / "logs").is_dir(), "logs/logs 兼容链被误删"
 
 
-def test_migration_survives_held_top_level_file(data_root: Path) -> None:
-    """顶层文件 unlink 失败（Windows 共享冲突）不中断整轮迁移，其余步骤完成。
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction 兼容链")
+def test_junction_compat_links_do_not_absorb_business_data(data_root: Path) -> None:
+    """业务数据/运行态/process_cli 的 junction 兼容链同样不被自吸收。
 
-    验证面向：日志仍被上一次未完全退出的子进程持有时，迁移其余部分照常
-    完成（业务数据迁入 profile/，其余顶层文件保留）。
+    同一机理不限于 logs 桶：``agent``、``workspace``、``config/runtime_state``、
+    ``profile/agent/process_cli_logs`` 也是兼容链挂载点，``is_symlink()`` 对
+    junction 恒为 False——无守卫时迁移会沿链把 profile 树与各桶正本删除。
     """
     logs = data_root / "logs"
-    logs.mkdir(parents=True)
-    (logs / "gateway.log").write_text("held by a stale process\n", encoding="utf-8")
-    (logs / "full.log").write_text("free top-level log\n", encoding="utf-8")
-    sessions = data_root / "agent" / "sessions" / "sess_demo"
-    sessions.mkdir(parents=True)
+    (logs / "agent").mkdir(parents=True)
+    (logs / "core").mkdir()
+    (logs / "process_cli").mkdir()
+    (logs / "agent" / "a.log").write_text("a\n", encoding="utf-8")
+    (logs / "core" / "c.log").write_text("c\n", encoding="utf-8")
+    (logs / "process_cli" / "p.log").write_text("p\n", encoding="utf-8")
+    profile = data_root / "profile"
+    (profile / "agent" / "sessions").mkdir(parents=True)
+    (profile / "agent" / "sessions" / "s.json").write_text("{}", encoding="utf-8")
+    (profile / "runtime_state").mkdir(parents=True)
+    (profile / "runtime_state" / "rt.yaml").write_text("x: 1\n", encoding="utf-8")
 
-    held_fd = None
-    if sys.platform == "win32":
-        import msvcrt
+    assert _make_junction(profile / "agent" / ".logs", logs / "agent")
+    assert _make_junction(logs / "logs", logs / "core")
+    assert _make_junction(profile / "agent" / "process_cli_logs", logs / "process_cli")
+    assert _make_junction(data_root / "agent", profile / "agent")
+    assert _make_junction(data_root / "config" / "runtime_state", profile / "runtime_state")
+    assert _make_junction(data_root / "workspace", profile)
 
-        held_fd = os.open(str(logs / "gateway.log"), os.O_RDWR)
-        msvcrt.locking(held_fd, msvcrt.LK_LOCK, 1)
-    else:
-        # POSIX：无独占锁语义，去掉目录写权限使 unlink 失败
-        logs.chmod(0o500)
+    _run_migration()
 
-    try:
-        _run_migration()  # 不应抛出
-    finally:
-        if held_fd is not None:
-            import msvcrt
+    assert (logs / "agent" / "a.log").is_file(), "logs/agent 桶内正本被 junction 链吸收删除"
+    assert (logs / "core" / "c.log").is_file(), "logs/core 桶内正本被 junction 链吸收删除"
+    assert (logs / "process_cli" / "p.log").is_file(), "logs/process_cli 桶内正本被 junction 链吸收删除"
+    assert (profile / "agent" / "sessions" / "s.json").is_file(), "profile/agent 数据被 junction 链吸收删除"
+    assert (profile / "runtime_state" / "rt.yaml").is_file(), "runtime_state 被 junction 链吸收删除"
+    assert (data_root / "workspace").is_dir(), "workspace 兼容链被误删"
 
-            msvcrt.locking(held_fd, msvcrt.LK_UNLCK, 1)
-            os.close(held_fd)
-        else:
-            logs.chmod(0o700)
 
-    # 业务数据迁移照常完成
-    assert (data_root / "profile" / "agent" / "sessions" / "sess_demo").is_dir()
-    # 其余顶层文件保留
-    assert (logs / "full.log").is_file()
+def test_absorb_file_degrades_on_locked_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同名同内容剪源时 unlink 失败（Windows 共享冲突）仅降级告警，不抛出。
+
+    验证 ``_migrate_absorb_file`` 的尽力而为语义：单个文件被残留进程占用时
+    正本保留（下次启动重试），而不是把异常抛到整轮迁移。
+    """
+    old = tmp_path / "logs" / "logs" / "llm.log"
+    new = tmp_path / "logs" / "core" / "llm.log"
+    old.parent.mkdir(parents=True)
+    new.parent.mkdir(parents=True)
+    old.write_text("same content\n", encoding="utf-8")
+    new.write_text("same content\n", encoding="utf-8")
+
+    real_unlink = Path.unlink
+
+    def _locked_unlink(self: Path, *args, **kwargs):
+        if self == old:
+            raise PermissionError("file is held by another process")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _locked_unlink)
+
+    paths._migrate_absorb_file(old, new)  # 不应抛出
+
+    assert old.is_file(), "被占用源文件应保留，等待下次启动重试"
+    assert new.read_text(encoding="utf-8") == "same content\n"
+
+
+def test_move_if_absent_degrades_on_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """整树剪切失败（源侧被占用）仅告警，不中断整轮迁移。"""
+    old = tmp_path / ".logs"
+    old.mkdir()
+    (old / "a.log").write_text("a\n", encoding="utf-8")
+    new = tmp_path / "logs" / "agent"
+
+    def _locked_move(*args, **kwargs):
+        raise PermissionError("directory is held by another process")
+
+    monkeypatch.setattr(paths.shutil, "move", _locked_move)
+
+    paths._move_if_absent(old, new)  # 不应抛出
+
+    assert (old / "a.log").is_file(), "剪切失败时源数据必须保留"
 
 
 def test_business_data_migration_unaffected(data_root: Path) -> None:

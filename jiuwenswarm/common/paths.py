@@ -1026,11 +1026,13 @@ def _migrate_absorb_file(old: Path, new: Path) -> None:
     不中断整轮迁移——迁移幂等，下次启动自动重试。
     """
     if not new.exists():
-        new.parent.mkdir(parents=True, exist_ok=True)
         try:
+            new.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(old), str(new))
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            logger.warning("[Migration] failed to move %s -> %s: %s", old, new, exc)
         return
     try:
         is_duplicate = (
@@ -1088,6 +1090,8 @@ def _move_if_absent(old: Path, new: Path) -> None:
     源路径存在时将其搬迁到目标位置（幂等 + 归并）。
 
     - 老位置已是兼容软链（前次迁移产物）→ 静默跳过；
+    - 老位置解析后就是目标本身（Windows junction 兼容链，``is_symlink``
+      恒为 False）→ 静默跳过，避免沿链把正本当"重复"删除；
     - 目标不存在 → 整体剪切（rename）；
     - 目标已存在（骨架先行 / 并发部分迁移 / 上次迁移中断）→ 递归归并：
       正本不覆盖，同名异内容源改名 ``.migrated`` 备份，源侧空树剪除——
@@ -1096,6 +1100,10 @@ def _move_if_absent(old: Path, new: Path) -> None:
     if old.is_symlink():
         return
     if not old.exists():
+        return
+    if old.resolve() == new.resolve():
+        # 自吸收守卫：junction 兼容链的解析目标就是 new，继续归并会逐个
+        # unlink 掉 new 里"同内容"的正本（每次启动清空）。
         return
     if new.exists():
         _migrate_absorb(old, new)
@@ -1165,11 +1173,15 @@ def _do_migrate_profile_data_root_layout() -> None:
 
     def _absorb_file(old: Path, new: Path) -> None:
         if not new.exists():
-            new.parent.mkdir(parents=True, exist_ok=True)
             try:
+                new.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(old), str(new))
             except FileNotFoundError:
                 pass
+            except OSError as exc:
+                # 尽力而为：单文件剪切失败（如 Windows 共享冲突）仅告警，
+                # 其余条目继续迁移（对齐 duplicate/archive 分支语义）
+                logger.warning("[Migration] failed to move %s -> %s: %s", old, new, exc)
             return
         try:
             is_duplicate = (
@@ -1216,6 +1228,11 @@ def _do_migrate_profile_data_root_layout() -> None:
     def _absorb_tree(old: Path, new: Path) -> None:
         if not old.is_dir():
             return
+        if old.resolve() == new.resolve():
+            # 自吸收守卫：junction 兼容链（is_symlink 恒为 False）解析目标就是
+            # 吸收目标本身（如 profile/agent/process_cli_logs → logs/process_cli、
+            # workspace → profile），沿链遍历会把正本当"同内容重复"删除。
+            return
         for entry in sorted(old.iterdir()):
             target = new / entry.name
             if entry.is_dir() and not entry.is_symlink():
@@ -1225,6 +1242,9 @@ def _do_migrate_profile_data_root_layout() -> None:
                         shutil.move(str(entry), str(target))
                     except FileNotFoundError:
                         pass
+                    except OSError as exc:
+                        # 尽力而为：目录剪切失败仅告警，其余条目继续迁移
+                        logger.warning("[Migration] failed to move %s -> %s: %s", entry, target, exc)
                 else:
                     _absorb_tree(entry, target)
             else:
@@ -1265,8 +1285,11 @@ def _do_migrate_profile_data_root_layout() -> None:
     # 随 agent 整树迁入后，吸收进 logs/process_cli 桶并在老位置留软链。
     legacy_process_cli_logs = profile / "agent" / "process_cli_logs"
     if legacy_process_cli_logs.is_dir() and not legacy_process_cli_logs.is_symlink():
-        _absorb_tree(legacy_process_cli_logs, get_process_cli_logs_dir())
-        _prune_empty_tree(legacy_process_cli_logs)
+        # 自吸收守卫同 .logs：该路径也是兼容链挂载点（→ logs/process_cli），
+        # Windows junction 的 is_symlink 恒为 False，沿链吸收会删桶内正本。
+        if legacy_process_cli_logs.resolve() != get_process_cli_logs_dir().resolve():
+            _absorb_tree(legacy_process_cli_logs, get_process_cli_logs_dir())
+            _prune_empty_tree(legacy_process_cli_logs)
     _move(root / _PERSONAL_CONTEXT_DIR_NAME, get_personal_context_dir())
 
     # 2.1) 企业版旧租户根：<root>/workspace_{tk} → profile/profile_{tk}
@@ -1279,16 +1302,22 @@ def _do_migrate_profile_data_root_layout() -> None:
             # 租户内遗留运行态（workspace_{tk}/config/runtime_state）→ 租户根 runtime_state
             legacy_rs = tenant_root / "config" / "runtime_state"
             if legacy_rs.is_dir() and not legacy_rs.is_symlink():
-                _absorb_tree(legacy_rs, tenant_root / "runtime_state")
-                _prune_empty_tree(legacy_rs)
+                # 自吸收守卫：config/runtime_state 兼容链（junction）指向
+                # runtime_state 本体时跳过，避免沿链删正本。
+                if legacy_rs.resolve() != (tenant_root / "runtime_state").resolve():
+                    _absorb_tree(legacy_rs, tenant_root / "runtime_state")
+                    _prune_empty_tree(legacy_rs)
 
     # 3) 更早期商用布局：workspace/ 内 agent、sessions 等平铺项
     #    吸收进 profile/（同名目录递归归并；agent/ 即新方案的 agent 根）。
     stray_workspace = root / "workspace"
     if stray_workspace.is_dir() and not stray_workspace.is_symlink():
-        for entry in sorted(stray_workspace.iterdir()):
-            _absorb_tree(entry, profile / entry.name)
-        _prune_empty_tree(stray_workspace)
+        # 自吸收守卫：workspace → profile 兼容链（Windows junction）解析到
+        # profile 本体时跳过，否则会沿链把整棵 profile 数据当重复删除。
+        if stray_workspace.resolve() != profile.resolve():
+            for entry in sorted(stray_workspace.iterdir()):
+                _absorb_tree(entry, profile / entry.name)
+            _prune_empty_tree(stray_workspace)
 
     # 4) 散落日志归位 logs/ 桶：agent/.logs → logs/agent，logs/logs → logs/core
     moved_agent_root = profile / "agent"
