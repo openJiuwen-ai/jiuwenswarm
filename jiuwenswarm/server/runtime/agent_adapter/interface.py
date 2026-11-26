@@ -2757,6 +2757,10 @@ class JiuWenSwarm:
         stream_done = asyncio.Event()
         producer_cancellation: asyncio.CancelledError | None = None
         stream_error_payload: dict[str, Any] | None = None
+        # sticky 错误期间的恢复产出信号：错误之后累计到过非空 chat.delta。
+        # 仅在 stream_error_payload 非空期间置位（前置 delta 噪声不会误置），
+        # 清除时复位——供恢复清除判据使用（TC-CHAT_SEND-STREAM-013 修复）。
+        stream_recovery_output_seen = False
         _rewind_task: asyncio.Task | None = None
         final_answer_content = ""
         final_answer_chunks: list[str] = []
@@ -3101,15 +3105,25 @@ class JiuWenSwarm:
                             if et in ("chat.delta", "chat.final"):
                                 # 恢复产出清除错误收执（team_helpers 语义边界：错误通知后
                                 # 重试成功/续跑产出覆盖此前错误，终帧回归成功回执）。
-                                # 清除只认「content 非空的 chat.final」：恢复产出必有
-                                # 正文；失败轮次自己的收尾帧（终态错误之后紧跟的空
-                                # content chat.final，TC-CHAT_SEND-STREAM-013 实证）
-                                # 不是恢复——清除会把 sticky 终态错误抹掉，失败终态
-                                # 回落 {"is_complete": True}（假完成回归）。
-                                if (
-                                    et == "chat.final"
-                                    and str(data.payload.get("content") or "").strip()
+                                # 清除判据 =「final 到达 且（final 自带非空 content
+                                # 或 错误后累计过非空 delta）」：恢复产出必有正文
+                                # （在 final 里或在 delta 流里——正文全走 delta、末帧
+                                # 仅带 usage 的空 content final 是合法成功形态，
+                                # interface 2922 注释实证）。失败轮次自己的收尾帧
+                                # （终态错误后紧跟的空 content chat.final、其后无
+                                # 非空 delta，TC-CHAT_SEND-STREAM-013 插桩实证）
+                                # 不是恢复——无条件清除会把 sticky 终态错误抹掉，
+                                # 失败终态回落 {"is_complete": True}（假完成）。
+                                if et == "chat.delta" and str(
+                                    data.payload.get("content") or ""
+                                ).strip():
+                                    if stream_error_payload is not None:
+                                        stream_recovery_output_seen = True
+                                elif et == "chat.final" and (
+                                    str(data.payload.get("content") or "").strip()
+                                    or stream_recovery_output_seen
                                 ):
+                                    stream_recovery_output_seen = False
                                     stream_error_payload = None
                             should_record = et.startswith("chat.")
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
@@ -3264,8 +3278,9 @@ class JiuWenSwarm:
                             # 错误回执收集（与上方落盘排除同口径）：只收终态性错误——
                             # 团队模式 chat.error 是轮内 warning（落盘所有权在
                             # team_helpers）、重试通知是过程不是结果；可恢复错误若
-                            # 之后仍有产出，由下方 delta/final 的清除逻辑覆盖。
-                            # 终态错误最终由统一终帧携带（gateway → e2a.error）。
+                            # 之后仍有产出（错误后非空 delta 或带正文的 final），
+                            # 由下方恢复清除判据覆盖。终态错误最终由统一终帧携带
+                            # （gateway → e2a.error）。
                             if (
                                 et == "chat.error"
                                 and not is_team_mode
@@ -3330,12 +3345,19 @@ class JiuWenSwarm:
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
                         et = str(data.get("event_type"))
                         if et in ("chat.delta", "chat.final"):
-                            # 与 chunk 分支同规：恢复产出清除错误收执——只认 content
-                            # 非空的 chat.final（失败轮次空尾帧不清 sticky 错误）。
-                            if (
-                                et == "chat.final"
-                                and str(data.get("content") or "").strip()
+                            # 与 chunk 分支同规：恢复产出清除错误收执——清除判据 =
+                            # 「final 到达 且（final 非空 content 或 错误后累计过
+                            # 非空 delta）」，失败轮次空尾帧不清 sticky 错误。
+                            if et == "chat.delta" and str(
+                                data.get("content") or ""
+                            ).strip():
+                                if stream_error_payload is not None:
+                                    stream_recovery_output_seen = True
+                            elif et == "chat.final" and (
+                                str(data.get("content") or "").strip()
+                                or stream_recovery_output_seen
                             ):
+                                stream_recovery_output_seen = False
                                 stream_error_payload = None
                         should_record = et.startswith("chat.")
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
