@@ -196,10 +196,6 @@
 }
 
 
-.app-market-toolbar .app-market-resources {
-  margin-left: 0;
-}
-
 .app-market-resources {
   margin-left: auto;
   color: var(--color-text-muted);
