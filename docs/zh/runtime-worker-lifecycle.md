@@ -80,7 +80,7 @@ debug 服务状态和新的钉钉 OAuth PID 记录保存操作系统进程身份
 
 ## Worker 输出日志
 
-resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<UUID>[-<owner>].stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，通过 `common.paths.get_worker_logs_dir()` 使用数据根下的 `logs/worker-logs`。该设置不改变 IPC 端点位置。
+resident 与 `front_loopback` 的 stdout 继承启动进程的输出，stderr 直接追加写入每次启动独立的 `runtime-worker-<UUID>[-<owner>].stderr.log`。可在启动应用或 Supervisor 前设置 `JIUWEN_WORKER_LOG_DIR` 指定目录；未设置或为空时，使用当前 Worker socket 路径父目录下的 `worker-logs`。自定义 socket 路径时，默认日志目录随之变化；`front_loopback` 同样按传入的 socket 路径选择默认日志目录。该设置不改变 IPC 端点位置。
 
 建议为 `JIUWEN_WORKER_LOG_DIR` 使用绝对路径；相对路径按 Supervisor 当前工作目录解析。
 

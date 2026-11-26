@@ -184,11 +184,10 @@ class WorkerProcess:
         self._ipc_listener = ipc_listener
         self._proc: subprocess.Popen[bytes] | None = None
         self.launch_identity: str | None = None
-        from jiuwenswarm.common.paths import get_worker_logs_dir
         from jiuwenswarm.server.worker.output_logs import worker_stderr_name
 
         configured_log_dir = os.environ.get("JIUWEN_WORKER_LOG_DIR")
-        log_dir = Path(configured_log_dir) if configured_log_dir else get_worker_logs_dir()
+        log_dir = Path(configured_log_dir) if configured_log_dir else Path(socket_path).parent / "worker-logs"
         self._stderr_path = log_dir / worker_stderr_name(uuid.uuid4().hex)
         self._diagnostic_path = log_dir / "latest-worker-error.log"
 

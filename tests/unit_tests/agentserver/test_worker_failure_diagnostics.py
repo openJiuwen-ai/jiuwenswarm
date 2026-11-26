@@ -77,16 +77,14 @@ def diagnostic_log(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("setting", [None, "", "configured"])
 def test_log_directory_routing(monkeypatch, tmp_path, setting):
-    from jiuwenswarm.common import paths
-
-    monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path / "data")
     if setting is None:
         monkeypatch.delenv("JIUWEN_WORKER_LOG_DIR", raising=False)
     else:
         value = str(tmp_path / "configured") if setting else ""
         monkeypatch.setenv("JIUWEN_WORKER_LOG_DIR", value)
-    process = worker_process.WorkerProcess(str(tmp_path / "worker"), host="127.0.0.1", port=0)
-    expected = tmp_path / ("configured" if setting else "data/logs/worker-logs")
+    socket = tmp_path / "custom ipc" / "worker"
+    process = worker_process.WorkerProcess(str(socket), host="127.0.0.1", port=0)
+    expected = tmp_path / "configured" if setting else socket.parent / "worker-logs"
     assert process.stderr_path.parent == expected
     assert process.diagnostic_path == expected / "latest-worker-error.log"
     assert process.stderr_path.name.startswith("runtime-worker-")
@@ -228,19 +226,24 @@ _FAILURE_SCRIPT = (
 
 
 @pytest.mark.asyncio
-async def test_spawn_routes_paths_resets_stale_error_and_inherits_stdout(monkeypatch, tmp_path, capfd):
-    directory = tmp_path / "configured logs"
-    directory.mkdir()
+@pytest.mark.parametrize("setting", [None, "", "configured"])
+async def test_spawn_routes_paths_resets_stale_error_and_inherits_stdout(monkeypatch, tmp_path, capfd, setting):
+    socket = tmp_path / "custom ipc" / "worker"
+    directory = tmp_path / "configured logs" if setting else socket.parent / "worker-logs"
+    directory.mkdir(parents=True)
     target = directory / "latest-worker-error.log"
     target.write_text("STALE_ERROR_DO_NOT_REUSE", encoding="utf-8")
     wrong_target = tmp_path / "parent-diagnostic.log"
-    monkeypatch.setenv("JIUWEN_WORKER_LOG_DIR", str(directory))
+    if setting is None:
+        monkeypatch.delenv("JIUWEN_WORKER_LOG_DIR", raising=False)
+    else:
+        monkeypatch.setenv("JIUWEN_WORKER_LOG_DIR", str(directory) if setting else "")
     monkeypatch.setenv("JIUWEN_WORKER_DIAGNOSTIC_PATH", str(wrong_target))
     monkeypatch.setattr(
         worker_process, "build_worker_command",
         lambda *args, **kwargs: [sys.executable, "-c", _FAILURE_SCRIPT],
     )
-    process = worker_process.WorkerProcess(str(tmp_path / "worker"), host="127.0.0.1", port=0)
+    process = worker_process.WorkerProcess(str(socket), host="127.0.0.1", port=0)
     try:
         await process.spawn()
         assert await process.wait(timeout=8) == 1
@@ -257,7 +260,8 @@ async def test_spawn_routes_paths_resets_stale_error_and_inherits_stdout(monkeyp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["resident", "front_loopback"])
-async def test_custom_log_rotation_preserves_failure_diagnostic(monkeypatch, tmp_path, mode):
+@pytest.mark.parametrize("setting", [None, "", "configured"])
+async def test_log_rotation_preserves_failure_diagnostic(monkeypatch, tmp_path, mode, setting):
     script = """
 import os, sys, time
 from pathlib import Path
@@ -283,11 +287,15 @@ os.utime(diagnostic, (stamp, stamp))
 prune_worker_logs(rotation.path.parent, max_bytes=1024, backup_count=1, protected=rotation.path)
 assert 'diagnostic after rotation' in diagnostic.read_text(encoding='utf-8')
 """
-    directory = tmp_path / "configured logs"
-    directory.mkdir()
+    socket = tmp_path / "custom ipc" / "worker"
+    directory = tmp_path / "configured logs" if setting else socket.parent / "worker-logs"
+    directory.mkdir(parents=True)
     diagnostic = directory / "latest-worker-error.log"
     diagnostic.write_text("STALE_ERROR_DO_NOT_REUSE", encoding="utf-8")
-    monkeypatch.setenv("JIUWEN_WORKER_LOG_DIR", str(directory))
+    if setting is None:
+        monkeypatch.delenv("JIUWEN_WORKER_LOG_DIR", raising=False)
+    else:
+        monkeypatch.setenv("JIUWEN_WORKER_LOG_DIR", str(directory) if setting else "")
     monkeypatch.setenv("JIUWEN_WORKER_DIAGNOSTIC_PATH", str(tmp_path / "wrong-diagnostic.log"))
     monkeypatch.setenv("JIUWENSWARM_WORKER_STDERR_LOG", str(tmp_path / "wrong-stderr.log"))
     monkeypatch.setattr(
@@ -296,7 +304,7 @@ assert 'diagnostic after rotation' in diagnostic.read_text(encoding='utf-8')
     )
     listener = worker_process.FrontLoopbackListener() if mode == "front_loopback" else None
     process = worker_process.WorkerProcess(
-        str(tmp_path / "worker"), host="127.0.0.1", port=0, ipc_listener=listener,
+        str(socket), host="127.0.0.1", port=0, ipc_listener=listener,
     )
     try:
         await process.spawn()
