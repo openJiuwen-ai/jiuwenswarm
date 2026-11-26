@@ -318,3 +318,23 @@ def test_lazy_management_registry_retains_each_provider_public_methods(provider)
     adapter_type = getattr(import_module(module), symbol)
     registry = LazyAdapterRegistry(object())
     assert adapter_type.methods <= registry.methods()
+
+
+@pytest.mark.asyncio
+async def test_memory_portal_request_is_routable_through_lazy_config_provider(monkeypatch):
+    """A newly added config RPC must reach the adapter through the Worker registry."""
+    config = {"memory": {"builtin": {"provider": "jiuwen"}}}
+    service = SimpleNamespace(open=AsyncMock(return_value={"status": "disabled"}))
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: config)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.memory_portal.get_memory_portal_service",
+        lambda: service,
+    )
+    registry = LazyAdapterRegistry(SimpleNamespace(_reload_after_config_save=None))
+    adapter = registry.get(ReqMethod.MEMORY_PORTAL_OPEN.value)
+    assert adapter is not None
+    response = await adapter.handle(AgentRequest(
+        request_id="portal", channel_id="web", req_method=ReqMethod.MEMORY_PORTAL_OPEN,
+    ))
+    assert response.ok and response.payload == {"status": "disabled"}
+    service.open.assert_awaited_once_with(config)

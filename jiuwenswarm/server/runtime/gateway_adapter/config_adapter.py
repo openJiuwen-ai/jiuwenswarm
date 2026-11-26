@@ -118,6 +118,7 @@ class ConfigAdapter(GatewayAdapter):
         self._on_config_saved = on_config_saved
 
     methods = frozenset({
+        ReqMethod.MEMORY_PORTAL_OPEN.value,
         ReqMethod.CONFIG_GET.value,
         ReqMethod.CONFIG_MOA_STATUS.value,
         ReqMethod.CONFIG_SET.value,
@@ -148,6 +149,16 @@ class ConfigAdapter(GatewayAdapter):
     })
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        if request.req_method == ReqMethod.MEMORY_PORTAL_OPEN:
+            from jiuwenswarm.common.config import get_config
+            from jiuwenswarm.server.runtime.memory_portal import get_memory_portal_service
+
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True, payload=await get_memory_portal_service().open(get_config()),
+                metadata=request.metadata,
+            )
+
         if request.req_method in {ReqMethod.CONFIG_SET, ReqMethod.CONFIG_SAVE_ALL}:
             from jiuwenswarm.common.config import get_config_raw
             from jiuwenswarm.common.multimodal_models import CAPABILITIES, MultimodalError

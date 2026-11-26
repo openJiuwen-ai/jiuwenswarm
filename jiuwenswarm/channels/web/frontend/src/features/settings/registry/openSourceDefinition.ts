@@ -1,5 +1,6 @@
 import { createSettingsPageDefinition } from './createSettingsPageDefinition';
 import { openSourceSettingsAccessPolicy } from './accessPolicy';
+import { memoryModule } from '../modules/memory/definition';
 import { generalModule } from '../modules/general';
 import { modelsModule } from '../modules/models';
 import { agentModule } from '../modules/agent';
@@ -21,6 +22,7 @@ export const openSourceSettingsPageDefinition = createSettingsPageDefinition({
     modelsModule,
     voiceModule,
     agentModule,
+    memoryModule,
     browserModule,
     channelsModule,
     personalContextSettingsModule,

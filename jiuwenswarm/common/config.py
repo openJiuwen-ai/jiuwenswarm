@@ -285,6 +285,11 @@ def _contains_exec_reference(value: Any) -> bool:
     return False
 
 
+def _has_credential_env_refs(names: Iterable[str]) -> bool:
+    """Keep decryption live when a crypto extension changes behind its bridge."""
+    return any("api_key" in name.lower() or "token" in name.lower() for name in names)
+
+
 def _resolved_config() -> dict[str, Any]:
     """Cache normalization, while every caller retains its own mutable snapshot."""
     path = Path(get_config_file())
@@ -297,16 +302,18 @@ def _resolved_config() -> dict[str, Any]:
     if cached is not None and parsed is not None and stamp is not None:
         current_file = cached.stamp == stamp == parsed[0]
         current_readers = cached.crypto_provider is provider and cached.reader is reader
-        if current_file and current_readers and cached.values == tuple(os.getenv(name) for name in cached.names):
+        if (current_file and current_readers and not _has_credential_env_refs(cached.names)
+                and cached.values == tuple(os.getenv(name) for name in cached.names)):
             return deepcopy(cached.config)
     base = reader(path)
     names = tuple(sorted(_config_env_names(base)))
     values = tuple(os.getenv(name) for name in names)
     resolved = resolve_env_vars(base)
     _normalize_config(resolved)
-    # Exec references can complete or recover without any YAML/env change.
-    # Reuse their parsed YAML, but always consult the credential resolver.
-    if stamp is not None and not _contains_exec_reference(base) and _yaml_file_stamp(path) == stamp:
+    # Credential resolvers and crypto extensions can recover without any YAML,
+    # environment or bridge identity change. Reuse only their parsed YAML.
+    live_credentials = _contains_exec_reference(base) or _has_credential_env_refs(names)
+    if stamp is not None and not live_credentials and _yaml_file_stamp(path) == stamp:
         if (values == tuple(os.getenv(name) for name in names)
                 and get_crypto_provider() is provider and _read_with_retry is reader):
             with _YAML_PARSE_CACHE_LOCK:

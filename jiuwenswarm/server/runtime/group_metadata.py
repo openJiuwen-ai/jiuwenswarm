@@ -86,7 +86,6 @@ def read_group(group_id: str, *, path: Path | None = None) -> dict | None:
     state.setdefault("configs", {})
     state.setdefault("avatar", "")
     state.setdefault("auto_reply", {"enabled": True, "model_selection": None})
-    state.setdefault("auto_reply", {"enabled": True, "model_selection": None})
     state["members"] = [normalize_group_member(member) for member in state["members"]]
     state["receipts"] = {
         key: normalize_group_member(member) for key, member in state["receipts"].items()

@@ -138,6 +138,7 @@ _PROVIDERS = {
         "ConfigAdapter",
         frozenset(
             {
+                ReqMethod.MEMORY_PORTAL_OPEN.value,
                 ReqMethod.CONFIG_GET.value,
                 ReqMethod.CONFIG_MOA_STATUS.value,
                 ReqMethod.CONFIG_SET.value,

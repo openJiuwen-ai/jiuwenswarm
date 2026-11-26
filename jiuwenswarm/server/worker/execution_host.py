@@ -1039,6 +1039,9 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                 logger.warning("[AgentWebSocketServer] checkpointer warmup stop failed: %s", exc)
         close_client_attachments()
         await self._stop_recommendation_host()
+        from jiuwenswarm.server.runtime.memory_portal import close_memory_portal_services
+
+        await close_memory_portal_services()
         await self._close_background_tasks()
         preparation = getattr(self, "_preparation_registry", None)
         if preparation is not None:

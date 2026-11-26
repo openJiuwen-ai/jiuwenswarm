@@ -24,8 +24,6 @@ from jiuwenswarm.runtime.project_activity import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
-from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
     GatewayAdapter,
     build_error_response,

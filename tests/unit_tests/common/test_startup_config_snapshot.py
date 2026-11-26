@@ -3,6 +3,7 @@
 """Configuration cache preserves live inputs and independent caller state."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -92,6 +93,26 @@ def test_cached_decryption_observes_provider_replacement(config_path, monkeypatc
     assert config.get_config()["key"] == "first"
     monkeypatch.setattr(config, "get_crypto_provider", lambda: second)
     assert config.get_config()["key"] == "second"
+
+
+def test_decryption_observes_extension_registration_through_stable_bridge(config_path, monkeypatch):
+    from agent_gateway.extensions import base_crypto
+    from agent_gateway.extensions.registry import ExtensionRegistry
+
+    config_path.write_text("channels: {}\nmodels: {}\nkey: ${API_KEY}\n", encoding="utf-8")
+    monkeypatch.setenv("API_KEY", "synthetic-encrypted")
+    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
+    monkeypatch.setattr(base_crypto, "_default_provider", None)
+    monkeypatch.setattr(config, "get_crypto_provider", base_crypto.get_crypto_provider)
+    registry = ExtensionRegistry.create_instance(callback_framework=object(), config={}, logger=None)
+    bridge = base_crypto.get_crypto_provider()
+    assert config.get_config()["key"] == "synthetic-encrypted"
+
+    for value in ("first", "second"):
+        provider = SimpleNamespace(decrypt=lambda _ciphertext, result=value: result)
+        registry.register_crypto_utility(SimpleNamespace(get_crypto=lambda current=provider: current))
+        assert base_crypto.get_crypto_provider() is bridge
+        assert config.get_config()["key"] == value
 
 
 @pytest.mark.parametrize("fallback", [False, True])

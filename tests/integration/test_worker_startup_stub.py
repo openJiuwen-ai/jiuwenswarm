@@ -302,3 +302,51 @@ async def test_required_startup_gate_and_retry_through_gateway(tmp_path, mode, f
         model.shutdown()
         model.server_close()
         (tmp_path / 'model-calls.json').write_text(json.dumps(model.calls), encoding='utf-8')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['agent', 'code.normal'])
+async def test_configuration_management_and_history_after_real_chat(tmp_path, mode):
+    """Config saves and lazily loaded management remain usable after SDK execution."""
+    model = ThreadingHTTPServer(('127.0.0.1', 0), ModelStub)
+    model.calls = []
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    (tmp_path / 'release').touch()
+    chain = WorkerChain(Path(__file__).resolve().parents[2], tmp_path, mode, 'slow', model.server_port)
+
+    async def rpc(identifier, method, params):
+        await chain.send(identifier, method, params)
+        return await chain.receive_until(
+            lambda wire: wire.get('type') == 'res' and wire.get('id') == identifier
+        )
+
+    try:
+        await chain.start()
+        await chain.chat('first')
+        await chain.chat('follow')
+        for method in ('models.list', 'skills.list', 'agents.list'):
+            response = await rpc(method, method, {})
+            assert response.get('ok') is True, response
+        portal = await rpc('portal', 'memory.portal.open', {})
+        assert portal.get('ok') is True, portal
+        assert portal['payload']['status'] == 'disabled'
+        history_start = len(chain.frames)
+        history = await rpc('history', 'history.get', {'cursor': None, 'limit': 50})
+        assert history.get('ok') is True, history
+        history_done = await chain.receive_until(
+            lambda wire: wire.get('event') == 'history.message'
+            and (wire.get('payload') or {}).get('status') in {'done', 'error'}
+        )
+        assert history_done['payload']['status'] == 'done', history_done
+        transcript = json.dumps(chain.frames[history_start:])
+        assert 'STUB_REPLY_first' in transcript and 'STUB_REPLY_follow' in transcript
+        saved = await rpc('save', 'config.set', {'setup_guide_enabled': 'false'})
+        assert saved.get('ok') is True, saved
+        configuration = await rpc('config', 'config.get', {})
+        assert configuration.get('ok') is True, configuration
+        assert configuration['payload']['setup_guide_enabled'] == 'false'
+    finally:
+        await chain.stop()
+        model.shutdown()
+        model.server_close()
+        (tmp_path / 'model-calls.json').write_text(json.dumps(model.calls), encoding='utf-8')

@@ -1,3 +1,5 @@
+import { MemoryPage } from './features/memory/MemoryPage';
+import { applyMemorySnapshot, getMemoryRevision, useMemoryEnabled } from './features/memory/featureConfig';
 import { gatewayFetch } from './services/gatewayFetch';
 import { browserClientCapabilities } from './features/webui/client/browserClient';
 import { SETTINGS_CONFIG_CHANGED_EVENT } from './features/settings/services/settingsContract';
@@ -653,6 +655,7 @@ function AppContent({
   }, [isJiuwenMate]);
   const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
   const [webUIPage, setWebUIPage] = useState<WebUIPageTarget | null>(null);
+  const memoryEnabled = useMemoryEnabled();
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -784,10 +787,10 @@ function AppContent({
   }, [activeNav]);
 
   useEffect(() => {
-    if (!masterEnabled && activeNav === 'personalContext') {
+    if ((!masterEnabled && activeNav === 'personalContext') || (!memoryEnabled && activeNav === 'memory')) {
       setActiveNav('chat');
     }
-  }, [activeNav, masterEnabled]);
+  }, [activeNav, masterEnabled, memoryEnabled]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -1328,6 +1331,7 @@ function AppContent({
       ...getHiddenNavItemsForPlatform(frontendPlatform),
       ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS),
     ];
+    if (!memoryEnabled) base.push('memory');
     // 用户空间仅企业版 + WORKSPACE_QUOTA_ENABLED；关闭时隐藏工作空间与审批入口。
     if (!workspaceQuotaEnabled) {
       base.push('workspace', 'approvals');
@@ -1346,10 +1350,13 @@ function AppContent({
     // 总开关关闭时隐藏导航入口（设置页入口保留，供打开总开关）
     if (!masterEnabled) return [...rsiFiltered, 'personalContext'];
     return rsiFiltered;
-  }, [frontendPlatform, masterEnabled, reaFeatureEnabled, rsiFeatureEnabled, workspaceQuotaEnabled]);
+  }, [frontendPlatform, masterEnabled, memoryEnabled, reaFeatureEnabled, rsiFeatureEnabled, workspaceQuotaEnabled]);
   const jiuwenMateHiddenPages = useMemo<JiuwenMateExistingPage[]>(
-    () => (FEATURE_PERSONAL_CONTEXT_UI && masterEnabled ? [] : ['personalContext']),
-    [masterEnabled],
+    () => [
+      ...(FEATURE_PERSONAL_CONTEXT_UI && masterEnabled ? [] : ['personalContext' as const]),
+      ...(memoryEnabled ? [] : ['memory' as const]),
+    ],
+    [masterEnabled, memoryEnabled],
   );
 
   useEffect(() => {
@@ -2485,8 +2492,10 @@ function AppContent({
     setConfigError(null);
     try {
       const collaborationRevision = getMultiModelCollaborationRevision();
+      const memoryRevision = getMemoryRevision();
       const config = await request<Record<string, unknown>>('config.get');
       if (contextEpoch !== browserClientCapabilities.getEpoch() || revision !== configRequestRevisionRef.current) return false;
+      applyMemorySnapshot(config.memory_portal_enabled, memoryRevision);
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setREAFeatureEnabled(normalizeREAEnabled(config.rea_enabled));
@@ -5192,6 +5201,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     promptSuggestionBox.setEnabled(normalizeConfigBoolean(serverConfig?.prompt_suggestion_enabled));
   }, [promptSuggestionBox.setEnabled, serverConfig?.prompt_suggestion_enabled]);
   const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage, settingsNavigation?: SettingsNavigationTarget) => {
+    if (nav === 'memory') {
+      return memoryEnabled ? <MemoryPage isConnected={isConnected} request={request} /> : null;
+    }
     if (nav === 'agents') {
       return (
         <div className="app-section min-h-0">
@@ -5877,6 +5889,12 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         {FEATURE_APP_UPDATER_UI && activeNav === 'updatepanel' && (
           <div className="app-section">
             <UpdatePanel isConnected={isConnected} request={request} />
+          </div>
+        )}
+
+        {memoryEnabled && activeNav === 'memory' && (
+          <div className="app-section" data-testid="app-memory-section">
+            <MemoryPage isConnected={isConnected} request={request} />
           </div>
         )}
 

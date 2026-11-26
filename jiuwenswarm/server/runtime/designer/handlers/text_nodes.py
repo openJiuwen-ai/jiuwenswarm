@@ -259,6 +259,7 @@ def sync_shot_nodes_from_storyboard_markdown(
             existing = str(gen.get("prompt") or "")
             if narrative[:80] not in existing:
                 from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+                    clip_scene_label,
                     shot_brief_prompt,
                 )
 
@@ -266,6 +267,7 @@ def sync_shot_nodes_from_storyboard_markdown(
                     idx,
                     camera=str(cfg.get("camera") or ""),
                     action=narrative[:300],
+                    scene=clip_scene_label(cfg),
                 )[:1200]
                 cfg["generate"] = gen
                 changed = True
