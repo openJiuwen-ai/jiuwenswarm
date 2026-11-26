@@ -203,7 +203,6 @@
       "title": "AI 角色",
       "empty": "尚未声明 AI 角色",
       "loadFailed": "加载 AI 角色失败",
-      "agent": "单角色会话",
       "team": "团队会话",
       "teamBadge": "团队",
       "leader": "队长"
