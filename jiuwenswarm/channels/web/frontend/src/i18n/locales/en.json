@@ -119,6 +119,9 @@
     "retry": "Retry",
     "selectedCount": "{{count}} selected",
     "noMatches": "No matches",
+    "all": "All",
+    "yes": "Yes",
+    "no": "No",
     "editMenu": {
       "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
@@ -173,7 +176,8 @@
     "personalContext": "Knowledge",
     "appMarket": "Apps",
     "workspace": "Workspace",
-    "approvals": "Requests"
+    "approvals": "Requests",
+    "memory": "Memory"
   },
   "appMarket": {
     "resourceMemory": "RAM",
@@ -190,6 +194,7 @@
     "market": "App Plaza",
     "marketLoadFailed": "Failed to load the App Plaza",
     "noMarketApps": "No apps in the App Plaza",
+    "searchPlaceholder": "Search apps",
     "moreActions": "More actions: {{name}}",
     "pin": "Pin to top",
     "unpin": "Unpin",
@@ -524,6 +529,7 @@
       "removeMaterial": "Remove asset",
       "promptPlaceholder": "This clip's prompt; sent to the model with the reference images above",
       "promptHint": "Prompt for this node's subagent. You can optionally edit it before generating; the subagent may still refine it based on the project.",
+      "sceneReferenceMissing": "The original scene card is gone; this run will generate without a scene reference, so the environment may differ between shots.",
       "editPlaceholder": "Edit text content…",
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
@@ -632,6 +638,8 @@
       "deleteConfirmMessage": "This node contains generated content. Deleting it cannot be undone. Are you sure you want to delete it?",
       "deleteConfirmCancel": "Cancel",
       "deleteConfirmOk": "Confirm",
+      "deleteSceneWarning": "The scene card used by {{count}} video node(s) is being deleted:",
+      "deleteSceneMissing": "\"{{clip}}\" will lose its scene reference; its environment may differ between shots",
       "resize": "Resize",
       "resizeHint": "Drag the bottom-right corner to resize this node",
       "playAudio": "Play audio",
@@ -788,6 +796,16 @@
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
+    "memory": {
+      "reconnect": "Reconnect",
+      "errors": {
+        "not_enabled": "Enable the Memory management page in Settings.",
+        "disconnected": "Swarm is disconnected. Reconnect and retry.",
+        "dependency_unavailable": "The installed dependency does not support Portal. Use an agent-memory version with Portal support.",
+        "timeout": "Opening the memory page timed out. Please retry.",
+        "portal_unavailable": "The memory page is unavailable. Check the service, identity and allowed frame origins, then reconnect."
+      }
+    },
     "multimodal": {
       "tab": "Multimodal models",
       "tabHelp": "Manage models for image, audio and video understanding, and image and video generation. Adjust tool switches and model bindings in Settings → Agent → Tools.",
@@ -876,6 +894,7 @@
       "configDescription": "Set the context window and other options for the limited-time free models"
     },
     "categories": {
+      "memory": "Memory",
       "voice": "Voice",
       "general": "General",
       "models": "Models",
@@ -1715,6 +1734,11 @@
         "title": "API Key",
         "description": "The JEV service credential.",
         "placeholder": "Enter API Key"
+      },
+      "memory_portal_enabled": {
+        "description": "Whether to enable the memory management page.",
+        "title": "Memory management",
+        "placeholder": ""
       }
     },
     "validation": {
@@ -2666,7 +2690,11 @@
     "expertBatchError": "Could not start teams: {{error}}. Retry safely; created teams will be reused.",
     "expertBatchRequestFailed": "Could not start expert teams. View details",
     "expertBatchSummary": "Expert teams: {{success}} succeeded, {{failed}} failed",
-    "expertBatchStatus": {"created": "Started", "existing": "Already added; reused", "failed": "Failed"},
+    "expertBatchStatus": {
+      "created": "Started",
+      "existing": "Already added; reused",
+      "failed": "Failed"
+    },
     "agentGroup": "Expert Teams",
     "agentToggle": "Choose an installed Expert",
     "agentSearchPlaceholder": "Enter keywords to search",
@@ -7542,7 +7570,9 @@
         "failures": {
           "org_access_denied": "Your DingTalk account was confirmed, but the selected organization has not allowed this account to access data through the CLI. Ask an organization administrator to grant access, then authorize again, or select an organization where you already have access.",
           "authorization_expired": "This device authorization expired. Select Authorize DingTalk account to get a new link and code.",
-          "authorization_failed": "Authorization did not complete or its process ended. Start again instead of reusing the old device code."
+          "authorization_failed": "Authorization did not complete or its process ended. Start again instead of reusing the old device code.",
+          "authorization_process_unverified": "DingTalk authorization status could not be confirmed. Your authorization records have been kept. Please try again shortly.",
+          "authorization_cleanup_failed": "Authorization timed out, but cleanup is incomplete. Your authorization records have been kept. Please try again shortly."
         },
         "status": {
           "loading": "Checking authorization…",

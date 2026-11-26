@@ -22,7 +22,7 @@ from jiuwenswarm.server.runtime.designer.handlers.clip import (
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 
 
-def _graph(*, brief: str = "火车站晨间短片", clip_prompt: str | None = None):
+def _graph(*, brief: str = "火车站晨间短片", clip_prompt: str | None = "只拍站台，年轻人走下火车"):
     clip_config: dict[str, object] = {"role": NODE_ROLE_CLIP}
     if clip_prompt is not None:
         clip_config["prompt"] = clip_prompt
@@ -53,19 +53,13 @@ def _graph(*, brief: str = "火车站晨间短片", clip_prompt: str | None = No
     )
 
 
-def test_build_clip_prompt_uses_brief_then_graph_text() -> None:
-    graph = _graph()
+def test_build_clip_prompt_requires_a_draft_or_storyboard_action() -> None:
+    graph = _graph(clip_prompt=None)
     clip = graph["nodes"][1]
-    prompt = build_clip_prompt(graph, clip)
-    assert "USER PROMPT (authoritative story" not in prompt
-    assert "火车站晨间短片" not in prompt
-    # Design clips always use R2V story-form (Image-N binding), not long lock essays.
-    assert "Image" in prompt or "image" in prompt.lower() or "scene" in prompt.lower()
-
-    clip["config"] = {"role": NODE_ROLE_CLIP, "prompt": "只拍站台", "clip_action": "只拍站台"}
-    out = build_clip_prompt(graph, clip)
-    assert "USER PROMPT (authoritative story" not in out
-    assert "Image" in out or "只拍站台" in out
+    with pytest.raises(ValueError, match="prompt or storyboard action required"):
+        build_clip_prompt(graph, clip)
+    clip["config"] = {"role": NODE_ROLE_CLIP, "prompt": "只拍站台"}
+    assert build_clip_prompt(graph, clip) == "只拍站台"
 
 
 @pytest.mark.asyncio
@@ -160,6 +154,16 @@ async def test_clip_handler_sends_character_and_scene_as_references(
         },
     )
     assert collect_clip_reference_images(ctx) == [character.resolve(), scene.resolve()]
+    graph["nodes"][-1]["config"].update(
+        {
+            "prompt": "The traveler steps onto the platform.",
+            "reference_call_mode": "r2v",
+            "reference_image_plan": [
+                {"role": NODE_ROLE_SCENE, "path": scene.resolve().as_uri()},
+                {"role": NODE_ROLE_CHARACTER, "path": character.resolve().as_uri()},
+            ],
+        }
+    )
     prompt = build_clip_prompt(graph, graph["nodes"][-1], ctx)
     assert prompt
 
@@ -184,14 +188,14 @@ async def test_clip_handler_sends_character_and_scene_as_references(
         fake_generate,
     )
     await ClipNodeHandler().execute(graph["nodes"][-1], ctx)
-    refs = [Path(x).resolve() for x in (seen.get("reference_images") or [])]
-    assert character.resolve() in refs
-    assert scene.resolve() in refs
-    assert frame.resolve() not in refs
+    refs = [str(x) for x in (seen.get("reference_images") or [])]
+    assert refs == [scene.resolve().as_uri(), character.resolve().as_uri()]
+    assert frame.resolve().as_uri() not in refs
     assert seen.get("first_frame") in (None, "")
     assert seen.get("force_reference_mode") is True
     assert seen["reference_file"] in (None, "")
-    assert seen["prompt"]
+    assert "Image 1 is the scene: scene." in str(seen["prompt"])
+    assert "Image 2 is the identity reference for character." in str(seen["prompt"])
 
 
 @pytest.mark.asyncio

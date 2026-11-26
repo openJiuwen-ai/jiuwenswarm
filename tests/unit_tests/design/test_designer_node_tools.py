@@ -75,6 +75,36 @@ def run_env() -> Any:
     registry.drop(_SESSION)
 
 
+@pytest.mark.parametrize("prompt", ["阿岚回头。", "身穿围裙的阿岚站在咖啡馆吧台左侧，侧身看向窗外。"])
+async def test_clip_tool_sends_its_argument_over_the_saved_draft(
+    node_tools, run_env, monkeypatch, tmp_path, prompt,
+):
+    node = next(n for n in run_env["graph"]["nodes"] if n["id"] == "n_clip")
+    node["config"].update({
+        "prompt": "Old task prompt",
+        "clip_action": "A different storyboard action",
+        "costume_lock": "white shirt and brown apron",
+        "generate": {"prompt": "An old generated draft"},
+    })
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"mp4" * 200)
+    sent = []
+
+    async def generate(prompt, **kwargs):
+        sent.append(prompt)
+        return {"video_path": str(video)}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.handlers.clip.generate_clip_video", generate,
+    )
+    result = await node_tools.generate_node_output(_ticket("n_clip"), member="clip", prompt=prompt)
+    assert result["success"] is True
+    assert sent == [prompt]
+    assert result["sent_prompt"] == prompt
+    assert result["prompt_source"] == "argument"
+    assert node["config"]["prompt"] == "Old task prompt"
+
+
 async def test_text_generation_retries_once_after_a_failure(node_tools, run_env, monkeypatch):
     calls: list[str] = []
 

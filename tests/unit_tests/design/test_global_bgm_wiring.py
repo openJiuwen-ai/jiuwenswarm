@@ -6,7 +6,6 @@ from __future__ import annotations
 from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
     _sound_line,
     compose_practice_prompt,
-    film_scored_by_music_node,
 )
 from jiuwenswarm.server.runtime.designer.smart_graph import bgm_node_wanted
 
@@ -40,13 +39,6 @@ def test_bgm_node_needs_an_explicit_music_request() -> None:
     assert bgm_node_wanted({"include_music": True, "policy": "music"}, "no music please", can_music=True) is False
     # No backend, no node.
     assert bgm_node_wanted({"include_music": True, "policy": "music"}, "", can_music=False) is False
-
-
-def test_music_node_owning_the_score_detaches_it_from_the_clips() -> None:
-    assert film_scored_by_music_node(_SCORED_GRAPH) is True
-    assert film_scored_by_music_node({}) is False
-    detached = {**_SCORED_GRAPH, "edges": _SCORED_GRAPH["edges"][:1]}
-    assert film_scored_by_music_node(detached) is False
 
 
 def test_no_clip_prompt_ever_asks_for_music() -> None:

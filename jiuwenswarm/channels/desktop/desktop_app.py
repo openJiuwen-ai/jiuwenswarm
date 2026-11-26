@@ -570,6 +570,7 @@ def _build_child_env(
     env[DESKTOP_ENV_FLAG] = "1"
     if name == "gateway":
         prepare_local_gateway_config(env)
+        env.setdefault("JIUWENSWARM_GATEWAY_CONFIG_DIR", str(get_gateway_config_dir()))
     # 桌面锁定: 仅 web 静态服务的对话页面入口需要校验 token,
     # 其他子进程不注入, API/WS 保持原有访问规则。
     if desktop_token and name == "web":
@@ -577,9 +578,6 @@ def _build_child_env(
     else:
         env.pop("JIUWENSWARM_DESKTOP_TOKEN", None)
     env["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
-    if name == "gateway":
-        # gateway 读取 <env>/config-gateway.yaml（与 AS config/config.yaml 同目录不同名）
-        env["JIUWENSWARM_GATEWAY_CONFIG_DIR"] = str(get_gateway_config_dir())
     # Desktop now starts Gateway directly, so preserve the original launcher
     # command here instead of relying on jiuwenswarm.app to add it. The
     # updater inherits this value from Gateway when it constructs a restart.

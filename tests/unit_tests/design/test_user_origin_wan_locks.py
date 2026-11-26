@@ -4,10 +4,6 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
-    director_approve_video_prompt,
-    narrative_seed_from_user_prompt,
-)
 from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import apply_wan_call_locks
 
 # Generic prop-swap language (not white/blue cup pipeline rules).
@@ -44,19 +40,16 @@ def _cfg(*, origin: str, user_prompt: str, stale_action: str = _STALE_ACTION) ->
 def test_user_origin_keeps_toolbar_prop_over_stale_beat() -> None:
     user_prompt = _practice_prompt(f"raises a {_USER_PROP}")
     cfg = _cfg(origin="user", user_prompt=user_prompt)
-    approved, notes = director_approve_video_prompt("agent ignored", cfg=cfg, graph={})
+    approved = apply_wan_call_locks("agent ignored", cfg=cfg, graph={})
     assert _USER_PROP in approved
     assert _STALE_PROP not in approved
-    assert "kept_user_prompt" in notes or "director_approved_user" in notes
 
 
-def test_storyboard_origin_rewrites_toward_stale_beat() -> None:
+def test_storyboard_origin_preserves_authored_prompt() -> None:
     user_prompt = _practice_prompt(f"raises a {_USER_PROP}")
     cfg = _cfg(origin="storyboard", user_prompt=user_prompt)
-    approved, notes = director_approve_video_prompt(user_prompt, cfg=cfg, graph={})
-    assert _STALE_PROP in approved or "pours" in approved.lower() or "cold water" in approved.lower()
-    assert _USER_PROP not in approved
-    assert "kept_user_prompt" not in notes
+    approved = apply_wan_call_locks(user_prompt, cfg=cfg, graph={})
+    assert approved == user_prompt
 
 
 def test_apply_wan_call_locks_stamps_sent_prompt_on_caller_cfg() -> None:
@@ -68,39 +61,27 @@ def test_apply_wan_call_locks_stamps_sent_prompt_on_caller_cfg() -> None:
     assert _USER_PROP in str(cfg.get("last_wan_prompt") or "")
     assert _USER_PROP in str((cfg.get("generate") or {}).get("prompt") or "")
     assert (cfg.get("generate") or {}).get("prompt_origin") == "user"
-    assert cfg.get("director_video_prompt_approved") is True
-    assert isinstance(cfg.get("director_video_prompt_notes"), list)
 
 
-def test_user_origin_lock_essay_seeds_narrative_not_stale_beat() -> None:
+def test_user_origin_text_is_not_mined_or_rewritten() -> None:
     essay = (
         "STYLE LOCK: photoreal. FORBID: morphing. "
         f"{_USER_ACTION}."
     )
-    assert _USER_PROP in narrative_seed_from_user_prompt(essay)
     cfg = _cfg(origin="user", user_prompt=essay)
     approved = apply_wan_call_locks("ignored", cfg=cfg, graph={}, clip_index=1)
     assert _USER_PROP in approved
     assert _STALE_PROP not in approved
-    assert "FORBID" not in approved
-    assert "STYLE LOCK" not in approved
+    assert approved == essay
 
 
-def test_user_origin_empty_falls_back_to_beat_path() -> None:
+def test_empty_user_surface_keeps_agent_text() -> None:
     cfg = _cfg(origin="user", user_prompt="")
     cfg["generate"] = {"prompt": "", "prompt_origin": "user"}
     cfg["prompt"] = ""
     cfg.pop("regenerate_packet", None)
-    approved, notes = director_approve_video_prompt(
-        "agent text without binding",
-        cfg=cfg,
-        graph={},
-        action=_STALE_ACTION,
-        camera="wide",
-    )
-    # No user surface → storyboard path may rewrite toward beat.
-    assert "kept_user_prompt" not in notes
-    assert approved
+    approved = apply_wan_call_locks("agent text without binding", cfg=cfg, graph={})
+    assert approved == "agent text without binding"
 
 
 def test_packet_film_shot_beats_stale_generate_practice() -> None:

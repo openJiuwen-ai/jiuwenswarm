@@ -86,7 +86,7 @@ wheels = [
 [[package]]
 name = "agent-gateway"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=aeaa9a8760284118e61e59692ce151238e7aeca4#aeaa9a8760284118e61e59692ce151238e7aeca4" }
+source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=9bf7622b02838ed7dde537bf0e98a3e21deeef07#9bf7622b02838ed7dde537bf0e98a3e21deeef07" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiosqlite" },
@@ -7518,6 +7518,8 @@ distribute = [
 ]
 harmony = [
     { name = "a2ui-agent-sdk" },
+    { name = "a4p" },
+    { name = "agent-gateway" },
     { name = "aiosqlite" },
     { name = "croniter" },
     { name = "dingtalk-stream" },
@@ -7536,6 +7538,7 @@ harmony = [
     { name = "lxml" },
     { name = "mutagen" },
     { name = "openjiuwen" },
+    { name = "openjiuwen-e2a" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
@@ -7636,7 +7639,9 @@ requires-dist = [
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", specifier = "==0.1.0" },
-    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=aeaa9a8760284118e61e59692ce151238e7aeca4" },
+    { name = "a4p", marker = "extra == 'harmony'", specifier = "==0.1.0" },
+    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=9bf7622b02838ed7dde537bf0e98a3e21deeef07" },
+    { name = "agent-gateway", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=9bf7622b02838ed7dde537bf0e98a3e21deeef07" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -7697,6 +7702,7 @@ requires-dist = [
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=1b066729e6159aa149fe9bdc2c31ec1778e2a681" },
     { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=c0e29a0fa0e1026934589b68564ac67c38a4c4e3" },
     { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
+    { name = "openjiuwen-e2a", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
     { name = "openjiuwen-runtime-foundation", specifier = "==0.1.2b1" },
     { name = "openjiuwen-security", specifier = "==0.0.1b2" },
     { name = "opentelemetry-api", specifier = ">=1.45.1,<2" },

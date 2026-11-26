@@ -40,6 +40,7 @@ from jiuwenswarm.common.utils import (
     is_package_installation,
 )
 from jiuwenswarm.common.process_supervision import application_shutdown, terminate_service_tree
+from jiuwenswarm.common.process_identity import ProcessIdentity, read_process_identity
 from jiuwenswarm.instance_manager import (
     InstanceConfig,
     InstanceLock,
@@ -523,11 +524,13 @@ def _run_instance_with_pid(commands: list[tuple[str, list[str], Path]],
             )
 
         launcher_create_time = _launcher_create_time()
+        metadata = _instance_process_metadata(processes, launcher_create_time)
+        started_at = time.time() if isinstance(launcher_create_time, str) else launcher_create_time
         write_pid_file(
             config,
             os.getpid(),
-            launcher_create_time,
-            _instance_process_metadata(processes, launcher_create_time),
+            started_at,
+            metadata,
         )
         logging.info(f"[start_services] Instance '{config.name}' started")
 
@@ -544,15 +547,15 @@ def _run_instance_with_pid(commands: list[tuple[str, list[str], Path]],
     return exit_code if cleanup_ok else 1
 
 
-def _launcher_create_time() -> float:
-    """Return the launcher process birth time for PID-reuse validation."""
+def _launcher_create_time() -> ProcessIdentity:
+    """Return the launcher process birth identity for PID-reuse validation."""
     import psutil
 
-    return psutil.Process(os.getpid()).create_time()
+    return read_process_identity(os.getpid(), process=psutil.Process(os.getpid()))
 
 
 def _instance_process_metadata(
-    processes: dict[str, subprocess.Popen[bytes]], launcher_create_time: float
+    processes: dict[str, subprocess.Popen[bytes]], launcher_create_time: ProcessIdentity
 ) -> dict[str, object]:
     """Build PID-file ownership evidence for an externally ``setsid`` launcher."""
     import psutil
@@ -584,24 +587,30 @@ def _instance_process_metadata(
             dotenv_path = os.path.realpath(cmdline[dotenv_index + 1])
             module_index = cmdline.index("-m")
             module = cmdline[module_index + 1]
-            witnesses.append(
-                {
-                    "name": name,
-                    "pid": process.pid,
-                    "create_time": process_info.create_time(),
-                    "module": module,
-                    "dotenv": dotenv_path,
-                }
-            )
+            created = read_process_identity(process.pid, process=process_info)
+            witness = {
+                "name": name,
+                "pid": process.pid,
+                "create_time": created if not isinstance(created, str) else None,
+                "module": module,
+                "dotenv": dotenv_path,
+            }
+            if isinstance(created, str):
+                witness["process_identity"] = created
+            witnesses.append(witness)
         except (IndexError, ValueError, psutil.Error):
             # A child that exits before its identity can be captured is not a
             # safe witness.  The supervisor's normal failure handling remains
             # responsible for terminating the rest of the launch.
             continue
 
+    launcher = {"pid": launcher_pid, "create_time": launcher_create_time}
+    if isinstance(launcher_create_time, str):
+        # Keep the display timestamp separate from the PID-reuse proof.
+        launcher = {"pid": launcher_pid, "create_time": None, "process_identity": launcher_create_time}
     return {
         "schema_version": 2,
-        "launcher": {"pid": launcher_pid, "create_time": launcher_create_time},
+        "launcher": launcher,
         "pgid": pgid,
         "sid": sid,
         "dedicated_session": dedicated_session,

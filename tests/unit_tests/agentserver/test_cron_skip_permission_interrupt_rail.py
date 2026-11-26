@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Cron execution sessions must not mount PermissionInterruptRail (option A)."""
+"""Cron permission-rail policy differs by edition."""
 
 from __future__ import annotations
 
@@ -59,7 +59,14 @@ def _stub_deep_rail_builders(adapter, monkeypatch, *, permission_rail):
 
 
 @pytest.mark.parametrize("mode", ["manual", "auto"])
-def test_deep_adapter_omits_permission_interrupt_rail_for_cron_session(monkeypatch, mode):
+@pytest.mark.parametrize("a4p_enabled", [False, True])
+def test_enterprise_cron_keeps_permission_rail_independent_of_a4p(
+    monkeypatch, mode, a4p_enabled,
+):
+    """Enterprise cron mounts the guardrail regardless of A4P."""
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.is_enterprise", lambda: True,
+    )
     permission_rail = object()
     adapter = JiuWenSwarmDeepAdapter()
     adapter._channel_id = "__cron__"
@@ -67,15 +74,39 @@ def test_deep_adapter_omits_permission_interrupt_rail_for_cron_session(monkeypat
     adapter = adapter._new_session_scoped_adapter("scheduled-without-cron-prefix")
     _stub_deep_rail_builders(adapter, monkeypatch, permission_rail=permission_rail)
 
-    config = {"models": {}, "permissions": {"enabled": True, "mode": mode}}
+    config = {
+        "models": {},
+        "permissions": {"enabled": True, "mode": mode},
+        "a4p": {"enabled": a4p_enabled},
+    }
+    rails = adapter._build_agent_rails({}, config, mode="agent")
+
+    assert permission_rail in rails
+    assert adapter._skip_cron_permission_rail(config) is False
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+def test_personal_cron_skips_permission_rail_without_a4p(monkeypatch, mode):
+    """Personal cron keeps the unattended default: no rail unless A4P is on."""
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.is_enterprise", lambda: False,
+    )
+    permission_rail = object()
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._channel_id = "__cron__"
+    adapter._is_cron_execution = True
+    adapter = adapter._new_session_scoped_adapter("scheduled-without-cron-prefix")
+    _stub_deep_rail_builders(adapter, monkeypatch, permission_rail=permission_rail)
+
+    config = {
+        "models": {},
+        "permissions": {"enabled": True, "mode": mode},
+        "a4p": {"enabled": False},
+    }
     rails = adapter._build_agent_rails({}, config, mode="agent")
 
     assert permission_rail not in rails
-    assert not adapter._enable_auto_permission
-    assert not adapter._uses_smart_permission_lifecycle(config)
-    assert adapter._root_permission_queue_rail is None
-    assert adapter._root_context_rail is None
-    assert adapter._root_permission_completion_rail is None
+    assert adapter._skip_cron_permission_rail(config) is True
 
 
 def test_deep_adapter_keeps_permission_interrupt_rail_for_user_session(monkeypatch):
@@ -92,7 +123,10 @@ def test_deep_adapter_keeps_permission_interrupt_rail_for_user_session(monkeypat
 
 
 @pytest.mark.parametrize("mode", ["manual", "auto"])
-def test_update_permission_rail_does_not_create_rail_for_cron_session(monkeypatch, mode):
+def test_enterprise_update_permission_rail_creates_rail_for_cron_session(monkeypatch, mode):
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.is_enterprise", lambda: True,
+    )
     created = []
 
     def fake_build_permission_rail(**_kwargs):
@@ -112,8 +146,8 @@ def test_update_permission_rail_does_not_create_rail_for_cron_session(monkeypatc
 
     adapter._update_permission_rail({"permissions": {"enabled": True, "mode": mode}, "models": {}})
 
-    assert adapter._permission_rail is None
-    assert created == []
+    assert adapter._permission_rail is not None
+    assert created == [adapter._permission_rail]
 
 
 @pytest.mark.parametrize(
@@ -133,9 +167,17 @@ def test_resolve_cron_execution_flag(channel_id, is_session_scoped, config, expe
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("cron_execution", "expected"), [(True, True), (False, False)])
-async def test_code_adapter_scopes_cron_flag_to_web_session_child(monkeypatch, cron_execution, expected):
-    """Web cron in code mode must keep the unattended permission recipe."""
+@pytest.mark.parametrize(("cron_execution", "enterprise", "skip_expected"), [
+    (True, True, False),
+    (True, False, True),
+    (False, False, False),
+])
+async def test_code_adapter_cron_skip_depends_on_edition(
+    monkeypatch, cron_execution, enterprise, skip_expected,
+):
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.is_enterprise", lambda: enterprise,
+    )
     adapter = JiuwenSwarmCodeAdapter()
     adapter.mark_as_session_scoped("sess_web")
     adapter._channel_id = "web"
@@ -146,5 +188,5 @@ async def test_code_adapter_scopes_cron_flag_to_web_session_child(monkeypatch, c
         {"channel_id": "web", "cron_execution": cron_execution}, mode="code",
     )
 
-    assert adapter._is_cron_execution is expected
-    assert adapter._skip_cron_permission_rail({}) is expected
+    assert adapter._is_cron_execution is cron_execution
+    assert adapter._skip_cron_permission_rail({}) is skip_expected

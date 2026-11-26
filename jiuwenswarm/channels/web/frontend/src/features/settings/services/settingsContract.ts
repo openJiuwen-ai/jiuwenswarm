@@ -4,7 +4,7 @@ import type { ModelEntry } from '../../../types';
 
 export const SETTINGS_CONFIG_CHANGED_EVENT = 'jiuwen:settings-config-changed';
 
-export type SettingsCategory = 'general' | 'models' | 'agent' | 'browser' | 'channels' | 'recommendation' | 'security' | 'experimental';
+export type SettingsCategory = 'memory' | 'general' | 'models' | 'agent' | 'browser' | 'channels' | 'recommendation' | 'security' | 'experimental';
 
 export type SettingsRequest = <T = unknown>(
   method: string,
@@ -72,6 +72,7 @@ const yamlField = (
  * _CONFIG_YAML_KEYS and the Symphony-specific config specs.
  */
 export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
+  yamlField('memory_portal_enabled', 'memory', 'boolean', 'memory.builtin.jiuwen.portal.enabled'),
   envField('embed_api_base', 'models', 'text', 'EMBED_API_BASE'),
   envField('embed_api_key', 'models', 'text', 'EMBED_API_KEY'),
   envField('embed_model', 'models', 'text', 'EMBED_MODEL'),
@@ -279,6 +280,7 @@ export const OPENAI_ACCOUNT_RPC = {
 } as const;
 
 export const OPEN_SOURCE_SETTINGS_REQUEST_METHODS = [
+  'memory.portal.open',
   'multimodal.models.list',
   'multimodal.models.get',
   'multimodal.models.upsert',
