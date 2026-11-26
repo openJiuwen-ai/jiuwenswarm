@@ -404,6 +404,7 @@ generated: true
 | [B_20261119_1150_chat-terminal-reasoning-close](bugfix/jiuwenswarm/channels/web/frontend/B_20261119_1150_chat-terminal-reasoning-close.md) | B | 消息出错后思考段不收口，「思考中…」永久转圈直到下次发消息 | gunner_beat | 无独立 D：交互层缺陷修复，复用同文件 chat.processing_status(false) 分支已有的「终态兜底收口」口径（幂等空操作），无独立设计文档。 |
 | [B_20261121_1529_skill-install-toast-display-name-width](bugfix/jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
 | [B_20261125_0115_cron-pin-sidebar-blackhole](bugfix/jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
+| [B_20261125_1146_design-shared-path-regressions](bugfix/jiuwenswarm/channels/web/B_20261125_1146_design-shared-path-regressions.md) | B | Design 公共路径历史回归防护 | Huang, Zeyu | 无独立 D：依据历史 issue 和当前公共路径契约补回归测试，无独立设计方案；不重构产品代码。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
@@ -499,6 +500,7 @@ generated: true
 | [B_20261124_1602_issue-4327-observability](bugfix/observability/B_20261124_1602_issue-4327-observability.md) | B | issue 4327：统一可观测性配置并分离轨迹存储与导出 | hh0205 | 无独立 D：依据 GitCode jiuwenswarm issue 4327，统一 observability 开关并分离轨迹存储、演进采集和可观测性导出的职责，无独立 D 文档。 |
 | [B_20261124_2201_rea-npx-readiness](bugfix/jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
 | [B_20261125_2150_windows-installer-restore-bootstrap](bugfix/scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
+| [B_20261125_1146_design-shared-path-regressions](bugfix/jiuwenswarm/channels/web/B_20261125_1146_design-shared-path-regressions.md) | B | Design 公共路径历史回归防护 | Huang, Zeyu | 无独立 D：依据历史 issue 和当前公共路径契约补回归测试，无独立设计方案；不重构产品代码。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 
