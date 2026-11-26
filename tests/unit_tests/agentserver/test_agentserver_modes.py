@@ -2274,7 +2274,7 @@ def test_deep_adapter_reconfigures_plan_evolution_rails_idempotently(monkeypatch
     adapter._skill_manager = FakeSkillManager()
     adapter._model = Mock()
 
-    monkeypatch.setattr(interface_deep_module, "get_agent_skills_dir", lambda: tmp_path)
+    monkeypatch.setattr(adapter, "_resolve_skill_dirs", lambda extra_skill_dir=None: [str(tmp_path)])
 
     asyncio.run(adapter._ensure_active_evolution_rails_registered())
     asyncio.run(adapter._ensure_active_evolution_rails_registered())
@@ -2378,7 +2378,7 @@ def test_deep_adapter_rebuilds_plan_evolution_rails_when_language_changes(monkey
     adapter._skill_manager = FakeSkillManager()
     adapter._model = Mock()
 
-    monkeypatch.setattr(interface_deep_module, "get_agent_skills_dir", lambda: tmp_path)
+    monkeypatch.setattr(adapter, "_resolve_skill_dirs", lambda extra_skill_dir=None: [str(tmp_path)])
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: language)
 
     asyncio.run(adapter._ensure_active_evolution_rails_registered())
@@ -2408,6 +2408,288 @@ def test_deep_adapter_rebuilds_plan_evolution_rails_when_language_changes(monkey
     assert first_rail not in adapter._instance._stale_rails
     assert adapter._skill_evolution_rail is skill_rails[0]
     assert adapter._evolution_interrupt_rail is interrupt_rails[0]
+
+
+def test_deep_adapter_rebuilds_evolution_rails_when_signal_trigger_changes(
+    monkeypatch, tmp_path
+):
+    """session.prepare vs first chat may disagree on signal_trigger (OA.05000090).
+
+    openjiuwen rejects in-place trigger changes; the adapter must unconfigure
+    and rebuild so every request does not fail before the model runs.
+    """
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
+    monkeypatch.delenv("EVOLUTION_SIGNAL_TRIGGER", raising=False)
+    monkeypatch.delenv("EVOLUTION_AUTO_SCAN", raising=False)
+
+    class FakeAbilityManager:
+        @staticmethod
+        def list():
+            return []
+
+    class FakeInstance:
+        def __init__(self):
+            self._pending_rails = []
+            self._registered_rails = []
+            self._stale_rails = []
+            self.unregistered = []
+            self.ability_manager = FakeAbilityManager()
+
+        def add_rail(self, rail):
+            self._pending_rails.append(rail)
+            return self
+
+        async def register_rail(self, rail):
+            self._registered_rails.append(rail)
+            self._pending_rails = [queued for queued in self._pending_rails if queued is not rail]
+            return self
+
+        async def unregister_rail(self, rail):
+            self.unregistered.append(rail)
+            self._pending_rails = [queued for queued in self._pending_rails if queued is not rail]
+            self._registered_rails = [
+                registered for registered in self._registered_rails if registered is not rail
+            ]
+            return self
+
+        def find_rails_by_type(self, rail_types):
+            return [
+                rail
+                for rail in (*self._pending_rails, *self._registered_rails)
+                if isinstance(rail, rail_types)
+            ]
+
+        def strip_rails_by_type(self, rail_types):
+            removed = 0
+            kept_pending = []
+            for rail in self._pending_rails:
+                if isinstance(rail, rail_types):
+                    removed += 1
+                else:
+                    kept_pending.append(rail)
+            kept_registered = []
+            for rail in self._registered_rails:
+                if isinstance(rail, rail_types):
+                    removed += 1
+                    self._stale_rails.append(rail)
+                else:
+                    kept_registered.append(rail)
+            self._pending_rails = kept_pending
+            self._registered_rails = kept_registered
+            return removed
+
+    class FakeSkillManager:
+        @staticmethod
+        def list_execution_disabled_skills():
+            return []
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = FakeInstance()
+    adapter._config_cache = {
+        "evolution": {
+            "enabled": True,
+            "review_trigger": False,
+            "signal_trigger": False,
+        },
+        "model_name": "configured-model",
+    }
+    adapter._skill_manager = FakeSkillManager()
+    adapter._model = Mock()
+
+    monkeypatch.setattr(adapter, "_resolve_skill_dirs", lambda extra_skill_dir=None: [str(tmp_path)])
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
+
+    asyncio.run(adapter._ensure_active_evolution_rails_registered())
+    first_rail = adapter._skill_evolution_rail
+    assert first_rail is not None
+    assert first_rail.signal_trigger is False
+
+    adapter._config_cache["evolution"]["signal_trigger"] = True
+    asyncio.run(adapter._ensure_active_evolution_rails_registered())
+
+    registered = adapter._instance._registered_rails
+    skill_rails = [
+        rail for rail in registered if _is_regular_skill_evolution_rail(rail)
+    ]
+    assert len(skill_rails) == 1
+    assert skill_rails[0] is not first_rail
+    assert skill_rails[0].signal_trigger is True
+    assert first_rail in adapter._instance.unregistered
+    assert adapter._skill_evolution_rail is skill_rails[0]
+
+
+def test_deep_adapter_retries_evolution_configure_after_cached_ref_mismatch(
+    monkeypatch, tmp_path
+):
+    """Stale ``_skill_evolution_rail`` cache must still recover via mismatch retry.
+
+    When the adapter cache is cleared (``None``) but the agent instance still
+    holds a rail with a different trigger, proactive rebuild is skipped and
+    ``configure_skill_evolution_runtime`` raises ``Evolution rail config
+    mismatch``. The except path must unconfigure once and retry successfully.
+    """
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
+    monkeypatch.delenv("EVOLUTION_SIGNAL_TRIGGER", raising=False)
+    monkeypatch.delenv("EVOLUTION_AUTO_SCAN", raising=False)
+
+    class FakeAbilityManager:
+        @staticmethod
+        def list():
+            return []
+
+    class FakeInstance:
+        def __init__(self):
+            self._pending_rails = []
+            self._registered_rails = []
+            self._stale_rails = []
+            self.unregistered = []
+            self.ability_manager = FakeAbilityManager()
+
+        def add_rail(self, rail):
+            self._pending_rails.append(rail)
+            return self
+
+        async def register_rail(self, rail):
+            self._registered_rails.append(rail)
+            self._pending_rails = [queued for queued in self._pending_rails if queued is not rail]
+            return self
+
+        async def unregister_rail(self, rail):
+            self.unregistered.append(rail)
+            self._pending_rails = [queued for queued in self._pending_rails if queued is not rail]
+            self._registered_rails = [
+                registered for registered in self._registered_rails if registered is not rail
+            ]
+            return self
+
+        def find_rails_by_type(self, rail_types):
+            return [
+                rail
+                for rail in (*self._pending_rails, *self._registered_rails)
+                if isinstance(rail, rail_types)
+            ]
+
+        def strip_rails_by_type(self, rail_types):
+            removed = 0
+            kept_pending = []
+            for rail in self._pending_rails:
+                if isinstance(rail, rail_types):
+                    removed += 1
+                else:
+                    kept_pending.append(rail)
+            kept_registered = []
+            for rail in self._registered_rails:
+                if isinstance(rail, rail_types):
+                    removed += 1
+                    self._stale_rails.append(rail)
+                else:
+                    kept_registered.append(rail)
+            self._pending_rails = kept_pending
+            self._registered_rails = kept_registered
+            return removed
+
+    class FakeSkillManager:
+        @staticmethod
+        def list_execution_disabled_skills():
+            return []
+
+    class FakeSkillEvolutionRail:
+        def __init__(self, *, signal_trigger, review_trigger=False, language="cn"):
+            self.signal_trigger = signal_trigger
+            self.review_trigger = review_trigger
+            self._language = language
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = FakeInstance()
+    adapter._config_cache = {
+        "evolution": {
+            "enabled": True,
+            "review_trigger": False,
+            "signal_trigger": False,
+        },
+        "model_name": "configured-model",
+    }
+    adapter._skill_manager = FakeSkillManager()
+    adapter._model = Mock()
+
+    monkeypatch.setattr(adapter, "_resolve_skill_dirs", lambda extra_skill_dir=None: [str(tmp_path)])
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
+    monkeypatch.setattr(interface_deep_module, "SkillEvolutionRail", FakeSkillEvolutionRail)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "sync_evolution_disabled_skills",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "_set_skill_evolution_triggers",
+        lambda rail, *, review_trigger, signal_trigger: (
+            setattr(rail, "review_trigger", review_trigger),
+            setattr(rail, "signal_trigger", signal_trigger),
+        ),
+    )
+
+    configure_calls: list[dict] = []
+
+    async def _fake_configure(agent, **kwargs):
+        configure_calls.append(dict(kwargs))
+        existing = [
+            rail
+            for rail in agent.find_rails_by_type((FakeSkillEvolutionRail,))
+            if not isinstance(rail, interface_deep_module.EvolutionInterruptRail)
+        ]
+        wanted_signal = kwargs.get("signal_trigger")
+        if existing and getattr(existing[0], "signal_trigger", None) != wanted_signal:
+            raise RuntimeError("Evolution rail config mismatch: signal_trigger")
+        for rail in list(existing):
+            await agent.unregister_rail(rail)
+        rail = FakeSkillEvolutionRail(
+            signal_trigger=bool(wanted_signal),
+            review_trigger=bool(kwargs.get("review_trigger")),
+            language=str(kwargs.get("language") or "cn"),
+        )
+        await agent.register_rail(rail)
+        return agent
+
+    def _fake_unconfigure(agent, *, team=False):
+        agent.strip_rails_by_type((FakeSkillEvolutionRail,))
+
+    monkeypatch.setattr(
+        interface_deep_module,
+        "configure_skill_evolution_runtime",
+        _fake_configure,
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "unconfigure_skill_evolution",
+        _fake_unconfigure,
+    )
+
+    asyncio.run(adapter._ensure_active_evolution_rails_registered())
+    first_rail = adapter._skill_evolution_rail
+    assert first_rail is not None
+    assert first_rail.signal_trigger is False
+    assert len(configure_calls) == 1
+
+    # Simulate cache drift: adapter forgot the rail, instance still holds it.
+    adapter._skill_evolution_rail = None
+    adapter._config_cache["evolution"]["signal_trigger"] = True
+    asyncio.run(adapter._ensure_active_evolution_rails_registered())
+
+    assert len(configure_calls) == 3  # initial + mismatch attempt + retry
+    assert configure_calls[1]["signal_trigger"] is True
+    assert configure_calls[2]["signal_trigger"] is True
+
+    registered = adapter._instance._registered_rails
+    skill_rails = [rail for rail in registered if isinstance(rail, FakeSkillEvolutionRail)]
+    assert len(skill_rails) == 1
+    assert skill_rails[0].signal_trigger is True
+    assert adapter._skill_evolution_rail is skill_rails[0]
+    assert first_rail in adapter._instance._stale_rails or first_rail in adapter._instance.unregistered
 
 
 def test_deep_adapter_handle_user_answer_ignores_team_plan_approval_compat(monkeypatch):

@@ -7748,6 +7748,31 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] TTSERail unregister failed: %s", exc)
 
+    def _active_evolution_rail_needs_rebuild(
+        self,
+        *,
+        resolved_language: str,
+        evolution_triggers: dict[str, bool],
+    ) -> bool:
+        """True when the cached rail cannot be reused for the requested config.
+
+        openjiuwen's ``configure_skill_evolution_runtime`` rejects in-place
+        trigger/language changes (``Evolution rail config mismatch``). Rebuild
+        before configure whenever the cached rail disagrees, so session.prepare
+        vs first-chat config drift (OA.05000090 field cases) recovers instead of
+        failing every request.
+        """
+        rail = self._skill_evolution_rail
+        if rail is None:
+            return False
+        if getattr(rail, "_language", None) != resolved_language:
+            return True
+        if getattr(rail, "signal_trigger", None) != evolution_triggers["signal_trigger"]:
+            return True
+        if getattr(rail, "review_trigger", None) != evolution_triggers["review_trigger"]:
+            return True
+        return False
+
     async def _ensure_active_evolution_rails_registered(self) -> None:
         """Configure, register, and cache single-agent skill evolution rails."""
         if self._instance is None:
@@ -7755,9 +7780,9 @@ class JiuWenSwarmDeepAdapter:
 
         resolved_language = self._resolve_runtime_language()
         evolution_triggers = get_passive_skill_evolution_triggers(self._config_cache)
-        if (
-            self._skill_evolution_rail is not None
-            and getattr(self._skill_evolution_rail, "_language", None) != resolved_language
+        if self._active_evolution_rail_needs_rebuild(
+            resolved_language=resolved_language,
+            evolution_triggers=evolution_triggers,
         ):
             await self._unconfigure_active_evolution_rails()
 
@@ -7770,19 +7795,33 @@ class JiuWenSwarmDeepAdapter:
             get_trajectory_span_processor,
         )
 
-        await configure_skill_evolution_runtime(
-            self._instance,
-            skills_dir=self._resolve_skill_dirs(),
-            llm=self._model,
-            model=self._default_model_name
+        configure_kwargs = {
+            "skills_dir": self._resolve_skill_dirs(),
+            "llm": self._model,
+            "model": self._default_model_name
             or self._config_cache.get("model_name", "gpt-4"),
-            review_trigger=evolution_triggers["review_trigger"],
-            signal_trigger=evolution_triggers["signal_trigger"],
-            auto_save=True,
-            disabled_skills=disabled_skills,
-            language=resolved_language,
-            trajectory_span_processor=get_trajectory_span_processor(),
-        )
+            "review_trigger": evolution_triggers["review_trigger"],
+            "signal_trigger": evolution_triggers["signal_trigger"],
+            "auto_save": True,
+            "disabled_skills": disabled_skills,
+            "language": resolved_language,
+            "trajectory_span_processor": get_trajectory_span_processor(),
+        }
+        try:
+            await configure_skill_evolution_runtime(self._instance, **configure_kwargs)
+        except RuntimeError as exc:
+            # Safety net when cached refs are stale but the agent still holds a
+            # rail with a different trigger/language (mismatch text from
+            # openjiuwen.harness.rails.evolution.configuration).
+            if "Evolution rail config mismatch" not in str(exc):
+                raise
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] evolution rail config mismatch; "
+                "unconfiguring and retrying once: %s",
+                exc,
+            )
+            await self._unconfigure_active_evolution_rails()
+            await configure_skill_evolution_runtime(self._instance, **configure_kwargs)
         self._refresh_active_evolution_rail_refs()
         if self._skill_evolution_rail is not None:
             sync_evolution_disabled_skills(self._skill_evolution_rail, disabled_skills)
