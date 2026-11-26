@@ -44,7 +44,7 @@ import zipfile
 from pathlib import Path
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 import logging
 from logging.handlers import BaseRotatingHandler, RotatingFileHandler
 
@@ -1199,6 +1199,102 @@ def ensure_gateway_config(workspace_dir: Path | None = None) -> bool:
         return False
 
 
+def _merge_tree_keep_dir_metadata(
+    src_dir: Path,
+    dst_dir: Path,
+    ignore: Optional[Callable[[str, list[str]], set[str]]] = None,
+) -> None:
+    """Merge ``src_dir`` into ``dst_dir``, adding only missing files and dirs.
+
+    Drop-in replacement for ``shutil.copytree(..., dirs_exist_ok=True)`` on
+    the workspace template path. ``copytree`` ends every visited directory
+    with ``copystat``, which chmod/utime the destination directory even when
+    it already existed and no new file was added. On a shared volume (an NFS
+    PVC reused across deployments) those directories are often owned by
+    another uid, so ``copystat`` fails with EPERM and aborts the whole
+    workspace preparation although the content is already in place.
+
+    Semantics:
+    - pre-existing destination directories keep their own metadata;
+    - newly created directories get template metadata on a best-effort basis;
+    - missing files are copied with ``shutil.copyfile``; file metadata is
+      best-effort and never fails the merge;
+    - genuine copy failures — including unreadable source directories hit
+      during traversal — are aggregated into ``shutil.Error`` the same way
+      ``copytree`` does.
+
+    Args:
+        src_dir: Template directory to merge from.
+        dst_dir: Destination directory, may already exist.
+        ignore: ``shutil.ignore_patterns``-style callable receiving the
+            current source directory and its entry names, returning the
+            names to skip.
+    """
+    errors: list[tuple[str, str, str]] = []
+    src_root = str(src_dir)
+
+    def _record_walk_error(err: OSError) -> None:
+        # os.walk silently skips directories it cannot list (onerror=None).
+        # A template directory that fails to enumerate would otherwise yield
+        # an incomplete workspace reported as ready, so aggregate the failure
+        # into the same shutil.Error as genuine copy failures.
+        failed = err.filename or src_root
+        try:
+            counterpart = dst_dir / os.path.relpath(failed, src_root)
+        except ValueError:
+            counterpart = dst_dir
+        errors.append((failed, str(counterpart), str(err)))
+
+    # followlinks mirrors copytree(symlinks=False), which descends into
+    # symlinked directories and copies their content as real entries.
+    for current_dir, dir_names, file_names in os.walk(
+        src_root, followlinks=True, onerror=_record_walk_error,
+    ):
+        ignored = ignore(current_dir, dir_names + file_names) if ignore else set()
+        dir_names[:] = [name for name in dir_names if name not in ignored]
+        relative = os.path.relpath(current_dir, src_root)
+        dst_current = dst_dir if relative == os.curdir else dst_dir / relative
+        fresh_dir = not dst_current.exists()
+        try:
+            dst_current.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            errors.append((current_dir, str(dst_current), str(exc)))
+            dir_names[:] = []
+            continue
+        if fresh_dir:
+            # Only ever chmod/utime directories we just created ourselves.
+            try:
+                shutil.copystat(current_dir, dst_current)
+            except OSError as exc:
+                logger.warning(
+                    "workspace template dir metadata not applied: %s -> %s: %s",
+                    current_dir, dst_current, exc,
+                )
+        for name in file_names:
+            if name in ignored:
+                continue
+            src_file = os.path.join(current_dir, name)
+            dst_file = dst_current / name
+            if dst_file.exists():
+                continue
+            try:
+                shutil.copyfile(src_file, dst_file)
+            except OSError as exc:
+                errors.append((src_file, str(dst_file), str(exc)))
+                continue
+            try:
+                shutil.copystat(src_file, dst_file)
+            except OSError as exc:
+                # Content is complete; a volume refusing chmod/utime on the
+                # freshly written file must not fail workspace preparation.
+                logger.warning(
+                    "workspace template file metadata not applied: %s -> %s: %s",
+                    src_file, dst_file, exc,
+                )
+    if errors:
+        raise shutil.Error(errors)
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1319,20 +1415,6 @@ def prepare_workspace(
     template_agent_workspace = template_agent_dir / "workspace"
     template_agent_memory = template_agent_dir / "workspace" / "memory"
 
-    def copy_if_missing(src: str | Path, dst: str | Path) -> str | Path:
-        """增量复制：目标已存在则跳过。
-
-        Args:
-            src: 源文件路径
-            dst: 目标文件路径
-
-        Returns:
-            目标文件路径（已存在则直接返回，否则返回复制后的路径）
-        """
-        if os.path.exists(dst):
-            return dst
-        return shutil.copy2(src, dst)
-
     def _copy_dir(
         src_dir: Path,
         dst_dir: Path,
@@ -1349,13 +1431,11 @@ def prepare_workspace(
         else:
             ignore = None
 
-        if not dst_dir.exists():
-            shutil.copytree(src_dir, dst_dir, ignore=ignore)
-        else:
-            shutil.copytree(
-                src_dir, dst_dir, dirs_exist_ok=True, ignore=ignore,
-                copy_function=copy_if_missing,
-            )
+        # Never copy directory metadata onto a pre-existing destination: a
+        # workspace on a shared volume (PVC) can be owned by another uid,
+        # where chmod/utime raise EPERM and would abort startup over content
+        # that is already in place.
+        _merge_tree_keep_dir_metadata(src_dir, dst_dir, ignore=ignore)
 
     # Copy DeepAgent workspace template (includes agent-data.json, memory, skills)
     # Ignore _ZH.md and _EN.md files - they are handled separately

@@ -290,6 +290,7 @@ generated: true
 | [B_20261124_2201_rea-npx-readiness](jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
 | [B_20261125_2150_windows-installer-restore-bootstrap](scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
 | [B_20261125_1146_design-shared-path-regressions](jiuwenswarm/channels/web/B_20261125_1146_design-shared-path-regressions.md) | B | Design 公共路径历史回归防护 | Huang, Zeyu | 无独立 D：依据历史 issue 和当前公共路径契约补回归测试，无独立设计方案；不重构产品代码。 |
+| [B_20261126_1631_shared-workspace-dir-metadata](jiuwenswarm/common/B_20261126_1631_shared-workspace-dir-metadata.md) | B | 共享卷上工作区准备因已存在目录元数据 EPERM 导致 AgentServer 启动失败 | wangmingqi | 无独立 D：对既有工作区模板播种行为的局部缺陷修复与语义收紧，不新增架构方案。 |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 
@@ -472,6 +473,7 @@ generated: true
 |---|---|---|---|---|
 | [B_20261125_0115_cron-pin-sidebar-blackhole](jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
 | [B_20261126_0954_native-npc-team-first-turn](jiuwenswarm/server/runtime/session/B_20261126_0954_native-npc-team-first-turn.md) | B | 原生 NPC 队伍首轮发言失败 | kdgmpw | 无独立 D：修复现有原生 NPC Team 装配契约。 |
+| [B_20261126_1308_session-metadata-corrupted-marker](jiuwenswarm/server/runtime/session/B_20261126_1308_session-metadata-corrupted-marker.md) | B | 损坏 metadata.json 的会话在列表中伪装成合法旧会话，团队身份字段静默丢失 | zhangpu | 无独立 D：防御性呈现契约修复，复用 _read_metadata 既有读路径补显式失败状态并在合成层打标、投影层透传，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 
