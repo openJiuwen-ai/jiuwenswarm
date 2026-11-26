@@ -59,6 +59,9 @@ _CLI_AGENT_LABELS = {
     "claude": "Claude",
     "codex": "Codex",
 }
+# Bounds starting the short-lived Codex App Server plus thread/fork, below the
+# web client's 60 s session.fork timeout so the server answers first.
+_CODEX_FORK_TIMEOUT_SECONDS = 45.0
 _ERROR_TEXT: dict[str, tuple[str, str]] = {
     "template_name_type": (
         "agent_template_name 必须是字符串",
@@ -104,6 +107,11 @@ _ERROR_TEXT: dict[str, tuple[str, str]] = {
     "fork_unsupported": (
         "该三方专家 (provider={provider!r}) 不支持复制其 CLI 会话",
         "This external expert (provider={provider!r}) cannot fork its CLI session",
+    ),
+    "fork_expert_changed": (
+        "三方专家会话的副本只能沿用原专家 {template!r}；请先恢复原专家选择再复制，或新建会话后切换专家",
+        "A copy of an External Harness session keeps its expert {template!r}; "
+        "restore that expert before copying, or start a new session to switch experts",
     ),
     "fork_failed": (
         "复制 CLI 会话失败: {detail}",
@@ -330,6 +338,11 @@ def _claude_projects_dir() -> Path:
 
 def _fork_claude_session(source_session: str, source_cwd: Path, target_cwd: Path) -> str:
     """Fork a Claude Code session and place the fork where the target's CLI resumes it."""
+    from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
+
+    # A frozen app installs claude_agent_sdk outside the bundle; this process
+    # must expose its site-packages before importing it.
+    activate_external_cli_runtime_paths()
     from claude_agent_sdk import fork_session, project_key_for_directory
 
     forked = fork_session(source_session, directory=str(source_cwd)).session_id
@@ -339,7 +352,14 @@ def _fork_claude_session(source_session: str, source_cwd: Path, target_cwd: Path
         projects = _claude_projects_dir()
         written = projects / source_key / f"{forked}.jsonl"
         if not written.is_file():
-            written = next(projects.glob(f"*/{forked}.jsonl"))
+            # A StopIteration here would surface as a meaningless RuntimeError
+            # once it crosses asyncio.to_thread, so look up with a default.
+            found = next(iter(projects.glob(f"*/{forked}.jsonl")), None)
+            if found is None:
+                raise FileNotFoundError(
+                    f"forked Claude Code transcript {forked}.jsonl not found under {projects}"
+                )
+            written = found
         target_dir = projects / target_key
         target_dir.mkdir(parents=True, exist_ok=True)
         os.replace(written, target_dir / written.name)
@@ -347,13 +367,57 @@ def _fork_claude_session(source_session: str, source_cwd: Path, target_cwd: Path
 
 
 async def _fork_codex_thread(source_thread: str, codex_bin: str | None, target_cwd: Path) -> str:
-    """Fork a Codex thread through a short-lived App Server."""
+    """Fork a Codex thread through a short-lived App Server.
+
+    Raises:
+        TimeoutError: The App Server did not start and fork the thread within
+            ``_CODEX_FORK_TIMEOUT_SECONDS``.
+    """
     from openai_codex import AsyncCodex, CodexConfig
 
     config = CodexConfig(codex_bin=codex_bin, cwd=str(target_cwd), env=dict(os.environ))
-    async with AsyncCodex(config=config) as codex:
-        thread = await codex.thread_fork(source_thread, cwd=str(target_cwd))
-    return str(thread.id)
+
+    async def fork() -> str:
+        async with AsyncCodex(config=config) as codex:
+            thread = await codex.thread_fork(source_thread, cwd=str(target_cwd))
+        return str(thread.id)
+
+    try:
+        return await asyncio.wait_for(fork(), timeout=_CODEX_FORK_TIMEOUT_SECONDS)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"codex thread/fork did not finish within {_CODEX_FORK_TIMEOUT_SECONDS:g}s"
+        ) from exc
+
+
+def _check_fork_keeps_expert(
+    bound_template_name: str,
+    session_equipment_override: Mapping[str, object] | None,
+) -> None:
+    """Refuse a copy whose equipment override names an expert other than the bound one.
+
+    The copy is bound to the source's expert and the binding cannot change, so
+    an override switching (or clearing) the expert would leave a copy whose
+    every message fails with ``binding_conflict``.
+
+    Raises:
+        ValueError: The override selects a different expert or clears it.
+    """
+    if not session_equipment_override or "agent_template_name" not in session_equipment_override:
+        return
+    requested = session_equipment_override.get("agent_template_name")
+    requested_name = requested.strip() if isinstance(requested, str) else ""
+    keeps_expert = False
+    if requested_name:
+        try:
+            keeps_expert = (
+                equipment.resolve_equipment_runtime_id("agent_templates", requested_name)
+                == bound_template_name
+            )
+        except Exception:
+            logger.debug("resolve requested expert %r failed", requested_name, exc_info=True)
+    if not keeps_expert:
+        raise ValueError(_error_text("fork_expert_changed", template=bound_template_name))
 
 
 async def fork_external_harness_session(
@@ -361,6 +425,7 @@ async def fork_external_harness_session(
     target_session_id: str,
     *,
     at_message: bool = False,
+    session_equipment_override: Mapping[str, object] | None = None,
 ) -> bool:
     """Bind a copy of an External Harness session to a fork of its CLI session.
 
@@ -370,6 +435,17 @@ async def fork_external_harness_session(
     CLI session is unchanged. A source that has run no turn has no CLI session
     yet, and the target starts one of its own. Return False when the source is
     not an External Harness session.
+
+    Args:
+        source_session_id: Session being copied.
+        target_session_id: The copy.
+        at_message: Whether the copy starts at a message; refused for an
+            External Harness session.
+        session_equipment_override: Equipment the copy was given in place of
+            the source's; refused when it switches or clears the expert.
+
+    Raises:
+        ValueError: The copy is refused, or forking the CLI session failed.
     """
     stored = get_session_metadata(source_session_id, cache_bust=True).get("session_runtime_binding")
     if not isinstance(stored, dict) or stored.get("kind") != _EXTERNAL_HARNESS_KIND:
@@ -378,6 +454,7 @@ async def fork_external_harness_session(
         raise ValueError(_error_text("fork_at_message_unsupported"))
     agent_template_name = str(stored.get("agent_template_name") or "")
     provider_name = str(stored.get("provider_name") or "")
+    _check_fork_keeps_expert(agent_template_name, session_equipment_override)
     binding: dict[str, Any] = {
         "kind": _EXTERNAL_HARNESS_KIND,
         "agent_template_name": agent_template_name,

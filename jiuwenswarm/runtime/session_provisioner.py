@@ -1536,6 +1536,7 @@ class RuntimeSessionProvisioner:
                     source_session_id,
                     target_session_id,
                     at_message=has_message_cutoff,
+                    session_equipment_override=provision_input.session_equipment_override,
                 )
             except BaseException:
                 from jiuwenswarm.common.utils import get_agent_sessions_dir
