@@ -47,6 +47,7 @@ from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
     HubPackageDownloader,
 )
 
+from .app_icon import read_local_app_icon
 from .app_market.models import AppManifest
 from .app_market.storage import MarketStorage
 from .editor_sessions import CoreRequest
@@ -149,11 +150,6 @@ def app_package_validator(package_root: Path, package_name: str) -> None:
                         "invalid_plugin_structure",
                         f"Hub app package must not ship market script {script.name}",
                     )
-
-
-def _read_attached_icon(icon_uri: str) -> str:
-    """Keep an embedded data-URL icon; leave remote URLs for the UI to fetch."""
-    return str(icon_uri or "").strip()
 
 
 class _HtmlMeta(html.parser.HTMLParser):
@@ -317,6 +313,38 @@ class _CancellableDownloader:
             max_single_file_bytes=MAX_APP_SINGLE_FILE_BYTES,
             verify_crc=False,
         )
+
+
+async def _stage_hub_app_package(
+    *,
+    asset_id: str,
+    version: str,
+    stage: Path,
+    hub_port: HubAssetPort,
+    downloader: _CancellableDownloader,
+    expected_sha256: str,
+) -> tuple[HubPackageInstallResult, str]:
+    package_icon = ""
+
+    def locate_package(extracted: Path, package_name: str) -> Path:
+        nonlocal package_icon
+        root = app_package_root(extracted, package_name)
+        package_icon = read_local_app_icon(root.parent, "icon.png")
+        return root
+
+    result = await install_hub_asset_package(
+        kind="app",
+        asset_id=asset_id,
+        version=version,
+        destination_root=stage,
+        package_name_validator=validate_package_name,
+        package_validator=app_package_validator,
+        package_root_locator=locate_package,
+        hub_port=hub_port,
+        downloader=downloader,
+        expected_sha256=expected_sha256,
+    )
+    return result, package_icon
 
 
 def operation_path(operation_dir: Path, job_id: str) -> Path:
@@ -599,14 +627,10 @@ async def install_hub_app(
     operation = _prepare_operation(operation_dir, job_id, app_id, root, destination, "install")
     try:
         progress("downloading")
-        result: HubPackageInstallResult = await install_hub_asset_package(
-            kind="app",
+        result, package_icon = await _stage_hub_app_package(
             asset_id=asset,
             version=detail.version,
-            destination_root=Path(operation["stage"]),
-            package_name_validator=validate_package_name,
-            package_validator=app_package_validator,
-            package_root_locator=app_package_root,
+            stage=Path(operation["stage"]),
             hub_port=port,
             downloader=_CancellableDownloader(downloader or hub_app_downloader(), cancel, progress),
             expected_sha256=expected_sha256 or detail.checksum_sha256,
@@ -645,6 +669,7 @@ async def install_hub_app(
             app_id=app_id,
             destination=destination,
             detail=detail,
+            package_icon=package_icon,
             hub_url=hub_url,
             artifact_sha256=result.record.checksum_sha256,
             owner_id=owner_id,
@@ -699,6 +724,7 @@ async def _register_installed_app(
     app_id: str,
     destination: Path,
     detail: HubAssetDetail,
+    package_icon: str,
     hub_url: str,
     artifact_sha256: str,
     owner_id: str,
@@ -712,7 +738,7 @@ async def _register_installed_app(
         "page_entry_path": "index.html",
         "work_dir": str(destination),
         "description": detail.short_description or meta.get("description", ""),
-        "icon_url": _read_attached_icon(detail.icon_uri),
+        "icon_url": package_icon or read_local_app_icon(destination, meta["icon_href"] or "icon.png"),
         "owner_id": owner_id,
         "permissions": list(detail.permissions),
         "source_session": "",
@@ -832,21 +858,18 @@ async def update_hub_app(
     cancel = cancelled or (lambda: False)
     try:
         progress("downloading")
-        staged = await install_hub_asset_package(
-            kind="app",
+        staged, package_icon = await _stage_hub_app_package(
             asset_id=asset_id,
             version=detail.version,
-            destination_root=Path(operation["stage"]),
-            package_name_validator=validate_package_name,
-            package_validator=app_package_validator,
-            package_root_locator=app_package_root,
+            stage=Path(operation["stage"]),
             hub_port=port,
             downloader=_CancellableDownloader(downloader or hub_app_downloader(), cancel, progress),
             expected_sha256=expected,
         )
         if cancel():
             raise AppInstallCancelled()
-        read_entry_metadata(staged.destination, detail.version)
+        meta = read_entry_metadata(staged.destination, detail.version)
+        icon_url = package_icon or read_local_app_icon(staged.destination, meta["icon_href"] or "icon.png")
         current = manager.service.get_app(app_id)
         if current is None or current.artifact_sha256 != manifest.artifact_sha256:
             raise AppInstallError("app_operation_conflict", "Application changed during update")
@@ -890,7 +913,7 @@ async def update_hub_app(
             "name": detail.display_name or current.name,
             "version": detail.version,
             "description": detail.short_description or current.description,
-            "icon_url": detail.icon_uri or current.icon_url,
+            "icon_url": icon_url,
             "artifact_sha256": staged.record.checksum_sha256,
             "requires_project": bool(detail.requires_project),
             "permissions": list(detail.permissions),

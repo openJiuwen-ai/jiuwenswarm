@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import asyncio
 import hashlib
-import base64
 import os
 import shutil
 import time
@@ -19,6 +18,7 @@ from urllib.parse import quote
 from jiuwenswarm.enterprise.edition import is_enterprise
 
 from .app_ai_roles import load_ai_role_groups
+from .app_icon import read_local_app_icon
 from .app_market.market_service import MarketService
 from .app_market.models import AppManifest, normalize_app_version
 from .app_market.run_consent import RunConsentStore
@@ -108,7 +108,7 @@ class _DescriptionParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag.lower() == "title":
             self._in_title = True
-        values = dict(attrs)
+        values = {key: value or "" for key, value in attrs}
         if tag.lower() == "meta" and values.get("name", "").lower() == "description":
             self.description = values.get("content", "")[:500]
         if tag.lower() == "meta" and values.get("name", "").lower() == "application-name":
@@ -126,26 +126,10 @@ def _metadata(entry: Path) -> dict[str, str]:
             parser.feed(source.read(65536))
     except OSError:
         pass
-    icon_url = ""
-    if parser.icon_path:
-        icon = (entry.parent / parser.icon_path).resolve()
-        mime = {
-            ".svg": "image/svg+xml",
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".webp": "image/webp",
-        }.get(icon.suffix.lower())
-        try:
-            icon.relative_to(entry.parent.resolve())
-            if mime and icon.is_file() and icon.stat().st_size <= 262144:
-                icon_url = "data:" + mime + ";base64," + base64.b64encode(icon.read_bytes()).decode("ascii")
-        except (OSError, ValueError):
-            pass
     return {
         "name": parser.application_name or parser.title.strip()[:128] or entry.stem,
         "description": parser.description or parser.title.strip()[:500],
-        "icon_url": icon_url,
+        "icon_url": read_local_app_icon(entry.parent, parser.icon_path),
         "version": parser.application_version,
     }
 
@@ -161,6 +145,23 @@ def get_app_description(app: AppManifest) -> str:
         return app.description
     entry = Path(app.work_dir) / (app.page_entry_path or "index.html")
     return _metadata(entry)["description"]
+
+
+def _get_app_icon(app: AppManifest) -> str:
+    """Resolve legacy Hub registrations from their installed files."""
+    icon_url = app.icon_url or ""
+    if icon_url.startswith("data:") or (app.source != "hub" and not app.app_id.startswith("hub-")):
+        return icon_url
+    if not app.work_dir:
+        return ""
+    root = Path(app.work_dir)
+    entry = root / (app.page_entry_path or "index.html")
+    try:
+        if entry.resolve().is_relative_to(root.resolve()):
+            return _metadata(entry)["icon_url"] or read_local_app_icon(root, "icon.png")
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return ""
 
 
 class AppMarketManager:
@@ -345,6 +346,7 @@ class AppMarketManager:
             record = self.storage.load_install_record(app_id)
             if record and (record.get("owner_id"), record.get("work_dir")) == (owner_id, manifest.work_dir):
                 manifest.local_release_id = str(record.get("release_id") or "")
+            manifest.icon_url = _get_app_icon(manifest)
             manifest.source = "local"
             manifest.hub_asset_id = ""
             manifest.hub_url = ""
@@ -426,7 +428,7 @@ class AppMarketManager:
                     "name": a.name,
                     "version": a.version,
                     "description": get_app_description(a),
-                    "icon_url": a.icon_url,
+                    "icon_url": _get_app_icon(a),
                     "run_type": a.run_type,
                     "default_port": a.default_port,
                     "status_mode": a.status_mode,

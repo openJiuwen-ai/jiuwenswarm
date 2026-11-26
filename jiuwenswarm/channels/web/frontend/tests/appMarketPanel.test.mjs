@@ -367,7 +367,7 @@ test('installed app details load AI role cards and show the session policy', asy
   }
 });
 
-test('AI role groups size their columns from the role count and mark only team roles', async () => {
+test('independent AI roles share a grid with notes in their cards while team roles stay grouped', async () => {
   const teamRoles = ['mayor', 'doctor', 'fisherman', 'pilot', 'judge', 'nurse'].map((id, index) => ({
     id, name: `Role ${id}`, description: `Duty ${index}`,
   }));
@@ -378,23 +378,29 @@ test('AI role groups size their columns from the role count and mark only team r
       { id: 'assistant', mode: 'agent', session_description: 'Single role.', roles: [
         { id: 'helper', name: 'Helper', description: 'Answers questions' },
       ] },
+      { id: 'guide', mode: 'agent', session_description: 'New session each visit.', roles: [
+        { id: 'guide', name: 'Guide', description: 'Shows the way' },
+      ] },
     ] };
   });
   try {
     await click(card('gomoku'));
     const groups = document.querySelectorAll('[data-testid="app-market-ai-role-group"]');
-    assert.equal(groups.length, 2);
+    assert.equal(groups.length, 1);
     assert.equal(groups[0].getAttribute('data-mode'), 'team');
-    assert.equal(groups[1].getAttribute('data-mode'), 'agent');
-    const grids = document.querySelectorAll('.app-market-ai-role-grid');
-    assert.equal(grids[0].style.getPropertyValue('--app-market-ai-role-columns'), '4');
-    assert.equal(grids[1].style.getPropertyValue('--app-market-ai-role-columns'), '1');
+    const teamGrid = groups[0].querySelector('[data-testid="app-market-ai-team-grid"]');
+    assert.equal(teamGrid.style.getPropertyValue('--app-market-ai-role-columns'), '4');
     const teamCards = groups[0].querySelectorAll('[data-testid="app-market-ai-role-card"]');
     assert.equal(teamCards.length, 6);
     for (const item of teamCards) assert.match(item.textContent, /Team/);
     assert.match(teamCards[0].textContent, /Leader/);
-    const agentCard = groups[1].querySelector('[data-testid="app-market-ai-role-card"]');
-    assert.doesNotMatch(agentCard.textContent, /Team|Leader/);
+    const agentGrid = find('app-market-ai-agent-grid');
+    assert.equal(agentGrid.style.getPropertyValue('--app-market-ai-role-columns'), '2');
+    assert.doesNotMatch(agentGrid.textContent, /Team|Leader|Single-role session/);
+    const agentCards = agentGrid.querySelectorAll('[data-testid="app-market-ai-role-card"]');
+    assert.equal(agentCards.length, 2);
+    assert.match(agentCards[0].textContent, /Helper.*Answers questions.*Single role\./s);
+    assert.match(agentCards[1].textContent, /Guide.*Shows the way.*New session each visit\./s);
   } finally {
     await ctx.close();
   }
