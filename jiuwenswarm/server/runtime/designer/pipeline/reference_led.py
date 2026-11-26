@@ -142,10 +142,7 @@ _REF_PHRASES: dict[str, dict[str, str]] = {
         "supporting_cast": "配角们",
     },
 }
-# Markers that reference_prompt_issues accepts in either content language.
-_CONTINUES_MARKERS = ("continues from", "承接上一镜")
-_MOTION_SOURCE_MARKERS = ("first frame", "animate this image", "首帧")
-_REFERENCE_ORDER_MARKERS = ("image 1", "last reference", "最后一张参考图")
+
 
 _SUBJECT_ROLE = {
     "character": ROLE_CHARACTER,
@@ -337,45 +334,6 @@ def _shown_look(cfg: dict[str, Any], lang: str) -> str:
     style = cfg.get("style_lock") if isinstance(cfg.get("style_lock"), dict) else {}
     look = strip_phrase(style.get("look"))
     return phrase(_REF_PHRASES, lang, "match_look") if look == MATCH_REFERENCE_LOOK else look
-
-
-def reference_prompt_issues(prompt: str, cfg: dict[str, Any] | None) -> list[str]:
-    cfg = cfg if isinstance(cfg, dict) else {}
-    text = str(prompt or "").strip()
-    reasons: list[str] = []
-    if not text:
-        return ["empty"]
-    action = str(cfg.get("clip_action") or "").strip()
-    if action and action not in text:
-        reasons.append("missing_action")
-    look = _shown_look(cfg, current_content_language())
-    if look and look not in text:
-        reasons.append("missing_style")
-    lighting = str(cfg.get("lighting") or "").strip()
-    if lighting and lighting not in text:
-        reasons.append("missing_lighting")
-    crowd = str(cfg.get("crowd") or "").strip()
-    if crowd and crowd not in text:
-        reasons.append("missing_crowd")
-    try:
-        index = int(cfg.get("clip_index") or 1)
-    except (TypeError, ValueError):
-        index = 1
-    if index > 1:
-        end = str(cfg.get("previous_end_state") or "").strip()
-        if not any(marker in text.lower() for marker in _CONTINUES_MARKERS):
-            reasons.append("missing_continuation")
-        if end and end not in text:
-            reasons.append("missing_previous_end")
-        prev = str(cfg.get("previous_action") or "").strip()
-        if prev and (f"Action: {prev}" in text or f"动作：{prev}" in text):
-            reasons.append("repeats_previous_action")
-    mode = str(cfg.get("reference_call_mode") or "")
-    if mode == "i2v" and not any(marker in text.lower() for marker in _MOTION_SOURCE_MARKERS):
-        reasons.append("missing_motion_source")
-    if mode == "r2v" and not any(marker in text.lower() for marker in _REFERENCE_ORDER_MARKERS):
-        reasons.append("missing_reference_order")
-    return reasons
 
 
 def compose_reference_clip_prompt(cfg: dict[str, Any] | None) -> str:
@@ -1759,12 +1717,17 @@ def _paths_from_plan(cfg: dict[str, Any], graph: dict[str, Any] | None) -> list[
 
 def _merge_ref_paths(planned: list[str], fallback: list[str]) -> list[str]:
     """Keep plan order, then append any edge-collected paths the plan missed."""
+    from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+        reference_path_key,
+    )
+
     out: list[str] = []
     seen: set[str] = set()
     for path in list(planned or []) + list(fallback or []):
         text = str(path or "").strip()
-        if not text or text in seen:
+        key = reference_path_key(text) if text else ""
+        if not key or key in seen:
             continue
-        seen.add(text)
+        seen.add(key)
         out.append(text)
     return out

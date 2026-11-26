@@ -74,3 +74,13 @@ Electron 开发版原先直接运行 `agent_gateway.app_gateway`，打包版的 
 - Windows 项目 `.venv` 运行 `test_builtin_extension_dirs.py`，8 项通过。Electron 入口选择测试通过。
 - 通过开发版 Python 模块入口与打包版参数分发入口，在隔离工作区验证新配置和旧默认配置。锁定的 Gateway `d68e80bf` 均发现 App Market 并绑定 17 个方法，`app_market.list` 返回成功。自定义扩展目录仍按用户配置加载。
 - Vite 生产前端构建通过，产物包含 `app_market.convert_to_local`。未启动完整 Electron 安装包。
+
+## 2026-11-26 的 0.2.10 全新初始化回归
+
+全新初始化后，Gateway 加载了 0 个扩展，`app_market.list` 返回 `unknown method`。初始化从 Gateway 模板生成的 `infra/config/config.yaml` 只含 Gateway 默认扩展路径。启动准备检查了 `config/config.yaml`，而启动参数让 Gateway 读取 `infra/config/config.yaml`。
+
+本地初始化生成的 Gateway 默认配置现在包含 `jiuwenswarm/extensions`。启动准备选定同一份配置，幂等补齐旧默认路径，并将配置目录传给 Gateway 子进程。
+
+Windows 上 12 项定向测试通过，覆盖配置生成、两个配置文件并存、显式配置和启动传参。通过 `jiuwenswarm-init` 创建隔离数据根并启动 Gateway，实际调用 `/ws` 上的 `app_market.list` 成功返回空列表。验证范围为市场方法注册。
+
+同一修复移植至 develop 时，通过 `common/paths.py` 选定 `config/config-gateway.yaml`。以上运行结果来自 0.2.10，develop 移植仅核对了提交差异。

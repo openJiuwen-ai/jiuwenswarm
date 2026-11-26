@@ -30,8 +30,9 @@ map $http_authorization $user_authz {
 }
 
 server {
-    listen ${WEB_HTTP_PORT};
+    include /etc/nginx/optional-upstreams/user-web-listen.inc;
     server_name _;
+    include /etc/nginx/optional-upstreams/user-web-redirect.inc;
 
     include /etc/nginx/mime.types;
     types { application/javascript mjs; }

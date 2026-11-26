@@ -1,69 +1,15 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Image locks, and the short prompt sent to the video model.
-
-Clip-spec images receive style and wardrobe locks. Clip calls are
-rewritten into a concise story-form prompt (wardrobe/seats/visibility
-folded into narrative); those locks stay on the node for the agent.
-"""
+"""Preserve media prompt authority and bind video calls to actual attachments."""
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-_SEED_CONTENT_WORD = re.compile(r"[A-Za-z\u4e00-\u9fff]{3,}")
-_SEED_STOP = frozenset(
-    {
-        "the",
-        "and",
-        "with",
-        "from",
-        "into",
-        "onto",
-        "that",
-        "this",
-        "only",
-        "shot",
-        "film",
-        "camera",
-        "action",
-        "focus",
-        "cast",
-        "screen",
-        "wide",
-        "medium",
-        "tracking",
-        "gentle",
-        "family",
-        "must",
-        "differ",
-        "sibling",
-        "clips",
-    }
+from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+    ReferenceSlot,
+    append_reference_binding,
+    strip_reference_binding,
 )
-
-
-def _merge_user_seed_facts(approved: str, seed: str) -> str:
-    """If compose dropped distinctive user nouns, append a short seed clause."""
-    text = str(approved or "").strip()
-    beat = str(seed or "").strip()
-    if not text or not beat:
-        return text
-    hay = text.casefold()
-    words = [
-        w
-        for w in _SEED_CONTENT_WORD.findall(beat)
-        if w.casefold() not in _SEED_STOP and not w.isdigit()
-    ]
-    # Need several content hits; if under ~40% of distinctive words appear, fold seed in.
-    if not words:
-        return text
-    hit = sum(1 for w in words if w.casefold() in hay)
-    if hit >= max(2, int(len(words) * 0.4)):
-        return text
-    clause = beat
-    merged = f"{text.rstrip('. ')}. Also: {clause}."
-    return merged
 
 
 def _style_from(cfg: dict[str, Any], graph: dict[str, Any], analysis: dict[str, Any]) -> dict[str, Any]:
@@ -133,8 +79,8 @@ def _stamp_sent_prompt(
     """Keep saved surfaces honest with the text actually sent to the video API.
 
     When origin is user, durable beat authority (``user_edit_prompt`` + packet)
-    stays the pre-rewrite toolbar text so the next regenerate cannot treat a
-    stamped practice body as the user's intent.
+    stays the original toolbar text, independent of appended dialogue and
+    attachment bindings.
     """
     text = str(approved or "").strip()
     if not text:
@@ -165,70 +111,37 @@ def apply_wan_call_locks(
     cfg: dict[str, Any] | None = None,
     graph: dict[str, Any] | None = None,
     clip_index: int = 0,
+    slots: list[ReferenceSlot] | None = None,
 ) -> str:
-    """Rewrite the video call into a short image-binding prompt.
-
-    Style, wardrobe, and storyboard locks stay on the node. The video model
-    receives who each image is, where they are, what they do, and what they say.
-
-    When generate.prompt_origin == user with a non-empty user prompt, that text
-    seeds action/camera instead of stale clip_action/camera beats.
-    """
-    # Stamp/notes must mutate the caller's cfg. ensure_prior_clip_story_on_cfg
-    # returns a shallow copy — use that copy only as the director working view.
-    cfg_map = cfg if isinstance(cfg, dict) else {}
-    director_cfg = cfg_map
-    if isinstance(graph, dict):
-        try:
-            from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
-                ensure_prior_clip_story_on_cfg,
-            )
-
-            director_cfg = ensure_prior_clip_story_on_cfg(cfg_map, graph)
-        except Exception:  # noqa: BLE001
-            director_cfg = cfg_map
+    """Preserve authored video prose, explicit dialogue, and actual image bindings."""
+    del clip_index
+    from jiuwenswarm.server.runtime.designer.pipeline.video_call_contract import (
+        prepare_video_prompt,
+    )
     from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
-        _pull_labeled,
-        director_approve_video_prompt,
-        narrative_seed_from_user_prompt,
+        active_video_family,
         resolve_user_origin_prompt,
     )
 
-    user_text = resolve_user_origin_prompt(cfg_map, prompt)
-    if user_text:
-        candidate = user_text
-        action = narrative_seed_from_user_prompt(user_text) or user_text
-        camera = _pull_labeled(user_text, ("camera move", "camera for shot", "camera"))
-        if not camera:
-            # Film-shot essays often put Camera on the same line as "Film shot N".
-            m = re.search(
-                r"(?i)\bcamera\b\s*[:.]?\s*(.+?)(?:\.\s*action\b|\.\s*focus\b|$)",
-                user_text,
-            )
-            if m:
-                camera = m.group(1).strip()[:240]
-    else:
-        candidate = prompt
-        action = str(director_cfg.get("clip_action") or "")
-        camera = str(director_cfg.get("camera") or "")
-
-    approved, notes = director_approve_video_prompt(
-        candidate,
-        cfg=director_cfg,
-        graph=graph if isinstance(graph, dict) else {},
-        clip_index=clip_index,
-        action=action,
-        camera=camera,
-    )
-    # If compose dropped user nouns (prop/color), fold a short seed clause in.
-    if user_text and action:
-        approved = _merge_user_seed_facts(approved, action)
-    cfg_map["director_video_prompt_notes"] = list(notes)
-    cfg_map["director_video_prompt_approved"] = True
+    cfg_map = cfg if isinstance(cfg, dict) else {}
+    user_text = resolve_user_origin_prompt(cfg_map)
+    candidate = user_text or prompt
+    if not isinstance(candidate, str) or not candidate.strip():
+        raise ValueError("Video prompt must be a non-empty string")
+    # Remove only a previously stamped binding, then render the actual attach order.
+    candidate = strip_reference_binding(candidate, cfg_map)
+    prepared = prepare_video_prompt(candidate, cfg=cfg_map, graph=graph)
+    if slots is not None:
+        prepared = append_reference_binding(
+            prepared,
+            slots,
+            cfg=cfg_map,
+            family=active_video_family(),
+        )
     _stamp_sent_prompt(
         cfg_map,
-        approved,
+        prepared,
         user_origin=bool(user_text),
         user_edit=user_text,
     )
-    return approved
+    return prepared
