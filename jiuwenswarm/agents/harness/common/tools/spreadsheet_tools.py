@@ -197,6 +197,7 @@ def _read_csv(path: Path, req: ReadSpreadsheetRequest) -> str:
         if total_data_count == 0:
             return (
                 f"**File: {path.name} (CSV, header only)**\n\n"
+                f"{_build_markdown_table([header])}\n\n"
                 "[Note: The file has a header row but no data rows.]"
             )
         return (
@@ -283,6 +284,13 @@ def _format_excel_output(
     header, data_rows, has_more_rows, total_rows = page
     sheets_nav = _format_sheets_nav(sheetnames, active_sheet_name)
     target_start = max(1, req.start_row)
+    if not data_rows and total_rows == 0:
+        return (
+            f"**File: {file_name} | Sheet: {active_sheet_name} (header only)**\n"
+            f"{sheets_nav}\n\n"
+            f"{_build_markdown_table([header])}\n\n"
+            "[Note: The sheet has a header row but no data rows.]"
+        )
     if not data_rows and total_rows is not None and target_start > total_rows:
         return (
             f"**File: {file_name} | Sheet: {active_sheet_name} ({total_rows} data rows)**\n"

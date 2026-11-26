@@ -259,6 +259,27 @@ async def test_read_csv_header_only_reports_no_data_rows(tmp_path: Path) -> None
     assert "header only" in result
     assert "no data rows" in result
     assert "Showing rows" not in result
+    assert "| ID | Value |" in result
+
+
+@pytest.mark.asyncio
+async def test_read_excel_header_only_reports_no_data_rows(tmp_path: Path) -> None:
+    """Verify a header-only Excel sheet does not report a contradictory start_row range."""
+    excel_path = tmp_path / "header_only.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Template"
+    sheet.append(["ID", "Value"])
+    workbook.save(excel_path)
+    workbook.close()
+
+    result = await read_spreadsheet.invoke({"file_path": str(excel_path)})
+
+    assert "header only" in result
+    assert "no data rows" in result
+    assert "beyond the last data row" not in result
+    assert "Showing rows" not in result
+    assert "| ID | Value |" in result
 
 
 @pytest.mark.asyncio
