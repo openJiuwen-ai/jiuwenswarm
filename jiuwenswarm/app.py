@@ -10,6 +10,7 @@ Supports ``--dotenv <path>`` for multi-instance isolation.
 from __future__ import annotations
 import signal
 import sys
+import threading
 import os
 import uuid
 import logging
@@ -137,10 +138,22 @@ def main() -> None:
     # launcher command. UpgradeExecutor uses it to build a valid restart.
     recovery_session_id = uuid.uuid4().hex
     os.environ["JIUWENSWARM_RECOVERY_SESSION_ID"] = recovery_session_id
-    try:
-        begin_system_plugin_recovery_session()
-    except Exception:  # noqa: BLE001 - recovery history must not block service startup
-        logger.warning("[SystemPluginRecovery] could not create startup record", exc_info=True)
+
+    def _prepare_recovery_history() -> None:
+        # The first config read imports openjiuwen.symphony. Do it together with
+        # the startup record in a daemon thread so the backend children start
+        # immediately; each child also creates the record when it wins the race.
+        try:
+            from jiuwenswarm.common.config import warm_up_config
+
+            warm_up_config()
+            begin_system_plugin_recovery_session()
+        except Exception:  # noqa: BLE001 - recovery history must not block service startup
+            logger.warning("[SystemPluginRecovery] could not create startup record", exc_info=True)
+
+    threading.Thread(
+        target=_prepare_recovery_history, name="recovery-history", daemon=True,
+    ).start()
 
     child_env = {
         **os.environ,
@@ -170,7 +183,13 @@ def main() -> None:
     from jiuwenswarm.common.process_supervision import application_shutdown
     from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
 
-    recovery = SystemPluginRecovery()
+    recovery: SystemPluginRecovery | None = None
+
+    def _recovery() -> SystemPluginRecovery:
+        nonlocal recovery
+        if recovery is None:
+            recovery = SystemPluginRecovery()
+        return recovery
 
     def _retire_recovery_worker() -> None:
         if shutdown_application_worker():
@@ -184,7 +203,7 @@ def main() -> None:
 
     def _backend_restart_requested() -> bool:
         try:
-            return recovery.consume_backend_restart(recovery_session_id)
+            return _recovery().consume_backend_restart(recovery_session_id)
         except Exception:  # noqa: BLE001 - recovery must not stop supervision
             logger.warning("[SystemPluginRecovery] could not read restart request", exc_info=True)
             return False

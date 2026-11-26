@@ -1819,7 +1819,8 @@ class AgentWebSocketServer:
         # delay startup; ContextEngine is local-only and uses string fallback
         # if this task has not completed when the first context is created.
         async def _prepare_tokenizers() -> bool:
-            return await self._schedule_tokenizer_warmup(get_config(), reason="startup")
+            config = await asyncio.to_thread(get_config)
+            return await self._schedule_tokenizer_warmup(config, reason="startup")
 
         preparation.register("tokenizers", _prepare_tokenizers)
 
