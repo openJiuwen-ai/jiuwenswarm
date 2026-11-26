@@ -4131,7 +4131,21 @@ def update_agent_template(params: dict) -> None:
         raise ValueError(
             f"only local packages can be edited: {package_id} (source={existing.get('source')!r})"
         )
-    _assert_agent_template_name_available(name, exclude_package_id=package_id)
+    # 判重只拦截改名：显示名与自身 manifest 现值一致（含仅大小写变化）时跳过
+    # 校验。存量同名数据（本判重不追溯）不应导致「仅改描述/技能」无法保存。
+    own_manifest = read_package_manifest(pkg_dir)
+    own_names: set[str] = set()
+    if own_manifest is not None:
+        raw_name = own_manifest.get("name")
+        fallback = (
+            raw_name if isinstance(raw_name, str) and raw_name.strip() else package_id
+        )
+        own_names = {
+            value.strip().casefold()
+            for value in _i18n(own_manifest.get("display_name"), fallback).values()
+        }
+    if name.strip().casefold() not in own_names:
+        _assert_agent_template_name_available(name, exclude_package_id=package_id)
 
     # Failures in the in-place rewrite propagate to the caller unchanged; there
     # is no partial state to clean up here (unlike create, which removes a
@@ -4596,10 +4610,6 @@ def _commit_imported_package(
     if kind == _AGENT_TEMPLATE_KIND:
         _validate_agent_template_import_layout(pkg_root, manifest)
         _validate_manifest_import_skill_paths(manifest, pkg_root, kind_label="agent_template")
-        for display_name in dict.fromkeys(
-            _i18n(manifest.get("display_name"), package_id).values()
-        ):
-            _assert_agent_template_name_available(display_name.strip())
     if kind == _PLUGIN_PACKAGE_KIND:
         _validate_manifest_import_skill_paths(manifest, pkg_root, kind_label="plugin")
     if kind == _AGENT_GROUP_KIND:
@@ -4624,6 +4634,13 @@ def _commit_imported_package(
         kind=kind_label,
         resources_root=_resources_root(kind),
     )
+    if kind == _AGENT_TEMPLATE_KIND:
+        # 显示名判重放在 id 判重之后：同 id 重导入应报 id 冲突，而不是
+        # 「显示名与自己冲突」；同名不同 id 的导出副本仍在此拦截。
+        for display_name in dict.fromkeys(
+            _i18n(manifest.get("display_name"), package_id).values()
+        ):
+            _assert_agent_template_name_available(display_name.strip())
     dest = local_root / package_id
     local_root.mkdir(parents=True, exist_ok=True)
     staging_parent = Path(

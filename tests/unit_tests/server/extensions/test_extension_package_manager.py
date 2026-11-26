@@ -1706,8 +1706,11 @@ class TestImportLocal:
         marker = pkg / "_keep.txt"
         marker.write_text("keep", encoding="utf-8")
         src = _write_src_dir(tmp_path, kind, "mine")
-        with pytest.raises(ValueError, match="already exists"):
+        with pytest.raises(ValueError, match="already exists") as excinfo:
             _import_package(kind, {"path": str(src)})
+        if kind == AGENT_TEMPLATES:
+            # 同 id 必须命中 id 判重，而不是被显示名判重抢先报「与自己冲突」。
+            assert "display name conflict" not in str(excinfo.value)
         assert marker.read_text(encoding="utf-8") == "keep"
         manifest = json.loads((pkg / "manifest.json").read_text(encoding="utf-8"))
         if kind == AGENT_TEMPLATES:
@@ -1984,6 +1987,41 @@ class TestAgentTemplateNameUniqueness:
         )
         assert manifest["name"] == "Demo-Expert"
         assert manifest["description"] == "D2"
+
+    def test_update_allows_unchanged_name_despite_legacy_duplicate(
+        self, extension_workspace: Path
+    ) -> None:
+        """存量同名数据不追溯：未改名的普通编辑（仅改描述）仍可保存。"""
+        create_package(AGENT_TEMPLATES, "demo-expert")
+        create_package(AGENT_TEMPLATES, "other-expert")
+        # 人为构造判重上线前的存量同名：other-expert 的显示名与 demo-expert 相同。
+        other_manifest_path = (
+            extension_workspace
+            / "plugins"
+            / AGENT_TEMPLATES
+            / "local"
+            / "other-expert"
+            / "manifest.json"
+        )
+        other_manifest = json.loads(other_manifest_path.read_text(encoding="utf-8"))
+        other_manifest["display_name"] = {"zh": "demo-expert", "en": "demo-expert"}
+        other_manifest["name"] = "demo-expert"
+        other_manifest_path.write_text(
+            json.dumps(other_manifest, ensure_ascii=False), encoding="utf-8"
+        )
+
+        catalog.update_agent_template(
+            {
+                "id": "other-expert",
+                "name": "demo-expert",
+                "description": "D3",
+                "persona": "P3",
+                "skills": [],
+            }
+        )
+
+        updated = json.loads(other_manifest_path.read_text(encoding="utf-8"))
+        assert updated["description"] == "D3"
 
 
 class TestInstallPendingConnectorsGate:
