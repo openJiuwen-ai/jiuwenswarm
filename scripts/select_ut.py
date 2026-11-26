@@ -123,10 +123,15 @@ def select(base_ref: str) -> list[str]:
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(message)s')
+    # The shell reads one test path per line from stdout.
+    path_output = logging.getLogger('ut.paths')
+    path_output.setLevel(logging.INFO)
+    path_output.propagate = False
+    path_output.addHandler(logging.StreamHandler(sys.stdout))
     try:
         paths = select(sys.argv[1] if len(sys.argv) > 1 else '')
     except SyntaxError as exc:
         paths = fallback(f'Python parse failed: {exc.filename!r}')
     except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError) as exc:
         paths = fallback(f'{type(exc).__name__}: {exc}')
-    sys.stdout.write('\n'.join(paths) + '\n')
+    path_output.info('%s', '\n'.join(paths))
