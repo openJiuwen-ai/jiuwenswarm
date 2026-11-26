@@ -105,7 +105,10 @@ symphony:
         return session_model if llm.model == "session-model" else default_model
 
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: raw)
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
+    )
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model", lambda: default_llm)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.model_from_config", resolve_model)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.build.model_from_config", resolve_model)

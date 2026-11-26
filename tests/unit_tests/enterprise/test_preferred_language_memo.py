@@ -126,3 +126,14 @@ def test_framework_language_from_params_prefers_ui_language(monkeypatch):
 def test_framework_language_from_params_falls_back_to_preferred():
     assert pref.framework_language_from_params({}, "zh") == "zh"
     assert pref.framework_language_from_params(None, "en") == "en"
+
+
+def test_enterprise_memo_en_overrides_yaml_zh(monkeypatch):
+    """UI/user preference memo must win over AS template yaml zh."""
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.edition.is_enterprise",
+        lambda: True,
+    )
+    monkeypatch.setattr(pref, "_yaml_or_en", lambda: "zh")
+    with pref.bind_preferred_language_memo(user_id="alice", language="en"):
+        assert pref.resolve_preferred_language() == "en"

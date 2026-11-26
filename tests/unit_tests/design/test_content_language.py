@@ -10,9 +10,14 @@ import pytest
 from jiuwenswarm.server.runtime.designer.pipeline import content_language as cl
 
 
+_RESOLVE_PREFERRED = (
+    "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language"
+)
+
+
 @pytest.fixture()
 def zh_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cl, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(_RESOLVE_PREFERRED, lambda: "zh")
 
 
 def _english_words(text: str) -> set[str]:
@@ -23,7 +28,8 @@ def _english_words(text: str) -> set[str]:
 def test_current_content_language_follows_preferred_language(
     monkeypatch: pytest.MonkeyPatch, preferred: str | None, expected: str
 ) -> None:
-    monkeypatch.setattr(cl, "get_config", lambda: {"preferred_language": preferred})
+    # None is not "en" → current_content_language maps it to zh (non-English bucket).
+    monkeypatch.setattr(_RESOLVE_PREFERRED, lambda: preferred)
     assert cl.current_content_language() == expected
 
 
@@ -85,7 +91,7 @@ def test_chinese_smart_graph_keeps_locks_out_of_visible_and_api_text(monkeypatch
     from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import director_approve_video_prompt
     from jiuwenswarm.server.runtime.designer.smart_graph import build_smart_video_graph
 
-    monkeypatch.setattr(cl, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(_RESOLVE_PREFERRED, lambda: "zh")
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.designer.capabilities.detect_audio_backends",
         lambda: {"can_speech": False, "can_music": False, "can_video_audio": True},

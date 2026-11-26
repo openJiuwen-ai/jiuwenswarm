@@ -154,13 +154,21 @@ def clear_recommendation_language_cache() -> None:
 def recommendation_language() -> str:
     """The language user-visible recommendation copy must use."""
 
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    # Enterprise is per-request memo; do not reuse a process-wide cache across users.
+    if is_enterprise():
+        return resolve_preferred_language()
+
     global _LANGUAGE_CACHE
     now = time.monotonic()
     cached = _LANGUAGE_CACHE
     if cached is not None and now - cached[0] < _LANGUAGE_CACHE_TTL_SECONDS:
         return cached[1]
-    raw = str(get_config().get("preferred_language") or "zh").strip().lower()
-    language = "en" if raw == "en" else "zh"
+    language = resolve_preferred_language()
     _LANGUAGE_CACHE = (now, language)
     return language
 
