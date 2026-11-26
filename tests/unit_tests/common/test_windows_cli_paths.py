@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,22 @@ from jiuwenswarm.common import windows_cli_paths as paths
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "preserve-windows-cli.ps1"
+
+
+def _append_probed_executable(path: Path, content: bytes) -> None:
+    """Wait for a temporary Windows image lock before mutating a test fixture."""
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            stream = path.open("ab")
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+        else:
+            with stream:
+                stream.write(content)
+            return
 
 
 def _inno_setup_compiler() -> Path | None:
@@ -1202,8 +1219,7 @@ def test_runtime_bundle_build_emits_identity_for_only_distributed_files(tmp_path
     if mutate_payload:
         # Signing changes PE bytes after copying; no certificate is needed to
         # exercise the identity boundary with an equivalent byte mutation.
-        with (bundled / "node.exe").open("ab") as payload:
-            payload.write(b"post-copy-signature-fixture")
+        _append_probed_executable(bundled / "node.exe", b"post-copy-signature-fixture")
     command = "Import-Module '" + str(module) + "'; Write-NodeRuntimeManifest -DistDir '" + str(dist) + "'"
     result = subprocess.run([str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], capture_output=True, timeout=60)
     assert result.returncode == 0, result.stderr

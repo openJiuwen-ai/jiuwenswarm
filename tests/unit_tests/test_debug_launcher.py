@@ -43,7 +43,7 @@ def debug_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _state(pid: int = 4242, log_file: str = "/tmp/swarm.log") -> DebugState:
-    """Build a DebugState with a zero timestamp (skips create_time matching)."""
+    """Build legacy state; CLI tests patch verification separately."""
     return DebugState(
         pid=pid,
         started_at=0.0,
@@ -51,6 +51,11 @@ def _state(pid: int = 4242, log_file: str = "/tmp/swarm.log") -> DebugState:
         command=[sys.executable, "-m", "jiuwenswarm.start_services", "all"],
         cwd="/tmp",
     )
+
+
+@pytest.fixture
+def verified_debug_identity(monkeypatch):
+    monkeypatch.setattr(debug_launcher, "_debug_process_identity", lambda state: 1_000_000.0)
 
 
 # --------------------------------------------------------------------------
@@ -262,11 +267,8 @@ def test_is_debug_service_alive_checks_process_create_time(
     )
     fake_proc = MagicMock()
     fake_proc.create_time.return_value = create_time
-    fake_psutil = MagicMock()
-    fake_psutil.Process.return_value = fake_proc
-
     with patch.object(debug_launcher, "is_process_alive", return_value=True):
-        with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        with patch("psutil.Process", return_value=fake_proc):
             assert is_debug_service_alive(state) is expected
 
 
@@ -558,7 +560,7 @@ def test_run_debug_requires_uv(debug_root: Path):
     assert read_debug_state() is None
 
 
-def test_run_debug_refuses_when_already_running(debug_root: Path):
+def test_run_debug_refuses_when_already_running(debug_root: Path, verified_debug_identity):
     write_debug_state(_state(pid=777))
     with patch.object(debug_launcher, "is_process_alive", return_value=True):
         assert run_debug() == 1
@@ -598,7 +600,7 @@ def test_stop_without_state_is_noop(debug_root: Path):
     worker_stopper.assert_not_called()
 
 
-def test_stop_terminates_recorded_process(debug_root: Path):
+def test_stop_terminates_recorded_process(debug_root: Path, verified_debug_identity):
     write_debug_state(_state(pid=5555))
     alive = iter([True, False])
     with patch.object(debug_launcher, "is_process_alive", side_effect=lambda _pid: next(alive)):
@@ -606,12 +608,12 @@ def test_stop_terminates_recorded_process(debug_root: Path):
             with patch.object(debug_launcher, "_stop_resident_worker", return_value=True) as worker_stopper:
                 assert stop_debug_service(timeout=1.0) == 0
 
-    stopper.assert_called_once_with(5555, timeout=1.0)
+    stopper.assert_called_once_with(5555, timeout=1.0, expected_created=1_000_000.0)
     worker_stopper.assert_called_once_with(timeout=1.0)
     assert read_debug_state() is None
 
 
-def test_stop_fails_when_resident_worker_survives(debug_root: Path):
+def test_stop_fails_when_resident_worker_survives(debug_root: Path, verified_debug_identity):
     write_debug_state(_state(pid=5555))
     alive = iter([True, False])
     with patch.object(debug_launcher, "is_process_alive", side_effect=lambda _pid: next(alive)):
@@ -632,7 +634,7 @@ def test_stop_clears_state_when_already_dead(debug_root: Path):
     assert read_debug_state() is None
 
 
-def test_stop_keeps_state_when_process_survives(debug_root: Path):
+def test_stop_keeps_state_when_process_survives(debug_root: Path, verified_debug_identity):
     write_debug_state(_state(pid=5555))
     with patch.object(debug_launcher, "is_process_alive", return_value=True):
         with patch.object(debug_launcher, "_stop_process_tree", return_value=False):
@@ -656,6 +658,7 @@ def test_stop_keeps_state_when_process_survives(debug_root: Path):
 )
 def test_stop_uses_separate_phase_budgets(
     debug_root: Path,
+    verified_debug_identity,
     *,
     legacy_pid: int | None,
     timeout: float | None,
@@ -671,7 +674,7 @@ def test_stop_uses_separate_phase_budgets(
         patch.object(debug_launcher, "_stop_resident_worker", return_value=True) as worker,
     ):
         assert stop_debug_service(timeout, worker_timeout=worker_timeout, legacy_worker_pid=legacy_pid) == 0
-    front.assert_called_once_with(5555, timeout=expected_front)
+    front.assert_called_once_with(5555, timeout=expected_front, expected_created=1_000_000.0)
     if legacy_pid is None:
         worker.assert_called_once_with(timeout=expected_worker)
     else:
@@ -830,7 +833,7 @@ def test_stop_process_tree_preserves_workers_on_windows():
          patch.object(process_supervision, "terminate_service_tree") as tree, \
          patch.object(debug_launcher, "stop_process_by_pid") as single:
         assert debug_launcher._stop_process_tree(7000, timeout=2.0) is True
-    tree.assert_called_once_with(7000, timeout=2.0)
+    tree.assert_called_once_with(7000, timeout=2.0, expected_created=None)
     single.assert_not_called()
 
 
