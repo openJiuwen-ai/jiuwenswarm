@@ -809,8 +809,14 @@ class ManagementRequests:
 
 
     async def handle_assets_package_request(self, request: AgentRequest) -> AgentResponse | None:
-        """Handle unified asset transfer requests (assets.export / assets.import);
-        None means not one of them."""
+        """Handle unified asset import and export requests.
+
+        Args:
+            request: The incoming asset transfer request.
+
+        Returns:
+            The transfer response, or None for an unrelated request method.
+        """
         host = self._host
         if request.req_method not in (ReqMethod.ASSETS_EXPORT, ReqMethod.ASSETS_IMPORT):
             return None
