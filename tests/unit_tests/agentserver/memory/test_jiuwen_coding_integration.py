@@ -1,5 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Swarm Coding assembly uses dependency stubs at the Core/Memory boundary."""
+import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call
@@ -13,6 +14,7 @@ from jiuwenswarm.agents.harness.common.memory import team_memory_members
 from jiuwenswarm.agents.harness.common.rails.memory_forbidden_rail import _targets_memory
 from jiuwenswarm.common.coding_memory_paths import resolve_coding_memory_project_name
 from jiuwenswarm.common.memory_config import get_builtin_memory_provider
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.server.runtime.agent_adapter import interface_code, interface_deep
 
 
@@ -649,3 +651,93 @@ def test_work_assembly_does_not_import_coding_rail(monkeypatch):
 
 def test_unknown_memory_scene_is_disabled():
     assert builder.build_jiuwen_memory_rail(config(), scene="unknown") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attach_only", [False, True])
+async def test_team_stream_only_reconciles_memory_for_user_input(monkeypatch, attach_only):
+    from jiuwenswarm.server.runtime.agent_adapter import team_helpers
+
+    cfg = config()
+    monkeypatch.setattr(interface_deep, "get_config", lambda: cfg)
+    obj = interface_deep.JiuWenSwarmDeepAdapter()
+    obj._is_session_scoped_adapter = True
+    obj._instance = SimpleNamespace(unregister_rail=AsyncMock())
+    previous = object()
+    obj._memory_rail = previous
+    monkeypatch.setattr(obj, "_drain_jiuwen_memory_rail", AsyncMock())
+    monkeypatch.setattr(obj, "_ensure_enterprise_models", AsyncMock())
+    monkeypatch.setattr(obj, "_model_config_error", lambda _request: None)
+    monkeypatch.setattr(obj, "_resolve_model_for_request", lambda _request: None)
+    monkeypatch.setattr(obj, "_apply_model_to_react_agent", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(obj, "_write_runtime_state", lambda **_kwargs: None)
+
+    async def team_stream(request, _inputs, _instance):
+        yield AgentResponseChunk(
+            request_id=request.request_id, channel_id=request.channel_id,
+            payload={"event_type": "chat.delta", "content": "team event"},
+        )
+
+    monkeypatch.setattr(team_helpers, "process_team_message_stream", team_stream)
+    request = AgentRequest(
+        request_id="observer" if attach_only else "user-turn", channel_id="web",
+        session_id="memory-race", is_stream=True,
+        params={"mode": "team.work.normal", "query": "" if attach_only else "count",
+                "attach_only": attach_only},
+    )
+    chunks = [chunk async for chunk in obj.process_message_stream_impl(
+        request, {"query": request.params["query"]},
+    )]
+
+    assert [chunk.payload for chunk in chunks] == [
+        {"event_type": "chat.delta", "content": "team event"},
+    ], "Both input and passive subscriptions must reach the Team stream"
+    if attach_only:
+        obj._drain_jiuwen_memory_rail.assert_not_awaited()
+        obj._instance.unregister_rail.assert_not_awaited()
+        assert obj._memory_rail is previous
+    else:
+        obj._drain_jiuwen_memory_rail.assert_awaited_once_with(previous)
+        obj._instance.unregister_rail.assert_awaited_once_with(previous)
+        assert obj._memory_rail is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_team_memory_reconciliation_unregisters_once(monkeypatch):
+    monkeypatch.setattr(interface_deep, "get_config", config)
+    obj = interface_deep.JiuWenSwarmDeepAdapter()
+    previous = SimpleNamespace(get_callbacks=lambda: {})
+    obj._memory_rail = previous
+    obj._instance = SimpleNamespace(
+        unregister_rail=AsyncMock(side_effect=lambda candidate: candidate.get_callbacks()),
+    )
+    draining = asyncio.Event()
+    release = asyncio.Event()
+    contender_started = asyncio.Event()
+
+    async def drain(_rail):
+        draining.set()
+        await release.wait()
+
+    async def contend():
+        contender_started.set()
+        await obj._handle_memory_rail_by_config("team")
+
+    monkeypatch.setattr(obj, "_drain_jiuwen_memory_rail", AsyncMock(side_effect=drain))
+    tasks = [asyncio.create_task(obj._handle_memory_rail_by_config("team.work.normal"))]
+    try:
+        await asyncio.wait_for(draining.wait(), timeout=2)
+        tasks.append(asyncio.create_task(contend()))
+        await asyncio.wait_for(contender_started.wait(), timeout=2)
+        drain_count_while_waiting = obj._drain_jiuwen_memory_rail.await_count
+    finally:
+        release.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=2,
+        )
+
+    assert results == [None, None], "Concurrent reconciliation must not unregister None"
+    assert drain_count_while_waiting == 1, "The second request must wait for the first cleanup"
+    obj._drain_jiuwen_memory_rail.assert_awaited_once_with(previous)
+    obj._instance.unregister_rail.assert_awaited_once_with(previous)
+    assert obj._memory_rail is None
