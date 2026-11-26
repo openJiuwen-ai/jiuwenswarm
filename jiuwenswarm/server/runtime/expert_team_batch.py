@@ -57,6 +57,9 @@ async def _prepare_owner(
     # deployments deliver models through Gateway templates, so the raw
     # AgentServer config leaves ${MODEL_PROVIDER} empty and owner creation fails.
     config_base = (await resolve_agent_config(get_config(), request=request)).config
+    swarmflow_config = _resolve_session_swarmflow_config(
+        params, config_base, session_id=session_id, project_dir=metadata.get("project_dir"),
+    )
     spec = await team_manager.get_swarm_enriched_team_spec(
         session_id=session_id,
         mode=metadata["mode"],
@@ -70,9 +73,7 @@ async def _prepare_owner(
         agent_group_name=owner_group or None,
         dispatch_mode=dispatch_mode,
         bootstrap_mode=bootstrap_mode,
-        swarmflow_config=_resolve_session_swarmflow_config(
-            params, config_base, session_id=session_id, project_dir=metadata.get("project_dir"),
-        ),
+        swarmflow_config=swarmflow_config,
         config_base=config_base,
     )
     if owner_id and spec.team_name != owner_id:
@@ -132,8 +133,12 @@ async def _prepare_owner(
                 logger.warning("Could not persist owner display identity: team=%s", spec.team_name, exc_info=True)
         persist_session_team_dispatch_mode(session_id, spec.dispatch_mode)
         persist_session_team_bootstrap_mode(session_id, spec.bootstrap_mode)
+        # 落盘用户意图（门禁/封顶之前），企业策略放开后旧会话可自动跟随。
         persist_session_swarmflow_config(session_id, {
-            "enable_swarmflow": spec.enable_swarmflow, "swarmflow_budget": spec.swarmflow_budget,
+            "enable_swarmflow": bool(swarmflow_config.get("swarmflow_user_enable", False)),
+            "swarmflow_budget": swarmflow_config.get("swarmflow_user_budget"),
+            "swarmflow_budget_cap": swarmflow_config.get("swarmflow_budget_cap"),
+            "swarmflow_allowed": bool(swarmflow_config.get("swarmflow_allowed", True)),
         })
         await runtime.pause(team_name=spec.team_name, session_id=session_id)
         # A materialized, paused owner has not started its chat stream or

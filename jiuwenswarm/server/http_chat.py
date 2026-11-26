@@ -24,11 +24,15 @@ _CHAT_BOOKKEEPING = (
     ReqMethod.CHAT_SEND,
     ReqMethod.CHAT_RESUME,
     ReqMethod.CHAT_ANSWER,
+    # SwarmFlow 人工轮回复与 user_answer 同构：把人的输入投递给一个挂起的
+    # 回合。企业版 HTTP 平面靠这条把 chat.swarmflow_reply 送进 handle_unary
+    # （runtime.invoke → 适配器 handle_swarmflow_reply → team_manager.interact）。
+    ReqMethod.CHAT_SWARMFLOW_REPLY,
 )
 
 
 def is_http_chat_method(method: ReqMethod | None) -> bool:
-    """这三条聊天不在普通处理函数表里，网址直接交给聊天适配。"""
+    """这几条聊天不在普通处理函数表里，网址直接交给聊天适配。"""
     return method in _CHAT_BOOKKEEPING
 
 
