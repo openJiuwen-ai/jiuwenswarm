@@ -1447,6 +1447,9 @@ async def test_runtime_prompt_skill_dirs_match_active_loader(
 ):
     workspace = tmp_path / "internal"
     workspace.mkdir()
+    residual = workspace / "skills" / "ppt-master"
+    residual.mkdir(parents=True)
+    (residual / "SKILL.md").write_text("old skill", encoding="utf-8")
     shared_roots = [tmp_path / "official", tmp_path / "user"]
     extra_root = tmp_path / "extension"
     adapter = _TestableJiuWenSwarmDeepAdapter()
@@ -1487,6 +1490,21 @@ async def test_runtime_prompt_skill_dirs_match_active_loader(
     assert f"{storage_label}:" in prompt or f"{storage_label}：" in prompt
     loading_paths = prompt.split(loading_label, 1)[1].split("\n\n", 1)[0]
     assert loading_paths.splitlines()[1:] == [f"  - {root}" for root in expected_roots]
+    discovery_label = (
+        "当前技能发现根目录"
+        if language == "cn" else "Current skill-discovery roots"
+    )
+    assert prompt.count(loading_label) + prompt.count(discovery_label) == 1
+    evidence_guidance = (
+        "- 注意：内部技能存储目录中存在技能文件，不代表该技能已安装或当前可用；"
+        "请通过安装管理查询工具核实。"
+        if language == "cn" else
+        "- Note: Skill files in the internal skill storage directory do not establish "
+        "that the skill is installed or currently available; "
+        "verify through the installation-management query tool."
+    )
+    storage_lines = prompt.split(storage_label, 1)[1].splitlines()
+    assert storage_lines[1] == evidence_guidance
     install_guidance = (
         "由安装工具选择目标目录并完成注册"
         if language == "cn" else "The installation tool selects the destination and registers the skill"

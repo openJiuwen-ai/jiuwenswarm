@@ -53,6 +53,7 @@ _DIRECTORY_MODEL_CN = """# 目录模型
 - 项目目录是文件操作的严格上限边界；严禁用 `../` 越界访问项目目录之外的用户系统文件。
 - 任务中出现 config/、memory/、skills/、todo/ 等逻辑名不自动映射到 Agent 内部目录。
 - 绝对路径以运行时注入的目录与环境信息为准。
+- 技能发现根目录以运行时列出的当前加载目录为准，不等同于 Agent 内部数据目录中的 skills 子目录。
 """
 
 _DIRECTORY_MODEL_EN = """# Directory Model
@@ -70,6 +71,7 @@ Four fixed terms and their definitions:
 - The project directory is the strict upper boundary for file operations; never use `../` to escape the project directory and access the user's system files outside it.
 - Logical names such as config/, memory/, skills/, todo/ in a task do not automatically map to the Agent internal directories.
 - For absolute paths, rely on the directory and environment information injected at runtime.
+- Skill-discovery roots follow the current loading directories listed at runtime, which may differ from the skills subdirectory of the Agent internal data directory.
 """
 
 _WRITE_LOCATION_CN = """# 写入位置
