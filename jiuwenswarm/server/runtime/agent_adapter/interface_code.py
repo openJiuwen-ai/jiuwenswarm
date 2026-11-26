@@ -485,6 +485,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "CodingArtifactPostProcessRail",
         "AgentModeRail", "StructuredAskUserRail", "ConfirmInterruptRail",
         "FileSystemRail",  # 别名
+        # 技能链两条（固定装配，见 _build_agent_rails）：列入固定集后，
+        # modes.code.rails 误配这两个名字只会被跳过，不会走动态重复注册。
+        "SkillCredentialInjectionRail", "SkillActiveStateRail",
     })
 
     def __init__(
@@ -714,7 +717,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """Build rails for code mode: fixed rails + dynamic rails from config.
 
         Code 模式固定包含 LspRail、ProjectMemoryRail、CodingMemoryRail。plan 相关
-        的 rails 同样固定挂载，不按子模式分叉。
+        的 rails 同样固定挂载，不按子模式分叉。技能链的 active_state / credential
+        两条 rail 与 agent 模式一致固定挂载（见列表后的 insert(0/1)）。
         """
         mode_config = config_base.get("modes", {}).get("code", {})
         artifact_config = mode_config.get("artifact_post_process") or {}
@@ -792,6 +796,31 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
         ]
+
+        # 技能链两条 rail 必须与 agent 模式（interface_deep._build_agent_rails
+        # 的 insert(0/1)）对齐：SkillActiveStateRail 持久化会话级 active_skill，
+        # SkillCredentialInjectionRail 按它把 runtime config 的 react.skill_envs
+        # 注入 shell 工具。缺任一 = 「技能能激活、脚本却读不到凭据 env」。
+        # 不放 config.yaml::modes.code.rails：_RAIL_BUILD_NAMES 没有这两个名字，
+        # 配在那里只会被当成 unknown rail 跳过。
+        rail_infos.insert(
+            0,
+            _RailBuildInfo(
+                "_skill_credential_injection_rail",
+                self._build_skill_credential_injection_rail,
+                {"config": config},
+            ),
+        )
+        rail_infos.insert(
+            1,
+            _RailBuildInfo(
+                "_skill_active_state_rail",
+                self._build_skill_active_state_rail,
+                {"config": config},
+            ),
+        )
+        # SkillSleepRail 有意不挂：code 覆写的 _reconcile_evolution_rails 每次
+        # reload 主动停用演进链，休眠训练属演进能力，挂上会被立即停用。
 
         normalized_sub_mode = _normalize_code_sub_mode(sub_mode)
         # The CodeAdapter may be rebuilt through JiuWenSwarm.create_instance(),

@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_05 / agent-skill-rails |
 | 关联模块 | jiuwenswarm/agents/harness/common/rails/skill_*.py + runtime_prompt_rail.py + subagent_skill_authorization_rail.py + rails/permissions/skill_authorization/（file_store + runtime）；flash/prompt/content/{tools,persona}.py |
-| 最近一次修订日期 | 2026-11-24 |
-| 关联 feature | B_02_skill-state-storage-failure-degradation.md（bugfix 归档：存储失败双路径语义） |
+| 最近一次修订日期 | 2026-11-26 |
+| 关联 feature | B_02_skill-state-storage-failure-degradation.md、B_03_skill-install-state-and-runtime-paths.md、B_04_code-adapter-missing-skill-rails.md（bugfix 归档） |
 
 ## 范围 / 边界
 
@@ -18,19 +18,19 @@ swarm 侧 7 个技能 rail 的**运行时行为契约**：priority、挂载条�
 
 rail 回调框架按 **priority 数值大者先执行**。技能链装配点与优先级：
 
-| Rail | priority | 挂载条件 / 装配点（interface_deep.py） |
+| Rail | priority | 挂载条件 / 装配点（interface_deep / interface_code） |
 |---|---|---|
 | `SkillUseRail`（core） | 95 | `_build_skill_rail`；skill_mode 检索开启时强制 `auto_list` |
 | `SkillAuthorizationRail`（swarm 子类） | 95（继承 core） | `_build_skill_authorization_rail`，**须在 `_permission_rail` 之后构建**（复用其 engine） |
 | `SkillRetrievalPromptRail` | `SkillUseRail.priority - 1`（= 94，**动态推导**） | `_build_skill_retrieval_prompt_rail`；`is_skill_retrieval_enabled()` 门控 |
-| `SkillSleepRail` | 26 | `_build_skill_sleep_rail`，**始终挂载**（是否跑休眠周期由 per-skill 配置在 runner 内裁决） |
-| `SkillActiveStateRail` | 25 | `_build_skill_active_state_rail` |
+| `SkillSleepRail` | 26 | `_build_skill_sleep_rail`，**agent 模式始终挂载**（是否跑休眠周期由 per-skill 配置在 runner 内裁决）；**code 模式不挂**——`_reconcile_evolution_rails` 每次 reload 主动停用演进链 |
+| `SkillActiveStateRail` | 25 | `_build_skill_active_state_rail`；**code 与 agent 一致固定挂载**（`interface_code._build_agent_rails` insert(1)） |
 | `SkillProtocolPromptRail` | 8 | `_build_skill_protocol_prompt_rail`，**仅 `mode.startswith("agent")`** |
-| `SkillCredentialInjectionRail` | 5 | `_build_skill_credential_injection_rail`（`react.skill_envs`） |
+| `SkillCredentialInjectionRail` | 5 | `_build_skill_credential_injection_rail`（`react.skill_envs`）；**code 与 agent 一致固定挂载**（`interface_code._build_agent_rails` insert(0)） |
 
 衍生装配：flash 模式 `_FLASH_RAIL_KEEP` 白名单保留 `SkillUseRail`（钉 `SKILL_MODE_ALL`，仅注册 skill_tool）/ credential / active_state / authorization；swarm 成员经 `agents/swarm/providers/`（`swarm.skill_retrieval_prompt` / `swarm.skill_retrieval` / `swarm.member_skill_toolkit`）；团队技能工作区经 `MemberSkillToolkitRail`（team/rails/）。
 
-**热重载原位更新约定**：`SkillUseRail`（skill_mode / disabled_skills 原位改，不重建——保住动态加载技能）、`SkillCredentialInjectionRail.update_skill_envs`（**空 overlay 不清空已有凭据目录**）、`SkillActiveStateRail.update_stale_invoke_limit`、`_sync_skill_retrieval_prompt_rail_for_runtime`（按开关动态注册 / 注销）、`_reconcile_skill_sleep_rail`（惰性补挂）。
+**热重载原位更新约定**：`SkillUseRail`（skill_mode / disabled_skills 原位改，不重建——保住动态加载技能）、`SkillCredentialInjectionRail.update_skill_envs`（**空 overlay 不清空已有凭据目录**）、`SkillActiveStateRail.update_stale_invoke_limit`、`_sync_skill_retrieval_prompt_rail_for_runtime`（按开关动态注册 / 注销）、`_reconcile_skill_sleep_rail`（惰性补挂）。code 模式创建期已挂 credential / active_state（见上表），reload 只走原位更新，不重建实例。
 
 ## SkillActiveStateRail — 会话级活跃技能状态
 

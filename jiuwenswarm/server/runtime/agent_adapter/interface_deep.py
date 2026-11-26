@@ -7174,8 +7174,9 @@ class JiuWenSwarmDeepAdapter:
                 else SkillActiveStateRail.DEFAULT_STALE_INVOKE_LIMIT
             )
             logger.info(
-                "[JiuWenSwarmDeepAdapter] SkillActiveStateRail create success "
+                "[%s] SkillActiveStateRail create success "
                 "(session_id=%s stale_invoke_limit=%s)",
+                type(self).__name__,
                 self._skill_rail_session_id() or "-",
                 display_limit,
             )
@@ -7460,8 +7461,9 @@ class JiuWenSwarmDeepAdapter:
                 preset_session_id=self._skill_rail_session_id(),
             )
             logger.info(
-                "[JiuWenSwarmDeepAdapter] SkillCredentialInjectionRail create success "
+                "[%s] SkillCredentialInjectionRail create success "
                 "(skills=[%s], session_id=%s)",
+                type(self).__name__,
                 ", ".join(skill_envs.keys()) if skill_envs else "",
                 self._skill_rail_session_id() or "-",
             )
