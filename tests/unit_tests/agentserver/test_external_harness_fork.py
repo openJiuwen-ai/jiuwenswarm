@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 import uuid
@@ -225,8 +227,13 @@ async def test_failed_cli_fork_removes_the_copy(monkeypatch: pytest.MonkeyPatch,
 
     seen: dict[str, Any] = {}
 
-    async def fork_cli(source: str, target: str, *, at_message: bool) -> bool:
-        seen.update(source=source, target=target, at_message=at_message)
+    async def fork_cli(
+        source: str, target: str, *, at_message: bool, session_equipment_override: Any = None,
+    ) -> bool:
+        seen.update(
+            source=source, target=target, at_message=at_message,
+            override=session_equipment_override,
+        )
         raise ValueError("Forking the CLI session failed: boom")
 
     monkeypatch.setattr(session_ops_service, "fork_session", fork_session)
@@ -238,9 +245,148 @@ async def test_failed_cli_fork_removes_the_copy(monkeypatch: pytest.MonkeyPatch,
 
     with pytest.raises(SessionProvisionError) as raised:
         await provisioner.prepare_session_fork(
-            SessionForkInput(channel_id="web", source_session_id="s", target_session_id="t")
+            SessionForkInput(
+                channel_id="web", source_session_id="s", target_session_id="t",
+                session_equipment_override={"agent_template_name": "other"},
+            )
         )
 
     assert raised.value.code == "BAD_REQUEST"
-    assert seen == {"source": "s", "target": "t", "at_message": False}
+    assert seen == {
+        "source": "s", "target": "t", "at_message": False,
+        "override": {"agent_template_name": "other"},
+    }
     assert not (tmp_path / "t").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override",
+    [{"agent_template_name": "other"}, {"agent_template_name": ""}, {"agent_template_name": None}],
+)
+async def test_copy_is_refused_when_the_override_switches_or_clears_the_expert(
+    metadata: dict[str, dict[str, Any]], monkeypatch: pytest.MonkeyPatch, override: dict[str, Any],
+) -> None:
+    _bind(metadata, "claudecode", "coder")
+    monkeypatch.setattr(
+        external_harness_helpers.equipment, "resolve_equipment_runtime_id", lambda _kind, name: name,
+    )
+
+    with pytest.raises(ValueError, match="coder"):
+        await external_harness_helpers.fork_external_harness_session(
+            "source", "target", session_equipment_override=override,
+        )
+    assert "session_runtime_binding" not in metadata["target"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override",
+    [None, {}, {"plugin_names": ["p"], "mcp": []}, {"agent_template_name": " hub-uuid "}],
+)
+async def test_copy_keeps_its_expert_when_the_override_does(
+    metadata: dict[str, dict[str, Any]], monkeypatch: pytest.MonkeyPatch, override: dict[str, Any] | None,
+) -> None:
+    _bind(metadata, "claudecode", "coder")
+    # A Hub asset UUID resolves to the bound local package id.
+    monkeypatch.setattr(
+        external_harness_helpers.equipment, "resolve_equipment_runtime_id",
+        lambda _kind, name: "coder" if name == "hub-uuid" else name,
+    )
+
+    assert await external_harness_helpers.fork_external_harness_session(
+        "source", "target", session_equipment_override=override,
+    )
+    assert metadata["target"]["session_runtime_binding"]["agent_template_name"] == "coder"
+
+
+def _fake_claude_sdk(
+    monkeypatch: pytest.MonkeyPatch, events: list[str], *, forked: str = "claude-forked",
+) -> None:
+    from jiuwenswarm.common import external_cli_runtime
+
+    monkeypatch.setattr(
+        external_cli_runtime, "activate_external_cli_runtime_paths", lambda: events.append("activate"),
+    )
+    sdk = ModuleType("claude_agent_sdk")
+
+    def fork_session(_session: str, *, directory: str) -> SimpleNamespace:
+        events.append("fork")
+        return SimpleNamespace(session_id=forked)
+
+    sdk.fork_session = fork_session  # type: ignore[attr-defined]
+    sdk.project_key_for_directory = lambda path: Path(path).name  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+
+
+def test_claude_fork_exposes_managed_sdk_paths_before_importing_the_sdk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    _fake_claude_sdk(monkeypatch, events)
+    original_import = __import__
+
+    def tracking_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "claude_agent_sdk":
+            events.append("import")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", tracking_import)
+    same_folder = tmp_path / "work"
+
+    assert external_harness_helpers._fork_claude_session("s", same_folder, same_folder) == "claude-forked"
+    assert events == ["activate", "import", "fork"]
+
+
+@pytest.mark.asyncio
+async def test_missing_forked_transcript_reports_where_it_looked(
+    metadata: dict[str, dict[str, Any]], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    _fake_claude_sdk(monkeypatch, events)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    (tmp_path / "claude" / "projects").mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError, match="claude-forked.jsonl not found under"):
+        external_harness_helpers._fork_claude_session("s", tmp_path / "source", tmp_path / "target")
+
+    # Across asyncio.to_thread the copy is refused with that reason, not a StopIteration.
+    _bind(metadata, "claudecode", "coder")
+    metadata["source"]["session_harness_checkpoint"] = _checkpoint(
+        "claudecode", "coder", "source", {"session_id": "claude-source"},
+    )
+    with pytest.raises(ValueError, match="not found under"):
+        await external_harness_helpers.fork_external_harness_session("source", "target")
+    assert events[:2] == ["activate", "fork"]
+    assert "session_runtime_binding" not in metadata["target"]
+
+
+@pytest.mark.asyncio
+async def test_codex_fork_gives_up_after_the_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    closed: list[bool] = []
+
+    class HangingCodex:
+        def __init__(self, *, config: Any) -> None:
+            self.config = config
+
+        async def __aenter__(self) -> "HangingCodex":
+            return self
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            closed.append(True)
+
+        async def thread_fork(self, _thread: str, *, cwd: str) -> Any:
+            await asyncio.Event().wait()
+
+    codex = ModuleType("openai_codex")
+    codex.AsyncCodex = HangingCodex  # type: ignore[attr-defined]
+    codex.CodexConfig = lambda **kwargs: kwargs  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai_codex", codex)
+    monkeypatch.setattr(external_harness_helpers, "_CODEX_FORK_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(TimeoutError, match="did not finish within"):
+        await external_harness_helpers._fork_codex_thread("thread", None, tmp_path)
+    # The short-lived App Server is shut down on timeout.
+    assert closed == [True]
