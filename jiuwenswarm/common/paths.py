@@ -752,17 +752,22 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     一次性会话目录。
     """
 
+    from jiuwenswarm.common.sandbox_fs import ensure_sandbox_writable
+
     base = get_default_project_workspace_dir()
     raw_session = str(session_id or "").strip()
     if not raw_session:
         base.mkdir(parents=True, exist_ok=True)
+        ensure_sandbox_writable(base)
         return base
     safe_session = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_session).strip("._-")
     if not safe_session:
         base.mkdir(parents=True, exist_ok=True)
+        ensure_sandbox_writable(base)
         return base
     workspace = base / safe_session
     workspace.mkdir(parents=True, exist_ok=True)
+    ensure_sandbox_writable(workspace)
     return workspace
 
 
