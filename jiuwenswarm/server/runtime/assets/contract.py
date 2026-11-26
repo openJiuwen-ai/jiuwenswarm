@@ -208,6 +208,13 @@ def parse_stage_local_params(params: Any) -> dict[str, str]:
     正常形态）；契约层挡控制字符、``..`` 段与相对路径——相对路径按服务
     进程 CWD 解析会指向不可预期位置，一律拒绝。文件真实存在性、symlink
     与体量判定由服务层在复制前收敛（分层防御同 ``assets.import``）。
+
+    有意不加「允许根白名单」：桌面原生选择器的合法返回本就包括外置卷与
+    网络盘（``/Volumes/…``、``/media/…``、非系统盘符），家目录/工作空间
+    枚举无法穷尽，白名单轴会打断主场景；来源门控才是正确轴，且须覆盖
+    整个 WS 管理面（基线上 ``agent_templates``/``agent_groups`` 的
+    ``import_local`` 同样接受任意路径）统一实施。取舍详见
+    :func:`jiuwenswarm.server.runtime.assets.service.stage_local_asset`。
     """
     if not isinstance(params, dict):
         raise ValueError("assets.stage_local params must be an object")

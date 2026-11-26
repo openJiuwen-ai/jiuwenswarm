@@ -219,6 +219,17 @@ def stage_local_asset(params: Any, *, limits: ArchiveLimits = ArchiveLimits()) -
     ``agent_templates.import_local`` 同为 WS-only，暴露面持平）。
     远程部署若需收口「任意路径」类入参，应作为覆盖整个管理面 RPC 的
     统一加固任务（来源门控/白名单），不在本入口单点处理。
+
+    检视曾建议在本入口加「允许根白名单」，未采纳，三点依据：其一，
+    白名单轴会改坏桌面通道主场景——原生选择器/拖拽的合法返回包括外置卷
+    与网络盘（``/Volumes/…``、``/media/…``、非系统盘符），按家目录或
+    工作空间枚举无法穷尽；其二，它不解决所担心的问题——若远端调用方
+    真能触达 WS 管理面，家目录白名单内（含本暂存根与导出产物）的
+    全部 zip 依然暴露，正确轴是来源门控，而请求上下文今日没有可验证的
+    本机来源锚点（回环地址/桌面壳认证），属跨模块管道工程；其三，单点
+    加白名单不缩小暴露面——基线上 ``agent_templates.import_local`` 与
+    ``agent_groups.import_local`` 仍注册于同一 WS 面、同样接受任意路径，
+    本入口只收紧不放松，加固必须在管理面层面统一做。
     """
     parsed = parse_stage_local_params(params)
     source = Path(parsed["path"])
