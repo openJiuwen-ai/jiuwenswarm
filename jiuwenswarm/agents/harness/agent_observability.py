@@ -11,7 +11,7 @@ reachable from supervisor tasks, agent-tier rail wiring and the sub-agent
 dispatch hook — live in the SDK under ``openjiuwen.harness.observability``.
 
 It keeps its own state, but reads the same ``observability`` config section as
-Team: one shared exporter block plus the ``observability.agent.enabled``
+Team: one shared exporter block plus the single ``observability.enabled``
 switch (see ``jiuwenswarm.common.observability_config``).
 
 Shared-provider note:
@@ -30,16 +30,27 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from openjiuwen.core.common.logging import server_logger
+from opentelemetry.trace import Span
 from openjiuwen.harness.observability import (
+    AgentObservabilityRail,
     acquire_observability,
     release_observability,
 )
 
-from jiuwenswarm.agents.harness.observability_runtime import build_observability_config
+from jiuwenswarm.agents.harness.observability_runtime import (
+    build_observability_config,
+    forget_observability_demand,
+    observability_state_lock,
+    remember_observability_demand,
+    sync_observability_export_policy,
+)
 
 from jiuwenswarm.common.config import (
     get_config,
@@ -48,11 +59,11 @@ from jiuwenswarm.common.config import (
     get_ttse_enabled,
 )
 from jiuwenswarm.common.observability_config import (
-    is_observability_scope_enabled,
+    is_observability_enabled,
     observability_export_settings,
     resolve_observability_section,
 )
-from jiuwenswarm.common.utils import get_domain_data_dir
+from jiuwenswarm.common.paths import get_trace_dir
 from jiuwenswarm.observability.config import load_trajectory_store_settings
 from jiuwenswarm.observability.runtime import (
     shutdown_trajectory_runtime,
@@ -71,16 +82,16 @@ _agent_observability_active: bool = False
 # auto-teardown the provider for the rest of the process. OTel allows only one
 # global TracerProvider and re-init after shutdown is fragile, so a /debug
 # toggle must not churn init/shutdown across alternating requests. The normal
-# config-gated path (observability.agent.enabled hot-reload) is unaffected
+# config-gated path (observability.enabled hot-reload) is unaffected
 # unless force was ever used.
 _force_ever_enabled: bool = False
 
-# Serializes the two flags above and the runtime toggle they guard. Callers hand
+# Serializes both Agent/Team config refreshes and the flags above. Callers hand
 # this module's entry points to a worker thread so a trajectory-runtime restart
 # never blocks the event loop, which means the single-threaded ordering they used
 # to rely on is no longer implied. Reentrant because the sync path calls the
 # shutdown path.
-_state_lock = threading.RLock()
+_state_lock = observability_state_lock
 _plugin_trajectory_demands: set[tuple[str, str, str]] = set()
 
 
@@ -127,25 +138,90 @@ def plugin_trajectory_demand_count() -> int:
 _ROOT_SPANS: dict[str, Any] = {}
 
 
+@dataclass
+class _SessionTraceTurns:
+    active: int = 0
+    overlapped: bool = False
+
+
+_trace_turns: dict[str, _SessionTraceTurns] = {}
+_trace_turns_lock = threading.Lock()
+
+
+@contextmanager
+def main_agent_trace_turn(session_id: str | None) -> Iterator[None]:
+    """Track overlapping enterprise turns across rail rebuilds until the session is idle."""
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if not session_id or not is_enterprise():
+        yield
+        return
+
+    with _trace_turns_lock:
+        turns = _trace_turns.setdefault(session_id, _SessionTraceTurns())
+        if turns.active:
+            turns.overlapped = True
+        turns.active += 1
+    try:
+        yield
+    finally:
+        with _trace_turns_lock:
+            turns.active -= 1
+            if turns.active == 0:
+                del _trace_turns[session_id]
+
+
+class MainAgentObservabilityRail(AgentObservabilityRail):
+    """Resolve the main agent's telemetry label for the exact recorded turn."""
+
+    def __init__(self, session_id: str) -> None:
+        from openjiuwen.extensions.observability.span_context import get_bound_root_span, get_session_root_span
+
+        super().__init__()
+        self._get_bound_root = get_bound_root_span
+        self._get_session_root = get_session_root_span
+        self._session_id = session_id
+        self._template_names: WeakKeyDictionary[Span, str] = WeakKeyDictionary()
+
+    def bind_template_name(self, run_span: Span, name: str) -> None:
+        with _trace_turns_lock:
+            self._template_names[run_span] = name
+
+    def resolve_agent_name(self, agent: Any) -> str:
+        with _trace_turns_lock:
+            root = self._get_session_root(self._session_id)
+            turns = _trace_turns.get(self._session_id)
+            # The SDK registry keeps only the latest root per session. Without
+            # a callback-bound root it is authoritative only for an isolated turn.
+            isolated = turns is not None and not turns.overlapped
+            if root is not None and (root is self._get_bound_root() or isolated):
+                name = self._template_names.get(root)
+                if name is not None:
+                    return name
+        return super().resolve_agent_name(agent)
+
+
 def sync_agent_observability(*, force: bool = False) -> None:
     """Synchronize single-agent observability state with current config.
 
     Called before each ``Runner.run_agent_streaming`` / ``Runner.run_agent`` so
-    that hot-reloading the ``observability.agent.enabled`` flag takes effect
-    immediately:
-
-    * disabled -> enabled : acquire the provider (or reuse if already up)
-    * enabled -> disabled : ``shutdown_agent_observability()``
-    * unchanged           : no-op
+    that hot-reloading the ``observability.enabled`` flag takes effect
+    on the next request. Refresh all acquired Swarm export demands, then acquire
+    or release this entry point's provider demand as its capture needs change.
 
     Trajectory-backed evolution also requests the provider when the explicit
-    ``observability.agent.enabled`` switch is off: skill evolution, symphony
+    ``observability.enabled`` switch is off: skill evolution, symphony
     evolution, and TTSE (FACT/TIP dual-track) all capture LLM/tool spans via
     ``TrajectorySpanProcessor``.
 
+    Evolution and the trajectory store request capture only: the provider
+    comes up so ``TrajectorySpanProcessor`` and the record processor receive
+    spans, but the export gate stays closed — only the explicit observability
+    switch or a debug force asks for export.
+
     ``force=True`` (set by a ``/debug`` run when ``debug_trace.<mode>.otel_enabled``
     is true) treats ``want_enabled`` as true regardless of config, so a debug
-    request can pull up OTel even when ``observability.agent.enabled`` is false.
+    request can pull up OTel even when ``observability.enabled`` is false.
     Once force is ever used, the provider stays up for the process (sticky — see
     ``_force_ever_enabled``) to avoid init/shutdown churn across alternating
     requests; the normal config hot-reload teardown is unchanged when evolution
@@ -161,6 +237,7 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
 
     config = get_config()
     section = resolve_observability_section(config)
+    sync_observability_export_policy(is_observability_enabled(section))
     cfg = observability_export_settings(section)
     trajectory_settings = load_trajectory_store_settings(config)
     evolution_requested = (
@@ -169,13 +246,17 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
         or get_ttse_enabled(config)
         or bool(_plugin_trajectory_demands)
     )
-    want_enabled = (
-        is_observability_scope_enabled(section, "agent")
-        or trajectory_settings.enabled
-        or evolution_requested
+    # Capture and export are separate demands. Evolution reads spans through
+    # ``TrajectorySpanProcessor`` and the trajectory store through the record
+    # processor; neither consumes the exporter, so both only need the provider
+    # up and must not open the export gate. Only the explicit observability
+    # switch and a debug force request export.
+    export_wanted = (
+        is_observability_enabled(section)
         or force
         or _force_ever_enabled
     )
+    want_enabled = export_wanted or trajectory_settings.enabled or evolution_requested
     if force:
         _force_ever_enabled = True
 
@@ -189,13 +270,14 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
         return
 
     try:
-        traces_dir = str(cfg.get("traces_dir") or get_domain_data_dir() / ".trace")
+        traces_dir = str(cfg.get("traces_dir") or get_trace_dir())
         obs_cfg = build_observability_config(
             cfg,
             service_name="jiuwenswarm",
             traces_dir=traces_dir,
         )
-        provider_existed = acquire_observability(obs_cfg)
+        provider_existed = acquire_observability(obs_cfg, export=export_wanted)
+        remember_observability_demand("agent", force_export=_force_ever_enabled)
         was_active = _agent_observability_active
         _agent_observability_active = True
         try:
@@ -244,6 +326,7 @@ def shutdown_agent_observability() -> None:
             return
         try:
             release_observability()
+            forget_observability_demand("agent")
             _agent_observability_active = False
             logger.info("[AgentObservability] disabled")
         except Exception as exc:
@@ -319,7 +402,7 @@ def _apply_single_agent_team_attr_suppression() -> None:
     """
     try:
         from openjiuwen.agent_teams.observability import rail as _rail
-        from openjiuwen.extensions.observability.semconv import (
+        from openjiuwen.extensions.observability.exporters.langfuse import (
             LANGFUSE_OBSERVATION_TYPE,
             LANGFUSE_SESSION_ID,
         )
@@ -888,7 +971,7 @@ def open_agent_run_span(*, session_id: str = "", mode: str = "") -> Any:
             get_tracer,
             is_initialized,
         )
-        from openjiuwen.extensions.observability.semconv import LANGFUSE_SESSION_ID
+        from openjiuwen.extensions.observability.exporters.langfuse import LANGFUSE_SESSION_ID
         from openjiuwen.agent_teams.observability.span_context import (
             set_current_session_id,
             set_root_span,
@@ -941,7 +1024,7 @@ def _stamp_run_output(handle: Any, output: str) -> None:
     if not output:
         return
     from openjiuwen.extensions.observability.redaction import redact_completion
-    from openjiuwen.extensions.observability.semconv import LANGFUSE_OBSERVATION_OUTPUT
+    from openjiuwen.extensions.observability.exporters.langfuse import LANGFUSE_OBSERVATION_OUTPUT
     # Aliased: the module-level ``get_config`` is JiuwenSwarm's own settings
     # reader, and this SDK-side one returns the active ObservabilityConfig.
     from openjiuwen.agent_teams.observability.setup import get_config as get_observability_config

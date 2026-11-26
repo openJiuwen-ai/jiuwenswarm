@@ -102,8 +102,8 @@ def _get_user_workspace_dir() -> Path:
     return (Path(user_home) if user_home else Path.home()) / ".jiuwenswarm"
 
 
-#: Startup splash candidate hint (Gateway S_09 section 4); answered locally because
-#: the page may load before the Gateway is up.
+#: Startup gate hint: splash candidates and appearance providers (Gateway S_09 section 4);
+#: answered locally because the page may load before the Gateway is up.
 SPLASH_HINT_PATH = "/extension-splash/hint"
 
 
@@ -122,8 +122,25 @@ def _splash_candidates() -> bool:
         return False
 
 
+def _appearance_providers() -> bool:
+    """Whether an installed Gateway package declares ``application.appearance`` (Gateway S_09 section 4).
+
+    The startup gate waits for these packages to apply their appearance; like the splash hint this
+    reads manifests only, and the browser still asks the Gateway once connected.
+    """
+    try:
+        from agent_gateway.extensions_v2.splash_hint import installed_appearance_providers
+
+        return bool(installed_appearance_providers())
+    except Exception:  # noqa: BLE001 - an unreadable install counts as none; the Gateway answer decides
+        logging.getLogger(__name__).debug("appearance hint unavailable", exc_info=True)
+        return False
+
+
 def _get_agent_root_dir() -> Path:
-    return _get_user_workspace_dir() / "agent"
+    # profile 契约：agent 子树挂 profile/agent（个人版 Web 进程无租户上下文，
+    # 企业版用户面经 user-backend 代理，不走本进程的这条链）。
+    return _get_user_workspace_dir() / "profile" / "agent"
 
 
 def _get_agent_sessions_dir() -> Path:
@@ -349,12 +366,13 @@ def _text_content_type(
 def _get_agent_teams_root(project_root: Path) -> Path:
     """Return the team state root without importing the agent runtime.
 
-    ``configure_agent_teams_home(project_root)`` in AgentServer resolves this
-    exact directory.  The static server only performs bounded file operations
+    profile 契约：.agent_teams 挂工作空间根（``<root>/profile/.agent_teams``），
+    与 AgentServer 侧 ``configure_agent_teams_home(get_workspace_root_dir())``
+    解析一致。The static server only performs bounded file operations
     under it, so importing OpenJiuwen solely to calculate the same path adds
     startup work without providing any Web-side behaviour.
     """
-    return (project_root / ".agent_teams").resolve()
+    return (project_root / "profile" / ".agent_teams").resolve()
 
 
 def _get_package_dir() -> Path:
@@ -400,7 +418,7 @@ def _normalize_lang_suffix(name: str) -> str:
 
 def _generate_agent_data(project_root: Path) -> None:
     """Generate agent/workspace/agent-data.json from agent tree."""
-    agent_root = (project_root / "agent").resolve()
+    agent_root = (project_root / "profile" / "agent").resolve()
     workspace_root = (agent_root / "workspace").resolve()
     output_path = (workspace_root / "agent-data.json").resolve()
     root_folder_key = "__root__"
@@ -2998,7 +3016,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if parsed.path == SPLASH_HINT_PATH:
-            self._write_json(200, {"candidates": _splash_candidates()})
+            self._write_json(200, {"candidates": _splash_candidates(), "appearance": _appearance_providers()})
             return
         if parsed.path == "/oauth/hub/done":
             body = (
@@ -3490,7 +3508,7 @@ def main() -> None:
         raise SystemExit(str(exc)) from exc
 
     project_root = _get_user_workspace_dir()
-    workspace_root = (project_root / "agent").resolve()
+    workspace_root = (project_root / "profile" / "agent").resolve()
     agent_teams_root = _get_agent_teams_root(project_root)
     logs_root = _get_logs_dir().resolve()
     # Start with the process logger.  The file handler and diagnostic hook are
@@ -3585,7 +3603,9 @@ def main() -> None:
         )
         logger.info("[jiuwenswarm-web] /file-api roots -> %s, %s, %s", workspace_root, agent_teams_root, logs_root)
 
-        _web_info_path = (_get_user_workspace_dir() / ".updates").resolve()
+        from jiuwenswarm.common.paths import get_updates_dir
+
+        _web_info_path = get_updates_dir().resolve()
         _web_info_path.mkdir(parents=True, exist_ok=True)
         _web_info_file = _web_info_path / "web_process.json"
         try:

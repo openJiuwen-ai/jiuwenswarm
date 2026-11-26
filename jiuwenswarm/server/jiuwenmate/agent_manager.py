@@ -81,7 +81,8 @@ from jiuwenswarm.server.jiuwenmate.recovery_service import (
     unverified_tool_calls,
 )
 from jiuwenswarm.server.jiuwenmate.scheduled_requests import DEFAULT_SCHEDULE_INTERVAL, ScheduleService
-from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService, default_data_dir
+from jiuwenswarm.common.paths import get_jiuwenmate_dir
+from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SchedulerLimits, SessionScheduler
 
 logger = logging.getLogger(__name__)
@@ -484,7 +485,7 @@ class AgentManager:
         approval_channels: frozenset[str] | None = None,
     ) -> AgentManager:
         """Runtime over the same SQLite file as ``PersistentAgentService.create_default``."""
-        db = (Path(data_dir) if data_dir is not None else default_data_dir()) / "agents.sqlite3"
+        db = (Path(data_dir) if data_dir is not None else get_jiuwenmate_dir()) / "agents.sqlite3"
         return cls(service, ExecutionRepository(db), WindowBackendStore(db), BudgetRepository(db), on_event=on_event,
                    approval_channels=approval_channels)
 

@@ -135,7 +135,7 @@ async def test_config_save_refreshes_persistent_models_without_starting_a_runtim
 
 @pytest.mark.asyncio
 async def test_model_reload_does_not_create_persistent_data_for_personal_agents(tmp_path, monkeypatch):
-    monkeypatch.setattr("jiuwenswarm.server.jiuwenmate.service.default_data_dir", lambda: tmp_path / "absent")
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_jiuwenmate_dir", lambda: tmp_path / "absent")
     server = SimpleNamespace(
         _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()),
         _jiuwenmate_web=JiuwenMateWebAdapter(),
@@ -180,7 +180,7 @@ async def test_model_reload_opens_an_existing_persistent_store_once(tmp_path, mo
         created.append(service)
         return service
 
-    monkeypatch.setattr("jiuwenswarm.server.jiuwenmate.service.default_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_jiuwenmate_dir", lambda: tmp_path)
     adapter = JiuwenMateWebAdapter(service_factory=service_factory)
     server = SimpleNamespace(
         _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()),
@@ -257,7 +257,7 @@ async def test_explicit_reload_updates_persistent_models_or_reports_unapplied_dr
 @pytest.mark.asyncio
 async def test_persistent_refresh_exception_returns_unapplied_without_creating_a_runtime(tmp_path, monkeypatch):
     (tmp_path / "agents.sqlite3").touch()
-    monkeypatch.setattr("jiuwenswarm.server.jiuwenmate.service.default_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_jiuwenmate_dir", lambda: tmp_path)
 
     def unavailable_service():
         raise RuntimeError("store unavailable")

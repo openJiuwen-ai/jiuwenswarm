@@ -26,6 +26,8 @@ design_note: 用户在会话中确认的配置收敛改动，无独立设计编�
 
 # Team 与单 Agent 可观测性配置统一
 
+本文保留最初合并配置段时的实现与验证记录，其中 `observability.team/agent.enabled` 为历史形态。当前已统一为 `observability.enabled`；issue #4327 的配置契约、轨迹采集与导出分离方案统一见[问题修复说明](../bugfix/observability/B_20261124_1602_issue-4327-observability.md)。
+
 ## 背景
 
 原先 `team_observability` 和 `agent_observability` 是两段平行的顶层配置，字段完全相同，都经 `build_observability_config` 生成同一个 `ObservabilityConfig`。OTel 一个进程只有一个全局 TracerProvider，两边同时开启时先初始化的一方生效，另一方的 exporter / endpoint / service_name 被静默忽略。分成两段的配置在同一进程里本来就无法各自生效，真正按运行时区分的只有开关。

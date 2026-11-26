@@ -12,6 +12,9 @@ from jiuwenswarm.common import symphony_config
 
 def test_product_defaults_are_explicit_and_preserve_core_defaults(monkeypatch, tmp_path):
     monkeypatch.setattr(symphony_config, "get_agent_workspace_dir", lambda: tmp_path)
+    # 默认 artifact_root 经 paths.get_symphony_dir() 派生（= agent workspace
+    # 下 symphony/），函数内局部 import，patch 需覆盖 paths 层
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_agent_workspace_dir", lambda: tmp_path)
     cfg = symphony_config.symphony_config_from_dict({})
     assert isinstance(cfg, SymphonyConfig)
     assert [source.model_dump() for source in cfg.capability.sources] == [

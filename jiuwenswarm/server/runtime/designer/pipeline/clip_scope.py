@@ -156,16 +156,6 @@ def looks_like_full_story_restatement(text: str, user_prompt: str) -> bool:
     return False
 
 
-def looks_like_prior_copy(text: str, prior: str) -> bool:
-    body = str(text or "").strip()
-    old = str(prior or "").strip()
-    if not body or not old or len(body) < 40:
-        return False
-    if body[:180].casefold() == old[:180].casefold():
-        return True
-    return overlap_ratio(body, old) >= 0.72 and user_prompt_coverage(body, old) >= 0.5
-
-
 def first_sentence(text: str, *, limit: int = 220) -> str:
     raw = re.sub(r"\s+", " ", str(text or "").strip())
     if not raw:

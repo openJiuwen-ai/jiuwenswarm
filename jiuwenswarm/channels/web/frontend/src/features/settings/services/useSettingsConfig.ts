@@ -1,3 +1,4 @@
+import { applyMemorySnapshot, getMemoryRevision, isMemoryEnabled, setMemoryEnabled } from '../../memory/featureConfig';
 import { parseKVCacheAffinityStatus } from './kvCacheAffinityStatus';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -28,6 +29,7 @@ export function useSettingsConfig() {
     const id = ++requestId.current;
     const revisionAtLoad = saveRevision.current;
     const featureRevisionAtLoad = getMultiModelCollaborationRevision();
+    const memoryRevisionAtLoad = getMemoryRevision();
     if (!silent) setLoading(true);
     setError(null);
     try {
@@ -44,6 +46,9 @@ export function useSettingsConfig() {
         }
         if (!applyMultiModelCollaborationSnapshot(visible.multi_model_collaboration_enabled, featureRevisionAtLoad)) {
           visible.multi_model_collaboration_enabled = isMultiModelCollaborationEnabled();
+        }
+        if (!applyMemorySnapshot(visible.memory_portal_enabled, memoryRevisionAtLoad)) {
+          visible.memory_portal_enabled = isMemoryEnabled();
         }
         setConfig(visible);
         setTeamOrganizationUiEnabled(visible.team_organization_ui_enabled);
@@ -75,6 +80,7 @@ export function useSettingsConfig() {
       const result = await saveQueue.enqueue(operation, () =>
         request<{ kv_cache_affinity_status?: unknown }>('config.save_all', payload, { timeoutMs: 600_000 }),
       );
+      if ('memory_portal_enabled' in payload.config) setMemoryEnabled(payload.config.memory_portal_enabled);
       if ('team_organization_ui_enabled' in payload.config) {
         setTeamOrganizationUiEnabled(payload.config.team_organization_ui_enabled);
       }

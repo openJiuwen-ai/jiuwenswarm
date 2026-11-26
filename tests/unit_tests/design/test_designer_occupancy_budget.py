@@ -134,6 +134,10 @@ def test_normalize_llm_owns_shot_count_not_heuristic_ceiling():
             {"id": "char_2", "name": "Sam", "description": "green coat; dark trousers; boots"},
         ],
         "target_clip_count": 5,
+        "scenes": [
+            {"id": "set_1", "name": "busy street market", "description": "stalls and awnings"},
+            {"id": "set_2", "name": "quiet lakeside bench", "description": "still water at dusk"},
+        ],
         "clips": [
             {
                 "clip_index": i,

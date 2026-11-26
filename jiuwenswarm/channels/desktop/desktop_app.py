@@ -50,11 +50,14 @@ from jiuwenswarm.common.startup_diagnostics import (
     select_blocking_doctor_check,
     select_startup_failure,
 )
+from jiuwenswarm.common.paths import (
+    get_gateway_config_dir,
+    get_updates_dir,
+)
 from jiuwenswarm.common.utils import (
+    ensure_gateway_config,
     get_user_workspace_dir,
     get_config_dir,
-    ensure_gateway_config,
-    get_gateway_config_dir,
     get_infra_data_dir,
     get_logs_dir,
     prepare_local_gateway_config,
@@ -495,7 +498,7 @@ def resolve_desktop_ports(
 
 
 def _cleanup_stale_update_artifacts() -> None:
-    updates_dir = get_infra_data_dir() / ".updates"
+    updates_dir = get_updates_dir()
     if not updates_dir.is_dir():
         return
 
@@ -567,6 +570,7 @@ def _build_child_env(
     env[DESKTOP_ENV_FLAG] = "1"
     if name == "gateway":
         prepare_local_gateway_config(env)
+        env.setdefault("JIUWENSWARM_GATEWAY_CONFIG_DIR", str(get_gateway_config_dir()))
     # 桌面锁定: 仅 web 静态服务的对话页面入口需要校验 token,
     # 其他子进程不注入, API/WS 保持原有访问规则。
     if desktop_token and name == "web":
@@ -574,8 +578,6 @@ def _build_child_env(
     else:
         env.pop("JIUWENSWARM_DESKTOP_TOKEN", None)
     env["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
-    if name == "gateway":
-        env["JIUWENSWARM_GATEWAY_CONFIG_DIR"] = str(get_gateway_config_dir())
     # Desktop now starts Gateway directly, so preserve the original launcher
     # command here instead of relying on jiuwenswarm.app to add it. The
     # updater inherits this value from Gateway when it constructs a restart.
@@ -3173,7 +3175,7 @@ class DesktopRuntime:
             return False
 
         app_executable = Path(sys.executable).resolve()
-        self._update_shutdown_receipt = create_shutdown_receipt(get_infra_data_dir() / ".updates")
+        self._update_shutdown_receipt = create_shutdown_receipt(get_updates_dir())
 
         if os.name == "nt":
             ok = self._launch_windows_install_helper(target, app_executable)
@@ -3192,7 +3194,7 @@ class DesktopRuntime:
 
     def _launch_macos_install_helper(self, target: Path, app_executable: Path) -> bool:
         parent_pid = os.getpid()
-        updates_dir = get_infra_data_dir() / ".updates"
+        updates_dir = get_updates_dir()
         updates_dir.mkdir(parents=True, exist_ok=True)
 
         if not os.access(updates_dir, os.W_OK):
@@ -3358,7 +3360,7 @@ echo "=== install helper finished: $(date) ==="
 
     def _launch_linux_install_helper(self, target: Path, app_executable: Path) -> bool:
         parent_pid = os.getpid()
-        updates_dir = get_infra_data_dir() / ".updates"
+        updates_dir = get_updates_dir()
         updates_dir.mkdir(parents=True, exist_ok=True)
 
         if not os.access(updates_dir, os.W_OK):
@@ -3567,7 +3569,7 @@ nohup {q_executable} >/dev/null 2>&1 &
     def run(self, window_title: str, width: int, height: int, debug: bool) -> None:
         self._clear_wkwebview_system_cache()
 
-        storage_path = get_infra_data_dir() / "tmp" / "webview"
+        storage_path = get_user_workspace_dir() / "tmp" / "webview"
         storage_path.mkdir(parents=True, exist_ok=True)
         self._clear_webview_http_cache(storage_path)
         _install_macos_media_capture_permission(lambda: self.frontend_display_url)

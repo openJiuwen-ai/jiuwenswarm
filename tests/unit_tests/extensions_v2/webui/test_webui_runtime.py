@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
@@ -203,6 +204,15 @@ async def test_package_cleanup_retains_failed_clear_for_retry(tmp_path: Path) ->
     transport.fail = False
     await runtime.drop_package(PACKAGE)
     assert not runtime.registry.contains(target)
+
+
+@pytest.mark.asyncio
+async def test_package_cleanup_forwards_the_retired_generation(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    runtime, _manager = await _runtime(tmp_path, transport)
+    runtime.resources.drop = AsyncMock()
+    await runtime.drop_package(PACKAGE, generation=3)
+    runtime.resources.drop.assert_awaited_once_with(package_id=PACKAGE, generation=3)
 
 
 @pytest.mark.asyncio

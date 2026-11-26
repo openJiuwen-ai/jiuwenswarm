@@ -35,7 +35,7 @@ def isolated_context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for key in list(os.environ):
         if key.startswith(transport.ENV_PREFIX):
             monkeypatch.delenv(key)
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setenv("AGENT_SERVER_PORT", "18092")
     monkeypatch.setenv("GATEWAY_PORT", "19001")
 
@@ -382,6 +382,7 @@ def test_frozen_entry_dispatches_before_single_instance_lock(
     monkeypatch.setattr(sys, "argv", ["workswarm", "extension", "query", "--json"])
     monkeypatch.setattr(sys, "frozen", frozen, raising=False)
     namespace = {"sys": sys, "_pop_flag": lambda flag: False, "_ensure_stdio": lambda: None,
+                 "RESTORE_CONFIG_FLAG": "--desktop-restore-upgrade-config",
                  "_DESKTOP_INSTALL_EXTERNAL_CLI": "install-cli", "_DESKTOP_RESET_EXTERNAL_CLI_CONFIG": "reset-cli",
                  "_DESKTOP_REMOVE_OFFICE_ADDINS": "remove-office-addins",
                  "_DESKTOP_STOP_BUNDLED_EMAIL_MCP": "stop-bundled-email-mcp"}

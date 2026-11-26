@@ -118,14 +118,14 @@ from jiuwenswarm.common.schema.agent import (
 )
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
+from jiuwenswarm.common.paths import get_personal_context_dir
 from jiuwenswarm.common.utils import (
     get_agent_root_dir,
     get_agent_sessions_dir,
     get_config_file,
-    get_domain_data_dir,
-    get_user_workspace_dir,
     mask_sensitive,
 )
+
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES, RuntimeEvent
@@ -291,6 +291,7 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _workflow_run_meta,
     split_history_record_for_stream,
 )
+from jiuwenswarm.server.edition_gate import enterprise_only_denial
 from jiuwenswarm.server.interrupt_intent import (
     normalized_intent_request,
     reject_interrupt_result_payload,
@@ -1435,7 +1436,7 @@ class AgentWebSocketServer:
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
         # AgentServer 内唯一持有的进程内 PersonalContext Host；Context Rail 使用同一固定目录。
         self._personal_context_host = PersonalContextHostAPI(
-            home=get_domain_data_dir() / ".personal_context",
+            home=get_personal_context_dir(),
         )
         self._personal_context_start_task: asyncio.Task[None] | None = None
         self._sandbox_start_task: asyncio.Task[None] | None = None
@@ -1819,7 +1820,8 @@ class AgentWebSocketServer:
         # delay startup; ContextEngine is local-only and uses string fallback
         # if this task has not completed when the first context is created.
         async def _prepare_tokenizers() -> bool:
-            return await self._schedule_tokenizer_warmup(get_config(), reason="startup")
+            config = await asyncio.to_thread(get_config)
+            return await self._schedule_tokenizer_warmup(config, reason="startup")
 
         preparation.register("tokenizers", _prepare_tokenizers)
 
@@ -2296,6 +2298,9 @@ class AgentWebSocketServer:
                 logger.warning("[AgentWebSocketServer] checkpointer warmup stop failed: %s", exc)
         close_client_attachments()
         await self._stop_recommendation_host()
+        from jiuwenswarm.server.runtime.memory_portal import close_memory_portal_services
+
+        await close_memory_portal_services()
         preparation = getattr(self, "_preparation_registry", None)
         if preparation is not None:
             await preparation.close()
@@ -3092,13 +3097,13 @@ class AgentWebSocketServer:
                 )
             return
 
-        from jiuwenswarm.server.front.protocol import unsupported_method_wire
+        from jiuwenswarm.server.front.protocol import rejected_method_wire
 
         if isinstance(data, dict):
             method = data.get("method")
             if method is None:
                 method = data.get("req_method")
-            error_wire = unsupported_method_wire(
+            error_wire = rejected_method_wire(
                 method,
                 request_id=data.get("request_id"),
                 channel_id=data.get("channel") or data.get("channel_id"),
@@ -3126,7 +3131,7 @@ class AgentWebSocketServer:
                 )
                 if not isinstance(legacy, dict):
                     raise ValueError("legacy_agent_request missing or not a dict")
-                error_wire = unsupported_method_wire(
+                error_wire = rejected_method_wire(
                     legacy.get("req_method"),
                     request_id=legacy.get("request_id"),
                     channel_id=legacy.get("channel_id"),
@@ -3250,14 +3255,14 @@ class AgentWebSocketServer:
     ) -> None:
         """Tell Gateway whether a colleague may serve a DingTalk app before that binding is saved."""
         from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
-        from jiuwenswarm.server.jiuwenmate.service import default_data_dir
+        from jiuwenswarm.common.paths import get_jiuwenmate_dir
 
         params = request.params if isinstance(request.params, dict) else {}
         agent_id, app_id = params.get("agent_id"), params.get("app_id")
         ok, payload = False, {"error": "invalid DingTalk binding check"}
         if all(isinstance(value, str) and value.strip() for value in (agent_id, app_id)):
             try:
-                repository = ExecutionRepository(default_data_dir() / "agents.sqlite3")
+                repository = ExecutionRepository(get_jiuwenmate_dir() / "agents.sqlite3")
                 served_elsewhere = await asyncio.to_thread(
                     repository.has_sessions_outside_dingtalk_app, "local", agent_id.strip(), app_id.strip(),
                 )
@@ -3390,6 +3395,24 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        denial = enterprise_only_denial(request.req_method)
+        if denial is not None:
+            response = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": denial, "code": "FORBIDDEN"},
+                metadata=request.metadata,
+                agent_ref=request.agent_ref,
+            )
+            async with send_lock:
+                await send_wire_payload(
+                    ws,
+                    encode_agent_response_for_wire(
+                        response, response_id=request.request_id
+                    ),
+                )
+            return
         if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
             params = request.params if isinstance(request.params, dict) else {}
             channels = params.get("channels")
@@ -11081,6 +11104,7 @@ class AgentWebSocketServer:
         async with self._asset_publish_lock:
             if self._asset_publish_api is None:
                 from jiuwenswarm.common.utils import get_workspace_dir
+
                 from jiuwenswarm.server.runtime.marketplace.asset_publish_api import (
                     AssetPublishAPI,
                 )
@@ -14925,6 +14949,7 @@ class AgentWebSocketServer:
         from jiuwenswarm.common.utils import (
             get_user_workspace_dir as current_workspace_dir,
         )
+
         requested_id = str(
             (params or {}).get("package_id") or ""
         ).strip()

@@ -19,6 +19,7 @@ files:
   - jiuwenswarm/server/runtime/agent_adapter/interface_app_role.py
   - jiuwenswarm/runtime/session_provisioner.py
   - jiuwenswarm/server/runtime/session/session_metadata.py
+  - jiuwenswarm/server/runtime/session/execution_settings.py
   - jiuwenswarm/agents/harness/common/session_ops_service.py
   - jiuwenswarm/server/runtime/agent_manager.py
   - jiuwenswarm/agents/harness/team/team_manager.py
@@ -43,6 +44,8 @@ Swarm Web/Electron 聊天页显示 NPC 标识和只读历史。当前前端通�
 ## 原生团队 NPC
 
 `execution_profile:"app_role"`、`mode:"team"` 和合法名册共同启用原生 Team 模式。创建结果回显按项目工作模式确定的 `team.work.normal` 或 `team.code.normal`，之后固定。成员名保留 `leader` 和框架保留标识。创建仅保存 Team 会话配置，首次发消息时由 framework bootstrap 装配固定成员，使用 scheduled dispatch 和进程内原生成员流。成员使用各自的 Team 会话上下文及 Team 内独立工作区，装配只保留 Team 协作能力，关闭项目工具、技能与团队记忆。
+
+原生 NPC Team 启动时跳过常规代码团队的工具执行环境初始化。请求启用独立 Git 身份或设置非空工具执行环境时，宿主返回配置错误。
 
 应用只提交普通玩家文本到 Team 会话。宿主将内容作为 leader 的普通文本输入，玩家文本中的成员寻址和斜杠命令不参与路由。leader 按角色分配发言任务，自己的最终文本独立发出。每个已发言的角色产生独立 `chat.final`，带 `member_name`、`display_name` 和完整 `content`。应用只展示这些发言，按 `turn_request_id` 关联回合，在 `chat.processing_status` 的 `is_processing:false` 时读取 `npc_missing_members` 检查角色是否齐全。
 

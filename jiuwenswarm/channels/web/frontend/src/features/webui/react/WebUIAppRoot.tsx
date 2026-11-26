@@ -10,11 +10,11 @@ import { WebHttpClient } from '../../../services/webHttpClient';
 import { createWebUIAppRuntime } from '../assembly/createWebUIAppRuntime.ts';
 import { componentCatalog } from '../catalog/componentCatalog.ts';
 import { createComponentRendererRegistry } from '../renderer/adapters/componentRegistry.ts';
-import { WebUIAppearanceHost } from './WebUIAppearanceHost.tsx';
+import { WebUIAppearanceHost, resetTabBrand } from './WebUIAppearanceHost.tsx';
 import { WebUIBackgroundHost } from './WebUIBackgroundHost.tsx';
 import { WebUIEntryHost } from './WebUIEntryHost.tsx';
 import { STATIC_NEUTRAL_ID, WebUISplashGate } from './WebUISplashGate.tsx';
-import { fetchSplashHint, resolveLaunch } from '../splash/launch.ts';
+import { fetchStartupHint, resolveLaunch } from '../splash/launch.ts';
 import { SPLASH_PLAY_EVENT } from '../splash/controller.ts';
 import { WebUIProvider } from './WebUIProvider.tsx';
 import { browserClientCapabilities } from '../client/browserClient.ts';
@@ -28,7 +28,10 @@ export interface WebUIAppRootProps {
 
 export function WebUIAppRoot({ children }: WebUIAppRootProps) {
   useLayoutEffect(() => {
-    if (webClient instanceof WebHttpClient) document.getElementById(STATIC_NEUTRAL_ID)?.remove();
+    if (!(webClient instanceof WebHttpClient)) return;
+    // Without a Gateway connection there is no gate and no appearance: show the host brand.
+    document.getElementById(STATIC_NEUTRAL_ID)?.remove();
+    resetTabBrand(document);
   }, []);
   if (webClient instanceof WebHttpClient) return <>{children}</>;
   return <WebSocketWebUIAppRoot client={webClient}>{children}</WebSocketWebUIAppRoot>;
@@ -89,7 +92,7 @@ function WebSocketWebUIAppRoot({ children, client }: WebUIAppRootProps & {
   return (
     <WebUIProvider runtime={app.runtime} registry={app.registry}>
       <WebUIUploadContext.Provider value={uploads}>
-      <WebUISplashGate launch={launch} hint={fetchSplashHint} requestProviders={requestProviders}
+      <WebUISplashGate launch={launch} hint={fetchStartupHint} requestProviders={requestProviders}
         subscribePreview={subscribePreview}>
         <WebUIBackgroundHost />
         <WebUIAppearanceHost />

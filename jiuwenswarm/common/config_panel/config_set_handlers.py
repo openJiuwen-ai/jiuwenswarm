@@ -52,6 +52,7 @@ from jiuwenswarm.common.config import (
     TEAM_MEMBER_MESSAGING_CONFIG_PATH,
     TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH,
     TEAM_TASK_VERIFICATION_CONFIG_PATH,
+    coerce_config_bool,
     coerce_subtask_depth,
     get_config,
     get_config_raw,
@@ -124,6 +125,9 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     normalize_affinity_request,
     parse_bool as parse_kvc_bool,
     get_affinity_status,
+)
+from jiuwenswarm.common.config_panel.memory_config import (
+    MEMORY_FIELDS, flatten_memory_config, parse_memory_updates, save_memory_updates,
 )
 from jiuwenswarm.common.utils import get_env_file
 from jiuwenswarm.common.version import get_runtime_version
@@ -252,6 +256,8 @@ class ConfigChangeSet:
             elif key_text == "trajectory_ui_diagnosis_enabled":
                 # Diagnosis owns the trajectory data plane and diagnosis entry.
                 scopes.update({"agent_runtime", "web_ui"})
+            elif key_text == "memory_portal_enabled":
+                scopes.add("web_ui")
             elif key_text in WEB_UI_YAML_KEYS or key_text == "rea_enabled" or key_text.startswith("a2ui_"):
                 scopes.add("web_ui")
             else:
@@ -1480,6 +1486,11 @@ def apply_config_payload(
             )
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc
+    try:
+        memory_updates = parse_memory_updates(params)
+    except ValueError as exc:
+        raise ConfigPanelBadRequest(str(exc)) from exc
+    params = {key: value for key, value in params.items() if key not in MEMORY_FIELDS}
     moa_params = {key: value for key, value in params.items() if key in MOA_CONFIG_KEYS}
     if moa_params:
         try:
@@ -1783,6 +1794,11 @@ def apply_config_payload(
             # A crypto provider may include credentials in exception text.
             raise ConfigPanelInternalError("failed to save MoA configuration") from None
 
+    try:
+        yaml_updated.extend(save_memory_updates(encrypt_config_params(memory_updates)))
+    except Exception:
+        raise ConfigPanelInternalError("failed to save memory configuration") from None
+
     if "kv_cache_affinity_enabled" in params:
         try:
             update_kv_cache_affinity_enabled_in_config(
@@ -1905,9 +1921,13 @@ async def config_get_handler(
             "true" if setup_guide_cfg.get("enabled", True) else "false"
         )
         rsi_cfg = raw.get("rsi") or {}
-        payload["rsi_enabled"] = "true" if rsi_cfg.get("enabled", True) else "false"
+        payload["rsi_enabled"] = (
+            "true" if coerce_config_bool(rsi_cfg.get("enabled"), True) else "false"
+        )
         rea_cfg = raw.get("rea") or {}
-        payload["rea_enabled"] = "true" if rea_cfg.get("enabled", True) else "false"
+        payload["rea_enabled"] = (
+            "true" if coerce_config_bool(rea_cfg.get("enabled"), True) else "false"
+        )
         crypto_provider = _get_crypto_provider()
         if crypto_provider is not None:
             for key, val in list(payload.items()):
@@ -1933,6 +1953,7 @@ async def config_get_handler(
         payload["skill_evolution"] = "true" if evolution_cfg.get("skill_evolution", False) else "false"
         ttse_cfg = (raw.get("react") or {}).get("ttse") or {}
         payload["ttse_enabled"] = "true" if ttse_cfg.get("enabled", False) else "false"
+        payload.update(flatten_memory_config(raw))
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
         memory_desc = memory_cfg.get("description") or {}

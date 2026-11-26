@@ -174,6 +174,28 @@ def _bool_text(value: Any, default: bool = False) -> str:
     return "true" if str(value).strip().lower() in {"true", "1", "yes", "on"} else "false"
 
 
+def _experimental_entry_flags(raw: dict[str, Any]) -> dict[str, str]:
+    """Expose persisted RSI/REA sidebar switches in the browser config payload."""
+    flags: dict[str, str] = {}
+    for key, section_name in (
+        ("rsi_enabled", "rsi"),
+        ("rea_enabled", "rea"),
+    ):
+        section = raw.get(section_name)
+        enabled = section.get("enabled", True) if isinstance(section, dict) else True
+        if isinstance(enabled, bool):
+            flags[key] = "true" if enabled else "false"
+        elif enabled is None:
+            flags[key] = "true"
+        elif isinstance(enabled, (int, float)):
+            flags[key] = "true" if enabled else "false"
+        elif str(enabled).strip().lower() in {"0", "false", "no", "off", ""}:
+            flags[key] = "false"
+        else:
+            flags[key] = "true"
+    return flags
+
+
 def _affinity_enabled(raw: dict[str, Any]) -> bool:
     canonical = raw.get(_KV_CACHE_CONFIG_KEY)
     if isinstance(canonical, dict) and _KV_CACHE_ENABLED_KEY in canonical:
@@ -436,6 +458,7 @@ def get_panel() -> dict[str, Any]:
     payload.update(cua_backend_settings())
     try:
         raw = _read_raw_config()
+        payload.update(_experimental_entry_flags(raw))
         payload.update(flatten_moa_for_config_panel(raw))
         setup_guide_cfg = raw.get("setup_guide") or {}
         payload["setup_guide_enabled"] = _bool_text(
@@ -459,6 +482,9 @@ def get_panel() -> dict[str, Any]:
         )
         ttse_cfg = react_cfg.get("ttse") or {}
         payload["ttse_enabled"] = _bool_text(ttse_cfg.get("enabled"), False)
+        from jiuwenswarm.common.config_panel.memory_config import flatten_memory_config
+
+        payload.update(flatten_memory_config(raw))
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = _bool_text(memory_cfg.get("enabled"), False)
         payload["memory_forbidden_description"] = memory_cfg.get("description") or {}
@@ -537,6 +563,8 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("permissions_profile", "full_access")
+        payload.setdefault("rsi_enabled", "true")
+        payload.setdefault("rea_enabled", "true")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
         payload.setdefault("ttse_enabled", "false")

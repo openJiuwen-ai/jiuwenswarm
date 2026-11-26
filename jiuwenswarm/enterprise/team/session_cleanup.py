@@ -423,6 +423,17 @@ def purge_team_for_deleted_session(
         )
 
     try:
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.enterprise.team.member_limits import clear_swarmflow_worker_quota
+
+            # Drop the in-process swarmflow quota registration with the team.
+            clear_swarmflow_worker_quota(session_id=sid, team_name=name)
+    except Exception:  # noqa: BLE001
+        logger.debug("[TeamCleanup] failed to clear swarmflow quota", exc_info=True)
+
+    try:
         from jiuwenswarm.enterprise.team.route_binding_store import (
             get_team_route_binding_store,
         )

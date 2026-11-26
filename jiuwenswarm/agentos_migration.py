@@ -29,7 +29,8 @@ from typing import Any
 
 from ruamel.yaml import YAML
 
-from jiuwenswarm.common.utils import get_gateway_config_dir, get_user_workspace_dir
+from jiuwenswarm.common.paths import get_gateway_config_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +177,7 @@ def migrate(
         }
 
     target_dir = Path(gateway_dir) if gateway_dir else get_gateway_config_dir(workspace)
-    target_path = target_dir / "config.yaml"
+    target_path = target_dir / "config-gateway.yaml"
     if target_path.resolve() == legacy_path.resolve():
         raise ValueError(
             "gateway config dir points at the legacy shared config: "
@@ -235,7 +236,7 @@ def refresh_deploy_owned(
     """
     workspace = Path(workspace)
     target_dir = Path(gateway_dir) if gateway_dir else get_gateway_config_dir(workspace)
-    target_path = target_dir / "config.yaml"
+    target_path = target_dir / "config-gateway.yaml"
     if not target_path.is_file():
         return {
             "status": "skipped",
@@ -290,7 +291,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--gateway-dir",
         type=Path,
         default=None,
-        help="Gateway config directory; defaults to get_gateway_config_dir(workspace)",
+        help="Gateway config directory; defaults to the data root (config-gateway.yaml)",
     )
     parser.add_argument(
         "--force",

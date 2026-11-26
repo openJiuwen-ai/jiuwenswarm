@@ -53,10 +53,11 @@ PURPOSE_ASSET_EXPORT = "asset_export"
 
 
 def _get_secret_file_path() -> Path:
+    # 密钥文件随业务配置目录（数据根 config/，真目录；老 infra/ 分区已废弃）
     workspace = os.getenv("JIUWENSWARM_WORKSPACE")
     if workspace:
-        return Path(workspace) / "infra" / "config" / _SECRET_FILE_NAME
-    return Path.home() / ".jiuwenswarm" / "infra" / "config" / _SECRET_FILE_NAME
+        return Path(workspace) / "config" / _SECRET_FILE_NAME
+    return Path.home() / ".jiuwenswarm" / "config" / _SECRET_FILE_NAME
 
 
 def _load_or_create_secret() -> str:

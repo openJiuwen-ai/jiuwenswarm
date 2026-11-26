@@ -16,11 +16,11 @@ from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 @pytest.fixture
 def app(monkeypatch, tmp_path):
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths, utils
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
     services = AppServices()
     services.adapter_registry = AdapterRegistry()
     services.adapter_registry.register(WorkspaceFileAdapter())

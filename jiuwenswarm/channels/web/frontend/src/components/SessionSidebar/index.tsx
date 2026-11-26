@@ -8,10 +8,10 @@ import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
 import PlusIcon from '../../assets/sidebar/plus.svg?react';
-import logoIcon from '/logo.svg';
 import SettingsIcon from '../../assets/settings/app-navigation/settings.svg?react';
 import UpdateIcon from '../../assets/sidebar/download-update.svg?react';
 import WorkIcon from '../../assets/工作.svg?react';
+import MemoryIcon from '../../assets/memory.svg?react';
 import SkillDesignIcon from '../../assets/agent-management/agent-skill.svg?react';
 import AgentDesignIcon from '../../assets/智能体.svg?react';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
@@ -24,6 +24,7 @@ import type {
 import { EnterpriseContextSwitcher } from './EnterpriseContextSwitcher';
 import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
 import { WebUIHost, WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
+import { SidebarBrandLogo } from './SidebarBrandLogo';
 
 const pluginNavigationStyles: WebUIStyleOverrides = {
   Button: {
@@ -157,6 +158,7 @@ const mainNavItems: NavItem[] = [
   { key: 'appMarket', labelKey: 'nav.appMarket', icon: appMarketNavIcon },
   { key: 'experiments', labelKey: 'nav.experiments', icon: experimentsNavIcon },
   { key: 'personalContext', labelKey: 'nav.personalContext', icon: personalContextNavIcon },
+  { key: 'memory', labelKey: 'nav.memory', icon: <MemoryIcon aria-hidden /> },
   { key: 'settings', labelKey: 'nav.settings', icon: <SettingsIcon aria-hidden /> },
   { key: 'updatepanel', labelKey: 'nav.update', icon: <UpdateIcon aria-hidden /> },
 ];
@@ -206,7 +208,7 @@ export function SessionSidebar({
   return (
     <aside className="sidebar sidebar--icon-rail" data-testid="session-sidebar-rail">
       <div className="icon-rail-logo" data-testid="session-sidebar-logo">
-        <img src={logoIcon} alt="Logo" width="28" height="28" />
+        <SidebarBrandLogo />
       </div>
 
       {showNewSession && (

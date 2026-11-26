@@ -1392,6 +1392,29 @@ def _resolve_session_team_bootstrap_mode(
     return _coerce_team_bootstrap_mode(metadata.get(_SESSION_TEAM_BOOTSTRAP_MODE_KEY))
 
 
+def _framework_bootstrap_will_build(session_id: str) -> bool:
+    """True when a framework bootstrap is about to materialize the Team.
+
+    ``kernel.start()`` builds only while the session has no Team row, and the
+    row's ``team_name`` reaches session metadata at ``runtime_ready``. Using
+    that fact instead of ``is_first_request`` also covers later requests,
+    follow-up fallbacks and cold starts, where the first-request flag is gone
+    but the roster would still be materialized.
+    """
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata
+
+        metadata = _read_metadata(session_id, cache_bust=True) or {}
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "[TeamHelpers] framework build metadata read failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return True
+    return not str(metadata.get("team_name") or "").strip()
+
+
 def _resolve_channel_id(channel_id: str | None) -> str:
     return str(channel_id or "default").strip() or "default"
 
@@ -2827,14 +2850,118 @@ async def _apply_enterprise_runtime_ready_hooks(
                     owner = entity.owner
             except Exception:  # noqa: BLE001
                 team_id = ""
+            max_teammates = 0
+            from jiuwenswarm.enterprise.edition import is_enterprise
+            from jiuwenswarm.enterprise.config.preferred_language import (
+                resolve_preferred_language,
+            )
+
+            # Capture while still under request bind; deferred exceed callbacks
+            # may run after memo reset and would otherwise fall back to yaml.
+            notice_language = resolve_preferred_language()
+
+            # Personal edition keeps its historical guard behavior. The owner
+            # fallback and platform member cap are enterprise-only.
+            if is_enterprise():
+                try:
+                    from jiuwenswarm.enterprise.team.control_store import OwnerIdentity
+                    from jiuwenswarm.enterprise.team.handlers import request_identity
+                    from jiuwenswarm.enterprise.team.quota import get_team_quota_service
+
+                    if owner is None and request is not None:
+                        candidate = request_identity(request)
+                        if str(getattr(candidate, "user_id", "") or "").strip():
+                            owner = candidate
+                    # Routed/restored sessions may have no request contextvar or
+                    # control entity at runtime_ready. Fall back to the session
+                    # metadata identity so the member cap is still resolved
+                    # instead of silently skipping the guard.
+                    if owner is None or not str(getattr(owner, "user_id", "") or "").strip():
+                        metadata = get_session_metadata(session_id) or {}
+                        channel_metadata = metadata.get("channel_metadata") or {}
+                        routing = (
+                            channel_metadata.get("routing")
+                            if isinstance(channel_metadata, dict)
+                            else {}
+                        ) or {}
+                        candidate = OwnerIdentity(
+                            user_id=str(metadata.get("user_id") or "").strip(),
+                            group_id=str(routing.get("group_id") or "").strip(),
+                            bot_id=str(routing.get("bot_id") or "").strip(),
+                        )
+                        if candidate.user_id:
+                            owner = candidate
+                    if owner is not None and str(getattr(owner, "user_id", "") or "").strip():
+                        limits = await run_team_store(
+                            get_team_quota_service().resolve_limits,
+                            owner,
+                        )
+                        max_teammates = int(limits.max_teammates_per_team)
+                except Exception:  # noqa: BLE001
+                    logger.debug("[TeamHelpers] teammate limit resolve failed", exc_info=True)
+                if max_teammates <= 0:
+                    # Enterprise quota always has a platform default. If the
+                    # owner is unresolved (and the team has no control entity),
+                    # leaving max_teammates=0 would skip the guard entirely and
+                    # let a bulk AgentGroup/Skill roster exceed the cap. Fail
+                    # closed only while the quota feature itself is enabled.
+                    from jiuwenswarm.enterprise.team.member_limits import (
+                        DEFAULT_MAX_TEAMMATES,
+                    )
+                    from jiuwenswarm.enterprise.team.quota import team_quota_enabled
+
+                    if team_quota_enabled():
+                        max_teammates = DEFAULT_MAX_TEAMMATES
+                        logger.warning(
+                            "[TeamHelpers] member cap unresolved; using default=%s "
+                            "session_id=%s team_name=%s",
+                            max_teammates,
+                            session_id,
+                            runtime_team_name,
+                        )
             attach_teammate_limit_guard(
                 team_agent,
+                max_teammates=max_teammates,
                 team_id=team_id,
                 owner=owner,
                 on_quota_exceeded=lambda **kwargs: _emit_teammate_quota_notice(
-                    channel_id, session_id, **kwargs
+                    channel_id,
+                    session_id,
+                    language=notice_language,
+                    **kwargs,
                 ),
             )
+            # Swarmflow workers are created outside TeamBackend.spawn_member,
+            # so register the same whole-team cap for that execution path too.
+            # Design canvas nodes are a separate execution surface, not the
+            # user-facing team roster, so leave team.design alone.
+            mode = ""
+            params = getattr(request, "params", None) if request is not None else None
+            if isinstance(params, dict):
+                mode = str(params.get("mode") or "").strip()
+            if not mode:
+                try:
+                    mode = str(get_session_metadata(session_id).get("mode") or "").strip()
+                except Exception:  # noqa: BLE001
+                    mode = ""
+            if is_enterprise() and max_teammates > 0 and mode != NEW_TEAM_DESIGN:
+                from jiuwenswarm.enterprise.team.member_limits import (
+                    install_swarmflow_worker_quota_guard,
+                    register_swarmflow_worker_quota,
+                )
+
+                register_swarmflow_worker_quota(
+                    session_id=session_id,
+                    team_name=runtime_team_name,
+                    max_teammates=max_teammates,
+                    on_quota_exceeded=lambda **kwargs: _emit_teammate_quota_notice(
+                        channel_id,
+                        session_id,
+                        language=notice_language,
+                        **kwargs,
+                    ),
+                )
+                install_swarmflow_worker_quota_guard()
             if team_id:
                 try:
                     from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
@@ -2852,6 +2979,13 @@ async def _apply_enterprise_runtime_ready_hooks(
                     )
                 except Exception:  # noqa: BLE001
                     logger.debug("[TeamHelpers] teammate quota roster reconcile failed", exc_info=True)
+        else:
+            logger.warning(
+                "[TeamHelpers] teammate quota guard not attached: no pooled leader agent "
+                "session_id=%s team_name=%s",
+                session_id,
+                runtime_team_name,
+            )
     except Exception:  # noqa: BLE001
         logger.debug("[TeamHelpers] teammate limit guard attach failed", exc_info=True)
 
@@ -2897,6 +3031,7 @@ def _emit_teammate_quota_notice(
     used: int,
     limit: int,
     member_name: str = "",
+    language: str | None = None,
     **_kwargs: Any,
 ) -> None:
     """Show one user-facing teammate-quota notice per round."""
@@ -2906,7 +3041,7 @@ def _emit_teammate_quota_notice(
     claim = getattr(tm, "claim_teammate_quota_notice", None)
     if callable(claim) and not claim(session_id):
         return
-    content = teammate_quota_user_message(limit)
+    content = teammate_quota_user_message(limit, language=language)
     event = {
         "event_type": "chat.notice",
         "notice_type": "team_teammate_quota",
@@ -4521,6 +4656,71 @@ async def _process_team_message_stream(
             model_selection=runtime_model_selection,
             config_base=team_runtime_config,
         )
+        if (
+            str(getattr(team_spec, "bootstrap_mode", "")) == "framework"
+            and _framework_bootstrap_will_build(session_id)
+        ):
+            from jiuwenswarm.enterprise.edition import is_enterprise
+            from jiuwenswarm.enterprise.team.member_limits import (
+                count_predefined_quota_members,
+                predefined_team_size_user_message,
+                whole_team_member_limit,
+            )
+            from jiuwenswarm.enterprise.team.quota import (
+                QUOTA_EXCEEDED,
+            )
+
+            # A framework bootstrap materializes the whole predefined roster
+            # inside kernel.start(), before team.runtime_ready attaches the
+            # teammate guard. Refuse an oversized AgentGroup/Skill roster here
+            # instead of letting it slip past the per-spawn admission.
+            if is_enterprise():
+                predefined = list(getattr(team_spec, "predefined_members", []) or [])
+                team_size = count_predefined_quota_members(predefined) + 1
+                limit, default = whole_team_member_limit(request, team_runtime_config)
+                if limit > 0 and team_size > limit:
+                    content = predefined_team_size_user_message(team_size, limit)
+                    event = {
+                        "event_type": "chat.notice",
+                        "notice_type": "team_predefined_size",
+                        "session_id": session_id,
+                        "content": content,
+                        "message": content,
+                        "code": QUOTA_EXCEEDED,
+                        "quota": {
+                            "kind": "teammate_spawn",
+                            "used": team_size,
+                            "limit": limit,
+                            "default": default,
+                        },
+                    }
+                    _persist_team_notice(
+                        channel_id,
+                        session_id,
+                        request_id=f"team-predefined-size-{rid}",
+                        content=content,
+                        event=event,
+                    )
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=channel_id,
+                        payload=event,
+                        is_complete=False,
+                    )
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=channel_id,
+                        payload={"event_type": "chat.done"},
+                        is_complete=False,
+                    )
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=channel_id,
+                        payload=None,
+                        is_complete=True,
+                    )
+                    await _release_team_create_off_loop(enterprise_create_lease)
+                    return
         from jiuwenswarm.server.runtime.session.execution_settings import prepare_session_execution
 
         try:

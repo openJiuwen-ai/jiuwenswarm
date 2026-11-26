@@ -72,6 +72,7 @@ export function InteractionSlot({ onSubmit }: InteractionSlotProps) {
           <AuthorizationPrompt pending={pending} onSubmit={onSubmit} />
         ) : (
           <InteractionPrompt
+            key={pending.request_id}
             pending={pending}
             onSubmit={onSubmit}
             legacyCardAnchors={isTeamMode}

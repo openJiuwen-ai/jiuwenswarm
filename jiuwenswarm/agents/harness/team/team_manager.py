@@ -44,11 +44,17 @@ from agent_gateway.common.cron_team_completion import (
 from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.common.log_preview import preview_text
-from jiuwenswarm.common.utils import get_domain_data_dir
+from jiuwenswarm.common.paths import get_trace_dir
 
 configure_agent_teams_home()
 
-from jiuwenswarm.agents.harness.observability_runtime import build_observability_config
+from jiuwenswarm.agents.harness.observability_runtime import (
+    build_observability_config,
+    forget_observability_demand,
+    observability_state_lock,
+    remember_observability_demand,
+    sync_observability_export_policy,
+)
 from jiuwenswarm.agents.harness.team.config_loader import (
     get_effective_team_model_entries,
     load_team_spec_dict,
@@ -91,7 +97,7 @@ from jiuwenswarm.common.config import (
     get_symphony_evolution_enabled,
 )
 from jiuwenswarm.common.observability_config import (
-    is_observability_scope_enabled,
+    is_observability_enabled,
     observability_export_settings,
     resolve_observability_section,
 )
@@ -247,37 +253,40 @@ def sync_team_observability() -> None:
     """Synchronize observability state with current config.
 
     Called before each ``Runner.run_agent_team_streaming`` so that
-    hot-reloading the ``observability.team.enabled`` flag takes
-    effect immediately:
-
-    * disabled → enabled : ``init_observability()``
-    * enabled → disabled : ``shutdown_observability()``
-    * unchanged          : no-op
+    hot-reloading the ``observability.enabled`` flag takes
+    effect on the next request, including export demands held by an idle Agent.
 
     The Web trajectory store is an independent fan-out owned by
     ``sync_trajectory_runtime``; Team tracing keeps its own demand so
-    disabling Team observability never tears down a trajectory sink another
-    runtime still uses.
+    shutting down Team alone preserves another runtime's sink. Disabling the
+    global trajectory setting stops the shared sink regardless of its owners.
 
-    Evolution also requests the provider when the explicit switch is disabled.
+    Evolution also requests the provider when the explicit switch is
+    disabled, as a capture-only demand that never opens the export gate.
     """
+    with observability_state_lock:
+        _sync_team_observability_locked()
+
+
+def _sync_team_observability_locked() -> None:
+    """Refresh shared config and Team lifecycle under the platform lock."""
     global _observability_active
     config = get_config()
     section = resolve_observability_section(config)
+    sync_observability_export_policy(is_observability_enabled(section))
     cfg = observability_export_settings(section)
     trajectory_settings = load_trajectory_store_settings(config)
     evolution_requested = get_skill_evolution_enabled(
         config
     ) or get_symphony_evolution_enabled(config)
     # The Web trajectory store needs the provider exactly like single-Agent
-    # does: spans must be exported so the record processor can fan them out to
+    # does: spans must be captured so the record processor can fan them out to
     # the SQLite sink. ``trajectory_ui.enabled`` therefore also pulls the
-    # provider up, mirroring ``sync_agent_observability``.
-    want_enabled = (
-        is_observability_scope_enabled(section, "team")
-        or trajectory_settings.enabled
-        or evolution_requested
-    )
+    # provider up — but only as a capture demand. Evolution is a capture
+    # demand too: it reads spans through ``TrajectorySpanProcessor``, never
+    # the exporter. Only the explicit switch opens the export gate.
+    export_wanted = is_observability_enabled(section)
+    want_enabled = export_wanted or trajectory_settings.enabled or evolution_requested
 
     # Always synchronize the trajectory store first (start when its setting is
     # enabled, tear the sink down otherwise); the provider decision below only
@@ -293,13 +302,16 @@ def sync_team_observability() -> None:
         return
 
     try:
-        traces_dir = str(cfg.get("traces_dir") or get_domain_data_dir() / ".trace")
+        traces_dir = str(cfg.get("traces_dir") or get_trace_dir())
         obs_cfg = build_observability_config(
             cfg,
             service_name="jiuwenswarm",
             traces_dir=traces_dir,
         )
-        provider_existed = team_observability.acquire_observability(obs_cfg)
+        provider_existed = team_observability.acquire_observability(
+            obs_cfg, export=export_wanted
+        )
+        remember_observability_demand("team")
         was_active = _observability_active
         _observability_active = True
         if not was_active and not provider_existed:
@@ -328,6 +340,12 @@ def sync_team_observability() -> None:
 
 def shutdown_team_observability() -> None:
     """Shutdown team observability (called on disable or process exit)."""
+    with observability_state_lock:
+        _shutdown_team_observability_locked()
+
+
+def _shutdown_team_observability_locked() -> None:
+    """Release Team resources under the shared platform lock."""
     global _observability_active
     try:
         if not shutdown_trajectory_runtime(demand="team"):
@@ -338,6 +356,7 @@ def shutdown_team_observability() -> None:
         return
     try:
         team_observability.release_observability()
+        forget_observability_demand("team")
         _observability_active = False
         logger.info("[TeamObservability] disabled")
     except Exception as exc:

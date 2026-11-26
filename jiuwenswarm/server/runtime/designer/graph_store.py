@@ -38,7 +38,9 @@ _STORE_LOCK = threading.Lock()
 
 
 def _designer_root() -> Path:
-    root = get_agent_root_dir() / "designer"
+    from jiuwenswarm.common.paths import get_designer_dir
+
+    root = get_designer_dir()
     root.mkdir(parents=True, exist_ok=True)
     return root
 

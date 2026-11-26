@@ -250,7 +250,6 @@ def test_skill_list_reconciles_stale_state_and_separates_customized_builtin(tmp_
     listed = asyncio.run(manager.handle_skills_list({"with_installed": True}))
     assert [s["name"] for s in listed["skills"] if s["source"] == "builtin"] == [
         BUILTIN_CATALOG_NAME,
-        "sample",
     ]
     assert not (skills / "sample").exists()
     # Unknown modifications remain active assets, but are no longer builtins.

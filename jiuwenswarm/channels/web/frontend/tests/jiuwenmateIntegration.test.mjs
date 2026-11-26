@@ -8,7 +8,7 @@ import {
   visibleJiuwenMatePublicPages,
 } from '../node_modules/.cache/jiuwenmate-integration/publicNav.js';
 
-const EXISTING_PAGES = new Set(['agents', 'personalContext', 'skills', 'connectorMarket', 'settings']);
+const EXISTING_PAGES = new Set(['agents', 'memory', 'personalContext', 'skills', 'connectorMarket', 'settings']);
 
 test('public rail entries open existing swarm pages and do not create jiuwenmate copies', () => {
   const byLabel = Object.fromEntries(JIUWENMATE_PUBLIC_PAGES.map((item) => [item.labelKey, item.nav]));
@@ -18,7 +18,7 @@ test('public rail entries open existing swarm pages and do not create jiuwenmate
   assert.equal(byLabel['jiuwenmate.nav.skills'], 'skills');
   assert.equal(byLabel['jiuwenmate.nav.extensions'], 'connectorMarket');
   assert.equal(byLabel['jiuwenmate.nav.settings'], 'settings');
-  assert.equal(JIUWENMATE_PUBLIC_PAGES.length, 5);
+  assert.equal(JIUWENMATE_PUBLIC_PAGES.length, 6);
   for (const item of JIUWENMATE_PUBLIC_PAGES) {
     assert.equal(EXISTING_PAGES.has(item.nav), true);
   }
@@ -28,6 +28,7 @@ test('assets leaves the rail while personal context is off and returns when it i
   const labels = (hidden) => visibleJiuwenMatePublicPages(hidden).map((item) => item.labelKey);
   assert.deepEqual(labels(['personalContext']), [
     'jiuwenmate.nav.plaza',
+    'nav.memory',
     'jiuwenmate.nav.skills',
     'jiuwenmate.nav.extensions',
     'jiuwenmate.nav.settings',
@@ -43,4 +44,9 @@ test('opening a reused page stays inside jiuwenmate and preserves the personal p
   const exited = { isJiuwenMate: false, activeNav: opened.activeNav };
   const returned = reenterJiuwenMate(exited);
   assert.deepEqual(returned, { isJiuwenMate: true, activeNav: 'chat' });
+});
+
+test('memory follows the same menu visibility contract as knowledge', () => {
+  assert.equal(visibleJiuwenMatePublicPages(['memory']).some((item) => item.nav === 'memory'), false);
+  assert.equal(visibleJiuwenMatePublicPages([]).some((item) => item.nav === 'memory'), true);
 });
