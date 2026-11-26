@@ -61,9 +61,15 @@ def pytest_testnodedown(node, error):
 
 @pytest.hookimpl(tryfirst=True, optionalhook=True)
 def pytest_xdist_make_scheduler(config, log):
+    groups = config.stash[GROUPS]
+    if config.getoption('dist') != 'loadfile':
+        if groups:
+            raise pytest.UsageError('Ordered UT worker groups require --dist=loadfile')
+        return None
+
     from xdist.scheduler import LoadFileScheduling
 
-    owners = {path: name for name, paths in config.stash[GROUPS].items() for path in paths}
+    owners = {path: name for name, paths in groups.items() for path in paths}
 
     class OrderedFileScheduling(LoadFileScheduling):
         def _split_scope(self, nodeid):

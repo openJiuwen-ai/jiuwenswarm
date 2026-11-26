@@ -34,12 +34,8 @@ def normalize_ut_paths(selected: set[str]) -> list[str]:
     root = Path(UNIT_ROOT).resolve()
     for path in sorted(selected):
         candidate = Path(path)
-        if (
-            not path.startswith(f'{UNIT_ROOT}/')
-            or any(ord(char) < 32 for char in path)
-            or not candidate.exists()
-            or not candidate.resolve().is_relative_to(root)
-        ):
+        unsafe_path = not path.startswith(f'{UNIT_ROOT}/') or any(ord(char) < 32 for char in path)
+        if unsafe_path or not candidate.exists() or not candidate.resolve().is_relative_to(root):
             raise ValueError(f'invalid or missing UT path {path!r}')
     return sorted(path for path in selected if not any(str(parent) in selected for parent in Path(path).parents))
 
@@ -127,7 +123,7 @@ def import_test_hits(
         if not is_unit_test(test):
             continue
         first = dependencies(path)
-        second = {dep for name in first if name in files for dep in dependencies(files[name])}
+        second = set().union(*(dependencies(files[name]) for name in first if name in files))
         for module in first & changed_modules.keys():
             hits[changed_modules[module]][0].add(test)
         for module in (second - first) & changed_modules.keys():

@@ -45,6 +45,7 @@ def test_import_selection_follows_at_most_two_edges(tmp_path, monkeypatch):
         (('jiuwenswarm/common/config.py',), 'full'),
         (('tests/unit_tests/conftest.py',), 'full'),
         (('.gitcode/ISSUE_TEMPLATE.zh/001-bug-report.yml',), 'baseline'),
+        (('jiuwenswarm/leaf.py',), 'diverged'),
     ],
 )
 def test_selector_requires_evidence_for_each_unmapped_source(tmp_path, changes, expected):
@@ -91,16 +92,20 @@ def test_selector_requires_evidence_for_each_unmapped_source(tmp_path, changes, 
 
     git('init', '-q', '--template=')
     git('add', '.')
-    git('commit', '-qm', 'base')
+    git('commit', '--no-gpg-sign', '-qm', 'base')
     for name in changes:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('# changed', encoding='utf-8')
     git('add', '.')
-    git('commit', '-qm', 'change')
+    git('commit', '--no-gpg-sign', '-qm', 'change')
+
+    base_ref = 'HEAD^'
+    if expected == 'diverged':
+        base_ref = git('commit-tree', '--no-gpg-sign', 'HEAD^{tree}', '-p', 'HEAD^', '-m', 'comparison')
 
     result = subprocess.run(
-        [sys.executable, 'scripts/select_ut.py', 'HEAD^'], cwd=tmp_path,
+        [sys.executable, 'scripts/select_ut.py', base_ref], cwd=tmp_path,
         check=True, capture_output=True, text=True,
     )
     expected_paths = {
@@ -109,6 +114,9 @@ def test_selector_requires_evidence_for_each_unmapped_source(tmp_path, changes, 
         'mirrored': {baseline, mirrored},
         'baseline': {baseline},
         'full': {'tests/unit_tests'},
+        'diverged': {'tests/unit_tests'},
     }
     assert set(result.stdout.splitlines()) == expected_paths[expected]
-    assert ('UT full suite:' in result.stderr) == (expected == 'full')
+    assert ('UT full suite:' in result.stderr) == (expected in {'full', 'diverged'})
+    if expected == 'diverged':
+        assert 'UT_BASE_SHA is not an ancestor of HEAD' in result.stderr

@@ -1,7 +1,9 @@
 """Select PR unit tests."""
 
 import json
+import logging
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -14,15 +16,19 @@ from ut_imports import (
 RULES = Path(__file__).with_name('ut_selection.json')
 DOC_PREFIXES = ('docs/', '.agents/agent-docs/')
 TEMPLATE_PREFIXES = ('.gitcode/ISSUE_TEMPLATE.zh/', '.gitcode/ISSUE_TEMPLATE.en/')
+LOGGER = logging.getLogger(__name__)
 
 
 def git(*args: str) -> str:
-    result = subprocess.run(['git', *args], check=True, capture_output=True)
-    return result.stdout.decode()
+    executable = shutil.which('git')
+    if not executable:
+        raise FileNotFoundError('git not found')
+    command = [str(Path(executable).absolute()), *args]
+    return subprocess.check_output(command, stderr=subprocess.PIPE).decode()
 
 
 def fallback(reason: str) -> list[str]:
-    print(f'UT full suite: {reason}', file=sys.stderr)
+    LOGGER.warning('UT full suite: %s', reason)
     return [UNIT_ROOT]
 
 
@@ -41,14 +47,19 @@ def select(base_ref: str) -> list[str]:
         return fallback('UT_BASE_SHA is missing')
     base = git('rev-parse', '--verify', '--end-of-options', f'{base_ref}^{{commit}}').strip()
     head = git('rev-parse', 'HEAD').strip()
-    git('merge-base', '--is-ancestor', base, head)
+    try:
+        git('merge-base', '--is-ancestor', base, head)
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 1:
+            return fallback('UT_BASE_SHA is not an ancestor of HEAD')
+        raise
     changed = git('diff', '--name-only', '-z', '--no-renames', base, head, '--').split(chr(0))[:-1]
     if not changed:
         return fallback('no committed diff against the supplied base')
 
     rules = json.loads(RULES.read_text(encoding='utf-8'))
     baseline = set(rules['baseline'])
-    if not baseline or not all(is_unit_test(path) for path in baseline):
+    if not baseline or not all(map(is_unit_test, baseline)):
         return fallback('baseline test list is empty or invalid')
 
     features = rules['features']
@@ -100,22 +111,22 @@ def select(base_ref: str) -> list[str]:
                 return fallback(f'no related UT found for {source!r}')
         import_direct = {test for first, _ in hits.values() for test in first}
         import_chained = {test for _, second in hits.values() for test in second} - import_direct
-        print(f'UT import hits: direct={len(import_direct)}, chained={len(import_chained)}', file=sys.stderr)
+        LOGGER.info('UT import hits: direct=%d, chained=%d', len(import_direct), len(import_chained))
         direct.update(import_direct | import_chained)
     selected = baseline | direct | affected
     include_worker_peers(selected, worker_groups(rules))
     paths = normalize_ut_paths(selected)
-    print(f'UT {base[:12]}..{head[:12]}: {len(changed)} files changed, {len(paths)} test paths', file=sys.stderr)
-    print(f'UT feature groups: {", ".join(sorted(groups)) or "none"}', file=sys.stderr)
+    LOGGER.info('UT %.12s..%.12s: %d changes, %d test paths', base, head, len(changed), len(paths))
+    LOGGER.info('UT feature groups: %s', ', '.join(sorted(groups)) or 'none')
     return paths
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
     try:
         paths = select(sys.argv[1] if len(sys.argv) > 1 else '')
     except SyntaxError as exc:
         paths = fallback(f'Python parse failed: {exc.filename!r}')
     except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError) as exc:
         paths = fallback(f'{type(exc).__name__}: {exc}')
-    for path in paths:
-        print(path)
+    sys.stdout.write('\n'.join(paths) + '\n')
