@@ -181,3 +181,31 @@ test('a stopped turn is flagged on its last visible row only', () => {
   delete stoppedUser.message.inputOutcome;
   assert.deepEqual(stoppedEnds(project(input).rows), []);
 });
+
+function commandOutput(id, offset) {
+  const item = message(id, 'system', offset);
+  item.message.isCommandOutput = true;
+  return item;
+}
+
+test('a slash command after a stopped turn leaves the marker on the partial answer', () => {
+  const stoppedUser = message('stopped-user', 'user', 100);
+  stoppedUser.message.inputOutcome = 'stopped';
+  const input = [stoppedUser, message('partial', 'assistant', 110), commandOutput('slash-out', 150)];
+  const stoppedEnds = (rows) => rows.filter((row) => row.stoppedTurnEnd).map((row) => row.key);
+  assert.deepEqual(stoppedEnds(project(input).rows), ['partial']);
+});
+
+test('the turn after a slash command that follows a stopped turn carries no marker', () => {
+  const stoppedUser = message('stopped-user', 'user', 100);
+  stoppedUser.message.inputOutcome = 'stopped';
+  const input = [
+    stoppedUser,
+    message('partial', 'assistant', 110),
+    commandOutput('slash-out', 150),
+    message('next-user', 'user', 200),
+    message('next-answer', 'assistant', 210),
+  ];
+  const stoppedEnds = (rows) => rows.filter((row) => row.stoppedTurnEnd).map((row) => row.key);
+  assert.deepEqual(stoppedEnds(project(input).rows), ['partial']);
+});
