@@ -16,6 +16,8 @@ generated: true
 |---|
 | [agent-core/openjiuwen/agent_teams](#module-agent-core-openjiuwen-agent_teams) |
 | [agent-gateway/agent_gateway/channel_manager/web](#module-agent-gateway-agent_gateway-channel_manager-web) |
+| [agent-gateway/channel_manager/web](#module-agent-gateway-channel_manager-web) |
+| [agent-gateway/extensions/runtime_management_extension](#module-agent-gateway-extensions-runtime_management_extension) |
 | [agent_gateway/channel_manager/im_platforms/xiaoyi](#module-agent_gateway-channel_manager-im_platforms-xiaoyi) |
 | [agent_gateway/message_handler](#module-agent_gateway-message_handler) |
 | [agent_teams](#module-agent_teams) |
@@ -59,6 +61,7 @@ generated: true
 | [jiuwenswarm/enterprise/config](#module-jiuwenswarm-enterprise-config) |
 | [jiuwenswarm/enterprise/team](#module-jiuwenswarm-enterprise-team) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
+| [jiuwenswarm/extensions/runtime_management_extension](#module-jiuwenswarm-extensions-runtime_management_extension) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
 | [jiuwenswarm/extensions/video_duplex](#module-jiuwenswarm-extensions-video_duplex) |
 | [jiuwenswarm/extensions_v2](#module-jiuwenswarm-extensions_v2) |
@@ -111,6 +114,21 @@ generated: true
 |---|---|---|---|---|
 | [F_20261125_1245_memory-portal-team-migration](features/F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
 | [S_03_memory-portal](specs/jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
+<a id="module-agent-gateway-channel_manager-web"></a>
+
+## agent-gateway/channel_manager/web
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
+
+<a id="module-agent-gateway-extensions-runtime_management_extension"></a>
+
+## agent-gateway/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-agent_gateway-channel_manager-im_platforms-xiaoyi"></a>
 
@@ -198,6 +216,7 @@ generated: true
 | [F_20261111_1528_unified-observability-config](features/F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 | [F_20261117_2300_conflict-free-tool-registry](features/F_20261117_2300_conflict-free-tool-registry.md) | F | 内置工具声明式自发现注册表与文档索引无冲突合并机制 | zhuxiangju | 无独立 D：架构级消除多分支并行开发工具与文档时的中心注册表及索引冲突热点。 |
 | [B_20261124_1602_issue-4327-observability](bugfix/observability/B_20261124_1602_issue-4327-observability.md) | B | issue 4327：统一可观测性配置并分离轨迹存储与导出 | hh0205 | 无独立 D：依据 GitCode jiuwenswarm issue 4327，统一 observability 开关并分离轨迹存储、演进采集和可观测性导出的职责，无独立 D 文档。 |
+| [B_20261124_1717_main-agent-template-trace](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261124_1717_main-agent-template-trace.md) | B | 企业版 Work、Code 的主 Agent Trace 显示默认名 | 垚垚 | 无独立 D：本次修复企业版 Work、Code 主 Agent 的 Trace 展示名，沿用现有会话配置与观测接口，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-code-rails-heartbeat"></a>
 
@@ -418,6 +437,7 @@ generated: true
 | [B_20261121_1529_skill-install-toast-display-name-width](bugfix/jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
 | [B_20261125_0115_cron-pin-sidebar-blackhole](bugfix/jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
 | [B_20261125_1146_design-shared-path-regressions](bugfix/jiuwenswarm/channels/web/B_20261125_1146_design-shared-path-regressions.md) | B | Design 公共路径历史回归防护 | Huang, Zeyu | 无独立 D：依据历史 issue 和当前公共路径契约补回归测试，无独立设计方案；不重构产品代码。 |
+| [B_20261126_2000_agent-mgmt-confirm-dialog-i18n](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_2000_agent-mgmt-confirm-dialog-i18n.md) | B | 专家团卸载与专家删除确认框原生 window.confirm 按钮文案无法随应用 i18n 切换 | whds5279 | 无独立 D：交互层缺陷修复，复用既有 ConfirmDialog 组件与 agentManagement.confirm / common.cancel\|confirm\|loading 文案契约，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
@@ -566,6 +586,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261126_0957_enterprise-execution-guard](features/F_20261126_0957_enterprise-execution-guard.md) | F | 企业级执行护栏改为独立模板槽位 | hanjiahui | 无独立 D：2026-11-25 已确认的企业执行护栏配置方案。本仓没有对应 D 编号。 |
+
 <a id="module-jiuwenswarm-enterprise-config"></a>
 
 ## jiuwenswarm/enterprise/config
@@ -603,6 +624,14 @@ generated: true
 | [S_01_app-session-project](specs/jiuwenswarm/extensions/app_market/app-session-project.md) | S | 应用角色会话的项目归属 | kdgmpw | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
 | [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
+
+<a id="module-jiuwenswarm-extensions-runtime_management_extension"></a>
+
+## jiuwenswarm/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-jiuwenswarm-extensions-sdk"></a>
 
@@ -832,8 +861,9 @@ generated: true
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 | [B_20261119_2249_deep-adapter-sync-build](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261119_2249_deep-adapter-sync-build.md) | B | DeepAdapter 冷启动同步构建阻塞事件循环 | yangzequ | 无独立 D：本次是对现有 DeepAdapter 创建链路的局部阻塞修复，无独立设计文档。 |
 | [B_20261121_1545_team-pause-teardown-admission-race](bugfix/jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
-| [B_20261126_1052_team-memory-rail-race](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
+| [B_20261124_1717_main-agent-template-trace](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261124_1717_main-agent-template-trace.md) | B | 企业版 Work、Code 的主 Agent Trace 显示默认名 | 垚垚 | 无独立 D：本次修复企业版 Work、Code 主 Agent 的 Trace 展示名，沿用现有会话配置与观测接口，无独立设计文档。 |
 | [B_20261126_1045_ui-lang-over-yaml-zh](bugfix/jiuwenswarm/enterprise/config/B_20261126_1045_ui-lang-over-yaml-zh.md) | B | 企业版 UI 语言被 AgentServer yaml preferred_language zh 盖过 | whds5279 | 无独立 D：无独立 D；依据 issue |
+| [B_20261126_1052_team-memory-rail-race](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
