@@ -60,6 +60,7 @@ from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
     ExtensionInstallRecord,
     ExtensionInstallState,
 )
+from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
 from jiuwenswarm.server.runtime.marketplace.hub_extensions import download_system_plugin_archive
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
 
@@ -121,6 +122,8 @@ class PackageManagementAdapter(GatewayAdapter):
             payload = await _dispatch(manager, method, parsed, require_all_members=require_all_members)
         except PackageNotFound as exc:
             return _error_response(request, f"package {exc} not found", code=_PACKAGE_NOT_FOUND)
+        except HubNotFoundError as exc:
+            return _error_response(request, str(exc), code=_PACKAGE_NOT_FOUND)
         except ValueError as exc:
             return _error_response(request, str(exc), code="INVALID_PARAMS")
         except ExtensionFailure as exc:
