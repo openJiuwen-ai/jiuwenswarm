@@ -112,8 +112,8 @@ def _install_app_builder_guides(source: Path, target: Path, catalog: Path) -> bo
     return True
 
 
-def _refresh_catalog_files(builtin_dir: Path, catalog: Path, versions: dict) -> None:
-    """Refresh bundled files that exactly match a known shipped version."""
+def _refresh_catalog_files(builtin_dir: Path, catalog: Path, versions: dict, installed: dict) -> None:
+    """Refresh unchanged bundled files using their last installed digest."""
     for name in ("SKILL.md", "skill_display.md", "references/catalog.md", _APP_BUILDER_SKILL):
         target = catalog / name
         source = builtin_dir / BUILTIN_CATALOG_NAME / name
@@ -123,25 +123,47 @@ def _refresh_catalog_files(builtin_dir: Path, catalog: Path, versions: dict) -> 
             continue
         previous = target.read_bytes()
         replacement = source.read_bytes()
-        if previous.replace(b"\r\n", b"\n") == replacement.replace(b"\r\n", b"\n"):
-            continue
         digest = hashlib.sha256(previous.replace(b"\r\n", b"\n")).hexdigest()
+        replacement_digest = hashlib.sha256(replacement.replace(b"\r\n", b"\n")).hexdigest()
+        if digest == replacement_digest:
+            installed[name] = replacement_digest
+            continue
         trusted = versions.get("_catalog_files", {}).get(name, [])
-        if not any(item.get("digest") == digest for item in trusted):
+        if installed.get(name) != digest and not any(item.get("digest") == digest for item in trusted):
             continue
         if name == _APP_BUILDER_SKILL and not _install_app_builder_guides(source, target, catalog):
             continue
-        backup = catalog / ".legacy" / "catalog-files" / f"{name}-{digest[:12]}"
-        if not backup.resolve().is_relative_to(catalog.resolve()):
-            raise ValueError("Catalog file archive escapes workspace")
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        if backup.exists() and backup.read_bytes() != previous:
-            raise ValueError("Conflicting catalog file archive")
-        backup.write_bytes(previous)
         _replace_catalog_file(target, replacement)
+        installed[name] = replacement_digest
 
 
-def _refresh_catalog_capabilities(builtin_dir: Path, catalog: Path, versions: dict) -> None:
+def _recover_catalog_capabilities(catalog: Path) -> None:
+    """Recover an interrupted directory replacement before installing missing leaves."""
+    backup_root = catalog / ".builtin-capability-recovery"
+    target_root = catalog / "references" / "capabilities"
+    if not backup_root.exists():
+        return
+    if backup_root.is_symlink() or not backup_root.resolve().is_relative_to(catalog.resolve()):
+        raise ValueError("Catalog recovery directory escapes workspace")
+    if target_root.is_symlink() or not target_root.resolve().is_relative_to(catalog.resolve()):
+        raise ValueError("Catalog capability directory escapes workspace")
+    target_root.mkdir(parents=True, exist_ok=True)
+    for backup in backup_root.iterdir():
+        if backup.is_symlink() or not backup.is_dir():
+            raise ValueError("Invalid catalog recovery entry")
+        target = target_root / backup.name
+        if target.is_symlink():
+            raise ValueError("Linked catalog capability")
+        if target.exists():
+            if not target.is_dir():
+                raise ValueError("Invalid catalog capability")
+            shutil.rmtree(backup)
+        else:
+            backup.rename(target)
+    backup_root.rmdir()
+
+
+def _refresh_catalog_capabilities(builtin_dir: Path, catalog: Path, versions: dict, installed: dict) -> None:
     """Refresh unmodified catalog leaves and preserve user-customized copies."""
     source_root = builtin_dir / BUILTIN_CATALOG_NAME / "references" / "capabilities"
     target_root = catalog / "references" / "capabilities"
@@ -160,24 +182,21 @@ def _refresh_catalog_capabilities(builtin_dir: Path, catalog: Path, versions: di
             logger.warning("Preserving unreadable catalog capability %s: %s", source.name, exc)
             continue
         if source_digest == target_digest:
+            installed[source.name] = source_digest
             continue
         trusted = {
             str(item.get("digest") or "")
             for item in versions.get(source.name, [])
             if isinstance(item, dict)
         }
-        if target_digest not in trusted:
+        if target_digest not in trusted and installed.get(source.name) != target_digest:
             continue
 
-        backup_root = catalog / ".legacy" / "catalog-capabilities"
+        backup_root = catalog / ".builtin-capability-recovery"
+        if backup_root.is_symlink() or not backup_root.resolve().is_relative_to(catalog.resolve()):
+            raise ValueError("Catalog recovery directory escapes workspace")
         backup_root.mkdir(parents=True, exist_ok=True)
-        backup = backup_root / f"{source.name}-{target_digest[:12]}"
-        suffix = 0
-        while backup.exists():
-            suffix += 1
-            backup = backup_root / f"{source.name}-{target_digest[:12]}-{suffix}"
-        if not backup.resolve().is_relative_to(catalog.resolve()):
-            raise ValueError("Catalog capability archive escapes workspace")
+        backup = backup_root / source.name
 
         with tempfile.TemporaryDirectory(prefix=".builtin-capability-refresh-", dir=target_root) as directory:
             staged = Path(directory) / source.name
@@ -189,6 +208,9 @@ def _refresh_catalog_capabilities(builtin_dir: Path, catalog: Path, versions: di
                 if not target.exists() and backup.exists():
                     backup.rename(target)
                 raise
+        shutil.rmtree(backup)
+        backup_root.rmdir()
+        installed[source.name] = source_digest
 
 
 def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
@@ -211,9 +233,17 @@ def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
     hashes = json.loads((builtin_dir / BUILTIN_CATALOG_NAME / "legacy_hashes.json").read_text(encoding="utf-8"))
     versions_file = builtin_dir / BUILTIN_CATALOG_NAME / "legacy_versions.json"
     versions = json.loads(versions_file.read_text(encoding="utf-8")) if versions_file.is_file() else {}
+    installed = state.get("builtin_catalog_installed_digests", {})
+    if not isinstance(installed, dict):
+        installed = {}
+    for kind in ("capabilities", "files"):
+        if not isinstance(installed.get(kind), dict):
+            installed[kind] = {}
+    state["builtin_catalog_installed_digests"] = installed
+    _recover_catalog_capabilities(catalog)
     _install_missing_catalog_capabilities(builtin_dir, catalog)
-    _refresh_catalog_capabilities(builtin_dir, catalog, versions)
-    _refresh_catalog_files(builtin_dir, catalog, versions)
+    _refresh_catalog_capabilities(builtin_dir, catalog, versions, installed["capabilities"])
+    _refresh_catalog_files(builtin_dir, catalog, versions, installed["files"])
     plugins = state.get("installed_plugins", [])
     configs = state.get("skill_configs", {})
     if not isinstance(plugins, list) or not isinstance(configs, dict):

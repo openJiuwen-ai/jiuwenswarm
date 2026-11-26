@@ -124,7 +124,7 @@ def test_catalog_navigation_updates_known_release_and_preserves_user_edit(tmp_pa
     seed.write_text("App Market navigation", encoding="utf-8")
     migrate_builtin_catalog(builtin, skills)
     assert (catalog / "SKILL.md").read_text() == "App Market navigation"
-    assert list((catalog / ".legacy/catalog-files").iterdir())[0].read_bytes() == previous
+    assert not (catalog / ".legacy/catalog-files").exists()
     (catalog / "SKILL.md").write_text("my custom navigation", encoding="utf-8")
     seed.write_text("updated packaged navigation", encoding="utf-8")
     migrate_builtin_catalog(builtin, skills)
@@ -150,9 +150,7 @@ def test_catalog_capability_updates_known_release_and_preserves_user_edit(tmp_pa
     migrate_builtin_catalog(builtin, skills)
 
     assert target.joinpath("SKILL.md").read_bytes() == source.read_bytes()
-    backups = list((catalog / ".legacy/catalog-capabilities").glob("sample-*"))
-    assert len(backups) == 1
-    assert skill_tree_digest(backups[0]) == previous_digest
+    assert not (catalog / ".builtin-capability-recovery").exists()
 
     target.joinpath("SKILL.md").write_text("user customization\n", encoding="utf-8")
     source.write_text(
@@ -225,8 +223,7 @@ def test_app_builder_upgrade_installs_guides_before_refreshing_trusted_instructi
         assert (target / "SKILL.md").read_bytes() == replacement
         for guide in ("single-npc.md", "ai-roles.md"):
             assert (target / "references" / guide).read_text(encoding="utf-8") == guide
-        archived, = (catalog / ".legacy/catalog-files" / relative).glob("SKILL.md-*")
-        assert archived.read_bytes() == previous
+        assert not (catalog / ".legacy/catalog-files" / relative).exists()
 
 
 def test_skill_list_reconciles_stale_state_and_separates_customized_builtin(tmp_path, monkeypatch):
@@ -295,18 +292,22 @@ def test_shipped_catalog_has_one_discovery_entry_and_all_leaf_links_work(tmp_pat
 
 @pytest.mark.parametrize("customized", [False, True])
 def test_release_system_plugin_copy_migrates_only_when_its_full_resources_match(tmp_path, monkeypatch, customized):
-    builtin = _resource_path(utils.get_builtin_skills_dir())
+    shipped = _resource_path(utils.get_builtin_skills_dir())
+    builtin = _resource_path(tmp_path / "builtin")
     skills = _resource_path(tmp_path / "skills")
     name = "jiuwen-system-plugin-dev"
-    source = builtin / BUILTIN_CATALOG_NAME / "references" / "capabilities" / name
+    seed = builtin / BUILTIN_CATALOG_NAME
+    source = seed / "references" / "capabilities" / name
+    shutil.copytree(shipped / BUILTIN_CATALOG_NAME / "references" / "capabilities" / name, source)
+    shutil.copyfile(shipped / BUILTIN_CATALOG_NAME / "SKILL.md", seed / "SKILL.md")
+    (seed / "legacy_hashes.json").write_text(
+        json.dumps({name: skill_tree_digest(source)}), encoding="utf-8",
+    )
     legacy = skills / name
     shutil.copytree(source, legacy)
-    expected = json.loads((builtin / BUILTIN_CATALOG_NAME / "legacy_hashes.json").read_text())[name]
-    assert skill_tree_digest(legacy) == expected
-    assert len([
-        path for path in legacy.rglob("*")
-        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
-    ]) == 16
+    assert skill_tree_digest(legacy) == skill_tree_digest(source)
+    assert (legacy / "scripts/build_package.py").is_file()
+    assert (legacy / "scripts/finalize_package.py").is_file()
     if customized:
         with (legacy / "SKILL.md").open("a", encoding="utf-8") as page:
             page.write("\nUser-authored local instructions.\n")
@@ -428,6 +429,114 @@ def test_existing_catalog_receives_new_capability_and_preserves_user_changes(tmp
     assert (installed / "SKILL.md").read_text() == "my system plugin instructions\n"
     assert (catalog / "references/catalog.md").read_text() == "my navigation\n"
     assert custom.read_text() == "my existing capability edit\n"
+
+
+def test_startup_refreshes_installed_catalog_without_registering_every_release(tmp_path, monkeypatch):
+    seed, catalog = _catalog_upgrade(tmp_path, monkeypatch)
+    local = catalog.parent / "my-local-skill"
+    local.mkdir()
+    (local / "SKILL.md").write_text("user skill\n", encoding="utf-8")
+    utils.ensure_default_builtin_skills()
+    source = seed / "references/capabilities/jiuwen-system-plugin-dev"
+    target = catalog / "references/capabilities/jiuwen-system-plugin-dev"
+    (seed / "legacy_versions.json").write_text("{}", encoding="utf-8")
+    (source / "scripts/build_package.py").unlink()
+    (source / "references").mkdir()
+    (source / "references/new-guide.md").write_text("new guide\n", encoding="utf-8")
+
+    for version in ("second", "third"):
+        (source / "SKILL.md").write_text(f"{version} instructions\n", encoding="utf-8")
+        (seed / "references/catalog.md").write_text(f"{version} navigation\n", encoding="utf-8")
+        utils.ensure_default_builtin_skills()
+        assert skill_tree_digest(target) == skill_tree_digest(source)
+        assert not (target / "scripts/build_package.py").exists()
+        assert (catalog / "references/catalog.md").read_bytes() == (seed / "references/catalog.md").read_bytes()
+        assert (local / "SKILL.md").read_text(encoding="utf-8") == "user skill\n"
+        state = json.loads((catalog.parent / "skills_state.json").read_text(encoding="utf-8"))
+        installed = state["builtin_catalog_installed_digests"]
+        assert installed["capabilities"]["jiuwen-system-plugin-dev"] == skill_tree_digest(target)
+        assert installed["files"]["references/catalog.md"] == hashlib.sha256(
+            (catalog / "references/catalog.md").read_bytes().replace(b"\r\n", b"\n")
+        ).hexdigest()
+
+    assert not (catalog / ".builtin-capability-recovery").exists()
+    utils.ensure_default_builtin_skills()
+    assert not (catalog / ".legacy/catalog-capabilities").exists()
+
+
+@pytest.mark.parametrize("interruption", [OSError, SystemExit])
+def test_catalog_capability_interrupted_replacement_recovers_on_restart(tmp_path, monkeypatch, interruption):
+    builtin, skills = _workspace(tmp_path)
+    catalog = skills / BUILTIN_CATALOG_NAME
+    target = catalog / "references/capabilities/sample"
+    original = skill_tree_digest(target)
+    (builtin / BUILTIN_CATALOG_NAME / "legacy_versions.json").write_text(
+        json.dumps({"sample": [{"digest": original}]}), encoding="utf-8",
+    )
+    source = builtin / BUILTIN_CATALOG_NAME / "references/capabilities/sample/SKILL.md"
+    source.write_text("updated skill\n", encoding="utf-8")
+    original_rename = Path.rename
+
+    def interrupted_rename(path, destination):
+        if path.name == "sample" and path.parent.name.startswith(".builtin-capability-refresh-"):
+            raise interruption("interrupted replacement")
+        return original_rename(path, destination)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "rename", interrupted_rename)
+        with pytest.raises(interruption):
+            migrate_builtin_catalog(builtin, skills)
+    if interruption is OSError:
+        assert skill_tree_digest(target) == original
+    else:
+        assert not target.exists()
+    migrate_builtin_catalog(builtin, skills)
+    assert target.joinpath("SKILL.md").read_text(encoding="utf-8") == "updated skill\n"
+    assert not (catalog / ".builtin-capability-recovery").exists()
+
+
+def test_catalog_capability_interrupted_after_publish_keeps_new_copy(tmp_path, monkeypatch):
+    from jiuwenswarm.common import builtin_skills
+
+    builtin, skills = _workspace(tmp_path)
+    catalog = skills / BUILTIN_CATALOG_NAME
+    target = catalog / "references/capabilities/sample"
+    (builtin / BUILTIN_CATALOG_NAME / "legacy_versions.json").write_text(
+        json.dumps({"sample": [{"digest": skill_tree_digest(target)}]}), encoding="utf-8",
+    )
+    source = builtin / BUILTIN_CATALOG_NAME / "references/capabilities/sample/SKILL.md"
+    source.write_text("updated skill\n", encoding="utf-8")
+    original_rmtree = shutil.rmtree
+
+    def interrupted_cleanup(path, *args, **kwargs):
+        if Path(path) == catalog / ".builtin-capability-recovery/sample":
+            raise SystemExit("interrupted cleanup")
+        return original_rmtree(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(builtin_skills.shutil, "rmtree", interrupted_cleanup)
+        with pytest.raises(SystemExit):
+            migrate_builtin_catalog(builtin, skills)
+    assert target.joinpath("SKILL.md").read_text(encoding="utf-8") == "updated skill\n"
+    migrate_builtin_catalog(builtin, skills)
+    assert target.joinpath("SKILL.md").read_text(encoding="utf-8") == "updated skill\n"
+    assert not (catalog / ".builtin-capability-recovery").exists()
+
+
+def test_catalog_does_not_record_unknown_user_content_as_installed_baseline(tmp_path):
+    builtin, skills = _workspace(tmp_path)
+    catalog = skills / BUILTIN_CATALOG_NAME
+    target = catalog / "references/capabilities/sample/SKILL.md"
+    target.write_text("user customization\n", encoding="utf-8")
+    (catalog / "SKILL.md").write_text("custom navigation\n", encoding="utf-8")
+
+    migrate_builtin_catalog(builtin, skills)
+    state = json.loads((skills / "skills_state.json").read_text(encoding="utf-8"))
+    installed = state["builtin_catalog_installed_digests"]
+    assert "sample" not in installed["capabilities"]
+    assert "SKILL.md" not in installed["files"]
+    assert target.read_text(encoding="utf-8") == "user customization\n"
+    assert (catalog / "SKILL.md").read_text(encoding="utf-8") == "custom navigation\n"
 
 
 def test_failed_catalog_capability_copy_keeps_old_navigation_and_no_partial_leaf(tmp_path, monkeypatch):
