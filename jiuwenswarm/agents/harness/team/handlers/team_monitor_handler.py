@@ -411,12 +411,26 @@ class TeamMonitorHandler(BaseMonitorHandler):
         if self._monitor is None:
             return None
         try:
-            members = await self._monitor.get_members()
-            team_info = await self._monitor.get_team_info()
+            # 快照三读合一：优先走单连接快照探针（同一读事务
+            # 取齐 团队信息/成员/任务，1 次 checkout 替代串行 3 次）；旧版
+            # openjiuwen 无该 API 时回退三读，行为与旧实现一致。
+            get_snapshot = getattr(self._monitor, "get_snapshot", None)
+            if get_snapshot is not None:
+                data = await get_snapshot()
+                if data is None:
+                    logger.warning(
+                        "[TeamMonitorHandler] get_team_snapshot probe unavailable: session_id=%s",
+                        self._session_id,
+                    )
+                    return None
+                team_info, members, tasks = data
+            else:  # pragma: no cover - 旧版 openjiuwen 兼容路径
+                members = await self._monitor.get_members()
+                team_info = await self._monitor.get_team_info()
+                tasks = await self._monitor.get_tasks() or []
             leader_name = team_info.leader_member_name if team_info else None
             if leader_name:
                 members = [m for m in members if m.member_name != leader_name]
-            tasks = await self._monitor.get_tasks() or []
             return {
                 "members": [
                     {

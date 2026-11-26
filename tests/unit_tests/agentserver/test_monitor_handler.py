@@ -322,6 +322,54 @@ async def test_get_team_snapshot_filters_leader_member() -> None:
     }
 
 
+class _SnapshotMonitor(_FakeMonitor):
+    """FakeMonitor + 单连接快照探针（openjiuwen TeamMonitor.get_snapshot）。"""
+
+    def __init__(self, snapshot, **kwargs):
+        super().__init__(**kwargs)
+        self._snapshot = snapshot
+        self.snapshot_calls = 0
+
+    async def get_snapshot(self):
+        self.snapshot_calls += 1
+        return self._snapshot
+
+
+@pytest.mark.anyio
+async def test_get_team_snapshot_prefers_single_probe() -> None:
+    """有 get_snapshot 时走单连接快照（不再串行三读），leader 过滤与
+    字段组装与旧路径一致。"""
+    monitor = _SnapshotMonitor(
+        (
+            SimpleNamespace(leader_member_name="team_leader", team_name="team-1"),
+            [_FakeMember("team_leader"), _FakeMember("worker-1")],
+            [_FakeTask(task_id="task-1", title="research", status="created", assignee="worker-1")],
+        ),
+        members=[_FakeMember("team_leader"), _FakeMember("worker-1")],
+        leader_member_name="team_leader",
+        tasks=[_FakeTask(task_id="task-1", title="research", status="created", assignee="worker-1")],
+    )
+    handler = TeamMonitorHandler(monitor, "sess-snap-probe")
+
+    snapshot = await handler.get_team_snapshot()
+
+    assert monitor.snapshot_calls == 1
+    assert snapshot is not None
+    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1"]
+    assert [t["task_id"] for t in snapshot["tasks"]] == ["task-1"]
+    assert snapshot["team_id"] == "team-1"
+
+
+@pytest.mark.anyio
+async def test_get_team_snapshot_returns_none_when_probe_unavailable() -> None:
+    """快照探针不可得（重试耗尽）→ 整体 None，与既有"任一读异常→整体
+    None"契约一致（调用方按快照不可得处理）。"""
+    monitor = _SnapshotMonitor(None, members=[], leader_member_name=None)
+    handler = TeamMonitorHandler(monitor, "sess-snap-none")
+
+    assert await handler.get_team_snapshot() is None
+
+
 @pytest.mark.anyio
 async def test_get_team_snapshot_keeps_members_when_team_info_unavailable() -> None:
     handler = TeamMonitorHandler(
