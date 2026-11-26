@@ -7,12 +7,14 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import secrets
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from jiuwenswarm.common.system_plugin_recovery import (
+    RECOVERY_MAX_BODY_BYTES,
     RecoveryRecordNotFound,
     SystemPluginRecovery,
     begin_system_plugin_recovery_session,
@@ -20,7 +22,6 @@ from jiuwenswarm.common.system_plugin_recovery import (
 )
 
 _PATH = "/system-plugin-recovery"
-_MAX_BODY_BYTES = 16 * 1024
 _PAGE_STYLE = """
 :root {
   color-scheme: light dark;
@@ -218,8 +219,9 @@ body.is-embedded .page-header { display: none; }
 _PAGE_SCRIPT = """
 <script>
 const token = __TOKEN__;
-const endpoint = "__ENDPOINT__";
-const parentOrigin = __PARENT_ORIGIN__;
+const endpoint = window.location.pathname.replace(/\\/(?:proxy)?$/, '');
+const parentOrigin = __PROXY_EMBEDDED__ ? window.location.origin : __PARENT_ORIGIN__;
+const embedded = window.parent !== window && Boolean(parentOrigin);
 const texts = __TEXTS__;
 const status = document.querySelector('#status');
 const records = document.querySelector('#records');
@@ -245,7 +247,14 @@ let restoring = false;
 let heightAnimationFrame = null;
 
 function postToParent(message) {
-  window.parent.postMessage(message, parentOrigin || '*');
+  if (embedded) window.parent.postMessage(message, parentOrigin);
+}
+
+function apiUrl(action, recordId) {
+  const url = new URL(`${endpoint}/api/${action}`, window.location.origin);
+  if (token) url.searchParams.set('token', token);
+  if (recordId !== undefined) url.searchParams.set('record_id', recordId);
+  return url;
 }
 
 function reportRecoveryState() {
@@ -298,8 +307,7 @@ function recordTitle(record) {
 }
 
 async function load() {
-  const query = encodeURIComponent(token);
-  const response = await fetch(`${endpoint}/api/history?token=${query}`);
+  const response = await fetch(apiUrl('history'));
   if (!response.ok) throw new Error('load failed');
   const data = await response.json();
   expandedRow = null;
@@ -385,9 +393,7 @@ async function loadPreview(recordId, container, detail) {
   detail.dataset.previewRequestId = requestId;
   renderPackageMessage(container, texts.loadingPreview);
   try {
-    const query = encodeURIComponent(token);
-    const recordQuery = encodeURIComponent(recordId);
-    const response = await fetch(`${endpoint}/api/preview?token=${query}&record_id=${recordQuery}`);
+    const response = await fetch(apiUrl('preview', recordId));
     if (!response.ok) throw new Error('preview failed');
     const data = await response.json();
     if (!detail.classList.contains('is-open') || detail.dataset.previewRequestId !== requestId) return;
@@ -447,7 +453,7 @@ function confirmRestore(id, button) {
 
 restoreButton.textContent = texts.restore;
 restoreButton.disabled = true;
-if (parentOrigin) {
+if (embedded) {
   document.body.classList.add('is-embedded');
   restoreButton.hidden = true;
 }
@@ -491,8 +497,7 @@ async function restore(id, button) {
   restoring = true;
   reportRecoveryState();
   try {
-    const query = encodeURIComponent(token);
-    const response = await fetch(`${endpoint}/api/restore?token=${query}`, {
+    const response = await fetch(apiUrl('restore'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ record_id: id }),
@@ -541,8 +546,14 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
             return
         if path in {_PATH, f"{_PATH}/"}:
             locale = query.get("locale", [""])[0]
-            parent_origin = _parent_origin(query.get("parent_origin", [""])[0])
-            self._html(_page(self.server.token, locale, parent_origin))
+            proxied = query.get("proxied") == ["1"]
+            parent_origin = "" if proxied else _parent_origin(query.get("parent_origin", [""])[0])
+            self._html(_page(
+                "" if proxied else self.server.token,
+                locale,
+                parent_origin,
+                proxy_embedded=proxied and query.get("embedded") == ["1"],
+            ))
             return
         if path == f"{_PATH}/api/history":
             self._json({"records": self.server.recovery.records()})
@@ -611,7 +622,7 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
             length = int(raw_length)
         except ValueError:
             return None
-        if length < 0 or length > _MAX_BODY_BYTES:
+        if length < 0 or length > RECOVERY_MAX_BODY_BYTES:
             return None
         try:
             return json.loads(self.rfile.read(length).decode("utf-8"))
@@ -628,7 +639,8 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(encoded)
+        if self.command != "HEAD":
+            self.wfile.write(encoded)
 
     def _html(self, value: str) -> None:
         encoded = value.encode("utf-8")
@@ -637,11 +649,13 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(encoded)
+        if self.command != "HEAD":
+            self.wfile.write(encoded)
 
 
 # BaseHTTPRequestHandler dispatches these protocol-defined method names.
 setattr(_RecoveryHandler, "do_GET", _RecoveryHandler.do_get)
+setattr(_RecoveryHandler, "do_HEAD", _RecoveryHandler.do_get)
 setattr(_RecoveryHandler, "do_POST", _RecoveryHandler.do_post)
 
 
@@ -669,7 +683,11 @@ def _request_target(value: str) -> tuple[str, dict[str, list[str]]]:
 
 
 def _parent_origin(value: str) -> str:
-    parsed = urlparse(value)
+    try:
+        parsed = urlparse(value)
+        parsed.port
+    except ValueError:
+        return ""
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     if parsed.path not in {"", "/"}:
@@ -682,19 +700,17 @@ def _parent_origin(value: str) -> str:
         return ""
     if parsed.username is not None or parsed.password is not None:
         return ""
-    try:
-        parsed.port
-    except ValueError:
-        return ""
     return value
 
 
-def _page(token: str, locale: str, parent_origin: str = "") -> str:
+def _page(token: str, locale: str, parent_origin: str = "", *, proxy_embedded: bool = False) -> str:
     texts = _texts(locale)
-    script = _PAGE_SCRIPT.replace("__TOKEN__", json.dumps(token))
-    script = script.replace("__ENDPOINT__", _PATH)
-    script = script.replace("__PARENT_ORIGIN__", json.dumps(parent_origin))
-    script = script.replace("__TEXTS__", json.dumps(texts, ensure_ascii=False))
+    values = {"TOKEN": token, "PARENT_ORIGIN": parent_origin, "PROXY_EMBEDDED": proxy_embedded, "TEXTS": texts}
+    script = re.sub(
+        r"__(TOKEN|PARENT_ORIGIN|PROXY_EMBEDDED|TEXTS)__",
+        lambda match: json.dumps(values.get(match[1])).replace("<", "\\u003c"),
+        _PAGE_SCRIPT,
+    )
     return f"""<!doctype html>
 <html lang="{texts['locale']}">
 <meta charset="utf-8">

@@ -99,6 +99,7 @@ test('group routes support refresh, IDs and existing chat routes', () => {
   assert.deepEqual(parseChatRoute(chatRoutePath(route)), route);
   assert.deepEqual(parseChatRoute('/chat/new'), { kind: 'chat-new' });
   assert.deepEqual(parseChatRoute('/chat/session'), { kind: 'chat-session', sessionId: 'session' });
+  assert.deepEqual(parseChatRoute('/system-plugin-recovery'), { kind: 'chat-new' });
 });
 
 test('attachment links reject executable and protocol-relative URLs', () => {
