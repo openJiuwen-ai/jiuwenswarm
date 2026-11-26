@@ -18,6 +18,7 @@ files: [jiuwenswarm/channels/desktop/electron/app_market_windows.cjs, jiuwenswar
 - Electron 受信前端通过 openMarketApp(appId, url, title, embedded?) 与 closeMarketApp(appId) 调用桌面 IPC；只接受无凭据的 loopback HTTP/HTTPS 初始入口。独立窗口标题以“应用名 · WorkSwarm”为前缀并显示页面 CPU、内存，图标复用主窗口解析入口。
 - Electron 窗口设置 skipTaskbar，不显示独立任务栏按钮；最小化后隐藏，从市场“打开／恢复应用”恢复现有窗口，不重载页面。隐藏期间的导航完成不重新弹出。Windows 不设置原生 parent，其他平台保留 owner。
 - 每个 Electron 应用沿用 persist:app-market-<编码appId> 分区；页面 sandbox/contextIsolation 开启，无 Node 或主界面 preload，权限默认拒绝。主窗口销毁时清理全部应用窗口。
+- Electron 根据实际请求页面校验权限，应用容器内与当前应用入口同源的 HTTP/HTTPS 页面可申请鼠标锁定（`pointerLock`）。独立窗口还可申请标准全屏（`fullscreen`），嵌入主窗口的应用使用面板放大。浏览器继续校验用户操作和焦点。
 - Web iframe 由前端注册表持有，面板卸载/收起仅隐藏实例。展开时面板固定占满浏览器页面视口，覆盖市场工具栏与列表区域，仅保留应用工具栏；恢复时回到原分栏且不重建 iframe。支持关闭面板、模态遮挡隐藏和恢复不抢焦点。应用必须允许 iframe 嵌入，市场遵守 CSP/X-Frame-Options。Web iframe 与 Electron 原生视图通过同一面板的尺寸同步接入，各自使用 webAppViews.setViewport 与 setMarketAppViewport，不接入聊天自动化浏览器或 headless 配置。两端按运行实例跟踪页面，实例结束后清理对应容器，见 [S_02_app-market-stop-and-page-lifecycle](../../extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md)。
 - 手动关闭应用窗口/页面不停止服务；停止/删除 RPC 成功后关闭对应容器，失败保留。停止成功后的窗口清理异常单独提示，不回滚服务状态。显式停止销毁不执行 beforeunload，应用不能以卸载作为唯一存档点。
 - Electron 仅最新入口导航可提交缓存或清理失败，市场入口和页面目标分开。原生 HTTP 导航保留 POST，popup 转入同窗口并保留正文、Content-Type/boundary 和 referrer；非 HTTP 导航拒绝。

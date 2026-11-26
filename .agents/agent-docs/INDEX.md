@@ -350,6 +350,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261103_1106_app-market-containers-and-editing](features/app-market-implementation.md) | F | 应用市场浏览器容器与编辑会话 | default | 无独立 D：用户明确授权初步本地实现，无独立设计文档。 |
+| [B_20261126_1634_desktop-app-permissions](bugfix/jiuwenswarm/channels/desktop/electron/B_20261126_1634_desktop-app-permissions.md) | B | 桌面应用鼠标锁定与全屏权限 | kdgmpw | 无独立 D：局部修复以应用市场分端展示契约和网页版已有权限为依据。 |
 | [S_01_app-market-browser-containers](specs/jiuwenswarm/channels/desktop/app-market-browser-containers.md) | S | 应用市场分端展示契约 | default | — |
 
 <a id="module-jiuwenswarm-channels-tui"></a>

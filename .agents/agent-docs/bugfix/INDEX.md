@@ -28,6 +28,7 @@ generated: true
 | [jiuwenswarm/agents/harness/team](#module-jiuwenswarm-agents-harness-team) |
 | [jiuwenswarm/agents/swarm](#module-jiuwenswarm-agents-swarm) |
 | [jiuwenswarm/channels/desktop](#module-jiuwenswarm-channels-desktop) |
+| [jiuwenswarm/channels/desktop/electron](#module-jiuwenswarm-channels-desktop-electron) |
 | [jiuwenswarm/channels/tui](#module-jiuwenswarm-channels-tui) |
 | [jiuwenswarm/channels/web](#module-jiuwenswarm-channels-web) |
 | [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
@@ -186,6 +187,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
+
+<a id="module-jiuwenswarm-channels-desktop-electron"></a>
+
+## jiuwenswarm/channels/desktop/electron
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261126_1634_desktop-app-permissions](jiuwenswarm/channels/desktop/electron/B_20261126_1634_desktop-app-permissions.md) | B | 桌面应用鼠标锁定与全屏权限 | kdgmpw | 无独立 D：局部修复以应用市场分端展示契约和网页版已有权限为依据。 |
 
 <a id="module-jiuwenswarm-channels-tui"></a>
 
