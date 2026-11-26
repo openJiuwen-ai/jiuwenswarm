@@ -8,10 +8,13 @@ import logging
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from jiuwenswarm.common.host_services import send_runtime_push
 from jiuwenswarm.runtime.session.model import (
     ExecutionLifecycleContext,
     SessionLifecycleContext,
 )
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
+from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata_async
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +45,26 @@ class _TeamLifecycleManager(Protocol):
         reason: str = "",
         *,
         generation: int | None = None,
-    ) -> bool:
-        """Pause runtime resources owned by the matching Session generation."""
+        expected_request_ids: frozenset[str] | None = None,
+    ) -> Any:
+        """Pause runtime resources owned by the matching Session generation.
+
+        Returns ``PauseSessionResult`` (or a legacy bool from stubs).
+        """
+        ...
+
+    def begin_request_stop(
+        self,
+        session_id: str,
+    ) -> None:
+        """Hold new team input until the caller's pause teardown finishes."""
+        ...
+
+    def end_request_stop(
+        self,
+        session_id: str,
+    ) -> None:
+        """Release one ``begin_request_stop`` hold for the session."""
         ...
 
     async def stop_session_runtime(
@@ -57,6 +78,10 @@ class _TeamLifecycleManager(Protocol):
         """Stop runtime resources owned by the matching Session generation."""
         ...
 
+    def has_waiters(self, session_id: str) -> bool:
+        """Return whether any Session observers can receive an in-process event."""
+        ...
+
     async def broadcast_event(
         self,
         session_id: str,
@@ -64,11 +89,18 @@ class _TeamLifecycleManager(Protocol):
         *,
         channel_id: str | None = None,
     ) -> bool:
-        """Deliver a Session event through observers or the waiter-less fallback."""
+        """Deliver a Session event to registered consumers."""
         ...
 
     def is_generation_running(self, session_id: str, generation: int) -> bool:
         """Return whether the matching Session generation has active work."""
+        ...
+
+    async def reseed_member_registry(
+        self,
+        session_id: str,
+    ) -> bool:
+        """Re-baseline the parked leader's member statuses from the database."""
         ...
 
 
@@ -136,14 +168,24 @@ class TeamSessionLifecycleAdapter:
         *,
         reason: str,
         channel_id: str | None = None,
-    ) -> bool:
-        """Return whether the matching Team generation was paused or drained."""
+        expected_request_ids: frozenset[str] | None = None,
+    ) -> Any:
+        """Return structured pause result for the matching Team generation."""
         del channel_id
         return await self._team_manager.pause_session_runtime(
             context.session_id,
             reason,
             generation=context.generation,
+            expected_request_ids=expected_request_ids,
         )
+
+    def begin_request_stop(self, session_id: str) -> None:
+        """Hold new team input until the caller's pause teardown finishes."""
+        self._team_manager.begin_request_stop(session_id)
+
+    def end_request_stop(self, session_id: str) -> None:
+        """Release one ``begin_request_stop`` hold for the session."""
+        self._team_manager.end_request_stop(session_id)
 
     async def stop_session(
         self,
@@ -165,9 +207,28 @@ class TeamSessionLifecycleAdapter:
         generation: int | None,
         channel_id: str | None = None,
     ) -> None:
-        """Park surviving observers and publish the authoritative pause terminal."""
+        """Park surviving observers and publish persisted member and session pause states."""
         if generation is not None:
             self._coordinator.mark_session_waiting_for_input(session_id, generation)
+        try:
+            # Core persists PAUSED member statuses on pause while the parked
+            # leader keeps the previous cycle's in-memory roster, so the busy
+            # judgment behind the runtime snapshot would keep reporting
+            # execution until the next run cycle. Re-baseline from the
+            # database now, through the agent's public contract; a failure
+            # here must not block the paused-state publish below.
+            await self._team_manager.reseed_member_registry(session_id)
+        except Exception:
+            logger.warning(
+                "Failed to reseed Team member registry after pause: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+        try:
+            await self._publish_paused_members(session_id, channel_id=channel_id)
+        except Exception:
+            logger.warning("Failed to synchronize paused Team members: session_id=%s", session_id, exc_info=True)
+
         logger.info(
             "[TeamProcessingStatus] generated: source=pause_completed channel_id=%s "
             "session_id=%s generation=%s is_processing=False is_complete=True",
@@ -175,16 +236,81 @@ class TeamSessionLifecycleAdapter:
             session_id,
             generation,
         )
-        await self._team_manager.broadcast_event(
-            session_id,
-            {
-                "event_type": "chat.processing_status",
+        terminal_event = {
+            "event_type": "chat.processing_status",
+            "session_id": session_id,
+            "is_processing": False,
+            "is_complete": True,
+        }
+        delivered = await self._push_pause_event(session_id, terminal_event, channel_id=channel_id)
+        if not delivered and self._team_manager.has_waiters(session_id):
+            # In-process consumers can outlive a Team execution without a connected Gateway.
+            delivered = await self._team_manager.broadcast_event(session_id, terminal_event, channel_id=channel_id)
+        if not delivered:
+            logger.warning("Team pause completion push not delivered: session_id=%s", session_id)
+
+    async def _publish_paused_members(self, session_id: str, *, channel_id: str | None) -> None:
+        """Record paused member states for replay and push them to live clients."""
+        from openjiuwen.agent_teams.schema.status import MemberStatus
+
+        from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _persist_team_history_event
+
+        metadata = await get_session_metadata_async(session_id, enable_writeback=False)
+        team_name = str(metadata.get("team_name") or "").strip()
+        if not team_name:
+            return
+
+        members = await TeamMonitorHandler.get_member_list_from_db(team_name, exclude_leader=True)
+        for member in members or ():
+            if member["status"] != MemberStatus.PAUSED.value:
+                continue
+            event = {
+                "event_type": "team.member",
                 "session_id": session_id,
-                "is_processing": False,
-                "is_complete": True,
-            },
-            channel_id=channel_id,
-        )
+                "event": {
+                    "type": "team.member.status_changed",
+                    "team_id": team_name,
+                    "member_id": member["member_id"],
+                    "new_status": member["status"],
+                },
+            }
+            try:
+                await run_history_io(_persist_team_history_event, channel_id, session_id, event)
+            except Exception:
+                logger.warning(
+                    "Failed to record paused Team member: session_id=%s member_id=%s",
+                    session_id,
+                    member["member_id"],
+                    exc_info=True,
+                )
+            await self._push_pause_event(session_id, event, channel_id=channel_id)
+
+    @staticmethod
+    async def _push_pause_event(
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        channel_id: str | None,
+    ) -> bool:
+        """Send a pause event through the host and return whether it was delivered."""
+        try:
+            return await send_runtime_push(
+                {
+                    "request_id": "",
+                    "channel_id": (channel_id or "").strip() or "web",
+                    "session_id": session_id,
+                    "payload": event,
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Failed to push Team pause event: session_id=%s event_type=%s",
+                session_id,
+                event.get("event_type"),
+                exc_info=True,
+            )
+            return False
 
     def is_running(self, context: SessionLifecycleContext) -> bool:
         """Return whether the matching Team generation has active work."""

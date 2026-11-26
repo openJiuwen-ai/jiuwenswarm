@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
-from jiuwenswarm.agents.harness.common.rails.permissions.root_context import HOST_USER_ORIGIN_INTERNAL
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL, HOST_USER_ORIGIN_INTERNAL,
+)
+from jiuwenswarm.agents.harness.team.expert_org.turn_diagnostics import OrganizationTurnDiagnostics
+from jiuwenswarm.common.team_memory_binding import team_memory_user_context
 from jiuwenswarm.server.runtime.team_organization_identity_store import save_organization_team_identity
 
 if TYPE_CHECKING:
@@ -122,6 +126,66 @@ def _team_build_labels(
     leader_display = str(getattr(leader, "display_name", "") or "").strip() or "leader"
     leader_desc = str(getattr(leader, "desc", "") or "").strip()
     return team_display, team_desc, leader_display, leader_desc
+
+
+async def _resolve_expert_member_quota(
+    *,
+    session_id: str,
+    spec: Any,
+    predefined_non_leaders: int | None = None,
+) -> tuple[int, Any | None]:
+    """``(member cap, owner)`` for an expert Team, refusing an oversized package.
+
+    Runs before activation so both shared-DB and standalone expert launches are
+    covered. Framework bootstrap materializes the roster inside activation, so
+    the refusal must happen before ``runtime.activate``.
+    """
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from jiuwenswarm.enterprise.team.quota import team_quota_enabled
+
+    if not is_enterprise() or not team_quota_enabled():
+        return 0, None
+    from jiuwenswarm.enterprise.team.member_limits import (
+        count_predefined_quota_members,
+        predefined_team_size_user_message,
+        resolve_session_member_limit,
+    )
+
+    if predefined_non_leaders is None:
+        predefined_non_leaders = count_predefined_quota_members(
+            getattr(spec, "predefined_members", []) or []
+        )
+    limit, owner = await resolve_session_member_limit(session_id)
+    team_size = max(int(predefined_non_leaders), 0) + 1
+    if limit > 0 and team_size > limit:
+        raise ValueError(predefined_team_size_user_message(team_size, limit))
+    return limit, owner
+
+
+def _attach_expert_member_guard(
+    agent: Any,
+    *,
+    team_id: str,
+    limit: int,
+    owner: Any,
+) -> None:
+    """Bind the same per-member cap to later ``spawn_*`` calls on this Team.
+
+    A real ``team_id`` is passed so admission uses the shared lease instead of
+    the non-atomic roster count. Without a resolved owner the lease cannot be
+    keyed, so fall back to the roster guard rather than fail every spawn.
+    """
+    if limit <= 0:
+        return
+    from jiuwenswarm.enterprise.team.member_limits import attach_teammate_limit_guard
+
+    owner_user_id = str(getattr(owner, "user_id", "") or "").strip()
+    attach_teammate_limit_guard(
+        agent,
+        max_teammates=limit,
+        team_id=str(team_id or "") if owner_user_id else "",
+        owner=owner,
+    )
 
 
 def _resolve_launch_channel_id(channel_id: str | None, session_id: str) -> str:
@@ -282,8 +346,13 @@ class JiuwenExpertTeamLauncher:
             files=files,
             origin_kind=origin_kind,
         ).render()
+        context = (
+            {"run_context": team_memory_user_context(None, query)}
+            if origin_kind == HOST_USER_ORIGIN_EXTERNAL and isinstance(query, str)
+            else {}
+        )
         result = await self._get_runtime().interact(
-            message, team_name=team_id, session_id=session_id,
+            message, team_name=team_id, session_id=session_id, **context,
         )
         if not result:
             logger.warning(
@@ -333,6 +402,10 @@ class JiuwenExpertTeamLauncher:
         turn_inputs = dict(inputs) if isinstance(inputs, dict) else inputs
         if isinstance(turn_inputs, dict):
             turn_inputs.pop("_org_relay_source", None)
+            if origin_kind == HOST_USER_ORIGIN_EXTERNAL and isinstance(turn_inputs.get("query"), str):
+                turn_inputs["run_context"] = team_memory_user_context(
+                    turn_inputs.get("run_context"), turn_inputs["query"],
+                )
         if is_root_relay:
             source = relay_source
         if source in {"org_root_background", "org_root_delivery"}:
@@ -485,8 +558,11 @@ class JiuwenExpertTeamLauncher:
         leader_final_parts: list[str] = []
         saw_leader_final = False
         registered = False
+        diagnostics = OrganizationTurnDiagnostics(team_id, session_id, round_id, source)
+        diagnostics.mark("activate_begin")
         try:
             activation = await runtime.activate(spec, session_id, turn_inputs)
+            diagnostics.mark("activate_end")
             agent = getattr(activation, "agent", None)
             action_kind = getattr(getattr(activation, "action", None), "kind", None)
             if agent is None or action_kind in {
@@ -525,15 +601,20 @@ class JiuwenExpertTeamLauncher:
                 return False
             register_turn(OrganizationTurn(session_id, team_id, round_id, source))
             registered = True
+            diagnostics.start(agent, summary_task_id)
+            diagnostics.mark("processing_start_push_begin")
             await self.push_expert_payload(
                 {"event_type": "chat.processing_status", "is_processing": True},
                 team_id=team_id, session_id=session_id, channel_id=resolved_channel_id,
                 round_id=round_id, frame_sequence=frame_sequence, source=source,
             )
+            diagnostics.mark("processing_start_push_end")
             frame_sequence += 1
             stream = agent.stream(turn_inputs, session=activation.session)
             try:
+                diagnostics.mark("stream_wait")
                 async for chunk in stream:
+                    diagnostics.observe_chunk()
                     payload = getattr(chunk, "payload", None)
                     if isinstance(payload, dict) and payload.get("event_type") in {
                         "team.idle",
@@ -548,8 +629,11 @@ class JiuwenExpertTeamLauncher:
                             source,
                             payload.get("event_type"),
                         )
+                        diagnostics.mark(f"{payload.get('event_type')}_received_finalize_begin")
                         await runtime.finalize(team_name=team_id, session_id=session_id)
+                        diagnostics.mark("finalize_end")
                         break
+                    diagnostics.phase = "stream_relay"
                     relayed = await self._relay_expert_chunk(
                         chunk,
                         team_id=team_id,
@@ -560,7 +644,17 @@ class JiuwenExpertTeamLauncher:
                         source=source,
                         summary_task_id=summary_task_id,
                     )
+                    diagnostics.phase = "stream_wait"
                     if relayed is not None:
+                        if relayed.get("event_type") in {
+                            "chat.llm_call_end", "chat.tool_call", "chat.tool_result", "chat.final", "chat.error",
+                        }:
+                            logger.info(
+                                "[OrgTurnDiagnostics] team=%s session=%s request=%s source=%s "
+                                "event=%s tool=%s frame=%s",
+                                team_id, session_id, round_id, source, relayed.get("event_type"),
+                                relayed.get("tool_name"), frame_sequence,
+                            )
                         frame_sequence += 1
                         if relayed.get("role") == "leader":
                             event_type = relayed.get("event_type")
@@ -571,10 +665,13 @@ class JiuwenExpertTeamLauncher:
                                 saw_leader_final = True
                                 if isinstance(content, str):
                                     leader_final_parts.append(content)
+                diagnostics.mark("stream_loop_exited")
             finally:
                 close = getattr(stream, "aclose", None)
                 if callable(close):
+                    diagnostics.mark("stream_close_begin")
                     await close()
+                    diagnostics.mark("stream_close_end")
             if not saw_leader_final and (
                 leader_text_parts or source == "org_expert_direct"
             ):
@@ -596,15 +693,18 @@ class JiuwenExpertTeamLauncher:
             from jiuwenswarm.server.runtime.organization_owner_results import capture_child_completion
 
             try:
+                diagnostics.mark("result_capture_begin")
                 await capture_child_completion(
                     session_id, team_id, getattr(agent, "team_backend", None),
                     "\n".join(leader_final_parts) if leader_final_parts else "".join(leader_text_parts),
                     round_id,
                 )
+                diagnostics.mark("result_capture_end")
             except Exception:
                 logger.warning("[ExpertTeamLauncher] result capture failed team=%s session=%s",
                                team_id, session_id, exc_info=True)
             # A final segment can precede a last tool call; end the Team turn explicitly.
+            diagnostics.mark("turn_completed_push_begin")
             await self.push_expert_payload(
                 {"event_type": "org.turn_completed", "team_id": team_id},
                 team_id=team_id,
@@ -614,6 +714,7 @@ class JiuwenExpertTeamLauncher:
                 frame_sequence=frame_sequence,
                 source=source,
             )
+            diagnostics.mark("turn_completed_push_end")
             frame_sequence += 1
             return True
         except Exception as exc:
@@ -642,6 +743,7 @@ class JiuwenExpertTeamLauncher:
                 frame_sequence += 1
             return False
         finally:
+            diagnostics.mark("cleanup_begin")
             try:
                 try:
                     if source in {"org_root_background", "org_root_delivery"} and registered:
@@ -653,7 +755,9 @@ class JiuwenExpertTeamLauncher:
                             except Exception:
                                 logger.warning("[ExpertTeamLauncher] cleanup notification failed team=%s session=%s",
                                                team_id, session_id, exc_info=True)
+                    diagnostics.mark("history_flush_begin")
                     await self._flush_expert_history(session_id, team_id, round_id)
+                    diagnostics.mark("history_flush_end")
                 finally:
                     if ran_turn and activation is not None:
                         if not finalized:
@@ -664,21 +768,29 @@ class JiuwenExpertTeamLauncher:
                                 session_id,
                                 source,
                             )
+                            diagnostics.mark("cleanup_finalize_begin")
                             await runtime.finalize(team_name=team_id, session_id=session_id)
+                            diagnostics.mark("cleanup_finalize_end")
                         current = await runtime.pool.get(team_id)
                         interact_gate = getattr(current, "interact_gate", None)
                         close_and_drain = getattr(interact_gate, "close_and_drain", None)
                         if callable(close_and_drain):
+                            diagnostics.mark("interact_gate_drain_begin")
                             await close_and_drain()
+                            diagnostics.mark("interact_gate_drain_end")
+                        diagnostics.mark("session_post_run_begin")
                         await activation.session.post_run()
+                        diagnostics.mark("session_post_run_end")
             finally:
                 try:
                     if registered:
+                        diagnostics.mark("processing_end_push_begin")
                         await self.push_expert_payload(
                             {"event_type": "chat.processing_status", "is_processing": False},
                             team_id=team_id, session_id=session_id, channel_id=resolved_channel_id,
                             round_id=round_id, frame_sequence=frame_sequence, source=source,
                         )
+                        diagnostics.mark("processing_end_push_end")
                 except Exception:
                     # Cleanup delivery must not replace the turn's outcome.
                     logger.warning("[ExpertTeamLauncher] turn cleanup status delivery failed team=%s session=%s",
@@ -687,6 +799,11 @@ class JiuwenExpertTeamLauncher:
                     if registered:
                         # Both operations are keyed by asyncio.current_task().
                         unregister_turn()
+                    diagnostics.mark("cleanup_end")
+                    try:
+                        await diagnostics.stop()
+                    except Exception:
+                        logger.warning("Diagnostic cleanup failed: team=%s", team_id, exc_info=True)
 
     async def _relay_expert_chunk(
         self,
@@ -800,6 +917,13 @@ class JiuwenExpertTeamLauncher:
                     "is_complete": False,
                 }
             )
+            if parsed.get("event_type") in {"chat.processing_status", "org.turn_completed"}:
+                logger.info(
+                    "[OrgTurnDiagnostics] team=%s session=%s request=%s source=%s "
+                    "event=%s is_processing=%s delivered=%s frame=%s",
+                    team_id, session_id, round_id, source, parsed.get("event_type"),
+                    parsed.get("is_processing"), delivered, frame_sequence,
+                )
         except Exception as exc:
             logger.warning(
                 "[ExpertTeamLauncher] expert output push raised team=%s session=%s",
@@ -1009,6 +1133,11 @@ class JiuwenExpertTeamLauncher:
                     + leader_prompt_suffix
                 }
             )
+        from jiuwenswarm.agents.harness.common.memory.team_memory_members import prepare_team_memory
+
+        await prepare_team_memory(
+            getattr(spec, "build_context", None), seed=getattr(spec, "build_context_seed", None),
+        )
         return spec
 
     async def _materialize_expert_team_in_db(
@@ -1137,10 +1266,16 @@ class JiuwenExpertTeamLauncher:
             self.ensure_turn_runner_installed()
             if not organization_enabled():
                 raise ValueError("Team Organization is disabled")
+            from jiuwenswarm.enterprise.team.member_limits import resolve_session_member_limit
+
+            quota_limit, quota_owner = await resolve_session_member_limit(session_id)
             try:
                 activation = await runtime.activate(spec, session_id)
                 await self._locate_group(group_name)
                 agent = getattr(activation, "agent", None)
+                _attach_expert_member_guard(
+                    agent, team_id=team_id, limit=quota_limit, owner=quota_owner,
+                )
                 backend = getattr(agent, "team_backend", None)
                 if (
                     backend is None or backend.db is not db
@@ -1223,12 +1358,19 @@ class JiuwenExpertTeamLauncher:
                 leader_prompt_suffix=leader_prompt_suffix,
                 extra_capabilities=extra_capabilities,
             )
+            quota_limit, quota_owner = await _resolve_expert_member_quota(
+                session_id=session_id, spec=spec,
+            )
             activation_attempted = True
             activation = await runtime.activate(spec, session_id)
             await self._locate_group(group_name)
             agent = getattr(activation, "agent", None)
             if agent is None:
                 raise ValueError(f"activate returned no agent for team: {team_id}")
+
+            _attach_expert_member_guard(
+                agent, team_id=team_id, limit=quota_limit, owner=quota_owner,
+            )
 
             if donor_backend is not None:
                 await self._materialize_expert_team_in_db(

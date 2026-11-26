@@ -3,6 +3,7 @@ import {
   type EnterpriseContextSnapshot,
 } from '../../services/enterpriseContext';
 import { parseRuntimeScope } from '../../services/runtimeScope';
+import i18n from '../../i18n';
 import type { EnterpriseAuthProvider } from '../types';
 
 const DEFAULTS = {
@@ -46,7 +47,7 @@ function entryPath(): string {
 
 export const simulatedAuthProvider: EnterpriseAuthProvider = {
   id: 'simulate',
-  startupMessage: '【登录认证模拟调试模式已开启】使用默认 Agent 上下文候选值',
+  startupMessage: i18n.t('auth.startup.simulate'),
   isAuthenticated: () => true,
   redirectToLogin: () => {
     window.location.replace(entryPath());

@@ -12,10 +12,10 @@ for (const prefix of ['', '/portal/']) {
     define: { 'import.meta.env': JSON.stringify({ VITE_API_PREFIX: prefix }) },
   });
   const { managerAuthProvider } = await import(
-    `data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}`
+    `data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString('base64')}#${encodeURIComponent(prefix)}`
   );
 
-  test(`logout uses the API prefix ${JSON.stringify(prefix)}, includes cookies and clears the cluster`, async () => {
+  test(`logout keeps root endpoints with legacy prefix ${JSON.stringify(prefix)} and clears the cluster`, async () => {
     const originals = Object.fromEntries(
       ['fetch', 'window', 'document', 'localStorage', 'sessionStorage'].map((key) => [key, globalThis[key]]),
     );
@@ -39,7 +39,7 @@ for (const prefix of ['', '/portal/']) {
     try {
       await managerAuthProvider.logout();
       assert.deepEqual(calls, [
-        [`${prefix.replace(/\/+$/, '')}/idp/v1/auth/logout`, 'include', { refresh_token: 'refresh' }],
+        ['/idp/v1/auth/logout', 'include', { refresh_token: 'refresh' }],
       ]);
       assert.equal(values.size, 0);
       assert.equal(sessionValues.size, 0);

@@ -74,7 +74,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
     },
 }
 
-_DEFAULT_LANGUAGE = "cn"
+_DEFAULT_LANGUAGE = "en"
 
 # 按工具排除不影响执行语义的顶层 metadata 键（不参与 args_hash）。
 _METADATA_ONLY_TOP_LEVEL: dict[str, frozenset[str]] = {
@@ -94,11 +94,23 @@ __all__ = [
 
 
 def _normalize_language(language: str | None) -> str:
-    """归一语言键：config 用 zh，rail 内部用 cn；非法值回落默认。"""
-    lang = (language or "").strip().lower()
-    if lang == "zh":
-        lang = "cn"
-    return lang if lang in _MESSAGES else _DEFAULT_LANGUAGE
+    """归一语言键：config 用 zh，rail 内部用 cn；未传时跟 preferred_language。"""
+    from jiuwenswarm.common.i18n import to_runtime_language
+
+    mapped = to_runtime_language(language)
+    if mapped is not None and mapped in _MESSAGES:
+        return mapped
+    if language and str(language).strip():
+        return _DEFAULT_LANGUAGE
+    try:
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
+        resolved = to_runtime_language(resolve_preferred_language())
+        return resolved if resolved in _MESSAGES else _DEFAULT_LANGUAGE
+    except Exception:  # noqa: BLE001
+        return _DEFAULT_LANGUAGE
 
 
 class ToolResultErrorDetector:
@@ -310,7 +322,7 @@ class CircuitBreakerRail(DeepAgentRail):
     def __init__(
         self,
         config: CircuitBreakerConfig | None = None,
-        language: str = _DEFAULT_LANGUAGE,
+        language: str | None = None,
     ):
         super().__init__()
         self._config = config or CircuitBreakerConfig()

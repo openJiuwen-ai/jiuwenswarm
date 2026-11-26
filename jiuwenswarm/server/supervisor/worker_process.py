@@ -56,14 +56,15 @@ def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
     if override:
         return override
-    from jiuwenswarm.common.utils import get_infra_data_dir
+    # 函数级导入：单测按数据根重定向需 patch paths.get_user_workspace_dir 本名
+    from jiuwenswarm.common.paths import get_run_dir
     from jiuwenswarm.server.supervisor.identity import deployment_scope
 
     suffix = "pipe" if os.name == "nt" else "sock"
     scope = deployment_scope()[:16]
     instance = _runtime_instance_token()
     sock_name = f"runtime-{scope}-{instance}.{suffix}" if instance else f"runtime-{scope}.{suffix}"
-    path = get_infra_data_dir() / "run" / sock_name
+    path = get_run_dir() / sock_name
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
 
@@ -83,12 +84,12 @@ def legacy_socket_paths() -> list[str]:
     """Historical endpoints in this data scope; explicit overrides are isolated."""
     if os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip():
         return []
-    from jiuwenswarm.common.utils import get_user_workspace_dir
+    from jiuwenswarm.common.paths import get_run_dir
 
     suffix = "pipe" if os.name == "nt" else "sock"
     from jiuwenswarm.server.supervisor.identity import data_scope
 
-    root = get_user_workspace_dir() / "run"
+    root = get_run_dir()
     instance = _runtime_instance_token()
     scoped = f"runtime-{data_scope()[:16]}-{instance}.{suffix}" if instance else f"runtime-{data_scope()[:16]}.{suffix}"
     paths = [
@@ -183,11 +184,10 @@ class WorkerProcess:
         self._ipc_listener = ipc_listener
         self._proc: subprocess.Popen[bytes] | None = None
         self.launch_identity: str | None = None
-        self._stderr_path = (
-            Path(socket_path).parent
-            / "worker-logs"
-            / f"runtime-worker-{uuid.uuid4().hex}.stderr.log"
-        )
+        from jiuwenswarm.common.paths import get_worker_logs_dir
+        from jiuwenswarm.server.worker.output_logs import worker_stderr_name
+
+        self._stderr_path = get_worker_logs_dir() / worker_stderr_name(uuid.uuid4().hex)
 
     @property
     def stderr_path(self) -> Path:
@@ -207,6 +207,7 @@ class WorkerProcess:
 
     async def spawn(self) -> None:
         from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, launch_identity_payload
+        from jiuwenswarm.server.worker.output_logs import STDERR_LOG_ENV, open_worker_stderr
 
         # Verify source once before the spawn, then hand that exact observation
         # to the child. Reattached resident Workers still require fresh checks.
@@ -230,10 +231,12 @@ class WorkerProcess:
         # process session and also stop on IPC EOF.
         try:
             self._stderr_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._stderr_path.open("ab") as stderr:
+            environment = os.environ.copy()
+            environment[STDERR_LOG_ENV] = str(self._stderr_path.resolve())
+            with open_worker_stderr(self._stderr_path) as stderr:
                 self._proc = subprocess.Popen(
                     command,
-                    env=os.environ.copy(),
+                    env=environment,
                     start_new_session=self._ipc_listener is None,
                     stdin=subprocess.PIPE,
                     stderr=stderr,

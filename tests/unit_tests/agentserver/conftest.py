@@ -3,12 +3,34 @@
 """Fixtures for tests simulating a process-lifetime Server Worker."""
 
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+
+
+@pytest.fixture
+def ipc_dir(tmp_path: Path):
+    """Directory for Runtime Worker IPC endpoints.
+
+    A Unix socket path must fit in ``sun_path`` (104 bytes on macOS), which the
+    pytest ``tmp_path`` under ``/var/folders/.../pytest-of-<user>/`` exceeds, so
+    the Worker cannot bind there. POSIX tests get a short directory under
+    ``/tmp`` instead; Windows named pipes have no such limit.
+    """
+    if os.name == "nt":
+        yield tmp_path
+        return
+    directory = Path(tempfile.mkdtemp(prefix="jw-ipc-", dir="/tmp"))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

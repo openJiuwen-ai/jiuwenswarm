@@ -19,6 +19,7 @@ files:
   - jiuwenswarm/server/runtime/agent_adapter/interface_app_role.py
   - jiuwenswarm/runtime/session_provisioner.py
   - jiuwenswarm/server/runtime/session/session_metadata.py
+  - jiuwenswarm/server/runtime/session/execution_settings.py
   - jiuwenswarm/agents/harness/common/session_ops_service.py
   - jiuwenswarm/server/runtime/agent_manager.py
   - jiuwenswarm/agents/harness/team/team_manager.py
@@ -30,6 +31,12 @@ files:
 
 `session.create` 在 `execution_profile:"app_role"` 上支持创建时固定的 `npc_team`（主从成员名册）。缺省时行为与既有轻量角色一致：`model.stream` 收到 `tools=None`，无工具轮。
 
+## NPC 会话标识
+
+NPC 会话在创建时固定 `npc_session:true`，在创建响应、会话元数据和列表中对外提供。所有 `app_role` 会话自动具备标识，已有同 profile 的会话读取时同样识别。使用默认执行配置的角色可在创建时显式传入该字段。会话分叉保留标识。
+
+Swarm Web/Electron 聊天页显示 NPC 标识和只读历史。当前前端通过 WebSocket 和 HTTP 发送对话时携带 `chat_surface:"swarm"`，Runtime 拒绝这类请求向 NPC 会话发送消息，并返回 `NPC_SESSION_READ_ONLY`。该标记用于识别发送入口，缺少标记的客户端仍走原有接口。Team 的空输入订阅继续用于只读观察。
+
 ## 能力边界
 
 不支持宿主工具注入。创建或聊天请求中的非空 `tools`（包括 `web_search`）明确拒绝，创建校验在 claim 前以 `BAD_REQUEST` 返回；不读取搜索配置、不构造搜索工具。已有 metadata 的 `role_tools` 不参与模型声明或执行，fork 不复制该字段。装备类参数（skills/mcp/plugin_names/agent_template_name/agent_group_name/moa_enabled）维持拒绝。
@@ -37,6 +44,8 @@ files:
 ## 原生团队 NPC
 
 `execution_profile:"app_role"`、`mode:"team"` 和合法名册共同启用原生 Team 模式。创建结果回显按项目工作模式确定的 `team.work.normal` 或 `team.code.normal`，之后固定。成员名保留 `leader` 和框架保留标识。创建仅保存 Team 会话配置，首次发消息时由 framework bootstrap 装配固定成员，使用 scheduled dispatch 和进程内原生成员流。成员使用各自的 Team 会话上下文及 Team 内独立工作区，装配只保留 Team 协作能力，关闭项目工具、技能与团队记忆。
+
+原生 NPC Team 启动时跳过常规代码团队的工具执行环境初始化。请求启用独立 Git 身份或设置非空工具执行环境时，宿主返回配置错误。
 
 应用只提交普通玩家文本到 Team 会话。宿主将内容作为 leader 的普通文本输入，玩家文本中的成员寻址和斜杠命令不参与路由。leader 按角色分配发言任务，自己的最终文本独立发出。每个已发言的角色产生独立 `chat.final`，带 `member_name`、`display_name` 和完整 `content`。应用只展示这些发言，按 `turn_request_id` 关联回合，在 `chat.processing_status` 的 `is_processing:false` 时读取 `npc_missing_members` 检查角色是否齐全。
 
@@ -56,6 +65,6 @@ files:
 
 删除 leader 成功后 best-effort 级联删除成员，失败不回滚 leader 删除。fork leader 复制名册定义并创建全新成员会话（空历史）；fork 单个成员剥离 `npc_member` 成为独立轻量 NPC。`npc_team`/`npc_member`/`npc_member_sessions` 为 metadata 首绑定字段，陈旧快照不得覆盖。
 
-不进入产品 team 体系：不写 `TEAM_CANONICAL_MODES`、不物化 `.agent_teams/`、不出现在团队看板。成员在同项目会话列表展示，可查看咨询历史并单独对话；人工消息进入后续咨询上下文。
+不进入产品 team 体系：不写 `TEAM_CANONICAL_MODES`、不物化 `.agent_teams/`、不出现在团队看板。成员在同项目会话列表展示，Swarm 中可只读查看咨询历史。
 
 成员单独删除后咨询返回明确错误且不重建；leader 可依据错误结果继续回答。

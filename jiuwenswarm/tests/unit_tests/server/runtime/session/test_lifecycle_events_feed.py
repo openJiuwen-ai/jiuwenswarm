@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from jiuwenswarm.common import paths as common_paths
 from jiuwenswarm.server.runtime.session import lifecycle as lc
 
 
@@ -34,6 +35,11 @@ def _setup_root(monkeypatch, tmp_path: Path) -> Path:
     root = tmp_path / "agent"
     (root / "sessions").mkdir(parents=True)
     monkeypatch.setattr(lc, "get_agent_sessions_dir", lambda: root / "sessions")
+    # 事件流与 GC 经 common.paths.get_lifecycle_dir 解析 lifecycle 目录，
+    # 必须与模块内 seam 打桩到同一 root，两套解析路径才不会分叉。
+    monkeypatch.setattr(
+        common_paths, "get_lifecycle_dir", lambda: root / "lifecycle"
+    )
     return root
 
 
@@ -154,6 +160,9 @@ def test_snapshot_cache_isolated_per_data_directory(
 
     # 切回目录 a：缓存仍在且内容正确。
     monkeypatch.setattr(lc, "get_agent_sessions_dir", lambda: root_a / "sessions")
+    monkeypatch.setattr(
+        common_paths, "get_lifecycle_dir", lambda: root_a / "lifecycle"
+    )
     assert lc.event_snapshots()[0]["completed"] is False
 
 

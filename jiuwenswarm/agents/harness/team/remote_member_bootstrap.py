@@ -1687,11 +1687,17 @@ async def _push_shutdown_cleanup_notice(
         from jiuwenswarm.common.host_services import RuntimeHostPushTransport
         from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 
+        from jiuwenswarm.common.i18n import t
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
         request_id = f"team_shutdown_cleanup_{session_id}"
+        lang = resolve_preferred_language()
         content = (
-            "团队已清空并解散，远端成员已恢复为空闲状态。"
+            t("enterprise.team.dissolved_remote_idle", language=lang)
             if deleted
-            else "团队解散清理未完成，请查看后端日志确认原因。"
+            else t("enterprise.team.dissolve_cleanup_incomplete", language=lang)
         )
         await RuntimeHostPushTransport().send_push(
             build_server_push_message(

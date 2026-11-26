@@ -22,10 +22,12 @@ export interface WebUIInstanceViewProps {
   mountLeaseId?: number;
   styles?: WebUIStyleOverrides;
   selected?: boolean;
+  /** Current chat session, used by application-scope sources to open a session right panel. */
+  hostSessionId?: string | null;
 }
 
 export function WebUIInstanceView({
-  runtime, registry, instanceKey, mountLeaseId, styles, selected,
+  runtime, registry, instanceKey, mountLeaseId, styles, selected, hostSessionId,
 }: WebUIInstanceViewProps) {
   useSyncExternalStore(
     (listener) => runtime.subscribeInstance(instanceKey, listener),
@@ -68,13 +70,14 @@ export function WebUIInstanceView({
           instanceKey,
           sessionId: frame.target.sessionId,
           packageId: frame.target.packageId,
+          renderRevision: frame.revision,
           connected: instance.connected,
           componentState,
           styles,
           selected,
           openPanel: (key) => {
             if (runtime.getInstance(instanceKey)?.lifetimeId === instance.lifetimeId) {
-              requestPanelOpen(runtime, frame.target, key);
+              requestPanelOpen(runtime, frame.target, key, hostSessionId);
             }
           },
         }}
@@ -83,7 +86,7 @@ export function WebUIInstanceView({
       />
     );
   }, [frame, registry, runtime, instanceKey, instance?.connected, instance?.localFrameId, mountLeaseId, componentState, styles,
-    selected, mountKey]);
+    selected, mountKey, hostSessionId]);
   if (!instance || !clientFrameActive) {
     return null;
   }

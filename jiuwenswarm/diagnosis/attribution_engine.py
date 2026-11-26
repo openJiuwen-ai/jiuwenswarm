@@ -29,6 +29,7 @@ Design notes (see ``CONTEXT_09_new_attr.md``):
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import time
@@ -73,6 +74,25 @@ WorkspaceResolver = Callable[[str], str]
 ModelFactory = Callable[[Any], Any]
 
 _REWARD_CARD_ID = "attribution-reward-agent"
+
+
+def _improvement_kwargs() -> dict[str, bool]:
+    """Ask Reward for a game design suggestion when this core knows the flag.
+
+    releases/0.2.9 pins a core that does not have the parameter yet. Passing it
+    there would crash diagnosis. The agent-core PR adds the parameter.
+    """
+    if "generate_improvements" in inspect.signature(run_diagnosis).parameters:
+        return {"generate_improvements": True}
+    return {}
+
+
+def _design_suggestion(diagnosis: Any) -> str | None:
+    """The game design text Reward wrote, or None for other tasks."""
+    reward = (getattr(diagnosis, "run_meta", None) or {}).get("reward") or {}
+    return str(reward.get("artifact_improvement") or "").strip() or None
+
+
 _TASK_PARSE_TIMEOUT_S = 180.0
 
 #: Core LLM status stages mapped onto the three zhou stage ids.
@@ -104,8 +124,8 @@ _TEXTS: dict[str, dict[str, str]] = {
         "parse_incomplete": "选中范围不包含完整任务，无法提取任务描述",
         "summary_generating": "正在生成轨迹摘要",
         "summary_reused": "已复用预先生成的轨迹摘要",
-        "summary_failed": "分层轨迹摘要生成失败，后续诊断继续：{reason}",
-        "summary_degraded": "分层轨迹摘要存在不完整项：{reason}",
+        "summary_failed": "轨迹摘要暂未生成，后续诊断继续",
+        "summary_degraded": "已保留可用摘要，部分内容暂不完整",
         "summary_only_skipped": "未解析出任务，已改为生成轨迹摘要",
         "parse_unrelated": "选中范围包含多个互不相关的任务，无法归因",
         "parse_invalid": "任务解析输出无法解析：{reason}",
@@ -159,8 +179,8 @@ _TEXTS: dict[str, dict[str, str]] = {
         "parse_incomplete": "The selection does not contain a complete task; no task description could be extracted",
         "summary_generating": "Generating the trajectory summary",
         "summary_reused": "Reusing the precomputed trajectory summary",
-        "summary_failed": "Hierarchical summary failed; diagnosis will continue: {reason}",
-        "summary_degraded": "Hierarchical summary has incomplete items: {reason}",
+        "summary_failed": "The trajectory summary is unavailable; diagnosis will continue",
+        "summary_degraded": "Available summaries are retained; some content is incomplete",
         "summary_only_skipped": "No task was parsed; generating the trajectory summary instead",
         "parse_unrelated": "The selection contains multiple unrelated tasks; attribution is not possible",
         "parse_invalid": "The task parse output could not be parsed: {reason}",
@@ -881,6 +901,7 @@ class AttributionCoreEngine:
         else:
             # Nothing to attribute is a normal outcome, not a failure.
             result = await self._result_without_signals(context, task_parse, diagnosis)
+        result.design_suggestion = _design_suggestion(diagnosis)
         if context.summary_tree is not None:
             result.summary_tree = context.summary_tree.to_dict()
             result.trajectory_summary = (
@@ -920,10 +941,8 @@ class AttributionCoreEngine:
             context.summary_tree = SummaryTree(warnings=[{"code": "summary_failed", "message": str(exc)[:200]}])
         if context.summary_tree.status != "completed":
             key = "summary_failed" if context.summary_tree.status == "failed" else "summary_degraded"
-            reasons = "; ".join(str(w.get("message") or w.get("code") or "")
-                                for w in context.summary_tree.warnings[:3])
             queue.put_nowait(EngineEvent("trajectory_summary", "output_delta",
-                                        text_delta=text[key].format(reason=reasons or context.summary_tree.status)))
+                                        text_delta=text[key]))
         queue.put_nowait(EngineEvent("trajectory_summary", "trajectory_summary",
                                     summary_tree=context.summary_tree.to_dict()))
         segments = []
@@ -1024,6 +1043,7 @@ class AttributionCoreEngine:
             status_sink=context.sink,
             model_name=context.model_name,
             status_counter=context.counter,
+            **_improvement_kwargs(),
         )
         for signal in diagnosis.signals:
             queue.put_nowait(

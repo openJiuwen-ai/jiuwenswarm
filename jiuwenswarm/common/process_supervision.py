@@ -379,11 +379,17 @@ def supervise(
     restart_requested: Callable[[], bool] | None = None,
     restart_names: Sequence[str] = (),
     before_restart: Callable[[], None] | None = None,
+    command_popen_kwargs: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> int:
     """Run *commands* (spawned in order) until one stops for good; return its exit code.
 
     Returns 130 on KeyboardInterrupt. All children are terminated on return.
     """
+    overrides = command_popen_kwargs or {}
+
+    def popen_kwargs_for(name: str) -> Mapping[str, Any]:
+        return overrides.get(name, popen_kwargs)
+
     children = [_Child(name, command) for name, command in commands.items()]
     try:
         # Spawning happens inside the try so that a signal (or a failing later
@@ -391,10 +397,12 @@ def supervise(
         # KeyboardInterrupt is a BaseException, so an `except Exception` guard
         # around a spawn would have let it orphan the children already started.
         for child in children:
-            child.spawn(popen_kwargs)
+            child.spawn(popen_kwargs_for(child.name))
         while True:
             if restart_requested is not None and restart_requested():
-                if _restart_selected_children(children, popen_kwargs, restart_names, before_restart):
+                if _restart_selected_children(
+                    children, popen_kwargs_for, restart_names, before_restart
+                ):
                     continue
             for child in children:
                 proc = child.proc
@@ -423,7 +431,7 @@ def supervise(
                     return returncode or 0
                 _reap_lingering_tree(child)
                 time.sleep(_RESTART_BACKOFF)
-                child.spawn(popen_kwargs)
+                child.spawn(popen_kwargs_for(child.name))
                 new_proc = child.proc
                 logger.warning(
                     "[app] %s respawned (pid %s)",
@@ -439,7 +447,7 @@ def supervise(
 
 def _restart_selected_children(
     children: Sequence[_Child],
-    popen_kwargs: Mapping[str, Any],
+    popen_kwargs_for: Callable[[str], Mapping[str, Any]],
     names: Sequence[str],
     before_restart: Callable[[], None] | None,
 ) -> bool:
@@ -455,7 +463,7 @@ def _restart_selected_children(
             before_restart()
         try:
             for child in selected:
-                child.spawn(popen_kwargs)
+                child.spawn(popen_kwargs_for(child.name))
                 logger.info("[app] %s restarted (pid %s)", child.name, child.proc.pid)
         except BaseException:
             # A partial replacement may already have started a fresh resident Worker.

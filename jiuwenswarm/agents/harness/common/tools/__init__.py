@@ -56,3 +56,18 @@ def __getattr__(name):
         value = process_kernel().recipe(key, lambda: value)
         globals()[name] = value
     return value
+
+
+def _register_discovered_exports() -> None:
+    # pylint: disable-next=import-outside-toplevel
+    from jiuwenswarm.agents.harness.common.tools.builtin_tool_registry import (
+        discover_lazy_exports,
+    )
+
+    extra = discover_lazy_exports(_EXPORTS)
+    if extra:
+        _EXPORTS.update(extra)
+        __all__.extend(name for name in extra if name not in __all__)
+
+
+_register_discovered_exports()

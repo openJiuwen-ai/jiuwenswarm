@@ -96,6 +96,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
 # 人数上限通知要在刷新后读回来。其它 chat.notice（例如图片工具降级）不进历史。
 _HISTORY_RESTORABLE_TEAM_NOTICE_TYPES = frozenset({
     "requested_team_size",
+    "team_predefined_size",
     "team_quota",
     "team_teammate_quota",
 })

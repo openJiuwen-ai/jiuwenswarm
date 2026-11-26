@@ -258,6 +258,9 @@ if [ "$FRONTEND_ONLY" = false ]; then
     uv run --no-sync python "$PROJECT_ROOT/scripts/verify_gateway_adapter_bundle.py" \
         --executable "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME"
 
+    uv run --no-sync python "$PROJECT_ROOT/scripts/verify_swarm_resources_bundle.py" \
+        --executable "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME"
+
     # Same GitCode CLI self-check as build-macos.sh.
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gitcode_cli_bundle.py"
 else
@@ -292,6 +295,7 @@ cp "$DESKTOP_DIR/browser_downloads.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_download_bubble.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/share_image_export.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/display_media_picker.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/media_device_permissions.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/preload.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/application_presentation.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/application_transition.cjs" "$APP_DIR/"
@@ -376,7 +380,7 @@ fi
 
 REQUIRED_FILES=(main.cjs update_shutdown.cjs cdp_port.cjs preload.cjs application_presentation.cjs application_transition.cjs presentation_preload.cjs browser_panels.cjs
     app_market_windows.cjs app_market_resources.cjs share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
-    browser_downloads.cjs browser_download_bubble.cjs dist/bubble.html
+    media_device_permissions.cjs browser_downloads.cjs browser_download_bubble.cjs dist/bubble.html
     macos_update.cjs install_macos_update.sh package.json dist/index.html
     node_modules/@playwright/mcp/package.json node_modules/@playwright/mcp/cli.js)
 for required in "${REQUIRED_FILES[@]}"; do

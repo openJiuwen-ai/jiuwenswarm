@@ -14,12 +14,14 @@ const jsonValue: WebUIPropRule = {
 export const applicationSurfaceRule = component('ApplicationSurface', {
   src: text,
   title: localizedTextRule,
+  mode: { kind: 'token', values: ['desktop', 'overlay'] },
+  autoStart: { kind: 'boolean' },
   width: { kind: 'number', integer: true, min: 160, max: 960 },
   height: { kind: 'number', integer: true, min: 120, max: 960 },
   config: { kind: 'record', value: jsonValue },
 }, {
   required: ['src', 'title'],
-  defaults: { width: 360, height: 440, config: {} },
+  defaults: { mode: 'desktop', autoStart: false, width: 360, height: 440, config: {} },
   validate(props) {
     if (!hasNonEmptyLocalizedText(props.title)) return 'ApplicationSurface title is required';
     const titles = typeof props.title === 'string' ? [props.title] : Object.values(props.title as Record<string, string>);

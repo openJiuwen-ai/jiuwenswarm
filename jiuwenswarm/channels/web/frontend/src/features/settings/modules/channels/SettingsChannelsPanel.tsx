@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../../../../components/ui';
 import { SettingsConfirmDialog } from '../../components';
@@ -20,12 +21,44 @@ export function SettingsChannelsPanel({
 }: SettingsChannelsPanelProps) {
   const { t } = useTranslation();
   const controller = useSettingsChannelsController({ onHasChangesChange });
+  const [toastNotice, setToastNotice] = useState<string | null>(null);
+
+  // The toast stays transient (2s, like the pre-fix behavior) even though the underlying
+  // controller errors persist for the banner and the dialog status bar until resolved.
+  useEffect(() => {
+    if (!controller.errorNotice) {
+      setToastNotice(null);
+      return;
+    }
+    setToastNotice(controller.errorNotice);
+    const timer = window.setTimeout(() => setToastNotice(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [controller.errorNotice]);
 
   return (
     <div className="settings-channels-panel" data-testid="settings-channels-panel">
-      {controller.errorNotice ? (
+      {toastNotice ? (
         <div className="settings-channels-panel__error-toast" data-testid="settings-channels-panel-error-toast">
-          {controller.errorNotice}
+          {toastNotice}
+        </div>
+      ) : null}
+
+      {controller.configurationsError ? (
+        <div
+          className="settings-channels-panel__fetch-error settings-channels-panel__config-error"
+          data-testid="settings-channels-panel-config-error"
+        >
+          <span>
+            {t('channels.configLoadFailed')}: {controller.configurationsError}
+          </span>
+          <Button
+            variant="quiet"
+            size="sm"
+            onClick={() => void controller.reloadChannels()}
+            data-testid="settings-channels-panel-config-retry-btn"
+          >
+            {t('channels.retry')}
+          </Button>
         </div>
       ) : null}
 
@@ -34,7 +67,12 @@ export function SettingsChannelsPanel({
           <span>
             {t('channels.fetchFailed')}: {controller.channelsError}
           </span>
-          <Button variant="quiet" size="sm" onClick={() => void controller.loadChannels()} data-testid="settings-channels-panel-retry-btn">
+          <Button
+            variant="quiet"
+            size="sm"
+            onClick={() => void controller.reloadChannels()}
+            data-testid="settings-channels-panel-retry-btn"
+          >
             {t('channels.retry')}
           </Button>
         </div>

@@ -282,18 +282,27 @@ def teammate_spawn_key(team_id: str, member_name: str) -> str:
     return f"team:{_clean(team_id)}:member:{_clean(member_name)}"
 
 
+def _t(message_id: str, **params: Any) -> str:
+    from jiuwenswarm.common.i18n import t
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    return t(message_id, language=resolve_preferred_language(), **params)
+
+
 def team_create_quota_user_message(limit: int) -> str:
     """User-facing X-quota failure. ``limit`` is max teams per user."""
-    return f"创建失败，一个用户最多有{max(int(limit), 0)}个团队"
+    return _t("enterprise.team.create_user_full", limit=max(int(limit), 0))
 
 
 def org_team_create_quota_user_message(limit: int) -> str:
     """User-facing Z-quota failure. ``limit`` is max teams in the organization."""
-    return f"创建失败，一个组织最多有{max(int(limit), 0)}个团队"
+    return _t("enterprise.team.create_org_full", limit=max(int(limit), 0))
 
 
 def team_quota_user_message(exc: TeamQuotaExceeded) -> str:
-    """Chinese sentence for a create-time quota block. Other kinds stay internal."""
+    """Localized sentence for a create-time quota block. Other kinds stay internal."""
     if exc.kind == KIND_ORG_TEAM_CREATE:
         return org_team_create_quota_user_message(exc.limit)
     if exc.kind == KIND_TEAM_CREATE:
@@ -384,6 +393,9 @@ def _insert_ignore_sql(mysql_sql: str, postgres_sql: str) -> str:
 
 class TeamQuotaService(TeamQuotaPolicyStore):
     """Process-wide quota operations. Backed by Gateway MySQL or local SQLite."""
+
+    def use_shared_store(self) -> bool:
+        return self._use_mysql()
 
     @staticmethod
     def _default_sqlite_path() -> Path:
@@ -1302,13 +1314,15 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                     )
                     return lease
 
-                await conn.execute(
-                    text(
-                        "UPDATE team_quota_lease SET status=:rel, updated_at=:now "
-                        "WHERE status=:res AND expires_at IS NOT NULL AND expires_at<=:now"
-                    ),
-                    {"rel": STATUS_RELEASED, "now": now, "res": STATUS_RESERVED},
+                cleanup_sql = (
+                    "UPDATE team_quota_lease SET status=:rel, updated_at=:now "
+                    "WHERE status=:res AND expires_at IS NOT NULL AND expires_at<=:now"
                 )
+                cleanup_params = {"rel": STATUS_RELEASED, "now": now, "res": STATUS_RESERVED}
+                if lock == "team" and _clean(team_id):
+                    cleanup_sql += " AND kind=:kind AND team_id=:tid"
+                    cleanup_params.update(kind=kind, tid=_clean(team_id))
+                await conn.execute(text(cleanup_sql), cleanup_params)
                 await conn.execute(text(_ABANDONED_HOLD_SQL), _abandoned_hold_params(now))
                 if on_existing != "ignore" and session_id:
                     entity_row = (

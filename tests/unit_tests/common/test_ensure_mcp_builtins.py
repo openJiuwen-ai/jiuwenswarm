@@ -136,7 +136,7 @@ def test_seed_update_needed_depends_on_installed_version(
         "jiuwenswarm.common.utils._find_mcp_builtins_seed", lambda _path: seed_zip
     )
 
-    assert mcp_builtins_seed_update_needed(workspace) is expected
+    assert mcp_builtins_seed_update_needed(workspace / "agent" / "workspace") is expected
 
 
 def test_runtime_workspace_prepares_when_mcp_seed_is_stale(

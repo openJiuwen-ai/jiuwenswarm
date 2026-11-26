@@ -4,14 +4,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, Mapping
 
 import httpx
 
 from jiuwenswarm.extensions.sdk.skill_source import (
     ArtifactDescriptor,
-    ArtifactRef,
     InstalledArtifact,
     ProviderInvocationContext,
     SkillCandidate,
@@ -20,7 +18,10 @@ from jiuwenswarm.extensions.sdk.skill_source import (
     SkillSearchResult,
     SkillSourceProvider,
     SkillUpdateStatus,
+    SkillVerificationResult,
 )
+
+from .hub_verify import HubTrustPolicy, verify_hub_skill_artifact
 
 SWARM_SKILL_HUB_SOURCE_ID = "swarmskillhub"
 
@@ -36,33 +37,12 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
-def _float_or_none(value: Any) -> float | None:
-    try:
-        return float(value) if value is not None and str(value).strip() else None
-    except (TypeError, ValueError):
-        return None
-
-
 def _bool_value(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     if isinstance(value, bool):
         return value
     return _text(value).lower() in {"1", "true", "yes", "on"}
-
-
-def _timestamp(value: Any) -> datetime | str | int | None:
-    if value is None or value == "":
-        return None
-    if isinstance(value, (int, float)):
-        number = float(value)
-        if number > 10_000_000_000:
-            number /= 1000
-        try:
-            return datetime.fromtimestamp(number, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return int(value)
-    return _text(value)
 
 
 class SwarmSkillHubProvider(SkillSourceProvider):
@@ -81,6 +61,7 @@ class SwarmSkillHubProvider(SkillSourceProvider):
         display_name: str = "SwarmSkillHub",
         timeout: float = 60.0,
         verify_ssl: bool = True,
+        trust_policy: HubTrustPolicy | None = None,
     ) -> None:
         self.source_id = _text(source_id)
         self.display_name = _text(display_name) or self.source_id
@@ -89,7 +70,11 @@ class SwarmSkillHubProvider(SkillSourceProvider):
             raise ValueError("SwarmSkillHub base_url is required")
         self._timeout = timeout
         self.verify_ssl = verify_ssl
+        self._trust_policy = trust_policy or HubTrustPolicy()
         self._client: httpx.AsyncClient | None = None
+
+    def set_trust_policy(self, trust_policy: HubTrustPolicy) -> None:
+        self._trust_policy = trust_policy
 
     async def start(self) -> None:
         if self._client is None:
@@ -169,13 +154,43 @@ class SwarmSkillHubProvider(SkillSourceProvider):
             version_id = _text(raw.get("latest_version_id") or raw.get("version_id") or raw.get("latest_version"))
             if not skill_id or not version_id or not name:
                 raise RuntimeError("SwarmSkillHub item 缺少 asset_id/latest_version/name")
-            tags = raw.get("labels", raw.get("tags", []))
-            labels: tuple[Mapping[str, Any], ...] = tuple(
-                item if isinstance(item, dict) else {"name": _text(item)}
-                for item in (tags if isinstance(tags, list) else [])
-                if isinstance(item, dict) or _text(item)
-            )
-            versions = raw.get("versions", [])
+            tags_raw = raw.get("labels", raw.get("tags", []))
+            tags: list[str] = []
+            for item in tags_raw if isinstance(tags_raw, list) else []:
+                if isinstance(item, dict):
+                    label = _text(item.get("name") or item.get("label"))
+                else:
+                    label = _text(item)
+                if label:
+                    tags.append(label)
+            versions_raw = raw.get("versions", [])
+            all_versions_list: list[str] = []
+            for entry in versions_raw if isinstance(versions_raw, list) else []:
+                if isinstance(entry, dict):
+                    version = _text(entry.get("version_id") or entry.get("version"))
+                else:
+                    version = _text(entry)
+                if version:
+                    all_versions_list.append(version)
+            all_versions = tuple(all_versions_list)
+            metadata: dict[str, Any] = {}
+            for key, value in (
+                ("fingerprint", raw.get("fingerprint")),
+                ("namespace", raw.get("namespace") or raw.get("space_name")),
+                ("slug", raw.get("slug")),
+                ("canonical_slug", raw.get("canonical_slug")),
+                ("owner_display_name", raw.get("publisher_name") or raw.get("author")),
+                ("homepage", raw.get("homepage") or raw.get("detail_url")),
+                ("rating_avg", raw.get("rating_avg", raw.get("rating"))),
+                ("rating_count", raw.get("rating_count")),
+                ("download_count", raw.get("download_count", raw.get("install_count"))),
+                ("updated_at", raw.get("updated_at", raw.get("update_time"))),
+                ("previous_version", raw.get("previous_version")),
+                ("accessible", raw.get("accessible") if "accessible" in raw else None),
+                ("asset_type", raw.get("asset_type")),
+            ):
+                if value is not None and value != "":
+                    metadata[key] = value
             items.append(
                 SkillCandidate(
                     source_id=self.source_id,
@@ -183,24 +198,14 @@ class SwarmSkillHubProvider(SkillSourceProvider):
                     version_id=version_id,
                     name=name,
                     display_name=_text(raw.get("display_name")) or name,
-                    summary=_text(raw.get("short_desc") or raw.get("summary") or raw.get("description")) or None,
+                    short_description=_text(
+                        raw.get("short_desc") or raw.get("summary") or raw.get("description")
+                    )
+                    or None,
                     version=_text(raw.get("latest_version") or raw.get("version")) or None,
-                    fingerprint=_text(raw.get("fingerprint")) or None,
-                    namespace=_text(raw.get("namespace") or raw.get("space_name")) or None,
-                    slug=_text(raw.get("slug")) or None,
-                    canonical_slug=_text(raw.get("canonical_slug")) or None,
-                    owner_display_name=_text(raw.get("publisher_name") or raw.get("author")) or None,
-                    labels=labels,
-                    homepage=_text(raw.get("homepage") or raw.get("detail_url")) or None,
-                    rating_avg=_float_or_none(raw.get("rating_avg", raw.get("rating"))),
-                    rating_count=_int_or_none(raw.get("rating_count")),
-                    download_count=_int_or_none(raw.get("download_count", raw.get("install_count"))),
-                    updated_at=_timestamp(raw.get("updated_at", raw.get("update_time"))),
-                    versions=tuple(v for v in versions if isinstance(v, dict)) if isinstance(versions, list) else (),
-                    previous_version=_text(raw.get("previous_version")) or None,
-                    accessible=_bool_value(raw["accessible"]) if "accessible" in raw else None,
-                    downloadable=_bool_value(raw.get("downloadable"), True),
-                    metadata={"asset_type": raw.get("asset_type")} if raw.get("asset_type") is not None else {},
+                    tags=tuple(tags),
+                    all_versions=all_versions,
+                    metadata=metadata,
                 )
             )
         total = _int_or_none(data.get("total", data.get("total_count")))
@@ -236,19 +241,21 @@ class SwarmSkillHubProvider(SkillSourceProvider):
                         latest_version_id=None,
                         has_update=False,
                         accessible=False,
-                        downloadable=False,
                         remote_status="removed",
                     )
                 )
                 continue
-            accessible = candidate.accessible
-            downloadable = candidate.downloadable
+            meta = dict(candidate.metadata or {})
+            accessible = meta.get("accessible")
+            if accessible is not None:
+                accessible = _bool_value(accessible, True)
             remote_status = "available"
             if accessible is False:
                 remote_status = "no_access"
             fingerprint_matched = None
-            if current.fingerprint and candidate.fingerprint:
-                fingerprint_matched = current.fingerprint == candidate.fingerprint
+            candidate_fp = _text(meta.get("fingerprint"))
+            if current.fingerprint and candidate_fp:
+                fingerprint_matched = current.fingerprint == candidate_fp
             statuses.append(
                 SkillUpdateStatus(
                     skill_ref=SkillRef(self.source_id, current.skill_id),
@@ -262,7 +269,6 @@ class SwarmSkillHubProvider(SkillSourceProvider):
                     latest_version=candidate.version,
                     fingerprint_matched=fingerprint_matched,
                     accessible=accessible,
-                    downloadable=downloadable,
                     remote_status=remote_status,
                 )
             )
@@ -295,23 +301,45 @@ class SwarmSkillHubProvider(SkillSourceProvider):
         ):
             if key in data and data[key] is not None:
                 metadata[key] = data[key]
+        content_sha256 = (
+            _text(data.get("content_sha256"))
+            or _text(data.get("artifact_sha256"))
+            or _text(data.get("checksum_sha256"))
+            or None
+        )
         return ArtifactDescriptor(
-            artifact_ref=ArtifactRef(skill_ref=skill_ref, version_id=version_id),
+            source_id=self.source_id,
+            skill_id=skill_ref.skill_id,
+            version_id=version_id,
             download_url=download_url,
-            checksum_sha256=_text(data.get("checksum_sha256")) or None,
-            artifact_sha256=_text(data.get("artifact_sha256")) or None,
+            content_sha256=content_sha256,
             signature=_text(data.get("signature")) or None,
             signature_algorithm=_text(
                 data.get("signature_algorithm") or data.get("signatureAlgorithm")
-            ) or None,
+            )
+            or None,
             signature_encoding=_text(
                 data.get("signature_encoding") or data.get("signatureEncoding")
-            ) or None,
+            )
+            or None,
             signature_scope=_text(
                 data.get("signature_scope") or data.get("signatureScope")
-            ) or None,
+            )
+            or None,
             key_id=_text(data.get("key_id") or data.get("keyId")) or None,
             fingerprint=_text(data.get("fingerprint")) or None,
             content_length=_int_or_none(data.get("content_length")),
             metadata=metadata,
+        )
+
+    async def verify_artifact(
+        self,
+        descriptor: ArtifactDescriptor,
+        content: bytes,
+    ) -> SkillVerificationResult | None:
+        """SkillHub HMAC verify; overrides the generic SPI default."""
+        return verify_hub_skill_artifact(
+            descriptor,
+            content,
+            trust_policy=self._trust_policy,
         )

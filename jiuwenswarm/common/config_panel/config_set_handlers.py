@@ -19,6 +19,7 @@ gateway 拆分：ConfigAdapter（AgentServer 进程）复用这些成熟实现�
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 import importlib.util
 import inspect
@@ -51,6 +52,7 @@ from jiuwenswarm.common.config import (
     TEAM_MEMBER_MESSAGING_CONFIG_PATH,
     TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH,
     TEAM_TASK_VERIFICATION_CONFIG_PATH,
+    coerce_config_bool,
     coerce_subtask_depth,
     get_config,
     get_config_raw,
@@ -69,6 +71,7 @@ from jiuwenswarm.common.config import (
     update_memory_forbidden_enabled_in_config,
     update_permissions_profile_in_config,
     update_progressive_tool_optimize_in_config,
+    update_rea_enabled_in_config,
     update_rsi_enabled_in_config,
     update_setup_guide_enabled_in_config,
     update_skill_evolution_enabled_in_config,
@@ -94,6 +97,7 @@ from jiuwenswarm.common.recommendation_switches import (
     flatten_recommendation_for_config_panel,
     save_recommendation_switches,
 )
+from jiuwenswarm.common.config_panel.cua_permission_guide import open_macos_cua_permission_guide
 from jiuwenswarm.common.config_panel.external_cli_read import (
     EXTERNAL_CLI_AGENT_KEY_SUFFIXES,
     EXTERNAL_CLI_AGENT_KINDS,
@@ -249,7 +253,7 @@ class ConfigChangeSet:
             elif key_text == "trajectory_ui_diagnosis_enabled":
                 # Diagnosis owns the trajectory data plane and diagnosis entry.
                 scopes.update({"agent_runtime", "web_ui"})
-            elif key_text in WEB_UI_YAML_KEYS or key_text.startswith("a2ui_"):
+            elif key_text in WEB_UI_YAML_KEYS or key_text == "rea_enabled" or key_text.startswith("a2ui_"):
                 scopes.add("web_ui")
             else:
                 scopes.add("agent_runtime")
@@ -277,6 +281,7 @@ class ConfigApplyResult:
     canonical_config: dict[str, str] | None = None
     pending_permission_profile: str | None = None
     pending_permission_key: str | None = None
+    cua_agent_just_enabled: bool = False
 
 
 # .env 路径（调用方可 monkeypatch 本模块属性以隔离测试）
@@ -403,6 +408,7 @@ CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_enabled",
     "memory_forbidden_description",
     "a2ui_enabled",
+    "rea_enabled",
     "rsi_enabled",
     "cua_agent_enabled",
     "trajectory_ui_diagnosis_enabled",
@@ -1486,6 +1492,7 @@ def apply_config_payload(
     params = encrypt_config_params({key: value for key, value in params.items() if key not in MOA_CONFIG_KEYS})
     env_updates: dict[str, str] = {}
     yaml_updated: list[str] = []
+    cua_agent_just_enabled = False
     codex_dependency_install: dict[str, Any] | None = None
     external_cli_dependency_installs: dict[str, dict[str, Any]] = {}
     canonical_config: dict[str, str] | None = None
@@ -1590,8 +1597,10 @@ def apply_config_payload(
                 update_setup_guide_enabled_in_config(parsed)
             elif param_key == "rsi_enabled":
                 update_rsi_enabled_in_config(parsed)
+            elif param_key == "rea_enabled":
+                update_rea_enabled_in_config(parsed)
             elif param_key == "cua_agent_enabled":
-                update_cua_agent_enabled_in_config(None if val is None else parsed)
+                cua_agent_just_enabled = update_cua_agent_enabled_in_config(None if val is None else parsed)
             elif param_key == "enable_free_models":
                 update_enable_free_models_in_config(parsed)
             elif param_key == "memory_forbidden_enabled":
@@ -1808,6 +1817,7 @@ def apply_config_payload(
             if "permissions_enabled" in params
             else None
         ),
+        cua_agent_just_enabled=cua_agent_just_enabled,
     )
 
 
@@ -1829,7 +1839,7 @@ async def _clear_agent_config_cache(agent_client=None) -> None:
 
     try:
         if agent_client is not None:
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+            from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
             from jiuwenswarm.common.schema.message import ReqMethod
 
             env = e2a_from_agent_fields(
@@ -1896,7 +1906,13 @@ async def config_get_handler(
             "true" if setup_guide_cfg.get("enabled", True) else "false"
         )
         rsi_cfg = raw.get("rsi") or {}
-        payload["rsi_enabled"] = "true" if rsi_cfg.get("enabled", True) else "false"
+        payload["rsi_enabled"] = (
+            "true" if coerce_config_bool(rsi_cfg.get("enabled"), True) else "false"
+        )
+        rea_cfg = raw.get("rea") or {}
+        payload["rea_enabled"] = (
+            "true" if coerce_config_bool(rea_cfg.get("enabled"), True) else "false"
+        )
         crypto_provider = _get_crypto_provider()
         if crypto_provider is not None:
             for key, val in list(payload.items()):
@@ -1974,6 +1990,7 @@ async def config_get_handler(
         payload.setdefault("context_engine_enabled", "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
+        payload.setdefault("rea_enabled", "true")
         payload.setdefault("rsi_enabled", "true")
         payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("permissions_profile", "full_access")
@@ -2056,6 +2073,8 @@ async def config_set_handler(
     env_updates = apply_result.env_updates
     yaml_updated = apply_result.yaml_updated
     change_set = ConfigChangeSet(env_updates, yaml_updated)
+    if apply_result.cua_agent_just_enabled:
+        await asyncio.to_thread(open_macos_cua_permission_guide)
     try:
         applied_without_restart = await apply_config_change_set(
             change_set,
@@ -2198,6 +2217,8 @@ async def config_save_all_handler(
         commit_pending_permission_profile(apply_result)
         yaml_updated.extend(apply_result.yaml_updated)
 
+        if apply_result.cua_agent_just_enabled:
+            await asyncio.to_thread(open_macos_cua_permission_guide)
         change_set = ConfigChangeSet(
             env_updates,
             yaml_updated,

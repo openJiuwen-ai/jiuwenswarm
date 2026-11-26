@@ -46,7 +46,7 @@ class TestCleanup:
         fop.write_text("{}", encoding="utf-8")
 
         monkeypatch.setattr("agent_gateway.cleanup.get_agent_workspace_dir", lambda: tmp_path / "agent-ws")
-        monkeypatch.setattr("agent_gateway.cleanup.get_user_workspace_dir", lambda: tmp_path / "user-ws")
+        monkeypatch.setattr("agent_gateway.cleanup.get_profile_data_dir", lambda: tmp_path / "profile")
         monkeypatch.setattr("agent_gateway.cleanup.get_agent_sessions_dir", lambda: sessions_dir)
 
         result = cleanup_orphan_file_ops()
@@ -105,7 +105,7 @@ def test_forever_retention_keeps_old_sessions_and_orphan_logs(
     )
     monkeypatch.setattr("agent_gateway.cleanup.get_agent_sessions_dir", lambda: sessions)
     monkeypatch.setattr("agent_gateway.cleanup.get_agent_workspace_dir", lambda: workspace)
-    monkeypatch.setattr("agent_gateway.cleanup.get_user_workspace_dir", lambda: workspace)
+    monkeypatch.setattr("agent_gateway.cleanup.get_profile_data_dir", lambda: tmp_path / "profile")
 
     assert cleanup_old_sessions() == {"removed": 0, "errors": 0}
     assert cleanup_orphan_file_ops() == {"removed": 0, "errors": 0}

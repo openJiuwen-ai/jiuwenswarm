@@ -161,6 +161,8 @@ def read_group(group_id: str) -> dict | None:
         raise GroupError("GROUP_CORRUPT", "invalid persisted group")
     state.setdefault("configs", {})
     state.setdefault("avatar", "")
+    # Groups saved before auto reply existed judge with the session model.
+    state.setdefault("auto_reply", {"enabled": True, "model_selection": None})
     state["members"] = [normalize_group_member(member) for member in state["members"]]
     state["receipts"] = {
         key: normalize_group_member(member) for key, member in state["receipts"].items()
@@ -351,6 +353,34 @@ def _save(state: dict) -> None:
         )
 
 
+def _auto_reply_settings(value, current: dict) -> dict:
+    """Merge a partial update; the judge model must resolve before it is saved."""
+    if not isinstance(value, dict) or set(value) - {"enabled", "model_selection"}:
+        raise GroupError("BAD_REQUEST", "auto_reply only accepts enabled and model_selection")
+    settings = {
+        "enabled": current.get("enabled", True) is not False,
+        "model_selection": current.get("model_selection"),
+    }
+    if "enabled" in value:
+        if not isinstance(value["enabled"], bool):
+            raise GroupError("BAD_REQUEST", "auto_reply.enabled must be a boolean")
+        settings["enabled"] = value["enabled"]
+    if "model_selection" in value:
+        selection = value["model_selection"]
+        if selection is not None:
+            from agent_gateway.common.model_selection import ModelSelection
+            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
+            try:
+                parsed = ModelSelection.model_validate(selection)
+                ModelSelectionResolver().resolve(parsed)
+            except Exception as exc:
+                raise GroupError("BAD_REQUEST", "auto_reply.model_selection cannot be resolved") from exc
+            selection = parsed.model_dump(exclude_none=True)
+        settings["model_selection"] = selection
+    return settings
+
+
 def _text(value, name: str, *, empty=False, maximum=2000) -> str:
     if not isinstance(value, str):
         raise GroupError("BAD_REQUEST", f"invalid {name}")
@@ -390,6 +420,11 @@ def _public(state: dict) -> dict:
     result = {}
     for key in keys:
         result[key] = copy.deepcopy(state[key])
+    settings = state.get("auto_reply") or {}
+    result["auto_reply"] = {
+        "enabled": settings.get("enabled", True) is not False,
+        "model_selection": copy.deepcopy(settings.get("model_selection")),
+    }
     for member in result.get("members", []):
         definition = state.get("compiled", {}).get(member["member_name"], {})
         if member["kind"] == "colleague":
@@ -681,10 +716,12 @@ class GroupService:
     async def update(self, group_id, params, *, user_id, channel_id):
         async with group_lock(group_id):
             state = self.owned(group_id, user_id, channel_id)
-            if set(params) - {"group_id", "session_id", "name", "description", "avatar"}:
+            if set(params) - {"group_id", "session_id", "name", "description", "avatar", "auto_reply"}:
                 raise GroupError(
-                    "BAD_REQUEST", "group.update only accepts name, description and avatar"
+                    "BAD_REQUEST", "group.update only accepts name, description, avatar and auto_reply"
                 )
+            if "auto_reply" in params:
+                state["auto_reply"] = _auto_reply_settings(params["auto_reply"], state.get("auto_reply") or {})
             if "name" in params:
                 state["name"] = _text(params["name"], "name", maximum=200)
             if "description" in params:
@@ -816,8 +853,11 @@ class GroupService:
             )
             page.append(item)
         page_end = offset + limit
+        from jiuwenswarm.server.runtime.group_auto_reply import public_records
+
         return dict(
             group_id=group_id,
+            auto_replies=public_records(state),
             messages=page,
             total=len(messages),
             limit=limit,

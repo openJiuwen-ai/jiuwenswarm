@@ -24,6 +24,7 @@ import { useTranslation } from 'react-i18next';
 import { ApplicationTaskControls } from '../../applicationPlugins/ApplicationTaskControls';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
+import { Pause } from 'lucide-react';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import StatusSuccessIcon from '../../assets/work-mode/status-success.svg?react';
 import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
@@ -93,6 +94,15 @@ export function CompactTaskList({
         const phase = workflowPhaseForTask(task, workflowRuns ?? [])?.phase;
         const statusIcon = renderStatusIcon ? (
           renderStatusIcon(task)
+        ) : columnKey === 'running' && task.progress_frozen ? (
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
+            data-testid="team-area-task-planning-task-status-icon"
+            data-variant="paused"
+            title={t('team.taskEvents.paused')}
+          >
+            <Pause className="h-4 w-4 shrink-0 text-violet-500" aria-hidden="true" />
+          </span>
         ) : columnKey === 'running' ? (
           <span
             className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"

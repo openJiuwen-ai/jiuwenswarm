@@ -13,6 +13,7 @@ const { pipeline } = require('node:stream/promises');
 const { reserveLoopbackPortSync, waitForOwnedCdpTarget } = require('./cdp_port.cjs');
 const { createShareImageExporter } = require('./share_image_export.cjs');
 const { registerDisplayMediaHandler } = require('./display_media_picker.cjs');
+const { registerMediaDevicePermissions } = require('./media_device_permissions.cjs');
 const { createApplicationPresentation } = require('./application_presentation.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
@@ -250,7 +251,7 @@ function serviceCommand(name, extraArgs = []) {
   }
   const moduleNames = {
     agent: 'jiuwenswarm.server.app_agentserver',
-    gateway: 'agent_gateway.app_gateway',
+    gateway: 'jiuwenswarm.channels.desktop.gateway_entry',
     web: 'jiuwenswarm.channels.web.app_web',
     lifecycle: 'jiuwenswarm.server.supervisor.shutdown',
     recovery: 'jiuwenswarm.common.system_plugin_recovery_sidecar',
@@ -3282,6 +3283,7 @@ async function createMainWindow() {
     if (isMainFrame && !isInPlace) applicationPresentation?.close('workspace_navigation');
   });
   mainWindow.webContents.on('render-process-gone', () => applicationPresentation?.close('workspace_renderer_gone'));
+  registerMediaDevicePermissions({ window: mainWindow, app, dialog, getFrontendUrl: () => currentFrontendUrl });
   registerDisplayMediaHandler({
     session: mainWindow.webContents.session,
     desktopCapturer,

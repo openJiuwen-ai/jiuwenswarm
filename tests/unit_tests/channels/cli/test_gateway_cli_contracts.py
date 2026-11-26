@@ -12,6 +12,7 @@ Gateway runtime, package manager, assembly and local RPC transport are real.
 from __future__ import annotations
 
 import json
+import shutil
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,7 +66,7 @@ async def isolate_control_context(
 ):
     await assembly.shutdown_gateway_extensions()
     # Both independently packaged local transports must publish into this test workspace.
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr("agent_gateway.common.paths.get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setenv("GATEWAY_PORT", "19001")
     monkeypatch.setenv("AGENT_SERVER_PORT", "18092")
@@ -113,9 +114,153 @@ def _config(tmp_path: Path) -> GatewayExtensionConfig:
     )
 
 
+class _FakeAgentServer:
+    """Minimal AgentServer RPC for the Gateway CLI forwarding contract."""
+
+    def __init__(self, runtime: GatewayRuntime) -> None:
+        from agent_gateway.extensions_v2.management.install_state import ExtensionInstallState
+
+        self.runtime = runtime
+        self.install_dir = Path(runtime.config.install_dir)
+        self.store = ExtensionInstallState.for_install_dir(self.install_dir)
+
+    @staticmethod
+    def _response(payload: dict) -> SimpleNamespace:
+        return SimpleNamespace(ok=True, payload=payload)
+
+    @staticmethod
+    def _report(
+        package_id: str,
+        operation: str,
+        *,
+        status: str = "SUCCESS",
+        previous_generation: int | None = None,
+        current_generation: int | None = None,
+        error: dict | None = None,
+    ) -> dict:
+        return {
+            "package_id": package_id,
+            "operation": operation,
+            "status": status,
+            "plan_id": "",
+            "previous_generation": previous_generation,
+            "current_generation": current_generation,
+            "error": error,
+        }
+
+    async def send_request(self, envelope) -> SimpleNamespace:
+        method = getattr(envelope, "method", "")
+        params = getattr(envelope, "params", {}) or {}
+        if method == "extensions.v2.install":
+            return self._install(params)
+        if method == "extensions.v2.reload":
+            return self._reload(params)
+        if method == "extensions.v2.uninstall":
+            return self._uninstall(params)
+        return SimpleNamespace(
+            ok=False,
+            payload={"error": f"unsupported {method}", "code": "BAD_REQUEST"},
+        )
+
+    def _install(self, params: dict) -> SimpleNamespace:
+        from agent_gateway.extensions_v2.management.install_state import (
+            ActiveInstance,
+            ExtensionInstallRecord,
+        )
+
+        source = Path(params["paths"][0])
+        with zipfile.ZipFile(source) as archive:
+            document = json.loads(archive.read("manifest.json"))
+            entry = archive.read("extension.py").decode("utf-8")
+            package = document["package"]
+            package_id = package["id"]
+            version = package["version"]
+            target = self.install_dir / package_id / version
+            shutil.rmtree(target, ignore_errors=True)
+            archive.extractall(target)
+        if "not.a.gateway.event" in entry:
+            return self._response(
+                {
+                    "reports": [
+                        self._report(
+                            package_id,
+                            "install",
+                            status="FAILED",
+                            error={
+                                "code": "EXTENSION_LOAD_FAILED",
+                                "message": "bad gateway event",
+                            },
+                        )
+                    ]
+                }
+            )
+        self.store.upsert(
+            ExtensionInstallRecord(
+                package_id=package_id, version=version, origin="user",
+                install_path=str(target), active=True, enabled=True,
+                domain="gateway", status="pending",
+            )
+        )
+        self.store.switch_active_instance(
+            ActiveInstance(package_id=package_id, version=version, kind="standalone")
+        )
+        self.store.mark(package_id, version=version, status="pending")
+        return self._response(
+            {
+                "reports": [
+                    self._report(package_id, "install", current_generation=1)
+                ],
+                "installed_packages": [
+                    {
+                        "package_id": package_id, "version": version,
+                        "install_path": str(target), "generation": 1,
+                    }
+                ],
+            }
+        )
+
+    def _reload(self, params: dict) -> SimpleNamespace:
+        package_id = params["package_id"]
+        record = self.store.get(package_id)
+        current = self.runtime.active_record(package_id)
+        next_generation = (current.generation + 1) if current is not None else 1
+        self.store.mark(
+            package_id,
+            version=record.version if record is not None else "",
+            status="pending",
+        )
+        return self._response(
+            {
+                "reports": [
+                    self._report(
+                        package_id,
+                        "reload",
+                        previous_generation=(
+                            current.generation if current is not None else None
+                        ),
+                        current_generation=next_generation,
+                    )
+                ]
+            }
+        )
+
+    def _uninstall(self, params: dict) -> SimpleNamespace:
+        package_id = params["package_id"]
+        record = self.store.get(package_id)
+        self.store.mark(
+            package_id,
+            version=record.version if record is not None else "",
+            active=False, enabled=False, status="uninstalling",
+        )
+        return self._response(
+            {"reports": [self._report(package_id, "uninstall")]}
+        )
+
+
 async def _runtime(tmp_path: Path) -> GatewayRuntime:
     runtime = GatewayRuntime(channel=Channel(), config=_config(tmp_path))
     await runtime.start()
+    runtime.channel.agent_client = _FakeAgentServer(runtime)
     return runtime
 
 

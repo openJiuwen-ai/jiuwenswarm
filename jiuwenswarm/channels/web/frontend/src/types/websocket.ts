@@ -110,6 +110,15 @@ export type InterruptIntent = 'pause' | 'cancel' | 'supplement' | 'resume';
 /**
  * 中断结果 Payload
  */
+/** Team pause outcome for interrupt_result (C1 two-axis contract). */
+export type TeamPauseOutcome =
+  | 'parked'
+  | 'already_paused'
+  | 'already_idle'
+  | 'generation_mismatch'
+  | 'cancel_preempted'
+  | 'failed';
+
 export interface InterruptResultPayload {
   intent: InterruptIntent;
   success: boolean;
@@ -118,6 +127,12 @@ export interface InterruptResultPayload {
   merged_input?: string;
   paused_task?: string;
   has_active_task?: boolean; // 是否有活跃任务，false 表示任务已完成
+  /** Team pause: safe to clear processing / freeze board / markInterruptSettled. */
+  work_stopped?: boolean;
+  /** Team pause: enter resumable paused UI (setPaused). */
+  resumable?: boolean;
+  /** Team pause structured outcome; drives success compatibility. */
+  outcome?: TeamPauseOutcome | string;
 }
 
 /**

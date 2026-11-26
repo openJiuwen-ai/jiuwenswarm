@@ -15,7 +15,11 @@ from jiuwenswarm.common.utils import logger
 from . import db_queries
 from .schemas import (
     DEFAULT_AGENT_LOAD_SLOTS,
+    EXECUTION_GUARD_ENTITY_TABLE,
+    EXECUTION_GUARD_SLOT,
     MODEL_SLOT_KEYS,
+    REACT_ENTITY_TABLE,
+    REACT_SLOT,
     SLOT_ENTITY_TABLE,
     EffectiveEnterpriseConfig,
     RoutingContext,
@@ -54,6 +58,10 @@ def _apply_slot_entities(
         result.mcp = entities
     elif slot == TemplateRefSlot.PERMISSIONS:
         result.permissions = entities
+    elif slot == REACT_SLOT:
+        result.react = entities
+    elif slot == EXECUTION_GUARD_SLOT:
+        result.execution_guard = entities
     elif slot == TemplateRefSlot.A2A_ACCESS_POLICY:
         result.a2a_access_policy = entities
 
@@ -74,6 +82,10 @@ def _any_requested_slot_loaded(
         if slot == TemplateRefSlot.MCP and result.mcp is not None:
             return True
         if slot == TemplateRefSlot.PERMISSIONS and result.permissions:
+            return True
+        if slot == REACT_SLOT and result.react is not None:
+            return True
+        if slot == EXECUTION_GUARD_SLOT and result.execution_guard is not None:
             return True
         if (
             slot == TemplateRefSlot.A2A_ACCESS_POLICY
@@ -225,18 +237,25 @@ class TemplateEntityCache:
     ) -> list[dict[str, Any]]:
         self._maybe_purge()
         generation = self._generation
-        try:
-            slot_key = TemplateRefSlot(slot)
-        except ValueError as exc:
-            raise ValueError(
-                f"unknown template_ref slot {slot!r} "
-                f"(known: {[s.value for s in TemplateRefSlot]})"
-            ) from exc
+        if slot == REACT_SLOT:
+            # e2a 协议包尚未登记 REACT 槽位，仓内字符串接线。
+            table = REACT_ENTITY_TABLE
+        elif slot == EXECUTION_GUARD_SLOT:
+            # e2a 协议包尚未登记 EXECUTION_GUARD 槽位，仓内字符串接线。
+            table = EXECUTION_GUARD_ENTITY_TABLE
+        else:
+            try:
+                slot_key = TemplateRefSlot(slot)
+            except ValueError as exc:
+                raise ValueError(
+                    f"unknown template_ref slot {slot!r} "
+                    f"(known: {[s.value for s in TemplateRefSlot]})"
+                ) from exc
 
-        table = SLOT_ENTITY_TABLE[slot_key]
+            table = SLOT_ENTITY_TABLE[slot_key]
         id_field = (
             "policy_id"
-            if slot_key is TemplateRefSlot.A2A_ACCESS_POLICY
+            if slot == TemplateRefSlot.A2A_ACCESS_POLICY.value
             else "template_id"
         )
         refs: list[str] = []
@@ -403,7 +422,12 @@ async def load_effective_enterprise_config(
         )
         return None
 
-    load_slots = frozenset(slot.value for slot in slots)
+    # slots 允许 TemplateRefSlot 枚举或裸字符串混入（react 槽位在 e2a 协议包
+    # 登记前以字符串接线），统一取 .value 收敛成字符串集合。
+    load_slots = frozenset(
+        slot.value if isinstance(slot, TemplateRefSlot) else str(slot)
+        for slot in slots
+    )
 
     resource_row = await _fetch_instance_agent_resource(rid)
     if resource_row is None:
@@ -473,11 +497,19 @@ async def load_effective_enterprise_config(
         try:
             entities = await _fetch_slot_entities(slot, template_ids)
         except Exception as exc:
-            if slot != TemplateRefSlot.A2A_ACCESS_POLICY:
+            # A2A 策略、react 与执行护栏失败降级（warning 后跳过该槽位，不拖垮其余槽位）：
+            # 对应表随 gateway 建表发版，当前环境未建表时查询会抛错，不能让配置了这些
+            # 引用的实例整体加载失败。
+            if slot not in (
+                TemplateRefSlot.A2A_ACCESS_POLICY,
+                REACT_SLOT,
+                EXECUTION_GUARD_SLOT,
+            ):
                 raise
             logger.warning(
-                "[enterprise_config] A2A policy load failed: resource_id=%r "
+                "[enterprise_config] %s slot load failed: resource_id=%r "
                 "template_ids=%s error_type=%s",
+                slot,
                 rid,
                 template_ids,
                 type(exc).__name__,

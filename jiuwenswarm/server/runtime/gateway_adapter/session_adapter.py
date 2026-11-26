@@ -46,6 +46,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
 from jiuwenswarm.server.runtime.session import session_metadata as session_metadata_store
 from jiuwenswarm.server.runtime.session.session_metadata import (
+    SessionPinRejection,
     _read_metadata,
     _write_metadata_sync,
     get_all_sessions_metadata,
@@ -138,9 +139,12 @@ class SessionAdapter(GatewayAdapter):
                 guard(str(params.get("session_id") or request.session_id or ""))
             except LifecycleError as exc:
                 return build_error_response(request, str(exc), code=exc.code)
+        # get_metadata stays on this async adapter so live Runner PAUSED can OR
+        # into is_paused. Front control session_repository is sync and durable-only.
+        if method == ReqMethod.SESSION_GET_METADATA:
+            return await self._handle_get_metadata(request)
         if method in {
             ReqMethod.SESSION_LIST,
-            ReqMethod.SESSION_GET_METADATA,
             ReqMethod.SESSION_PIN,
             ReqMethod.SESSION_COLOR_SET,
             ReqMethod.SESSION_PREVIEW,
@@ -327,11 +331,32 @@ class SessionAdapter(GatewayAdapter):
             return build_error_response(
                 request, "session not found", code="NOT_FOUND"
             )
+        payload = dict(meta)
+        # Enterprise HTTP refresh rebuilds pause UI from this flag. Gateway may
+        # overwrite is_processing from its busy map but must leave is_paused.
+        # Prefer durable metadata.is_paused (survives Runner pool teardown);
+        # OR with live Runner PAUSED so a just-paused turn still reads true
+        # before the metadata sync_write is visible to another process.
+        durable_paused = meta.get("is_paused") is True
+        live_paused = False
+        try:
+            from jiuwenswarm.agents.harness.team.team_manager import (
+                is_team_session_paused,
+            )
+
+            live_paused = bool(await is_team_session_paused(sid))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[SessionAdapter] is_paused lookup failed session_id=%s error=%s",
+                sid,
+                exc,
+            )
+        payload["is_paused"] = bool(durable_paused or live_paused)
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload=meta,
+            payload=payload,
             metadata=request.metadata,
         )
 
@@ -351,6 +376,14 @@ class SessionAdapter(GatewayAdapter):
         started = time.perf_counter()
         try:
             result = await asyncio.to_thread(set_session_pinned, sid, raw_pinned)
+        except SessionPinRejection as exc:
+            # Pinning a cron session without job identity would make it vanish
+            # from every sidebar list; surface the refusal as a client error.
+            logger.info(
+                "[SessionAdapter] session.pin rejected request_id=%s session_id=%s",
+                request.request_id, sid,
+            )
+            return build_error_response(request, str(exc), code=exc.code)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "[SessionAdapter] session.pin failed request_id=%s session_id=%s elapsed_ms=%.1f",

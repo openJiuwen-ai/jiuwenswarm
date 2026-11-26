@@ -50,9 +50,15 @@ class ColleagueGroupBridge:
 
     async def start(self) -> None:
         if self._task is None:
+            from jiuwenswarm.server.runtime import group_auto_reply
+
+            group_auto_reply.register_colleague_notifier(self.notify)
             self._task = asyncio.create_task(self._run(), name="swarmchat-colleagues")
 
     async def aclose(self) -> None:
+        from jiuwenswarm.server.runtime import group_auto_reply
+
+        group_auto_reply.register_colleague_notifier(None)
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
@@ -102,13 +108,23 @@ class ColleagueGroupBridge:
 
     async def _catch_up_group(self, group_id: str) -> None:
         group = read_group(group_id)
-        if group is None or group.get("status") == "deleting" or not colleague_members(group):
+        if group is None or group.get("status") == "deleting":
+            return
+        try:
+            from jiuwenswarm.server.runtime import group_auto_reply
+
+            # Notifications decided while the bridge was down are delivered by this scan.
+            await group_auto_reply.recover_group(group_id)
+        except Exception:
+            logger.exception("SwarmChat auto-reply recovery failed for group=%s", group_id)
+        members = colleague_members(group)
+        if not members:
             return
         backend = await resolve_group_backend(group)
         if backend is None:
             return
         history = None
-        for member in colleague_members(group):
+        for member in members:
             try:
                 history = await self._catch_up_member(group, backend, member["member_name"], history)
             except Exception:
@@ -147,7 +163,7 @@ class ColleagueGroupBridge:
 
     async def submit(
         self, group_id: str, member_name: str, message: ConversationMessage,
-        *, history: list[ConversationMessage] | None = None,
+        *, history: list[ConversationMessage] | None = None, notified: bool = False,
     ) -> bool:
         """Handle one mention; False means another path is still handling it."""
         # The callback and the scan may see the same mention; one of them handles it.
@@ -156,17 +172,26 @@ class ColleagueGroupBridge:
             return False
         self._inflight.add(key)
         try:
-            await self._submit(group_id, member_name, message, history)
+            await self._submit(group_id, member_name, message, history, notified)
         finally:
             self._inflight.discard(key)
         return True
 
+    async def notify(self, group_id: str, member_name: str, message: ConversationMessage) -> bool:
+        """Ask a colleague to answer a message that does not mention it.
+
+        Shares the request identity, reservation and stop handling of mentions,
+        so a repeated notification never starts a second request.
+        """
+        return await self.submit(group_id, member_name, message, notified=True)
+
     async def _submit(
         self, group_id: str, member_name: str, message: ConversationMessage,
-        history: list[ConversationMessage] | None,
+        history: list[ConversationMessage] | None, notified: bool = False,
     ) -> None:
         group = read_group(group_id)
-        if group is None or member_name not in message.mentions or member_name == message.sender:
+        addressed = notified or member_name in message.mentions
+        if group is None or not addressed or member_name == message.sender:
             return
         member = next((item for item in colleague_members(group) if item["member_name"] == member_name), None)
         if member is None or message.timestamp < _joined_ms(group, member_name):
@@ -212,6 +237,11 @@ class ColleagueGroupBridge:
                     reset_session_id(token)
             return
         source = converted(group, message)
+        if notified and member["id"] not in source.mention_ids:
+            # The group's judgement already chose this colleague. Without the mention its own
+            # participation check may ignore the message while the group shows it was asked.
+            # Only the colleague's input changes; the stored message keeps its real mentions.
+            source = source.model_copy(update={"mention_ids": (*source.mention_ids, member["id"])})
         await self._manager.accept_swarmchat_message(group, member, source)
         self._consumption.accept(group_id, message.message_id, member_name)
 

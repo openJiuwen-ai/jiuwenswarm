@@ -35,6 +35,8 @@ def runtime_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (workspace / "config").mkdir(parents=True)
     monkeypatch.setattr(common_utils, "_find_package_root", lambda: package_root)
     monkeypatch.setattr(common_utils, "get_user_workspace_dir", lambda: workspace)
+    # profile 契约：paths 侧解析（get_agent_root_dir 链）同步重定向
+    monkeypatch.setattr("jiuwenswarm.common.paths._workspace_base_dir", workspace)
     monkeypatch.setattr(common_utils, "_install_default_builtin_skills", lambda **_kwargs: None)
     monkeypatch.setattr(common_utils, "ensure_default_builtin_skills", lambda: None)
     return workspace
@@ -65,7 +67,7 @@ def test_agentos_runtime_preserves_yuanrong_config(
     config_module.dump_yaml_round_trip(config_path, deployed)
     original_config = config_path.read_bytes()
 
-    installed = runtime_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
+    installed = runtime_workspace / "profile" / "agent" / "workspace" / "mcp" / "mcp_builtins"
     if mcp_state != "missing":
         installed.mkdir(parents=True)
         installed_version = "v0.2" if mcp_state == "ready" else "v0.1"
@@ -138,7 +140,7 @@ def test_runtime_workspace_retries_migration_after_mcp_repair_lock_error(
     monkeypatch.setattr(config_module, "migrate_config_from_template", raise_lock_error)
     common_utils.prepare_runtime_workspace(cleanup_stale_descs=False)
 
-    assert (runtime_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins").is_dir()
+    assert (runtime_workspace / "profile" / "agent" / "workspace" / "mcp" / "mcp_builtins").is_dir()
     assert len(warnings) == 1
     assert "获取配置写锁失败" in warnings[0]
     assert "config_version" not in config_module.load_yaml_round_trip(config_path)

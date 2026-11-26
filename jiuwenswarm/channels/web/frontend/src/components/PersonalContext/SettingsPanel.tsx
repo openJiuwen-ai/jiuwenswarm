@@ -14,6 +14,8 @@ import { useTranslation } from 'react-i18next';
 import { Loader2, X } from 'lucide-react';
 import { Switch } from '../Switch';
 import { SettingRow } from '../../features/settings/components/SettingRow';
+import { SettingItemRenderer } from '../../features/settings/components/SettingItemRenderer';
+import { personalContextCapacitySetting } from '../../features/settings/modules/personalContext/capacitySetting';
 import ModelPicker from '../ModelPicker';
 import { usePersonalContextStore } from '../../stores';
 import { useSessionStore } from '../../stores';
@@ -75,6 +77,8 @@ export function PersonalContextSettingsPanel({
   const masterEnabled = config.master_enabled ?? (config.collection_enabled || config.agent_use_enabled);
 
   const [error, setError] = useState<string | null>(null);
+  const [capacityEditing, setCapacityEditing] = useState(false);
+  const handleCapacityEditingChange = useCallback((_id: string, editing: boolean) => setCapacityEditing(editing), []);
   const [githubModalOpen, setGithubModalOpen] = useState(false);
   const [gitcodeModalOpen, setGitcodeModalOpen] = useState(false);
 
@@ -339,6 +343,7 @@ export function PersonalContextSettingsPanel({
             onChange={handleMasterEnabled}
             disabled={
               !isConnected ||
+              capacityEditing ||
               configNeedsReconciliation ||
               runtimeStopping ||
               !!pendingWrites.collection_enabled ||
@@ -364,7 +369,7 @@ export function PersonalContextSettingsPanel({
                 data-testid="personal-context-collection-switch"
                 checked={config.collection_enabled}
                 onChange={handleEnabled}
-                disabled={!isConnected || configNeedsReconciliation || runtimeStopping || !!pendingWrites.collection_enabled}
+                disabled={!isConnected || capacityEditing || configNeedsReconciliation || runtimeStopping || !!pendingWrites.collection_enabled}
               />
             </SettingRow>
 
@@ -389,6 +394,13 @@ export function PersonalContextSettingsPanel({
                 ))}
               </select>
             </SettingRow>
+
+            {/* Knowledge capacity uses the shared Settings field contract. */}
+            <SettingItemRenderer
+              item={personalContextCapacitySetting}
+              disabled={!isConnected || configNeedsReconciliation || runtimeStopping}
+              onEditingChange={handleCapacityEditingChange}
+            />
 
             {/* 上下文整理模型 */}
             <SettingRow

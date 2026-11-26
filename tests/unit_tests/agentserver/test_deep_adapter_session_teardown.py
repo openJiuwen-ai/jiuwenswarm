@@ -12,7 +12,10 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue i
     RootPermissionQueue,
 )
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
-from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
+    _session_adapter_idle_ttl_default,
+)
 from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import (
     SessionPermissionState,
 )
@@ -70,6 +73,22 @@ class _EvolutionRail:
 class _FailingEvolutionRail:
     async def cleanup_background_tasks(self) -> None:
         raise RuntimeError("background evolution remains active")
+
+
+def test_idle_ttl_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC", "60")
+    assert _session_adapter_idle_ttl_default() == 60
+
+
+def test_idle_ttl_env_invalid_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    for bad in ("abc", "-1", "0", "   "):
+        monkeypatch.setenv("JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC", bad)
+        assert _session_adapter_idle_ttl_default() == 2 * 60 * 60
+
+
+def test_idle_ttl_env_absent_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC", raising=False)
+    assert _session_adapter_idle_ttl_default() == 2 * 60 * 60
 
 
 def test_other_active_sessions_treats_subagent_as_related() -> None:

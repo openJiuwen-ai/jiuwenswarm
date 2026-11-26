@@ -105,6 +105,8 @@ class HttpHubTransport:
         )
         self.token = (token or "").strip()
         self.system_token = (system_token or "").strip()
+        # Default True keeps existing callers (Skill plaza / MCP / publish) unchanged.
+        # Connector SPI may pass SourceConfig.verify_ssl explicitly.
         self.verify = bool(verify)
 
     def _headers(self) -> dict[str, str] | None:
@@ -439,7 +441,7 @@ class HubClient(HubAssetPort):
             request.asset_id, plugin_type=contract.hub_plugin_type
         )
         self._require_request_kind(request.kind, item.plugin_type, item.asset_type)
-        version = request.version or item.public_latest_version
+        version = (request.version or "").strip() or item.public_latest_version
         if not version:
             raise HubProtocolError(f"Hub asset has no public version: {request.asset_id}")
         detail = await self.get_version(item.asset_id, version)
@@ -456,18 +458,35 @@ class HubClient(HubAssetPort):
             icon_uri=self._normalize_icon_uri(detail.icon_uri or item.icon_uri),
             tags=detail.tags,
             package_name=detail.name or item.name,
+            category_name=item.category_name,
             preview_url=self._normalize_icon_uri(detail.preview_url),
             package_profile=detail.package_profile,
             versions=item.all_versions,
+            file_size=detail.file_size,
+            source_size=detail.source_size,
+            requires_project=detail.requires_project,
+            permissions=detail.permissions,
+            has_server_script=detail.has_server_script,
+            checksum_sha256=detail.checksum_sha256,
         )
 
     async def resolve_download(
         self, request: HubDownloadRequest
     ) -> HubResolvedDownload:
-        artifact = await self.get_artifact(request.asset_id, version=request.version)
+        # Apps are distributed as the original market-wrapped ZIP. raw.zip must
+        # never be requested for an app: it is not generated for this type.
+        is_cli_download = request.kind == "app"
+        artifact = await self.get_artifact(
+            request.asset_id,
+            version=request.version,
+            is_cli_download=is_cli_download,
+        )
         self._require_request_kind(
             request.kind, artifact.plugin_type, artifact.asset_type
         )
+        if request.kind == "app":
+            if artifact.file_size is None or artifact.file_size <= 0:
+                raise HubProtocolError("Hub app artifact is missing file_size")
         return HubResolvedDownload(
             kind=request.kind,
             asset_id=artifact.asset_id,
@@ -475,4 +494,5 @@ class HubClient(HubAssetPort):
             download_url=artifact.download_url,
             checksum_sha256=artifact.checksum_sha256,
             package_name=artifact.name,
+            file_size=artifact.file_size,
         )

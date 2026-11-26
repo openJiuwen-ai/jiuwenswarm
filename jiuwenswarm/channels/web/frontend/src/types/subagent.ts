@@ -1,3 +1,5 @@
+import type { LocalizedText } from './pluginPackage';
+
 export type SubagentStatus = 'running' | 'idle' | 'closed';
 
 export type SubagentTurnOutcome = 'completed' | 'failed' | 'cancelled' | 'parent_ended';
@@ -18,6 +20,8 @@ export interface Subagent {
   parent_session_id: string;
   subagent_type: string;
   display_name: string;
+  display_name_i18n?: LocalizedText;
+  avatar?: string;
   role: string;
   task_description: string;
   status: SubagentStatus;

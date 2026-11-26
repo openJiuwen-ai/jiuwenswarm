@@ -65,7 +65,8 @@ const {
   WebUIPageHost,
   WebUIBackgroundHost,
   ApplicationPresentationHost, SystemPluginRecoverySettings,
-  WebUIAppearanceHost, appearanceModule, splashModule, WebUISplashGate,
+  setFavicon, WebUIAppearanceHost, appearanceModule, splashModule, brandModule, WebUISplashGate,
+  WelcomeHeading, WelcomeMascot, BEE_ANIMATION_DURATION, SidebarBrandLogo,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const target = {
@@ -600,6 +601,113 @@ test('Button opens only its own live panel after an accepted receipt; renders ne
   }
 });
 
+test('an application-scope button opens its own live right panel in the current chat session', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const source = {
+    scope: 'application', slot_id: 'application.sidebar.footer', package_id: 'pkg.demo', instance_key: 'footer',
+  };
+  const destination = { ...target, slot_id: 'conversation.panel.right', instance_key: 'details' };
+  const sourceTree = {
+    component: 'Button',
+    props: { value: 'Open details', openPanel: 'details' },
+    events: { 'ui.click': { id: 'open.details' } },
+  };
+  const details = {
+    component: 'Panel',
+    props: { title: 'Details' },
+    children: [{ component: 'Text', props: { value: 'Body' } }],
+  };
+  const targetOwner = runtime.mountSlot(target.session_id, destination.slot_id, { notifyReady: false });
+  const render = (sessionId) => act(async () => root.render(
+    createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+      createElement(WebUISlotProvider, { sessionId },
+        createElement(WebUIHost, { slotId: source.slot_id, sessionId: '' }))),
+  ));
+  try {
+    await act(async () => transport.injectRenderFrame(frame(details, 1, destination)));
+    await render(null);
+    await act(async () => transport.injectRenderFrame(frame(sourceTree, 1, source)));
+    const navigation = panelNavigation(runtime);
+    const button = container.querySelector('[data-testid="webui-button"]');
+    await click(button);
+    assert.equal(transport.dispatches.at(-1).payload.action_id, 'open.details');
+    assert.equal(navigation.getSnapshot(), null);
+    await render(target.session_id);
+    assert.equal(container.querySelector('[data-testid="webui-button"]'), button);
+    await click(button);
+    const request = navigation.getSnapshot();
+    assert.equal(request.sessionId, target.session_id);
+    assert.equal(request.key, 'sess-1|conversation.panel.right|pkg.demo|details');
+    navigation.consume(request.id);
+  } finally {
+    targetOwner.release();
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+  }
+});
+
+test('two same-package buttons select their own right-panel instances', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const source = {
+    scope: 'application', slot_id: 'application.sidebar.footer', package_id: 'pkg.demo', instance_key: 'footer',
+  };
+  const details = { ...target, slot_id: 'conversation.panel.right', instance_key: 'details' };
+  const notes = { ...target, slot_id: 'conversation.panel.right', instance_key: 'notes' };
+  const sourceTree = {
+    component: 'Box',
+    props: { direction: 'row' },
+    children: [
+      {
+        component: 'Button',
+        props: { value: 'Details', openPanel: 'details' },
+        events: { 'ui.click': { id: 'open.details' } },
+      },
+      {
+        component: 'Button',
+        props: { value: 'Notes', openPanel: 'notes' },
+        events: { 'ui.click': { id: 'open.notes' } },
+      },
+    ],
+  };
+  const panel = title => ({
+    component: 'Panel', props: { title }, children: [{ component: 'Text', props: { value: title } }],
+  });
+  const targetOwner = runtime.mountSlot(target.session_id, details.slot_id, { notifyReady: false });
+  try {
+    await act(async () => transport.injectRenderFrame(frame(panel('Details'), 1, details)));
+    await act(async () => transport.injectRenderFrame(frame(panel('Notes'), 1, notes)));
+    await act(async () => root.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+      createElement(WebUISlotProvider, { sessionId: target.session_id },
+        createElement(WebUIHost, { slotId: source.slot_id, sessionId: '' })))));
+    await act(async () => transport.injectRenderFrame(frame(sourceTree, 1, source)));
+    const navigation = panelNavigation(runtime);
+    const buttons = container.querySelectorAll('[data-testid="webui-button"]');
+    assert.equal(buttons.length, 2);
+    await click(buttons[0]);
+    let request = navigation.getSnapshot();
+    assert.equal(request.key, 'sess-1|conversation.panel.right|pkg.demo|details');
+    navigation.consume(request.id);
+    await click(buttons[1]);
+    request = navigation.getSnapshot();
+    assert.equal(request.key, 'sess-1|conversation.panel.right|pkg.demo|notes');
+    navigation.consume(request.id);
+  } finally {
+    targetOwner.release();
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+  }
+});
+
 test('page-owned panel discovery survives a hidden body and opens only on explicit navigation', async () => {
   const transport = createMockTransport();
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
@@ -666,6 +774,7 @@ test('Iframe selects complete localized documents and keeps the fixed sandbox wi
     assert.equal(first.title, 'Usage details');
     assert.equal(first.getAttribute('srcdoc'), documents.en);
     assert.equal(first.hasAttribute('src'), false);
+    assert.equal(first.hasAttribute('allow'), false);
     assert.equal(app.container.querySelector('[data-testid="webui-iframe-open-source"]'), null);
     assert.equal(app.container.querySelector('[data-testid="webui-iframe-source"]').textContent, 'Plugin page');
     assert.equal(first.getAttribute('sandbox'), 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
@@ -1248,6 +1357,41 @@ test('TreeSelect sends the whole checked selection for change in treeCheckable m
   } finally { await app.close(); }
 });
 
+test('keep-mounted TreeSelect preserves local multi-selection until the default changes', async () => {
+  const slot = { ...target, slot_id: 'conversation.panel.right' };
+  const tree = (defaults) => ({
+    component: 'Panel', props: { title: 'Controls' },
+    children: [treeSelectTree({ multiple: true, defaultValue: defaults })],
+  });
+  const app = await setup(tree(['alpha']), slot);
+  try {
+    await changeInput(app.container.querySelector('input'), 'Beta');
+    await click(document.querySelector('.ant-select-tree-node-content-wrapper'));
+    assert.match(app.container.textContent, /Alpha/);
+    assert.match(app.container.textContent, /Beta/);
+    await app.replace(tree(['alpha']));
+    assert.match(app.container.textContent, /Beta/, 'equivalent defaults must preserve the local selection');
+    await app.replace(tree(['beta']), 3);
+    assert.doesNotMatch(app.container.textContent, /Alpha/);
+    assert.match(app.container.textContent, /Beta/);
+  } finally { await app.close(); }
+});
+
+test('keep-mounted TreeSelect removes unavailable selections before dispatching changes', async () => {
+  const slot = { ...target, slot_id: 'conversation.panel.right' };
+  const tree = (options, defaults) => ({ component: 'Panel', props: { title: 'Controls' }, children: [
+    treeSelectTree({ multiple: true, treeData: options, ...(defaults ? { defaultValue: defaults } : {}) }),
+  ] });
+  const options = [{ value: 'alpha', title: 'Alpha' }, { value: 'beta', title: 'Beta' }];
+  const app = await setup(tree(options, ['alpha']), slot);
+  try {
+    await app.replace(tree([options[1]]));
+    await changeInput(app.container.querySelector('input'), 'Beta');
+    await click(document.querySelector('.ant-select-tree-node-content-wrapper'));
+    assert.deepEqual(app.business().find((request) => request.event === 'ui.change').payload.data, { value: ['beta'] });
+  } finally { await app.close(); }
+});
+
 const sliderTree = (props = {}, bindings = { 'ui.change': { id: 'slide', args: { field: 'level' } } }) => ({
   component: 'Slider', props, events: bindings,
 });
@@ -1337,6 +1481,142 @@ test('Tabs reinitializes hidden content when destroyOnHidden is set', async () =
     await click(tabLabel(app, 'two'));
     await click(tabLabel(app, 'one'));
     assert.equal(input().value, 'draft');
+  } finally { await app.close(); }
+});
+
+const rightPanelTree = child => ({
+  component: 'Panel', props: { title: 'Test panel' }, children: [child],
+});
+const rightPanelTarget = { ...target, slot_id: 'conversation.panel.right' };
+const activeTabLabel = app => app.container.querySelector('[role="tab"][aria-selected="true"]')?.textContent;
+
+test('Tabs in a retained panel follow the server selection across frames', async () => {
+  const page = activeKey => rightPanelTree(tabsTree({ activeKey }));
+  const app = await setup(page('one'), rightPanelTarget);
+  try {
+    await click(tabLabel(app, 'two'));
+    assert.deepEqual(app.business().map(request => request.payload.data), [{ activeKey: 'two' }]);
+    await app.replace(page('one'));
+    assert.equal(activeTabLabel(app), 'One');
+    await app.replace(page('two'), 3);
+    assert.equal(activeTabLabel(app), 'Two');
+    assert.equal(app.business().length, 1);
+  } finally { await app.close(); }
+});
+
+test('Tabs in a retained panel fall back when the local selection disappears or is disabled', async () => {
+  const [one, two] = tabsTree().props.items;
+  const page = items => rightPanelTree(tabsTree({ items }));
+  const app = await setup(page([one, two]), rightPanelTarget);
+  try {
+    await click(tabLabel(app, 'two'));
+    await app.replace(page([one]));
+    assert.equal(activeTabLabel(app), 'One');
+    await app.replace(page([{ ...one, disabled: true }, two]), 3);
+    assert.equal(activeTabLabel(app), 'Two');
+    await app.replace(page([one, two]), 4);
+    assert.equal(activeTabLabel(app), 'Two');
+    await app.replace(page([{ ...one, disabled: true }, { ...two, disabled: true }]), 5);
+    assert.equal(activeTabLabel(app), undefined);
+    assert.equal(app.business().length, 1);
+  } finally { await app.close(); }
+});
+
+test('Input in a retained panel keeps a draft for the same field and resets it on field replacement', async () => {
+  const page = (ariaLabel, defaultValue, args, placeholder) => rightPanelTree({
+    component: 'Input', props: { ariaLabel, defaultValue, placeholder },
+    events: { 'ui.change': { id: 'edit', args } },
+  });
+  const app = await setup(page('Field A', 'A', { record: 'a', field: 'text' }, 'Edit'), rightPanelTarget);
+  const input = () => app.container.querySelector('input');
+  try {
+    const original = input();
+    await changeInput(original, 'my draft');
+    await app.replace(page('Field A', 'A', { field: 'text', record: 'a' }, 'Continue editing'));
+    assert.equal(input(), original);
+    assert.equal(input().placeholder, 'Continue editing');
+    assert.equal(input().value, 'my draft');
+
+    await app.replace(page('Field B', 'B', { field: 'text', record: 'a' }, 'Edit'), 3);
+    assert.equal(input().getAttribute('aria-label'), 'Field B');
+    assert.equal(input().value, 'B');
+    await changeInput(input(), 'another draft');
+    await app.replace(page('Field B', 'B', { field: 'text', record: 'b' }, 'Edit'), 4);
+    assert.equal(input().value, 'B');
+    await changeInput(input(), 'new draft');
+    assert.deepEqual(app.business().at(-1).payload.args, { record: 'b', field: 'text' });
+  } finally { await app.close(); }
+});
+
+test('Input in a retained panel applies a repeated server value without remounting', async () => {
+  const page = () => rightPanelTree(inputTree({ value: 'Server' }));
+  const app = await setup(page(), rightPanelTarget);
+  try {
+    const input = app.container.querySelector('input');
+    await changeInput(input, 'Draft');
+    assert.equal(input.value, 'Draft');
+    await app.replace(page());
+    assert.equal(app.container.querySelector('input'), input);
+    assert.equal(input.value, 'Server');
+    assert.deepEqual(app.business().map(request => request.payload.data), [{ value: 'Draft', isComposing: false }]);
+  } finally { await app.close(); }
+});
+
+test('Input in a retained panel preserves an in-progress composition when a server frame arrives', async () => {
+  const page = value => rightPanelTree(inputTree({ value }));
+  const app = await setup(page('Server'), rightPanelTarget);
+  try {
+    const input = app.container.querySelector('input');
+    await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true })));
+    await changeInput(input, '北', true);
+    await app.replace(page('Server'));
+    assert.equal(input.value, '北');
+    await changeInput(input, '北京', true);
+    await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true })));
+    assert.deepEqual(app.business().map(request => [request.payload.revision, request.payload.data]), [
+      [1, { value: '北', isComposing: true }],
+      [2, { value: '北京', isComposing: true }],
+      [2, { value: '北京', isComposing: false }],
+    ]);
+    await app.replace(page('Server'), 3);
+    assert.equal(input.value, 'Server');
+  } finally { await app.close(); }
+});
+
+test('Select in a retained panel falls back or clears when the selected option disappears', async () => {
+  const page = props => rightPanelTree(selectTree(props));
+  const app = await setup(page({ defaultValue: 'a' }), rightPanelTarget);
+  const control = () => app.container.querySelector('[data-testid="webui-select"]');
+  try {
+    const original = control();
+    await app.replace(page({ options: [{ value: 'c', label: 'Tianjin' }], defaultValue: 'c' }));
+    assert.equal(control(), original);
+    assert.equal(control().textContent, 'Tianjin');
+    await app.replace(page({ placeholder: 'Pick a city' }), 3);
+    assert.equal(control().textContent, 'Pick a city');
+    assert.equal(app.business().length, 0);
+  } finally { await app.close(); }
+});
+
+test('Select in a retained panel prunes invalid choices and preserves custom tags', async () => {
+  const page = props => rightPanelTree(selectTree(props, { 'ui.change': { id: 'selection' } }));
+  const app = await setup(page({ mode: 'multiple', defaultValue: ['a', 'b'] }), rightPanelTarget);
+  const input = () => app.container.querySelector('input');
+  const choices = () => [...app.container.querySelectorAll('.ant-select-selection-item')].map(item => item.title);
+  try {
+    await app.replace(page({ mode: 'multiple', options: [selectOptions[1]] }));
+    assert.deepEqual(choices(), ['Shanghai']);
+    await app.replace(page({ mode: 'tags', options: [] }), 3);
+    await changeInput(input(), 'custom');
+    await pressEnter(input());
+    assert.deepEqual(app.business().map(request => request.payload.data), [{ value: ['b', 'custom'] }]);
+    await app.replace(page({ mode: 'tags', options: [{ value: 'c', label: 'Tianjin' }] }), 4);
+    assert.deepEqual(choices(), ['Shanghai', 'custom']);
+    await app.replace(page({ mode: 'tags', options: [], maxCount: 1 }), 5);
+    assert.deepEqual(choices(), ['Shanghai']);
+    await app.replace(page({ mode: 'tags', options: [] }), 6);
+    assert.deepEqual(choices(), ['Shanghai']);
+    assert.equal(app.business().length, 1);
   } finally { await app.close(); }
 });
 
@@ -1819,6 +2099,14 @@ test('Text semantic types and Button variant/type props map to antd classes', as
     await app.replace({ component: 'Button', props: { value: 'Default', size: 'lg' } }, 7);
     assert.doesNotMatch(app.container.querySelector('button').className, /ant-btn-variant-filled/);
     assert.match(app.container.querySelector('button').className, /ant-btn-lg/);
+    await app.replace({ component: 'Button', props: { value: 'Color', type: 'primary', color: 'green' } }, 8);
+    assert.match(app.container.querySelector('button').className, /ant-btn-color-green/);
+    assert.match(app.container.querySelector('button').className, /ant-btn-variant-solid/);
+    await app.replace({ component: 'Button', props: { value: 'Color', color: 'blue', variant: 'outlined' } }, 9);
+    assert.match(app.container.querySelector('button').className, /ant-btn-color-blue/);
+    assert.match(app.container.querySelector('button').className, /ant-btn-variant-outlined/);
+    await app.replace({ component: 'Select', props: { options: [{ value: 'a', label: 'A' }] } }, 10);
+    assert.equal(app.container.querySelector('[data-testid="webui-select"]').style.width, '180px');
   } finally { await app.close(); }
 });
 
@@ -1885,8 +2173,56 @@ test('Iframe releases inactive documents and resets loading on source changes an
     await act(async () => iframe().dispatchEvent(new window.Event('error')));
     assert.ok(!iframe(), 'failed frame releases its iframe'); assert.equal(state().dataset.variant, 'error');
     assert.notEqual(getComputedStyle(state()).pointerEvents, 'none');
+    await app.replace(tree('https://example.com/third'), 3);
+    assert.equal(iframe().src, 'https://example.com/third');
+    assert.equal(iframe().getAttribute('aria-busy'), 'true');
+    assert.equal(state().dataset.variant, 'loading');
+    await fire(iframe(), 'load');
+    await app.replace({ component: 'Iframe', props: { srcDoc: '<p>New document</p>', title: 'Preview' } }, 4);
+    assert.equal(iframe().getAttribute('srcdoc'), '<p>New document</p>');
     assert.equal(app.business().length, 0);
   } finally { await app.close(); }
+});
+
+test('keep-mounted form controls replay controlled values and changed defaults on new frames', async () => {
+  const panel = (component, props) => ({ component: 'Panel', props: { title: 'Controls' }, children: [{ component, props }] });
+  const slot = { ...target, slot_id: 'conversation.panel.right' };
+  const switchApp = await setup(panel('Switch', { checked: false }), slot);
+  try {
+    const control = () => switchApp.container.querySelector('[role="switch"]');
+    await click(control());
+    assert.equal(control().getAttribute('aria-checked'), 'true');
+    await switchApp.replace(panel('Switch', { checked: false }));
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+    await switchApp.replace(panel('Switch', { defaultChecked: true }), 3);
+    assert.equal(control().getAttribute('aria-checked'), 'true');
+    await switchApp.replace(panel('Switch', { defaultChecked: false }), 4);
+    assert.equal(control().getAttribute('aria-checked'), 'false');
+  } finally { await switchApp.close(); }
+
+  const sliderApp = await setup(panel('Slider', { value: 20 }), slot);
+  try {
+    const handle = () => sliderApp.container.querySelector('[role="slider"]');
+    await pressKey(handle(), 'ArrowRight', 39);
+    await sliderApp.replace(panel('Slider', { value: 20 }));
+    assert.equal(handle().getAttribute('aria-valuenow'), '20');
+    await sliderApp.replace(panel('Slider', { defaultValue: 30 }), 3);
+    await sliderApp.replace(panel('Slider', { defaultValue: 40 }), 4);
+    assert.equal(handle().getAttribute('aria-valuenow'), '40');
+  } finally { await sliderApp.close(); }
+
+  const props = (value) => ({ treeData: treeSelectOptions, ...value });
+  const treeApp = await setup(panel('TreeSelect', props({ value: 'alpha' })), slot);
+  try {
+    await changeInput(treeApp.container.querySelector('input'), 'Beta');
+    await click(document.querySelector('.ant-select-tree-node-content-wrapper'));
+    assert.match(treeApp.container.textContent, /Beta/);
+    await treeApp.replace(panel('TreeSelect', props({ value: 'alpha' })));
+    assert.match(treeApp.container.textContent, /Alpha/);
+    await treeApp.replace(panel('TreeSelect', props({ defaultValue: 'alpha' })), 3);
+    await treeApp.replace(panel('TreeSelect', props({ defaultValue: 'beta' })), 4);
+    assert.match(treeApp.container.textContent, /Beta/);
+  } finally { await treeApp.close(); }
 });
 
 for (const source of [{ src: 'https://example.com/wide' }, { srcDoc: '<p>Wide page</p>' }]) {
@@ -1925,7 +2261,7 @@ for (const source of [{ src: 'https://example.com/wide' }, { srcDoc: '<p>Wide pa
   });
 }
 
-test('Iframe reload retries the same URL and retains plugin minimum width and sandbox permissions', async () => {
+test('Iframe reload keeps the URL and minimum width without adding permissions', async () => {
   const app = await setup(
     {
       component: 'Iframe',
@@ -1939,6 +2275,7 @@ test('Iframe reload retries the same URL and retains plugin minimum width and sa
   );
   try {
     const first = app.container.querySelector('iframe');
+    assert.equal(first.hasAttribute('allow'), false);
     await act(async () => first.dispatchEvent(new window.Event('load')));
     const source = app.container.querySelector('[data-testid="webui-iframe-source"]');
     assert.equal(source.textContent, 'https://example.com/retry');
@@ -1948,6 +2285,7 @@ test('Iframe reload retries the same URL and retains plugin minimum width and sa
     assert.notEqual(reloaded, first);
     assert.equal(reloaded.src, first.src);
     assert.equal(reloaded.getAttribute('sandbox'), first.getAttribute('sandbox'));
+    assert.equal(reloaded.getAttribute('allow'), first.getAttribute('allow'));
     assert.equal(getComputedStyle(reloaded).minWidth, '720px');
     assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]').dataset.variant, 'loading');
     await act(async () => reloaded.dispatchEvent(new window.Event('error')));
@@ -1958,6 +2296,7 @@ test('Iframe reload retries the same URL and retains plugin minimum width and sa
     assert.ok(retry);
     assert.equal(retry.src, first.src);
     assert.equal(retry.getAttribute('sandbox'), first.getAttribute('sandbox'));
+    assert.equal(retry.getAttribute('allow'), first.getAttribute('allow'));
     await act(async () => retry.dispatchEvent(new window.Event('load')));
     assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]'), null);
     const open = app.container.querySelector('[data-testid="webui-iframe-open-source"]');
@@ -1965,6 +2304,81 @@ test('Iframe reload retries the same URL and retains plugin minimum width and sa
     assert.equal(open.target, '_blank');
     assert.equal(open.rel, 'noopener noreferrer');
     assert.equal(app.business().length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Iframe delegates each explicitly requested browser capability once and remounts on a change', async () => {
+  const tree = (permissions) => ({
+    component: 'Iframe',
+    props: { src: 'https://example.com/editor', title: 'Editor', permissions },
+  });
+  const app = await setup(
+    tree(['clipboard-write', 'fullscreen', 'autoplay', 'fullscreen', 'future-feature']),
+    { ...target, slot_id: 'conversation.panel.right' },
+  );
+  try {
+    const first = app.container.querySelector('iframe');
+    assert.equal(first.getAttribute('allow'), 'clipboard-write; fullscreen; autoplay; future-feature');
+    assert.ok(!first.getAttribute('sandbox').split(/\s+/).includes('allow-same-origin'));
+
+    await app.replace(tree([]));
+    const replacement = app.container.querySelector('iframe');
+    assert.notEqual(replacement, first);
+    assert.equal(replacement.src, first.src);
+    assert.equal(replacement.hasAttribute('allow'), false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Iframe gives each desktop document with a media declaration its own name', async (context) => {
+  const desktop = window.jiuwenDesktop;
+  window.jiuwenDesktop = { apiBase: 'http://localhost' };
+  context.after(() => {
+    if (desktop === undefined) delete window.jiuwenDesktop;
+    else window.jiuwenDesktop = desktop;
+  });
+  const tree = (permissions) => ({
+    component: 'Iframe',
+    props: { src: 'https://example.com/editor', title: 'Editor', permissions },
+  });
+  const app = await setup(tree(['microphone']), { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    const initialName = app.container.querySelector('iframe').name;
+    assert.ok(initialName.startsWith('workswarm-media-'));
+    await act(async () => app.container.querySelector('[data-testid="webui-iframe-reload"]').click());
+    assert.notEqual(app.container.querySelector('iframe').name, initialName);
+    await app.replace(tree(['fullscreen']));
+    assert.equal(app.container.querySelector('iframe').hasAttribute('name'), false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Iframe preserves independent HTTP and HTTPS origins when host documents are isolated', async (context) => {
+  const src = 'http://localhost:19500/editor';
+  const marker = document.createElement('meta');
+  marker.name = 'workswarm-iframe-host-isolation';
+  marker.content = 'true';
+  document.head.append(marker);
+  context.after(() => marker.remove());
+  const tree = (src) => ({ component: 'Iframe', props: { src, title: 'Editor' } });
+  const app = await setup(tree(src), { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    const first = app.container.querySelector('iframe');
+    assert.equal(first.src, src);
+    assert.ok(first.getAttribute('sandbox').split(' ').includes('allow-same-origin'));
+    assert.equal(first.hasAttribute('allow'), false);
+    await act(async () => app.container.querySelector('[data-testid="webui-iframe-reload"]').click());
+    const reloaded = app.container.querySelector('iframe');
+    assert.notEqual(reloaded, first);
+    assert.equal(reloaded.getAttribute('sandbox'), first.getAttribute('sandbox'));
+    await app.replace(tree('https://example.com/editor'));
+    const deployed = app.container.querySelector('iframe');
+    assert.equal(deployed.src, 'https://example.com/editor');
+    assert.equal(deployed.getAttribute('sandbox'), first.getAttribute('sandbox'));
   } finally {
     await app.close();
   }
@@ -2015,7 +2429,12 @@ test('Iframe slow loading stays interactive and cancels pending notices on compl
   assert.equal(timers.size, 0, 'unmount cancels pending timers');
 });
 
-test('Iframe keeps relative and absolute host sources sandboxed without same-origin access', async () => {
+test('Iframe keeps host URLs and srcDoc sandboxed when host documents are isolated', async (context) => {
+  const marker = document.createElement('meta');
+  marker.name = 'workswarm-iframe-host-isolation';
+  marker.content = 'true';
+  document.head.append(marker);
+  context.after(() => marker.remove());
   const tree = (src) => ({ component: 'Iframe', props: { src, title: 'Local preview' } });
   const app = await setup(tree('/preview'), { ...target, slot_id: 'conversation.panel.right' });
   try {
@@ -2033,6 +2452,14 @@ test('Iframe keeps relative and absolute host sources sandboxed without same-ori
       assert.ok(!permissions.some((permission) => permission.startsWith('allow-top-navigation')));
       assert.equal(iframe.hasAttribute('srcdoc'), false);
     }
+    await app.replace({
+      component: 'Iframe',
+      props: { srcDoc: '<p>Preview</p>', title: 'Local preview', permissions: ['fullscreen'] },
+    }, 4);
+    const inline = app.container.querySelector('iframe');
+    assert.equal(inline.getAttribute('srcdoc'), '<p>Preview</p>');
+    assert.equal(inline.hasAttribute('allow'), false);
+    assert.ok(!inline.getAttribute('sandbox').split(' ').includes('allow-same-origin'));
   } finally { await app.close(); }
 });
 
@@ -2253,6 +2680,25 @@ const formTree = (rules = [{ required: true, message: '请输入账号' }, { min
     { component: 'Button', props: { value: '确认', form: 'credentials' }, events },
     { component: 'Button', props: { value: '普通按钮' }, events },
   ],
+});
+
+test('keep-mounted panel resets form fields to the new frame before submission', async () => {
+  const tree = (initial) => ({ component: 'Panel', props: { title: 'Form' }, children: [
+    { component: 'Form', props: { name: 'profile' }, children: [
+      { component: 'Form.Item', props: { name: 'account' }, children: [
+        { component: 'Input', props: { defaultValue: initial } },
+      ] },
+    ] },
+    { component: 'Button', props: { value: 'Submit', form: 'profile' }, events },
+  ] });
+  const app = await setup(tree('first'), { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    await changeInput(app.container.querySelector('input'), 'draft');
+    await app.replace(tree('second'));
+    assert.equal(app.container.querySelector('input').value, 'second');
+    await click(app.container.querySelector('[data-testid="webui-button"]'));
+    assert.deepEqual(app.business()[0].payload.data, { account: 'second' });
+  } finally { await app.close(); }
 });
 
 test('Form validates on blur and click locally, then sends exactly its current fields', async () => {
@@ -2779,7 +3225,7 @@ test('FileTree retains scrolling across directory expansion and preview data fra
     assert.equal(body().scrollTop, 320);
     assert.deepEqual(app.business()[0].payload.data.expandedKeys, ['dir']);
     await app.replace(tree(true));
-    assert.notEqual(body(), original, 'the existing frame remount behavior is unchanged');
+    assert.equal(body(), original, 'the keep-mounted panel updates the existing tree in place');
     assert.equal(body().scrollTop, 320);
     await click(app.container.querySelector('[data-variant="child"][data-testid="webui-file-tree-item"]'));
     await app.replace(tree(true, 'selected child'), 3);
@@ -2961,10 +3407,13 @@ test('a plugin display preference hides bars and detail tabs across conversation
   });
   const visibleFrame = (tree, revision, owner) => ({ ...frame(tree, revision, owner), visible_when: binding });
   function Panels({ sessionId }) {
-    const { panels, renderPanel } = useWebUIPanels({ slotId: 'conversation.panel.right', sessionId });
+    const { panels, hiddenPanels, renderPanel } = useWebUIPanels({ slotId: 'conversation.panel.right', sessionId });
     return createElement(
       'section',
-      null,
+      {
+        'data-testid': 'webui-test-discovery',
+        'data-hidden-ids': hiddenPanels.map((panel) => panel.panelId).join(','),
+      },
       ...panels.map((panel) =>
         createElement(
           'div',
@@ -3008,12 +3457,17 @@ test('a plugin display preference hides bars and detail tabs across conversation
     assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 2);
     assert.equal(tabs().length, 3);
     assert.equal(iframes().length, 3);
+    const hiddenIds = () => [...container.querySelectorAll('[data-testid="webui-test-discovery"]')]
+      .map((node) => node.dataset.hiddenIds);
+    assert.deepEqual(hiddenIds(), ['', ''], 'visible panels are never reported as hidden');
     const originalDocument = iframes()[0];
     const control = () => container.querySelector('[data-testid="webui-switch"]');
     await click(control());
     assert.equal(control().getAttribute('aria-checked'), 'false');
     assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 0);
     assert.equal(tabs().length, 1, 'the unrelated package keeps its tab');
+    assert.deepEqual(hiddenIds(), [`${packageId}|details`, `${packageId}|details`],
+      'discovery reports preference-hidden detail panels as hidden, not gone');
     assert.equal(iframes().length, 1, 'hidden documents release their browsing contexts');
     assert.equal(originalDocument.isConnected, false);
     await act(async () => {
@@ -3033,6 +3487,7 @@ test('a plugin display preference hides bars and detail tabs across conversation
     assert.equal(container.querySelectorAll('[data-variant="conversation.input.above"]').length, 2);
     assert.equal(tabs().length, 3);
     assert.equal(iframes().length, 3);
+    assert.deepEqual(hiddenIds(), ['', ''], 're-enabling the preference clears the hidden result');
     assert.ok([...iframes()].some((node) => node.getAttribute('srcdoc').includes('Updated history while hidden')));
     assert.equal(panelNavigation(runtime).getSnapshot(), null, 'enabling does not request panel selection');
     const storageKey = Object.keys(window.localStorage).find((key) => !keysBefore.has(key));
@@ -3286,11 +3741,17 @@ test('one settings tree mounts application and session items with independent id
 });
 
 const appearanceCases = JSON.parse(readFileSync(new URL('./fixtures/gatewayAppearanceCases.json', import.meta.url), 'utf8'));
-for (const { name, appearance, valid } of appearanceCases) {
+const COLOR_FIELDS = ['accent', 'surface', 'surfaceOpacity', 'tokens'];
+for (const { name, appearance, valid, normalized } of appearanceCases) {
   test(`Gateway appearance contract: ${name}`, () => {
     const result = appearanceModule.validateAppearance(appearance);
-    if (valid) assert.deepEqual(result, appearance);
-    else assert.equal(result, null);
+    if (!valid) {
+      assert.equal(result, null);
+      return;
+    }
+    // An object made only of color fields is the colors part; the Gateway reports the same normalized parts.
+    const flat = Object.keys(appearance).every((key) => COLOR_FIELDS.includes(key));
+    assert.deepEqual(result, normalized ?? (flat ? { colors: appearance } : appearance));
   });
 }
 
@@ -3353,12 +3814,14 @@ test('WebUIAppearanceHost writes the contribution layer and removes it on revoke
   const root = createRoot(container);
   const html = document.documentElement;
   const style = () => document.getElementById('webui-appearance');
+  const titleBefore = document.title = 'Recorded';
   html.setAttribute('data-theme', 'default'); html.setAttribute('data-color-mode', 'light');
   try {
     await act(async () => root.render(createElement(WebUIAppearanceHost, { runtime })));
     assert.equal(style(), null);
-    await act(async () => transport.injectAppearanceFrame({ package_id: 'pkg.theme', revision: 1,
-      appearance: { accent: '#b45309', surface: 'translucent', surfaceOpacity: 0.6 } }));
+    assert.equal(document.title, titleBefore, 'without the gate the tab keeps what index.html applied');
+    await act(async () => transport.injectAppearanceFrame({ revision: 1, parts: { colors: { package_id: 'pkg.theme',
+      value: { accent: '#b45309', surface: 'translucent', surfaceOpacity: 0.6 } } } }));
     assert.match(style().textContent, /--color-action-primary:#b45309/);
     assert.match(style().textContent, /rgba\(245, 247, 249, 0\.252\)/);
     assert.equal(html.getAttribute('data-webui-surface'), 'translucent');
@@ -3370,13 +3833,16 @@ test('WebUIAppearanceHost writes the contribution layer and removes it on revoke
     assert.notEqual(html.getAttribute('data-webui-appearance'), firstWrite);
     assert.equal(html.getAttribute('data-color-mode'), 'dark', 'the host never changes the color mode');
 
-    await act(async () => transport.injectAppearanceFrame({ package_id: 'pkg.theme', revision: 2, appearance: null }));
+    // Another package's identity does not bring the colors back.
+    await act(async () => transport.injectAppearanceFrame({ revision: 2, parts: {
+      identity: { package_id: 'pkg.logo', value: { name: 'Acme' } } } }));
     assert.equal(style(), null);
     assert.equal(html.hasAttribute('data-webui-appearance'), false);
     assert.equal(html.hasAttribute('data-webui-surface'), false);
     assert.equal(html.getAttribute('data-color-mode'), 'dark');
 
-    await act(async () => transport.injectAppearanceFrame({ package_id: 'pkg.theme', revision: 3, appearance: { accent: '#2f6fae' } }));
+    await act(async () => transport.injectAppearanceFrame({ revision: 3, parts: {
+      colors: { package_id: 'pkg.theme', value: { accent: '#2f6fae' } } } }));
     assert.equal(html.getAttribute('data-webui-surface'), 'opaque');
     await act(async () => root.unmount());
     assert.equal(style(), null, 'unmounting the host removes the layer');
@@ -3414,8 +3880,21 @@ function splashTransport(answers, { connected = true } = {}) {
       revision += 1;
       for (const handler of handlers) handler.onClearFrame({ target: target(packageId), revision });
     },
+    appearance(snapshot) {
+      for (const handler of handlers) handler.onAppearanceFrame?.(snapshot);
+    },
+    packagesChanged(packageIds) {
+      for (const handler of handlers) handler.onPackagesChanged?.(packageIds);
+    },
     async dispatch(request) {
       dispatches.push(request);
+      if (request.event === 'ui.ready' && request.target.slotId === 'application.appearance') {
+        // Appearance providers apply their parts before the receipt (Gateway S_09 section 3.4).
+        const answer = answers['@appearance'] ?? 'unhandled';
+        if (answer === 'hang') return new Promise(() => undefined);
+        if (typeof answer === 'function') return answer(transport, request);
+        return answer === 'ready' ? { accepted: true, status: 'ready' } : { accepted: false, status: 'unhandled' };
+      }
       if (request.event !== 'ui.ready' || request.target.slotId !== 'application.splash') {
         return { accepted: true, status: request.event === 'ui.closed' ? 'closed' : 'ready' };
       }
@@ -3460,23 +3939,33 @@ const providerList = (...entries) => ({ providers: entries.map(([packageId, skip
   package_id: packageId, skippable, max_duration_ms: max,
 })) });
 
-function splashSetup({ answers = {}, providers = providerList(), hint = 'candidates', launch = splashLaunch(), preferred, connected } = {}) {
+/** The Web server hint; a bare string is the splash part with an unknown appearance. */
+const startupHint = (hint, appearance = null) => (typeof hint === 'string' ? { splash: hint, appearance } : hint);
+
+function splashSetup({
+  answers = {}, providers = providerList(), hint = 'candidates', launch = splashLaunch(), preferred, connected, appearance = false,
+} = {}) {
   const transport = splashTransport(answers, { connected });
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
   runtime.start();
   const timers = fakeTimers();
   const requests = [];
+  const preparation = appearance ? appearanceModule.createAppearancePreparation({ runtime, timers }) : undefined;
   const controller = splashModule.createSplashController({
-    runtime, launch, timers, preferredProvider: preferred, reducedMotion: () => false,
-    hint: async () => hint,
+    runtime, launch, timers, reducedMotion: () => false, appearance: preparation,
+    preferredProvider: typeof preferred === 'function' ? preferred : preferred === undefined ? undefined : () => preferred,
+    hint: async () => startupHint(hint),
     requestProviders: async () => { requests.push('providers'); return providers; },
   });
   const phases = [];
   controller.subscribe(() => phases.push(`${controller.getState().phase}:${controller.getState().provider?.packageId ?? ''}`));
-  const readies = () => transport.dispatches.filter((request) => request.event === 'ui.ready').map((request) => request.target.packageId);
+  const readies = () => transport.dispatches.filter((request) => request.event === 'ui.ready'
+    && request.target.slotId === 'application.splash').map((request) => request.target.packageId);
+  const appearanceReadies = () => transport.dispatches.filter((request) => request.event === 'ui.ready'
+    && request.target.slotId === 'application.appearance');
   const closes = () => transport.dispatches.filter((request) => request.event === 'ui.closed')
     .map((request) => [request.target.packageId, request.payload.reason, request.payload.revision]);
-  return { transport, runtime, timers, controller, requests, phases, readies, closes, launch };
+  return { transport, runtime, timers, controller, preparation, requests, phases, readies, appearanceReadies, closes, launch };
 }
 
 test('splash provider lists are validated and the appearance provider plays first', () => {
@@ -3630,7 +4119,7 @@ test('WebUISplashGate shows the splash backdrop while it waits after a candidate
     const overlay = () => document.querySelector('[data-testid="webui-splash"]');
     try {
       await act(async () => reactRoot.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
-        createElement(WebUISplashGate, { launch: splashLaunch(), timers: fakeTimers(), hint: async () => hint,
+        createElement(WebUISplashGate, { launch: splashLaunch(), timers: fakeTimers(), hint: async () => startupHint(hint),
           requestProviders: async () => providerList(['pkg.theme']) }, createElement('main', null, 'Workspace')))));
       await act(async () => settle());
       assert.equal(overlay().dataset.variant, 'deciding', `${hint}: still waiting for the Gateway`);
@@ -3655,7 +4144,7 @@ test('WebUISplashGate holds the workspace and entry until the queue ends and ski
   const overlay = () => document.querySelector('[data-testid="webui-splash"]');
   try {
     await act(async () => reactRoot.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
-      createElement(WebUISplashGate, { launch, hint: async () => 'candidates',
+      createElement(WebUISplashGate, { launch, hint: async () => startupHint('candidates'),
         requestProviders: async () => providerList(['pkg.theme', true, 9500]) },
         createElement(WebUIEntryHost, null, createElement('main', { 'data-testid': 'workspace' }, 'Workspace'))))));
     assert.equal(document.getElementById('workswarm-neutral'), null, 'the gate takes over the first-paint layer');
@@ -4009,7 +4498,7 @@ test('WebUISplashGate plays a requested preview over the open workspace', async 
   const overlay = () => document.querySelector('[data-testid="webui-splash"]');
   try {
     await act(async () => reactRoot.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
-      createElement(WebUISplashGate, { launch: splashLaunch(true), hint: async () => 'none',
+      createElement(WebUISplashGate, { launch: splashLaunch(true), hint: async () => startupHint('none'),
         requestProviders: async () => providerList(), subscribePreview },
         createElement('main', { 'data-testid': 'workspace' }, 'Workspace')))));
     await act(async () => settle());
@@ -4066,4 +4555,624 @@ test('resource controls change visible and accessible labels with the host langu
     await view.unmount(); runtime.dispose();
     await act(async () => i18n.changeLanguage(previousLanguage));
   }
+});
+
+// ── Layered appearance and home-page brand (Gateway F_16) ─────────────────────
+
+const colorsPart = (packageId = 'pkg.theme') => ({ package_id: packageId, value: { accent: '#b45309' } });
+const logoIdentity = { package_id: 'pkg.logo', value: { name: 'Acme', logo: '/extension-assets/pkg.logo/g1/logo.svg' } };
+const readyReceipt = { accepted: true, status: 'ready' };
+
+/** Run with the first-frame and splash records restored afterwards. */
+async function withBrandRecords(run) {
+  const keys = [
+    splashModule.APPEARANCE_EXPECTED_KEY, splashModule.APPEARANCE_IDENTITY_KEY, splashModule.APPEARANCE_PROVIDER_KEY,
+    splashModule.SPLASH_EXPECTED_KEY, splashModule.SPLASH_PLAYED_KEY,
+  ];
+  const saved = keys.map((key) => [key, window.localStorage.getItem(key)]);
+  const title = document.title;
+  try {
+    for (const key of keys) window.localStorage.removeItem(key);
+    await run();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === null) window.localStorage.removeItem(key);
+      else window.localStorage.setItem(key, value);
+    }
+    document.title = title;
+  }
+}
+
+test('the startup hint reads splash candidates and appearance providers', async () => {
+  const respond = (body, ok = true) => async () => ({ ok, json: async () => body });
+  assert.deepEqual(await splashModule.fetchStartupHint(respond({ candidates: true, appearance: true })),
+    { splash: 'candidates', appearance: true });
+  assert.deepEqual(await splashModule.fetchStartupHint(respond({ candidates: false })),
+    { splash: 'none', appearance: null }, 'a server without the field leaves the appearance unknown');
+  assert.deepEqual(await splashModule.fetchStartupHint(respond({ candidates: false, appearance: 'yes' })),
+    { splash: 'none', appearance: null });
+  for (const fetcher of [
+    respond({ appearance: true }), respond({ candidates: true }, false), respond('<!doctype html>'),
+    async () => { throw new Error('offline'); },
+  ]) {
+    assert.deepEqual(await splashModule.fetchStartupHint(fetcher), { splash: 'unknown', appearance: null });
+  }
+});
+
+test('the welcome suffix follows the work mode, then the default, then the host', () => {
+  const { welcomeSuffix, localizedText } = appearanceModule;
+  const welcome = { default: { zh: '默认', en: 'default' }, modes: { code: { en: 'writes code' } } };
+  assert.equal(welcomeSuffix(welcome, 'code', 'zh-CN'), 'writes code', 'a missing language falls back to the other one');
+  assert.equal(welcomeSuffix(welcome, 'design', 'zh-CN'), '默认');
+  assert.equal(welcomeSuffix(welcome, 'work', 'en-US'), 'default');
+  assert.equal(welcomeSuffix(welcome, 'chat', 'en'), 'default', 'an unknown mode uses the default');
+  assert.equal(welcomeSuffix({ modes: { work: { zh: '工作' } } }, 'design', 'en'), null, 'the host text remains');
+  assert.equal(welcomeSuffix(undefined, 'work', 'en'), null);
+  assert.equal(localizedText({ zh: '中文' }, 'fr'), '中文');
+  assert.equal(localizedText({ zh: '中文', en: 'English' }, 'ZH-tw'), '中文');
+});
+
+test('appearance preparation holds snapshots until the providers answer and keeps the identity record', async () => {
+  await withBrandRecords(async () => {
+    window.localStorage.setItem(splashModule.APPEARANCE_IDENTITY_KEY,
+      JSON.stringify({ name: 'Old', logo: '/extension-assets/pkg.logo/g0/logo.svg' }));
+    const transport = splashTransport({
+      '@appearance': (gateway) => {
+        // Providers answer side by side; the first one applies before the second.
+        gateway.appearance({ revision: 1, parts: { colors: colorsPart() } });
+        gateway.appearance({ revision: 2, parts: { colors: colorsPart(), identity: logoIdentity } });
+        return readyReceipt;
+      },
+    }, { connected: false });
+    const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+    runtime.start();
+    const shown = [];
+    runtime.subscribeAppearance(() => shown.push(runtime.getAppearance()?.revision ?? null));
+    const preparation = appearanceModule.createAppearancePreparation({ runtime, timers: fakeTimers() });
+    try {
+      assert.equal(preparation.getIdentity().name, 'Old', 'the last identity shows until the providers answer');
+      assert.equal(transport.dispatches.length, 0, 'the ready waits for the connection');
+      transport.setConnectionState('connected');
+      assert.deepEqual(await preparation.ready(), readyReceipt);
+      const [ready] = transport.dispatches;
+      assert.deepEqual([ready.event, ready.target, ready.payload], ['ui.ready',
+        { sessionId: '', slotId: 'application.appearance', packageId: '', instanceKey: 'main', scope: 'application' }, {}]);
+      assert.deepEqual(shown, [2], 'the partial snapshot never showed');
+      assert.equal(preparation.getIdentity().name, 'Acme');
+      assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_EXPECTED_KEY), '1');
+      assert.deepEqual(JSON.parse(window.localStorage.getItem(splashModule.APPEARANCE_IDENTITY_KEY)), {
+        name: 'Acme', logo: '/extension-assets/pkg.logo/g1/logo.svg', favicon: '/extension-assets/pkg.logo/g1/logo.svg',
+      });
+
+      // Without an identity provider the host brand returns and the record goes.
+      transport.appearance({ revision: 3, parts: { colors: colorsPart() } });
+      assert.equal(preparation.getIdentity(), null);
+      assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_IDENTITY_KEY), null);
+      // Invalid records are ignored by the next page.
+      window.localStorage.setItem(splashModule.APPEARANCE_IDENTITY_KEY, '{"logo":"https://example.com/logo.svg"}');
+      assert.equal(appearanceModule.readIdentityRecord(), null);
+    } finally {
+      preparation.dispose();
+      runtime.dispose();
+    }
+  });
+});
+
+test('a slow appearance provider holds snapshots for at most three seconds', async () => {
+  await withBrandRecords(async () => {
+    const transport = splashTransport({
+      '@appearance': (gateway) => {
+        gateway.appearance({ revision: 1, parts: { identity: logoIdentity } });
+        return new Promise(() => undefined);
+      },
+    });
+    const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+    runtime.start();
+    const timers = fakeTimers();
+    const preparation = appearanceModule.createAppearancePreparation({ runtime, timers });
+    try {
+      await settle();
+      assert.equal(runtime.getAppearance(), null);
+      await timers.advance(appearanceModule.APPEARANCE_READY_MS - 1);
+      assert.equal(runtime.getAppearance(), null);
+      await timers.advance(1);
+      assert.equal(runtime.getAppearance().revision, 1, 'held snapshots show after the limit');
+      preparation.finish();
+      assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_EXPECTED_KEY), '0', 'no answer counts as no provider');
+      assert.equal(preparation.getIdentity().name, 'Acme');
+    } finally {
+      preparation.dispose();
+      runtime.dispose();
+    }
+  });
+});
+
+test('every page load waits for appearance providers, at most three seconds', async () => {
+  await withBrandRecords(async () => {
+    // The last page had appearance providers, so a reload of the completed launch waits for them too.
+    window.localStorage.setItem(splashModule.APPEARANCE_EXPECTED_KEY, '1');
+    const slow = splashSetup({
+      launch: splashLaunch(true), hint: { splash: 'candidates', appearance: true }, appearance: true,
+      answers: { '@appearance': 'hang' },
+    });
+    const done = slow.controller.start();
+    await settle();
+    assert.equal(slow.controller.getState().phase, 'deciding', 'a completed launch still waits for the appearance');
+    assert.equal(slow.appearanceReadies().length, 1);
+    await slow.timers.advance(splashModule.SPLASH_TIMEOUTS.appearance - 1);
+    assert.equal(slow.controller.getState().phase, 'deciding');
+    await slow.timers.advance(1);
+    await done;
+    assert.equal(slow.controller.getState().phase, 'open');
+    assert.deepEqual([slow.readies(), slow.requests], [[], []], 'a completed launch plays no splash');
+    assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_EXPECTED_KEY), '0');
+    slow.preparation.dispose(); slow.runtime.dispose();
+
+    window.localStorage.setItem(splashModule.APPEARANCE_EXPECTED_KEY, '1');
+    const answered = splashSetup({
+      launch: splashLaunch(true), hint: { splash: 'none', appearance: null }, appearance: true,
+      answers: { '@appearance': 'ready' },
+    });
+    await answered.controller.start();
+    assert.equal(answered.controller.getState().phase, 'open', 'an unknown appearance hint waits for the answer only');
+    assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_EXPECTED_KEY), '1');
+    answered.preparation.dispose(); answered.runtime.dispose();
+
+    // A reload that expects no appearance opens at once; the answer still corrects the record.
+    window.localStorage.setItem(splashModule.APPEARANCE_EXPECTED_KEY, '0');
+    const reload = splashSetup({
+      launch: splashLaunch(true), hint: { splash: 'none', appearance: true }, appearance: true, answers: { '@appearance': 'ready' },
+    });
+    let hinted = false;
+    const reloadController = splashModule.createSplashController({
+      runtime: reload.runtime, launch: splashLaunch(true), timers: reload.timers, reducedMotion: () => false,
+      appearance: reload.preparation, hint: async () => { hinted = true; return { splash: 'none', appearance: true }; },
+      requestProviders: async () => providerList(),
+    });
+    const opened = reloadController.start();
+    assert.equal(reloadController.getState().phase, 'open', 'opened before any await');
+    await opened;
+    await settle();
+    assert.equal(hinted, false, 'the hint is not needed');
+    assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_EXPECTED_KEY), '1');
+    reloadController.dispose(); reload.controller.dispose(); reload.preparation.dispose(); reload.runtime.dispose();
+
+    window.localStorage.removeItem(splashModule.APPEARANCE_EXPECTED_KEY);
+    const unexpected = splashSetup({
+      hint: { splash: 'none', appearance: false }, appearance: true, connected: false, answers: { '@appearance': 'ready' },
+    });
+    // After a "none" hint the controller still confirms with the Gateway once connected.
+    const confirmed = unexpected.controller.start();
+    await settle();
+    assert.equal(unexpected.phases[0], 'open:', 'without appearance providers the gate does not wait');
+    assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_EXPECTED_KEY), '0');
+    unexpected.transport.setConnectionState('connected');
+    await confirmed;
+    await settle();
+    assert.equal(unexpected.appearanceReadies().length, 1, 'the ready still goes out once connected');
+    assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_EXPECTED_KEY), '1', 'the next page expects the appearance');
+    unexpected.preparation.dispose(); unexpected.runtime.dispose();
+  });
+});
+
+test('with a splash the appearance is prepared after the connection and before the queue', async () => {
+  await withBrandRecords(async () => {
+    const app = splashSetup({
+      hint: { splash: 'candidates', appearance: true }, appearance: true, connected: false,
+      providers: providerList(['pkg.a'], ['pkg.b']),
+      answers: { 'pkg.a': 'skip', 'pkg.b': 'skip', '@appearance': 'hang' },
+    });
+    const done = app.controller.start();
+    await settle();
+    assert.equal(app.appearanceReadies().length, 0, 'nothing is sent before the connection');
+    await app.timers.advance(splashModule.SPLASH_TIMEOUTS.appearance);
+    assert.equal(app.controller.getState().phase, 'deciding', 'with a splash the connection wait follows the splash rule');
+    app.transport.setConnectionState('connected');
+    await settle();
+    assert.deepEqual(app.requests, [], 'the providers wait for the appearance');
+    await app.timers.advance(splashModule.SPLASH_TIMEOUTS.appearance);
+    await done;
+    const order = app.transport.dispatches.filter((request) => request.event === 'ui.ready')
+      .map((request) => (request.target.slotId === 'application.appearance' ? 'appearance' : request.target.packageId));
+    assert.deepEqual(order, ['appearance', 'pkg.a', 'pkg.b']);
+    assert.equal(app.controller.getState().phase, 'open');
+    app.preparation.dispose(); app.runtime.dispose();
+  });
+});
+
+test('WebUISplashGate shows the recorded brand, then the providers\' parts, and plays the colors provider first', async () => {
+  await withBrandRecords(async () => {
+    window.localStorage.setItem(splashModule.APPEARANCE_IDENTITY_KEY,
+      JSON.stringify({ name: 'Old', logo: '/extension-assets/pkg.logo/g0/logo.svg' }));
+    window.localStorage.setItem(splashModule.APPEARANCE_PROVIDER_KEY, 'pkg.a');
+    const welcome = { default: { en: 'gets it done' } };
+    const mascot = { src: '/extension-assets/pkg.theme/g2/idle.webp' };
+    const transport = splashTransport({
+      'pkg.a': 'skip', 'pkg.b': 'skip',
+      '@appearance': (gateway) => {
+        gateway.appearance({ revision: 1, parts: {
+          colors: colorsPart('pkg.b'), identity: logoIdentity,
+          welcome: { package_id: 'pkg.theme', value: welcome }, mascot: { package_id: 'pkg.theme', value: mascot },
+        } });
+        return readyReceipt;
+      },
+    }, { connected: false });
+    const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+    runtime.start();
+    const rootElement = document.createElement('div'); rootElement.id = 'root'; document.body.append(rootElement);
+    const reactRoot = createRoot(rootElement);
+    const overlay = () => document.querySelector('[data-testid="webui-splash"]');
+    function Probe() {
+      const identity = brandModule.useBrandIdentity();
+      const text = brandModule.useAppearancePart('welcome');
+      const image = brandModule.useAppearancePart('mascot');
+      return createElement('output', { 'data-testid': 'brand-probe' },
+        JSON.stringify([identity?.name ?? null, text?.default?.en ?? null, image?.src ?? null]));
+    }
+    const probe = () => JSON.parse(document.querySelector('[data-testid="brand-probe"]').textContent);
+    try {
+      await act(async () => reactRoot.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+        createElement(WebUISplashGate, {
+          launch: splashLaunch(), hint: async () => ({ splash: 'candidates', appearance: true }),
+          requestProviders: async () => providerList(['pkg.a'], ['pkg.b']),
+        }, createElement(WebUIAppearanceHost), createElement(Probe)))));
+      await act(async () => settle());
+      assert.equal(overlay().dataset.variant, 'deciding');
+      assert.equal(overlay().querySelector('[data-testid="webui-splash-neutral-name"]').textContent, 'Old');
+      assert.match(overlay().querySelector('[data-testid="webui-splash-neutral-logo"]').getAttribute('src'), /g0\/logo\.svg$/);
+      assert.equal(document.title, 'Old', 'the tab shows the recorded brand meanwhile');
+      assert.deepEqual(probe(), ['Old', null, null]);
+
+      await act(async () => transport.setConnectionState('connected'));
+      await act(async () => settle());
+      assert.equal(overlay(), null, 'both splashes were skipped');
+      const order = transport.dispatches.filter((request) => request.event === 'ui.ready'
+        && request.target.slotId === 'application.splash').map((request) => request.target.packageId);
+      assert.deepEqual(order, ['pkg.b', 'pkg.a'], 'the current colors provider plays first, not the recorded one');
+      assert.equal(document.title, 'Acme');
+      assert.deepEqual(probe(), ['Acme', 'gets it done', mascot.src]);
+      assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_PROVIDER_KEY), 'pkg.b');
+    } finally {
+      await act(async () => reactRoot.unmount());
+      runtime.dispose();
+      rootElement.remove();
+    }
+    assert.equal(document.title, 'WorkSwarm', 'the host title returns when the host goes away');
+  });
+});
+
+test('tab icons replace the active link after loading and ignore obsolete image requests', () => {
+  const doc = document.implementation.createHTMLDocument();
+  const originalImage = globalThis.Image;
+  const probes = [];
+  globalThis.Image = class {
+    constructor() { probes.push(this); }
+  };
+  const tabIcon = () => doc.head.querySelector('link[rel="icon"]');
+  try {
+    setFavicon(doc, '/favicon.png');
+    const initial = tabIcon();
+    assert.equal(initial.type, 'image/png');
+    const stale = '/extension-assets/pkg.theme/g/old.svg';
+    const current = '/extension-assets/pkg.theme/g/favicon.png?content=2';
+    const cancel = setFavicon(doc, stale);
+    cancel();
+    setFavicon(doc, current);
+    assert.equal(tabIcon(), initial, 'the displayed icon stays in place while the new one loads');
+    probes[1].onload();
+    assert.notEqual(tabIcon(), initial);
+    assert.equal(tabIcon().getAttribute('href'), current);
+    assert.equal(tabIcon().type, 'image/png');
+    probes[0].onload();
+    assert.equal(tabIcon().getAttribute('href'), current, 'a cancelled load cannot replace the active icon');
+    setFavicon(doc, '/extension-assets/pkg.theme/g/missing.png');
+    probes[2].onerror();
+    assert.equal(tabIcon().getAttribute('href'), '/favicon.png');
+    assert.equal(doc.head.querySelectorAll('link[rel="icon"]').length, 1);
+  } finally {
+    if (originalImage === undefined) delete globalThis.Image;
+    else globalThis.Image = originalImage;
+  }
+});
+
+test('a brand image falls back to the host image once it fails to load', async () => {
+  function Logo({ src }) {
+    const image = brandModule.useBrandImage(src, brandModule.DEFAULT_BRAND_LOGO);
+    return createElement('img', { 'data-testid': 'brand-logo', src: image.src, onError: image.onError });
+  }
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const logo = () => container.querySelector('[data-testid="brand-logo"]');
+  try {
+    await act(async () => root.render(createElement(Logo, { src: undefined })));
+    assert.equal(logo().getAttribute('src'), '/logo.svg');
+    await act(async () => root.render(createElement(Logo, { src: '/extension-assets/pkg.logo/g1/logo.svg' })));
+    assert.equal(logo().getAttribute('src'), '/extension-assets/pkg.logo/g1/logo.svg');
+    await act(async () => logo().dispatchEvent(new window.Event('error')));
+    assert.equal(logo().getAttribute('src'), '/logo.svg');
+    await act(async () => root.render(createElement(Logo, { src: '/extension-assets/pkg.logo/g2/logo.svg' })));
+    assert.equal(logo().getAttribute('src'), '/extension-assets/pkg.logo/g2/logo.svg', 'a new image is tried again');
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
+test('the standalone login logo uses a valid saved brand and falls back if the asset fails', async () => {
+  function LoginLogo() {
+    const image = brandModule.useWorkSwarmLogo(true);
+    return createElement('img', { src: image.src, onError: image.onError });
+  }
+  await withBrandRecords(async () => {
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    const logo = () => container.querySelector('img');
+    try {
+      const saved = '/extension-assets/pkg.logo/g1/logo.svg';
+      window.localStorage.setItem(splashModule.APPEARANCE_IDENTITY_KEY, JSON.stringify({ logo: saved }));
+      await act(async () => root.render(createElement(LoginLogo)));
+      assert.equal(logo().getAttribute('src'), saved);
+      await act(async () => logo().dispatchEvent(new window.Event('error')));
+      assert.equal(logo().getAttribute('src'), '/logo.svg');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+});
+
+/** Runs the first-paint script of index.html over a full neutral layer and a tab icon. */
+function firstPaint() {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1])
+    .find((body) => body.includes('workswarm-neutral'));
+  const neutral = document.createElement('div'); neutral.id = 'workswarm-neutral';
+  neutral.innerHTML = '<img src="/logo.svg" alt="" /><div class="workswarm-neutral__name">WorkSwarm</div>';
+  document.body.append(neutral);
+  const icon = document.createElement('link'); icon.rel = 'icon'; icon.type = 'image/png'; icon.href = '/favicon.png';
+  document.head.prepend(icon);
+  const title = document.title;
+  try {
+    new Function('window', 'document', 'localStorage', 'sessionStorage', script)(
+      window, document, window.localStorage, window.sessionStorage);
+    return {
+      kept: neutral.isConnected,
+      name: neutral.querySelector('.workswarm-neutral__name').textContent,
+      logo: neutral.querySelector('img').getAttribute('src'),
+      title: document.title,
+      icon: icon.getAttribute('href'),
+      iconType: icon.type,
+    };
+  } finally {
+    neutral.remove();
+    icon.remove();
+    document.title = title;
+  }
+}
+
+test('the first-paint script keeps the neutral layer for the appearance wait and shows the recorded brand', async () => {
+  const sessionBefore = sessionEntries();
+  await withBrandRecords(async () => {
+    try {
+      openTab();
+      window.localStorage.setItem(splashModule.SPLASH_EXPECTED_KEY, '0');
+      assert.deepEqual(firstPaint(), {
+        kept: false, name: 'WorkSwarm', logo: '/logo.svg', title: document.title, icon: '/favicon.png', iconType: 'image/png',
+      });
+      window.localStorage.setItem(splashModule.APPEARANCE_EXPECTED_KEY, '1');
+      assert.equal(firstPaint().kept, true, 'a page that expects appearance providers keeps the layer');
+
+      window.localStorage.setItem(splashModule.APPEARANCE_IDENTITY_KEY, JSON.stringify({
+        name: 'Acme', logo: '/extension-assets/pkg.logo/g1/logo.svg', favicon: '/extension-assets/pkg.logo/g1/icon.png',
+      }));
+      assert.deepEqual(firstPaint(), {
+        kept: true, name: 'Acme', logo: '/extension-assets/pkg.logo/g1/logo.svg', title: 'Acme',
+        icon: '/extension-assets/pkg.logo/g1/icon.png', iconType: 'image/png',
+      });
+      window.localStorage.setItem(splashModule.APPEARANCE_EXPECTED_KEY, '0');
+      const removed = firstPaint();
+      assert.deepEqual([removed.kept, removed.title, removed.icon], [false, 'Acme', '/extension-assets/pkg.logo/g1/icon.png'],
+        'the tab uses the record even without the layer');
+
+      window.localStorage.setItem(splashModule.APPEARANCE_EXPECTED_KEY, '1');
+      window.localStorage.setItem(splashModule.APPEARANCE_IDENTITY_KEY, JSON.stringify({
+        logo: 'https://example.com/logo.svg', favicon: 'javascript:alert(1)',
+      }));
+      const foreign = firstPaint();
+      assert.deepEqual([foreign.logo, foreign.icon], ['/logo.svg', '/favicon.png'], 'only package asset paths are used');
+      window.localStorage.setItem(splashModule.APPEARANCE_IDENTITY_KEY, '{broken');
+      assert.equal(firstPaint().kept, true, 'an unreadable record leaves the layer to the expectation');
+    } finally {
+      openTab(sessionBefore);
+    }
+  });
+});
+
+/** Render the home-page brand spots inside a gate-less host with one appearance preparation. */
+async function renderBrandSpots(transport, workMode = 'work', onTrigger = () => undefined) {
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const preparation = appearanceModule.createAppearancePreparation({ runtime, timers: fakeTimers() });
+  preparation.finish();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const render = (mode) => act(async () => root.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+    createElement(brandModule.AppearanceBrandContext.Provider, { value: preparation },
+      createElement('h2', { 'data-testid': 'heading' }, createElement(WelcomeHeading, { workMode: mode })),
+      createElement(WelcomeMascot, { className: 'chat-welcome__banner', altText: 'mascot', onTrigger, onLeave: () => undefined }),
+      createElement(SidebarBrandLogo)))));
+  await render(workMode);
+  const query = (id) => container.querySelector(`[data-testid="${id}"]`);
+  return {
+    runtime, render, query,
+    heading: () => [query('chat-panel-welcome-heading-brand').textContent, query('chat-panel-welcome-heading-suffix').textContent],
+    async unmount() { await act(async () => root.unmount()); container.remove(); preparation.dispose(); runtime.dispose(); },
+  };
+}
+
+test('home-page brand spots show host defaults without an appearance', async () => {
+  const previousLanguage = i18n.language;
+  await withBrandRecords(async () => {
+    const view = await renderBrandSpots(splashTransport({}));
+    try {
+      await act(async () => i18n.changeLanguage('zh'));
+      assert.deepEqual(view.heading(), ['WorkSwarm', '轻松解决工作每个问题！']);
+      await view.render('design');
+      assert.deepEqual(view.heading(), ['WorkSwarm', '轻松解决每个设计问题！']);
+      await act(async () => i18n.changeLanguage('en'));
+      assert.deepEqual(view.heading(), ['WorkSwarm', 'solves every design problem!']);
+      await view.render('code');
+      assert.deepEqual(view.heading(), ['WorkSwarm', 'makes work easier!'], 'code uses the work text as before');
+      const mascot = view.query('chat-panel-welcome-banner');
+      assert.deepEqual([mascot.getAttribute('src'), mascot.dataset.variant], ['/assets/bee-static.png', 'default']);
+      const logo = view.query('session-sidebar-logo-image');
+      assert.deepEqual([logo.getAttribute('src'), logo.dataset.variant], ['/logo.svg', 'default']);
+    } finally {
+      await view.unmount();
+      await act(async () => i18n.changeLanguage(previousLanguage));
+    }
+  });
+});
+
+test('home-page brand spots follow the identity, welcome and mascot parts and fall back on errors', async () => {
+  const previousLanguage = i18n.language;
+  await withBrandRecords(async () => {
+    const transport = splashTransport({});
+    let triggers = 0;
+    const view = await renderBrandSpots(transport, 'code', () => { triggers += 1; });
+    const mascotValue = { src: '/extension-assets/pkg.theme/g2/idle.webp', hoverSrc: '/extension-assets/pkg.theme/g2/fly.gif', hoverMs: 600 };
+    try {
+      await act(async () => i18n.changeLanguage('zh'));
+      await act(async () => transport.appearance({ revision: 1, parts: {
+        identity: logoIdentity,
+        welcome: { package_id: 'pkg.theme', value: { default: { zh: '默认后半句' }, modes: { code: { en: 'writes code' } } } },
+        mascot: { package_id: 'pkg.theme', value: mascotValue },
+      } }));
+      assert.deepEqual(view.heading(), ['Acme', 'writes code'], 'the mode text in the other language beats the default');
+      await view.render('work');
+      assert.deepEqual(view.heading(), ['Acme', '默认后半句']);
+      const logo = view.query('session-sidebar-logo-image');
+      assert.deepEqual([logo.getAttribute('src'), logo.dataset.variant], ['/extension-assets/pkg.logo/g1/logo.svg', 'custom']);
+
+      const mascot = () => view.query('chat-panel-welcome-banner');
+      assert.deepEqual([mascot().getAttribute('src'), mascot().dataset.variant], [mascotValue.src, 'custom']);
+      assert.match(mascot().className, /chat-welcome__banner--mascot/);
+      await act(async () => mascot().dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true })));
+      assert.equal(triggers, 1);
+      assert.equal(mascot().getAttribute('src'), mascotValue.hoverSrc);
+      await act(async () => new Promise((resolve) => setTimeout(resolve, mascotValue.hoverMs + 50)));
+      assert.equal(mascot().getAttribute('src'), mascotValue.src, 'the hover image shows for hoverMs');
+
+      // Broken images bring back the host artwork.
+      await act(async () => logo.dispatchEvent(new window.Event('error')));
+      assert.equal(view.query('session-sidebar-logo-image').getAttribute('src'), '/logo.svg');
+      await act(async () => mascot().dispatchEvent(new window.Event('error')));
+      assert.deepEqual([mascot().getAttribute('src'), mascot().dataset.variant], ['/assets/bee-static.png', 'default']);
+
+      // A still mascot without a hover image keeps its image on hover; the bubble still opens.
+      await act(async () => transport.appearance({ revision: 2, parts: {
+        mascot: { package_id: 'pkg.theme', value: { src: '/extension-assets/pkg.theme/g3/idle.png' } },
+      } }));
+      assert.deepEqual(view.heading(), ['WorkSwarm', '轻松解决工作每个问题！'], 'withdrawn parts return to the host');
+      await act(async () => mascot().dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true })));
+      assert.equal(triggers, 2);
+      assert.equal(mascot().getAttribute('src'), '/extension-assets/pkg.theme/g3/idle.png');
+
+      await act(async () => transport.appearance({ revision: 3, parts: {} }));
+      assert.equal(mascot().getAttribute('src'), '/assets/bee-static.png');
+      await act(async () => mascot().dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true })));
+      assert.equal(mascot().getAttribute('src'), '/assets/bee-flying.webp', 'the bee keeps its own animation');
+      assert.equal(BEE_ANIMATION_DURATION, 4536);
+    } finally {
+      await view.unmount();
+      await act(async () => i18n.changeLanguage(previousLanguage));
+    }
+  });
+});
+
+test('a ready for one changed package does not touch the first-paint record', async () => {
+  await withBrandRecords(async () => {
+    // Every provider answers the page's own ready; a reloaded package without an appearance does not.
+    const transport = splashTransport({
+      '@appearance': (gateway, request) => (request.target.packageId === '' ? readyReceipt : { accepted: false, status: 'unhandled' }),
+    });
+    const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+    runtime.start();
+    const preparation = appearanceModule.createAppearancePreparation({ runtime, timers: fakeTimers() });
+    try {
+      await preparation.ready();
+      assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_EXPECTED_KEY), '1');
+      transport.packagesChanged(['pkg.other']);
+      await settle();
+      const targeted = transport.dispatches.filter((request) => request.target.slotId === 'application.appearance');
+      assert.deepEqual(targeted.map((request) => request.target.packageId), ['', 'pkg.other']);
+      assert.equal(window.localStorage.getItem(splashModule.APPEARANCE_EXPECTED_KEY), '1');
+    } finally {
+      preparation.dispose();
+      runtime.dispose();
+    }
+  });
+});
+
+test('the welcome highlight stays readable on light and dark pages', () => {
+  const { readableOn, readableHighlight, contrastRatio, parseColor } = appearanceModule;
+  const light = [245, 247, 249];
+  const dark = [17, 17, 17];
+  for (const color of ['#ffdd00', '#17b893', '#5b4fc4', '#ffffff', '#000000']) {
+    const rgb = parseColor(color);
+    assert.ok(contrastRatio(readableOn(rgb, light), light) >= 3, `${color} on light`);
+    assert.ok(contrastRatio(readableOn(rgb, dark), dark) >= 3, `${color} on dark`);
+  }
+  // A colour that already reads well is kept as given.
+  assert.deepEqual(readableHighlight(['#5b4fc4'], light), ['#5b4fc4']);
+  assert.notDeepEqual(readableHighlight(['#ffdd00'], light), ['#ffdd00'], 'pale yellow is darkened on a light page');
+  assert.deepEqual(readableHighlight(['#5b4fc4', 'red'], light), ['#5b4fc4'], 'unreadable values are dropped');
+});
+
+test('the brand name follows the welcome highlight as a colour or a gradient', async () => {
+  await withBrandRecords(async () => {
+    const transport = splashTransport({});
+    const view = await renderBrandSpots(transport);
+    const brand = () => view.query('chat-panel-welcome-heading-brand');
+    try {
+      assert.equal(brand().dataset.variant, 'default');
+      assert.equal(brand().getAttribute('style'), null, 'the host colour applies without a highlight');
+      await act(async () => transport.appearance({ revision: 1, parts: {
+        welcome: { package_id: 'pkg.theme', value: { highlight: ['#5b4fc4'] } },
+      } }));
+      assert.equal(brand().dataset.variant, 'custom');
+      assert.equal(brand().style.color, 'rgb(91, 79, 196)');
+      await act(async () => transport.appearance({ revision: 2, parts: {
+        welcome: { package_id: 'pkg.theme', value: { highlight: ['#5b4fc4', '#17b893'] } },
+      } }));
+      assert.match(brand().style.backgroundImage, /linear-gradient\(90deg, #5b4fc4, #/);
+      assert.equal(brand().style.color, 'transparent');
+      // The suffix keeps the host text colour; only the brand name changes.
+      const suffix = () => view.query('chat-panel-welcome-heading-suffix');
+      assert.equal(suffix().getAttribute('style'), null);
+      assert.equal(suffix().dataset.variant, 'default');
+      // highlightScope 'line' colours the second half the same way.
+      await act(async () => transport.appearance({ revision: 3, parts: {
+        welcome: { package_id: 'pkg.theme', value: {
+          default: { zh: '今天也要高效协作！', en: 'Make today count!' },
+          highlight: ['#5b4fc4', '#17b893'], highlightScope: 'line',
+        } },
+      } }));
+      assert.equal(suffix().dataset.variant, 'custom');
+      assert.equal(suffix().style.backgroundImage, brand().style.backgroundImage);
+      assert.equal(suffix().style.color, 'transparent');
+      await act(async () => transport.appearance({ revision: 4, parts: {
+        welcome: { package_id: 'pkg.theme', value: { highlight: ['#5b4fc4'], highlightScope: 'brand' } },
+      } }));
+      // React clears the properties and leaves an empty style attribute behind.
+      assert.equal(suffix().style.cssText, '');
+      assert.equal(suffix().dataset.variant, 'default');
+      assert.equal(brand().style.color, 'rgb(91, 79, 196)');
+      await act(async () => transport.appearance({ revision: 5, parts: {} }));
+      assert.equal(brand().dataset.variant, 'default');
+      assert.equal(suffix().dataset.variant, 'default');
+    } finally {
+      await view.unmount();
+    }
+  });
 });

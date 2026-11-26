@@ -383,10 +383,11 @@ async def test_http_uses_e2a_for_html_relative_css_head_and_revocation(tmp_path,
     adapter = WebUIDispatchAdapter()
 
     async def fetch(**kwargs):
-        assert kwargs["req_method"] == ReqMethod.WEBUI_RESOURCE_READ
+        host_method = ReqMethod(kwargs["req_method"].value)
+        assert host_method is ReqMethod.WEBUI_RESOURCE_READ
         assert kwargs["user_id"] == "u1" and kwargs["session_id"] == "s1"
         response = await adapter.handle(AgentRequest(
-            "read", channel_id=kwargs["channel_id"], req_method=kwargs["req_method"],
+            "read", channel_id=kwargs["channel_id"], req_method=host_method,
             user_id=kwargs["user_id"], session_id=kwargs["session_id"], params=kwargs["params"],
         ))
         return response.ok, response.payload
@@ -444,6 +445,30 @@ async def test_revoked_activation_cannot_publish_and_a_new_activation_can(tmp_pa
         resource_id, path, route = _parts(old.url("page.html"))
         with pytest.raises(FileNotFoundError):
             await service.read(resource_id, path, route=route)
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_retiring_an_older_generation_keeps_the_current_activation_usable(tmp_path):
+    service, ops, record, records = _service(tmp_path)
+    try:
+        # A hot reload publishes the successor before the previous generation is retired,
+        # and the successor may already have published files of its own.
+        records[0] = SimpleNamespace(package_id="pkg.demo", root=tmp_path, version="1.0.0", generation=2)
+        published = await _publish(service, ops, {"page.html": "new"})
+        resource_id, path, route = _parts(published.url("page.html"))
+
+        await service.drop(package_id="pkg.demo", generation=1)
+        data, _ = await service.read(resource_id, path, route=route)
+        assert data == b"new"
+        assert (await _publish(service, ops, {"page.html": "again"})).resource_id
+
+        await service.drop(package_id="pkg.demo", generation=2)
+        with pytest.raises(FileNotFoundError):
+            await service.read(resource_id, path, route=route)
+        with pytest.raises(PermissionError):
+            await _publish(service, ops, {"page.html": "late"})
     finally:
         await service.shutdown()
 

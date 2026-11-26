@@ -1,8 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+import base64
 import hashlib
 import zipfile
 
 import pytest
+import yaml
 
 from jiuwenswarm.server.runtime.marketplace.asset_package_builder import (
     PackageBuildError,
@@ -184,3 +186,65 @@ def test_preserves_executable_scripts_without_other_permission_bits(source, tmp_
         assert (
             archive.getinfo("test-skill/test-skill/run.sh").external_attr >> 16
         ) & 0o777 == 0o755
+
+
+_PNG_1PX = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+)
+
+
+def _app_source(tmp_path, icon_href):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "index.html").write_text(
+        '<!doctype html><html><head><meta name="application-version" content="1.0.0">'
+        f'<link rel="icon" href="{icon_href}">'
+        "</head><body>demo</body></html>",
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_app_package_writes_hub_icon_from_snapshot(tmp_path):
+    source = _app_source(tmp_path, "assets/app-icon.png?v=2")
+    (source / "assets").mkdir()
+    (source / "assets/app-icon.png").write_bytes(_PNG_1PX)
+    package = build_asset_package(
+        source,
+        PublishIdentity("app", "demo-app", "1.0.0"),
+        {
+            "display_name": "Demo App",
+            "description": "",
+            "tags": [],
+            "requires_project": False,
+            "app_permissions": [],
+        },
+        tmp_path / "out",
+    )
+    with zipfile.ZipFile(package.artifact_path) as archive:
+        assert archive.read("demo-app/icon.png") == _PNG_1PX
+        plugin_text = archive.read("demo-app/plugin.yaml").decode("utf-8")
+        wrapper = yaml.safe_load(plugin_text)
+        assert wrapper["metadata"]["app"]["requires_project"] is True
+        # Local project/editor metadata must never travel to the Hub package.
+        for field in ("project_id", "project_dir", "project_work_mode", "editor_session"):
+            assert field not in plugin_text
+
+
+def test_app_package_skips_non_png_icon(tmp_path):
+    source = _app_source(tmp_path, "app-icon.svg")
+    (source / "app-icon.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
+    package = build_asset_package(
+        source,
+        PublishIdentity("app", "demo-app", "1.0.0"),
+        {
+            "display_name": "Demo App",
+            "description": "",
+            "tags": [],
+            "requires_project": False,
+            "app_permissions": [],
+        },
+        tmp_path / "out",
+    )
+    with zipfile.ZipFile(package.artifact_path) as archive:
+        assert "demo-app/icon.png" not in archive.namelist()

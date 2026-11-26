@@ -274,17 +274,17 @@ async def test_published_pid_retains_the_identity_checked_during_hello(monkeypat
 @pytest.mark.parametrize("busy", [False, True])
 @pytest.mark.parametrize("protocol", [1, 2])
 async def test_public_complete_stop_during_unverified_hello_does_not_terminate_peer(
-    monkeypatch, tmp_path, busy, protocol,
+    monkeypatch, tmp_path, ipc_dir, busy, protocol,
 ):
     from pathlib import Path
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths, utils
     from jiuwenswarm.server.ipc.client import connect_with_retry
 
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / "data")
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path / "data")
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
-    path = str(tmp_path / "worker")
+    path = str(ipc_dir / "worker")
     worker = WorkerProcess(path, host="127.0.0.1", port=0, stub=True)
     connection = None
     start = None
@@ -352,17 +352,17 @@ async def test_complete_stop_cannot_reuse_an_old_connections_validation():
 
 
 @pytest.mark.asyncio
-async def test_complete_stop_can_reap_its_own_child_without_sending_unverified_ipc(monkeypatch, tmp_path):
+async def test_complete_stop_can_reap_its_own_child_without_sending_unverified_ipc(monkeypatch, tmp_path, ipc_dir):
     from pathlib import Path
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths, utils
     from jiuwenswarm.server.ipc.client import connect_with_retry
 
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / "data")
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path / "data")
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
     monkeypatch.setattr(supervisor_module, "_FINAL_SHUTDOWN_TIMEOUT", .1)
-    worker = WorkerProcess(str(tmp_path / "worker"), host="127.0.0.1", port=0, stub=True)
+    worker = WorkerProcess(str(ipc_dir / "worker"), host="127.0.0.1", port=0, stub=True)
     peer = None
     native = None
     try:
@@ -406,6 +406,34 @@ def test_shutdown_cli_emits_one_json_line_to_stdout(monkeypatch, capsys, caplog,
     assert output.out.count("\n") == 1
     assert output.err == ""
     assert not caplog.records
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinked data roots are a POSIX layout")
+def test_shutdown_cli_keeps_the_workspace_spelling_that_names_the_worker(monkeypatch, capsys, tmp_path):
+    # The Worker's endpoint and --socket argv come from JIUWENSWARM_DATA_DIR as
+    # written. Resolving a symlinked root (macOS /var -> /private/var) made the
+    # helper look for a different endpoint and report a running Worker absent.
+    from jiuwenswarm.common import paths
+    from jiuwenswarm.server.supervisor import shutdown
+
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    seen = []
+
+    async def shutdown_worker(*, timeout, include_legacy):
+        seen.append(os.environ["JIUWENSWARM_DATA_DIR"])
+        return {"ok": True}
+
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", "")
+    # 数据根缓存已随路径契约迁移 common.paths（utils 仅转发）
+    monkeypatch.setattr(paths, "_workspace_base_dir", None)
+    monkeypatch.setattr(sys, "argv", ["shutdown", "--shutdown-worker", "--workspace", str(link), "--timeout", "2"])
+    monkeypatch.setattr(shutdown, "shutdown_resident_worker", shutdown_worker)
+    shutdown.main()
+    assert seen == [str(link)]
+    assert json.loads(capsys.readouterr().out) == {"ok": True}
 
 
 @pytest.mark.asyncio

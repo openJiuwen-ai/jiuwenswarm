@@ -17,6 +17,7 @@ from jiuwenswarm.extensions_v2.event_types.context_usage import (
     register_context_usage_events,
 )
 from jiuwenswarm.extensions_v2.management import ExtensionManager
+from tests.unit_tests.extensions_v2.core_compat import requires_rooted_startup
 from tests.unit_tests.extensions_v2.management.support import make_bus
 
 PACKAGE_ID = "example.store-probe"
@@ -134,6 +135,7 @@ async def _trigger(bus, session_id: str) -> None:
     assert result.accepted
 
 
+@requires_rooted_startup
 async def test_zip_crud_logging_reload_cross_session_restart_and_uninstall(tmp_path, store_probe_logs) -> None:
     manager, bus = await _manager(tmp_path)
     reports = await manager.install([_archive(tmp_path)])
@@ -161,12 +163,15 @@ async def test_zip_crud_logging_reload_cross_session_restart_and_uninstall(tmp_p
     await restarted.shutdown()
 
 
+@requires_rooted_startup
 async def test_inactive_uninstall_delegates_to_core_and_deletes_data(tmp_path) -> None:
     manager, bus = await _manager(tmp_path)
     assert (await manager.install([_archive(tmp_path)]))[0].status == "SUCCESS"
     await _trigger(bus, "first")
+    assert (await manager.set_enabled(PACKAGE_ID, False)).status == "SUCCESS"
     await manager.shutdown()
     restarted, _ = await _manager(tmp_path)
+    await restarted.load_installed()
     assert restarted.active_packages() == ()
     assert (await restarted.uninstall(PACKAGE_ID)).status == "SUCCESS"
     assert not (tmp_path / "data" / f"{PACKAGE_ID}.json").exists()

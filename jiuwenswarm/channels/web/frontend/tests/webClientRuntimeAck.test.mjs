@@ -80,7 +80,7 @@ function runtimeEvent(event, requestId, payload = {}) {
 
 test('request without a deadline accepts delayed receipts and remains abortable', async () => {
   const pending = webClient.request('video.qwen.tool', {}, { timeoutMs: 0 });
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   const id = FakeWebSocket.instance.lastRequest.id;
   await new Promise(resolve => setTimeout(resolve, 20));
   gatewayResponse(id);
@@ -88,7 +88,7 @@ test('request without a deadline accepts delayed receipts and remains abortable'
 
   const controller = new AbortController();
   const aborted = webClient.request('video.qwen.tool', {}, { timeoutMs: 0, signal: controller.signal });
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   controller.abort();
   await assert.rejects(aborted, error => error.code === 'REQUEST_ABORTED');
 });
@@ -124,12 +124,12 @@ test('runtime-ack request stays pending after gateway response and resolves exac
     .finally(() => {
       settled = true;
     });
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   const requestId = FakeWebSocket.instance.lastRequest.id;
 
   gatewayResponse(requestId);
   runtimeEvent('runtime.accepted', 'other-request');
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(settled, false);
 
   runtimeEvent('runtime.accepted', requestId, { accepted: true });
@@ -142,14 +142,14 @@ test('runtime-ack request rejects exact Host error while ordinary request keeps 
     { source: 'permission_interrupt' },
     { awaitRuntimeAccepted: true, timeoutMs: 1000 },
   );
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   const permissionId = FakeWebSocket.instance.lastRequest.id;
   gatewayResponse(permissionId);
   runtimeEvent('chat.error', permissionId, { error: 'send failed' });
   await assert.rejects(permission, /send failed/);
 
   const ordinary = webClient.request('chat.send', { source: 'ask_user_interrupt' });
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   const ordinaryId = FakeWebSocket.instance.lastRequest.id;
   gatewayResponse(ordinaryId);
   assert.deepEqual(await ordinary, { accepted: true });
@@ -166,14 +166,14 @@ test('abort keeps runtime-ack request rejected without waiting for Host event', 
       signal: controller.signal,
     },
   );
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   const requestId = FakeWebSocket.instance.lastRequest.id;
   gatewayResponse(requestId);
   controller.abort();
 
   await assert.rejects(pending, (error) => error.code === 'REQUEST_ABORTED');
   runtimeEvent('runtime.accepted', requestId);
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
 });
 
 test('request identity is bound before send and runtime errors preserve their code and payload', async () => {
@@ -196,7 +196,7 @@ test('request identity is bound before send and runtime errors preserve their co
         },
       },
     );
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     runtimeEvent('chat.error', boundId, { code: 'SESSION_INPUT_DELIVERY_UNKNOWN', error: 'uncertain' });
     await assert.rejects(pending, (error) => {
       assert.equal(error.code, 'SESSION_INPUT_DELIVERY_UNKNOWN');
@@ -216,7 +216,7 @@ test('legacy content wrapping an acceptance is routed as ACK, not final output',
   });
   try {
     const pending = webClient.request('chat.send', { input_mode: 'steer' }, { awaitRuntimeAccepted: true });
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     const requestId = FakeWebSocket.instance.lastRequest.id;
     FakeWebSocket.instance.receive({
       type: 'content',
@@ -235,7 +235,7 @@ test('timeout and disconnect reject runtime-ack requests after gateway acceptanc
     { source: 'permission_interrupt' },
     { awaitRuntimeAccepted: true, timeoutMs: 5 },
   );
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   gatewayResponse(FakeWebSocket.instance.lastRequest.id);
   await assert.rejects(timedOut, (error) => error.code === 'REQUEST_TIMEOUT');
 
@@ -244,11 +244,46 @@ test('timeout and disconnect reject runtime-ack requests after gateway acceptanc
     { source: 'permission_interrupt' },
     { awaitRuntimeAccepted: true, timeoutMs: 1000 },
   );
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   gatewayResponse(FakeWebSocket.instance.lastRequest.id);
   const closed = webClient.disconnect();
   await assert.rejects(disconnected, (error) => error.code === 'WS_CLOSED');
   await closed;
+});
+
+test('connect timeout closes the socket and resets the connection state', async (t) => {
+  class HungWebSocket {
+    static OPEN = 1;
+    static CLOSED = 3;
+
+    constructor() {
+      this.readyState = 0;
+    }
+
+    close() {
+      this.readyState = HungWebSocket.CLOSED;
+      this.onclose?.({ code: 4000, reason: 'connect timeout', wasClean: false });
+    }
+  }
+
+  const originalWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = HungWebSocket;
+  const fresh = new webClient.constructor();
+  const states = [];
+  const offState = fresh.onStateChange((state) => states.push(state));
+  const nodeMajor = Number(process.versions.node.split('.')[0]);
+  t.mock.timers.enable(nodeMajor >= 20 ? { apis: ['setTimeout'] } : ['setTimeout']);
+  try {
+    const pending = fresh.request('chat.send', {}, { timeoutMs: 1000 });
+    await new Promise(resolve => setImmediate(resolve));
+    t.mock.timers.tick(15000);
+    await assert.rejects(pending, (error) => error.code === 'WS_CONNECT_TIMEOUT');
+    assert.equal(states.at(-1), 'closed');
+  } finally {
+    offState();
+    t.mock.timers.reset();
+    globalThis.WebSocket = originalWebSocket;
+  }
 });
 
 test('reconnect resumes the original event cursor without resubmitting input', async () => {
@@ -316,7 +351,7 @@ test('a fresh page subscribes to the execution discovered in session metadata', 
   });
   try {
     const pending = fresh.request('session.get_metadata', { session_id: 'fresh-session' });
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     socket.receive({
       type: 'res',
       id: socket.lastRequest.id,
@@ -354,7 +389,7 @@ test('a fresh page subscribes to the execution discovered in session metadata', 
 async function beginMetadataRecovery(client, sessionId, options) {
   const socket = FakeWebSocket.instance;
   const result = client.request('session.get_metadata', { session_id: sessionId }, options);
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   const query = socket.lastRequest;
   const sessionDetails = { session_id: sessionId, title: 'Original metadata', mode: 'team' };
   socket.receive({
@@ -432,7 +467,7 @@ test('metadata still rejects when the first request fails', async () => {
   await client.connect();
   try {
     const result = client.request('session.get_metadata', { session_id: 'missing-session' });
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     const socket = FakeWebSocket.instance;
     socket.receive({ type: 'res', id: socket.lastRequest.id, ok: false, code: 'NOT_FOUND' });
     await assert.rejects(result, { code: 'NOT_FOUND' });
@@ -772,7 +807,7 @@ test('late callbacks from a replaced socket preserve current requests, processin
       },
     });
     const pending = fresh.request('config.get');
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     const currentRequest = currentSocket.lastRequest;
     oldSocket.onopen?.();
     oldSocket.receive({
@@ -831,7 +866,7 @@ test('replaced pending connections reject only their own promise on late lifecyc
       assert.equal(fresh.getState(), 'ready', callback);
       const currentSocket = FakeWebSocket.instance;
       const pending = fresh.request('config.get');
-      await Promise.resolve();
+      await new Promise(resolve => setImmediate(resolve));
       currentSocket.receive({ type: 'res', id: currentSocket.lastRequest.id, ok: true, payload: { callback } });
       assert.deepEqual(await pending, { callback });
     } finally {
@@ -862,4 +897,33 @@ test('team attachment is fire-and-forget and resets only for reconnect', async (
   resetTeamAttachments();
   await attachTeamSession('team-session-1', 'team.work.normal');
   assert.equal(socket.sentRequests.length, initialCount + 2);
+});
+
+
+test('stale connection timeout cannot close a replacement socket', async () => {
+  await webClient.disconnect();
+  const originalSetTimeout = window.setTimeout;
+  const timers = [];
+  window.setTimeout = (callback, delay, ...args) => {
+    if (delay === 15000) {
+      timers.push(callback);
+      return 0;
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  };
+  try {
+    const first = webClient.ensureReady();
+    const second = webClient.ensureReady();
+    const firstRejected = assert.rejects(first, error => error.code === 'WS_CONNECT_TIMEOUT');
+    const secondRejected = assert.rejects(second);
+    timers[0]();
+    const replacement = webClient.connect();
+    const current = FakeWebSocket.instance;
+    timers[1]();
+    await Promise.all([firstRejected, secondRejected, replacement]);
+    assert.equal(current.readyState, FakeWebSocket.OPEN);
+    assert.equal(webClient.getState(), 'ready');
+  } finally {
+    window.setTimeout = originalSetTimeout;
+  }
 });

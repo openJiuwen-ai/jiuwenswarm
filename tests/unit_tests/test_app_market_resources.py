@@ -103,6 +103,11 @@ async def test_real_market_service_reports_memory_and_releases_metrics_after_sto
     page.write_text("<html><title>Resource test</title></html>", encoding="utf-8")
     manager = AppMarketManager(str(tmp_path / "market"))
     published = await manager.publish_app(str(page), "resource-test", "alice")
+    manifest = manager.storage.load_manifest(published["app_id"])
+    manifest.project_id = "resource-project"
+    manifest.project_dir = str(tmp_path)
+    manifest.project_work_mode = "code"
+    manager.storage.save_manifest(published["app_id"], manifest)
     started = await manager.start_app(published["app_id"], "alice")
     assert started is not None
     try:

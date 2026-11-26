@@ -392,7 +392,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   onSummaryChange,
   onArchiveActionsReady,
 }: TrajectoryPanelProps) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
   const sessionTeamMode = mode === 'team';
   // Swarmflow run summaries (task names) for the workflow lane grouping; runs
@@ -920,9 +920,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         }
         if (signal.aborted || !coordinator.isCurrent(generation)) return false;
         if (page.store_epoch !== seeded.storeEpoch) {
-          throw new Error(chinese
-            ? '轨迹保留清理正在进行，请稍后重试。'
-            : 'Trajectory retention is running; retry shortly.');
+          throw new Error(t('trajectory.retentionRunning'));
         }
         checkpointsRef.current = seeded.checkpoints;
         trajectoryV2ReducerRef.current.seed(seeded.checkpoints.v2Seeds);

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import plistlib
 import re
 import shutil
 import socket
@@ -119,6 +120,10 @@ class FakeRegistry:
 
     def delete(self, key: str, name: str) -> None:
         self.values.pop((key, name), None)
+
+    @staticmethod
+    def office_version() -> str | None:
+        return None
 
 
 def _free_port() -> int:
@@ -372,6 +377,54 @@ def test_unwritable_sideload_folder_reports_permission_denied(
 
     assert status.installed is False
     assert "permission_denied" in status.problems
+
+
+def test_an_app_older_than_its_manifest_requires_is_left_out_with_the_version_to_update_to(
+    home: Path, office_dist: Path, listeners: list[TlsListener],
+) -> None:
+    applications = home.parent / "Applications"
+    for app, version in {"powerpoint": "16.95.2", "word": "16.76", "excel": "16.104"}.items():
+        info = applications / HOSTS[app].mac_bundle / "Contents" / "Info.plist"
+        info.parent.mkdir(parents=True)
+        info.write_bytes(plistlib.dumps({"CFBundleShortVersionString": version}))
+    registrations = {app: MacRegistration(home, app, applications) for app in APPS}
+    addins = _mac_addins(home, office_dist, listeners, FakeKeychain(), registrations=registrations)
+
+    status = addins.install("office")
+
+    assert status == SuiteStatus(
+        installed=True, problems=(), required={"powerpoint": "16.96"},
+        apps={"powerpoint": "host_outdated", "word": "installed", "excel": "installed"},
+    )
+    assert not _wef_manifest(home).exists()
+
+    # A version that cannot be read is unknown, and installs.
+    (applications / HOSTS["powerpoint"].mac_bundle / "Contents" / "Info.plist").write_bytes(b"not a plist")
+    assert addins.install("office") == INSTALLED
+
+
+def test_windows_leaves_out_the_apps_its_office_build_is_too_old_for(
+    tmp_path: Path, office_dist: Path, listeners: list[TlsListener],
+) -> None:
+    registry = FakeRegistry()
+    data = tmp_path / "data" / "office-addin"
+    listener = TlsListener(_free_port(), partial(SimpleHTTPRequestHandler, directory=str(office_dist.parent)))
+    listeners.append(listener)
+    addins = OfficeAddins(
+        tls=TlsFiles(data / "tls"),
+        trust=WindowsTrustStore(runner=FakeCertutil()),
+        registrations={app: WindowsRegistration(data, registry, app, lambda: "16.0.17928.20114") for app in APPS},
+        listener=listener,
+        http_origin=HTTP_ORIGIN,
+        office_dist=office_dist,
+        user_id_file=data / "user-id",
+    )
+
+    status = addins.install("office")
+
+    assert status.apps == {"powerpoint": "host_outdated", "word": "installed", "excel": "installed"}
+    assert status.required == {"powerpoint": "2504"}
+    assert registry.get(WindowsRegistration.KEY, HOSTS["powerpoint"].addin_id) is None
 
 
 def test_windows_registers_our_manifest_path_under_our_id(

@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Switch } from '../Switch';
 import { ConfirmDialog } from './ConfirmDialog';
-import { systemPluginApi } from '../../services/extensionsV2Api';
+import { hasOtherEnabledSystemPlugin } from './systemPluginConflict';
 
 interface SystemPluginSwitchProps {
   packageId: string;
@@ -26,8 +26,7 @@ export function SystemPluginSwitch({ packageId, checked, disabled, onChange }: S
     try {
       if (enabled && !confirmed) {
         // Query installed system packages, independent of the visible list/filter.
-        const packages = await systemPluginApi.catalog('mine', true);
-        if (packages.some((pkg) => pkg.installed && pkg.enabled && (pkg.packageId || pkg.id) !== packageId)) {
+        if (await hasOtherEnabledSystemPlugin(packageId)) {
           setConfirm(true);
           return;
         }

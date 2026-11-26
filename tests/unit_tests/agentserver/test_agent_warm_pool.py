@@ -90,6 +90,7 @@ async def test_persist_session_is_create_identity_but_not_warm_key() -> None:
     manager.warm_pool = warm_pool
     manager._session_create_token_lock = asyncio.Lock()
     manager._session_create_tokens = {}
+    manager._session_create_tokens_max = 8192
     params = {
         "channel_id": "web",
         "project_id": "default",

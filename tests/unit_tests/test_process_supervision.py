@@ -6,6 +6,7 @@ import json
 import importlib
 import signal
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import psutil
@@ -43,19 +44,27 @@ def test_application_final_exit_owns_worker_unless_launcher_delegates(
 
     monkeypatch.setattr(utils, "cleanup_stale_openjiuwen_descs", lambda: None)
     monkeypatch.setattr(utils, "prepare_runtime_workspace", lambda **kwargs: None)
+    monkeypatch.setattr(utils, "ensure_gateway_config", lambda **kwargs: None)
     monkeypatch.setattr(sys, "argv", ["jiuwenswarm-app"] + (["--keep-worker"] if keep_worker else []))
     app = importlib.import_module("jiuwenswarm.app")
     order = []
     supervised = []
 
-    def supervise_application(_commands, popen_kwargs, **_kwargs):
-        supervised.append(popen_kwargs)
+    def supervise_application(_commands, popen_kwargs, **kwargs):
+        supervised.append((popen_kwargs, kwargs))
         order.append("fronts-stopped")
         return 0
 
     monkeypatch.setattr(app, "supervise", supervise_application)
     if gateway_config_dir is None:
         monkeypatch.delenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", raising=False)
+        # prepare_local_gateway_config 只在无独立 Gateway 配置且非 AgentOS 时注入
+        # 实例配置目录；固定走注入分支，不依赖运行环境的真实配置文件。
+        import agent_gateway.common.paths as gateway_paths
+
+        monkeypatch.setattr(gateway_paths, "get_config_file",
+                            lambda: Path("<nonexistent>") / "gateway-config.yaml")
+        monkeypatch.setattr(utils, "is_agentos_runtime", lambda: False)
     else:
         monkeypatch.setenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", gateway_config_dir)
     monkeypatch.setattr(app, "begin_system_plugin_recovery_session", lambda: None)
@@ -68,8 +77,11 @@ def test_application_final_exit_owns_worker_unless_launcher_delegates(
         app.main()
     assert result.value.code == expected
     assert order == (["fronts-stopped"] if keep_worker else ["fronts-stopped", "worker-stopped"])
-    expected_config_dir = gateway_config_dir or str(app._env_file.parent)
-    assert supervised[0]["env"]["JIUWENSWARM_GATEWAY_CONFIG_DIR"] == expected_config_dir
+    _popen_kwargs, kwargs = supervised[0]
+    agent_env = kwargs["command_popen_kwargs"]["agentserver"]["env"]
+    assert "JIUWENSWARM_GATEWAY_CONFIG_DIR" not in agent_env
+    gateway_env = kwargs["command_popen_kwargs"]["gateway"]["env"]
+    assert gateway_env["JIUWENSWARM_GATEWAY_CONFIG_DIR"] == str(app.get_gateway_config_dir())
 
 
 class _Clock:
@@ -159,6 +171,25 @@ def _script_children(monkeypatch, clock: _Clock, plans: dict[str, list[tuple[flo
 
     monkeypatch.setattr(process_supervision, "subprocess", SimpleNamespace(Popen=fake_popen))
     return spawned
+
+
+def test_command_specific_popen_kwargs_override_only_selected_child(monkeypatch, clock):
+    seen = {}
+
+    def fake_popen(command, **kwargs):
+        name = command[0]
+        seen[name] = kwargs
+        return _FakeProc(clock, None if name == "gateway" else clock.now + 100, 0)
+
+    monkeypatch.setattr(process_supervision, "subprocess", SimpleNamespace(Popen=fake_popen))
+
+    assert supervise(
+        _COMMANDS,
+        {"env": {"CHILD_ENV": "base"}},
+        command_popen_kwargs={"gateway": {"env": {"CHILD_ENV": "gateway"}}},
+    ) == 0
+    assert seen["agentserver"]["env"] == {"CHILD_ENV": "base"}
+    assert seen["gateway"]["env"] == {"CHILD_ENV": "gateway"}
 
 
 def test_gateway_restart_request_respawns_only_the_gateway(monkeypatch, clock):

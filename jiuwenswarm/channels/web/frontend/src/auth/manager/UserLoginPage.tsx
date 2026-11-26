@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import logoIcon from '/logo.svg';
+import { useWorkSwarmLogo } from '../../features/webui/react/appearanceBrand';
 import { Button } from '../../components/ui/Button/Button';
 import { clearActiveUserCluster, clearManagerTokens, getManagerAccessToken, getManagerRefreshToken } from './authSession';
 import {
@@ -8,12 +8,12 @@ import {
   consumeSilentCallback, endBrowserSession, rememberBrowserSession,
 } from './federation';
 import { AuthApi, type FederationConnection } from './userLogin';
-import { resolveApiUrl } from '../../utils/env';
 import { userWebPaths } from './userWebPaths';
 import './userLogin.css';
 
 export function UserLoginPage() {
   const { i18n, t } = useTranslation();
+  const logo = useWorkSwarmLogo(true);
   const isZh = i18n.language.startsWith('zh');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -44,7 +44,7 @@ export function UserLoginPage() {
         if (route === '/auth/federation/logout') {
           const refresh = getManagerRefreshToken();
           if (refresh) {
-            await fetch(resolveApiUrl('/idp/v1/auth/logout'), {
+            await fetch('/idp/v1/auth/logout', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ refresh_token: refresh }),
@@ -127,7 +127,7 @@ export function UserLoginPage() {
           </Button>
         </div>
         <div className="user-login-title">
-          <img src={logoIcon} alt="JiuwenSwarm" />
+          <img src={logo.src} onError={logo.onError} alt="WorkSwarm" />
           <h1>{t('userLogin.title')}</h1>
         </div>
         <label htmlFor="user-login-username">{t('userLogin.username')}</label>

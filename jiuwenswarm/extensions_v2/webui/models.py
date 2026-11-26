@@ -175,6 +175,13 @@ class ClearFrame:
         return payload
 
 
+def effective_render_props(component: str, props: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Omit URL-only iframe permissions without changing the plugin's props."""
+    if component == "Iframe" and "permissions" in props and "src" not in props:
+        return {name: value for name, value in props.items() if name != "permissions"}
+    return props
+
+
 def node_to_payload(node: RenderNode | None) -> dict[str, Any] | None:
     """Convert a render node into the JSON shape sent to the browser."""
 
@@ -182,7 +189,7 @@ def node_to_payload(node: RenderNode | None) -> dict[str, Any] | None:
         return None
     payload: dict[str, Any] = {
         "component": node.component,
-        "props": _content_to_payload(node.props),
+        "props": _content_to_payload(effective_render_props(node.component, node.props)),
     }
     if node.events is not None:
         payload["events"] = _content_to_payload(node.events)

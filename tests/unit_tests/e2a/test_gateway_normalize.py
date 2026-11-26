@@ -7,14 +7,16 @@ from e2a.constants import E2A_RESPONSE_KIND_PLAN_APPROVAL_REQUIRED
 from e2a.models import E2AEnvelope, E2AResponse
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.gateway_normalize import (
+from e2a.gateway_normalize import (
     E2A_FALLBACK_FAILED_KEY,
     E2A_INTERNAL_CONTEXT_KEY,
     E2A_LEGACY_AGENT_REQUEST_KEY,
     build_fallback_e2a,
     channel_context_for_channel_reply,
-    e2a_from_agent_fields,
     e2a_response_to_agent_chunk,
+)
+from jiuwenswarm.common.e2a.request_wire import (
+    e2a_from_agent_fields,
     message_to_e2a_or_fallback,
     message_to_legacy_agent_dict,
 )
@@ -24,7 +26,7 @@ from jiuwenswarm.common.schema.message import Message, ReqMethod
 @pytest.mark.parametrize("event_type", ["chat.delta", "chat.reasoning", "chat.final", "runtime.accepted"])
 def test_execution_binding_survives_agent_wire_and_web_payload(event_type):
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from e2a.gateway_normalize import e2a_response_from_agent_chunk
     from agent_gateway.channel_manager.web.web_connect import WebChannel
 
     chunk = AgentResponseChunk(
@@ -48,7 +50,7 @@ def test_execution_binding_survives_agent_wire_and_web_payload(event_type):
 )
 def test_cross_session_identity_survives_agent_wire_and_web_payload(event_type, is_complete):
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from e2a.gateway_normalize import e2a_response_from_agent_chunk
     from agent_gateway.channel_manager.web.web_connect import WebChannel
 
     fields = {
@@ -74,7 +76,7 @@ def test_cross_session_identity_survives_agent_wire_and_web_payload(event_type, 
 @pytest.mark.parametrize("event_type", ["chat.delta", "chat.reasoning", "chat.final", "chat.tool_call", "chat.input_received", "chat.output_phase"])
 def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from e2a.gateway_normalize import e2a_response_from_agent_chunk
     from agent_gateway.channel_manager.web.web_connect import WebChannel
 
     fields = {"output_phase_id": "phase-1", "output_suppressed": True,
@@ -97,7 +99,7 @@ def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
 
 def test_proactive_markers_survive_chat_delta_wire_and_web_payload():
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from e2a.gateway_normalize import e2a_response_from_agent_chunk
     from agent_gateway.channel_manager.web.web_connect import WebChannel
 
     fields = {
@@ -152,7 +154,7 @@ def test_message_to_e2a_or_fallback_basic():
 
 
 def test_envelope_from_dict_merges_metadata_when_channel_context_nonempty():
-    """telemetry 等先写入 channel_context 时，顶层 metadata 仍须并入，以便 AgentRequest.metadata 含 wecom_chat_id。"""
+    """Merge legacy metadata without losing existing channel context."""
     env = E2AEnvelope.from_dict(
         {
             "request_id": "r3",
@@ -161,12 +163,12 @@ def test_envelope_from_dict_merges_metadata_when_channel_context_nonempty():
             "params": {"query": "q"},
             "is_stream": True,
             "method": "chat.send",
-            "channel_context": {"traceparent": "00-abc-def-01"},
+            "channel_context": {"channel_marker": "preserved"},
             "metadata": {"wecom_chat_id": "user1"},
         }
     )
     req = e2a_to_agent_request(env)
-    assert req.metadata["traceparent"] == "00-abc-def-01"
+    assert req.metadata["channel_marker"] == "preserved"
     assert req.metadata["wecom_chat_id"] == "user1"
 
 
@@ -293,7 +295,7 @@ def test_e2a_response_to_agent_chunk_plan_approval_required():
 @pytest.mark.parametrize("source", ["org_expert_background", "org_summary_background", "org_root_delivery"])
 def test_organization_identity_survives_protocol_package_roundtrip(entrypoint, event_type, source):
     import e2a
-    from jiuwenswarm.common.e2a import gateway_normalize
+    from e2a import gateway_normalize
     from e2a import wire_codec
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
 
@@ -323,7 +325,7 @@ def test_organization_identity_survives_protocol_package_roundtrip(entrypoint, e
 @pytest.mark.parametrize("payload", [None, {}, {"event_type": "chat.delta", "content": "plain"}])
 def test_non_organization_normalization_keeps_protocol_behavior(payload):
     from e2a import gateway_normalize as protocol
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from e2a.gateway_normalize import e2a_response_from_agent_chunk
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
 
     chunk = AgentResponseChunk(request_id="plain", channel_id="web", payload=payload)

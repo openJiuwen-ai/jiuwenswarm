@@ -60,7 +60,7 @@ ExtensionManager(
 安装、重载和卸载都经过 Core 的报告保护。等待依赖时不占用 Swarm 门面锁；初始化、卸载和停机仍由
 本地锁保护。
 
-无参数的 `/extension query` 按包 ID 显示共享报告中的包。每个包显示 ID、domain 和当前生效版本；
+无参数的 `/extension query` 由 Gateway 合并本地 Gateway 状态与 AgentServer 域状态，再按包 ID 显示。每个包显示 ID、domain 和当前生效版本；
 属于当前进程的包还在同一块中显示运行状态和安装目录。指定包 ID 的查询使用相同的展示规则。
 
 包安装完成后，管理适配器通知已挂载的页面重新发送 `ui.ready`。热重载时，旧代际的视图先发送

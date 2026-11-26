@@ -16,6 +16,10 @@
   background: var(--color-feedback-danger-subtle);
 }
 
+.settings-channels-panel__config-error {
+  margin-bottom: 12px;
+}
+
 .settings-channels-panel__error-toast {
   position: fixed;
   z-index: 100;
@@ -277,6 +281,17 @@
 .settings-channel-dialog .form-dialog__body {
   min-height: 240px;
   max-height: min(600px, calc(100vh - 220px));
+}
+
+.settings-channels-panel__dialog-status {
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  color: var(--color-feedback-danger);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  border: 1px solid var(--color-border-danger);
+  border-radius: var(--radius-md);
+  background: var(--color-feedback-danger-subtle);
 }
 
 .settings-channel-form__hint {

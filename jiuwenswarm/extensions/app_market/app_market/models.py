@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
 MAX_APP_VERSION_CHARS = 32
 _APP_VERSION_PATTERN = re.compile(r"^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]{1,16})?$")
@@ -48,16 +48,36 @@ class AppManifest:
     permissions: list[str] = field(default_factory=list)
     source_session: str | None = None  # 来源会话 ID
     created_at: str = ""
+    pinned: bool = False
     description: str = ""
     icon_url: str = ""
     owner_id: str = ""
     editor_session_id: str = ""
     editor_create_token: str = ""
+    editor_create_pending: bool = False
+    editor_session_ids: list[str] = field(default_factory=list)
     startup_timeout_seconds: int = 30
+    # Distribution provenance. Local registrations keep the defaults so old
+    # manifests load unchanged.
+    source: str = "local"  # "local" | "hub"
+    hub_asset_id: str = ""
+    hub_url: str = ""
+    artifact_sha256: str = ""
+    requires_project: bool = False
+    project_id: str = ""
+    project_dir: str = ""
+    project_work_mode: str = ""
+    local_release_id: str = ""  # Directory ownership retained after Hub conversion.
 
     def __post_init__(self) -> None:
         timeout = self.startup_timeout_seconds
         self.startup_timeout_seconds = min(timeout, 300) if type(timeout) is int and timeout > 0 else 30
+
+    def iter_editor_session_ids(self) -> Iterator[str]:
+        """Include the singular binding from older app manifests."""
+        yield from self.editor_session_ids
+        if self.editor_session_id and self.editor_session_id not in self.editor_session_ids:
+            yield self.editor_session_id
 
 
 @dataclass

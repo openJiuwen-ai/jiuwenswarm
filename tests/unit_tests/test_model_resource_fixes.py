@@ -92,6 +92,65 @@ def test_upsert_preserves_omitted_secret_and_encrypts_rotation(catalog_state, mo
     assert saved["model_client_config"]["api_key"] == "enc:new"
 
 
+def test_upsert_honours_explicit_non_default_on_singleton_group(catalog_state):
+    """#6853: is_default:false must survive the models.upsert round trip."""
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_new",
+        "is_default": False,
+        "model_client_config": {
+            "model_name": "gpt-test",
+            "api_base": "https://example.com/v1",
+            "api_key": "k",
+            "client_provider": "OpenAI",
+        },
+    })
+    assert saved["is_default"] is False
+    assert ModelCatalog().get_public_model_detail("mdl_new")["is_default"] is False
+
+    # Omission still means the only entry of a model_name is its default.
+    config_module.upsert_model_resource({
+        "model_id": "mdl_other",
+        "model_client_config": {
+            "model_name": "gpt-other",
+            "api_base": "https://example.com/v1",
+            "api_key": "k",
+            "client_provider": "OpenAI",
+        },
+    })
+    assert ModelCatalog().get_public_model_detail("mdl_other")["is_default"] is True
+
+
+@pytest.mark.asyncio
+async def test_upsert_treats_blank_temperature_as_unset(catalog_state, monkeypatch):
+    """#6856: models.upsert must not persist or echo a literal empty string."""
+    from jiuwenswarm.common.config_panel import models_handlers
+
+    catalog_state["models"]["defaults"][0]["model_config_obj"] = {"temperature": 0.7}
+
+    saved = config_module.upsert_model_resource(
+        {"model_id": "mdl_a", "model_config_obj": {"temperature": ""}}
+    )
+    assert "temperature" not in saved["model_config_obj"]
+
+    # Flat frontend-style payloads must not raise on float("") either.
+    saved = config_module.upsert_model_resource({"model_id": "mdl_a", "temperature": ""})
+    assert "temperature" not in (saved.get("model_config_obj") or {})
+
+    monkeypatch.setattr(models_handlers, "get_config", lambda: deepcopy(catalog_state))
+    monkeypatch.setattr(
+        models_handlers, "get_default_models", lambda config: config["models"]["defaults"]
+    )
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await models_handlers.models_list_handler(channel, SimpleNamespace(), "r", {}, "s")
+    row = channel.send_response.call_args.kwargs["payload"]["models"][0]
+    assert row["temperature"] is None
+
+    saved = config_module.upsert_model_resource(
+        {"model_id": "mdl_a", "model_config_obj": {"temperature": 0.3}}
+    )
+    assert saved["model_config_obj"]["temperature"] == 0.3
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [False, True])
 async def test_vendor_reset_survives_list_and_detail(catalog_state, monkeypatch, legacy):

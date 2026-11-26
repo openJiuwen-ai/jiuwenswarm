@@ -8,13 +8,13 @@ import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
 import PlusIcon from '../../assets/sidebar/plus.svg?react';
-import logoIcon from '/logo.svg';
 import SettingsIcon from '../../assets/settings/app-navigation/settings.svg?react';
 import UpdateIcon from '../../assets/sidebar/download-update.svg?react';
 import WorkIcon from '../../assets/工作.svg?react';
 import SkillDesignIcon from '../../assets/agent-management/agent-skill.svg?react';
 import AgentDesignIcon from '../../assets/智能体.svg?react';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
+import ReaNavIcon from '../../assets/sidebar/rea.svg';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
 import type {
   ApplicationPluginContribution,
@@ -23,6 +23,7 @@ import type {
 import { EnterpriseContextSwitcher } from './EnterpriseContextSwitcher';
 import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
 import { WebUIHost, WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
+import { SidebarBrandLogo } from './SidebarBrandLogo';
 
 const pluginNavigationStyles: WebUIStyleOverrides = {
   Button: {
@@ -123,11 +124,35 @@ const personalContextNavIcon = (
   </svg>
 );
 
+
+const workspaceNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"
+    />
+  </svg>
+);
+
+/** 7519：「我的申请」文档图标，挂在侧栏底部 spacer 下方，不与工作空间共用文件夹。 */
+const approvalsNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+    />
+  </svg>
+);
+
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
+  { key: 'workspace', labelKey: 'nav.workspace', icon: workspaceNavIcon },
   { key: 'teams', labelKey: 'nav.teams', icon: teamNavIcon },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
+  { key: 'rea', labelKey: 'nav.rea', icon: <img src={ReaNavIcon} alt="" width={16} height={16} /> },
   { key: 'connectorMarket', labelKey: 'nav.connectorMarket', icon: connectorMarketNavIcon },
   { key: 'appMarket', labelKey: 'nav.appMarket', icon: appMarketNavIcon },
   { key: 'experiments', labelKey: 'nav.experiments', icon: experimentsNavIcon },
@@ -181,7 +206,7 @@ export function SessionSidebar({
   return (
     <aside className="sidebar sidebar--icon-rail" data-testid="session-sidebar-rail">
       <div className="icon-rail-logo" data-testid="session-sidebar-logo">
-        <img src={logoIcon} alt="Logo" width="28" height="28" />
+        <SidebarBrandLogo />
       </div>
 
       {showNewSession && (
@@ -226,6 +251,26 @@ export function SessionSidebar({
         styles={pluginNavigationStyles}
       />
       <div className="icon-rail-spacer" />
+
+      {/* 与 7519 一致：申请入口在底部，文档图标，与上方主导航/工作空间分离 */}
+      {!hiddenNavItems.includes('approvals') && (
+        <button
+          type="button"
+          className={`icon-rail-nav-item${activeNav === 'approvals' ? ' icon-rail-nav-item--active' : ''}`}
+          onClick={() => handleNavClick('approvals')}
+          onPointerDownCapture={() => onNavItemPointerDownCapture?.('approvals')}
+          onMouseEnter={() => onNavItemHover?.('approvals')}
+          onMouseLeave={() => onNavItemHover?.(null)}
+          aria-label={t('nav.approvals')}
+          title={t('nav.approvals')}
+          data-testid="session-sidebar-nav-item"
+          data-variant="approvals"
+        >
+          <span className="icon-rail-nav-item__icon">{approvalsNavIcon}</span>
+          <span className="icon-rail-nav-item__label">{t('nav.approvals')}</span>
+        </button>
+      )}
+
       {onToggleJiuwenMate ? (
         <JiuwenMateModeSwitch
           active={false}
