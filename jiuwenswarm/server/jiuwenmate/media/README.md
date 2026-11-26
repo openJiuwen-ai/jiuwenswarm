@@ -1,13 +1,7 @@
 # HyperAgent media
 
-This package prepares channel images and limits vision-tool reads to the current message or session. It does not own task scheduling, channel message delivery, or Issue repair.
+- `feishu_inbound_media.py` validates the source message, downloads its images and cleans up private files.
+- `execution_media.py` resolves authorized message and session images. New channels implement the `InboundMedia` protocol and keep channel API calls in their adapter.
+- `vision_runtime.py` resolves the configured model and passes authorized images to the question-answering and OCR tools.
 
-| Module | Responsibility |
-| --- | --- |
-| `execution_media.py` | Channel adapter protocols, execution-scoped file access, and cancellable media preparation |
-| `vision_runtime.py` | Unified vision configuration resolution and checked VQA/OCR tool invocation |
-| `feishu_inbound_media.py` | Bound-bot authentication, source validation, bounded image download, and cleanup |
-
-`execution_driver.py` owns the lifecycle and passes the scope through invocation extras. `bash_runtime.py` assembles the existing tools with that scope. `welink_inbound.py` remains a channel entry point because it accepts whole messages, not just media.
-
-Channel adapters implement `InboundMedia`; the common execution scope must not depend on a channel API. Import the owning module directly; `__init__.py` does not eagerly register or re-export runtime objects. Media cache paths and persisted reference identifiers are unchanged by this package layout.
+The execution driver owns the media lifetime. The Bash runtime registers the vision tools with the current execution scope.
