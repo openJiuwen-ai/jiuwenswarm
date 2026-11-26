@@ -17151,7 +17151,11 @@ class JiuWenSwarmDeepAdapter:
         session = create_agent_session(
             session_id=session_id,
             card=getattr(self._instance, "card", None),
-            kv_cache_runtime=get_kv_cache_runtime(),
+            kv_cache_runtime=get_kv_cache_runtime(
+                self._config_base_cache
+                if isinstance(self._config_base_cache, dict)
+                else None
+            ),
         )
         await session.pre_run(inputs={})
         await self.install_session_input_guard()

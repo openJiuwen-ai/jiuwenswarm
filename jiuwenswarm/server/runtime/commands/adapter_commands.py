@@ -95,9 +95,12 @@ async def append_command_context(adapter: Any, session_id: str, notes: tuple[str
     session = resolve_live_agent_session(instance, session_id)
     session = session or (context.get_session_ref() if context is not None else None)
     if session is None:
+        cache = getattr(adapter, "_config_base_cache", None)
         session = create_agent_session(
             session_id=session_id, card=getattr(instance, "card", None),
-            kv_cache_runtime=get_kv_cache_runtime(),
+            kv_cache_runtime=get_kv_cache_runtime(
+                cache if isinstance(cache, dict) else None
+            ),
         )
         await session.pre_run(inputs={})
     if context is None:

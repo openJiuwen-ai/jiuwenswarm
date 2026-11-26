@@ -16,7 +16,12 @@ from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_
 
 
 def is_kv_cache_affinity_enabled(config: dict[str, Any] | None = None) -> bool:
-    cfg = config if isinstance(config, dict) else get_config()
+    """企业版：显式 config / 代码默认；个人版：config 或 config.yaml。"""
+    from jiuwenswarm.enterprise.config.effective.apply_advanced_config import (
+        resolve_runtime_config_for_advanced_switches,
+    )
+
+    cfg = resolve_runtime_config_for_advanced_switches(config=config)
     return is_affinity_enabled(cfg)
 
 

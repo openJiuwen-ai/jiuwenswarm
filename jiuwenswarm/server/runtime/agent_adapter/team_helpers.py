@@ -3636,6 +3636,7 @@ async def _start_team_stream_round(
     cross_session_marker: dict[str, Any] | None = None,
     interrupt_input: Any | None = None,
     request: Any | None = None,
+    config_base: dict[str, Any] | None = None,
 ) -> asyncio.Queue | None:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -3690,6 +3691,8 @@ async def _start_team_stream_round(
     stream_kwargs["round_request_id"] = request_id
     if cross_session_marker is not None:
         stream_kwargs["cross_session_marker"] = cross_session_marker
+    if isinstance(config_base, dict):
+        stream_kwargs["config_base"] = config_base
     request_token = _TEAM_STREAM_REQUEST.set(request)
     try:
         stream = _consume_stream_with_query(
@@ -5408,6 +5411,7 @@ async def _process_team_message_stream(
                     ),
                     interrupt_input=interrupt_input,
                     request=request,
+                    config_base=team_runtime_config,
                 )
             except BaseException:
                 _remove_team_waiter(
@@ -5783,6 +5787,7 @@ async def _consume_stream_with_query(
     round_request_id: str | None = None,
     cross_session_marker: dict[str, Any] | None = None,
     interrupt_input: Any | None = None,
+    config_base: dict[str, Any] | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
     _envs = envs or {}
@@ -5926,13 +5931,21 @@ async def _consume_stream_with_query(
             _safe_query_preview(initial_query),
         )
         runner_entered_at = time.monotonic()
+        from jiuwenswarm.enterprise.config.effective.apply_advanced_config import (
+            resolve_runtime_config_for_advanced_switches,
+        )
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
             get_kv_cache_runtime,
         )
 
+        kv_config = (
+            config_base
+            if isinstance(config_base, dict)
+            else resolve_runtime_config_for_advanced_switches()
+        )
         team_session = create_agent_team_session(
             session_id=session_id,
-            kv_cache_runtime=get_kv_cache_runtime(),
+            kv_cache_runtime=get_kv_cache_runtime(kv_config),
         )
         # Interrupt-resume wait state: the no-input runtime stream is driven
         # with a frame budget and an overall budget until the team.recovered

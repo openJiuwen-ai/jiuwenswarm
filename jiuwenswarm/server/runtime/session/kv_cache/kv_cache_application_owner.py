@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from enum import Enum
+from typing import Any
 
 from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
 from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_session_lifecycle_participant import (
@@ -77,15 +78,26 @@ class KVCacheApplicationOwner:
         return self._state is KVCacheApplicationState.CLOSED
 
     @staticmethod
-    def _affinity_enabled() -> bool:
+    def _affinity_config() -> dict[str, Any] | None:
         # Configuration and provider imports stay lazy so KVC OFF has no model
         # construction side effects and remains a cheap, fail-open path.
+        try:
+            from jiuwenswarm.enterprise.config.effective.apply_advanced_config import (
+                resolve_runtime_config_for_advanced_switches,
+            )
+
+            return resolve_runtime_config_for_advanced_switches()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _affinity_enabled() -> bool:
         try:
             from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider import (
                 is_kv_cache_affinity_enabled,
             )
 
-            return is_kv_cache_affinity_enabled()
+            return is_kv_cache_affinity_enabled(KVCacheApplicationOwner._affinity_config())
         except Exception:
             return False
 
@@ -94,7 +106,7 @@ class KVCacheApplicationOwner:
             get_kv_cache_runtime,
         )
 
-        runtime = get_kv_cache_runtime()
+        runtime = get_kv_cache_runtime(self._affinity_config())
         if runtime is None:
             return False
         self._participant = KVCacheSessionLifecycleParticipant(runtime)

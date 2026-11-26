@@ -120,13 +120,15 @@ def test_http_modules_do_not_use_the_websocket_dispatch() -> None:
 
 @pytest.mark.asyncio
 async def test_a4p_config_http_round_trip_without_session(monkeypatch, tmp_path) -> None:
-    from jiuwenswarm.agents.harness.common.a4p import rpc, runtime
+    from jiuwenswarm.agents.harness.common.a4p import rpc
     from jiuwenswarm.common import config
 
     path = tmp_path / "config.yaml"
     path.write_text("a4p:\n  enabled: false\n", encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
-    monkeypatch.setattr(runtime, "get_config", config.get_config_raw)
+    # rpc 直接 import get_config；个人版回读/reconfigure 都走 rpc.get_config。
+    monkeypatch.setattr(rpc, "get_config", config.get_config_raw)
+    monkeypatch.setattr(rpc, "is_enterprise", lambda: False)
     reconfigure = AsyncMock()
     monkeypatch.setattr(rpc, "reconfigure_a4p_runtime", reconfigure)
     transport = httpx.ASGITransport(app=build_http_app(AppServices()))
@@ -143,7 +145,8 @@ async def test_a4p_config_http_round_trip_without_session(monkeypatch, tmp_path)
         {"enabled": False}, {"enabled": True}, {"enabled": True},
     ]
     assert config.get_config_raw()["a4p"]["enabled"] is True
-    reconfigure.assert_awaited_once_with()
+    reconfigure.assert_awaited_once()
+    assert "config" in reconfigure.await_args.kwargs
 
 
 @pytest.mark.asyncio

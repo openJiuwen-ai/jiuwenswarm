@@ -37,11 +37,6 @@ def _stub_db(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         loader.db_queries,
-        "fetch_advanced_config",
-        _fake_advanced_config,
-    )
-    monkeypatch.setattr(
-        loader.db_queries,
         "fetch_templates_by_slot",
         _fake_fetch_templates_by_slot,
     )
@@ -61,10 +56,6 @@ async def _fake_list_records(table: str, *, filters=None, order_by: str = ""):
             }
         ]
     return []
-
-
-async def _fake_advanced_config(agent_template_id: str):
-    return None
 
 
 async def _fake_fetch_templates_by_slot(slot: str, template_ids: list[str]):
@@ -198,6 +189,58 @@ async def test_load_execution_guard_slot_returns_template_row(monkeypatch) -> No
     assert result.execution_guard == [guard_row]
 
 
+def test_advanced_config_table_contract_matches_gateway_pin() -> None:
+    """防漂移：AS 槽位表名须与已安装 agent-gateway 的 template 表一致。"""
+    from jiuwenswarm.enterprise.config.effective.schemas import (
+        ADVANCED_CONFIG_ENTITY_TABLE,
+    )
+
+    try:
+        from agent_gateway.config.enterprise.tables.template_models import (
+            ADVANCED_CONFIG_TEMPLATE_TABLE_DEF,
+        )
+    except ImportError as exc:  # pragma: no cover - pin 过旧时显式失败
+        raise AssertionError(
+            "pinned agent-gateway lacks advanced_config_template; "
+            "upgrade pyproject/uv.lock to a gateway rev that registers the table"
+        ) from exc
+
+    assert ADVANCED_CONFIG_ENTITY_TABLE == ADVANCED_CONFIG_TEMPLATE_TABLE_DEF.table_name
+    column_names = {col.name for col in ADVANCED_CONFIG_TEMPLATE_TABLE_DEF.columns}
+    assert "template_id" in column_names
+    assert "enabled" in column_names
+
+
+@pytest.mark.asyncio
+async def test_load_degrades_when_advanced_config_query_fails(monkeypatch) -> None:
+    """advanced_config_template 表未建时跳过该槽位，其余槽位仍加载。"""
+    _stub_db(monkeypatch)
+
+    async def _advanced_query_boom(slot: str, template_ids: list[str]):
+        if slot == "advanced_config":
+            raise RuntimeError("no such table: advanced_config_template")
+        if slot == "mcp":
+            return [{"template_id": "m1", "data": {}}]
+        return []
+
+    monkeypatch.setattr(
+        loader.db_queries, "fetch_templates_by_slot", _advanced_query_boom
+    )
+    monkeypatch.setattr(
+        loader.db_queries,
+        "list_records",
+        _fake_list_records_with_refs({"advanced_config": ["ac1"], "mcp": ["m1"]}),
+    )
+
+    result = await load_effective_enterprise_config(
+        _request(), DEFAULT_AGENT_LOAD_SLOTS
+    )
+
+    assert result is not None
+    assert result.advanced_config is None
+    assert result.mcp == [{"template_id": "m1", "data": {}}]
+
+
 @pytest.mark.asyncio
 async def test_load_with_mixed_enum_and_str_slots(monkeypatch) -> None:
     """混合槽位集合（枚举 + react 裸字符串）能完整走通加载流程。
@@ -218,6 +261,7 @@ async def test_load_with_mixed_enum_and_str_slots(monkeypatch) -> None:
     # load_slots 已收敛为字符串集合
     assert "react" in result.debug["load_slots"]
     assert "execution_guard" in result.debug["load_slots"]
+    assert "advanced_config" in result.debug["load_slots"]
 
 
 @pytest.mark.asyncio

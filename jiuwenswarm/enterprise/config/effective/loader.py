@@ -14,6 +14,8 @@ from jiuwenswarm.common.utils import logger
 
 from . import db_queries
 from .schemas import (
+    ADVANCED_CONFIG_ENTITY_TABLE,
+    ADVANCED_CONFIG_SLOT,
     DEFAULT_AGENT_LOAD_SLOTS,
     EXECUTION_GUARD_ENTITY_TABLE,
     EXECUTION_GUARD_SLOT,
@@ -62,6 +64,8 @@ def _apply_slot_entities(
         result.react = entities
     elif slot == EXECUTION_GUARD_SLOT:
         result.execution_guard = entities
+    elif slot == ADVANCED_CONFIG_SLOT:
+        result.advanced_config = entities
     elif slot == TemplateRefSlot.A2A_ACCESS_POLICY:
         result.a2a_access_policy = entities
 
@@ -86,6 +90,8 @@ def _any_requested_slot_loaded(
         if slot == REACT_SLOT and result.react is not None:
             return True
         if slot == EXECUTION_GUARD_SLOT and result.execution_guard is not None:
+            return True
+        if slot == ADVANCED_CONFIG_SLOT and result.advanced_config is not None:
             return True
         if (
             slot == TemplateRefSlot.A2A_ACCESS_POLICY
@@ -243,6 +249,9 @@ class TemplateEntityCache:
         elif slot == EXECUTION_GUARD_SLOT:
             # e2a 协议包尚未登记 EXECUTION_GUARD 槽位，仓内字符串接线。
             table = EXECUTION_GUARD_ENTITY_TABLE
+        elif slot == ADVANCED_CONFIG_SLOT:
+            # e2a 协议包尚未登记 ADVANCED_CONFIG 槽位，仓内字符串接线。
+            table = ADVANCED_CONFIG_ENTITY_TABLE
         else:
             try:
                 slot_key = TemplateRefSlot(slot)
@@ -504,6 +513,7 @@ async def load_effective_enterprise_config(
                 TemplateRefSlot.A2A_ACCESS_POLICY,
                 REACT_SLOT,
                 EXECUTION_GUARD_SLOT,
+                ADVANCED_CONFIG_SLOT,
             ):
                 raise
             logger.warning(
@@ -518,20 +528,6 @@ async def load_effective_enterprise_config(
         if entities:
             _apply_slot_entities(result, slot, entities)
 
-    try:
-        result.advanced_config = await db_queries.fetch_advanced_config(
-            ref_template_id
-        )
-    except Exception:
-        logger.warning(
-            "[enterprise_config] advanced_config load failed: resource_id=%r "
-            "agent_template_id=%r",
-            rid,
-            ref_template_id,
-            exc_info=True,
-        )
-        result.advanced_config = None
-
     if not _any_requested_slot_loaded(result, load_slots):
         logger.warning(
             "[enterprise_config] no template entities loaded for resource_id=%r "
@@ -543,16 +539,17 @@ async def load_effective_enterprise_config(
         )
         return None
 
+    a4p_enabled_log = None
+    if result.advanced_config:
+        first = result.advanced_config[0]
+        if isinstance(first, dict):
+            a4p_enabled_log = first.get("a4p_enabled")
     logger.info(
         "[enterprise_config] loaded enterprise config by resource_id=%r slots=%s "
         "a4p_enabled=%s",
         rid,
         sorted(load_slots),
-        (
-            result.advanced_config.get("a4p_enabled")
-            if isinstance(result.advanced_config, dict)
-            else None
-        ),
+        a4p_enabled_log,
     )
     return result
 

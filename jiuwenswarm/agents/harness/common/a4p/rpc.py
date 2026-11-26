@@ -18,7 +18,7 @@ from jiuwenswarm.agents.harness.common.a4p.runtime import (
     is_a4p_enabled,
     reconfigure_a4p_runtime,
 )
-from jiuwenswarm.common.config import update_a4p_in_config
+from jiuwenswarm.common.config import get_config, update_a4p_in_config
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.enterprise.edition import is_enterprise
@@ -67,16 +67,30 @@ async def _dispatch_config(request: AgentRequest) -> AgentResponse:
     async with _CONFIG_LOCK:
         try:
             if request.req_method == ReqMethod.A4P_CONFIG_UPDATE:
+                # 企业版 a4p.enabled 权威源是 advanced_config 模板 / 代码默认，
+                # 禁止运行时 RPC 改进程 yaml，避免「写成功、回读错乱、运行时不生效」。
+                if is_enterprise():
+                    return _err(
+                        request,
+                        "Enterprise A4P enabled is managed by advanced_config "
+                        "templates in Manager; runtime RPC updates are not allowed",
+                        code="FORBIDDEN",
+                    )
                 update_a4p_in_config(updates)
                 try:
-                    await reconfigure_a4p_runtime()
+                    await reconfigure_a4p_runtime(config=get_config())
                 except Exception as exc:  # noqa: BLE001
                     return _err(
                         request,
                         f"A4P config saved but runtime reconfiguration failed: {exc}",
                         code="A4P_CONFIG_APPLY_FAILED",
                     )
-            config = get_a4p_config()
+            # 个人版回读进程 config，保证 set 后写读一致；企业版 GET 走 resolve
+            #（无 session 时为代码默认 / 全量基底覆盖后的 enabled）。
+            if is_enterprise():
+                config = get_a4p_config()
+            else:
+                config = get_a4p_config(config=get_config())
             return _ok(request, {key: bool(config.get(key, False)) for key in _CONFIG_FIELDS})
         except Exception as exc:  # noqa: BLE001
             return _err(request, str(exc), code="INTERNAL_ERROR")

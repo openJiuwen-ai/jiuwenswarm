@@ -32,7 +32,7 @@ design_note: 2026-11-25 已确认的企业执行护栏配置方案。本仓没�
 
 ## 决策归属与关系
 
-新决定。此前企业模型套用会把模型行的 `retry_count` 写入异常护栏的 `transient_max_retries`，并强制打开该护栏。该路径已删除。护栏开关和 `transient_max_retries` 只来自执行护栏模板；未套用模板时沿用 `config.yaml` 的 `execution_guard`。
+新决定。此前企业模型套用会把模型行的 `retry_count` 写入异常护栏的 `transient_max_retries`，并强制打开该护栏。该路径已删除。护栏开关和 `transient_max_retries` 只来自执行护栏模板；未套用模板、行禁用或 body 非法时套用代码写死的 `DEFAULT_EXECUTION_GUARD_BODY`（数值对齐包内 yaml，不读取 yaml）。
 
 ## 上下文与跨边界影响（按需）
 
@@ -40,7 +40,7 @@ design_note: 2026-11-25 已确认的企业执行护栏配置方案。本仓没�
 
 消费者是企业版配置合并后的内存快照。`interface_deep` 与 `member_rails` 仍从 `execution_guard.model_anomaly_detection_rail` 读异常护栏；断路器仍只在 Deep Agent 上从 `execution_guard.circuit_breaker` 构造。算法、CUA 写死的 `ModelAnomalyDetectionRail()`、`config.yaml` 默认值都没有改。
 
-查询失败、未绑定、行禁用或 body 非法时保留 YAML，不让这次加载失败。Gateway 写入不会清本仓缓存：模板行缓存默认 3600 秒，Agent 模板绑定缓存 600 秒，每个 AgentServer 进程一份。个人版在 `ConfigSource.YAML` 时不进入企业套用。
+查询失败时跳过该槽位并在套用阶段回落代码默认，不让这次加载失败。未绑定、行禁用或 body 非法时同样套代码默认，不依赖 yaml。Gateway 写入不会清本仓缓存：模板行缓存默认 3600 秒，Agent 模板绑定缓存 600 秒，每个 AgentServer 进程一份。个人版在 `ConfigSource.YAML` 时不进入企业套用。
 
 配套 Gateway 变更是 agent-gateway !365（检视时核对：表名 `execution_guard_template`，校验副本与本仓字段集一致，仅 docstring 措辞不同）。本仓可以先合入；表尚未创建时该槽位降级，其他槽位继续加载。
 
@@ -48,10 +48,10 @@ design_note: 2026-11-25 已确认的企业执行护栏配置方案。本仓没�
 
 - 槽位键是本地字符串 `execution_guard`，表名 `execution_guard_template`。`e2a.template_slots` 还没有这个枚举。`normalize_template_ref` 会保留未知字符串键，接线方式与 react 相同，不改 e2a。
 - 套用放在模型与 MCP 之后、凭据等其余企业策略之前。模型套用不再创建或修改 `execution_guard`。
-- body 合法时深拷贝整份配置，用校验后的 body 整段替换 `execution_guard`，不写回 `config.yaml`。不与 YAML 做深度合并：模板是完整快照，避免 YAML 里多出来的键继续生效。react 的深度合并只适用于「模型槽位键从 react data 里丢掉」那种补丁，不用于本槽位。
-- 多个模板只取第一个，并打 warning。行上 `enabled is False` 才视为禁用并保留 YAML；`None`、`0` 和其他真值视为启用，避免 MariaDB `tinyint` 1 被当成关闭。非法 body 打 error（带 `exc_info`）后保留 YAML，不把护栏构造器变成返回空。
-- 校验是字段白名单，缺字段和未知键都拒绝。整数拒绝布尔。`repeat_window_chars` 不得低于 `max(repeat_max_pattern_chars * repeat_min_count, repeat_min_total_chars, single_char_repeat_count)`。`critical_threshold` 不得小于 `warning_threshold`。默认值与当前 `config.yaml` 相同；YAML 没有 `transient_max_retries`，默认 3，与构造器缺省一致。`transient_base_delay_seconds`、`backoff_seconds` 不进入模板。
-- `retry_count` 仍写入 `model_client_config.max_retries`，因为模型行上该列还在。SDK 重试仍固定为 0，没有任何护栏读取这个 `max_retries`。不再用它改 `transient_max_retries`，也不再强制打开异常护栏。未绑定护栏模板时异常护栏保持 YAML 的 `enabled: true`，断路器保持 `enabled: false`。
+- 企业路径先深拷贝配置，再写入 `execution_guard`：有合法模板 body 则整段替换，否则整段套 `DEFAULT_EXECUTION_GUARD_BODY`。不写回 `config.yaml`，也不与 yaml 深度合并。
+- 多个模板只取第一个，并打 warning。行上 `enabled is False` 才视为禁用并回落代码默认；`None`、`0` 和其他真值视为启用，避免 MariaDB `tinyint` 1 被当成关闭。非法 body 打 error（带 `exc_info`）后回落代码默认。
+- 校验是字段白名单，缺字段和未知键都拒绝。整数拒绝布尔。`repeat_window_chars` 不得低于 `max(repeat_max_pattern_chars * repeat_min_count, repeat_min_total_chars, single_char_repeat_count)`。`critical_threshold` 不得小于 `warning_threshold`。代码默认与当前包内 yaml 数值相同；yaml 没有 `transient_max_retries`，默认 3。`transient_base_delay_seconds`、`backoff_seconds` 不进入模板。
+- `retry_count` 仍写入 `model_client_config.max_retries`，因为模型行上该列还在。SDK 重试仍固定为 0，没有任何护栏读取这个 `max_retries`。不再用它改 `transient_max_retries`，也不再强制打开异常护栏。未绑定护栏模板时异常护栏为代码默认 `enabled: true`，断路器为 `enabled: false`。
 
 ## 与设计的偏差
 
@@ -65,11 +65,11 @@ design_note: 2026-11-25 已确认的企业执行护栏配置方案。本仓没�
 | 2026-11-25 槽位加载 | 本机 Windows，`jiuwenswarm/.venv` | `python -m pytest tests/unit_tests/enterprise/config/test_effective_loader_slots.py -o addopts=` | 6 passed | 只覆盖这个文件 |
 | 2026-11-25 企业环境对话 | 命名空间 `hjh`，Gateway 库 `gateway_hjh`，AgentServer `gateway.log` | 模板 `222` 断路器关闭，再改绑模板 `333` 并打开断路器后新对话 | 日志先后出现 `breaker_enabled=False`、`breaker_enabled=True` | 同一对话会打多条 applied，因为创建实例、模型预热、MCP 加载都会走套用；不表示每次都查库 |
 
-套用测试覆盖了未绑定保留 YAML、合法 body 整段替换且不写文件、非法 body 回落、禁用行、多模板取第一个，以及护栏套用晚于模型套用。正向加载测试要求 `fetch_templates_by_slot` 以 `execution_guard` 被调用，并把该行放到 `result.execution_guard`。降级测试要求表查询失败时该槽位为空、MCP 仍在。
+套用测试覆盖了未绑定套代码默认、合法 body 整段替换且不写文件、非法 body 回落代码默认、禁用行、多模板取第一个，以及护栏套用晚于模型套用。正向加载测试要求 `fetch_templates_by_slot` 以 `execution_guard` 被调用，并把该行放到 `result.execution_guard`。降级测试要求表查询失败时该槽位为空、MCP 仍在。
 
 ### 可见行为、副作用与证据有效范围
 
-用户可见结果是企业版对话使用的护栏开关和重试次数。未绑定、禁用或 body 非法时与只改 `config.yaml` 相同。绑定并下发成功时，以 Gateway 行的 body 为准。
+用户可见结果是企业版对话使用的护栏开关和重试次数。未绑定、禁用或 body 非法时使用代码默认（数值对齐包内 yaml，但不读 yaml）。绑定并下发成功时，以 Gateway 行的 body 为准。
 
 上述集群证据只说明当时那次对话读到了模板 `222` 和后来的 `333`。它不覆盖缓存过期前的旧绑定、多副本 AgentServer 各持一份缓存，也不覆盖个人版。单测使用假 DB，不证明 Gateway 表结构。
 
@@ -77,7 +77,7 @@ design_note: 2026-11-25 已确认的企业执行护栏配置方案。本仓没�
 
 ## 验证结论
 
-- 已证明范围：合法 body 会替换内存中的 `execution_guard` 且不写 YAML；未绑定、禁用、非法 body、查询失败都保留 YAML 或跳过该槽位。槽位字符串能进入加载。企业环境一次改绑后，新对话日志中的断路器开关与库中模板一致。
+- 已证明范围：合法 body 会替换内存中的 `execution_guard` 且不写 YAML；未绑定、禁用、非法 body 回落代码默认；查询失败跳过该槽位。槽位字符串能进入加载。企业环境一次改绑后，新对话日志中的断路器开关与库中模板一致。
 - 未覆盖或未通过的承诺：三份校验器（本仓、Gateway、Manager）没有跨仓 CI。缓存失效和多副本不一致没有自动化用例。
 - 可支持的交付判断：本仓加载与套用符合 2026-11-25 设计。Gateway 表未就绪时本仓空转降级，闭环要等 Gateway 建表和 Manager 下发。
 

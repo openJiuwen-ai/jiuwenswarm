@@ -2899,13 +2899,18 @@ async def _ensure_dynamic_member_execution_loop(
             try:
                 from openjiuwen.core.runner import Runner
                 from openjiuwen.core.session.agent_team import create_agent_team_session
+                from jiuwenswarm.enterprise.config.effective.apply_advanced_config import (
+                    resolve_runtime_config_for_advanced_switches,
+                )
                 from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
                     get_kv_cache_runtime,
                 )
 
                 team_session = create_agent_team_session(
                     session_id=sid,
-                    kv_cache_runtime=get_kv_cache_runtime(),
+                    kv_cache_runtime=get_kv_cache_runtime(
+                        resolve_runtime_config_for_advanced_switches()
+                    ),
                 )
                 await Runner.run_agent_team(
                     teammate_agent,
