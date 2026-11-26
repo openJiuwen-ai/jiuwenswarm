@@ -201,8 +201,14 @@ def stage_local_asset(params: Any, *, limits: ArchiveLimits = ArchiveLimits()) -
     来源侧校验（本机真实文件、非符号链接、绝对路径），文件名/格式/体积
     防护与暂存落位走 ``staging.store_staged_package``——与 upload-temp
     同一实现、同一暂存根，返回 ``{path}`` 供前端统一调 ``assets.import``。
-    信任模型与其替代的旧专家/专家团导入接口一致：只接受本机真实文件，
-    不取 URL，不跟随符号链接。
+
+    接受任意本机绝对路径是有意设计，不视为越权面扩大：本 RPC 与被它替代
+    的旧 ``agent_templates.import_local`` 同属本机管理面信任模型（详情页
+    文件读取等既有 RPC 同样按客户端给出的路径读服务端文件），未引入既有
+    RPC 面之外的新能力；且此处只收紧不放松——仅 .zip、拒符号链接、限额、
+    复制入受控暂存根后 ``assets.import`` 只读暂存根，不再触碰原路径。
+    远程部署若需收口「任意路径」类入参，应作为覆盖整个管理面 RPC 的
+    统一加固任务（来源门控/白名单），不在本入口单点处理。
     """
     parsed = parse_stage_local_params(params)
     source = Path(parsed["path"])
