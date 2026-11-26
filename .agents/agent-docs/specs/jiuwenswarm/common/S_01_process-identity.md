@@ -23,7 +23,7 @@ files:
 
 # 受限系统进程身份与 PID 重用校验
 
-最近修订日期：2026-11-25。
+最近修订日期：2026-11-26。
 
 ## 范围与事实源
 
@@ -81,4 +81,4 @@ debug 兼容旧时间戳记录；OAuth 兼容旧纯 PID 文件的时间校验。
 - `tests/unit_tests/agentserver/test_worker_process_identity.py`：权限拒绝、不同端权限、PID 重用、HELLO 和清理。
 - `tests/unit_tests/server/test_runtime_owner_identity.py`：旧 owner 记录及保守失败。
 - `tests/unit_tests/common/test_process_identity_contracts.py`：debug/OAuth 未知状态、信号前重验及异常类型兼容。
-- [本次故障与验证](../../../bugfix/jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md)。
+- [修复与验证记录](https://gitcode.com/openJiuwen/jiuwenswarm/merge_requests/10796)。

@@ -37,7 +37,6 @@ generated: true
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
-| [jiuwenswarm/instance_manager](#module-jiuwenswarm-instance_manager) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-advanced-daily-report) |
@@ -46,18 +45,15 @@ generated: true
 | [jiuwenswarm/server](#module-jiuwenswarm-server) |
 | [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
 | [jiuwenswarm/server/ipc](#module-jiuwenswarm-server-ipc) |
-| [jiuwenswarm/server/jiuwenmate](#module-jiuwenswarm-server-jiuwenmate) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
-| [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
 | [jiuwenswarm/server/supervisor](#module-jiuwenswarm-server-supervisor) |
 | [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
 | [scripts](#module-scripts) |
 | [tests/fixtures/ttse_plugin](#module-tests-fixtures-ttse_plugin) |
 | [tests/unit_tests/agentserver](#module-tests-unit_tests-agentserver) |
-| [tests/unit_tests/common](#module-tests-unit_tests-common) |
 | [tests/unit_tests/gateway](#module-tests-unit_tests-gateway) |
 | [tests/unit_tests/personal_context](#module-tests-unit_tests-personal_context) |
 | [tests/unit_tests/server](#module-tests-unit_tests-server) |
@@ -148,7 +144,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
-| [B_20261123_1757_harmony-process-identity](jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-desktop"></a>
 
@@ -253,7 +248,6 @@ generated: true
 | [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 | [B_20261120_1735_upsert-empty-temperature](jiuwenswarm/common/B_20261120_1735_upsert-empty-temperature.md) | B | models.upsert 将空串 temperature 原样落库，与文档约定的空串转 null 不符 | openjiuwen_ai | 无独立 D：仅统一 upsert 与 replace_all 对空串 temperature 的归一化口径，不改模型配置结构与合并语义；无独立设计。 |
 | [B_20261121_0108_pypi-update-version-baseline](jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
-| [B_20261123_1757_harmony-process-identity](jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
 | [B_20261124_2201_rea-npx-readiness](jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
@@ -284,14 +278,6 @@ generated: true
 | [B_20261105_1459_web-url-host-403](jiuwenswarm/extensions/app_market/web-url-host-403.md) | B | Web 应用入口 403：静态服务未放行应用专属 localhost 主机 | kdgmpw | 无独立 D：依据 S_02_app-market-stop-and-page-lifecycle 的 Web 入口与来源隔离契约；本次修复使实现重新满足既有契约，无独立 D。 |
 | [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 | [B_20261124_1429_local-app-removal-and-conversion](jiuwenswarm/extensions/app_market/B_20261124_1429_local-app-removal-and-conversion.md) | B | 应用市场本地清理和 Hub 转换的一致性 | kdgmpw | 无独立 D：本次修正应用市场登记、目录归属与转换行为，沿用 S_03 契约和现有项目接口，无独立设计。 |
-
-<a id="module-jiuwenswarm-instance_manager"></a>
-
-## jiuwenswarm/instance_manager
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261123_1757_harmony-process-identity](jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
 
 <a id="module-jiuwenswarm-resources-agent-workspace-skills"></a>
 
@@ -363,14 +349,6 @@ generated: true
 |---|---|---|---|---|
 | [B_20261110_1042_issue6191-ipc-recovery](jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
 
-<a id="module-jiuwenswarm-server-jiuwenmate"></a>
-
-## jiuwenswarm/server/jiuwenmate
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261123_1757_harmony-process-identity](jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
-
 <a id="module-jiuwenswarm-server-runtime"></a>
 
 ## jiuwenswarm/server/runtime
@@ -401,14 +379,6 @@ generated: true
 |---|---|---|---|---|
 | [B_20261116_2059_hub-package-root](jiuwenswarm/server/runtime/B_20261116_2059_hub-package-root.md) | B | Hub 安装把包内子资产 manifest 误判为多个包根 | openjiuwen_ai | 无独立 D：仅修正包根识别的深度判定，不改变 Hub 包格式、安装状态机与 marketplace 契约；无独立设计。 |
 
-<a id="module-jiuwenswarm-server-runtime-session"></a>
-
-## jiuwenswarm/server/runtime/session
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261123_1757_harmony-process-identity](jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
-
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 
 ## jiuwenswarm/server/runtime/skill
@@ -428,7 +398,6 @@ generated: true
 |---|---|---|---|---|
 | [B_20261107_1505_6226-forwarding-replay](jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 | [B_20261110_1042_issue6191-ipc-recovery](jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
-| [B_20261123_1757_harmony-process-identity](jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
 
 <a id="module-jiuwenswarm-server-worker"></a>
 
@@ -437,7 +406,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261105_1518_worker-dispatch-slot-accounting](jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
-| [B_20261123_1757_harmony-process-identity](jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
 
 <a id="module-scripts"></a>
 
@@ -466,15 +434,6 @@ generated: true
 | [B_20261031_1048_ttse-core-dependent-ut](tests/unit_tests/agentserver/B_20261031_1048_ttse-core-dependent-ut.md) | B | 暂时移除依赖未合入 core 工厂能力的插件 UT | xinyang_bali | 无独立 D：用户明确要求暂时删除依赖 core 的相关 UT，不调整依赖或运行实现，无独立 D。 |
 | [B_20261116_1701_my-plugin-installed-only](jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [B_20261117_1050_adapter-ut-fixtures](tests/unit_tests/agentserver/B_20261117_1050_adapter-ut-fixtures.md) | B | 图片降级提示与付费搜索 UT 的测试替身和断言漂移 | TwZhang | 无独立 D：根据用户提供的 UT 报告修正测试替身及副作用断言，无独立设计。 |
-| [B_20261125_0908_socket-diagnostics-ut-sync](tests/unit_tests/agentserver/B_20261125_0908_socket-diagnostics-ut-sync.md) | B | Socket 写锁诊断 UT 的跨线程就绪同步 | 刘瑜 | 无独立 D：修复既有诊断测试的跨线程前置条件，保持真实传输和行为断言，无独立设计。 |
-
-<a id="module-tests-unit_tests-common"></a>
-
-## tests/unit_tests/common
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261124_1812_auth-callback-ut-race](tests/unit_tests/common/B_20261124_1812_auth-callback-ut-race.md) | B | 登录回调 UT 的后台轮询时序竞态 | 刘瑜 | 无独立 D：修复既有异步登录测试的时序假设，保持认证接口和实现不变，无独立设计。 |
 
 <a id="module-tests-unit_tests-gateway"></a>
 
