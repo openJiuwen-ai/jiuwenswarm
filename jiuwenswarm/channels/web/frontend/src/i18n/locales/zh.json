@@ -4706,6 +4706,8 @@
       "skillNetInstallFailedHint": "SkillNet 安装失败，请检查 skill URL 或依赖",
       "importFailed": "导入失败",
       "importFailedHint": "导入失败，请检查路径或权限",
+      "localSkillUploadDisabled": "当前 Agent 配置模板未开启「上传本地Skill」。",
+      "localSkillUploadUnavailable": "无法确认当前 Agent 配置，请稍后重试。",
       "knowledgeSkillExists": "技能「{{name}}」已存在，请更换名称或先卸载后再试",
       "knowledgeSkillExistsGeneric": "同名技能已存在，请更换名称或先卸载后再试",
       "uploadFailed": "文件上传失败，请重试",

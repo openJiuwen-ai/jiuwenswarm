@@ -4709,6 +4709,8 @@
       "skillNetInstallFailedHint": "SkillNet install failed. Check the skill URL or dependencies.",
       "importFailed": "Import failed",
       "importFailedHint": "Import failed. Check the path or permissions.",
+      "localSkillUploadDisabled": "Local Skill upload is not enabled for this Agent template.",
+      "localSkillUploadUnavailable": "Could not verify the current Agent configuration. Please try again later.",
       "knowledgeSkillExists": "Skill \"{{name}}\" already exists. Use another name or uninstall it first.",
       "knowledgeSkillExistsGeneric": "A skill with this name already exists. Use another name or uninstall it first.",
       "uploadFailed": "File upload failed. Please try again.",
