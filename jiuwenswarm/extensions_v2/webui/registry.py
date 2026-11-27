@@ -94,11 +94,11 @@ class ActiveRenderRegistry:
             # must not share the per-slot cap.
             async with self._lock_for(_slot_capacity_key(target)):
                 instance = self._instances.get(target.key)
-                if create and instance is None and max_instances is not None and self._count_slot(target) >= max_instances:
+                created = create and instance is None
+                if created and max_instances is not None and self._count_slot(target) >= max_instances:
                     yield RenderClaim(instance=RenderInstance(target=target), rejected=True)
                     return
                 evicted = self._evict_candidates(target) if create else ()
-                created = create and instance is None
                 if instance is None:
                     revision = self._revisions.get(target.key, (target, 0))[1] if _retains_revision(target) else 0
                     instance = RenderInstance(target=target, revision=revision)
@@ -220,12 +220,11 @@ class ActiveRenderRegistry:
     def _count_slot(self, target: RenderTarget) -> int:
         """Count instances for one slot in the caller's capacity group."""
 
-        return sum(
-            1
-            for instance in self._instances.values()
-            if instance.target.slot_id == target.slot_id
-            and _same_capacity_group(instance.target, target)
-        )
+        count = 0
+        for instance in self._instances.values():
+            if instance.target.slot_id == target.slot_id and _same_capacity_group(instance.target, target):
+                count += 1
+        return count
 
     def _evict_candidates(self, target: RenderTarget) -> tuple[RenderInstance, ...]:
         """Select the oldest instances in the capacity group for removal after delivery."""
