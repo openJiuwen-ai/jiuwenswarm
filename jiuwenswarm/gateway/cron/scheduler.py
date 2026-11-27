@@ -484,12 +484,53 @@ class CronSchedulerService:
         # 不应被误判为运行期而恢复原先要避免的重复执行风险。
         self._boot_time = self._now_fn()
         try:
-            await self._store.list_run_records()
+            rows = await self._store.list_run_records()
         except Exception:
             logger.exception("[Cron] 执行记录迁移失败，保留原文件，后续查询或启动重试")
+            rows = []
+        try:
+            await self._reclaim_orphan_runs(rows)
+        except Exception:
+            logger.exception("[Cron] 孤儿 running 记录回收失败，保留原文件")
         await self.reload()
         self._task = asyncio.create_task(self._loop(), name="cron-scheduler")
         logger.info("[Cron] scheduler started")
+
+    async def _reclaim_orphan_runs(self, rows: list[dict]) -> None:
+        """启动时回收崩溃/硬杀遗留的 running 记录（问题3 / TC-PROP-H03 ①）。
+
+        仅由 start() 调用——此刻 _loop 尚未创建、内存 _runs 为空，任何
+        status=="running" 且无 finishedAt 的记录都必然来自上一个已死进程
+        （唯一落终态的写入在 _run_agent 的 finally 里，taskkill /F 硬杀会跳过它），
+        不可能是在飞行的活 run。活 run 只会出现在运行期 reload()，故本方法
+        **绝不可挂到 reload()**——否则会把活 run 误判成孤儿、错误落 failed。
+
+        落 failed 终态并打 [orphaned_by_restart] 标记，使 cron.run.list 不再
+        返回永久 running 僵尸。与崩溃恢复 grace 机制（_on_wake 已决定"宁可丢
+        结果"不重跑）互补：这里只补记录侧收尾，不重排 wake/push。
+        """
+        if not rows:
+            return
+        boot_ms = int(self._boot_time * 1000)
+        mark = " [orphaned_by_restart]"
+        swept = 0
+        for r in rows:
+            if (
+                r.get("status") == "running"
+                and not r.get("finishedAt")
+                and int(r.get("startedAt", 0)) < boot_ms
+                and mark not in str(r.get("summary") or "")
+            ):
+                r["status"] = "failed"
+                r["finishedAt"] = boot_ms
+                r["summary"] = str(r.get("summary") or "") + mark
+                await self._store.save_run_record(r)
+                swept += 1
+        if swept:
+            logger.info(
+                "[Cron] 重启回收孤儿 running 记录 %d 条 → failed[orphaned_by_restart]",
+                swept,
+            )
 
     async def stop(self) -> None:
         self._running = False

@@ -2700,3 +2700,81 @@ class TestUnaryEmptyFinalAnswerClassification:
         assert back.ok is True
         assert back.payload.get("empty_final_answer") is True
         assert back.payload.get("content") == ""
+
+
+# ── 孤儿 running 记录回收（问题3 / TC-PROP-H03 ①）────────────────────────────
+
+
+class TestOrphanRunReclaim:
+    """start() 回收硬杀/崩溃遗留的 running 记录；reload() 绝不回收（活 run 保护）。"""
+
+    @staticmethod
+    def _rec(rid, started_at, status="running", **extra):
+        return {
+            "id": rid, "taskId": "job", "taskName": "僵尸巡检", "scope": "my-pc",
+            "startedAt": started_at, "status": status, **extra,
+        }
+
+    @pytest.mark.asyncio
+    async def test_start_sweeps_orphan_running_to_failed(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        (tmp_path / "cron_run_records.json").write_text(
+            json.dumps([self._rec("job:1", 1_000)]), encoding="utf-8")
+        svc = _make_scheduler(store)
+        await svc.start()
+        await svc.stop()
+        rows = await CronJobStore(path=store.path).list_run_records()
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["status"] == "failed"
+        assert r["finishedAt"] >= int(svc.boot_time * 1000)
+        assert "[orphaned_by_restart]" in r["summary"]
+
+    @pytest.mark.asyncio
+    async def test_start_only_sweeps_stale_running(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        future_ms = int(time.time() * 1000) + 3_600_000
+        rows_in = [
+            self._rec("job:stale", 1_000),                                   # 孤儿 → 扫
+            self._rec("job:future", future_ms),                              # startedAt>=boot → 不动
+            self._rec("job:done", 1_000, status="success", finishedAt=1_500),  # 已终态 → 不动
+            self._rec("job:fin_running", 1_000, finishedAt=1_500),           # running 但有 finishedAt → 不动
+        ]
+        (tmp_path / "cron_run_records.json").write_text(json.dumps(rows_in), encoding="utf-8")
+        svc = _make_scheduler(store)
+        await svc.start()
+        await svc.stop()
+        got = {r["id"]: r for r in await CronJobStore(path=store.path).list_run_records()}
+        assert got["job:stale"]["status"] == "failed"
+        assert "[orphaned_by_restart]" in got["job:stale"]["summary"]
+        assert got["job:future"]["status"] == "running"          # 未误杀未来态/活 run
+        assert "orphaned_by_restart" not in (got["job:future"].get("summary") or "")
+        assert got["job:done"]["status"] == "success"            # 终态原样
+        assert got["job:fin_running"]["status"] == "running"     # 有 finishedAt 不动
+        assert got["job:fin_running"]["finishedAt"] == 1_500
+
+    @pytest.mark.asyncio
+    async def test_reload_does_not_sweep_live_running(self, tmp_path):
+        """关键陷阱守卫：清扫只能在 start()。reload() 运行期若扫会误杀活 run。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        (tmp_path / "cron_run_records.json").write_text(
+            json.dumps([self._rec("job:live", int(time.time() * 1000))]), encoding="utf-8")
+        svc = _make_scheduler(store)
+        await svc.reload()
+        rows = await CronJobStore(path=store.path).list_run_records()
+        assert rows[0]["status"] == "running"
+        assert "orphaned_by_restart" not in (rows[0].get("summary") or "")
+
+    @pytest.mark.asyncio
+    async def test_reclaim_is_idempotent_across_restarts(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        (tmp_path / "cron_run_records.json").write_text(
+            json.dumps([self._rec("job:1", 1_000)]), encoding="utf-8")
+        for _ in range(2):
+            svc = _make_scheduler(store)
+            await svc.start()
+            await svc.stop()
+        rows = await CronJobStore(path=store.path).list_run_records()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "failed"
+        assert rows[0]["summary"].count("[orphaned_by_restart]") == 1   # 不重复追加
