@@ -6365,6 +6365,8 @@
       "installedVersion": "已安装 v{{version}}",
       "switchVersion": "切换版本",
       "switchVersionConfirm": "将「{{name}}」从 v{{installed}} 切换到 v{{target}}？切换后当前版本将停止生效，但文件会保留在工作区（不会删除），之后可随时切回。",
+      "versionLoadFailed": "版本 v{{version}} 加载失败，已恢复到 v{{previous}}，原因：{{error}}",
+      "versionUnavailable": "该版本加载失败，无法切换",
       "publish": "发布",
       "uninstallConfirm": "请选择卸载方式：「仅卸载 v{{version}}」只删除该版本，其他已安装版本会保留但不再生效；「全部卸载」会删除「{{name}}」留在工作区的所有版本文件，不可恢复。",
       "uninstallSingleConfirm": "确认卸载「{{name}}」？工作区只保留 v{{version}} 一个版本，卸载会删除其全部文件，不可恢复。",

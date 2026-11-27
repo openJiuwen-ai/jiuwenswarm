@@ -166,6 +166,7 @@ async def _install_one(
             )
         return await _install_single(
             manager, store, root, document, origin=origin, asset_id=asset_id, timeout=timeout,
+            require_all_members=require_all_members,
         )
     finally:
         await asyncio.to_thread(opened.close)
@@ -577,6 +578,64 @@ async def _wait_gateway_member(
     return _failure_report(package_id, error), False
 
 
+def _load_failure_message(error: str) -> str:
+    """Unwrap the Core status template so the reason reads as one sentence."""
+
+    prefix = "extension load failed, reason="
+    if not error.startswith(prefix):
+        return error
+    reason = error[len(prefix):].strip()
+    if len(reason) >= 2 and reason[0] == reason[-1] and reason[0] in {"'", '"'}:
+        reason = reason[1:-1]
+    return reason or error
+
+
+async def _wait_gateway_package(
+    store: ExtensionInstallState,
+    package_id: str,
+    version: str,
+    timeout: float,
+) -> str:
+    """Wait for the Gateway host to load one standalone copy.
+
+    Returns the failure message, or ``""`` when the copy loaded or the wait
+    timed out; a slow Gateway keeps the pending result instead of a failure.
+    """
+
+    deadline = time.monotonic() + min(max(timeout, 0.1), _GATEWAY_MEMBER_TIMEOUT)
+    while time.monotonic() < deadline:
+        record = store.get(package_id, version)
+        if record is not None:
+            if record.active and record.status == "active":
+                return ""
+            if record.status in {"failed", "disabled", "uninstalling"}:
+                error = record.error or f"{package_id} {version} did not load"
+                return _load_failure_message(error)
+        await asyncio.sleep(_GATEWAY_MEMBER_POLL)
+    return ""
+
+
+async def _discard_failed_standalone(
+    manager: Any,
+    store: ExtensionInstallState,
+    package_id: str,
+    version: str,
+) -> None:
+    """Remove a first install that could not load instead of leaving it installed."""
+
+    target = Path(manager.install_dir) / package_id / version
+    await asyncio.to_thread(_remove_tree, target)
+    if target.exists():
+        logger.warning(
+            "[ExtensionsV2] failed copy %s@%s could not be removed", package_id, version,
+        )
+        return
+    await asyncio.to_thread(store.remove, package_id, version)
+    package_dir = target.parent
+    if package_dir.is_dir() and not any(package_dir.iterdir()):
+        await asyncio.to_thread(_remove_directory, package_dir)
+
+
 async def _install_single(
     manager: Any,
     store: ExtensionInstallState,
@@ -586,6 +645,7 @@ async def _install_single(
     origin: str,
     asset_id: str,
     timeout: float,
+    require_all_members: bool = False,
 ) -> ContainerOutcome:
     manifest = parse_manifest_mapping(document, root, require_domain=True)
     package_id = manifest.package_id
@@ -730,6 +790,7 @@ async def _install_single(
                 error="member load failed",
             )
     else:
+        previous_claim = claim
         await _store_standby_single(
             manager, store, root, package_id, version,
             domain=domain, origin=origin, asset_id=asset_id, status="pending", digest=digest,
@@ -742,13 +803,41 @@ async def _install_single(
         await asyncio.to_thread(
             store.mark, package_id, version=version, status="pending",
         )
+        overall = "pending"
+        if require_all_members:
+            # The Gateway loads this copy in its own process; wait for the
+            # result so a version that cannot load is not reported as enabled.
+            error = await _wait_gateway_package(store, package_id, version, timeout)
+            if error:
+                member_state = _standalone_member_state(store, package_id, version, domain)
+                if previous_claim is not None:
+                    await asyncio.to_thread(store.switch_active_instance, previous_claim)
+                elif not any(
+                    record.package_id == package_id and record.version != version
+                    for record in store.packages()
+                ):
+                    # A failing first install must not stay behind as an
+                    # installed plugin the detail page cannot reload.
+                    await _discard_failed_standalone(manager, store, package_id, version)
+                return ContainerOutcome(
+                    container_id=package_id,
+                    version=version,
+                    kind="package",
+                    reports=[_failure_report(package_id, error)],
+                    members=[member_state],
+                    overall_status="failed",
+                    error=error,
+                )
+            record = store.get(package_id, version)
+            if record is not None and record.status == "active":
+                overall = "enabled"
         return ContainerOutcome(
             container_id=package_id,
             version=version,
             kind="package",
             reports=reports,
             members=[_standalone_member_state(store, package_id, version, domain)],
-            overall_status="pending",
+            overall_status=overall,
         )
 
     await asyncio.to_thread(
@@ -2201,7 +2290,7 @@ def _failure_report(package_id: str, error: str) -> ActivationReport:
         "FAILED",
         None,
         None,
-        operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=error),
+        operation_error(StatusCode.EXTENSION_LOAD_FAILED, msg=error),
     )
 
 

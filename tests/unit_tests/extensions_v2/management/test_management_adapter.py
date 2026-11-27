@@ -1191,3 +1191,50 @@ async def test_uninstall_a_stored_version_keeps_the_active_one(
     assert removed.payload["reports"][0]["status"] == "SUCCESS"
     assert not (manager.install_dir / "webui.demo" / "0.9.0").exists()
     assert [record.version for record in (await manager.query()).active] == ["1.0.0"]
+
+
+@pytest.mark.asyncio
+async def test_failed_install_notifies_the_restored_active_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(tmp_path / "store")
+    store.upsert(ExtensionInstallRecord(
+        package_id="demo.gw", version="1.0.0", origin="user",
+        active=True, enabled=True, domain="gateway", status="active",
+        installed_at="2026-11-27T00:00:00+00:00",
+    ))
+    # The failed target is written last and must not hide the live version.
+    store.upsert(ExtensionInstallRecord(
+        package_id="demo.gw", version="2.0.0", origin="user",
+        active=False, enabled=False, domain="gateway", status="failed",
+        error="extension load failed", installed_at="2026-11-27T00:00:01+00:00",
+    ))
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
+        lambda: SimpleNamespace(notify_packages_changed=notify),
+    )
+    failed = ActivationReport("", "demo.gw", "install", "FAILED", None, None)
+
+    delivered = await adapter_module._notify_installed_packages([failed], store)
+
+    assert delivered is True
+    notify.assert_awaited_once_with(["demo.gw"])
+
+
+@pytest.mark.asyncio
+async def test_failed_first_install_does_not_notify_without_an_active_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(tmp_path / "store")
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
+        lambda: SimpleNamespace(notify_packages_changed=notify),
+    )
+    failed = ActivationReport("", "demo.gw", "install", "FAILED", None, None)
+
+    assert await adapter_module._notify_installed_packages([failed], store) is False
+    notify.assert_not_awaited()

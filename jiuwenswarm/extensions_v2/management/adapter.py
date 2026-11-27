@@ -135,7 +135,10 @@ class PackageManagementAdapter(GatewayAdapter):
         if method in (ReqMethod.EXTENSIONS_V2_INSTALL.value, ReqMethod.EXTENSIONS_V2_IMPORT.value) or (
             method == ReqMethod.EXTENSIONS_V2_SET_ENABLED.value and parsed.enable is True
         ):
-            payload["ui_notified"] = await _notify_installed_packages(payload.get("reports", ()))
+            store = ExtensionInstallState.for_install_dir(resolve_install_dir())
+            payload["ui_notified"] = await _notify_installed_packages(
+                payload.get("reports", ()), store,
+            )
         try:
             return AgentResponse(
                 request_id=request.request_id,
@@ -608,16 +611,32 @@ async def _hub_file_payload(
         raise ValueError("file preview is unavailable") from exc
 
 
-async def _notify_installed_packages(reports: Sequence[ActivationReport]) -> bool:
-    """Refresh mounted WebUI slots after a confirmed install."""
-    succeeded = [report.package_id for report in reports if report.status == "SUCCESS"]
-    if not succeeded:
+async def _notify_installed_packages(
+    reports: Sequence[ActivationReport],
+    store: ExtensionInstallState | None = None,
+) -> bool:
+    """Refresh mounted WebUI slots after a package change.
+
+    A failed version switch restores the previously active version, so that
+    package must replay ``ui.ready`` even though its Report says FAILED.
+    """
+    package_ids = {report.package_id for report in reports if report.status == "SUCCESS"}
+    for report in reports:
+        if report.status == "SUCCESS" or store is None:
+            continue
+        # Judge by the live instance, not by a versionless record lookup: a
+        # failed switch leaves several versions behind and only the restored
+        # one still has an owner.
+        claim = store.active_instance(report.package_id)
+        if claim is not None or store.active_bundle(report.package_id) is not None:
+            package_ids.add(report.package_id)
+    if not package_ids:
         return False
     from jiuwenswarm.extensions_v2.assembly import get_webui_runtime
 
     try:
         runtime = get_webui_runtime()
-        return await runtime.notify_packages_changed(succeeded) if runtime is not None else False
+        return await runtime.notify_packages_changed(sorted(package_ids)) if runtime is not None else False
     except Exception:  # noqa: BLE001 - notification failure does not undo a successful install
         logger.warning("[ExtensionsV2] package change UI notification failed", exc_info=True)
         return False

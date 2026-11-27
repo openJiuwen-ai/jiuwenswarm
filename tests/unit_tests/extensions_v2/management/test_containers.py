@@ -1111,6 +1111,123 @@ async def test_gateway_standalone_waiting_dependency_stays_pending(
     assert claim is not None and claim.kind == "standalone" and claim.version == "1.0.0"
 
 
+async def _answer_gateway_package(
+    store: ExtensionInstallState,
+    package_id: str,
+    version: str,
+    *,
+    error: str = "",
+) -> None:
+    """Stand in for the Gateway loading a pending standalone copy."""
+
+    for _ in range(1000):
+        await asyncio.sleep(0.01)
+        claim = store.active_instance(package_id)
+        if claim is None or claim.kind != "standalone" or claim.version != version:
+            continue
+        record = store.get(package_id, version)
+        if record is None or record.status != "pending":
+            continue
+        if error:
+            store.mark(
+                package_id, version=version, active=False, enabled=False,
+                status="failed", error=error,
+            )
+            return
+        store.mark(package_id, version=version, active=True, enabled=True, status="active")
+        store.switch_active_instance(
+            ActiveInstance(package_id=package_id, version=version, kind="standalone"),
+        )
+        return
+    raise AssertionError(f"gateway package {package_id}@{version} never became pending")
+
+
+@pytest.mark.asyncio
+async def test_gateway_standalone_switch_reports_a_failed_load_and_restores_the_previous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    await containers.install_sources(
+        manager, store,
+        [_write_member(tmp_path / "v1", "demo.gw", "gateway", version="1.0.0")],
+        origin="user", timeout=5,
+    )
+    _simulate_gateway(store, "demo.gw", "1.0.0")
+
+    answer = asyncio.create_task(
+        _answer_gateway_package(
+            store, "demo.gw", "2.0.0", error="extension load failed, reason='No module named demo'",
+        ),
+    )
+    outcomes = await containers.install_sources(
+        manager, store,
+        [_write_member(tmp_path / "v2", "demo.gw", "gateway", version="2.0.0")],
+        origin="user", timeout=5, require_all_members=True,
+    )
+    await answer
+
+    assert outcomes[0].overall_status == "failed"
+    assert [report.status for report in outcomes[0].reports] == ["FAILED"]
+    assert outcomes[0].reports[0].error.message == "No module named demo"
+    assert store.get("demo.gw", "2.0.0").status == "failed"
+    assert (manager.install_dir / "demo.gw" / "2.0.0").is_dir()
+    previous = store.get("demo.gw", "1.0.0")
+    assert previous is not None and previous.active is True and previous.status == "active"
+    claim = store.active_instance("demo.gw")
+    assert claim is not None and claim.version == "1.0.0"
+
+
+@pytest.mark.asyncio
+async def test_gateway_first_install_failure_removes_the_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    answer = asyncio.create_task(
+        _answer_gateway_package(store, "demo.gw", "1.0.0", error="extension load failed, reason='No module named demo'"),
+    )
+    outcomes = await containers.install_sources(
+        manager, store,
+        [_write_member(tmp_path / "gateway", "demo.gw", "gateway")],
+        origin="user", timeout=5, require_all_members=True,
+    )
+    await answer
+
+    assert outcomes[0].overall_status == "failed"
+    assert outcomes[0].reports[0].error.message == "No module named demo"
+    assert store.get("demo.gw", "1.0.0") is None
+    assert store.active_instance("demo.gw") is None
+    assert not (manager.install_dir / "demo.gw" / "1.0.0").exists()
+
+
+@pytest.mark.asyncio
+async def test_gateway_standalone_switch_waits_for_the_gateway_to_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    await containers.install_sources(
+        manager, store,
+        [_write_member(tmp_path / "v1", "demo.gw", "gateway", version="1.0.0")],
+        origin="user", timeout=5,
+    )
+    _simulate_gateway(store, "demo.gw", "1.0.0")
+
+    answer = asyncio.create_task(_answer_gateway_package(store, "demo.gw", "2.0.0"))
+    outcomes = await containers.install_sources(
+        manager, store,
+        [_write_member(tmp_path / "v2", "demo.gw", "gateway", version="2.0.0")],
+        origin="user", timeout=5, require_all_members=True,
+    )
+    await answer
+
+    assert outcomes[0].overall_status == "enabled"
+    assert [report.status for report in outcomes[0].reports] == ["SUCCESS"]
+    record = store.get("demo.gw", "2.0.0")
+    assert record is not None and record.active is True and record.status == "active"
+
+
 @pytest.mark.asyncio
 async def test_uninstalling_a_gateway_standalone_marks_the_copy_for_the_gateway(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
