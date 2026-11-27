@@ -208,7 +208,6 @@
       "title": "AI 角色",
       "empty": "尚未声明 AI 角色",
       "loadFailed": "加载 AI 角色失败",
-      "agent": "单角色会话",
       "team": "团队会话",
       "teamBadge": "团队",
       "leader": "队长"
@@ -293,7 +292,7 @@
     "editSessionTitle": "编辑 {{name}}",
     "reloadPreview": "重新加载应用预览",
     "reloadFailed": "重新加载应用预览失败",
-    "editPrompt": "帮我修改应用“{{name}}”（v{{version}}）。\n应用简介：{{description}}\n源码入口：{{entryPath}}\n\n请先阅读现有代码和数据，保留已有的数据与存档。建议按以下步骤进行：\n1. 说明当前实现、入口文件和关键数据；\n2. 按我的需求做最小修改并自测；\n3. 需要发布新版本时提醒我。\n我要修改的内容是：",
+    "editPrompt": "帮我修改应用“{{name}}”（v{{version}}）。\n应用简介：{{description}}\n源码入口：{{entryPath}}\n\n请先参考 WorkSwarm 内置能力目录中的应用开发技能 workswarm-app-builder，再阅读现有代码和数据，保留已有的数据与存档。建议按以下步骤进行：\n1. 说明当前实现、入口文件和关键数据；\n2. 按我的需求做最小修改并自测；\n3. 需要发布新版本时提醒我。\n我要修改的内容是：",
     "noDescription": "暂无简介",
     "expandPane": "展开应用面板",
     "restorePane": "恢复分栏",
