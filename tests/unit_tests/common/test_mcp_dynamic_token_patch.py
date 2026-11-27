@@ -21,7 +21,6 @@ from jiuwenswarm.common.mcp_dynamic_token_patch import (
     TOKEN_HEADER_PREFIX,
     TOKEN_RESPONSE_FIELD,
     _ACTIVE_PROVIDERS,
-    _LATEST_PROVIDERS,
     _MAX_PENDING_NOTIF_TOKENS,
     _MAX_PENDING_TURN_TOKENS,
     _PENDING_TAG_SERVER,
@@ -68,7 +67,7 @@ def _dispatch_credentials(
     if client_secret is not None:
         entry["client_secret"] = client_secret
     enterprise = SimpleNamespace(
-        agent_template={"data": {"custom_config": [entry]}},
+        agent_client_credentials=entry,
         resource_id="bot-a",
         ref_template_id="tpl-a",
     )
@@ -104,9 +103,7 @@ def test_credentials_none_when_incomplete():
     # 条目字段为空 → None
     apply_dispatched_credentials(
         SimpleNamespace(
-            agent_template={
-                "data": {"custom_config": [{"client_id": "", "client_secret": "s"}]}
-            }
+            agent_client_credentials={"client_id": "", "client_secret": "s"},
         )
     )
     assert read_instance_credentials() is None
@@ -148,55 +145,48 @@ def test_code_contract_constants():
 
 
 # ---------------------------------------------------------------------------
-# 1.1 模板行提取（Agent 模板 data.custom_config 对象数组）
+# 1.1 Private Agent registration credentials
 # ---------------------------------------------------------------------------
 
 
 def test_extract_strips_whitespace():
     creds = extract_dispatched_credentials(
-        {
-            "data": {
-                "custom_config": [
-                    {"client_id": "  demo_agent1 ", "client_secret": "\tsecret "},
-                ]
-            }
-        }
+        SimpleNamespace(agent_client_credentials={"client_id": "  demo_agent1 ", "client_secret": "\tsecret "})
     )
     assert creds == {"client_id": "demo_agent1", "client_secret": "secret"}
 
 
-def test_extract_takes_first_valid_entry():
-    row = {
-        "data": {
-            "custom_config": [
-                {"client_id": "demo_agent1"},  # 缺 secret → 跳过
-                "not-a-dict",  # 非 dict → 跳过
-                {"client_id": "demo_agent2", "client_secret": "demo-agent-secret2"},
-                {"client_id": "demo_agent3", "client_secret": "demo-agent-secret3"},
-            ]
-        }
-    }
-    creds = extract_dispatched_credentials(row)
-    assert creds == {"client_id": "demo_agent2", "client_secret": "demo-agent-secret2"}
+def test_extract_uses_only_registration_field():
+    credentials = {"client_id": "agent-id", "client_secret": "registered-secret"}
+    enterprise = SimpleNamespace(
+        agent_client_credentials=credentials,
+        agent_template={"data": {"custom_config": [{"client_id": "ordinary", "client_secret": "ordinary-data"}]}},
+    )
+    assert extract_dispatched_credentials(enterprise) == credentials
+    assert extract_dispatched_credentials(enterprise) is not credentials
 
 
 @pytest.mark.parametrize(
-    "row",
+    "credentials",
     [
         None,
         {},
-        {"data": None},
-        {"data": {}},  # 无 custom_config
-        {"data": {"custom_config": None}},
-        {"data": {"custom_config": "not-a-list"}},
-        {"data": {"custom_config": [{"client_id": "only-id"}]}},  # 缺 secret
-        {"data": {"custom_config": [{"client_id": "", "client_secret": "s"}]}},
-        {"data": {"custom_config": [{"client_secret": "only-secret"}]}},
-        {"data": {"custom_config": [{"client_id": "id", "client_secret": "   "}]}},
+        [],
+        "invalid",
+        {"client_id": "only-id"},
+        {"client_id": "", "client_secret": "s"},
+        {"client_secret": "only-secret"},
+        {"client_id": "id", "client_secret": "   "},
+        {"client_id": 1, "client_secret": "s"},
+        {"client_id": "id", "client_secret": {"value": "s"}},
     ],
 )
-def test_extract_none_when_absent_or_malformed(row):
-    assert extract_dispatched_credentials(row) is None
+def test_extract_none_when_absent_or_malformed(credentials):
+    enterprise = SimpleNamespace(
+        agent_client_credentials=credentials,
+        agent_template={"data": {"custom_config": [{"client_id": "manual", "client_secret": "manual-secret"}]}},
+    )
+    assert extract_dispatched_credentials(enterprise) is None
 
 
 @contextlib.contextmanager
@@ -226,11 +216,11 @@ def _patch_logs(level: int = logging.WARNING):
         logger.setLevel(original_level)
 
 
-def test_apply_warns_when_custom_config_present_but_invalid():
+def test_apply_warns_when_registration_present_but_invalid():
     with _patch_logs() as records:
         apply_dispatched_credentials(
             SimpleNamespace(
-                agent_template={"data": {"custom_config": [{"client_id": "only-id"}]}},
+                agent_client_credentials={"client_id": "only-id"},
                 resource_id="bot-a",
                 ref_template_id="tpl-a",
             )
@@ -244,10 +234,15 @@ def test_apply_warns_when_custom_config_present_but_invalid():
     assert "only-id" not in text
 
 
-def test_apply_silent_when_custom_config_absent():
+@pytest.mark.parametrize("custom", [[], [{"client_id": "only-id"}], [
+    {"client_id": "ordinary", "client_secret": "ordinary-data"},
+]])
+def test_apply_ignores_custom_json_without_warning(custom):
+    _dispatch_credentials("agent-id", "registered-secret")
     with _patch_logs() as records:
-        apply_dispatched_credentials(SimpleNamespace(agent_template={"enabled": True}))
+        apply_dispatched_credentials(SimpleNamespace(agent_template={"data": {"custom_config": custom}}))
     assert records == []
+    assert read_instance_credentials() is None
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +250,7 @@ def test_apply_silent_when_custom_config_absent():
 # ---------------------------------------------------------------------------
 
 
-def _enterprise_policy(agent_template: dict | None) -> Any:
+def _enterprise_policy(agent_template: dict | None, credentials: dict | None = None) -> Any:
     from jiuwenswarm.enterprise.config.effective.schemas import (
         EffectiveEnterpriseConfig,
         RoutingContext,
@@ -266,20 +261,22 @@ def _enterprise_policy(agent_template: dict | None) -> Any:
         resource_id="bot-a",
         ref_template_id="tpl-a",
         agent_template=agent_template,
+        agent_client_credentials=credentials,
         mcp=[],
     )
 
 
-def test_pipeline_feeds_credentials_from_agent_template(monkeypatch):
+def test_pipeline_feeds_credentials_from_agent_registration(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     policy = _enterprise_policy(
         {
             "data": {
                 "custom_config": [
-                    {"client_id": "demo_agent1", "client_secret": "demo-agent-secret1"},
+                    {"client_id": "ordinary", "client_secret": "ordinary-data"},
                 ]
             }
-        }
+        },
+        credentials={"client_id": "demo_agent1", "client_secret": "demo-agent-secret1"},
     )
     providers._apply_enterprise_policy(
         {"mcp": {"servers": [{"name": "local", "transport": "stdio"}]}}, policy
@@ -288,6 +285,17 @@ def test_pipeline_feeds_credentials_from_agent_template(monkeypatch):
     assert creds is not None
     assert creds.client_id == "demo_agent1"
     assert creds.client_secret == "demo-agent-secret1"
+    assert policy.agent_template["data"]["custom_config"] == [
+        {"client_id": "ordinary", "client_secret": "ordinary-data"},
+    ]
+
+
+def test_cached_config_never_rebinds_another_agents_credentials(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    _dispatch_credentials("active", "active-secret")
+    cached = _enterprise_policy({}, credentials={"client_id": "previous", "client_secret": "previous-secret"})
+    providers._apply_enterprise_policy({}, cached, bind_request_credentials=False)
+    assert read_instance_credentials() == InstanceCredentials("active", "active-secret")
 
 
 def test_pipeline_without_credentials_clears_dispatched_state(monkeypatch):
@@ -295,7 +303,9 @@ def test_pipeline_without_credentials_clears_dispatched_state(monkeypatch):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
     assert read_instance_credentials() is not None
 
-    providers._apply_enterprise_policy({}, _enterprise_policy({"enabled": True}))
+    providers._apply_enterprise_policy({}, _enterprise_policy({"data": {"custom_config": [
+        {"client_id": "ordinary", "client_secret": "ordinary-data"},
+    ]}}))
     assert read_instance_credentials() is None
 
 
@@ -402,7 +412,7 @@ async def test_auth_flow_sends_empty_header_when_fetch_fails():
         "srv-1",
     )
 
-    async def _failing_fetch() -> str:
+    async def _failing_fetch(_credentials) -> str:
         raise McpDynamicTokenUnavailableError(token_url, "connection refused")
 
     provider._fetch_token = _failing_fetch  # type: ignore[method-assign]
@@ -513,18 +523,66 @@ async def test_fetch_transport_error():
 
 
 @pytest.mark.asyncio
+async def test_token_failure_cache_follows_the_current_registration(monkeypatch):
+    provider = DynamicTokenProvider({}, {}, TOKEN_URL, "srv-1")
+    attempts = []
+
+    async def fetch(credentials):
+        attempts.append(credentials)
+        if credentials is None:
+            raise McpDynamicTokenUnavailableError(TOKEN_URL, "unbound")
+        return credentials.client_id
+
+    monkeypatch.setattr(provider, "_fetch_token", fetch)
+    _dispatch_credentials(None)
+    with pytest.raises(McpDynamicTokenUnavailableError):
+        await provider._get_token(read_instance_credentials())
+    _dispatch_credentials("agent-b", "new-secret")
+    assert await provider._get_token(read_instance_credentials()) == "agent-b"
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_rotated_credentials_start_a_new_fetch_while_old_fetch_is_pending(monkeypatch):
+    provider = DynamicTokenProvider({}, {}, TOKEN_URL, "srv-1")
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def fetch(credentials):
+        if credentials.client_secret == "previous-secret":
+            started.set()
+            await finish.wait()
+            raise McpDynamicTokenUnavailableError(TOKEN_URL, "rotated")
+        return "new-token"
+
+    monkeypatch.setattr(provider, "_fetch_token", fetch)
+    _dispatch_credentials("agent-a", "previous-secret")
+    first = asyncio.create_task(provider._get_token(read_instance_credentials()))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        _dispatch_credentials("agent-a", "new-secret")
+        assert await asyncio.wait_for(provider._get_token(read_instance_credentials()), timeout=2) == "new-token"
+    finally:
+        finish.set()
+        with pytest.raises(McpDynamicTokenUnavailableError):
+            await first
+    assert await provider._get_token(read_instance_credentials()) == "new-token"
+
+
+@pytest.mark.asyncio
 async def test_single_flight_merges_concurrent_fetches():
     provider = DynamicTokenProvider({}, {}, _creds(), "srv-1")
     calls = {"count": 0}
 
-    async def _slow_fetch() -> str:
+    async def _slow_fetch(_credentials) -> str:
         calls["count"] += 1
         await asyncio.sleep(0.02)
         return f"tok-{calls['count']}"
 
     provider._fetch_token = _slow_fetch  # type: ignore[method-assign]
 
-    results = await asyncio.gather(provider._get_token(), provider._get_token())
+    credentials = read_instance_credentials()
+    results = await asyncio.gather(provider._get_token(credentials), provider._get_token(credentials))
     assert calls["count"] == 1  # 并发合并为一次 fetch
     assert results[0] == results[1]
 
@@ -538,7 +596,7 @@ async def test_negative_cache_window():
     provider = DynamicTokenProvider({}, {}, "http://token-svc.example/token", "srv-1")
     calls = {"count": 0}
 
-    async def _failing_fetch() -> str:
+    async def _failing_fetch(_credentials) -> str:
         calls["count"] += 1
         raise McpDynamicTokenUnavailableError(
             "http://token-svc.example/token", "connection refused"
@@ -567,14 +625,14 @@ async def test_sequential_requests_refetch():
     provider = DynamicTokenProvider({}, {}, _creds(), "srv-1")
     calls = {"count": 0}
 
-    async def _fast_fetch() -> str:
+    async def _fast_fetch(_credentials) -> str:
         calls["count"] += 1
         return f"tok-{calls['count']}"
 
     provider._fetch_token = _fast_fetch  # type: ignore[method-assign]
 
-    assert await provider._get_token() == "tok-1"
-    assert await provider._get_token() == "tok-2"  # 顺序请求仍每次实时取
+    assert await provider._get_token(read_instance_credentials()) == "tok-1"
+    assert await provider._get_token(read_instance_credentials()) == "tok-2"  # 顺序请求仍每次实时取
     assert calls["count"] == 2
 
 
@@ -792,10 +850,8 @@ async def test_provider_picks_up_hot_reloaded_credentials(monkeypatch):
     # 凭据热更：上游重发快照（换 client）
     _dispatch_credentials("demo_agent2", "demo-agent-secret2")
 
-    request = httpx.Request("POST", "https://gw.example/mcp")
-    flow = provider.async_auth_flow(request)
-    sent = await flow.__anext__()
-    await flow.aclose()
+    provider.record_request_token(1, "")
+    sent = await _run_flow(provider, _jsonrpc_request(request_id=1))
 
     assert captured["client_id"] == "demo_agent2"  # 热更后的凭据
     assert sent.headers["X-Actor-Token"] == "Bearer tok"
@@ -879,7 +935,7 @@ def _bare_provider(server_id: str = "srv-1", fetch_token: str = "tok-1") -> Dyna
         server_id,
     )
 
-    async def _fake_fetch() -> str:
+    async def _fake_fetch(_credentials) -> str:
         return fetch_token
 
     provider._fetch_token = _fake_fetch  # type: ignore[method-assign]
@@ -952,8 +1008,8 @@ def test_current_user_authorization_max_length_boundary():
 def test_request_token_record_then_consume_exact():
     provider = _bare_provider()
     provider.record_request_token(7, "Bearer t7")
-    assert provider._consume_request_token(7) == "Bearer t7"
-    assert provider._consume_request_token(7) == ""  # 一次性消费
+    assert provider._consume_request_token(7).user == "Bearer t7"
+    assert provider._consume_request_token(7).user == ""  # 一次性消费
 
 
 def test_request_token_same_id_fifo_for_retries():
@@ -961,45 +1017,47 @@ def test_request_token_same_id_fifo_for_retries():
     provider = _bare_provider()
     provider.record_request_token(1, "Bearer first")
     provider.record_request_token(1, "Bearer second")
-    assert provider._consume_request_token(1) == "Bearer first"
-    assert provider._consume_request_token(1) == "Bearer second"
+    assert provider._consume_request_token(1).user == "Bearer first"
+    assert provider._consume_request_token(1).user == "Bearer second"
 
 
 def test_request_token_pending_cap_evicts_oldest():
     provider = _bare_provider()
     for i in range(_MAX_PENDING_TURN_TOKENS + 4):
         provider.record_request_token(i, f"Bearer t{i}")
-    assert provider._consume_request_token(0) == ""  # 最旧被逐出
+    assert provider._consume_request_token(0).user == ""  # 最旧被逐出
     last = _MAX_PENDING_TURN_TOKENS + 3
-    assert provider._consume_request_token(last) == f"Bearer t{last}"
+    assert provider._consume_request_token(last).user == f"Bearer t{last}"
 
 
 def test_notification_fifo_pairs_sends_with_posts():
     provider = _bare_provider()
-    assert provider._pop_notification_token() == ""  # 空队列出队 → 无令牌
+    assert provider._pop_notification_token().user == ""  # 空队列出队 → 无令牌
     provider.push_notification_token("Bearer conn-A")
     provider.push_notification_token("")  # 无令牌通知的哨兵
     provider.push_notification_token("Bearer conn-B")
-    assert provider._pop_notification_token() == "Bearer conn-A"
-    assert provider._pop_notification_token() == ""  # 哨兵：该通知不带令牌
-    assert provider._pop_notification_token() == "Bearer conn-B"
-    assert provider._pop_notification_token() == ""
+    assert provider._pop_notification_token().user == "Bearer conn-A"
+    assert provider._pop_notification_token().user == ""  # 哨兵：该通知不带令牌
+    assert provider._pop_notification_token().user == "Bearer conn-B"
+    assert provider._pop_notification_token().user == ""
 
 
 def test_notification_fifo_cap_evicts_oldest():
     provider = _bare_provider()
     for i in range(_MAX_PENDING_NOTIF_TOKENS + 4):
         provider.push_notification_token(f"Bearer n{i}")
-    assert provider._pop_notification_token() == "Bearer n4"  # 最旧 4 条被逐出
+    for _ in range(4):
+        assert provider._pop_notification_token().user == ""
+    assert provider._pop_notification_token().user == "Bearer n4"  # 最旧 4 条被逐出
 
 
 def test_last_known_tracks_latest_non_empty():
     provider = _bare_provider()
-    assert provider._last_turn_token == ""
+    assert provider._control_auth.user == ""
     provider.record_request_token(1, "Bearer first")
     provider.record_request_token(2, "Bearer second")
     provider.push_notification_token("")  # 哨兵不更新 last-known
-    assert provider._last_turn_token == "Bearer second"
+    assert provider._control_auth.user == "Bearer second"
 
 
 def test_two_sessions_same_id_isolated():
@@ -1012,8 +1070,8 @@ def test_two_sessions_same_id_isolated():
     provider_b.record_request_token(1, "Bearer U2")  # session B 的 id=1（撞号）
 
     # B 的 POST 先出网（顺序反转也不串）
-    assert provider_b._consume_request_token(1) == "Bearer U2"
-    assert provider_a._consume_request_token(1) == "Bearer U1"
+    assert provider_b._consume_request_token(1).user == "Bearer U2"
+    assert provider_a._consume_request_token(1).user == "Bearer U1"
 
 
 def test_two_sessions_notification_fifo_isolated():
@@ -1022,8 +1080,8 @@ def test_two_sessions_notification_fifo_isolated():
     provider_a.push_notification_token("Bearer U1")
     provider_b.push_notification_token("Bearer U2")
     # B 的通知 POST 先出网
-    assert provider_b._pop_notification_token() == "Bearer U2"
-    assert provider_a._pop_notification_token() == "Bearer U1"
+    assert provider_b._pop_notification_token().user == "Bearer U2"
+    assert provider_a._pop_notification_token().user == "Bearer U1"
 
 
 def test_two_sessions_last_known_isolated():
@@ -1032,8 +1090,8 @@ def test_two_sessions_last_known_isolated():
     provider_b = _bare_provider("srv-shared")
     provider_a.record_request_token(1, "Bearer U1")
     provider_b.record_request_token(1, "Bearer U2")
-    assert provider_a._last_turn_token == "Bearer U1"
-    assert provider_b._last_turn_token == "Bearer U2"
+    assert provider_a._control_auth.user == "Bearer U1"
+    assert provider_b._control_auth.user == "Bearer U2"
 
 
 # ---------------------------------------------------------------------------
@@ -1079,7 +1137,7 @@ async def test_tagging_stream_records_outbound_request_token():
         await stream.send(_FakeSessionMessage(_FakeRequestRoot(5, "tools/call")))
 
     assert len(inner.sent) == 1  # 消息照常下发
-    assert provider._consume_request_token(5) == "Bearer turn-A"
+    assert provider._consume_request_token(5).user == "Bearer turn-A"
 
 
 @pytest.mark.asyncio
@@ -1094,8 +1152,8 @@ async def test_tagging_stream_notification_pushes_sentinel_without_ext():
     )
 
     # 无令牌通知的 POST 出队得到哨兵 ""，不继承 A；A 的登记不受影响
-    assert provider._pop_notification_token() == ""
-    assert provider._consume_request_token(5) == "Bearer turn-A"
+    assert provider._pop_notification_token().user == ""
+    assert provider._consume_request_token(5).user == "Bearer turn-A"
 
 
 @pytest.mark.asyncio
@@ -1107,9 +1165,9 @@ async def test_tagging_stream_skips_response_and_bool_id():
         await stream.send(_FakeSessionMessage(_FakeRequestRoot(7, None)))  # 响应
         await stream.send(_FakeSessionMessage(_FakeRequestRoot(True, "tools/call")))
 
-    assert provider._consume_request_token(7) == ""
-    assert provider._pop_notification_token() == ""
-    assert provider._last_turn_token == ""
+    assert provider._consume_request_token(7).user == ""
+    assert provider._pop_notification_token().user == ""
+    assert provider._control_auth.user == ""
 
 
 @pytest.mark.asyncio
@@ -1131,6 +1189,36 @@ async def test_tagging_stream_delegates_and_install_idempotent():
 # ---------------------------------------------------------------------------
 # 11.3 provider 消费：按消息形态精确归属（评审①②③回归）
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_background_writer_uses_each_senders_agent_registration(monkeypatch):
+    provider = DynamicTokenProvider({}, {}, TOKEN_URL, "shared-server")
+    stream, _ = _tagged_stream(provider)
+    ready = asyncio.Barrier(3)
+
+    async def fetch(credentials):
+        if credentials is None:
+            raise McpDynamicTokenUnavailableError(TOKEN_URL, "unbound")
+        await asyncio.sleep(0)
+        return credentials.client_id
+
+    async def send(request_id, agent):
+        _dispatch_credentials(agent, "test-secret")
+        await ready.wait()
+        with _turn_ext({"X-User-Token": f"Bearer user-{request_id}"}):
+            await stream.send(_FakeSessionMessage(_FakeRequestRoot(request_id, "tools/call")))
+
+    monkeypatch.setattr(provider, "_fetch_token", fetch)
+    await asyncio.gather(send(1, "agent-a"), send(2, "agent-b"), send(3, None))
+    requests = [_jsonrpc_request(request_id=rid) for rid in (2, 3, 1, 4)]
+    sent = await asyncio.gather(*(_run_flow(provider, request) for request in requests))
+    assert [request.headers["X-Actor-Token"] for request in sent] == [
+        "Bearer agent-b", "", "Bearer agent-a", "",
+    ]
+    assert [request.headers.get("Authorization") for request in sent] == [
+        "Bearer user-2", "Bearer user-3", "Bearer user-1", None,
+    ]
 
 
 @pytest.mark.asyncio
@@ -1266,7 +1354,7 @@ async def test_auth_flow_actor_failure_with_user_token():
         {"Authorization": "Bearer static"}, {}, token_url, "srv-1"
     )
 
-    async def _failing_fetch() -> str:
+    async def _failing_fetch(_credentials) -> str:
         raise McpDynamicTokenUnavailableError(token_url, "connection refused")
 
     provider._fetch_token = _failing_fetch  # type: ignore[method-assign]
@@ -1283,7 +1371,7 @@ async def test_auth_flow_adds_authorization_when_static_empty():
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
     provider = DynamicTokenProvider({}, {}, "http://token-svc.example/token", "srv-1")
 
-    async def _fake_fetch() -> str:
+    async def _fake_fetch(_credentials) -> str:
         return "tok-1"
 
     provider._fetch_token = _fake_fetch  # type: ignore[method-assign]
@@ -1305,7 +1393,7 @@ async def test_auth_flow_overrides_lowercase_authorization_key():
         "srv-1",
     )
 
-    async def _fake_fetch() -> str:
+    async def _fake_fetch(_credentials) -> str:
         return "tok-1"
 
     provider._fetch_token = _fake_fetch  # type: ignore[method-assign]
@@ -1402,7 +1490,7 @@ async def test_authenticate_sets_pending_provider_marker():
     await DynamicTokenAuthStrategy().authenticate(_auth_config(tool_id="srv-1"))
     marked = _PENDING_TAG_SERVER.get()
     assert marked is not None and marked.server_id == "srv-1"
-    assert marked is _LATEST_PROVIDERS["srv-1"]
+    assert marked in _ACTIVE_PROVIDERS
     _PENDING_TAG_SERVER.set(None)  # 测试上下文清理
 
 
@@ -1503,7 +1591,6 @@ def test_unmark_evicts_all_session_providers():
     provider_b = _bare_provider("srv-evict")
     other = _bare_provider("srv-other")
     _ACTIVE_PROVIDERS.update({provider_a, provider_b, other})
-    _LATEST_PROVIDERS["srv-evict"] = provider_b
 
     assert mark_dynamic_token_server("srv-evict", "http://kc.example/token")
     unmark_dynamic_token_server("srv-evict")
@@ -1511,7 +1598,6 @@ def test_unmark_evicts_all_session_providers():
     assert provider_a not in _ACTIVE_PROVIDERS
     assert provider_b not in _ACTIVE_PROVIDERS
     assert other in _ACTIVE_PROVIDERS  # 其他网关不受影响
-    assert "srv-evict" not in _LATEST_PROVIDERS
     _ACTIVE_PROVIDERS.discard(other)  # 测试清理
 
 
@@ -1878,7 +1964,7 @@ async def test_real_client_session_lifecycle_with_tagging_proxy():
             message = await outbound_receive.receive()
             assert message.message.root.method == "notifications/initialized"
             # 发送侧在真实会话路径上完成登记（通知 → FIFO，"" 哨兵不适用）
-            assert list(provider._pending_notif_tokens) == ["Bearer lifecycle"]
+            assert provider._pop_notification_token().user == "Bearer lifecycle"
     finally:
         await inbound_send.aclose()
         await outbound_send.aclose()

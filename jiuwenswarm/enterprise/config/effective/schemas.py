@@ -76,6 +76,8 @@ class EffectiveEnterpriseConfig:
     service_id: str | None = None
     send_file_allowed: bool = True
     debug: dict[str, Any] = field(default_factory=dict)
+    # Private per-request credentials; excluded from repr and public as_dict().
+    agent_client_credentials: dict[str, str] | None = field(default=None, repr=False)
 
     def as_dict(self) -> dict[str, Any]:
         return {

@@ -4,8 +4,8 @@
 Why this exists: 企业版 MCP 网关采用 Keycloak Client Credentials 模式做
 Agent-to-Tool 双重授权。**每个网关条目自带 ``dynamic_token_url``**（取动态
 token 的端点，存在 = 该网关需要动态 token），而 ``client_id``/``client_secret``
-是 **AgentServer 实例层级**的凭据（由上游 Gateway 下发，所有需要动态 token 的
-网关共用）。本补丁让被标记网关的 MCP HTTP 请求在**每次出网前**实时取 token
+come only from the current Agent's Manager-owned Keycloak registration.
+本补丁让被标记网关的 MCP HTTP 请求在**每次出网前**实时取 token
 并注入 ``X-Actor-Token`` 头；**取不到 token 时不阻断请求**：照常发起调用，
 动态头置空（值 = 空字符串），由网关侧决定放行或 401。
 
@@ -81,20 +81,19 @@ Configuration (two levels, both delivered by the upstream Manager):
   ``dynamic_token_url`` field is THAT gateway's token endpoint — its presence
   marks the gateway as needing dynamic tokens (absent/empty = static headers).
   Each gateway may point at a different token endpoint;
-- **Instance level** (``client_id`` / ``client_secret``): one pair per
-  AgentServer instance (``client_id`` IS the instance identity in Keycloak),
-  shared by all marked gateways. Manager 挂在 Agent 模板行
-  ``data.custom_config`` 对象数组里下发；企业配置合并时由
-  ``apply_dispatched_credentials`` 提取并整份替换（不经过 config 快照，
-  合并未携带合法凭据对即清除）。
+- **Agent registration** (``client_id`` / ``client_secret``): Manager dispatches
+  registered clients by Agent ID. The enterprise loader selects the exact Agent
+  and supplies ``EffectiveEnterpriseConfig.agent_client_credentials``.
+  ``custom_config`` is ordinary application data and never supplies credentials.
 
 ``apply_dispatched_credentials`` (wired at the enterprise config merge,
-``enterprise.config.config_provider._apply_enterprise_policy``) stores the template's instance
-credentials wholesale; a merge without the pair clears them. Everything else
+``enterprise.config.config_provider._apply_enterprise_policy``) stores the selected Agent's
+credentials in the calling task. The send stream pairs that immutable snapshot
+with the user token for each JSON-RPC request or notification. Everything else
 is a code-level contract (the
 ``TOKEN_*`` constants below): POST form ``grant_type=client_credentials`` + the
 instance credentials as form fields, response field ``access_token`` (short
-plain-text bodies accepted verbatim), injected header ``Authorization: Bearer
+plain-text bodies accepted verbatim), injected header ``X-Actor-Token: Bearer
 <token>``, 5s fetch timeout. Credential hot-update takes effect on the next
 fetch without re-registration.
 """  # noqa: E501
@@ -108,7 +107,7 @@ import threading
 import time
 import weakref
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -131,11 +130,11 @@ _REGISTRY_LOCK = threading.Lock()
 # 强引用集：asyncio 对 task 只持弱引用，无人引用的后台任务可能被 GC 掉导致
 # aclose 永不执行——仿 mcp_config._retire_tasks 的自持模式。
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
-# 实例级凭据（client_id / client_secret，由企业配置合并从 Agent 模板
-# data.custom_config 提取）——所有被标记网关共用；apply_dispatched_credentials
-# 整份替换，None = 未下发/清除。
-_DISPATCHED_CREDENTIALS: dict[str, str] | None = None
-_DISPATCHED_LOCK = threading.Lock()
+# Selected Agent registration credentials; apply_dispatched_credentials replaces
+# the snapshot, and a missing registration clears it. Custom JSON is not read.
+_DISPATCHED_CREDENTIALS: contextvars.ContextVar[InstanceCredentials | None] = contextvars.ContextVar(
+    "mcp_agent_credentials", default=None,
+)
 
 #: 纯文本回退时接受的最大 body 长度（超过按解析失败处理，防止把大页面当 token）。
 _MAX_PLAIN_TEXT_TOKEN_LEN = 4096
@@ -211,85 +210,61 @@ class McpDynamicTokenUnavailableError(RuntimeError):
 
 @dataclass(frozen=True)
 class InstanceCredentials:
-    """AgentServer 实例层级的凭据（上游 Gateway 下发，所有标记网关共用）。
+    """The current Agent's Keycloak registration credentials.
 
     其余契约（方法 / 字段名 / 注入头 / 超时 / 网关各自的 token 端点）不进入
     本结构：网关级 token 端点在 server_id 注册表里，其余为 ``TOKEN_*`` 常量。
     """
 
     client_id: str
-    client_secret: str
+    client_secret: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _TurnAuthorization:
+    """User and Actor identities captured together by the sender of one MCP message."""
+
+    user: str = field(default="", repr=False)
+    actor: InstanceCredentials | None = None
 
 
 # ---------------------------------------------------------------------------
-# 下发通道：实例级凭据（apply_dispatched_credentials 写，消费点现读）
+# Current request registration, inherited by child tasks.
 # ---------------------------------------------------------------------------
 
 
-def extract_dispatched_credentials(agent_template_row: Any) -> dict[str, str] | None:
-    """从 Agent 模板行 ``data.custom_config`` 提取首个合法凭据对。
-
-    Manager 下发的实例凭据挂在模板行 ``data.custom_config`` 对象数组里（元素
-    形如 ``{"client_id": ..., "client_secret": ...}``）；逐条跳过非 dict /
-    缺字段 / 空值条目，整行未配置或无合法条目返回 ``None``。取值去除首尾空白。
-    """
-    if not isinstance(agent_template_row, dict):
+def extract_dispatched_credentials(enterprise: Any) -> dict[str, str] | None:
+    """Read the selected Agent registration, never custom application JSON."""
+    credentials = getattr(enterprise, "agent_client_credentials", None)
+    if not isinstance(credentials, dict):
         return None
-    data = agent_template_row.get("data")
-    if not isinstance(data, dict):
+    client_id = credentials.get("client_id")
+    client_secret = credentials.get("client_secret")
+    if not isinstance(client_id, str) or not isinstance(client_secret, str):
         return None
-    entries = data.get("custom_config")
-    if not isinstance(entries, list):
+    client_id, client_secret = client_id.strip(), client_secret.strip()
+    if not client_id or not client_secret:
         return None
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        client_id = str(entry.get("client_id") or "").strip()
-        client_secret = str(entry.get("client_secret") or "").strip()
-        if client_id and client_secret:
-            return {"client_id": client_id, "client_secret": client_secret}
-    return None
+    return {"client_id": client_id, "client_secret": client_secret}
 
 
 def apply_dispatched_credentials(enterprise: Any) -> None:
-    """企业配置到达时，提取其中的实例凭据并整份替换（未携带 → 清除）。
-
-    由企业配置合并管线调用（``enterprise.config.config_provider._apply_enterprise_policy``）。
-    ``enterprise`` 为鸭子类型的企业配置对象（带 ``agent_template`` /
-    ``resource_id`` / ``ref_template_id`` 属性；None = 配置未加载 → 清除）。
-    ``custom_config`` 存在但提取不到合法凭据对视为模板配置错误，打
-    ``warning``（只带模板定位信息，不带凭据值）。
-    """
-    global _DISPATCHED_CREDENTIALS
-    row = getattr(enterprise, "agent_template", None) if enterprise is not None else None
-    credentials = extract_dispatched_credentials(row)
-    if credentials is None:
-        data = row.get("data") if isinstance(row, dict) else None
-        if isinstance(data, dict) and "custom_config" in data:
-            logger.warning(
-                "[mcp-dynamic-token] agent_template.data.custom_config has no valid "
-                "client_id/client_secret pair: resource_id=%s ref_template_id=%s",
-                getattr(enterprise, "resource_id", None),
-                getattr(enterprise, "ref_template_id", None),
-            )
-        with _DISPATCHED_LOCK:
-            _DISPATCHED_CREDENTIALS = None
-        return
-    with _DISPATCHED_LOCK:
-        _DISPATCHED_CREDENTIALS = dict(credentials)
+    """Replace credentials from the private Agent registration field, or clear them."""
+    credentials = extract_dispatched_credentials(enterprise)
+    if credentials is None and getattr(enterprise, "agent_client_credentials", None) is not None:
+        logger.warning(
+            "[mcp-dynamic-token] Agent registration has no valid client_id/client_secret pair: "
+            "resource_id=%s ref_template_id=%s",
+            getattr(enterprise, "resource_id", None),
+            getattr(enterprise, "ref_template_id", None),
+        )
+    selected = InstanceCredentials(credentials["client_id"], credentials["client_secret"]) if credentials else None
+    _DISPATCHED_CREDENTIALS.set(selected)
 
 
 def read_instance_credentials() -> InstanceCredentials | None:
-    """读实例级凭据快照；未下发 / 缺 client_id / 缺 client_secret → None。"""
-    with _DISPATCHED_LOCK:
-        section = dict(_DISPATCHED_CREDENTIALS) if _DISPATCHED_CREDENTIALS else None
-    if not section:
-        return None
-    client_id = str(section.get("client_id") or "").strip()
-    client_secret = str(section.get("client_secret") or "").strip()
-    if not client_id or not client_secret:
-        return None
-    return InstanceCredentials(client_id=client_id, client_secret=client_secret)
+    """Return the current registration's immutable credential pair, if bound."""
+    return _DISPATCHED_CREDENTIALS.get()
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +307,6 @@ def unmark_dynamic_token_server(server_id: str) -> None:
             return
         if entry["refcount"] <= 1:
             _DYNAMIC_SERVERS.pop(sid, None)
-            _LATEST_PROVIDERS.pop(sid, None)
             evicted = [p for p in _ACTIVE_PROVIDERS if p.server_id == sid]
             for provider in evicted:
                 _ACTIVE_PROVIDERS.discard(provider)
@@ -390,18 +364,13 @@ def _registry_ssl_verify(server_id: str) -> bool:
 #     FIFO，配对精确；"" 哨兵防止无令牌通知误配他人登记值；
 #   - 出站**响应**（id 无 method，回服务器 ping 等）→ 不登记（响应的 id
 #     属服务器请求 id 空间，与客户端请求撞号，消费会误配）。
-# 每次**非空**登记同步更新 last-known；GET 事件流 / SSE 重连 / DELETE 等
-# 无法按消息归属的请求取 last-known（最近一次已知令牌，令牌换成 B 后
-# 重连即带 B），无已知值回退静态快照。
+# Transport control frames use the connection owner and its latest user token.
 
 #: 存活 provider 集合（每次 connect 的 TOOL_AUTH 新建一个，绑到该连接的
 #: 会话写流代理上）。登记表全部内聚在 provider 实例上——**凭据按连接绑定**：
 #: 同一网关被多个会话各自建连时，各连接的请求 id 空间 / 通知 FIFO /
 #: last-known 互不可见，同 id 撞号、通知错配、GET 重连串身份从根上消除。
 _ACTIVE_PROVIDERS: set["DynamicTokenProvider"] = set()
-#: server_id -> 最近一次 TOOL_AUTH 创建的 provider（connect 成功后的兜底
-#: 安装接缝用；主接缝经归属标记直持 provider 引用，无歧义）。
-_LATEST_PROVIDERS: dict[str, "DynamicTokenProvider"] = {}
 #: 单连接待消费登记上限（在途消息数量级），超出丢弃最旧——连接死亡导致
 #: 永不消费的登记不无限累积。
 _MAX_PENDING_TURN_TOKENS = 64
@@ -510,7 +479,7 @@ class _TurnTokenTaggingStream:
                         self._provider.server_id,
                         request_id,
                     )
-                elif user_token:
+                else:
                     self._provider.record_request_token(request_id, user_token)
         except Exception:  # noqa: BLE001 - 登记失败不阻断消息发送
             logger.debug(
@@ -647,10 +616,7 @@ def _patch_sdk_session_tagging() -> None:
             finally:
                 _CONNECT_USER_TOKEN.reset(pending)
             if ok:
-                with _REGISTRY_LOCK:
-                    provider = _LATEST_PROVIDERS.get(
-                        str(getattr(self, "_server_id", "") or "")
-                    )
+                provider = _consume_pending_tag_provider()
                 _install_turn_token_tagging(getattr(self, "_session", None), provider)
             else:
                 # 建连失败且会话构造点没有消费归属标记（失败发生在
@@ -664,10 +630,8 @@ def _patch_sdk_session_tagging() -> None:
         setattr(_tagged, _TURN_TOKEN_TAGGED_ATTR, True)
         return _tagged
 
-    # Streamable HTTP connect 包装：连接成功后的兜底登记安装（_LATEST_
-    # PROVIDERS → _install_turn_token_tagging）与建连失败时的遗留 provider
-    # 回收。令牌按命令绑定由下方 _submit 包装完成；这里的连接期覆盖仅对
-    # 未经 _submit 的直接调用兜底（当前 SDK 不会走到）。
+    # Use only the provider created by this connection for fallback tagging.
+    # Also release unused providers after connection failure.
     original_streamable = getattr(StreamableHttpClient, "connect", None)
     if original_streamable is not None and not getattr(
         original_streamable, _TURN_TOKEN_TAGGED_ATTR, False
@@ -693,12 +657,15 @@ def _patch_sdk_session_tagging() -> None:
             self: Any, cmd: Any, __orig: Any = original
         ) -> Any:
             captured = _current_user_authorization()
+            actor = read_instance_credentials()
 
             async def _run() -> Any:
                 pending = _CONNECT_USER_TOKEN.set(captured)
+                actor_token = _DISPATCHED_CREDENTIALS.set(actor)
                 try:
                     return await cmd()
                 finally:
+                    _DISPATCHED_CREDENTIALS.reset(actor_token)
                     _CONNECT_USER_TOKEN.reset(pending)
 
             return await __orig(self, _run)
@@ -747,9 +714,6 @@ def _detach_active_provider(provider: "DynamicTokenProvider") -> bool:
         if provider not in _ACTIVE_PROVIDERS:
             return False
         _ACTIVE_PROVIDERS.discard(provider)
-        sid = provider.server_id
-        if _LATEST_PROVIDERS.get(sid) is provider:
-            _LATEST_PROVIDERS.pop(sid, None)
     return True
 
 
@@ -812,7 +776,7 @@ def _token_form_fields(creds: InstanceCredentials) -> dict[str, str]:
     """Keycloak Client Credentials 的三个 form 入参（§2.2）。
 
     ``grant_type`` 是 OAuth 2.0 规范中 Client Credentials 模式的固定字面量。
-    ``client_id`` / ``client_secret`` 是实例层级凭据（上游 Gateway 下发）。
+    ``client_id`` and ``client_secret`` come from the selected Agent registration.
     """
     return {
         "grant_type": "client_credentials",
@@ -982,6 +946,7 @@ class DynamicTokenProvider(httpx.Auth):
         self._ssl_verify = bool(ssl_verify)
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._fetch_credentials: InstanceCredentials | None = None
         self._inflight: asyncio.Task | None = None
         # 负缓存：取 token 失败后的窗口期（秒），窗口内直接空头降级不再打
         # token 服务（防故障期打爆 + warning 刷屏）。0 = 无窗口（立即重试）。
@@ -990,11 +955,12 @@ class DynamicTokenProvider(httpx.Auth):
         # 本方法在后台发送任务里消费。多会话各自建连时各持一个 provider，
         # 登记互不可见——同 id 撞号 / 通知错配 / GET 重连串身份从根上消除。
         #: jsonrpc_id -> 令牌 FIFO（同连接不会撞号；FIFO 容忍重试类重复消费）
-        self._pending_turn_tokens: dict[Any, deque[str]] = {}
+        self._pending_turn_tokens: dict[Any, deque[_TurnAuthorization]] = {}
         #: 通知令牌 FIFO（含 "" 哨兵 = 发送方无令牌）
-        self._pending_notif_tokens: deque[str] = deque()
+        self._pending_notif_tokens: deque[_TurnAuthorization] = deque()
+        self._evicted_notifications = 0
         #: 最近一次非空登记值（GET / SSE 重连 / DELETE 等取它）
-        self._last_turn_token: str = ""
+        self._control_auth = _TurnAuthorization(_effective_send_authorization(), read_instance_credentials())
         self._binding_lock = threading.Lock()
         #: 持有本 provider 的会话（弱引用）。provider 随连接创建，也随会话
         #: 关闭回收——避免只依赖 unmark 被动清理，长期存活进程里泄漏 token
@@ -1008,8 +974,7 @@ class DynamicTokenProvider(httpx.Auth):
     def bind_session(self, session: Any) -> bool:
         """把 provider 绑定到会话；已被**其它存活会话**持有时返回 False。
 
-        兜底安装接缝可能查到同一 server_id 的“最近 provider”，若它已属于
-        另一个连接，绑定失败即跳过，绝不把别的连接的身份/生命周期挂过来。
+        Both tagging hooks must agree on the same session for this provider.
         """
         with self._binding_lock:
             owner = (
@@ -1053,19 +1018,21 @@ class DynamicTokenProvider(httpx.Auth):
         """发送侧登记：把当前调用者的用户令牌绑到本连接的 JSON-RPC id 上。"""
         with self._binding_lock:
             queue = self._pending_turn_tokens.setdefault(request_id, deque())
-            queue.append(authorization)
+            turn = _TurnAuthorization(authorization, read_instance_credentials())
+            queue.append(turn)
             # 上限作用于不同 id 的数量（连接死亡导致永不消费的登记不无限累积）
             while len(self._pending_turn_tokens) > _MAX_PENDING_TURN_TOKENS:
                 self._pending_turn_tokens.pop(next(iter(self._pending_turn_tokens)))
-            if authorization:
-                self._last_turn_token = authorization
+            # Transport control messages belong to the Agent that opened the connection.
+            if authorization and turn.actor == self._control_auth.actor:
+                self._control_auth = turn
 
-    def _consume_request_token(self, request_id: Any) -> str:
-        """出网消费：返回并移除该 id 的登记（无 → 空串，调用方回退静态头）。"""
+    def _consume_request_token(self, request_id: Any) -> _TurnAuthorization:
+        """Consume both identities for this request; missing IDs have no registration."""
         with self._binding_lock:
             queue = self._pending_turn_tokens.get(request_id)
             if not queue:
-                return ""
+                return _TurnAuthorization()
             value = queue.popleft()
             if not queue:
                 self._pending_turn_tokens.pop(request_id, None)
@@ -1074,15 +1041,19 @@ class DynamicTokenProvider(httpx.Auth):
     def push_notification_token(self, authorization: str) -> None:
         """发送侧入队：通知与其 POST 按 FIFO 配对；无令牌入 "" 哨兵占位。"""
         with self._binding_lock:
-            self._pending_notif_tokens.append(authorization)
+            self._pending_notif_tokens.append(_TurnAuthorization(authorization, read_instance_credentials()))
             while len(self._pending_notif_tokens) > _MAX_PENDING_NOTIF_TOKENS:
                 self._pending_notif_tokens.popleft()
+                self._evicted_notifications += 1
 
-    def _pop_notification_token(self) -> str:
-        """出网出队：该通知 POST 对应发送侧登记的令牌（"" = 无令牌）。"""
+    def _pop_notification_token(self) -> _TurnAuthorization:
+        """Consume the next notification in send order, including evicted positions."""
         with self._binding_lock:
+            if self._evicted_notifications:
+                self._evicted_notifications -= 1
+                return _TurnAuthorization()
             if not self._pending_notif_tokens:
-                return ""
+                return _TurnAuthorization()
             return self._pending_notif_tokens.popleft()
 
     async def async_auth_flow(
@@ -1103,22 +1074,17 @@ class DynamicTokenProvider(httpx.Auth):
         # 保留条目静态快照头，不阻断请求。
         kind, request_id = _jsonrpc_kind_and_id(request)
         if kind == "request":
-            user_authorization = self._consume_request_token(request_id)
+            turn = self._consume_request_token(request_id)
         elif kind == "notification":
-            user_authorization = self._pop_notification_token()
-        else:  # response / unknown（GET / DELETE / 无法解析）
-            user_authorization = self._last_turn_token
-            if not user_authorization:
-                # 尚无任何已登记令牌（典型：SSE 建连的 GET /sse 先于首次
-                # send）。连接期覆盖由 connect/reconnect 的调用者捕获——
-                # 尤其 SSE owner task 冻结上下文时，只有这里能拿到当轮值。
-                override = _CONNECT_USER_TOKEN.get()
-                if override is not _UNSET:
-                    user_authorization = str(override or "")
-        if user_authorization:
-            request.headers["Authorization"] = user_authorization
+            turn = self._pop_notification_token()
+        elif request.method == "POST" and kind == "unknown":
+            turn = _TurnAuthorization(user=self._control_auth.user)
+        else:
+            turn = self._control_auth
+        if turn.user:
+            request.headers["Authorization"] = turn.user
         try:
-            token = await self._get_token()
+            token = await self._get_token(turn.actor)
         except McpDynamicTokenUnavailableError:
             # 取不到 token 不阻断请求：动态头置空（空字符串），照常发起调用，
             # 由网关决定放行或 401。CancelledError 等 BaseException 不在此消化。
@@ -1127,7 +1093,12 @@ class DynamicTokenProvider(httpx.Auth):
             request.headers[TOKEN_HEADER_NAME] = TOKEN_HEADER_PREFIX + token
         yield request
 
-    async def _get_token(self) -> str:
+    async def _get_token(self, credentials: InstanceCredentials | None) -> str:
+        if credentials != self._fetch_credentials:
+            # An unbound or rotated client must not suppress requests from the next registration.
+            self._fetch_credentials = credentials
+            self._inflight = None
+            self._negative_until = 0.0
         now = time.monotonic()
         if now < self._negative_until:
             # 负缓存窗口内：直接失败（空头降级），不再打 token 服务。
@@ -1139,24 +1110,22 @@ class DynamicTokenProvider(httpx.Auth):
         inflight = self._inflight
         if inflight is not None and not inflight.done():
             return await inflight
-        task = asyncio.get_running_loop().create_task(self._fetch_token())
+        task = asyncio.get_running_loop().create_task(self._fetch_token(credentials))
         self._inflight = task
         try:
             token = await task
         except Exception:
             # 失败进入负缓存：窗口内后续请求直接空头降级（不再打 token 服务）。
-            self._negative_until = time.monotonic() + _NEGATIVE_CACHE_TTL_S
+            if self._inflight is task:
+                self._negative_until = time.monotonic() + _NEGATIVE_CACHE_TTL_S
             raise
         finally:
             if self._inflight is task:
                 self._inflight = None
-        self._negative_until = 0.0
         return token
 
-    async def _fetch_token(self) -> str:
-        # 现读实例凭据（下发快照热更即时生效）；token 端点用创建时登记的
-        # 网关级 url（注册表按 server_id 持有，重连/热更均命中）。
-        creds = read_instance_credentials()
+    async def _fetch_token(self, creds: InstanceCredentials | None) -> str:
+        # Use the same credential snapshot that selected the in-flight request.
         if creds is None:
             # 凭据被清除（下发快照未携带段）→ 专用异常 → async_auth_flow
             # 置空头降级；不用 AttributeError 穿透。
@@ -1252,7 +1221,6 @@ class DynamicTokenAuthStrategy:
         )
         with _REGISTRY_LOCK:
             _ACTIVE_PROVIDERS.add(provider)
-            _LATEST_PROVIDERS[tool_id] = provider
         # 归属标记：connect 流程内 authenticate 与 ClientSession 构造同
         # 任务，构造点消费标记（直持本连接的 provider）装上登记代理
         # （initialize 握手与通知即带当轮用户令牌，见 _TurnTokenTaggingStream）。
@@ -1293,14 +1261,12 @@ def apply_mcp_dynamic_token_patch() -> bool:
 
 def _reset_dynamic_token_state_for_tests() -> None:
     """测试隔离：清空补丁态与注册表（不触碰 SDK registry 的最终槽位归属）。"""
-    global _PATCHED, _ORIGINAL_STRATEGY, _DISPATCHED_CREDENTIALS
+    global _PATCHED, _ORIGINAL_STRATEGY
     with _REGISTRY_LOCK:
         providers = list(_ACTIVE_PROVIDERS)
         _ACTIVE_PROVIDERS.clear()
-        _LATEST_PROVIDERS.clear()
         _DYNAMIC_SERVERS.clear()
-    with _DISPATCHED_LOCK:
-        _DISPATCHED_CREDENTIALS = None
+    _DISPATCHED_CREDENTIALS.set(None)
     _PATCHED = False
     _ORIGINAL_STRATEGY = None
     DynamicTokenAuthStrategy.auth_type = None
