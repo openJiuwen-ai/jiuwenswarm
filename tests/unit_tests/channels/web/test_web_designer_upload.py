@@ -16,6 +16,19 @@ from jiuwenswarm.channels.web.designer_upload_http import handle_designer_upload
 _BOUNDARY = "----designer-upload"
 
 
+class _StubConnection:
+    """Minimal socket stand-in for the drain idle-timeout calls."""
+
+    def __init__(self) -> None:
+        self.timeout: float | None = None
+
+    def gettimeout(self) -> float | None:
+        return self.timeout
+
+    def settimeout(self, value: float | None) -> None:
+        self.timeout = value
+
+
 class _UploadHandlerHarness(_SpaStaticHandler):
     """Real ``/file-api`` POST routing over an in-memory request."""
 
@@ -24,6 +37,7 @@ class _UploadHandlerHarness(_SpaStaticHandler):
         self.path = path
         self.headers = headers
         self.rfile = io.BytesIO(body)
+        self.connection = _StubConnection()
         self.logger = logging.getLogger("test-web-designer-upload")
         self.sent: list[tuple[int, dict | None]] = []
 
