@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock
 
@@ -378,6 +378,10 @@ async def test_partial_answer_is_not_the_team_completion_predicate(task_status: 
             SimpleNamespace(status="ready"),
         ]))),
         message_manager=SimpleNamespace(has_unread_messages=AsyncMock(return_value=False)),
+    )
+    # Newer core splits completion into settled_completion_snapshot + unread check.
+    backend.settled_completion_snapshot = MethodType(
+        TeamBackend.settled_completion_snapshot, backend
     )
     result = await TeamBackend.is_team_completed(backend)
     if task_status in {"pending", "in_progress"}:
