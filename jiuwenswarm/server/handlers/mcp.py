@@ -241,6 +241,8 @@ async def _persist_and_probe_mcp(
     old_item: dict[str, Any] | None,
     types: McpUpsertTypes,
     item: dict[str, Any] | None = None,
+    *,
+    force_reload: bool = False,
 ) -> AgentResponse:
     """Shared add/update persistence + live-connect probe.
 
@@ -259,7 +261,7 @@ async def _persist_and_probe_mcp(
     else:
         old_relevant = {k: old_item[k] for k in payload if k in old_item}
         config_changed = old_relevant != payload
-    if not config_changed:
+    if not config_changed and not force_reload:
         logger.info("[command.mcp] add/update skipped reload: '%s' config unchanged", name)
     # config.yaml legacy stock has no connection_state and no state.json
     # rollback target — skip the probe; keep the direct write+reload path.
@@ -460,10 +462,14 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
             if not pre_check_failed:
                 name = server_payload.get("name", "")
                 old_item = get_mcp_server_config(name) if name else None
-                resp = await _persist_and_probe_mcp(services, 
-                    request, server_payload, old_item,
-                    types=McpUpsertTypes(ok="added", fail="add_failed"),
-                )
+                from jiuwenswarm.server.runtime.mcp.control import mcp_change_guard
+
+                async with mcp_change_guard(services.agent_manager, name):
+                    resp = await _persist_and_probe_mcp(services,
+                        request, server_payload, old_item,
+                        types=McpUpsertTypes(ok="added", fail="add_failed"),
+                        force_reload=bool(params.get("force_reload", False)),
+                    )
         elif action in {"enable", "disable"}:
             name = str(params.get("name", "")).strip()
             if not name:
@@ -483,25 +489,28 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
 
             # set_mcp_server_enabled 双查(state.json 优先，兜底 config.yaml)，
             # 在 server 不存在时抛 KeyError，由外层统一返回 MCP_NOT_FOUND。
-            item = set_mcp_server_enabled(name, enabled)
+            from jiuwenswarm.server.runtime.mcp.control import mcp_change_guard
 
-            # 只有 enabled 状态真的改变才需要 reload；无法判断旧状态时保守 reload。
-            config_changed = (old_enabled is None) or (old_enabled != enabled)
-            if not config_changed:
-                logger.info(
-                    "[command.mcp] %s skipped reload: '%s' already %s",
-                    action, name, "enabled" if enabled else "disabled",
-                )
+            async with mcp_change_guard(services.agent_manager, name):
+                item = set_mcp_server_enabled(name, enabled)
 
-            applied = True
-            error_message = ""
-            if config_changed:
-                try:
-                    await services.agent_manager.reload_agents_config(get_config(), None)
-                except Exception as reload_exc:  # noqa: BLE001
-                    applied = False
-                    error_message = str(reload_exc)
-                    logger.warning("[command.mcp] reload after %s failed: %s", action, reload_exc)
+                # 只有 enabled 状态真的改变才需要 reload；无法判断旧状态时保守 reload。
+                config_changed = (old_enabled is None) or (old_enabled != enabled)
+                if not config_changed:
+                    logger.info(
+                        "[command.mcp] %s skipped reload: '%s' already %s",
+                        action, name, "enabled" if enabled else "disabled",
+                    )
+
+                applied = True
+                error_message = ""
+                if config_changed:
+                    try:
+                        await services.agent_manager.reload_agents_config(get_config(), None)
+                    except Exception as reload_exc:  # noqa: BLE001
+                        applied = False
+                        error_message = str(reload_exc)
+                        logger.warning("[command.mcp] reload after %s failed: %s", action, reload_exc)
 
             payload = {
                 "type": "enabled" if enabled else "disabled",
@@ -524,15 +533,18 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
             # remove_mcp_server 双查(state.json 优先，兜底 config.yaml)，
             # 在 server 不存在时抛 KeyError，由外层统一返回 MCP_NOT_FOUND，
             # 且不会触发 reload（删除不存在 = 无变化）。
-            removed = remove_mcp_server(name)
-            applied = True
-            error_message = ""
-            try:
-                await services.agent_manager.reload_agents_config(get_config(), None)
-            except Exception as reload_exc:  # noqa: BLE001
-                applied = False
-                error_message = str(reload_exc)
-                logger.warning("[command.mcp] reload after remove failed: %s", reload_exc)
+            from jiuwenswarm.server.runtime.mcp.control import mcp_change_guard
+
+            async with mcp_change_guard(services.agent_manager, name):
+                removed = remove_mcp_server(name)
+                applied = True
+                error_message = ""
+                try:
+                    await services.agent_manager.reload_agents_config(get_config(), None)
+                except Exception as reload_exc:  # noqa: BLE001
+                    applied = False
+                    error_message = str(reload_exc)
+                    logger.warning("[command.mcp] reload after remove failed: %s", reload_exc)
             payload = {
                 "type": "removed",
                 "name": name,
@@ -581,11 +593,57 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
             if not pre_check_failed:
                 upd_name = normalized.get("name", "")
                 old_item = get_mcp_server_config(upd_name) if upd_name else None
-                resp = await _persist_and_probe_mcp(services, 
-                    request, normalized, old_item,
-                    types=McpUpsertTypes(ok="updated", fail="update_failed"),
-                    item=_mask_sensitive_fields(normalized),
-                )
+                from jiuwenswarm.server.runtime.mcp.control import mcp_change_guard
+
+                async with mcp_change_guard(services.agent_manager, upd_name):
+                    resp = await _persist_and_probe_mcp(services,
+                        request, normalized, old_item,
+                        types=McpUpsertTypes(ok="updated", fail="update_failed"),
+                        item=_mask_sensitive_fields(normalized),
+                        force_reload=bool(params.get("force_reload", False)),
+                    )
+        elif action == "inspect_inventory":
+            name = str(params.get("name", "")).strip()
+            if not name:
+                raise ValueError("MCP server name is required")
+            if name != "rea":
+                raise ValueError("inspect_inventory is only supported for rea")
+            from jiuwenswarm.server.runtime.mcp import apps as mcp_apps
+
+            tools = await mcp_apps.list_app_tools(name)
+            call_result = await mcp_apps.call_diagnostic_tool(
+                name,
+                "binary_session",
+                {},
+            )
+            from jiuwenswarm.common.rea_mcp_probe import (
+                binary_session_from_call_result,
+                run_functional_tool_probes,
+            )
+
+            functional_probes = await run_functional_tool_probes(
+                lambda tool, arguments: mcp_apps.call_diagnostic_tool(
+                    name,
+                    tool,
+                    arguments,
+                ),
+                tools,
+            )
+            binary_session = binary_session_from_call_result(call_result)
+            if functional_probes:
+                binary_session["functional_probes"] = functional_probes
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={
+                    "type": "inventory",
+                    "server_name": name,
+                    "tools": tools,
+                    "binary_session_result": call_result,
+                    "functional_probe_results": functional_probes,
+                },
+            )
         elif action == "list_tools":
             name = str(params.get("name", "")).strip()
             if not name:
@@ -640,7 +698,7 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
             )
         else:
             raise ValueError("Unsupported action, must be one of " \
-                             "list|show|add|update|enable|disable|remove|list_tools")
+                             "list|show|add|update|enable|disable|remove|inspect_inventory|list_tools")
     except KeyError as exc:
         resp = AgentResponse(
             request_id=request.request_id,

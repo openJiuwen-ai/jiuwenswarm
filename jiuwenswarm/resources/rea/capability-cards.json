@@ -198,6 +198,7 @@
           "label": "Rizin",
           "kind": "component",
           "component_id": "rizin",
+          "available_on_any_tool": true,
           "tool_names": [
             "start_rizin_debug_session",
             "execute_rizin_command",
@@ -223,7 +224,8 @@
         {
           "id": "frida",
           "label": "Frida",
-          "kind": "tool_group",
+          "kind": "component",
+          "component_id": "frida",
           "tool_names": [
             "close_frida_session",
             "frida_session_status",
@@ -240,6 +242,7 @@
           "id": "browser_electron",
           "label": "浏览器 / Electron runtime",
           "kind": "tool_group",
+          "requires_component": "chrome",
           "tool_names": [
             "analyze_javascript_application",
             "analyze_web_bundle",
@@ -316,7 +319,7 @@
         "recover_javascript_sources",
         "inspect_with_objdump"
       ],
-      "manual_actions": ["pwntools 和 Wakaru 当前仅支持 Linux x64", "objdump 属于系统依赖"]
+      "manual_actions": ["pwntools 和 Wakaru 当前仅支持 Linux x64", "objdump 在 Windows 自动安装，其他平台需要配置 GNU binutils"]
     }
   ]
 }

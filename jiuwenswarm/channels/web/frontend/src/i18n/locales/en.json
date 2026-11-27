@@ -6935,7 +6935,7 @@
     "viewDetails": "View details",
     "gotIt": "Got it",
     "memberDetails": "Components",
-    "installCancelled": "Installation was cancelled.",
+    "installCancelled": "Installation was cancelled. Installed capabilities are kept for later.",
     "mcpDetailsTitle": "REA MCP details",
     "tools": "Tools",
     "inventoryGroups": "Tool groups / available tools",
@@ -6971,6 +6971,7 @@
     "visualState": {
       "available": "Available",
       "installing": "Installing",
+      "verifying": "Verifying",
       "detecting": "Detecting",
       "needsAction": "Needs setup",
       "detected": "Detected",

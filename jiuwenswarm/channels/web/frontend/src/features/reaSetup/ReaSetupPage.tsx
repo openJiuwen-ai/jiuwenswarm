@@ -12,15 +12,18 @@ import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import { reaSetupApi } from './reaSetupApi';
 import {
   cancelReaSetupJob,
+  classifyCompletedReaSetupJob,
   estimatePaceRemainingSeconds,
   estimateRemainingSeconds,
   formatProgressDuration,
+  mergeReaSetupScan,
   messageWithoutEta,
   persistActiveJob,
   pollReaSetupJob,
   readPersistedActiveJob,
+  resolveActiveComponentVisualState,
+  resolveEnhancedVisualState,
   selectDisplayedRemainingSeconds,
-  shouldDeferEnhancedDetection,
   stabilizeRemainingSeconds,
   aggregateCapabilityVisualState,
   type VisualState,
@@ -28,7 +31,6 @@ import {
 import type {
   ReaAssistedInput,
   ReaSetupEnhancedItem,
-  ReaSetupInstallResult,
   ReaSetupJob,
   ReaSetupPlanItem,
   ReaSetupScan,
@@ -122,7 +124,6 @@ function mergePlan(
     const live = enhancedById.get(item.id);
     const state =
       live?.available === true
-        || (live?.available == null && live?.inventory?.configured)
         ? 'ready'
         : live?.code === 'unsupported_host'
           ? 'unsupported'
@@ -144,7 +145,9 @@ function groupStats(
         || (includePartialAsInstalled && item.visualState === 'partial')
       ),
     ).length,
-    installing: items.filter((item) => item.visualState === 'installing').length,
+    installing: items.filter(
+      (item) => item.visualState === 'installing' || item.visualState === 'verifying',
+    ).length,
     notInstalled: items.filter(
       (item) => (
         item.visualState === 'notInstalled'
@@ -172,10 +175,10 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   }
   const [scan, setScan] = useState<ReaSetupScan | null>(null);
   const [job, setJobState] = useState<ReaSetupJob | null>(initialActiveJobRef.current);
-  const [enhancedResult, setEnhancedResult] = useState<ReaSetupInstallResult | null>(null);
   const [loading, setLoading] = useState(initialActiveJobRef.current === null);
-  const [refreshing, setRefreshing] = useState(false);
+  const [refreshingScope, setRefreshingScope] = useState<'all' | GroupKind | null>(null);
   const [error, setError] = useState('');
+  const [cancelNotice, setCancelNotice] = useState('');
   const [cancelPending, setCancelPending] = useState(false);
   const [clock, setClock] = useState(Date.now());
   const [scanStartedAt, setScanStartedAt] = useState(Date.now());
@@ -203,67 +206,67 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   const mountedRef = useRef(true);
   const pollGenerationRef = useRef(0);
   const cancelActiveRef = useRef(false);
+  const jobRef = useRef<ReaSetupJob | null>(initialActiveJobRef.current);
 
   const setJob = useCallback((next: ReaSetupJob | null) => {
+    jobRef.current = next;
     setJobState(next);
     persistActiveJob(activeJobStorage, next);
   }, [activeJobStorage]);
 
+  const refreshing = refreshingScope !== null;
   const installing = job?.status === 'queued' || job?.status === 'running';
   const baseReady = scan?.ready === true;
   const mergedPlan = useMemo(
     () => mergePlan(scan?.enhanced_plan ?? [], scan?.enhanced ?? []),
     [scan?.enhanced, scan?.enhanced_plan],
   );
-  const resultById = useMemo(() => {
-    const results = new Map(
-      Object.entries(job?.component_results ?? {}).map(([id, item]) => [id, item]),
-    );
-    for (const item of enhancedResult?.enhanced_install_results ?? []) {
-      results.set(item.id, item);
-    }
-    return results;
-  }, [enhancedResult?.enhanced_install_results, job?.component_results]);
+  const resultById = useMemo(
+    () => new Map(Object.entries(job?.component_results ?? {})),
+    [job?.component_results],
+  );
 
   const applyScan = useCallback((next: ReaSetupScan) => {
     scanRef.current = next;
     setScan(next);
   }, []);
 
-  const refresh = useCallback(async (scope: 'all' | GroupKind = 'all') => {
+  const refresh = useCallback(async (
+    scope: 'all' | GroupKind = 'all',
+    options: {
+      preserveCancelNotice?: boolean;
+      preserveError?: boolean;
+      timeoutMs?: number;
+    } = {},
+  ) => {
     if (refreshInFlightRef.current) return;
     refreshInFlightRef.current = true;
+    const currentJob = jobRef.current;
+    if (currentJob && currentJob.status !== 'queued' && currentJob.status !== 'running') {
+      setJob(null);
+    }
     const hasSnapshot = scanRef.current !== null;
-    setError('');
+    if (!options.preserveError) {
+      setError('');
+    }
+    if (!options.preserveCancelNotice) {
+      setCancelNotice('');
+    }
     setLoading(!hasSnapshot && initialActiveJobRef.current === null);
-    setRefreshing(hasSnapshot);
+    setRefreshingScope(hasSnapshot ? scope : null);
     setScanStartedAt(Date.now());
     try {
-      const next = await reaSetupApi.status(scope);
+      const next = await reaSetupApi.status(scope, options.timeoutMs);
       const previous = scanRef.current;
-      applyScan(
-        scope === 'base' && previous && next.ready
-          ? {
-              ...previous,
-              ...next,
-              enhanced: previous.enhanced,
-              enhanced_plan: previous.enhanced_plan,
-              capability_cards: previous.capability_cards,
-              rea_inventory_diagnostics: previous.rea_inventory_diagnostics,
-            }
-          : next,
-      );
-      if (!next.ready) {
-        setEnhancedResult(null);
-      }
+      applyScan(mergeReaSetupScan(previous, next, scope));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       refreshInFlightRef.current = false;
       setLoading(false);
-      setRefreshing(false);
+      setRefreshingScope(null);
     }
-  }, [applyScan]);
+  }, [applyScan, setJob]);
 
   const recoverStaleJob = useCallback(async () => {
     pollGenerationRef.current += 1;
@@ -274,8 +277,8 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     setCancelPending(false);
     setJob(null);
     setScan(null);
-    setEnhancedResult(null);
     setError('');
+    setCancelNotice('');
     stableRemainingRef.current = null;
     displayedRemainingRef.current = null;
     await refresh('all');
@@ -299,24 +302,26 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     if (current.status === 'queued' || current.status === 'running') return;
     cancelActiveRef.current = false;
     setCancelPending(false);
-    if (scanRef.current === null && (current.status === 'cancelled' || !current.result?.scan)) {
-      initialActiveJobRef.current = null;
-      await refresh();
-      if (!mountedRef.current) return;
-    }
-    if (current.status === 'cancelled') {
-      setError(t('reaSetup.installCancelled'));
+    const completion = classifyCompletedReaSetupJob(current);
+    if (completion === 'cancelled') {
+      setError('');
+      setCancelNotice(t('reaSetup.installCancelled'));
+      await refresh('all', {
+        preserveCancelNotice: true,
+        timeoutMs: 45000,
+      });
     } else if (current.result?.scan) {
-      if (current.kind === 'enhanced') {
-        setEnhancedResult(current.result);
-      }
       applyScan(current.result.scan);
       if (current.kind === 'base' && current.result.base_ready) {
         setDecisionPending(true);
         setDecisionModalOpen(true);
       }
-    } else if (current.error) {
+    } else if (completion === 'error' && current.error) {
       setError(current.error);
+      await refresh('all', {
+        preserveError: true,
+        timeoutMs: 45000,
+      });
     }
   }, [applyScan, refresh, t]);
 
@@ -328,6 +333,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     setDecisionPending(false);
     setDecisionModalOpen(false);
     setError('');
+    setCancelNotice('');
     try {
       const initial = await reaSetupApi.installEnhanced(components);
       const current = await pollJob(initial);
@@ -345,7 +351,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     setBaseExpanded(true);
     setEnhancedExpanded(true);
     setError('');
-    setEnhancedResult(null);
+    setCancelNotice('');
     setDecisionPending(false);
     setDecisionModalOpen(false);
     try {
@@ -475,6 +481,10 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
 
   const configure = useCallback(async () => {
     if (!configuring) return;
+    const currentJob = jobRef.current;
+    if (currentJob && currentJob.status !== 'queued' && currentJob.status !== 'running') {
+      setJob(null);
+    }
     setConfigureSaving(true);
     setError('');
     try {
@@ -487,10 +497,14 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     } finally {
       setConfigureSaving(false);
     }
-  }, [applyScan, configureValues, configuring]);
+  }, [applyScan, configureValues, configuring, setJob]);
 
   const baseCardVisualState = useCallback(
     (id: string, ok: boolean): VisualState => {
+      const baseJobActive =
+        job?.kind === 'base'
+        && (job.status === 'queued' || job.status === 'running');
+      if (!baseJobActive) return ok ? 'available' : 'notInstalled';
       const stepIds =
         id === 'node_npx'
           ? ['node_npx', 'node_runtime_download']
@@ -505,45 +519,44 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
       }
       return ok ? 'available' : 'notInstalled';
     },
-    [job?.steps],
+    [job],
   );
 
   const componentVisualState = useCallback(
     (item: PlanWithEnhanced): VisualState => {
       const result = resultById.get(item.id);
+      const componentSteps = (job?.steps ?? []).filter((step) =>
+        (step.id || '').startsWith(`component_${item.id}_`),
+      );
+      const activeAutoInstall =
+        installing
+        && job?.kind === 'enhanced'
+        && (job.plan ?? []).some(
+          (planned) => planned.id === item.id && planned.auto_install,
+        );
+      if (activeAutoInstall) {
+        const activeState = resolveActiveComponentVisualState({
+          stepStates: componentSteps.map((step) => step.status),
+          resultState: result?.state,
+          resultSource: result?.source,
+        });
+        if (activeState) {
+          return activeState;
+        }
+      }
       if (result) {
         if (result.state === 'installed' || result.state === 'reused') return 'available';
         if (result.state === 'needs_action') return 'needsAction';
         if (result.state === 'unsupported') return 'unsupported';
         return 'failed';
       }
-      const steps = (job?.steps ?? []).filter((step) =>
-        (step.id || '').startsWith(`component_${item.id}_`),
-      );
-      if (steps.some((step) => step.status === 'failed')) return 'failed';
-      if (
-        steps.some(
-          (step) => step.status === 'running' || (step.status === 'succeeded' && !steps.every((candidate) => candidate.status !== 'pending')),
-        )
-      ) {
-        return 'installing';
-      }
-      const inventoryState = item.enhanced?.inventory?.state ?? item.enhanced?.local_state;
-      if (inventoryState === 'unsupported') return 'unsupported';
-      if (inventoryState === 'partial') return 'partial';
-      if (inventoryState === 'downloaded' || inventoryState === 'cached') return 'downloaded';
-      if (inventoryState === 'discovered') return 'detected';
-      if (inventoryState === 'configured') {
-        return item.enhanced?.available === false || item.state === 'needs_action'
-          ? 'needsAction'
-          : 'available';
-      }
-      if (item.state === 'ready') return 'available';
-      if (item.state === 'needs_action') return 'needsAction';
-      if (item.state === 'unsupported') return 'unsupported';
-      return 'notInstalled';
+      return resolveEnhancedVisualState({
+        planState: item.state,
+        available: item.enhanced?.available,
+        inventoryState: item.enhanced?.inventory?.state ?? item.enhanced?.local_state,
+      });
     },
-    [job?.steps, resultById],
+    [installing, job?.kind, job?.plan, job?.steps, resultById],
   );
 
   const baseDisplayItems = (scan?.base ?? []).map((item) => ({
@@ -557,6 +570,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   const capabilityCardState = (state: string): VisualState => {
     if (state === 'available') return 'available';
     if (state === 'installing') return 'installing';
+    if (state === 'verifying') return 'verifying';
     if (state === 'partial') return 'partial';
     if (state === 'needs_action') return 'needsAction';
     if (state === 'unsupported') return 'unsupported';
@@ -564,10 +578,6 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     return 'notInstalled';
   };
   const liveCardById = new Map((scan?.capability_cards ?? []).map((card) => [card.id, card]));
-  const enhancedScanPending = shouldDeferEnhancedDetection(
-    job,
-    scan?.capability_cards?.length ?? 0,
-  );
   const capabilityCards: CapabilityCardView[] = CAPABILITY_SPECS.map((spec) => {
     const memberItems = spec.memberIds
       .map((id) => enhancedDisplayItems.find((item) => item.id === id))
@@ -579,10 +589,12 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     const members: CapabilityMemberView[] = spec.memberIds.map((id) => {
       const item = memberItems.find((candidate) => candidate.id === id);
       const liveMember = liveMemberById.get(id);
-    const memberState = enhancedScanPending
-        ? 'installing'
-        : item?.visualState
-          || (liveMember ? capabilityCardState(liveMember.state) : 'notInstalled');
+      const memberState =
+        item && (resultById.has(id) || item.visualState === 'installing')
+          ? item.visualState
+          : liveMember
+            ? capabilityCardState(liveMember.state)
+            : item?.visualState || 'notInstalled';
       return {
         id,
         label: liveMember?.label || item?.label || MEMBER_FALLBACK_LABELS[id] || id,
@@ -591,22 +603,21 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
       };
     });
     let visualState: VisualState;
-    if (enhancedScanPending) {
-      visualState = 'installing';
-    } else if (memberItems.length === 0) {
-      visualState = liveCard
-        ? capabilityCardState(liveCard.state)
-        : scan?.platform_id?.startsWith('macos')
-          ? 'available'
-          : 'unsupported';
+    if (memberItems.length === 0) {
+      if (liveCard) {
+        visualState = capabilityCardState(liveCard.state);
+      } else if (spec.id === 'apple') {
+        visualState = scan?.platform_id?.startsWith('macos') ? 'available' : 'unsupported';
+      } else {
+        visualState = 'notInstalled';
+      }
+    } else if (liveCard && !installing) {
+      visualState = capabilityCardState(liveCard.state);
     } else {
       visualState = aggregateCapabilityVisualState(
         memberItems.map((item) => item.visualState),
         { liveState: liveCard ? capabilityCardState(liveCard.state) : undefined },
       );
-    }
-    if (installing && job?.kind === 'enhanced' && visualState !== 'available' && visualState !== 'failed') {
-      visualState = 'installing';
     }
     const actionMember = memberItems.find(
       (item) => (
@@ -882,7 +893,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
             data-testid={`rea-check-${kind}`}
           >
             <img className="rea-group__check-icon" src={detectArt} alt="" aria-hidden />
-            {refreshing ? t('reaSetup.checking') : t('reaSetup.stats.check')}
+            {refreshingScope === kind ? t('reaSetup.checking') : t('reaSetup.stats.check')}
           </button>
           <button
             type="button"
@@ -1146,6 +1157,15 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
               ))}
             </div>
           </section>
+        )}
+
+        {cancelNotice && (
+          <div className="rea-cancel-notice" role="status" data-testid="rea-setup-cancelled">
+            <span>{cancelNotice}</span>
+            <button type="button" className="rea-text-action" onClick={() => void refresh()}>
+              {t('reaSetup.stats.check')}
+            </button>
+          </div>
         )}
 
         {error && (

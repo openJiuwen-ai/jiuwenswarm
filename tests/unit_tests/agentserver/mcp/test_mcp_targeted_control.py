@@ -83,6 +83,43 @@ async def test_agent_manager_apply_mcp_change_one_success_among_failures() -> No
 
 
 @pytest.mark.anyio
+async def test_agent_manager_mcp_change_guard_serializes_same_connector() -> None:
+    """REA install/reload and extension connect/disconnect must not overlap."""
+
+    import asyncio
+    from jiuwenswarm.server.runtime.agent_manager import AgentManager
+
+    mgr = AgentManager.__new__(AgentManager)
+    mgr._mcp_change_locks = {}
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    order: list[str] = []
+
+    async def first() -> None:
+        async with mgr.mcp_change_guard("rea"):
+            order.append("first-enter")
+            first_entered.set()
+            await release_first.wait()
+            order.append("first-exit")
+
+    async def second() -> None:
+        await first_entered.wait()
+        async with mgr.mcp_change_guard("REA"):
+            order.append("second")
+
+    first_task = asyncio.create_task(first())
+    second_task = asyncio.create_task(second())
+    await first_entered.wait()
+    await asyncio.sleep(0)
+    assert order == ["first-enter"]
+
+    release_first.set()
+    await asyncio.gather(first_task, second_task)
+
+    assert order == ["first-enter", "first-exit", "second"]
+
+
+@pytest.mark.anyio
 async def test_adapter_register_mcp_by_name_uses_single_register_no_reload() -> None:
     """register_mcp_by_name builds cfg from get_mcp_server_config + calls
     _register_mcp_server once; it must not invoke reload_agents_config."""

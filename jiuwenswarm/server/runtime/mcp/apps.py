@@ -34,6 +34,7 @@ __all__ = [
     "list_app_tools",
     "read_app_resource",
     "call_app_tool",
+    "call_diagnostic_tool",
     "apply_mcp_apps_patch",
 ]
 
@@ -207,6 +208,33 @@ async def call_app_tool(name: str, tool: str, arguments: dict[str, Any] | None) 
     client = await _client_for(name)
     logger.info("[mcp.apps] app-initiated tools/call server=%s tool=%s", name, t)
     return _dump(await _with_session(client, lambda session: session.call_tool(t, arguments=arguments or {})))
+
+
+async def call_diagnostic_tool(
+    name: str,
+    tool: str,
+    arguments: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Call a model-facing MCP tool for trusted setup diagnostics.
+
+    Unlike :func:`call_app_tool`, this path allows tools without MCP Apps
+    visibility. It is used by AgentServer-side readiness checks and must not
+    be exposed as an MCP App operation.
+    """
+
+    t = str(tool or "").strip()
+    if not t:
+        raise ValueError("tool name is required")
+    if arguments is not None and not isinstance(arguments, dict):
+        raise ValueError("arguments must be an object")
+    client = await _client_for(name)
+    logger.info("[mcp.apps] diagnostic tools/call server=%s tool=%s", name, t)
+    return _dump(
+        await _with_session(
+            client,
+            lambda session: session.call_tool(t, arguments=arguments or {}),
+        )
+    )
 
 
 # --- Agent tool-call path: surface the UI link + raw result to the chat -----

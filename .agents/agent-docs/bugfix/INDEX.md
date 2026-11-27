@@ -347,6 +347,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261126_1055_file-size-unit-rounding](jiuwenswarm/channels/web/B_20261126_1055_file-size-unit-rounding.md) | B | 文件大小在单位边界显示为 1024K/1024M | openjiuwen_ai | 无独立 D：前端展示层单位进位缺陷，无独立设计方案，按 Issue |
+| [B_20261127_1718_rea-live-mcp-availability](jiuwenswarm/channels/web/B_20261127_1718_rea-live-mcp-availability.md) | B | REA 能力状态必须以 Workswarm 实际 MCP 可调用为准 | zhongxiaotian | 无独立 D：修复现有 REA 安装与状态展示契约，不改变组件清单、可安装分类或卡片分组。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-rsi"></a>
 
@@ -402,6 +403,7 @@ generated: true
 | [B_20261127_1021_rea-offline-cancel-recovery](jiuwenswarm/channels/web/B_20261127_1021_rea-offline-cancel-recovery.md) | B | REA 断网取消后卡死且重装不可恢复 | zhongxiaotian | 无独立 D：修复现有 REA 安装作业的前端恢复语义，不改变后端安装协议或状态机。 |
 | [B_20261127_1636_macos-resident-worker-clock-drift](jiuwenswarm/server/supervisor/B_20261127_1636_macos-resident-worker-clock-drift.md) | B | macOS 升级后旧 Worker 因创建时间漂移无法退出 | XINCHEN ZHANG | 无独立 D：在现有 Worker HELLO、部署归属和关闭应答契约内修复旧版兼容路径，无独立设计文档。 |
 | [B_20261128_1414_call-goal-ui-language](jiuwenswarm/common/B_20261128_1414_call-goal-ui-language.md) | B | call_goal 副标题语言与 UI preferred_language 不一致 | wangxin | 无独立 D：在既有 call_goal schema 注入与 preferred_language 请求契约上的局部缺陷修复，不新增架构方案。 |
+| [B_20261127_1718_rea-live-mcp-availability](jiuwenswarm/channels/web/B_20261127_1718_rea-live-mcp-availability.md) | B | REA 能力状态必须以 Workswarm 实际 MCP 可调用为准 | zhongxiaotian | 无独立 D：修复现有 REA 安装与状态展示契约，不改变组件清单、可安装分类或卡片分组。 |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 
@@ -488,6 +490,24 @@ generated: true
 
 <a id="module-jiuwenswarm-observability"></a>
 
+
+## jiuwenswarm/extensions_v2
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261126_2208_application-menu-slot-flicker](jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
+
+<a id="module-jiuwenswarm-gateway-channel_manager-web"></a>
+
+## jiuwenswarm/gateway/channel_manager/web
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261127_1021_rea-offline-cancel-recovery](jiuwenswarm/channels/web/B_20261127_1021_rea-offline-cancel-recovery.md) | B | REA 断网取消后卡死且重装不可恢复 | zhongxiaotian | 无独立 D：修复现有 REA 安装作业的前端恢复语义，不改变后端安装协议或状态机。 |
+| [B_20261127_1718_rea-live-mcp-availability](jiuwenswarm/channels/web/B_20261127_1718_rea-live-mcp-availability.md) | B | REA 能力状态必须以 Workswarm 实际 MCP 可调用为准 | zhongxiaotian | 无独立 D：修复现有 REA 安装与状态展示契约，不改变组件清单、可安装分类或卡片分组。 |
+
+<a id="module-jiuwenswarm-observability"></a>
+
 ## jiuwenswarm/observability
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
@@ -560,6 +580,7 @@ generated: true
 | [B_20261125_1658_unhandled-known-method-no-chat-fallback](jiuwenswarm/server/B_20261125_1658_unhandled-known-method-no-chat-fallback.md) | B | 枚举内未接 handler 的方法落入聊天分支：runtime 两个入口补通用兜底 | mingo007 | 无独立 D：静态审计全部枚举成员的认领层，确认只有 4 个聊天入口方法允许落入 chat 执行器；兜底不维护 175 方法白名单，而是挂在两个入口的收口点上。 |
 | [B_20261126_0212_team-delete-partial-quota-release](jiuwenswarm/server/B_20261126_0212_team-delete-partial-quota-release.md) | B | 团队部分删除后配额占用残留：按会话清理与实体保留 | hanxinyang | 无独立 D：针对 Issue |
 | [B_20261126_1621_health-native-telemetry-exclusion](jiuwenswarm/server/B_20261126_1621_health-native-telemetry-exclusion.md) | B | 健康探测排除 FastAPI 原生遥测 | jrr | 无独立 D：对既有健康接口的小范围修复，无独立设计文档；依据 Issue 7091 及已确认的精确路径排除方案。 |
+| [B_20261127_1718_rea-live-mcp-availability](jiuwenswarm/channels/web/B_20261127_1718_rea-live-mcp-availability.md) | B | REA 能力状态必须以 Workswarm 实际 MCP 可调用为准 | zhongxiaotian | 无独立 D：修复现有 REA 安装与状态展示契约，不改变组件清单、可安装分类或卡片分组。 |
 
 <a id="module-jiuwenswarm-server-control"></a>
 

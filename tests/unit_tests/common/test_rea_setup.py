@@ -6,10 +6,12 @@ import json
 import os
 import plistlib
 import subprocess
+import sys
 import tarfile
 import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,11 +42,307 @@ def test_supports_rea_node_uses_published_range() -> None:
     assert rea_setup.supports_rea_node("22.23.4")
     assert rea_setup.supports_rea_node("24.22.1")
     assert rea_setup.supports_rea_node("26.12.1")
+    assert rea_setup.supports_rea_node("26.13.0")
     assert not rea_setup.supports_rea_node("22.23.3")
     assert not rea_setup.supports_rea_node("24.22.0")
     assert not rea_setup.supports_rea_node("26.12.0")
     assert not rea_setup.supports_rea_node("23.9.0")
     assert not rea_setup.supports_rea_node("25.0.0")
+
+
+@pytest.mark.anyio
+async def test_functional_probes_cover_multiple_provider_diagnostics() -> None:
+    from jiuwenswarm.common.rea_mcp_probe import run_functional_tool_probes
+
+    tools = [
+        {"name": "list_frida_devices"},
+        {"name": "list_cutter_sessions"},
+        {"name": "inspect_adb_client"},
+        {"name": "inspect_apktool_client"},
+        {"name": "inspect_with_objdump"},
+        {"name": "execute_rizin_command"},
+    ]
+    calls = []
+
+    async def call_tool(name: str, arguments: dict[str, object]):
+        calls.append((name, arguments))
+        if name == "list_frida_devices":
+            raise RuntimeError("bindings missing")
+        if name == "inspect_apktool_client":
+            return {
+                "isError": True,
+                "content": [{"text": "apktool executable missing"}],
+            }
+        if name == "list_cutter_sessions":
+            return {
+                "isError": False,
+                "structuredContent": {
+                    "result": {
+                        "sessions": [],
+                        "discovery_status": "no_live_bridge_found",
+                    },
+                },
+            }
+        return {"isError": False}
+
+    probes = await run_functional_tool_probes(call_tool, tools)
+
+    assert {name for name, _arguments in calls} == {
+        "list_frida_devices",
+        "list_cutter_sessions",
+        "inspect_adb_client",
+        "inspect_apktool_client",
+        "inspect_with_objdump",
+        "execute_rizin_command",
+    }
+    assert probes["list_frida_devices"]["ok"] is False
+    assert probes["list_cutter_sessions"]["ok"] is False
+    assert "no_live_bridge_found" in probes["list_cutter_sessions"]["error"]
+    assert probes["inspect_apktool_client"]["error"] == "apktool executable missing"
+    assert probes["inspect_adb_client"]["ok"] is True
+    assert probes["inspect_with_objdump"]["ok"] is True
+    rizin_args = next(arguments for name, arguments in calls if name == "execute_rizin_command")
+    assert rizin_args == {"path": str(Path(sys.executable)), "command": "iI"}
+
+
+def test_temporary_mcp_probe_uses_registered_record_environment(monkeypatch) -> None:
+    from jiuwenswarm.common.rea_mcp_probe import mcp_record_environment
+
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", "D:/host-only/ghidra")
+    monkeypatch.setenv("JAVA_HOME", "D:/host-only/jdk")
+    monkeypatch.setattr(rea_setup, "resolve_node_runtime", lambda _command: None)
+
+    env = mcp_record_environment(
+        {
+            "command": "node.exe",
+            "env": {"PATH": "C:/managed/node", "REA_RIZIN_COMMAND": "C:/rizin.exe"},
+        }
+    )
+
+    assert env["PATH"] == "C:/managed/node"
+    assert env["REA_RIZIN_COMMAND"] == "C:/rizin.exe"
+    assert "GHIDRA_INSTALL_DIR" not in env
+    assert "JAVA_HOME" not in env
+
+
+def test_functional_probe_failure_downgrades_component_without_manifest_tool_mapping() -> None:
+    from jiuwenswarm.common.rea_capability import build_capability_cards
+
+    scan = {
+        "platform_id": "windows-x64",
+        "enhanced": [
+            {"id": "java", "available": True, "install_mode": "managed"},
+            {"id": "jadx", "available": True, "install_mode": "managed"},
+            {"id": "adb", "available": True, "install_mode": "managed"},
+            {"id": "apktool", "available": True, "install_mode": "managed"},
+        ],
+    }
+    tool_names = [
+        "inspect_android_package",
+        "inspect_android_class",
+        "inspect_android_method",
+        "inspect_adb_client",
+        "decode_android_resources",
+    ]
+    binary_session = {
+        "tool_availability": {
+            "groups": [
+                {
+                    "surface": "adb-provider",
+                    "names": tool_names,
+                    "available": True,
+                    "reason": "available",
+                }
+            ]
+        },
+        "functional_probes": {
+            "inspect_adb_client": {
+                "ok": False,
+                "reason": "functional_probe_failed",
+                "error": "adb unavailable",
+            }
+        },
+    }
+
+    cards, _diagnostics = build_capability_cards(
+        scan,
+        binary_session,
+        [{"name": name} for name in tool_names],
+    )
+    android = next(card for card in cards if card["id"] == "android")
+    adb = next(member for member in android["members"] if member["id"] == "adb")
+
+    assert adb["state"] == "missing"
+    assert adb["tool_names"] == ["inspect_adb_client"]
+
+
+def test_functional_probe_failure_overrides_available_provider_candidate() -> None:
+    from jiuwenswarm.common.rea_capability import build_capability_cards
+
+    scan = {
+        "platform_id": "windows-x64",
+        "enhanced": [
+            {"id": "cutter", "available": True, "install_mode": "managed"},
+        ],
+    }
+    binary_session = {
+        "tool_availability": {
+            "groups": [
+                {
+                    "surface": "native-provider",
+                    "names": ["cutter_command", "list_cutter_sessions"],
+                    "available": True,
+                    "reason": "available",
+                }
+            ]
+        },
+        "analysis_provider_candidates": [
+            {
+                "provider": {"id": "cutter"},
+                "availability": {"status": "available", "code": "ready"},
+            }
+        ],
+        "functional_probes": {
+            "list_cutter_sessions": {
+                "ok": False,
+                "reason": "functional_probe_failed",
+                "error": "Cutter bridge is not running",
+            }
+        },
+    }
+
+    cards, _diagnostics = build_capability_cards(
+        scan,
+        binary_session,
+        [{"name": "cutter_command"}, {"name": "list_cutter_sessions"}],
+    )
+    dynamic = next(card for card in cards if card["id"] == "dynamic")
+    cutter = next(member for member in dynamic["members"] if member["id"] == "cutter")
+
+    assert cutter["state"] == "missing"
+
+
+def test_windows_rizin_available_on_any_supported_tool() -> None:
+    from jiuwenswarm.common.rea_capability import (
+        _actual_tool_states,
+        _tool_states,
+        build_capability_cards,
+    )
+
+    tools = [
+        "start_rizin_debug_session",
+        "execute_rizin_command",
+        "rizin_debug_command",
+        "rizin_debug_session_status",
+        "close_rizin_debug_session",
+    ]
+    scan = {
+        "platform_id": "windows-x64",
+        "enhanced": [
+            {"id": "rizin", "available": True, "install_mode": "managed"},
+        ],
+    }
+    binary_session = {
+        "tool_availability": {
+            "groups": [
+                {
+                    "surface": "native-provider",
+                    "names": tools,
+                    "available": True,
+                    "reason": "available",
+                }
+            ]
+        },
+        "functional_probes": {
+            "execute_rizin_command": {
+                "ok": True,
+                "reason": "available",
+                "error": None,
+            }
+        },
+    }
+
+    cards, _diagnostics = build_capability_cards(
+        scan,
+        binary_session,
+        [{"name": name} for name in tools],
+    )
+    dynamic = next(card for card in cards if card["id"] == "dynamic")
+    rizin = next(member for member in dynamic["members"] if member["id"] == "rizin")
+    raw_states, _availability = _tool_states(binary_session)
+    states = _actual_tool_states(
+        raw_states,
+        {},
+        {},
+        binary_session["functional_probes"],
+        "windows-x64",
+    )
+
+    assert rizin["state"] == "available"
+    assert states["execute_rizin_command"]["available"] is True
+    assert states["start_rizin_debug_session"]["actual_reason"] == "unsupported_host"
+
+
+def test_ensure_node_runtime_replaces_incompatible_managed_runtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    root = workspace / "rea" / "runtimes" / "node" / "26.13.0"
+    old_pkg = root / "node-runtime"
+    old_pkg.mkdir(parents=True)
+    for name in ("node.exe", "npx.cmd", "npx-cli.js"):
+        (old_pkg / name).write_text("old", encoding="utf-8")
+    (old_pkg / "version.txt").write_text("25.0.0", encoding="utf-8")
+
+    platform_data = {
+        "url": "https://example.invalid/node.zip",
+        "sha256": "0" * 64,
+        "destination": "rea/cache/node.zip",
+        "extract_to": "rea/runtimes/node/26.13.0",
+        "node": "node-runtime/node.exe",
+        "npx": "node-runtime/npx.cmd",
+        "npx_cli": "node-runtime/npx-cli.js",
+        "archive_type": "zip",
+    }
+    manifest = {
+        "version": "26.13.0",
+        "npm_version": "11.20.0",
+        "platforms": {"test-platform": platform_data},
+    }
+    archive = workspace / "rea" / "cache" / "node.zip"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"archive")
+
+    monkeypatch.setattr(rea_setup, "resolve_node_runtime", lambda *_args: None)
+    monkeypatch.setattr(rea_setup, "_platform_id", lambda: "test-platform")
+    monkeypatch.setattr(rea_setup, "load_node_runtime_manifest", lambda: manifest)
+    monkeypatch.setattr(
+        rea_setup,
+        "_download_component_artifact",
+        lambda *_args, **_kwargs: archive,
+    )
+
+    def fake_extract(_archive: Path, destination: Path, _archive_type: str) -> None:
+        package = destination / "node-runtime"
+        package.mkdir(parents=True)
+        for name in ("node.exe", "npx.cmd", "npx-cli.js"):
+            (package / name).write_text("new", encoding="utf-8")
+        (package / "version.txt").write_text("26.13.0", encoding="utf-8")
+
+    def fake_node_version(node: Path) -> str:
+        return (node.parent / "version.txt").read_text(encoding="utf-8")
+
+    monkeypatch.setattr(rea_setup, "_extract_archive_safely", fake_extract)
+    monkeypatch.setattr(rea_setup, "_node_version", fake_node_version)
+
+    runtime = rea_setup.ensure_node_runtime(workspace)
+
+    assert runtime.version == "26.13.0"
+    assert runtime.node == (root / "node-runtime" / "node.exe").resolve()
+    assert (root / "node-runtime" / "version.txt").read_text(encoding="utf-8") == "26.13.0"
+    assert not list(root.parent.glob(".26.13.0.staging-*"))
+    assert not list(root.parent.glob(".26.13.0.backup-*"))
 
 
 def test_run_preserves_windows_process_options(monkeypatch, mocker) -> None:
@@ -107,7 +405,7 @@ def test_resolve_node_runtime_accepts_bound_npx_path(
     monkeypatch,
 ) -> None:
     runtime = _runtime(tmp_path)
-    npx_sibling = runtime.npx.with_name("node")
+    npx_sibling = runtime.npx.with_name("node.exe")
     npx_sibling.write_text("", encoding="utf-8")
     monkeypatch.setattr(rea_setup, "_candidate_node_paths", lambda: [])
     monkeypatch.setattr(rea_setup, "_node_version", lambda _node: "26.13.0")
@@ -207,6 +505,384 @@ def test_scan_requires_base_rea_mcp(tmp_path: Path, monkeypatch) -> None:
     assert scan["base"][1]["ok"] is True
     assert scan["base"][2]["ok"] is False
     assert scan["enhanced_blocked_by_base"] is True
+    assert scan["enhanced"] == []
+    assert scan["enhanced_plan"]
+
+
+def test_component_environment_ignores_unregistered_host_tool_paths(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ghidra = tmp_path / "ghidra_12.1.4_PUBLIC"
+    (ghidra / "Ghidra").mkdir(parents=True)
+    (ghidra / "Ghidra" / "application.properties").write_text(
+        "application.version=12.1.4\n",
+        encoding="utf-8",
+    )
+    (ghidra / "support").mkdir()
+    (ghidra / "support" / "analyzeHeadless.bat").write_text("", encoding="utf-8")
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", str(ghidra))
+
+    assert rea_setup._configured_component("ghidra", {})[0] is True
+
+    with rea_setup._component_env_scope(
+        rea_setup._record_process_env(None, {"PATH": os.environ.get("PATH", "")})
+    ):
+        assert rea_setup._configured_component("ghidra", {})[0] is False
+
+
+def test_enhanced_scan_uses_registered_mcp_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime(tmp_path)
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", "D:/host-only/ghidra")
+    monkeypatch.setattr(rea_setup, "_manifest_components", lambda: {})
+    observed = {}
+
+    def fake_scan(_runtime, _extra_env):
+        observed.update(rea_setup._base_process_env())
+        return []
+
+    monkeypatch.setattr(rea_setup, "_scan_enhancements_via_rea", fake_scan)
+
+    assert rea_setup._scan_enhancements(
+        runtime,
+        {"PATH": str(runtime.bin_dir)},
+        tmp_path / "workspace",
+    ) == []
+    assert "GHIDRA_INSTALL_DIR" not in observed
+    assert observed["PATH"].startswith(str(runtime.bin_dir))
+
+
+def test_capability_card_requires_live_mcp_tool_not_only_component_discovery() -> None:
+    from jiuwenswarm.common.rea_capability import build_capability_cards
+
+    scan = {
+        "platform_id": "windows-x64",
+        "enhanced": [
+            {"id": "java", "available": True},
+            {"id": "ghidra", "available": True},
+        ],
+    }
+    binary_session = {
+        "analysis_provider_candidates": [
+            {
+                "provider": {"id": "ghidra", "name": "Ghidra"},
+                "availability": {
+                    "status": "unavailable",
+                    "code": "not_configured",
+                },
+                "capabilities": [
+                    {
+                        "groups": [
+                            {
+                                "operations": [
+                                    "binary_overview",
+                                    "decompile_all",
+                                    "procedure_pseudo_code",
+                                    "procedure_assembly",
+                                    "analyze_function",
+                                ]
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
+        "tool_availability": {
+            "groups": [
+                {
+                    "surface": "native-provider",
+                    "names": [
+                        "binary_overview",
+                        "decompile_all",
+                        "procedure_pseudo_code",
+                        "procedure_assembly",
+                        "analyze_function",
+                    ],
+                    "available": False,
+                    "reason": "target_required",
+                }
+            ]
+        }
+    }
+    tools = [
+        {"name": name}
+        for name in binary_session["tool_availability"]["groups"][0]["names"]
+    ]
+
+    cards, _diagnostics = build_capability_cards(scan, binary_session, tools)
+    ghidra = next(card for card in cards if card["id"] == "ghidra")
+
+    assert ghidra["state"] == "not_installed"
+    assert {member["state"] for member in ghidra["members"]} == {"missing"}
+
+
+def test_target_required_is_available_only_when_provider_is_live() -> None:
+    from jiuwenswarm.common.rea_capability import build_capability_cards
+
+    scan = {
+        "platform_id": "windows-x64",
+        "enhanced": [{"id": "ghidra", "available": False}],
+    }
+    binary_session = {
+        "analysis_provider_candidates": [
+            {
+                "provider": {"id": "ghidra", "name": "Ghidra"},
+                "availability": {"status": "available", "code": None},
+                "capabilities": [
+                    {
+                        "groups": [
+                            {
+                                "operations": [
+                                    "binary_overview",
+                                    "decompile_all",
+                                    "procedure_pseudo_code",
+                                    "procedure_assembly",
+                                    "analyze_function",
+                                ]
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
+        "tool_availability": {
+            "groups": [
+                {
+                    "surface": "native-provider",
+                    "names": [
+                        "binary_overview",
+                        "decompile_all",
+                        "procedure_pseudo_code",
+                        "procedure_assembly",
+                        "analyze_function",
+                    ],
+                    "available": False,
+                    "reason": "target_required",
+                }
+            ]
+        },
+    }
+    tools = [
+        {"name": name}
+        for name in binary_session["tool_availability"]["groups"][0]["names"]
+    ]
+
+    cards, _diagnostics = build_capability_cards(scan, binary_session, tools)
+    ghidra = next(card for card in cards if card["id"] == "ghidra")
+
+    assert ghidra["state"] == "available"
+    assert next(
+        member for member in ghidra["members"] if member["id"] == "ghidra"
+    )["state"] == "available"
+
+
+def test_live_status_tool_cannot_promote_unavailable_components_to_partial() -> None:
+    from jiuwenswarm.common.rea_capability import build_capability_cards
+
+    scan = {
+        "platform_id": "windows-x64",
+        "enhanced": [
+            {"id": "pcap", "available": False},
+            {"id": "mitmproxy", "available": False},
+            {"id": "firmware", "available": False},
+            {"id": "sigrok", "available": False},
+        ],
+    }
+    names = [
+        "inspect_pcap_capture",
+        "inspect_packet_capture",
+        "inspect_packet_fields",
+        "inspect_web_network_capture",
+        "inspect_firmware_regions",
+        "extract_firmware",
+        "decode_signal_recording",
+        "inspect_signal_decoders",
+    ]
+    binary_session = {
+        "tool_availability": {
+            "groups": [
+                {
+                    "surface": "native-provider",
+                    "names": ["inspect_web_network_capture"],
+                    "available": True,
+                    "reason": "available",
+                },
+                {
+                    "surface": "application",
+                    "names": [
+                        name
+                        for name in names
+                        if name != "inspect_web_network_capture"
+                    ],
+                    "available": False,
+                    "reason": "provider_missing",
+                },
+            ]
+        }
+    }
+
+    cards, _diagnostics = build_capability_cards(
+        scan,
+        binary_session,
+        [{"name": name} for name in names],
+    )
+    network_firmware = next(
+        card for card in cards if card["id"] == "network_firmware"
+    )
+
+    assert network_firmware["state"] == "not_installed"
+
+
+def test_managed_component_uses_live_confirmation_tools() -> None:
+    from jiuwenswarm.common.rea_capability import _component_state
+
+    chrome = {
+        "id": "chrome",
+        "install_mode": "managed",
+        "available": False,
+        "status": "discovered",
+        "inventory": {"state": "discovered"},
+    }
+    tool_states = {
+        "list_browser_targets": {"available": True, "actual_reason": "available"},
+        "capture_web_screenshot": {"available": True, "actual_reason": "available"},
+    }
+
+    assert _component_state(
+        chrome,
+        ["list_browser_targets", "capture_web_screenshot"],
+        tool_states,
+    ) == "available"
+
+
+def test_rizin_available_on_any_tool_does_not_change_other_components() -> None:
+    from jiuwenswarm.common.rea_capability import _component_state
+
+    component = {
+        "id": "rizin",
+        "install_mode": "managed",
+        "available": True,
+        "status": "configured",
+        "inventory": {"state": "configured"},
+    }
+    tool_states = {
+        "execute_rizin_command": {
+            "available": True,
+            "actual_reason": "available",
+            "functional_verified": True,
+        },
+        "start_rizin_debug_session": {
+            "available": False,
+            "actual_reason": "unsupported_host",
+            "functional_verified": True,
+        },
+    }
+    tools = list(tool_states)
+
+    assert _component_state(
+        component,
+        tools,
+        tool_states,
+        available_on_any_tool=True,
+    ) == "available"
+    assert _component_state(
+        {**component, "id": "cutter"},
+        tools,
+        tool_states,
+    ) == "partial"
+
+
+def test_frida_component_uses_live_device_probe() -> None:
+    from jiuwenswarm.common.rea_capability import _component_state
+
+    component = {
+        "id": "frida",
+        "install_mode": "managed",
+        "available": True,
+        "status": "configured",
+        "inventory": {"state": "configured"},
+    }
+
+    assert _component_state(
+        component,
+        ["list_frida_devices"],
+        {
+            "list_frida_devices": {
+                "available": True,
+                "actual_reason": "available",
+                "functional_verified": True,
+            }
+        },
+    ) == "available"
+    assert _component_state(
+        component,
+        ["list_frida_devices"],
+        {
+            "list_frida_devices": {
+                "available": False,
+                "actual_reason": "functional_probe_failed",
+                "functional_verified": True,
+            }
+        },
+    ) == "missing"
+
+
+def test_discovered_managed_component_is_uninstalled_not_needing_config() -> None:
+    from jiuwenswarm.common.rea_capability import _component_state
+
+    chrome = {
+        "id": "chrome",
+        "install_mode": "managed",
+        "available": False,
+        "status": "discovered",
+        "inventory": {"state": "discovered"},
+    }
+
+    assert _component_state(chrome, [], {}) == "missing"
+
+
+def test_all_unavailable_components_follow_fixed_status_taxonomy() -> None:
+    from jiuwenswarm.common.rea_capability import _component_state
+
+    manual_modes = {"manual", "manual_license", "system"}
+    checked = 0
+    for component_id, component in rea_setup._manifest_components().items():
+        if not rea_setup._platform_supported(component):
+            continue
+        mode = str(component.get("install_mode") or "manual")
+        state = _component_state(
+            {
+                "id": component_id,
+                "install_mode": mode,
+                "available": False,
+                "status": "discovered",
+                "inventory": {"state": "discovered"},
+            },
+            [],
+            {},
+        )
+        assert state == ("needs_action" if mode in manual_modes else "missing")
+        checked += 1
+    assert checked > 0
+
+
+def test_card_with_unsupported_member_cannot_be_fully_available() -> None:
+    from jiuwenswarm.common.rea_capability import _card_state
+
+    members = [
+        {"id": "rizin", "state": "available"},
+        {"id": "frida", "state": "available"},
+        {"id": "gdb", "state": "unsupported"},
+    ]
+
+    assert _card_state(members, platform_matches=True) == "partial"
+    assert _card_state(
+        [{"id": "gdb", "state": "unsupported"}],
+        platform_matches=True,
+    ) == "unsupported"
 
 
 def test_base_only_scan_skips_enhanced_probes(tmp_path: Path, monkeypatch) -> None:
@@ -955,7 +1631,6 @@ def test_enhanced_install_persists_env_before_later_cancellation(
 
     monkeypatch.setattr(rea_setup, "_manifest_components", lambda: components)
     monkeypatch.setattr(rea_setup, "resolve_node_runtime", lambda *_args: object())
-
     def fake_install(*_args, **_kwargs):
         return {
             "env": {"JAVA_HOME": "D:/tools/java"},
@@ -988,6 +1663,141 @@ def test_enhanced_install_persists_env_before_later_cancellation(
     assert written["mcp"]["rea"]["state"] == "connected"
 
 
+def test_enhanced_install_skips_component_confirmed_by_live_mcp(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "mcp" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "mcp": {
+                    "rea": {
+                        "transport": "stdio",
+                        "command": "node.exe",
+                        "args": ["rea-agents@6.8.0", "mcp"],
+                        "env": {},
+                        "state": "connected",
+                    }
+                },
+                "mounts": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    components = {
+        "cutter": {
+            "display_name": "Cutter",
+            "install_mode": "managed",
+            "default_selected": True,
+        },
+        "ghidra": {
+            "display_name": "Ghidra",
+            "install_mode": "managed",
+            "default_selected": True,
+        },
+    }
+    installed: list[str] = []
+
+    monkeypatch.setattr(rea_setup, "_manifest_components", lambda: components)
+    monkeypatch.setattr(rea_setup, "resolve_node_runtime", lambda *_args: object())
+    monkeypatch.setattr(
+        rea_setup,
+        "_reuse_existing_component",
+        lambda component_id, *_args: (
+            ({"REA_CUTTER_COMMAND": "D:/tools/cutter.exe"}, "2.5.0")
+            if component_id == "cutter"
+            else None
+        ),
+    )
+
+    def fake_install(*args, **kwargs):
+        selected_ids = kwargs.get("selected_ids")
+        if selected_ids is None and len(args) >= 3:
+            selected_ids = args[2]
+        component_id = selected_ids[0]
+        installed.append(component_id)
+        return {
+            "env": {"GHIDRA_INSTALL_DIR": "D:/tools/ghidra"},
+            "results": [
+                {
+                    "id": component_id,
+                    "ok": True,
+                    "state": "installed",
+                    "path": "D:/tools/ghidra",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(rea_setup, "install_managed_enhancements", fake_install)
+    monkeypatch.setattr(
+        rea_setup,
+        "_verify_component",
+        lambda *_args: {"ok": True, "detail": "verified"},
+    )
+    monkeypatch.setattr(rea_setup, "scan_rea_setup", lambda _workspace=None: {"ready": True})
+
+    result = rea_setup.install_enhanced_components(
+        workspace,
+        selected_ids=["cutter", "ghidra"],
+        available_component_ids=["cutter"],
+    )
+
+    assert installed == ["ghidra"]
+    by_id = {item["id"]: item for item in result["results"]}
+    assert by_id["cutter"]["state"] == "reused"
+    assert by_id["cutter"]["source"] == "live-mcp"
+    assert by_id["cutter"]["verified"] is True
+    assert by_id["ghidra"]["state"] == "installed"
+    written = json.loads(state_path.read_text(encoding="utf-8"))
+    assert written["mcp"]["rea"]["env"]["REA_CUTTER_COMMAND"] == "D:/tools/cutter.exe"
+
+
+def test_enhanced_install_scopes_component_detection_to_registered_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "mcp" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "mcp": {
+                    "rea": {
+                        "transport": "stdio",
+                        "command": "node.exe",
+                        "args": ["rea-agents@6.8.0", "mcp"],
+                        "env": {"PATH": "C:/Windows"},
+                        "state": "connected",
+                    }
+                },
+                "mounts": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    runtime = _runtime(runtime_dir)
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", "D:/host-only/ghidra")
+    monkeypatch.setattr(rea_setup, "resolve_node_runtime", lambda *_args: runtime)
+    monkeypatch.setattr(
+        rea_setup,
+        "_install_enhanced_components",
+        lambda *_args, **_kwargs: rea_setup._base_process_env(),
+    )
+
+    scoped = rea_setup.install_enhanced_components(workspace)
+
+    assert scoped["PATH"].startswith(str(runtime.bin_dir))
+    assert "GHIDRA_INSTALL_DIR" not in scoped
+
+
 def test_enhanced_plan_is_os_aware_and_lists_manual_and_unsupported(monkeypatch) -> None:
     monkeypatch.setattr(rea_setup, "_platform_id", lambda: "windows-x64")
     windows = {item["id"]: item for item in rea_setup.enhanced_component_plan()}
@@ -998,6 +1808,10 @@ def test_enhanced_plan_is_os_aware_and_lists_manual_and_unsupported(monkeypatch)
     assert windows["jeb"]["state"] == "needs_action"
     assert windows["hopper"]["state"] == "unsupported"
     assert windows["firmware"]["state"] == "unsupported"
+    assert windows["objdump"]["state"] == "planned"
+    assert windows["objdump"]["auto_install"] is True
+    assert windows["frida"]["state"] == "planned"
+    assert windows["frida"]["auto_install"] is True
 
     monkeypatch.setattr(rea_setup, "_platform_id", lambda: "macos-arm64")
     macos = {item["id"]: item for item in rea_setup.enhanced_component_plan()}
@@ -1006,6 +1820,8 @@ def test_enhanced_plan_is_os_aware_and_lists_manual_and_unsupported(monkeypatch)
     assert macos["ida"]["state"] == "needs_action"
     assert macos["kuna"]["state"] == "planned"
     assert macos["firmware"]["state"] == "unsupported"
+    assert macos["objdump"]["state"] == "needs_action"
+    assert macos["frida"]["state"] == "planned"
 
     monkeypatch.setattr(rea_setup, "_platform_id", lambda: "linux-arm64")
     linux_arm = {item["id"]: item for item in rea_setup.enhanced_component_plan()}
@@ -1015,6 +1831,8 @@ def test_enhanced_plan_is_os_aware_and_lists_manual_and_unsupported(monkeypatch)
     assert linux_arm["jadx"]["state"] == "unsupported"
     assert linux_arm["adb"]["state"] == "unsupported"
     assert linux_arm["apktool"]["state"] == "unsupported"
+    assert linux_arm["objdump"]["state"] == "needs_action"
+    assert linux_arm["frida"]["state"] == "planned"
 
 
 def test_versions_are_pinned_and_enhanced_manifest_covers_product_cards() -> None:
@@ -1048,11 +1866,282 @@ def test_versions_are_pinned_and_enhanced_manifest_covers_product_cards() -> Non
     assert components["rizin"]["artifact_by_platform"]["linux-x64"]["version"] == "0.9.1"
     assert components["cutter"]["artifact_by_platform"]["windows-x64"]["version"] == "2.5.0"
     assert components["wabt"]["artifact_by_platform"]["windows-x64"]["version"] == "1.0.42"
+    objdump = components["objdump"]
+    assert objdump["default_selected"] is True
+    assert objdump["install_mode"] == "system"
+    assert objdump["install_mode_by_platform"] == {"windows-x64": "managed"}
+    assert objdump["auto_platforms"] == ["windows-x64"]
+    assert objdump["artifact_by_platform"]["windows-x64"]["version"] == "2.47-5"
+    assert len(objdump["artifact_by_platform"]["windows-x64"]["companions"]) == 4
+    frida = components["frida"]
+    assert frida["default_selected"] is True
+    assert frida["install_mode"] == "managed"
+    assert frida["env_key"] == "REA_FRIDA_BINDING"
+    for platform_id, artifact in frida["artifact_by_platform"].items():
+        assert artifact["version"] == rea_setup.REA_FRIDA_VERSION
+        assert artifact["sha256"]
+        assert frida["installer_by_platform"][platform_id]["type"] == "frida_binding"
     assert components["pwntools"]["python_packages"] == {
         "pwntools": "4.15.0",
         "pyelftools": "0.33",
         "unicorn": "2.1.2",
     }
+
+
+def test_frida_binding_installs_into_the_rea_owned_package(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rea_package = tmp_path / "node_modules" / "rea-agents"
+    frida_package = rea_package.parent / "frida"
+    rea_package.mkdir(parents=True)
+    (frida_package / "build" / "src").mkdir(parents=True)
+    (rea_package / "package.json").write_text(
+        json.dumps({"name": "rea-agents", "version": "6.8.0"}),
+        encoding="utf-8",
+    )
+    (frida_package / "package.json").write_text(
+        json.dumps({"name": "frida", "version": "17.23.2"}),
+        encoding="utf-8",
+    )
+    (frida_package / "build" / "src" / "frida.js").write_text(
+        "export {};",
+        encoding="utf-8",
+    )
+    binding_source = tmp_path / "frida_binding.node"
+    binding_source.write_bytes(b"frida binding")
+    archive = tmp_path / "frida.tar.gz"
+    with tarfile.open(archive, "w:gz") as tarball:
+        tarball.add(binding_source, arcname="build/frida_binding.node")
+    monkeypatch.setattr(
+        rea_setup,
+        "_rea_skill_source_candidates",
+        lambda: [rea_package],
+    )
+
+    env = rea_setup._install_rea_frida_binding(tmp_path / "workspace", archive)
+
+    binding = frida_package / "build" / "frida_binding.node"
+    assert binding.read_bytes() == b"frida binding"
+    assert env == {"REA_FRIDA_BINDING": str(binding.resolve())}
+    assert rea_setup._configured_component("frida")[0] is True
+    assert rea_setup._reuse_existing_component("frida") == (
+        env,
+        rea_setup.REA_FRIDA_VERSION,
+    )
+
+
+def test_frida_verification_loads_the_installed_module(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rea_package = tmp_path / "node_modules" / "rea-agents"
+    frida_package = rea_package.parent / "frida"
+    (rea_package).mkdir(parents=True)
+    (frida_package / "build" / "src").mkdir(parents=True)
+    (rea_package / "package.json").write_text(
+        json.dumps({"name": "rea-agents", "version": "6.8.0"}),
+        encoding="utf-8",
+    )
+    (frida_package / "package.json").write_text(
+        json.dumps({"name": "frida", "version": "17.23.2"}),
+        encoding="utf-8",
+    )
+    (frida_package / "build" / "src" / "frida.js").write_text(
+        "export {};",
+        encoding="utf-8",
+    )
+    (frida_package / "build" / "frida_binding.node").write_bytes(b"binding")
+    monkeypatch.setattr(
+        rea_setup,
+        "_rea_skill_source_candidates",
+        lambda: [rea_package],
+    )
+    monkeypatch.setattr(
+        rea_setup,
+        "_run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+
+    verification = rea_setup._verify_component(
+        "frida",
+        _runtime(runtime_root),
+        {},
+    )
+
+    assert verification["ok"] is True
+    assert verification["version"] == rea_setup.REA_FRIDA_VERSION
+
+
+def test_objdump_install_mode_is_managed_only_on_windows(monkeypatch) -> None:
+    component = {
+        "install_mode": "system",
+        "install_mode_by_platform": {"windows-x64": "managed"},
+    }
+
+    monkeypatch.setattr(rea_setup, "_platform_id", lambda: "windows-x64")
+    assert rea_setup._component_install_mode(component) == "managed"
+
+    monkeypatch.setattr(rea_setup, "_platform_id", lambda: "linux-x64")
+    assert rea_setup._component_install_mode(component) == "system"
+
+
+def test_extract_tar_zst_uses_node_and_safe_tar_members(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    archive = tmp_path / "package.pkg.tar.zst"
+    archive.write_bytes(b"compressed")
+    destination = tmp_path / "extract"
+    payload = tmp_path / "payload.tar"
+    source = tmp_path / "objdump.exe"
+    source.write_bytes(b"exe")
+    with tarfile.open(payload, "w") as tarball:
+        tarball.add(source, arcname="mingw64/bin/objdump.exe")
+
+    def fake_decompress(_archive: Path, output: Path, _node: Path) -> None:
+        output.write_bytes(payload.read_bytes())
+
+    monkeypatch.setattr(rea_setup, "_decompress_zstd_with_node", fake_decompress)
+    rea_setup._extract_archive_safely(
+        archive,
+        destination,
+        "tar.zst",
+        node_command=tmp_path / "node.exe",
+    )
+
+    assert (destination / "mingw64" / "bin" / "objdump.exe").read_bytes() == b"exe"
+
+
+def test_objdump_companion_packages_share_the_managed_runtime_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manifest = rea_setup.load_component_manifest()
+    component = next(item for item in manifest["components"] if item["id"] == "objdump")
+    artifact = component["artifact_by_platform"]["windows-x64"]
+    primary = tmp_path / "binutils.pkg.tar.zst"
+    companions = [
+        (tmp_path / f"dependency-{index}.pkg.tar.zst", "tar.zst")
+        for index in range(len(artifact["companions"]))
+    ]
+    calls = []
+
+    def fake_extract(
+        archive: Path,
+        destination: Path,
+        archive_type: str,
+        *,
+        node_command: Path | None = None,
+    ) -> None:
+        calls.append((archive, archive_type, node_command))
+        output = destination / "mingw64" / "bin"
+        output.mkdir(parents=True, exist_ok=True)
+        (output / archive.name.split(".")[0]).write_bytes(b"managed")
+        if archive == primary:
+            (output / "objdump.exe").write_bytes(b"exe")
+
+    monkeypatch.setattr(rea_setup, "_zstd_node_command", lambda _env=None: tmp_path / "node.exe")
+    monkeypatch.setattr(rea_setup, "_extract_archive_safely", fake_extract)
+
+    env = rea_setup._apply_component_files(
+        component,
+        artifact,
+        primary,
+        tmp_path / "workspace",
+        {},
+        companions,
+    )
+
+    objdump = (
+        tmp_path
+        / "workspace"
+        / "rea"
+        / "tools"
+        / "objdump"
+        / "2.47-5"
+        / "mingw64"
+        / "bin"
+        / "objdump.exe"
+    )
+    assert env["REA_OBJDUMP_COMMAND"] == str(objdump)
+    assert len(calls) == 1 + len(companions)
+    assert all(item[1] == "tar.zst" for item in calls)
+    assert all(item[2] == tmp_path / "node.exe" for item in calls)
+
+
+def test_browser_runtime_requires_installed_browser_component() -> None:
+    from jiuwenswarm.common.rea_capability import build_capability_cards
+
+    tool_names = [
+        "analyze_javascript_application",
+        "analyze_web_bundle",
+        "capture_browser_scenario",
+        "capture_electron_scenario",
+        "inspect_electron_page",
+        "list_browser_targets",
+        "list_electron_targets",
+        "list_javascript_runtime_targets",
+    ]
+    scan = {
+        "platform_id": "windows-x64",
+        "enhanced": [
+            {
+                "id": "chrome",
+                "state": "discovered",
+                "available": False,
+                "install_mode": "managed",
+                "requires_install_evidence": True,
+                "inventory": {"state": "discovered"},
+            }
+        ],
+    }
+    binary_session = {
+        "tool_availability": {
+            "groups": [
+                {
+                    "surface": "browser-provider",
+                    "names": tool_names,
+                    "available": True,
+                    "reason": "available",
+                }
+            ]
+        }
+    }
+
+    cards, _diagnostics = build_capability_cards(
+        scan,
+        binary_session,
+        [{"name": name} for name in tool_names],
+    )
+    dynamic = next(card for card in cards if card["id"] == "dynamic")
+    chrome = next(member for member in dynamic["members"] if member["id"] == "chrome")
+    browser_electron = next(
+        member for member in dynamic["members"] if member["id"] == "browser_electron"
+    )
+
+    assert chrome["state"] == "missing"
+    assert browser_electron["state"] == "missing"
+
+    scan["enhanced"][0].update(
+        {
+            "state": "configured",
+            "available": True,
+            "inventory": {"state": "configured"},
+        }
+    )
+    cards, _diagnostics = build_capability_cards(
+        scan,
+        binary_session,
+        [{"name": name} for name in tool_names],
+    )
+    dynamic = next(card for card in cards if card["id"] == "dynamic")
+    browser_electron = next(
+        member for member in dynamic["members"] if member["id"] == "browser_electron"
+    )
+    assert browser_electron["state"] == "available"
 
 
 def test_rea_skill_is_installed_into_workspace_and_reused(
@@ -1180,6 +2269,101 @@ def test_upgrade_backup_preserves_existing_provider_env(tmp_path: Path, monkeypa
     assert record["env"]["JAVA_HOME"] == "D:/existing/jdk"
     assert record["env"]["REA_PWNTOOLS_PYTHON"] == "/existing/python"
     assert list((workspace / "mcp").glob("state.json.rea-setup-*.bak"))
+
+
+def test_concurrent_env_updates_preserve_every_component(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "mcp" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "mcp": {
+                    "rea": {
+                        "transport": "stdio",
+                        "command": "node.exe",
+                        "args": ["rea-agents@6.8.0", "mcp"],
+                        "env": {"PATH": "node"},
+                        "state": "connected",
+                    }
+                },
+                "mounts": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_read = rea_setup._read_state_unlocked
+
+    def delayed_read(workspace_arg=None):
+        payload = original_read(workspace_arg)
+        time.sleep(0.02)
+        return payload
+
+    monkeypatch.setattr(rea_setup, "_read_state_unlocked", delayed_read)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(
+                rea_setup._persist_rea_env,
+                workspace,
+                {f"REA_COMPONENT_{index}": str(index)},
+            )
+            for index in range(16)
+        ]
+        for future in futures:
+            future.result()
+
+    record = json.loads(state_path.read_text(encoding="utf-8"))["mcp"]["rea"]
+    assert record["env"]["PATH"] == "node"
+    for index in range(16):
+        assert record["env"][f"REA_COMPONENT_{index}"] == str(index)
+
+
+def test_state_write_retries_permission_denied(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "mcp" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text('{"version":1,"mcp":{},"mounts":{}}', encoding="utf-8")
+    original_replace = rea_setup.os.replace
+    attempts = 0
+
+    def flaky_replace(source, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError(5, "Access denied", str(destination))
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(rea_setup.os, "replace", flaky_replace)
+
+    rea_setup._write_state(
+        {"version": 1, "mcp": {"test": {"state": "connected"}}, "mounts": {}},
+        workspace,
+    )
+
+    assert attempts == 2
+    updated = json.loads(state_path.read_text(encoding="utf-8"))
+    assert updated["mcp"]["test"]["state"] == "connected"
+
+
+def test_state_write_cleans_unique_temp_when_replace_fails(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "mcp" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text('{"version":1,"mcp":{},"mounts":{}}', encoding="utf-8")
+
+    def denied_replace(_source, destination):
+        raise PermissionError(5, "Access denied", str(destination))
+
+    monkeypatch.setattr(rea_setup.os, "replace", denied_replace)
+
+    with pytest.raises(PermissionError):
+        rea_setup._write_state(
+            {"version": 1, "mcp": {"test": {"state": "connected"}}, "mounts": {}},
+            workspace,
+        )
+
+    assert not list((workspace / "mcp").glob("*.tmp"))
 
 
 def test_reset_removes_only_workswarm_rea_configuration(tmp_path: Path) -> None:
@@ -1518,7 +2702,14 @@ def test_managed_executable_selection_prefers_declared_primary_name(
     wrong = root / "share" / "cons" / "cutter"
     expected = root / "Cutter-v2.5.0-Windows-x86_64" / "cutter.exe"
 
-    def fake_extract(_archive: Path, destination: Path, _archive_type: str) -> None:
+    def fake_extract(
+        _archive: Path,
+        destination: Path,
+        _archive_type: str,
+        *,
+        node_command: Path | None = None,
+    ) -> None:
+        _ = node_command
         for path in (wrong, expected):
             portable = destination / path.relative_to(root)
             portable.parent.mkdir(parents=True, exist_ok=True)
@@ -1624,6 +2815,10 @@ def test_cutter_bridge_install_adds_macos_lifecycle_fix_without_windows_runtime(
     assert "启动 Cutter 后可连接" in reason
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="DMG extraction test requires macOS filesystem symlink semantics",
+)
 def test_dmg_extraction_uses_ditto_only_for_app_bundles(
     tmp_path: Path,
     monkeypatch,
@@ -1691,6 +2886,10 @@ def test_pkg_extraction_uses_nonexistent_staging_directory(
     assert not list(destination.parent.glob(".0.9.1.*"))
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not expose POSIX executable mode bits",
+)
 def test_zip_extraction_preserves_unix_executable_mode(
     tmp_path: Path,
     monkeypatch,
@@ -1713,6 +2912,10 @@ def test_zip_extraction_preserves_unix_executable_mode(
     assert executable.stat().st_mode & 0o111 == 0o111
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="macOS shell launchers cannot execute natively on Windows",
+)
 def test_macos_rizin_uses_private_dylib_launcher(
     tmp_path: Path,
     monkeypatch,
@@ -1732,7 +2935,14 @@ def test_macos_rizin_uses_private_dylib_launcher(
         / "rizin"
     )
 
-    def fake_extract(_archive: Path, _destination: Path, _archive_type: str) -> None:
+    def fake_extract(
+        _archive: Path,
+        _destination: Path,
+        _archive_type: str,
+        *,
+        node_command: Path | None = None,
+    ) -> None:
+        _ = node_command
         rizin.parent.mkdir(parents=True)
         rizin.write_text("#!/bin/sh\necho 'rizin 0.9.1'\n", encoding="utf-8")
         rizin.chmod(0o755)
@@ -1911,7 +3121,14 @@ def test_managed_executable_can_configure_parent_directory(
     root = workspace / "rea" / "tools" / "wabt" / "1.0.42"
     expected = root / "wabt-1.0.42" / "bin" / "wasm-validate.exe"
 
-    def fake_extract(_archive: Path, destination: Path, _archive_type: str) -> None:
+    def fake_extract(
+        _archive: Path,
+        destination: Path,
+        _archive_type: str,
+        *,
+        node_command: Path | None = None,
+    ) -> None:
+        _ = node_command
         portable = destination / expected.relative_to(root)
         portable.parent.mkdir(parents=True)
         portable.write_text("", encoding="utf-8")
@@ -1943,7 +3160,14 @@ def test_managed_executable_map_marks_binary_executable(
     workspace = tmp_path / "workspace"
     android = workspace / "rea" / "tools" / "adb" / "37.0.1" / "platform-tools" / "adb"
 
-    def fake_extract(_archive: Path, _destination: Path, _archive_type: str) -> None:
+    def fake_extract(
+        _archive: Path,
+        _destination: Path,
+        _archive_type: str,
+        *,
+        node_command: Path | None = None,
+    ) -> None:
+        _ = node_command
         android.parent.mkdir(parents=True)
         android.write_text("", encoding="utf-8")
 

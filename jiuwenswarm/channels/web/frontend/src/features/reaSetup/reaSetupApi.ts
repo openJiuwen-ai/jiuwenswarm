@@ -1,9 +1,20 @@
 import { webRequest } from '../../services/webClient';
+import { selectLocalFiles } from '../workspace/localFilePicker';
+import { selectProjectDirectory } from '../workspace/projectDirectoryPicker';
 import type { ReaComponentConfigureResult, ReaSetupJob, ReaSetupScan } from './types';
 
+function pickerError(
+  result: { reason: 'unsupported' | 'cancelled' | 'failed'; message?: string },
+): Error {
+  return new Error(result.message || result.reason);
+}
+
 export const reaSetupApi = {
-  status: (scope: 'all' | 'base' | 'enhanced' = 'all') =>
-    webRequest<ReaSetupScan>('rea.status.get', { scope }, { timeoutMs: 180000 }),
+  status: (
+    scope: 'all' | 'base' | 'enhanced' = 'all',
+    timeoutMs = 180000,
+  ) =>
+    webRequest<ReaSetupScan>('rea.status.get', { scope }, { timeoutMs }),
   installBase: () => webRequest<ReaSetupJob>('rea.base.install', {}, { timeoutMs: 30000 }),
   installEnhanced: (components?: string[]) =>
     webRequest<ReaSetupJob>(
@@ -21,16 +32,24 @@ export const reaSetupApi = {
       { id, values },
       { timeoutMs: 120000 },
     ),
-  selectFile: (title: string) =>
-    webRequest<{ path: string | null; cancelled: boolean }>(
-      'path.select_file',
-      { title },
-      { timeoutMs: 5 * 60 * 1000 },
-    ),
-  selectDirectory: (title: string) =>
-    webRequest<{ path: string | null; cancelled: boolean }>(
-      'path.select_directory',
-      { title },
-      { timeoutMs: 5 * 60 * 1000 },
-    ),
+  selectFile: async (_title: string) => {
+    const result = await selectLocalFiles(false);
+    if (result.ok) {
+      return { path: result.files[0]?.path ?? null, cancelled: false };
+    }
+    if (result.reason === 'cancelled') {
+      return { path: null, cancelled: true };
+    }
+    throw pickerError(result);
+  },
+  selectDirectory: async (_title: string) => {
+    const result = await selectProjectDirectory();
+    if (result.ok) {
+      return { path: result.path, cancelled: false };
+    }
+    if (result.reason === 'cancelled') {
+      return { path: null, cancelled: true };
+    }
+    throw pickerError(result);
+  },
 };

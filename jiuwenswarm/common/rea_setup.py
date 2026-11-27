@@ -28,11 +28,15 @@ import threading
 import time
 import urllib.request
 import zipfile
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
+
+import portalocker
 
 from jiuwenswarm.common.utils import get_workspace_dir
 
@@ -286,7 +290,77 @@ def _candidate_node_paths() -> list[Path]:
 
 
 def _process_env(runtime: NodeRuntime | None = None) -> dict[str, str]:
-    env = os.environ.copy()
+    env = _base_process_env()
+    if runtime is not None:
+        old_path = env.get("PATH", "")
+        env["PATH"] = str(runtime.bin_dir) + (os.pathsep + old_path if old_path else "")
+    return env
+
+
+_COMPONENT_ENV_CONTEXT = threading.local()
+_SYSTEM_ENV_PASSTHROUGH = (
+    "COMSPEC",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LOCALAPPDATA",
+    "PATHEXT",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+)
+
+
+def _base_process_env() -> dict[str, str]:
+    """Return the active process environment, or the scoped MCP environment."""
+
+    scoped = getattr(_COMPONENT_ENV_CONTEXT, "base", None)
+    return dict(scoped) if isinstance(scoped, dict) else os.environ.copy()
+
+
+@contextmanager
+def _component_env_scope(env: dict[str, str]) -> Iterator[None]:
+    """Scope capability checks to the environment used by the REA MCP."""
+
+    previous = getattr(_COMPONENT_ENV_CONTEXT, "base", None)
+    _COMPONENT_ENV_CONTEXT.base = dict(env)
+    try:
+        yield
+    finally:
+        if previous is None:
+            try:
+                del _COMPONENT_ENV_CONTEXT.base
+            except AttributeError:
+                pass
+        else:
+            _COMPONENT_ENV_CONTEXT.base = previous
+
+
+def _record_process_env(
+    runtime: NodeRuntime | None,
+    record_env: dict[str, str] | None,
+) -> dict[str, str]:
+    """Build a launch-like environment without inheriting the Gateway host.
+
+    The registered REA MCP receives ``record.env`` from AgentServer, so setup
+    checks must not borrow unrelated variables from the Gateway process.
+    """
+
+    env = {
+        key: os.environ[key]
+        for key in _SYSTEM_ENV_PASSTHROUGH
+        if key in os.environ
+    }
+    env.update(record_env or {})
     if runtime is not None:
         old_path = env.get("PATH", "")
         env["PATH"] = str(runtime.bin_dir) + (os.pathsep + old_path if old_path else "")
@@ -486,7 +560,34 @@ def _state_file(workspace: str | Path | None = None) -> Path:
     return _workspace_path(workspace) / "mcp" / "state.json"
 
 
-def _read_state(workspace: str | Path | None = None) -> dict[str, Any]:
+_STATE_THREAD_LOCKS: dict[Path, threading.RLock] = {}
+_STATE_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_state_lock(path: Path) -> threading.RLock:
+    key = path.resolve()
+    with _STATE_THREAD_LOCKS_GUARD:
+        lock = _STATE_THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _STATE_THREAD_LOCKS[key] = lock
+        return lock
+
+
+@contextmanager
+def _state_lock(workspace: str | Path | None = None) -> Iterator[None]:
+    path = _state_file(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    thread_lock = _thread_state_lock(path)
+    with thread_lock, portalocker.Lock(
+        path.with_name(f"{path.name}.lock"),
+        mode="a+",
+        timeout=30,
+    ):
+        yield
+
+
+def _read_state_unlocked(workspace: str | Path | None = None) -> dict[str, Any]:
     path = _state_file(workspace)
     if not path.is_file():
         return {"version": 1, "mcp": {}, "mounts": {}}
@@ -502,18 +603,62 @@ def _read_state(workspace: str | Path | None = None) -> dict[str, Any]:
     return payload
 
 
-def _write_state(state: dict[str, Any], workspace: str | Path | None = None) -> None:
+def _read_state(workspace: str | Path | None = None) -> dict[str, Any]:
+    with _state_lock(workspace):
+        return _read_state_unlocked(workspace)
+
+
+def _write_state_unlocked(
+    state: dict[str, Any],
+    workspace: str | Path | None = None,
+) -> None:
     path = _state_file(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         backup = path.with_name(f"state.json.rea-setup-{int(time.time())}.bak")
         shutil.copy2(path, backup)
-    temp = path.with_suffix(".tmp")
-    temp.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
     )
-    temp.replace(path)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(
+                json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n"
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        last_error: PermissionError | None = None
+        for attempt in range(5):
+            try:
+                os.replace(temp, path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.05 * (2**attempt))
+        if last_error is not None:
+            raise last_error
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _write_state(state: dict[str, Any], workspace: str | Path | None = None) -> None:
+    with _state_lock(workspace):
+        _write_state_unlocked(state, workspace)
+
+
+def _update_state(
+    workspace: str | Path | None,
+    updater: Callable[[dict[str, Any]], Any],
+) -> Any:
+    with _state_lock(workspace):
+        payload = _read_state_unlocked(workspace)
+        result = updater(payload)
+        _write_state_unlocked(payload, workspace)
+        return result
 
 
 def _rea_record(
@@ -609,6 +754,24 @@ def _rea_skill_source_candidates() -> list[Path]:
         )
     )
     return candidates
+
+
+def _find_rea_frida_package() -> tuple[Path, Path, Path] | None:
+    """Return the REA-owned Frida package, entry module and native binding."""
+
+    for rea_package in _rea_skill_source_candidates():
+        frida_package = rea_package.parent / "frida"
+        package_json = frida_package / "package.json"
+        try:
+            payload = json.loads(package_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str((payload or {}).get("version") or "").strip() != REA_FRIDA_VERSION:
+            continue
+        module = frida_package / "build" / "src" / "frida.js"
+        binding = frida_package / "build" / "frida_binding.node"
+        return frida_package.resolve(), module.resolve(), binding.resolve()
+    return None
 
 
 def _find_rea_skill_source() -> tuple[Path, str | None] | None:
@@ -816,6 +979,26 @@ def _install_rea_macos_frida_prebuild(workspace: Path) -> None:
     )
 
 
+def _install_rea_frida_binding(workspace: Path, artifact_path: Path) -> dict[str, str]:
+    """Install the pinned Frida NAPI binding into the REA-owned package."""
+
+    found = _find_rea_frida_package()
+    if found is None:
+        raise RuntimeError(
+            f"未找到 REA 使用的 frida@{REA_FRIDA_VERSION} 包"
+        )
+    _package, _module, binding = found
+    if not binding.is_file() or binding.stat().st_size <= 0:
+        _extract_tar_member_atomically(
+            artifact_path,
+            "build/frida_binding.node",
+            binding,
+        )
+    if not binding.is_file() or binding.stat().st_size <= 0:
+        raise RuntimeError("Frida binding 安装后文件不存在或为空")
+    return {"REA_FRIDA_BINDING": str(binding)}
+
+
 def _ensure_cutter_libffi(workspace: Path, cutter_root: Path) -> Path:
     destination = cutter_root / _CUTTER_LIBFFI_MEMBER
     if destination.is_file() and destination.stat().st_size > 0:
@@ -971,6 +1154,15 @@ def _auto_install_supported(component: dict[str, Any]) -> bool:
     return not isinstance(values, list) or _platform_id() in {str(item) for item in values}
 
 
+def _component_install_mode(component: dict[str, Any]) -> str:
+    modes = component.get("install_mode_by_platform")
+    if isinstance(modes, dict):
+        platform_mode = str(modes.get(_platform_id()) or "").strip()
+        if platform_mode:
+            return platform_mode
+    return str(component.get("install_mode") or "manual")
+
+
 def _component_installer(component: dict[str, Any]) -> dict[str, Any] | None:
     installers = component.get("installer_by_platform")
     if isinstance(installers, dict):
@@ -1000,7 +1192,7 @@ def _java_full_jdk_home(
     *,
     minimum_major: int = 17,
 ) -> Path | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     java_home = str(runtime_env.get("JAVA_HOME") or "").strip()
     candidates: list[Path] = []
     if java_home:
@@ -1127,9 +1319,12 @@ def _apply_manifest_overlay(
     merged = dict(item)
     merged["label"] = str(component.get("display_name") or merged.get("label") or merged.get("id"))
     merged["group"] = str(component.get("group") or merged.get("group") or "")
-    merged["install_mode"] = str(component.get("install_mode") or "unknown")
+    merged["install_mode"] = _component_install_mode(component)
     merged["install_hint"] = str(component.get("install_hint") or "")
     merged["default_selected"] = bool(component.get("default_selected", False))
+    merged["requires_install_evidence"] = bool(
+        component.get("requires_install_evidence", False)
+    )
     if isinstance(component.get("assisted_setup"), dict):
         merged["assisted_setup"] = _filter_assisted_setup(
             component["assisted_setup"],
@@ -1184,7 +1379,7 @@ def _apply_manifest_overlay(
 
 
 def _static_enhancements(extra_env: dict[str, str] | None = None) -> list[dict[str, Any]]:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     java_home = _java_full_jdk_home(extra_env, minimum_major=21)
     checks = (
         ("jadx", "JADX / Android", "REA_JADX_MCP_JAR", ()),
@@ -1259,14 +1454,15 @@ def mark_rea_mcp_state(
     *,
     tool_count: int | None = None,
 ) -> None:
-    payload = _read_state(workspace)
-    record = payload.get("mcp", {}).get(REA_MCP_NAME)
-    if not isinstance(record, dict):
-        return
-    record["state"] = state
-    if tool_count is not None:
-        record["tool_count"] = max(0, int(tool_count))
-    _write_state(payload, workspace)
+    def update(payload: dict[str, Any]) -> None:
+        record = payload.get("mcp", {}).get(REA_MCP_NAME)
+        if not isinstance(record, dict):
+            return
+        record["state"] = state
+        if tool_count is not None:
+            record["tool_count"] = max(0, int(tool_count))
+
+    _update_state(workspace, update)
 
 
 def _mcp_registration_check(
@@ -1339,35 +1535,37 @@ def _scan_enhancements(
     workspace: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     workspace_path = _workspace_path(workspace)
-    if runtime is None:
-        items = _static_enhancements(extra_env)
-    else:
-        items = _scan_enhancements_via_rea(runtime, extra_env)
-    known = {str(item.get("id") or "") for item in items}
-    for component_id, component in _manifest_components().items():
-        if component_id in known:
-            continue
-        mode = str(component.get("install_mode") or "manual")
-        items.append(
-            _apply_manifest_overlay(
-                {
-                    "id": component_id,
-                    "label": str(component.get("display_name") or component_id),
-                    "group": str(component.get("group") or ""),
-                    "detected": False,
-                    "available": None,
-                    "status": "not_configured",
-                    "code": "not_configured",
-                    "reason": str(component.get("install_hint") or "需要安装或配置"),
-                    "install_mode": mode,
-                },
-                extra_env,
+    scoped_env = _record_process_env(runtime, extra_env)
+    with _component_env_scope(scoped_env):
+        if runtime is None:
+            items = _static_enhancements(extra_env)
+        else:
+            items = _scan_enhancements_via_rea(runtime, extra_env)
+        known = {str(item.get("id") or "") for item in items}
+        for component_id, component in _manifest_components().items():
+            if component_id in known:
+                continue
+            mode = _component_install_mode(component)
+            items.append(
+                _apply_manifest_overlay(
+                    {
+                        "id": component_id,
+                        "label": str(component.get("display_name") or component_id),
+                        "group": str(component.get("group") or ""),
+                        "detected": False,
+                        "available": None,
+                        "status": "not_configured",
+                        "code": "not_configured",
+                        "reason": str(component.get("install_hint") or "需要安装或配置"),
+                        "install_mode": mode,
+                    },
+                    extra_env,
+                )
             )
-        )
-    return [
-        _with_component_inventory(item, extra_env, workspace_path)
-        for item in items
-    ]
+        return [
+            _with_component_inventory(item, extra_env, workspace_path)
+            for item in items
+        ]
 
 
 def _scan_enhancements_via_rea(
@@ -1825,21 +2023,68 @@ def _copy_dmg_app_bundles(mount: Path, destination: Path) -> None:
             raise RuntimeError(detail[-4000:])
 
 
+def _zstd_node_command(extra_env: dict[str, str] | None = None) -> Path:
+    runtime_env = _base_process_env() | (extra_env or {})
+    node_hint = _first_command(("node.exe", "node"), runtime_env.get("PATH"))
+    runtime = resolve_node_runtime(node_hint or None)
+    if runtime is None:
+        raise RuntimeError("解压 tar.zst 需要兼容的 Node.js 运行时")
+    return runtime.node
+
+
+def _decompress_zstd_with_node(archive: Path, output: Path, node: Path) -> None:
+    script = (
+        "const fs=require('node:fs');"
+        "const z=require('node:zlib');"
+        "if(typeof z.zstdDecompressSync!=='function')process.exit(2);"
+        "fs.writeFileSync(process.argv[2],"
+        "z.zstdDecompressSync(fs.readFileSync(process.argv[1])));"
+    )
+    result = _run(
+        [str(node), "-e", script, str(archive), str(output)],
+        timeout=180,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "tar.zst 解压失败").strip()
+        raise RuntimeError(detail[-4000:])
+
+
 def _extract_archive_safely(
     archive: Path,
     destination: Path,
     archive_type: str,
+    *,
+    node_command: Path | None = None,
 ) -> None:
-    if archive_type in {"tar.gz", "tar.xz"}:
+    if archive_type in {"tar", "tar.gz", "tar.xz", "tar.zst"}:
         destination.mkdir(parents=True, exist_ok=True)
         root = destination.resolve()
-        mode = "r:gz" if archive_type == "tar.gz" else "r:xz"
-        with tarfile.open(archive, mode) as tarball:
-            for member in tarball.getmembers():
-                resolved = (destination / member.name).resolve()
-                if resolved != root and root not in resolved.parents:
-                    raise RuntimeError(f"压缩包包含越界路径: {member.name}")
-            tarball.extractall(destination, filter="data")
+        mode = {
+            "tar": "r:",
+            "tar.gz": "r:gz",
+            "tar.xz": "r:xz",
+            "tar.zst": "r:",
+        }[archive_type]
+        tarball_path = archive
+        temporary_tar: Path | None = None
+        try:
+            if archive_type == "tar.zst":
+                if node_command is None:
+                    raise RuntimeError("解压 tar.zst 缺少 Node.js 运行时")
+                temporary_tar = archive.with_name(
+                    f".{archive.name}.{time.time_ns()}.tar"
+                )
+                _decompress_zstd_with_node(archive, temporary_tar, node_command)
+                tarball_path = temporary_tar
+            with tarfile.open(tarball_path, mode) as tarball:
+                for member in tarball.getmembers():
+                    resolved = (destination / member.name).resolve()
+                    if resolved != root and root not in resolved.parents:
+                        raise RuntimeError(f"压缩包包含越界路径: {member.name}")
+                tarball.extractall(destination, filter="data")
+        finally:
+            if temporary_tar is not None:
+                temporary_tar.unlink(missing_ok=True)
         return
     if archive_type == "pkg":
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1907,6 +2152,88 @@ def load_node_runtime_manifest() -> dict[str, Any]:
     return json.loads(_NODE_RUNTIME_MANIFEST.read_text(encoding="utf-8"))
 
 
+def _managed_node_paths(
+    root: Path,
+    platform_data: dict[str, Any],
+) -> tuple[Path, Path, Path]:
+    return (
+        root / str(platform_data.get("node") or ""),
+        root / str(platform_data.get("npx") or ""),
+        root / str(platform_data.get("npx_cli") or ""),
+    )
+
+
+def _managed_node_is_usable(root: Path, platform_data: dict[str, Any]) -> bool:
+    node, npx, npx_cli = _managed_node_paths(root, platform_data)
+    if not node.is_file() or not npx.is_file() or not npx_cli.is_file():
+        return False
+    if os.name != "nt":
+        for executable in (node, npx):
+            executable.chmod(
+                executable.stat().st_mode
+                | stat.S_IXUSR
+                | stat.S_IXGRP
+                | stat.S_IXOTH
+            )
+    detected = _node_version(node)
+    return detected is not None and supports_rea_node(detected)
+
+
+def _install_managed_node_runtime(
+    workspace_path: Path,
+    root: Path,
+    platform_data: dict[str, Any],
+    progress_callback: DownloadProgressCallback | None,
+) -> None:
+    """Download and atomically replace an incomplete or incompatible runtime."""
+
+    artifact = {
+        "url": platform_data.get("url"),
+        "fallback_urls": platform_data.get("fallback_urls") or [],
+        "size_bytes": platform_data.get("size_bytes"),
+        "sha256": platform_data.get("sha256"),
+        "destination": platform_data.get("destination"),
+        "max_bytes": 128 * 1024 * 1024,
+        "primary_timeout_seconds": 25,
+        "fallback_timeout_seconds": 900,
+    }
+    archive = _download_component_artifact(
+        {"artifact": artifact},
+        workspace_path,
+        artifact,
+        progress_callback,
+    )
+    root.parent.mkdir(parents=True, exist_ok=True)
+    staging = root.parent / f".{root.name}.staging-{time.time_ns()}"
+    backup = root.parent / f".{root.name}.backup-{time.time_ns()}"
+    moved_existing = False
+    try:
+        _extract_archive_safely(
+            archive,
+            staging,
+            str(platform_data.get("archive_type") or "zip"),
+        )
+        if not _managed_node_is_usable(staging, platform_data):
+            node, _, _ = _managed_node_paths(staging, platform_data)
+            detected = _node_version(node)
+            raise RuntimeError(
+                f"受管 Node {detected or platform_data.get('version') or ''} "
+                "不满足 REA 版本要求"
+            )
+        if root.exists():
+            root.replace(backup)
+            moved_existing = True
+        staging.replace(root)
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+    except Exception:
+        if moved_existing and backup.exists() and not root.exists():
+            backup.replace(root)
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def ensure_node_runtime(
     workspace: str | Path | None = None,
     preferred_node: str | Path | None = None,
@@ -1930,31 +2257,14 @@ def ensure_node_runtime(
         raise RuntimeError("受管 Node 运行时清单不完整")
 
     root = workspace_path / extract_to
-    node = root / str(platform_data.get("node") or "")
-    npx = root / str(platform_data.get("npx") or "")
-    npx_cli = root / str(platform_data.get("npx_cli") or "")
-    if not node.is_file():
-        artifact = {
-            "url": platform_data.get("url"),
-            "fallback_urls": platform_data.get("fallback_urls") or [],
-            "size_bytes": platform_data.get("size_bytes"),
-            "sha256": platform_data.get("sha256"),
-            "destination": platform_data.get("destination"),
-            "max_bytes": 128 * 1024 * 1024,
-            "primary_timeout_seconds": 25,
-            "fallback_timeout_seconds": 900,
-        }
-        archive = _download_component_artifact(
-            {"artifact": artifact},
+    if not _managed_node_is_usable(root, platform_data):
+        _install_managed_node_runtime(
             workspace_path,
-            artifact,
+            root,
+            platform_data,
             progress_callback,
         )
-        _extract_archive_safely(
-            archive,
-            root,
-            str(platform_data.get("archive_type") or "zip"),
-        )
+    node, npx, npx_cli = _managed_node_paths(root, platform_data)
     if not node.is_file() or not npx.is_file() or not npx_cli.is_file():
         raise RuntimeError("受管 Node 运行时解压后缺少 node、npx 或 npx-cli")
     if os.name != "nt":
@@ -2168,7 +2478,7 @@ def _install_python_component(
 
 
 def _java_executable(extra_env: dict[str, str] | None = None) -> Path | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     java_home = str(runtime_env.get("JAVA_HOME") or "").strip()
     if java_home:
         candidate = Path(java_home) / "bin" / ("java.exe" if os.name == "nt" else "java")
@@ -2290,14 +2600,30 @@ def _apply_component_files(
     artifact_path: Path,
     workspace: Path,
     extra_env: dict[str, str] | None = None,
+    companion_artifacts: list[tuple[Path, str]] | None = None,
 ) -> dict[str, str]:
     extract_to = str(component.get("extract_to") or "").strip()
     if extract_to:
+        archive_type = str(artifact.get("archive_type") or "zip")
+        companion_artifacts = companion_artifacts or []
+        needs_node = archive_type == "tar.zst" or any(
+            item_type == "tar.zst" for _path, item_type in companion_artifacts
+        )
+        node_command = _zstd_node_command(extra_env) if needs_node else None
+        destination = workspace / extract_to
         _extract_archive_safely(
             artifact_path,
-            workspace / extract_to,
-            str(artifact.get("archive_type") or "zip"),
+            destination,
+            archive_type,
+            node_command=node_command,
         )
+        for companion_path, companion_type in companion_artifacts:
+            _extract_archive_safely(
+                companion_path,
+                destination,
+                companion_type,
+                node_command=node_command,
+            )
     result: dict[str, str] = {}
     executable_map = component.get("executables")
     env_key = str(component.get("env_key") or "").strip()
@@ -2381,7 +2707,7 @@ def _ghidra_version(install_dir: Path) -> str | None:
 
 
 def _find_ghidra_install(extra_env: dict[str, str] | None = None) -> tuple[Path, str] | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     candidates: list[Path] = []
     configured = str(runtime_env.get("GHIDRA_INSTALL_DIR") or "").strip()
     if configured:
@@ -2433,7 +2759,7 @@ def _find_ghidra_install(extra_env: dict[str, str] | None = None) -> tuple[Path,
 
 
 def _find_hopper_launcher(extra_env: dict[str, str] | None = None) -> Path | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     configured = str(runtime_env.get("HOPPER_LAUNCHER_PATH") or "").strip()
     candidates: list[Path] = [Path(configured)] if configured else []
     home = Path.home()
@@ -2466,7 +2792,7 @@ def _find_hopper_launcher(extra_env: dict[str, str] | None = None) -> Path | Non
 def _find_pcap_tools(
     extra_env: dict[str, str] | None = None,
 ) -> tuple[Path, Path] | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     candidates = [
         Path("C:/Program Files/Wireshark"),
         Path("C:/Program Files (x86)/Wireshark"),
@@ -2496,7 +2822,7 @@ def _find_pcap_tools(
 def _find_pcap_partial(
     extra_env: dict[str, str] | None = None,
 ) -> tuple[Path | None, Path | None]:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     tshark = str(runtime_env.get("REA_TSHARK_COMMAND") or "").strip()
     capinfos = str(runtime_env.get("REA_CAPINFOS_COMMAND") or "").strip()
     tshark_path = Path(tshark).expanduser() if tshark else None
@@ -2511,7 +2837,7 @@ def _find_pcap_partial(
 
 
 def _find_browser_executable(extra_env: dict[str, str] | None = None) -> Path | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     configured = str(runtime_env.get("REA_BROWSER_EXECUTABLE") or "").strip()
     if configured:
         candidate = Path(configured).expanduser()
@@ -2569,12 +2895,19 @@ def _configured_component(
     component = _manifest_components().get(component_id)
     if component is None:
         return False, {}, None
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     values = {
         key: str(runtime_env.get(key) or "").strip()
         for key in _component_env_keys(component)
         if str(runtime_env.get(key) or "").strip()
     }
+    if component_id == "frida":
+        found = _find_rea_frida_package()
+        if found is not None and found[2].is_file() and found[2].stat().st_size > 0:
+            binding = str(found[2])
+            return True, {"REA_FRIDA_BINDING": binding}, binding
+        configured_binding = values.get("REA_FRIDA_BINDING")
+        return False, values, configured_binding or None
     if component_id == "java":
         configured_home = values.get("JAVA_HOME")
         if not configured_home:
@@ -2704,6 +3037,10 @@ def _reuse_existing_component(
     workspace: str | Path | None = None,
 ) -> tuple[dict[str, str], str] | None:
     workspace_path = _workspace_path(workspace)
+    if component_id == "frida":
+        found = _find_rea_frida_package()
+        if found is not None and found[2].is_file() and found[2].stat().st_size > 0:
+            return {"REA_FRIDA_BINDING": str(found[2])}, REA_FRIDA_VERSION
     if component_id == "java":
         java_home = _java_full_jdk_home(extra_env, minimum_major=21)
         if java_home is None:
@@ -2769,7 +3106,7 @@ def _reuse_existing_component(
                     "REA_CAPINFOS_COMMAND": str(capinfos),
                 }, "installed"
     if component_id == "jadx":
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get("REA_JADX_MCP_JAR") or "").strip()
         if not candidate:
             cached = Path.home() / ".rea" / "tools" / "jadx-headless-mcp-0.7.1-all.jar"
@@ -2804,7 +3141,7 @@ def _reuse_existing_component(
             return {"REA_JADX_MCP_JAR": str(Path(candidate).expanduser().resolve())}, "0.7.1"
     if component_id in {"adb", "apktool"}:
         env_key = "REA_ADB_PATH" if component_id == "adb" else "REA_APKTOOL_COMMAND"
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get(env_key) or "").strip()
         names = ("adb", "adb.exe") if component_id == "adb" else ("apktool", "apktool.bat", "apktool.cmd")
         if not candidate:
@@ -2869,7 +3206,7 @@ def _reuse_existing_component(
             return {env_key: str(resolved)}, "installed"
     if component_id in {"pwntools", "mitmproxy"}:
         env_key = "REA_PWNTOOLS_PYTHON" if component_id == "pwntools" else "REA_MITMDUMP_COMMAND"
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get(env_key) or "").strip()
         candidates = [Path(candidate).expanduser()] if candidate else []
         if component_id == "pwntools":
@@ -2896,7 +3233,7 @@ def _reuse_existing_component(
             ):
                 return {env_key: str(executable.resolve())}, "installed"
     if component_id == "wabt":
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get("REA_WABT_BIN_DIRECTORY") or "").strip()
         if candidate and (Path(candidate) / ("wasm-validate.exe" if os.name == "nt" else "wasm-validate")).is_file():
             return {"REA_WABT_BIN_DIRECTORY": str(Path(candidate).expanduser().resolve())}, "1.0.42"
@@ -2924,7 +3261,7 @@ def _reuse_existing_component(
             "cutter": "REA_CUTTER_COMMAND",
             "wakaru": "REA_WAKARU_COMMAND",
         }[component_id]
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get(env_key) or "").strip()
         names = {
             "kuna": ("kuna", "kuna.exe"),
@@ -3002,7 +3339,7 @@ def _reuse_existing_component(
             "objdump": "REA_OBJDUMP_COMMAND",
             "sigrok": "REA_SIGROK_COMMAND",
         }[component_id]
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get(env_key) or "").strip()
         names = {
             "gdb": ("gdb", "gdb.exe"),
@@ -3058,7 +3395,7 @@ def _partial_component_path(
     component_id: str,
     extra_env: dict[str, str] | None,
 ) -> tuple[str, str] | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     if component_id == "pcap":
         tshark, capinfos = _find_pcap_partial(extra_env)
         if tshark is not None or capinfos is not None:
@@ -3598,7 +3935,7 @@ def install_managed_enhancements(
     selected = set(selected_ids) if selected_ids is not None else None
     managed_components = []
     for component_id, component in _manifest_components().items():
-        install_mode = component.get("install_mode")
+        install_mode = _component_install_mode(component)
         if install_mode not in {
             "managed",
             "rea_setup",
@@ -3618,7 +3955,7 @@ def install_managed_enhancements(
     component_span = max(0.0, progress_end - progress_start) / max(1, len(managed_components))
     for index, (component_id, component) in enumerate(managed_components):
         _raise_if_cancelled(cancel_check)
-        if component.get("install_mode") not in {
+        if _component_install_mode(component) not in {
             "managed",
             "rea_setup",
             "package_manager",
@@ -3749,6 +4086,8 @@ def install_managed_enhancements(
         prefix = f"component_{component_id}"
         download_source: str | None = None
         download_fallback = False
+        primary_download_source: str | None = None
+        primary_download_fallback = False
         _report_progress(
             progress_callback,
             f"{prefix}_planning",
@@ -3812,7 +4151,8 @@ def install_managed_enhancements(
             _raise_if_cancelled(cancel_check)
             artifact: dict[str, Any] | None = None
             artifact_path: Path | None = None
-            if component.get("install_mode") == "rea_setup":
+            companion_artifacts: list[tuple[Path, str]] = []
+            if _component_install_mode(component) == "rea_setup":
                 env.update(
                     _install_rea_hopper(
                         effective_env,
@@ -3823,7 +4163,7 @@ def install_managed_enhancements(
                         label=label,
                     )
                 )
-            elif component.get("install_mode") == "package_manager":
+            elif _component_install_mode(component) == "package_manager":
                 env.update(
                     _install_package_manager_component(
                         component,
@@ -3834,7 +4174,7 @@ def install_managed_enhancements(
                         label=label,
                     )
                 )
-            elif component.get("install_mode") in {"python_venv", "python_tool"}:
+            elif _component_install_mode(component) in {"python_venv", "python_tool"}:
                 env.update(
                     _install_python_component(
                         component_id,
@@ -3854,23 +4194,49 @@ def install_managed_enhancements(
                     artifact,
                     report_download,
                 )
+                primary_download_source = download_source
+                primary_download_fallback = download_fallback
+                for companion in artifact.get("companions") or []:
+                    if not isinstance(companion, dict):
+                        continue
+                    _raise_if_cancelled(cancel_check)
+                    companion_path = _download_component_artifact(
+                        component,
+                        workspace_path,
+                        companion,
+                        report_download,
+                    )
+                    companion_artifacts.append(
+                        (
+                            companion_path,
+                            str(companion.get("archive_type") or "zip"),
+                        )
+                    )
                 component_installer = _component_installer(component)
                 if isinstance(component_installer, dict):
                     installer_type = str(component_installer.get("type") or "")
-                    if installer_type != "msi_admin":
+                    if installer_type not in {"frida_binding", "msi_admin"}:
                         raise RuntimeError(f"{label} 的安装器类型不受支持: {installer_type}")
-                    env.update(
-                        _install_msi_admin_component(
-                            component,
-                            artifact_path,
-                            workspace_path,
-                            progress_callback,
-                            component_id=component_id,
-                            component_start=component_start,
-                            component_end=component_end,
-                            label=label,
+                    if installer_type == "frida_binding":
+                        env.update(
+                            _install_rea_frida_binding(
+                                workspace_path,
+                                artifact_path,
+                            )
                         )
-                    )
+                    else:
+                        env.update(
+                            _install_msi_admin_component(
+                                component,
+                                artifact_path,
+                                workspace_path,
+                                progress_callback,
+                                component_id=component_id,
+                                component_start=component_start,
+                                component_end=component_end,
+                                label=label,
+                            )
+                        )
             _report_progress(
                 progress_callback,
                 f"{prefix}_install",
@@ -3879,7 +4245,7 @@ def install_managed_enhancements(
                 {"component_id": component_id, "component_label": label, "phase": "installing"},
             )
             if (
-                component.get("install_mode") == "managed"
+                _component_install_mode(component) == "managed"
                 and _component_installer(component) is None
             ):
                 if artifact is None or artifact_path is None:
@@ -3891,13 +4257,15 @@ def install_managed_enhancements(
                         artifact_path,
                         workspace_path,
                         effective_env,
+                        companion_artifacts,
                     )
                 )
-            install_mode = str(component.get("install_mode") or "")
-            source = download_source
+            install_mode = _component_install_mode(component)
+            source = primary_download_source or download_source
             if source is None:
                 source = {
                     "rea_setup": "rea-setup",
+                    "managed": "managed-download",
                     "package_manager": "system-package-manager",
                     "python_venv": "python-package-index",
                     "python_tool": "python-package-index",
@@ -3912,7 +4280,7 @@ def install_managed_enhancements(
                     if artifact is not None
                     else None,
                     "source": source,
-                    "mirror_fallback": download_fallback,
+                    "mirror_fallback": primary_download_fallback or download_fallback,
                     "error": None,
                 }
             )
@@ -3993,6 +4361,42 @@ def _verify_component(
 ) -> dict[str, Any]:
     """Verify one installed/reused component with REA-native probes."""
 
+    if component_id == "frida":
+        found = _find_rea_frida_package()
+        if found is None:
+            return {
+                "ok": False,
+                "code": "frida_package_missing",
+                "detail": f"未找到 REA 使用的 frida@{REA_FRIDA_VERSION} 包",
+            }
+        _package, module, binding = found
+        if not binding.is_file() or binding.stat().st_size <= 0:
+            return {
+                "ok": False,
+                "code": "frida_binding_missing",
+                "detail": "frida_binding.node 不存在或为空",
+            }
+        if runtime is None:
+            return {
+                "ok": False,
+                "code": "frida_node_missing",
+                "detail": "验证 Frida binding 需要兼容的 Node.js",
+            }
+        script = (
+            "import(process.argv[1]).then(() => process.exit(0), "
+            "(error) => { console.error(error); process.exit(1); });"
+        )
+        result = _run(
+            [str(runtime.node), "-e", script, module.as_uri()],
+            timeout=30,
+        )
+        detail = (result.stdout or result.stderr).strip()
+        return {
+            "ok": result.returncode == 0,
+            "code": None if result.returncode == 0 else "frida_binding_probe_failed",
+            "detail": detail[-2000:] or f"frida@{REA_FRIDA_VERSION} binding 可加载",
+            "version": REA_FRIDA_VERSION,
+        }
     if component_id == "java":
         home = _java_full_jdk_home(extra_env, minimum_major=21)
         if home is None:
@@ -4330,7 +4734,7 @@ def enhanced_component_plan(
                 continue
         supported = _platform_supported(component)
         auto_supported = _auto_install_supported(component)
-        mode = str(component.get("install_mode") or "manual")
+        mode = _component_install_mode(component)
         if not supported:
             state = "unsupported"
             reason = "当前操作系统或架构不支持此能力"
@@ -4367,13 +4771,14 @@ def _persist_rea_env(
 
     if not component_env:
         return
-    record = rea_mcp_record(workspace_path)
-    if not record:
-        return
-    record["env"] = _record_env(record) | component_env
-    payload = _read_state(workspace_path)
-    payload.setdefault("mcp", {})[REA_MCP_NAME] = record
-    _write_state(payload, workspace_path)
+
+    def update(payload: dict[str, Any]) -> None:
+        record = payload.get("mcp", {}).get(REA_MCP_NAME)
+        if not isinstance(record, dict):
+            return
+        record["env"] = _record_env(record) | component_env
+
+    _update_state(workspace_path, update)
 
 
 def install_enhanced_components(
@@ -4381,6 +4786,42 @@ def install_enhanced_components(
     selected_ids: list[str] | None = None,
     progress_callback: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    available_component_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Install enhanced components using the registered REA environment."""
+
+    record = rea_mcp_record(workspace)
+    if not record:
+        return _install_enhanced_components(
+            workspace,
+            selected_ids,
+            progress_callback,
+            cancel_check,
+            available_component_ids,
+        )
+    record_env = _record_env(record)
+    runtime = resolve_node_runtime(str(record.get("command") or ""))
+    scoped_env = (
+        _record_process_env(runtime, record_env)
+        if isinstance(runtime, NodeRuntime)
+        else record_env
+    )
+    with _component_env_scope(scoped_env):
+        return _install_enhanced_components(
+            workspace,
+            selected_ids,
+            progress_callback,
+            cancel_check,
+            available_component_ids,
+        )
+
+
+def _install_enhanced_components(
+    workspace: str | Path | None = None,
+    selected_ids: list[str] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
+    available_component_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Install enhanced components without changing base installation semantics."""
 
@@ -4404,6 +4845,23 @@ def install_enhanced_components(
         for item in plan
         if item.get("auto_install") is True
     ]
+    live_available: dict[str, tuple[dict[str, str], str]] = {}
+    for component_id in available_component_ids or []:
+        if component_id not in auto_ids:
+            continue
+        reused = _reuse_existing_component(
+            component_id,
+            record_env,
+            workspace_path,
+        )
+        if reused is not None and reused[0]:
+            live_available[component_id] = reused
+    live_available_ids = set(live_available)
+    auto_ids = [
+        component_id
+        for component_id in auto_ids
+        if component_id not in live_available_ids
+    ]
 
     _report_progress(
         progress_callback,
@@ -4424,7 +4882,11 @@ def install_enhanced_components(
             artifact = _component_artifact(_manifest_components()[component_id])
         except (KeyError, RuntimeError):
             continue
-        component_total_bytes[component_id] = int(artifact.get("size_bytes") or 0)
+        component_total_bytes[component_id] = int(artifact.get("size_bytes") or 0) + sum(
+            int(item.get("size_bytes") or 0)
+            for item in artifact.get("companions") or []
+            if isinstance(item, dict)
+        )
     component_ranges = {
         component_id: (
             18.0 + index * (72.0 / max(1, len(auto_ids))),
@@ -4487,6 +4949,37 @@ def install_enhanced_components(
 
     managed_env: dict[str, str] = {}
     managed_results: list[dict[str, Any]] = []
+    for component_id, (component_env, version) in live_available.items():
+        component = _manifest_components()[component_id]
+        managed_env.update(component_env)
+        _persist_rea_env(workspace_path, component_env)
+        result = {
+            "id": component_id,
+            "label": str(component.get("display_name") or component_id),
+            "ok": True,
+            "state": "reused",
+            "path": next(iter(component_env.values()), None),
+            "version": version,
+            "verified": True,
+            "reused": True,
+            "source": "live-mcp",
+            "reason": "Workswarm 已确认该能力可用，跳过下载",
+            "error": None,
+        }
+        managed_results.append(result)
+        _report_progress(
+            progress_callback,
+            f"component_{component_id}_cached",
+            18,
+            f"{result['label']}：Workswarm 已确认可用，跳过下载",
+            {
+                "component_id": component_id,
+                "component_label": result["label"],
+                "phase": "cached",
+                "reused": True,
+                "component_result": result,
+            },
+        )
     pending_auto = {
         component_id: _manifest_components()[component_id]
         for component_id in auto_ids
@@ -4810,7 +5303,7 @@ def scan_rea_setup(
             if ready and include_enhanced
             else []
         ),
-        "enhanced_plan": enhanced_component_plan() if ready and include_enhanced else [],
+        "enhanced_plan": enhanced_component_plan() if include_enhanced else [],
         "enhanced_blocked_by_base": not ready,
         "rea_skill": rea_skill,
         "generated_at": time.time(),
@@ -4836,7 +5329,7 @@ def configure_component(
     record = rea_mcp_record(workspace)
     if not record:
         raise ValueError("请先安装并验证基础 REA MCP")
-    env = _record_env(record)
+    configured_env: dict[str, str] = {}
     workspace_path = _workspace_path(workspace)
     provided = {
         str(field.get("id") or ""): str(values.get(str(field.get("id") or "")) or "").strip()
@@ -4891,7 +5384,7 @@ def configure_component(
                     raise ValueError(
                         f"{field_id} 不像是正确的安装目录，未找到 {', '.join(map(str, probes))}"
                     )
-            env[env_key] = str(selected)
+            configured_env[env_key] = str(selected)
             continue
         if field_type == "json":
             try:
@@ -4908,18 +5401,22 @@ def configure_component(
                 raise ValueError(f"{field_id} 必须是 http:// 或 https:// URL")
             content = value + ("" if value.endswith("\n") else "\n")
         if not target_rel:
-            env[env_key] = value
+            configured_env[env_key] = value
             continue
         target = (workspace_path / target_rel).resolve()
         if workspace_path.resolve() not in target.parents:
             raise ValueError("组件配置目标路径越界")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        env[env_key] = str(target)
-    record["env"] = env
-    payload = _read_state(workspace)
-    payload.setdefault("mcp", {})[REA_MCP_NAME] = record
-    _write_state(payload, workspace)
+        configured_env[env_key] = str(target)
+
+    def update(payload: dict[str, Any]) -> None:
+        current = payload.get("mcp", {}).get(REA_MCP_NAME)
+        if not isinstance(current, dict):
+            raise ValueError("请先安装并验证基础 REA MCP")
+        current["env"] = _record_env(current) | configured_env
+
+    _update_state(workspace, update)
     return scan_rea_setup(workspace)
 
 
@@ -4994,15 +5491,17 @@ def install_rea_base(
     _raise_if_cancelled(cancel_check)
 
     _report_progress(progress_callback, "write_config", 72, "写入固定版本 REA MCP 配置")
-    existing_env = _record_env(record)
     record = _rea_record(runtime, state="registered")
-    if isinstance(record.get("env"), dict):
-        for key, value in existing_env.items():
-            if key != "PATH":
-                record["env"][key] = value
-    payload = _read_state(workspace_path)
-    payload.setdefault("mcp", {})[REA_MCP_NAME] = record
-    _write_state(payload, workspace_path)
+
+    def update(payload: dict[str, Any]) -> None:
+        current = payload.get("mcp", {}).get(REA_MCP_NAME)
+        if isinstance(current, dict) and isinstance(record.get("env"), dict):
+            for key, value in _record_env(current).items():
+                if key != "PATH":
+                    record["env"][key] = value
+        payload.setdefault("mcp", {})[REA_MCP_NAME] = record
+
+    _update_state(workspace_path, update)
     _raise_if_cancelled(cancel_check)
     _report_progress(progress_callback, "base_snapshot", 84, "正在生成基础环境快照")
     scan = scan_rea_setup(workspace_path)
@@ -5014,9 +5513,11 @@ def reset_rea_setup(workspace: str | Path | None = None) -> dict[str, Any]:
     """Remove Workswarm-owned REA config and managed components."""
 
     workspace_path = _workspace_path(workspace)
-    payload = _read_state(workspace_path)
-    removed_record = payload.get("mcp", {}).pop(REA_MCP_NAME, None)
-    _write_state(payload, workspace_path)
+
+    def update(payload: dict[str, Any]) -> Any:
+        return payload.get("mcp", {}).pop(REA_MCP_NAME, None)
+
+    removed_record = _update_state(workspace_path, update)
 
     for backup in (workspace_path / "mcp").glob("state.json.rea-setup-*.bak"):
         backup.unlink(missing_ok=True)

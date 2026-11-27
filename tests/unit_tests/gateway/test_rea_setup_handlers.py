@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from types import SimpleNamespace
 
 import pytest
 
@@ -224,7 +225,7 @@ async def test_base_status_scope_skips_enhanced_inventory(monkeypatch) -> None:
             "capability_cards": [],
         }
 
-    async def fake_verify():
+    async def fake_verify(*_args, **_kwargs):
         return {"ok": True, "tool_count": 207, "error": None}
 
     async def fail_attach(_scan, _verification):
@@ -329,7 +330,7 @@ async def test_base_status_rescans_after_mcp_verification_fails(monkeypatch) -> 
             "capability_cards": [],
         }
 
-    async def failed_verify():
+    async def failed_verify(*_args, **_kwargs):
         return {"ok": False, "tool_count": 0, "error": "probe failed"}
 
     monkeypatch.setattr(rea_setup_handlers, "scan_rea_setup", fake_scan)
@@ -347,3 +348,159 @@ async def test_base_status_rescans_after_mcp_verification_fails(monkeypatch) -> 
     assert len(scans) == 2
     assert channel.response["ok"] is True
     assert channel.response["payload"]["ready"] is False
+
+
+async def test_verify_rea_mcp_uses_agentserver_live_inventory(monkeypatch) -> None:
+    record = {"command": "node", "args": ["npx", "rea", "mcp"]}
+    marks = []
+    requests = []
+    binary_session = {
+        "tool_availability": {
+            "groups": [
+                {
+                    "surface": "session",
+                    "names": ["binary_session"],
+                    "available": True,
+                    "reason": "available",
+                }
+            ]
+        }
+    }
+
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "rea_mcp_record",
+        lambda _workspace: record,
+    )
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "probe_rea_mcp_inventory",
+        lambda _record: (_ for _ in ()).throw(
+            AssertionError("live verification must not start a temporary MCP")
+        ),
+    )
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "mark_rea_mcp_state",
+        lambda *args, **kwargs: marks.append((args, kwargs)),
+    )
+
+    async def fake_request(_services, _channel, params, **_kwargs):
+        requests.append(params)
+        return True, {
+            "tools": [{"name": "binary_session"}],
+            "binary_session_result": {
+                "structuredContent": {"result": binary_session},
+            },
+        }
+
+    monkeypatch.setattr(rea_setup_handlers, "_request_agent_mcp", fake_request)
+
+    result = await rea_setup_handlers._verify_rea_mcp(
+        services=SimpleNamespace(agent_client=object()),
+        channel=SimpleNamespace(channel_id="web"),
+    )
+
+    assert result["ok"] is True
+    assert result["tool_count"] == 1
+    assert result["inventory"]["binary_session"] == binary_session
+    assert requests == [{"action": "inspect_inventory", "name": "rea"}]
+    assert marks == [(("connected", None), {"tool_count": 1})]
+
+
+async def test_detected_component_ids_prefer_live_capability_cards(monkeypatch) -> None:
+    async def fake_verify(**_kwargs):
+        return {
+            "ok": True,
+            "tool_count": 229,
+            "inventory": {"tools": [], "binary_session": {}},
+        }
+
+    def fake_scan():
+        return {
+            "enhanced": [
+                {"id": "ghidra", "available": False},
+                {"id": "java", "available": True},
+            ]
+        }
+
+    async def fake_attach(_scan, _verification):
+        return {
+            "enhanced": [
+                {"id": "ghidra", "available": False},
+                {"id": "java", "available": True},
+            ],
+            "capability_cards": [
+                {
+                    "members": [
+                        {"id": "cutter", "kind": "component", "state": "available"},
+                        {"id": "frida", "kind": "tool_group", "state": "available"},
+                    ]
+                }
+            ],
+        }
+
+    monkeypatch.setattr(rea_setup_handlers, "_verify_rea_mcp", fake_verify)
+    monkeypatch.setattr(rea_setup_handlers, "scan_rea_setup", fake_scan)
+    monkeypatch.setattr(rea_setup_handlers, "_attach_capability_cards", fake_attach)
+
+    assert await rea_setup_handlers._detected_available_component_ids() == [
+        "cutter",
+        "java",
+    ]
+
+
+async def test_enhanced_cancel_during_final_verification_wins(
+    monkeypatch,
+) -> None:
+    job = rea_setup_handlers._create_job(
+        kind="enhanced",
+        steps=rea_setup_handlers._enhanced_steps([]),
+    )
+    job_id = job["job_id"]
+    scans = []
+
+    async def fake_available(**_kwargs):
+        return []
+
+    def fake_install(**_kwargs):
+        return {
+            "plan": [],
+            "results": [],
+            "summary": {},
+        }
+
+    async def cancel_during_verify(**_kwargs):
+        rea_setup_handlers._JOB_CANCEL_EVENTS[job_id].set()
+        return {"ok": True, "tool_count": 229}
+
+    def fake_scan(*_args, **_kwargs):
+        scans.append(True)
+        return {"ready": True}
+
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "_detected_available_component_ids",
+        fake_available,
+    )
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "install_enhanced_components",
+        fake_install,
+    )
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "_reload_and_verify_rea_mcp",
+        cancel_during_verify,
+    )
+    monkeypatch.setattr(rea_setup_handlers, "scan_rea_setup", fake_scan)
+
+    await rea_setup_handlers._run_enhanced_job(job_id, None)
+
+    payload = rea_setup_handlers._job_payload(job_id)
+    assert payload["status"] == "cancelled"
+    assert payload["result"]["cancelled"] is True
+    assert scans == []
+
+    rea_setup_handlers._JOBS.pop(job_id, None)
+    rea_setup_handlers._JOB_CANCEL_EVENTS.pop(job_id, None)
