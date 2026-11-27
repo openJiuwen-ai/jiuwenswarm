@@ -3394,6 +3394,15 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        if request.req_method == ReqMethod.TTS_SYNTHESIZE:
+            # The Gateway's voice extension owns synthesis. A missing handler
+            # can forward this call, but it must never start a chat turn.
+            wire = self._send_error_response(
+                ws, request, send_lock, "Text-to-speech is unavailable.", "METHOD_NOT_FOUND",
+            )
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+            return
         if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
             params = request.params if isinstance(request.params, dict) else {}
             channels = params.get("channels")
