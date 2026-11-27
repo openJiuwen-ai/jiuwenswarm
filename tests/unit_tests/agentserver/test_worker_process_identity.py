@@ -11,6 +11,7 @@ import psutil
 import pytest
 
 from jiuwenswarm.common import process_identity as identity
+from jiuwenswarm.server.ipc.stream import StreamConnection
 from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor import resident_lifecycle
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
@@ -398,3 +399,46 @@ def test_dead_launcher_witness_can_use_tick_identity(monkeypatch, restricted_pro
     assert status._has_live_group_witness(record, launcher_pid)
     monkeypatch.setattr(identity, "proc_start_ticks", lambda pid: 4243)
     assert not status._has_live_group_witness(record, launcher_pid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("peer_pid", [123, 456, None])
+async def test_frozen_macos_retires_drifted_legacy_worker_only_with_matching_unix_peer(
+    monkeypatch, restricted_process, tmp_path, peer_pid,
+):
+    monkeypatch.setattr(resident_lifecycle, "sys", SimpleNamespace(
+        platform="darwin", frozen=True, executable=sys.executable,
+    ))
+    monkeypatch.setattr(resident_lifecycle, "deployment_scope", lambda: "deployment")
+    monkeypatch.setattr(resident_lifecycle, "data_scope", lambda: "data")
+    socket_path = str(tmp_path / "worker")
+    monkeypatch.setattr(restricted_process, "cmdline", lambda: [
+        sys.executable, "-m", "jiuwenswarm.server.worker.main", "--socket", socket_path,
+    ])
+    restricted_process.create_time.side_effect = None
+    restricted_process.create_time.return_value = 1700000001.0
+    hello = {
+        "kind": "hello", "protocol": 2, "pid": 123,
+        "deployment_scope": "deployment", "data_scope": "data",
+        "process_created": 1700000000.0,
+    }
+    connection = Mock(spec=StreamConnection)
+    connection.macos_unix_peer_pid.return_value = peer_pid
+    connection.recv.return_value = {"kind": "shutdown.done", "ok": True}
+    wait_exit = AsyncMock()
+    monkeypatch.setattr(resident_lifecycle, "_wait_exit", wait_exit)
+
+    if peer_pid == hello["pid"]:
+        outcome = await resident_lifecycle.retire_worker(
+            connection, hello, socket_path, deadline=time.monotonic() + 5,
+        )
+        assert outcome == {"kind": "shutdown.done", "ok": True}
+        connection.send.assert_awaited_once_with({"kind": "shutdown"})
+        assert wait_exit.await_args.args[:2] == (restricted_process, 1700000001.0)
+    else:
+        with pytest.raises(RuntimeError, match="Worker PID identity changed"):
+            await resident_lifecycle.retire_worker(
+                connection, hello, socket_path, deadline=time.monotonic() + 5,
+            )
+        connection.send.assert_not_awaited()
+        wait_exit.assert_not_awaited()
