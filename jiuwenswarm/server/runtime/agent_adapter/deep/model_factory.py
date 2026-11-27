@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from typing import Any
+from urllib.parse import urlparse
 from openjiuwen.core.foundation.llm import (
     ModelRequestConfig,
     ModelClientConfig,
@@ -370,25 +371,36 @@ def _build_model_from_entry(mcc: dict, mco: dict, modalities: Any = None) -> Mod
             exc_info=True,
         )
     if tip_headers:
-        existing = mcc_fields.get("custom_headers")
-        merged = dict(existing) if isinstance(existing, dict) else {}
-        for header_name, header_value in tip_headers.items():
-            key = str(header_name)
-            # Tip credentials must win for Authorization (MaaS Basic auth).
-            if key.lower() == "authorization":
-                merged[key] = str(header_value)
-            else:
-                merged.setdefault(key, str(header_value))
-        mcc_fields["custom_headers"] = merged
-        has_authorization = any(
-            str(k).lower() == "authorization" for k in merged
-        )
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] merged tip default_headers into "
-            "custom_headers: keys=%s has_authorization=%s",
-            sorted(str(k) for k in merged),
-            has_authorization,
-        )
+        from jiuwenswarm.llm_sse_patch import should_merge_tip_default_headers
+
+        api_base = str(mcc_fields.get("api_base") or "")
+        if not should_merge_tip_default_headers(mcc_fields):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] skip tip default_headers for "
+                "non-MaaS model with own api_key: model=%s host=%s",
+                name,
+                urlparse(api_base).hostname or "",
+            )
+        else:
+            existing = mcc_fields.get("custom_headers")
+            merged = dict(existing) if isinstance(existing, dict) else {}
+            for header_name, header_value in tip_headers.items():
+                key = str(header_name)
+                # Tip credentials must win for Authorization (MaaS Basic auth).
+                if key.lower() == "authorization":
+                    merged[key] = str(header_value)
+                else:
+                    merged.setdefault(key, str(header_value))
+            mcc_fields["custom_headers"] = merged
+            has_authorization = any(
+                str(k).lower() == "authorization" for k in merged
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] merged tip default_headers into "
+                "custom_headers: keys=%s has_authorization=%s",
+                sorted(str(k) for k in merged),
+                has_authorization,
+            )
     else:
         api_key = str(mcc_fields.get("api_key", "") or "").strip()
         if api_key == "huawei-maas-session":

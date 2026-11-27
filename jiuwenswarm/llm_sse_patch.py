@@ -64,6 +64,22 @@ def _is_huawei_maas_api_base(api_base: str) -> bool:
         return True
     return "modelarts" in base and "maas" in base
 
+
+def should_merge_tip_default_headers(mcc: dict[str, Any]) -> bool:
+    """Return whether tip ``default_headers`` may be merged into this model.
+
+    A third-party model with its own API key and a non-MaaS base must not
+    receive official-channel tip headers. An empty ``api_base`` still merges:
+    the team path does not backfill a MaaS address.
+    """
+    api_key = str(mcc.get("api_key") or "").strip()
+    api_base = str(mcc.get("api_base") or "").strip()
+    owns_real_key = bool(api_key) and api_key != _HUAWEI_MAAS_PLACEHOLDER_API_KEY
+    return not (
+        owns_real_key and api_base and not _is_huawei_maas_api_base(api_base)
+    )
+
+
 _GLM_TOOL_XML_CLOSED_RE = re.compile(
     r"<(arg_value|arg_key|tool_call)[^>]*?>.*?</\1>",
     re.IGNORECASE | re.DOTALL,
@@ -331,18 +347,19 @@ def apply_openai_auth_header_patch() -> None:
                 auth = _resolve_model_client_authorization(self.model_client_config)
                 if auth is None:
                     return client
-                _key, value = auth
+                value = auth[1]
                 try:
-                    # OpenAI default_headers merges _custom_headers over api_key Bearer.
-                    existing = dict(getattr(client, "_custom_headers", {}) or {})
-                    existing["Authorization"] = value
-                    setattr(client, "_custom_headers", existing)
+                    # A copy keeps this request's Authorization off the cached client.
+                    # OpenAI default_headers still override the api_key Bearer.
+                    return client.with_options(
+                        default_headers={"Authorization": value},
+                    )
                 except Exception:
                     logger.warning(
                         "[llm_sse_patch] failed to inject Authorization into AsyncOpenAI",
                         exc_info=True,
                     )
-                return client
+                    return client
 
             setattr(OpenAIModelClient, create_attr, _create_async_openai_client_with_auth)
             setattr(OpenAIModelClient, applied_attr, True)

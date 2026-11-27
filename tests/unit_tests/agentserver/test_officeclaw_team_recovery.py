@@ -543,7 +543,8 @@ async def test_naming_resolves_partial_models_before_real_schema_validation(stat
     assert captured[0].model_request_config.temperature == 0.2
     assert captured[0].model_client_config.api_key == "dummy-key"
     assert captured[0].model_client_config.api_base == "https://tenant.example/v1"
-    assert captured[0].model_client_config.custom_headers["Authorization"] == "Basic dummy"
+    headers = captured[0].model_client_config.custom_headers or {}
+    assert not any(str(key).lower() == "authorization" for key in headers)
     assert state.config == before
     persisted = state.entities.get("code-review").template_snapshot
     assert "ref" in persisted["agents"]["leader"]["model"]

@@ -148,6 +148,43 @@ def test_new_config_wins_for_same_identity(monkeypatch):
     assert len(adapter._model_identity_to_keys[_ref(_entry("glm-5.1"))]) == 1
 
 
+def _authorization_value(headers: dict | None) -> str | None:
+    if not headers:
+        return None
+    for key, value in headers.items():
+        if str(key).lower() == "authorization":
+            return str(value)
+    return None
+
+
+def test_tip_authorization_not_merged_into_third_party_model(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.local_env_config.read_default_headers",
+        lambda: {"Authorization": "Basic X"},
+    )
+    entry = _entry(
+        "deepseek-v4.1-flash",
+        api_base="https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
+        api_key="volc-real-key",
+    )
+    model = _build_model_from_entry(entry["model_client_config"], entry["model_config_obj"])
+    headers = getattr(model.model_client_config, "custom_headers", None)
+    assert _authorization_value(headers) is None
+
+
+def test_tip_authorization_still_merged_for_huawei_maas(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.local_env_config.read_default_headers",
+        lambda: {"Authorization": "Basic X"},
+    )
+    base = "https://officeace-002.cn-southwest-2.huaweicloud-agentarts.com/v2"
+    for api_key in ("huawei-maas-session", "real-maas-key"):
+        entry = _entry("deepseek-v4.1-flash-1017", api_base=base, api_key=api_key)
+        model = _build_model_from_entry(entry["model_client_config"], entry["model_config_obj"])
+        headers = getattr(model.model_client_config, "custom_headers", None)
+        assert _authorization_value(headers) == "Basic X"
+
+
 def test_same_name_other_endpoint_stays_reachable_by_ref_only(monkeypatch):
     adapter, _ = _adapter(monkeypatch)
     old = _entry("glm-5.1", api_base="https://old.example/v1")

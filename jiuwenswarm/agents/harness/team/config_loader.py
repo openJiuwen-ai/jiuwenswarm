@@ -8,6 +8,7 @@ import logging
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from openjiuwen.agent_teams.paths import get_agent_teams_home
 
@@ -59,7 +60,8 @@ def merge_tip_default_headers(model_client_config: dict[str, Any]) -> dict[str, 
     Huawei MaaS uses ``api_key=huawei-maas-session`` as a placeholder while the
     real Basic Authorization is supplied by the tip ``default_headers``.  The
     tip Authorization therefore takes precedence; unrelated tip headers only
-    fill keys that are not explicitly configured on the model.
+    fill keys that are not explicitly configured on the model. A third-party
+    model with its own API key and a non-MaaS base is returned unchanged.
     """
     merged_config = deepcopy(model_client_config)
     try:
@@ -72,6 +74,18 @@ def merge_tip_default_headers(model_client_config: dict[str, Any]) -> dict[str, 
         return merged_config
 
     if not tip_headers:
+        return merged_config
+
+    from jiuwenswarm.llm_sse_patch import should_merge_tip_default_headers
+
+    if not should_merge_tip_default_headers(merged_config):
+        api_base = str(merged_config.get("api_base") or "")
+        logger.info(
+            "[TeamConfigLoader] skip tip default_headers for non-MaaS model "
+            "with own api_key: model=%s host=%s",
+            merged_config.get("model_name") or "",
+            urlparse(api_base).hostname or "",
+        )
         return merged_config
 
     existing_headers = merged_config.get("custom_headers")

@@ -94,6 +94,58 @@ def test_regular_api_key_does_not_use_task_overlay_authorization() -> None:
             asyncio.run(client.close())
 
 
+def _effective_authorization(client: object) -> str | None:
+    custom = dict(getattr(client, "_custom_headers", None) or {})
+    for key, value in custom.items():
+        if str(key).lower() == "authorization" and value:
+            return str(value)
+    auth_headers = getattr(client, "auth_headers", None)
+    if isinstance(auth_headers, dict):
+        for key, value in auth_headers.items():
+            if str(key).lower() == "authorization" and value:
+                return str(value)
+    return None
+
+
+def test_auth_patch_does_not_mutate_shared_client() -> None:
+    """A request-scoped Authorization must not stick on the cached AsyncOpenAI client."""
+    apply_openai_auth_header_patch()
+    api_key = "shared-cache-api-key"
+    api_base = "https://shared-cache.invalid/v1"
+    polluted = oai_client_mod.OpenAIModelClient(
+        ModelRequestConfig(),
+        ModelClientConfig(
+            api_key=api_key,
+            api_base=api_base,
+            client_provider="OpenAI",
+            verify_ssl=False,
+            custom_headers={"Authorization": "Basic c2hhcmVk"},
+        ),
+    )
+    clean = oai_client_mod.OpenAIModelClient(
+        ModelRequestConfig(),
+        ModelClientConfig(
+            api_key=api_key,
+            api_base=api_base,
+            client_provider="OpenAI",
+            verify_ssl=False,
+        ),
+    )
+    cache_key = oai_client_mod.OpenAIModelClient.connection_key(clean.model_client_config)
+    try:
+        first = polluted._create_async_openai_client()
+        second = clean._create_async_openai_client()
+        cached = oai_client_mod.OpenAIModelClient._client_cache[cache_key]
+        assert _effective_authorization(first) == "Basic c2hhcmVk"
+        assert _effective_authorization(second) == f"Bearer {api_key}"
+        custom = dict(getattr(cached, "_custom_headers", None) or {})
+        assert not any(str(key).lower() == "authorization" for key in custom)
+    finally:
+        cached = oai_client_mod.OpenAIModelClient._client_cache.pop(cache_key, None)
+        if cached is not None:
+            asyncio.run(cached.close())
+
+
 def test_explicit_client_authorization_wins_over_task_overlay() -> None:
     """The existing explicit custom_headers path remains authoritative."""
     apply_openai_auth_header_patch()
