@@ -329,3 +329,39 @@ async def test_a2ui_panel_without_registered_provider(panel_config, monkeypatch)
     await handlers.config_get_handler(channel, None, "get", {}, None)
     assert channel.send_response.call_args.kwargs["ok"] is True
     assert channel.send_response.call_args.kwargs["payload"]["a2ui_enabled"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_save_all_reports_success_when_reload_callback_fails(panel_config, fields):
+    """A failed on_config_saved callback must not turn a persisted save into an error."""
+    channel = SimpleNamespace(send_response=AsyncMock())
+    reload = AsyncMock(side_effect=RuntimeError("gateway hot reload crashed"))
+
+    await handlers.config_save_all_handler(
+        channel, None, "save", {"config": fields}, None, on_config_saved=reload,
+    )
+
+    saved = channel.send_response.call_args.kwargs
+    assert saved["ok"] is True
+    assert saved["payload"]["applied_without_restart"] is False
+    # The change set itself must have been persisted before the callback ran.
+    raw = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+    assert raw["experimental"]["multi_model_collaboration"]["verifier_interval"] == 3
+
+
+@pytest.mark.asyncio
+async def test_save_all_clears_agent_cache_when_reload_callback_fails(panel_config, fields, monkeypatch):
+    """On reload failure the agent config cache is still cleared best-effort."""
+    channel = SimpleNamespace(send_response=AsyncMock())
+    reload = AsyncMock(side_effect=RuntimeError("gateway hot reload crashed"))
+    cleared = AsyncMock()
+    monkeypatch.setattr(handlers, "_clear_agent_config_cache", cleared)
+
+    await handlers.config_save_all_handler(
+        channel, None, "save", {"config": fields}, None, on_config_saved=reload,
+    )
+
+    saved = channel.send_response.call_args.kwargs
+    assert saved["ok"] is True
+    assert saved["payload"]["applied_without_restart"] is False
+    cleared.assert_awaited_once()

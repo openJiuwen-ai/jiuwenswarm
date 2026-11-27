@@ -2224,11 +2224,25 @@ async def config_save_all_handler(
             yaml_updated,
             force=bool(env_updates or yaml_updated),
         )
-        applied_without_restart = await apply_config_change_set(
-            change_set,
-            on_config_saved=on_config_saved,
-            agent_client=agent_client,
-        )
+        try:
+            applied_without_restart = await apply_config_change_set(
+                change_set,
+                on_config_saved=on_config_saved,
+                agent_client=agent_client,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # The change set is already persisted at this point; a failure in
+            # the post-save reload (callback or get_config payload build)
+            # must not turn a successful save into an error the UI would
+            # retry (duplicating writes). Same contract as the config.set
+            # path above.
+            logger.warning(
+                "[config.save_all] config hot reload failed: %s", exc, exc_info=True,
+            )
+            # Best-effort cache clear so agent-side reads still pick up the
+            # persisted file even though the reload path itself failed.
+            await _clear_agent_config_cache(agent_client)
+            applied_without_restart = False
 
         if "enable_free_models" in yaml_updated and on_free_models_toggled is not None:
             try:
