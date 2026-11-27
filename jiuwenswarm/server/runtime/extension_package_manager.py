@@ -250,6 +250,20 @@ def read_package_manifest(pkg_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def read_plugin_package_config(pkg_dir: Path) -> dict[str, Any]:
+    """Read optional package-local YAML and reject paths outside the package."""
+    root = pkg_dir.resolve()
+    path = (root / "config.yaml").resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("Plugin config.yaml must stay inside the package")
+    if not path.is_file():
+        return {}
+    config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(config, dict):
+        raise ValueError("Plugin configuration must be a mapping")
+    return config
+
+
 def agent_template_runtime(
     manifest: AgentTemplateSpec | AgentTemplateCard | dict[str, Any],
 ) -> RuntimeSpec | None:
@@ -769,6 +783,21 @@ def resolve_package_avatar_thumbnail(pkg_dir: Path, reference: str) -> str:
         return ""
 
 
+def _resolve_plugin_card_avatar(pkg_dir: Path, manifest: dict, *, source: str) -> str:
+    avatar = _resolve_package_avatar(pkg_dir, manifest)
+    if avatar or source != "builtin" or manifest.get("package_type") != "plugin":
+        return avatar
+    # The copied package may predate the bundled icon. Keep installed files intact.
+    resources_root = _resources_root(_PLUGIN_PACKAGE_KIND)
+    if resources_root is None:
+        return ""
+    resource_dir = resources_root / pkg_dir.name
+    resource_manifest = read_package_manifest(resource_dir)
+    if resource_manifest is None or resource_manifest.get("package_type") != "plugin":
+        return ""
+    return _resolve_package_avatar(resource_dir, resource_manifest)
+
+
 def _build_list_card(
     pkg_dir: Path,
     *,
@@ -798,7 +827,7 @@ def _build_list_card(
         "category": category if isinstance(category, str) else "",
         "tags": manifest.get("tags") if isinstance(manifest.get("tags"), list) else [],
         "source": source,
-        "avatar": _resolve_package_avatar(pkg_dir, manifest),
+        "avatar": _resolve_plugin_card_avatar(pkg_dir, manifest, source=source),
     }
     if installed is not None:
         card["installed"] = installed
@@ -889,7 +918,7 @@ def _build_show_card(
         "displayName": manifest.get("display_name") or pkg_dir.name,
         "displayDescription": display_description,
         "source": resolved_source,
-        "avatar": _resolve_package_avatar(pkg_dir, manifest),
+        "avatar": _resolve_plugin_card_avatar(pkg_dir, manifest, source=resolved_source),
         "version": version if isinstance(version, str) else "",
         "details": details,
         "tags": tags if isinstance(tags, list) else [],
@@ -1705,6 +1734,15 @@ def _resolve_agent_template_definition_dir(name: Any) -> tuple[Path, str] | None
     )
 
 
+def _shipped_memory_plugin_dir(name: str) -> Path | None:
+    from jiuwenswarm.agents.harness.common.memory.plugin import MEMORY_PLUGIN_ID
+
+    if name != MEMORY_PLUGIN_ID:
+        return None
+    root = get_equipment_resources_plugin_packages_dir()
+    return _package_dir_if_present(root, name) if root is not None else None
+
+
 def resolve_plugin_dir(name: Any) -> Path:
     """Resolve an installed plugin package directory."""
     return _resolve_package_dir(
@@ -1713,6 +1751,17 @@ def resolve_plugin_dir(name: Any) -> Path:
         kind_label="plugin",
         package_type="plugin",
     )
+
+
+def resolve_plugin_runtime_dir(name: str) -> Path:
+    """Use shipped memory code for an installed built-in copy, even after upgrade."""
+    installed = resolve_plugin_dir(name)
+    shipped = _shipped_memory_plugin_dir(name)
+    if shipped is None:
+        return installed
+    if installed.parent.name != "built_in":
+        raise ValueError(f"plugin package conflict: {name} exists in both local and resources")
+    return _validate_package_manifest(shipped, "plugin", "plugin")
 
 
 def plugin_package_exists(name: Any) -> bool:
@@ -2989,6 +3038,14 @@ def list_plugin_packages(params: dict | None = None) -> list[dict]:
         built_in_root=_built_in_root(_PLUGIN_PACKAGE_KIND),
         marketplace_by_id=market,
     )
+    from jiuwenswarm.agents.harness.common.memory.plugin import (
+        MEMORY_PLUGIN_ID,
+        memory_plugin_default_enabled,
+    )
+
+    for card in cards:
+        if card["id"] == MEMORY_PLUGIN_ID and card["installed"]:
+            card["default_enabled"] = memory_plugin_default_enabled()
     return _apply_list_source_filter(cards, params, package_kind=_PLUGIN_PACKAGE_KIND)
 
 
@@ -3014,8 +3071,7 @@ def show_agent_template(name: str) -> dict | None:
     )
 
 
-def show_plugin_package(name: str) -> dict | None:
-    """Return one plugin detail card, or None if missing/bad."""
+def _resolve_plugin_show_dir(name: str) -> tuple[Path, str] | None:
     resolved = _resolve_show_package_dir(
         name,
         kind_label="plugin",
@@ -3023,17 +3079,42 @@ def show_plugin_package(name: str) -> dict | None:
         built_in_root=_built_in_root(_PLUGIN_PACKAGE_KIND),
         resources_root=_resources_root(_PLUGIN_PACKAGE_KIND),
     )
+    if resolved is not None and resolved[1] == "builtin":
+        return _shipped_memory_plugin_dir(name) or resolved[0], resolved[1]
+    return resolved
+
+
+def bundled_memory_plugin_dir() -> Path:
+    from jiuwenswarm.agents.harness.common.memory.plugin import MEMORY_PLUGIN_ID
+
+    resolved = _resolve_plugin_show_dir(MEMORY_PLUGIN_ID)
+    if resolved is None or resolved[1] != "builtin":
+        raise ValueError("Bundled memory plugin is unavailable")
+    return resolved[0]
+
+
+def show_plugin_package(name: str) -> dict | None:
+    """Return one plugin detail card, or None if missing/bad."""
+    resolved = _resolve_plugin_show_dir(name)
     if resolved is None:
         return None
     pkg_dir, source = resolved
     market = _marketplace_index(read_plugin_marketplace_entries())
     marketplace = market.get(pkg_dir.name)
-    return _build_show_card(
+    card = _build_show_card(
         pkg_dir,
         package_type="plugin",
         marketplace=marketplace,
         source=source,
     )
+    if card is not None and source == "builtin":
+        from jiuwenswarm.agents.harness.common.memory.plugin import MEMORY_PLUGIN_ID
+
+        if pkg_dir.name == MEMORY_PLUGIN_ID:
+            from jiuwenswarm.server.runtime.managed_memory_http import public_memory_plugin_settings
+
+            card["memory_access"] = public_memory_plugin_settings()
+    return card
 
 
 def _hub_detail_card(

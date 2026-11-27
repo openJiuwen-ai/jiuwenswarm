@@ -131,6 +131,11 @@
   cursor: default;
 }
 
+.app-market-ai-role-grid--agent > .app-market-ai-role-card {
+  gap: 12px;
+  padding: 18px;
+}
+
 .app-market-ai-role-card .page-card__body {
   display: block;
   white-space: pre-wrap;

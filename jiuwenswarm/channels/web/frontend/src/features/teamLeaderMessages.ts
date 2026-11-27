@@ -1,4 +1,6 @@
 import type { Message } from '../types';
+import { getFileIdentityKey } from '../utils/fileDownloadDedup';
+import type { FileIdentitySource } from '../utils/fileDownloadDedup';
 
 function findLatestUserIndex(messages: Message[]): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -63,6 +65,33 @@ export function findActiveTeamLeaderMessage(
       message.teamStream &&
       message.teamStream.requestId === requestId
     ) {
+      return message;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 在当前用户轮内查找已带相同文件身份的 team-leader 消息。
+ *
+ * chat.final 会把 team-leader 消息的 teamStream 清成 undefined，使
+ * findActiveTeamLeaderMessage 命中不到；此时若同一 chat.file 二次到达
+ *（team relay / fanout 等延迟投递），用文件身份兜底合并，避免新建一条
+ * 带 fileItems 的 team-leader 消息导致文件卡片重复渲染（issue #105）。
+ */
+export function findTeamLeaderMessageWithFile(
+  messages: Message[],
+  incoming: FileIdentitySource[],
+): Message | undefined {
+  if (!incoming.length) return undefined;
+  const latestUserIndex = findLatestUserIndex(messages);
+  const incomingKeys = new Set(incoming.map((file) => getFileIdentityKey(file)));
+  for (let index = messages.length - 1; index > latestUserIndex; index -= 1) {
+    const message = messages[index];
+    if (!isTeamLeaderMessage(message)) continue;
+    const files = message.fileItems;
+    if (!files?.length) continue;
+    if (files.some((file) => incomingKeys.has(getFileIdentityKey(file)))) {
       return message;
     }
   }

@@ -15,7 +15,7 @@ from ruamel.yaml import YAML
 logger = logging.getLogger("update_conf")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent
+REPO_ROOT = SCRIPT_DIR.parent.parent  # 脚本位于 docker/jiuwenswarm-ee/，需上溯两层才是仓库根
 SRC_FILE = REPO_ROOT / "jiuwenswarm" / "resources" / "config.yaml"
 DEFAULT_CONFIG_DIR = Path.home() / ".jiuwenswarm" / "config"
 

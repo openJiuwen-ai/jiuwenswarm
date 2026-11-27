@@ -61,6 +61,7 @@ from jiuwenswarm.agents.harness.common.memory.config import (
     is_auto_memory_enabled,
     is_memory_enabled,
 )
+from jiuwenswarm.agents.harness.common.memory.plugin import supported_memory_session
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     EVOLUTION_INTERRUPT_METADATA_SOURCES,
     is_interrupt_resume_payload,
@@ -4195,7 +4196,8 @@ class JiuWenSwarm:
                 raise
 
             # cloud memory: before chat hook
-            if memory_mode == "cloud":
+            plugin_owns_memory = supported_memory_session(request.params or {})
+            if memory_mode == "cloud" and not plugin_owns_memory:
                 mem_ctx = MemoryHookContext(
                     session_id=request.session_id or "default",
                     request_id=request.request_id or "",
@@ -4292,7 +4294,7 @@ class JiuWenSwarm:
                 _schedule_feedback_once("success")
 
                 # cloud memory: after chat hook
-                if memory_mode == "cloud":
+                if memory_mode == "cloud" and not plugin_owns_memory:
                     after_ctx = MemoryHookContext(
                         session_id=request.session_id or "default",
                         request_id=request.request_id or "",
@@ -4308,7 +4310,7 @@ class JiuWenSwarm:
                 # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
                 mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
                 config = get_config()
-                if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
+                if not plugin_owns_memory and is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                     _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
 
             if not feedback_scheduled:
@@ -5054,7 +5056,8 @@ class JiuWenSwarm:
             )
 
         # cloud memory: before chat hook
-        if memory_mode == "cloud":
+        plugin_owns_memory = supported_memory_session(request.params or {})
+        if memory_mode == "cloud" and not plugin_owns_memory:
             mem_ctx = MemoryHookContext(
                 session_id=request.session_id or "default",
                 request_id=request.request_id or "",
@@ -6361,7 +6364,7 @@ class JiuWenSwarm:
         _schedule_feedback_once(completion_status)
 
         # cloud memory: after chat hook
-        if memory_mode == "cloud":
+        if memory_mode == "cloud" and not plugin_owns_memory:
             assistant_message = final_answer_content or "".join(final_answer_chunks)
             after_ctx = MemoryHookContext(
                 session_id=request.session_id or "default",
@@ -6378,7 +6381,7 @@ class JiuWenSwarm:
         # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
         mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
         config = get_config()
-        if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
+        if not plugin_owns_memory and is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
             _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=True)
 
         if completion_receipt is not None:

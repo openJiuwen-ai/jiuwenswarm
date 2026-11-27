@@ -23,6 +23,8 @@
     "test:skill-detail-description": "node --test tests/skillDetailDescription.test.mjs",
     "test:skillpack-install": "esbuild src/components/SkillPanel/skillPackInstall.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/skillpack-install/skillPackInstall.mjs && node --test tests/skillPackInstall.test.mjs",
     "test:skill-upload-errors": "esbuild src/components/SkillPanel/skillUploadErrors.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/skill-upload-errors/skillUploadErrors.mjs && node --test tests/skillUploadErrors.test.mjs",
+    "test:skill-panel-races": "esbuild src/components/SkillPanel/skillPanelGuards.ts src/components/SkillPanel/skillRebuildWait.ts --bundle --packages=external --platform=node --format=esm --out-extension:.js=.mjs --outdir=node_modules/.cache/skill-panel-races && node --test tests/skillPanelGuards.test.mjs tests/skillRebuildWait.test.mjs",
+    "test:agent-definition-detail": "node scripts/test-agent-definition-detail.mjs",
     "test:office-addins": "node --test tests/officeAddins.test.mjs",
     "test:application-presentation": "esbuild tests/fixtures/applicationPresentation.ts --bundle --packages=external --platform=node --format=esm --define:import.meta.env={} --outfile=node_modules/.cache/application-presentation/protocol.mjs && node --test tests/applicationPresentation.test.mjs tests/presentationTransitions.test.mjs tests/presentationOverlay.test.mjs tests/presentationStart.test.mjs",
     "test:update-panel": "esbuild src/components/UpdatePanel/index.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/update-panel/index.mjs && node --test tests/updatePanel.test.mjs",
@@ -127,6 +129,7 @@
     "test:team-member-departure": "esbuild src/features/teamMemberDeparture.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/team-member-departure/teamMemberDeparture.mjs && node --test tests/teamMemberDeparture.test.mjs",
     "test:tool-group-display": "node --test tests/toolGroupDisplayOrder.test.mjs",
     "test:team-panel-state": "tsc src/features/teamPanelStateNormalize.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/team-panel-state --skipLibCheck --noEmitOnError && node --test tests/teamPanelState.test.mjs",
+    "test:team-panel-load": "tsc src/components/TeamPanel/teamPanelLoad.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/team-panel-load --skipLibCheck --noEmitOnError && node --test tests/teamPanelLoad.test.mjs",
     "test:team-panel-layout": "esbuild src/components/teamArea/teamPanelLayout.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/team-panel-layout/teamPanelLayout.mjs && node --test tests/teamPanelLayout.test.mjs",
     "test:team-connection-presentation": "esbuild src/features/teamConnectionPresentation.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/team-connection-presentation/teamConnectionPresentation.mjs && node --test tests/teamConnectionPresentation.test.mjs",
     "test:team-dispatch-config": "esbuild src/features/teamDispatch/featureConfig.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/team-dispatch-config/featureConfig.mjs && node --test tests/teamDispatchFeatureConfig.test.mjs",
@@ -305,7 +308,8 @@
     "test:mcp-app-view": "esbuild src/components/ChatPanel/McpAppView.tsx src/features/mcpApps/mcpAppContext.ts src/services/webClient.ts --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/mcp-app-view --loader:.css=empty --define:import.meta.env={} && node --test tests/mcpAppView.test.mjs",
     "test:moa-progress": "node --test tests/moaProgress.test.mjs",
     "test:duplex-subagent-panel": "node --test ../../../extensions/video_duplex/tests/frontend/duplexSubagentPanel.test.mjs",
-    "test:video-frame-encoding": "node --test ../../../extensions/video_duplex/tests/frontend/frameEncoding.test.mjs"
+    "test:video-frame-encoding": "node --test ../../../extensions/video_duplex/tests/frontend/frameEncoding.test.mjs",
+    "test:team-leader-messages": "esbuild src/features/teamLeaderMessages.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/team-leader-messages/teamLeaderMessages.mjs --define:import.meta.env.DEV=false && node --test tests/teamLeaderMessages.test.mjs"
   },
   "dependencies": {
     "@a2ui/react": "0.8.0",

@@ -140,7 +140,7 @@ def _appearance_providers() -> bool:
 
 def _get_agent_root_dir() -> Path:
     # profile 契约：agent 子树挂 profile/agent（个人版 Web 进程无租户上下文，
-    # 企业版用户面经 user-backend 代理，不走本进程的这条链）。
+    # 企业版用户面经 web-server 代理，不走本进程的这条链）。
     return _get_user_workspace_dir() / "profile" / "agent"
 
 
@@ -627,6 +627,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
     _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
+    # Idle timeout while draining a request body we are about to reject. A
+    # client that announces a large Content-Length and then stalls must not
+    # hold the per-connection thread in a blocking read forever.
+    _REJECTED_UPLOAD_DRAIN_IDLE_TIMEOUT = 30.0
     _HTTP_PROXY_CHUNK_BYTES = 64 * 1024
     _WS_CONNECT_TIMEOUT = 10
     _WS_HANDSHAKE_TIMEOUT = 10
@@ -3101,17 +3105,20 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             handle_custom_agent_upload_http,
         )
 
+        length = self._parse_content_length()
         # Custom agents install into this machine's user workspace, which a
         # routed multi-user AgentServer does not share.
         if _uses_agentos_routing():
+            self._discard_request_body(length)
             self._write_json(503, {"error": "custom agents are not supported in AgentOS mode"})
             return
-        if self._parse_content_length() > MAX_CUSTOM_AGENT_UPLOAD_BYTES:
+        if length > MAX_CUSTOM_AGENT_UPLOAD_BYTES:
+            self._discard_request_body(length)
             self._write_json(413, {"error": "upload too large"})
             return
         status, payload = handle_custom_agent_upload_http(
             content_type=self.headers.get("Content-Type", ""),
-            body=self._read_request_body(),
+            body=self.rfile.read(length) if length > 0 else b"",
         )
         self._write_json(status, payload)
 
@@ -3123,12 +3130,26 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _discard_request_body(self, length: int) -> None:
         # Answering before the body is consumed resets the connection, which
         # the browser reports as "Failed to fetch" instead of the JSON error.
-        remaining = length
-        while remaining > 0:
-            chunk = self.rfile.read(min(remaining, 1024 * 1024))
-            if not chunk:
-                break
-            remaining -= len(chunk)
+        if length <= 0:
+            return
+        previous_timeout = self.connection.gettimeout()
+        try:
+            self.connection.settimeout(self._REJECTED_UPLOAD_DRAIN_IDLE_TIMEOUT)
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except OSError:
+            # A stalled or broken peer cannot be drained; stop blocking this
+            # connection's thread and close it after the error response.
+            self.close_connection = True
+        finally:
+            try:
+                self.connection.settimeout(previous_timeout)
+            except OSError:
+                pass
 
     def _handle_designer_upload(self) -> None:
         from jiuwenswarm.channels.web.designer_upload_http import (

@@ -525,6 +525,21 @@ async def test_agent_mode_web_tools_keep_chinese_schema_for_zh(monkeypatch):
     for name in _WEB_TOOL_NAMES:
         assert _CJK.search(registered[name].card.description), name
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edition", ["enterprise", "personal"])
+async def test_read_email_is_discoverable_in_both_editions(monkeypatch, edition):
+    from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import classify_tool
+    from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import discovery_search_text
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+    adapter, _registered = _make_adapter(monkeypatch, "en")
+    cards = {card.name: card for card in await adapter._get_tool_cards("agent-1")}
+    assert "read_pdf" in cards
+    assert "read_docx" in cards
+    assert "邮件" in discovery_search_text(cards["read_email"])
+    assert classify_tool("read_email").operation_family == classify_tool("read_docx").operation_family
+
+
 # --- from test_enterprise_skill_http_route.py ---
 
 _ROOT = Path(__file__).resolve().parents[3]

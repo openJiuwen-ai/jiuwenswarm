@@ -157,6 +157,9 @@ def _resolve_workspace_dir() -> Path | None:
             workspace,
         )
         return None
+    from jiuwenswarm.common.sandbox_fs import ensure_sandbox_writable
+
+    ensure_sandbox_writable(workspace)
     return workspace
 
 
@@ -853,6 +856,9 @@ def build_filesystem_policy(
                 exc,
             )
             continue
+        from jiuwenswarm.common.sandbox_fs import ensure_sandbox_writable
+
+        ensure_sandbox_writable(intent_path)
         _mount_rw_dir(intent_path)
 
     if effective_startup_mode == "internal":

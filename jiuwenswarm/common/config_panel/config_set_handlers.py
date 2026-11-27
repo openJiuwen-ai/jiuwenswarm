@@ -36,6 +36,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm import ProviderType
 
+from jiuwenswarm.common.external_cli_runtime import missing_external_cli_sdk_modules
 from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
 from jiuwenswarm.common.team_goal_config import leader_goal_enabled, resolve_leader_goal_update
 from jiuwenswarm.common.config import (
@@ -999,14 +1000,67 @@ def _detect_custom_agent_cli(cli_agent: str, cli_path: str) -> dict[str, Any]:
 
 
 def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = False) -> dict[str, Any]:
-    # use_builtin 且未显式给路径时，优先解析内置托管 CLI；解析失败再回退 PATH 搜索。
+    # 内置 agent（claude/codex）的所有探测统一以"内置 SDK 是否可用"为前提
+    # （集群模式拉成员依赖 SDK，PATH 上的裸 CLI 不算数——!10678 讨论）：
+    # runtime 清单 required_modules 全部可导入 + reference_version 非空，
+    # 任一不满足即 missing（卡片出"一键安装"入口）——显式配置的自定义路径
+    # 同样受此门控，SDK 缺失时自定义 CLI 单独存在并不能让成员被拉起。
+    # SDK 就绪后再按路径来源判 CLI：显式路径 → 校验该路径；无显式路径 →
+    # 内置托管 CLI 文件存在。
+    # 自定义（上传）agent 不在 runtime 清单里，missing_external_cli_sdk_modules
+    # 会对它们抛 ValueError、reference_version 也恒为空——门控只对清单覆盖
+    # 的内置 agent 生效，自定义 agent 的可用性由上传 CLI 自身的探测校验
+    # （!10678 第二轮检视）。
+    reference_version = external_cli_reference_version(normalized_agent)
+    if normalized_agent in EXTERNAL_CLI_AGENT_KINDS:
+        try:
+            missing_modules = missing_external_cli_sdk_modules(normalized_agent)
+        except RuntimeError as exc:
+            # 清单缺失/损坏/schema 不符是环境级错误，与 _verify_installed_runtime
+            # 的验收失败同语义：按"内置 SDK 未就绪"降级为 missing（卡片出
+            # 一键安装入口），不让清单错误穿透到探测/保存接口——保存管线只把
+            # ValueError 转 BadRequest，RuntimeError 会变成 500（!10678 检视）。
+            return {
+                "cli_agent": normalized_agent,
+                "status": "missing",
+                "path": "",
+                "version": "",
+                "reference_version": reference_version,
+                "reason": "builtin_not_installed",
+                "message": f"{normalized_agent} builtin sdk not installed: manifest unavailable: {exc}",
+            }
+        if missing_modules or not reference_version:
+            return {
+                "cli_agent": normalized_agent,
+                "status": "missing",
+                "path": "",
+                "version": "",
+                "reference_version": reference_version,
+                "reason": "builtin_not_installed",
+                "message": f"{normalized_agent} builtin sdk not installed"
+                + (
+                    f": missing modules {', '.join(missing_modules)}"
+                    if missing_modules
+                    else "; reference version unavailable"
+                ),
+            }
     effective_cli_path = cli_path.strip()
-    if not effective_cli_path and use_builtin:
-        effective_cli_path = external_cli_managed_cli_path(normalized_agent)
+    if normalized_agent in EXTERNAL_CLI_AGENT_KINDS and not effective_cli_path:
+        managed = external_cli_managed_cli_path(normalized_agent)
+        if not managed:
+            return {
+                "cli_agent": normalized_agent,
+                "status": "missing",
+                "path": "",
+                "version": "",
+                "reference_version": reference_version,
+                "reason": "builtin_not_installed",
+                "message": f"{normalized_agent} builtin managed cli missing",
+            }
+        effective_cli_path = managed
     resolved_path, path_error, path_reason = resolve_external_cli_path(
         normalized_agent, effective_cli_path
     )
-    reference_version = external_cli_reference_version(normalized_agent)
     if not resolved_path:
         return {
             "cli_agent": normalized_agent,

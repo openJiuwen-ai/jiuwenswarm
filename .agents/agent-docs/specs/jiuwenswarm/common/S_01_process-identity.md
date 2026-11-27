@@ -24,7 +24,7 @@ files:
 
 # 受限系统进程身份与 PID 重用校验
 
-最近修订日期：2026-11-26。
+最近修订日期：2026-11-27。
 
 ## 范围与事实源
 
@@ -60,7 +60,12 @@ develop 的可选 `process_started` 保存平台原生的稳定启动标记，�
 其读取受限时发送 null，不得因此中断仍有有效 ticks 的 HELLO；它也不能替代 protocol 2 必须声明的
 `process_created` / `process_start_ticks`。双方有可比较 ticks 时仍以 ticks 为准；否则可用同字段的精确
 标记比较兼容观察方 psutil 时钟修正差异，并保留本地 OS 出生身份供后续检查。
-未声明稳定标记的旧时间戳仍须通过原有身份比较，不增加通用时间容差以放行无法确认的 PID。
+未声明稳定标记的旧时间戳仍按原有身份比较规则校验。
+
+macOS 常驻 Worker 退出时，如果旧 HELLO 只上报墙钟创建时间且时间不符，
+退役流程可以用已连接 Unix socket 的内核对端 PID 复核归属。对端 PID 必须与 HELLO 匹配，
+部署、用户、可执行文件和端点仍须通过既有校验。复核后以本端观察到的进程身份确认退出。
+内核对端 PID 不可读取或不匹配时拒绝退役。
 
 实例 PID 文件的 `started_at` 保持数值展示时间；新增的 `process_identity` 字段保存受限系统上的身份凭据。
 群 owner 兼容旧数值与稳定 psutil hash；回退记录使用带类型的内核计数。
@@ -89,3 +94,4 @@ debug 兼容旧时间戳记录；OAuth 兼容旧纯 PID 文件的时间校验。
 - `tests/unit_tests/server/test_runtime_owner_identity.py`：旧 owner 记录及保守失败。
 - `tests/unit_tests/common/test_process_identity_contracts.py`：debug/OAuth 未知状态、信号前重验及异常类型兼容。
 - [修复与验证记录](https://gitcode.com/openJiuwen/jiuwenswarm/merge_requests/10796)。
+- [macOS Worker 时间戳漂移的修复与验证](../../../bugfix/jiuwenswarm/server/supervisor/B_20261127_1636_macos-resident-worker-clock-drift.md)。

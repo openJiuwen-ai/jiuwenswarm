@@ -15,7 +15,7 @@ import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
  *   useEvolution / useSkillToasts；发布与登录由公共 AssetPublishHost 承载
  * - 视图：SkillGraphTab / MarketplaceView / SkillDetailView；弹窗：UploadSkillModal / DocToSkillModal /
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Upload } from 'lucide-react';
 import MoreIcon from '../../assets/work-mode/more-rimless.svg?react';
@@ -81,6 +81,8 @@ import type {
   SkillVersionsListResponse,
   SkillRebuildResponse,
 } from './types';
+import { SequenceGuard, applyToggleToSelection } from './skillPanelGuards';
+import { waitForSkillRebuild } from './skillRebuildWait';
 
 const REBUILD_POLL_MS = 3000;
 const REBUILD_WAIT_MS = 30 * 60 * 1000;
@@ -104,23 +106,6 @@ async function requestRebuildStatus(
     // skills.rebuild 带上 rebuild_id 时只查状态，不会再开一次重建。
     return await webRequest<SkillRebuildResponse>('skills.rebuild', params, { timeoutMs: 30_000 });
   }
-}
-
-async function waitForSkillRebuild(
-  name: string,
-  rebuildId: string,
-  withSession: (params: { name: string; rebuild_id: string }) => Record<string, unknown>,
-): Promise<'done' | 'timeout'> {
-  const deadline = Date.now() + REBUILD_WAIT_MS;
-  while (Date.now() < deadline) {
-    await sleep(REBUILD_POLL_MS);
-    const status = await requestRebuildStatus(name, rebuildId, withSession);
-    if (status.status === 'done' && status.success) return 'done';
-    if (status.status === 'failed' || status.success === false) {
-      throw new Error(status.detail || '技能重建失败。');
-    }
-  }
-  return 'timeout';
 }
 
 type MySkillsSubTab = 'all' | 'enabled' | 'disabled' | 'builtin' | 'prebuilt' | 'user' | 'local';
@@ -313,6 +298,24 @@ export function SkillPanel({
   const prevIsActiveRef = useRef(isActive);
   const mountedRef = useRef(false);
 
+  // 详情请求序号守卫：晚到的 skills.get 响应不再回写状态（先开 A 再开 B，
+  // A 的慢响应到达时已被 B 的请求作废）
+  const detailGuardRef = useRef(new SequenceGuard());
+  // 当前选中技能的镜像：await 之后用“此刻的选中”而非点击时闭包做判断
+  const selectedSkillRef = useRef<SkillDetail | null>(null);
+  useLayoutEffect(() => {
+    selectedSkillRef.current = selectedSkill;
+  }, [selectedSkill]);
+  // 卸载标记 + 重建代次：等待重建的轮询循环据此退出，不再做无主的后台 RPC
+  const aliveRef = useRef(true);
+  const rebuildSeqRef = useRef(0);
+  useEffect(
+    () => () => {
+      aliveRef.current = false;
+    },
+    [],
+  );
+
   const { message, messageType, setMessage, setMessageType, showMessage, cleanMessage } = useSkillToasts();
   const searchKeyword = search.trim();
   const withSession = useCallback(
@@ -377,6 +380,7 @@ export function SkillPanel({
     setHubDetail,
     setHubDetailState,
     fetchHubSkillDetail,
+    invalidateHubDetail,
     openHubMore,
     invalidateHubFetch,
     pauseHubFetching,
@@ -488,12 +492,15 @@ export function SkillPanel({
 
   const fetchSkillDetail = useCallback(
     async (skillName: string, version?: string) => {
+      const seq = detailGuardRef.current.begin();
       setDetailState('loading');
       try {
         const data = await webRequest<SkillDetail>(
           'skills.get',
           withSession({ name: skillName, ...(version ? { version } : {}) }),
         );
+        // 序号已过期：期间用户切换了别的技能或关闭了详情，晚到的响应不再回写
+        if (!detailGuardRef.current.isCurrent(seq)) return;
         const detail = normalizeSkillItem(data);
         // skills.get 若未带回 source_type，用列表缓存补齐（编辑/卸载/启停展示依赖来源类型）
         const listed = skills.find((s) => s.name === skillName);
@@ -508,6 +515,7 @@ export function SkillPanel({
         setDetailState('success');
         resetFilesTab();
       } catch (error) {
+        if (!detailGuardRef.current.isCurrent(seq)) return;
         console.error(error);
         setDetailState('error');
       }
@@ -634,6 +642,10 @@ export function SkillPanel({
 
   const handleRebuild = useCallback(
     async (skillName: string, version: string | null) => {
+      // 代次 + 卸载标记构成取消谓词：新一轮重建开始或组件卸载时，
+      // 旧的等待循环退出且不再回写任何状态
+      const generation = ++rebuildSeqRef.current;
+      const isCancelled = () => generation !== rebuildSeqRef.current || !aliveRef.current;
       setRebuildLoading(true);
       showMessage('loading', t('skills.messages.rebuilding'));
       try {
@@ -643,8 +655,16 @@ export function SkillPanel({
           // 这次只做校验和准备。静默改写在后台跑，不再占用 600 秒的非流式等待。
           { timeoutMs: 120_000 },
         );
+        if (isCancelled()) return;
         if (data.pending && data.rebuild_id) {
-          const outcome = await waitForSkillRebuild(skillName, data.rebuild_id, (params) => withSession(params));
+          const outcome = await waitForSkillRebuild(skillName, data.rebuild_id, {
+            pollMs: REBUILD_POLL_MS,
+            waitMs: REBUILD_WAIT_MS,
+            sleep,
+            requestStatus: (name, rebuildId) => requestRebuildStatus(name, rebuildId, withSession),
+            isCancelled,
+          });
+          if (outcome === 'cancelled') return;
           if (outcome === 'timeout') {
             showMessage('loading', t('skills.messages.rebuildStillRunning'));
             return;
@@ -652,15 +672,24 @@ export function SkillPanel({
         } else if (!data.success) {
           throw new Error(data.detail || t('skills.messages.rebuildFailed', { detail: '' }));
         }
+        if (isCancelled()) return;
         showMessage('success', t('skills.messages.rebuildCompleted'));
-        fetchSkillDetail(skillName);
-        fetchSkillVersions(skillName);
+        // 重建的技能仍是当前选中时才刷新详情与版本；用户已切走时不回写，
+        // 避免把正在看的其他技能详情覆盖回旧技能
+        if (selectedSkillRef.current?.name === skillName) {
+          fetchSkillDetail(skillName);
+          fetchSkillVersions(skillName);
+        }
       } catch (error) {
         console.error(error);
+        if (isCancelled()) return;
         const detail = error instanceof Error ? error.message : String(error);
         showMessage('error', t('skills.messages.rebuildFailed', { detail }));
       } finally {
-        setRebuildLoading(false);
+        // 只有最新一轮重建负责解锁 loading，避免被取消的旧轮次提前复位
+        if (generation === rebuildSeqRef.current) {
+          setRebuildLoading(false);
+        }
       }
     },
     [withSession, fetchSkillDetail, fetchSkillVersions, showMessage, t],
@@ -715,6 +744,7 @@ export function SkillPanel({
       return;
     }
     setSelectedSkill(null);
+    detailGuardRef.current.invalidate();
     setDetailState('idle');
   }, [detailNavStack, fetchSkillDetail]);
 
@@ -722,6 +752,7 @@ export function SkillPanel({
   const handleBackToList = useCallback(() => {
     setDetailNavStack([]);
     setSelectedSkill(null);
+    detailGuardRef.current.invalidate();
     setDetailState('idle');
   }, []);
 
@@ -1316,17 +1347,23 @@ export function SkillPanel({
 
         setSkills((prev) => prev.map((s) => (s.name === skillName ? { ...s, enabled: newEnabled } : s)));
 
-        if (selectedSkill && selectedSkill.name === skillName) {
-          setSelectedSkill({ ...selectedSkill, enabled: newEnabled });
-        }
+        // 详情回写按“此刻的选中”判断（applyToggleToSelection 纯函数）：
+        // await 期间用户切到别的技能时不写，避免旧技能把已切换的详情页拉回来
+        setSelectedSkill((prev) => applyToggleToSelection(prev, skillName, newEnabled));
 
         // 仅成员技能影响技能包聚合状态，确认后才刷新列表与技能包详情；
         // 无技能包关联的技能保持轻量更新，不重新拉取列表
         if (parentPacks.length > 0) {
           await fetchSkills();
-          if (selectedSkill && isSkillPackage(selectedSkill) && selectedSkill.name !== skillName) {
-            const data = await webRequest<SkillDetail>('skills.get', withSession({ name: selectedSkill.name }));
-            setSelectedSkill(normalizeSkillItem(data));
+          // 用选中镜像判断“当前是否仍在看一个不含被切技能的技能包”，
+          // 不再依赖点击时的旧 selectedSkill 闭包
+          const current = selectedSkillRef.current;
+          if (current && isSkillPackage(current) && current.name !== skillName) {
+            const data = await webRequest<SkillDetail>('skills.get', withSession({ name: current.name }));
+            // 拉取期间选中又变了就放弃回写
+            if (selectedSkillRef.current?.name === current.name) {
+              setSelectedSkill(normalizeSkillItem(data));
+            }
           }
         }
       } catch (error) {
@@ -1527,7 +1564,9 @@ export function SkillPanel({
     setSelectedHubSkill(null);
     setHubDetail(null);
     setHubDetailState('idle');
-  }, [setMarketplaceSubView, setSelectedHubSkill, setHubDetail, setHubDetailState]);
+    // 退出详情视图时作废在途的广场详情请求
+    invalidateHubDetail();
+  }, [setMarketplaceSubView, setSelectedHubSkill, setHubDetail, setHubDetailState, invalidateHubDetail]);
 
   const handleMainTabChange = useCallback(
     (tab: 'my' | 'marketplace' | 'graph') => {

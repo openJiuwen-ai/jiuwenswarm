@@ -147,7 +147,7 @@ def apply_enterprise_models_and_mcp(
     return merged, models_applied, mcp_applied
 
 
-def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
+def _apply_enterprise_policy(base: dict, loaded: Any, *, bind_request_credentials: bool = True) -> dict:
     from jiuwenswarm.agents.harness.common.memory.config import (
         merge_memory_config_into_config,
     )
@@ -168,14 +168,13 @@ def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
     merged, _, _ = apply_enterprise_models_and_mcp(base, loaded)
     # 执行护栏在模型之后整段替换，避免模型 retry_count 旧逻辑盖掉护栏开关和重试次数。
     merged, _ = apply_enterprise_execution_guard_to_config(merged, loaded)
-    # MCP 动态 token 实例凭据：Manager 挂在 Agent 模板 data.custom_config 对象
-    # 数组里，合并时提取并整份替换给动态 token 模块（未携带则清除）。
-    apply_dispatched_credentials(loaded)
     merged = merge_memory_config_into_config(merged)
     merged, _ = apply_enterprise_permissions_to_config(merged, loaded)
     merged, _ = apply_enterprise_react_to_config(merged, loaded)
     # advanced_config（含 a4p_enabled）→ config.a4p.enabled 等
     merged, _ = apply_enterprise_advanced_config_to_config(merged, loaded)
+    if bind_request_credentials:
+        apply_dispatched_credentials(loaded)
     return merged
 
 
@@ -218,7 +217,8 @@ class DefaultConfigProvider:
             else ctx.cached_policy
         )
         return AgentConfigResult(
-            config=_apply_enterprise_policy(base, loaded), policy=loaded
+            config=_apply_enterprise_policy(base, loaded, bind_request_credentials=ctx.request is not None),
+            policy=loaded,
         )
 
     async def refresh(self) -> None:
@@ -254,6 +254,11 @@ async def resolve_agent_config(
     routing: dict | None = None,
     cached_policy: Any = None,
 ) -> AgentConfigResult:
+    if request is not None:
+        from jiuwenswarm.common.mcp_dynamic_token_patch import apply_dispatched_credentials
+
+        # A failed or skipped lookup must not inherit the caller's previous registration.
+        apply_dispatched_credentials(None)
     if routing is None and request is not None:
         from jiuwenswarm.common.request_identity import web_routing_identity
 

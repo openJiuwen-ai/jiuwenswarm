@@ -4,14 +4,15 @@ export const webUISlots: readonly WebUISlotRule[] = [
   { id: 'conversation.input.above', display: 'list', maxVisible: 3 },
   { id: 'conversation.input.below', display: 'list', maxVisible: 2 },
   { id: 'conversation.panel.right', display: 'list', rootComponents: ['Panel', 'Iframe'], strictRoot: true, rerender: 'keep-mounted' },
-  // Menu hosts require a real session_id; task navigation belongs to the application.
-  { id: 'application.menu', display: 'list' },
-  { id: 'application.menu.main', display: 'single', rootComponents: ['Iframe'], rerender: 'keep-mounted' },
+  // Menu and task navigation hosts belong to the application so switching sessions keeps them mounted.
+  { id: 'application.menu', display: 'list', scope: 'application' },
+  { id: 'application.menu.main', display: 'single', scope: 'application', rootComponents: ['Iframe'], rerender: 'keep-mounted' },
   { id: 'task.function', display: 'list', scope: 'application' },
   { id: 'task.function.main', display: 'single', scope: 'application', rootComponents: ['Iframe'], rerender: 'keep-mounted' },
   { id: 'application.settings', display: 'list', additionalScopes: ['application'] },
   { id: 'application.entry', display: 'single', scope: 'application' },
-  { id: 'application.sidebar.footer', display: 'list', scope: 'application' },
+  // Keep maxVisible in sync with SlotSpec.max_instances in extensions_v2/webui/constants.py.
+  { id: 'application.sidebar.footer', display: 'list', scope: 'application', maxVisible: 3 },
   { id: 'application.presentation', display: 'list', scope: 'application',
     rootComponents: ['ApplicationSurface'], strictRoot: true, rerender: 'keep-mounted' },
   // Gateway-only full-window layer below the workspace.
@@ -24,7 +25,8 @@ export const webUISlots: readonly WebUISlotRule[] = [
   { id: 'application.appearance', display: 'list', scope: 'application' },
   { id: 'conversation.session.content.after', display: 'list' },
   { id: 'conversation.turn.footer.actions', display: 'list' },
-  { id: 'conversation.header.title.after', display: 'list' },
-  { id: 'conversation.header.actions', display: 'list' },
+  // Keep maxVisible in sync with SlotSpec.max_instances in extensions_v2/webui/constants.py.
+  { id: 'conversation.header.title.after', display: 'list', maxVisible: 2 },
+  { id: 'conversation.header.actions', display: 'list', maxVisible: 3 },
   { id: 'message.assistant.meta', display: 'list' },
 ];

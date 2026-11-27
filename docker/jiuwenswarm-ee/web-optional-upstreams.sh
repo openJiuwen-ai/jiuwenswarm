@@ -67,14 +67,14 @@ if [ "${JIUWENSWARM_EDITION:-personal}" = "enterprise" ]; then
         backend_target=$(qualify_service_target "$backend_target")
     fi
     if [ -n "$backend_target" ]; then
-        printf 'set $user_backend_target "%s";\n' "${backend_target%/}" >> "$CONF"
+        printf 'set $web_server_target "%s";\n' "${backend_target%/}" >> "$CONF"
         cat >> "$CONF" <<'EOF_BACKEND'
 location ^~ /idp/ {
-    proxy_pass $user_backend_target;
+    proxy_pass $web_server_target;
 }
 location ^~ /manager-api/v1/user-console/ {
     rewrite ^/manager-api/(.*)$ /api/$1 break;
-    proxy_pass $user_backend_target;
+    proxy_pass $web_server_target;
 }
 location = /manager-api { return 404; }
 location ^~ /manager-api/ { return 404; }
@@ -82,7 +82,7 @@ location = /file-api { return 307 /file-api/; }
 location = /share-api { return 307 /share-api/; }
 EOF_BACKEND
         for file in user-http.inc user-webchannel-http.inc user-ws.inc; do
-            printf 'proxy_pass $user_backend_target;\n' > "/etc/nginx/optional-upstreams/$file"
+            printf 'proxy_pass $web_server_target;\n' > "/etc/nginx/optional-upstreams/$file"
         done
         # The WebSocket locations set Upgrade locally and do not inherit server headers.
         printf '%s\n' 'proxy_set_header X-Forwarded-Proto $scheme;' \

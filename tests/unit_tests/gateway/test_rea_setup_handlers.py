@@ -245,3 +245,105 @@ async def test_base_status_scope_skips_enhanced_inventory(monkeypatch) -> None:
 
     assert calls["include_enhanced"] is False
     assert channel.response["payload"]["capability_cards"] == []
+
+
+async def test_verify_rea_mcp_downgrades_state_when_probe_returns_no_tools(
+    monkeypatch,
+) -> None:
+    record = {"command": "node", "args": ["npx", "rea", "mcp"]}
+    marks = []
+
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "rea_mcp_record",
+        lambda _workspace: record,
+    )
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "probe_rea_mcp_inventory",
+        lambda _record: {"tools": []},
+    )
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "mark_rea_mcp_state",
+        lambda *args, **kwargs: marks.append((args, kwargs)),
+    )
+
+    result = await rea_setup_handlers._verify_rea_mcp()
+
+    assert result["ok"] is False
+    assert marks == [(("registered", None), {})]
+
+
+async def test_verify_rea_mcp_downgrades_state_when_probe_fails(monkeypatch) -> None:
+    record = {"command": "node", "args": ["npx", "rea", "mcp"]}
+    marks = []
+
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "rea_mcp_record",
+        lambda _workspace: record,
+    )
+
+    def fail_probe(_record):
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "probe_rea_mcp_inventory",
+        fail_probe,
+    )
+    monkeypatch.setattr(
+        rea_setup_handlers,
+        "mark_rea_mcp_state",
+        lambda *args, **kwargs: marks.append((args, kwargs)),
+    )
+
+    result = await rea_setup_handlers._verify_rea_mcp()
+
+    assert result == {"ok": False, "tool_count": 0, "error": "probe failed"}
+    assert marks == [(("registered", None), {})]
+
+
+async def test_base_status_rescans_after_mcp_verification_fails(monkeypatch) -> None:
+    class FakeChannel:
+        def __init__(self) -> None:
+            self.methods = {}
+            self.response = None
+
+        def register_method(self, name, handler) -> None:
+            self.methods[name] = handler
+
+        async def send_response(self, _ws, _req_id, **kwargs) -> None:
+            self.response = kwargs
+
+    scans = []
+
+    def fake_scan(**kwargs):
+        scans.append(kwargs)
+        return {
+            "ready": len(scans) == 1,
+            "base": [],
+            "enhanced": [],
+            "enhanced_plan": [],
+            "capability_cards": [],
+        }
+
+    async def failed_verify():
+        return {"ok": False, "tool_count": 0, "error": "probe failed"}
+
+    monkeypatch.setattr(rea_setup_handlers, "scan_rea_setup", fake_scan)
+    monkeypatch.setattr(rea_setup_handlers, "_verify_rea_mcp", failed_verify)
+
+    channel = FakeChannel()
+    rea_setup_handlers.register_rea_setup_handlers(channel)
+    await channel.methods["rea.status.get"](
+        object(),
+        "req-base",
+        {"scope": "base"},
+        "sess",
+    )
+
+    assert len(scans) == 2
+    assert channel.response["ok"] is True
+    assert channel.response["payload"]["ready"] is False
