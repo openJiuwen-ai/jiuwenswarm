@@ -168,6 +168,21 @@ export interface Message {
   isStreaming?: boolean;
   /** 未收到工具/final 分段边界的集群输出；暂停只关闭光标，不移除此关联。 */
   teamStream?: { requestId?: string };
+  /**
+   * 该条 system 气泡是「本轮以失败收尾」的终态错误（实时 chat.error / 历史 chat.error）。
+   * 用来在刷新或切换会话后重新推导会话列表上的失败标记（GitCode #6920/#6919/#6794）——
+   * 失败标记不能只活在前端 runtime.error 里，否则页面一刷新就丢失。
+   */
+  terminalError?: true;
+  /**
+   * 该条 assistant 气泡是「chat.final 正常收尾」的完整回答，历史恢复时只对
+   * chat.final 来源打标。用来把「本轮成功收尾」的判定从「末尾是 assistant」
+   * 收紧为「末尾是带 final 语义的 assistant」——被中断的半截回答（worker 被杀等）
+   * 即使历史里残留 assistant 气泡，也不能据此推出 succeeded 而抹掉缓存里的真实失败
+   * （GitCode #6920 检视意见）。实时路径的失败由 terminalError 气泡兜底、成功由收尾
+   * 清缓存兜底，不需要在每条实时 final 分支重复打标。
+   */
+  turnFinal?: true;
   usageSummary?: UsageSummary;
   // Harness message flag for special styling
   isHarnessMessage?: boolean;

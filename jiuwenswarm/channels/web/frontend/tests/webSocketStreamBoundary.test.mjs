@@ -544,3 +544,37 @@ test('cross-session finals do not mark a request as a finished turn', async (con
     assert.ok(connection.runtime().executionError);
   } finally { await connection.dispose(); }
 });
+
+test('chat.error with a non-failure code shows the bubble without lighting the mark', async (context) => {
+  const sessionId = 'chat-error-non-failure';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    connection.receive('chat.error', {
+      session_id: sessionId, request_id: 'req-cancelled', code: 'REQUEST_ABORTED', error: '用户取消',
+    });
+    const runtime = connection.runtime();
+    // 错误气泡照常显示（用户能看到发生了什么）。
+    assert.equal(runtime.messages.length, 1);
+    assert.match(runtime.messages[0].content, /用户取消/);
+    // 但不点亮会话级失败标记：不打终态标记、不设 runtime.error/executionError、不写缓存。
+    assert.equal(runtime.messages[0].terminalError, undefined);
+    assert.equal(runtime.error, null);
+    assert.equal(runtime.executionError, null);
+    assert.equal(globalThis.localStorage.getItem('jiuwenswarm_session_turn_error'), null);
+  } finally { await connection.dispose(); }
+});
+
+test('chat.error with a real failure code lights the persistent mark', async (context) => {
+  const sessionId = 'chat-error-real-failure';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    connection.receive('chat.error', {
+      session_id: sessionId, request_id: 'req-failed', code: 'INTERNAL_ERROR', error: '模型调用失败',
+    });
+    const runtime = connection.runtime();
+    assert.equal(runtime.error, '模型调用失败');
+    assert.equal(runtime.executionError, '模型调用失败');
+    assert.equal(runtime.messages.at(-1).terminalError, true);
+    assert.ok(globalThis.localStorage.getItem('jiuwenswarm_session_turn_error'));
+  } finally { await connection.dispose(); }
+});

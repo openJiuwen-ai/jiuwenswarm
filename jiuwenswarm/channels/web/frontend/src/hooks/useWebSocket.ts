@@ -13,6 +13,7 @@ import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutp
 import { isEnterprise } from '../edition';
 import { persistEnterpriseAttachments } from '../services/obsUpload';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
+import { isTurnFailureCode, rememberSessionTurnError, forgetSessionTurnError } from '../features/sessionTurnError';
 import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
   assetKindFromMime,
@@ -2578,12 +2579,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setThinking(sessionId, false);
         const errorMsg = webError.message || t('network.sendMessageFailed');
         useChatStore.getState().updateMessage(sessionId, userMessageId, { inputOutcome: 'failed' });
+        // 服务端以 ok=false 收尾（例如模型调用在首帧前就抛错）说明这一轮真的失败了，
+        // 必须点亮会话级失败标记，否则会话列表没有红叹号（GitCode #6919）。
+        const turnFailed = isTurnFailureCode(webError.code);
+        if (turnFailed) {
+          rememberSessionTurnError(sessionId, errorMsg);
+          useChatStore.getState().setExecutionError(sessionId, errorMsg);
+          useChatStore.getState().setSessionError(sessionId, errorMsg);
+        }
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().addMessage(sessionId, {
           id: prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
+          ...(turnFailed ? { terminalError: true as const } : {}),
         });
         return false;
       }
@@ -2686,12 +2696,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           clearFailedAgentGroupBinding(sessionId, agentGroupSelectionPayload.agent_group_name);
         }
         const errorMsg = webError.message || t('network.sendMessageFailed');
+        // 同 sendMessage 的失败分支：服务端拒绝这一轮时要留下会话级失败标记（#6919）。
+        const turnFailed = isTurnFailureCode(webError.code);
+        if (turnFailed) {
+          rememberSessionTurnError(sessionId, errorMsg);
+          useChatStore.getState().setExecutionError(sessionId, errorMsg);
+          useChatStore.getState().setSessionError(sessionId, errorMsg);
+        }
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().addMessage(sessionId, {
           id: prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
+          ...(turnFailed ? { terminalError: true as const } : {}),
         });
       }
     },
@@ -4107,6 +4125,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // on team.completed, so we must NOT reset isProcessing here.
         if (!useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) {
           useChatStore.getState().setExecutionError(sessionId, null);
+          // 一轮正常收尾意味着上一轮的失败标记作废：清掉本地缓存，避免刷新后
+          // 时间线里那条旧 chat.error 之外的兜底缓存又把红叹号画回来。
+          forgetSessionTurnError(sessionId);
           if (currentMode !== 'team') {
             // 有 active Goal 时，普通问答轮和 Goal 后续执行走同一条流；这次 chat.final 可能只是
             // 普通问答轮的收尾，Goal 紧接着还要继续跑。此时不能把它当"整段彻底结束"处理——
@@ -5455,14 +5476,29 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             useWorkspaceStore.getState().patchSession(sessionId, { is_processing: false });
           }
         }
-        useChatStore.getState().setExecutionError(sessionId, errorMsg);
+        // 与 sendMessage 失败分支同一口径（isTurnFailureCode）：传输层/用户取消/
+        // 登录预检等 code（REQUEST_ABORTED / REQUEST_CANCELLED / REQUEST_TIMEOUT /
+        // WS_* / login_required）不是「本轮以失败收尾」，错误气泡照常显示，但
+        // 不写缓存、不打终态标记，避免用户取消一次就被永久标成失败会话。
+        // login_required 走到这里时上面的 requestLogin 已弹出登录框，仅此而已。
+        const payloadCode = typeof payload.code === 'string' ? payload.code : null;
+        const turnFailed = isTurnFailureCode(payloadCode);
+        if (turnFailed) {
+          useChatStore.getState().setExecutionError(sessionId, errorMsg);
+          useChatStore.getState().setSessionError(sessionId, errorMsg);
+          // 记进本地缓存：worker 被杀等失败不会落 chat.error 历史记录，
+          // 刷新后只能靠这条缓存把红叹号画回来（GitCode #6919/#6794）。
+          rememberSessionTurnError(sessionId, errorMsg);
+        }
         onErrorRef.current?.(errorMsg);
-        useChatStore.getState().setSessionError(sessionId, errorMsg);
         useChatStore.getState().addMessage(sessionId, {
           id: isSessionBudgetExhausted ? sessionBudgetErrorId : prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
+          // 这条气泡就是「本轮以失败收尾」的可见证据；历史恢复后侧栏红叹号
+          // 靠它重新推导出来（见 features/sessionTurnError.ts）。
+          ...(turnFailed ? { terminalError: true as const } : {}),
         });
       }),
       webClient.on('chat.message_updated', ({ payload }) => {
@@ -6339,6 +6375,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         flushPendingStreamDelta(sessionId);
         useChatStore.getState().setExecutionError(sessionId, null);
+        // harness 整段正常结束同样意味着上一轮的失败已经过去，清掉兜底缓存。
+        forgetSessionTurnError(sessionId);
         useChatStore.getState().setProcessing(sessionId, false);
         useChatStore.getState().setThinking(sessionId, false);
         // 会话终态兜底收口思考段（已闭合为幂等空操作）：错误路径可能没有
