@@ -3674,6 +3674,7 @@
   grid-template-columns: repeat(auto-fill, 178px);
   gap: 8px;
   flex: 1 1 auto;
+  max-height: min(240px, 30vh);
   overflow-y: auto;
   overflow-x: visible;
   padding: 5px 5px 5px 0;
@@ -3681,7 +3682,7 @@
 }
 
 .chat-input-attachment-grid--menu-open {
-  overflow: visible;
+  overflow: auto;
 }
 
 .chat-input-attachment-card {
