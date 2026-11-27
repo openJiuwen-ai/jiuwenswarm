@@ -1145,6 +1145,14 @@ permissions:
     enabled: false
     archive_dir: ""
 
+  # 工作空间内删除豁免：区内 rm/del 等删除命令不再弹卡，区外删除与变量/通配等
+  # 无法证明目标位置的命令照旧审批（fail-closed）。rules 为命令层待豁免的规则 id，
+  # 命令家族与 shell_delete_files pattern 保持一致（见 workspace_delete_exempt.py）。
+  in_workspace_delete_exempt:
+    enabled: true
+    rules:
+      - shell_delete_files
+
   # Native 路径层（agent-core FileGuard）：defaults + workspace 绑定运行时 workspace_root
   # trusted_dirs（TUI 项目 cwd / /add-dir）由引擎运行时编译，不必写进 YAML。
   file_guard:
