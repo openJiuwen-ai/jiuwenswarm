@@ -1730,6 +1730,10 @@ def prepare_local_gateway_config(env: dict[str, str]) -> None:
     gateway_dir = get_gateway_config_dir(env=env)
     if env.get(key, "").strip():
         env[key] = str(gateway_dir)
+        if not is_agentos_runtime():
+            gateway_config = gateway_dir / "config.yaml"
+            if gateway_config.is_file():
+                _migrate_local_gateway_extension_dirs(gateway_config)
         return
     if is_agentos_runtime():
         return
