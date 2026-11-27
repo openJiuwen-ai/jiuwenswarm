@@ -1354,29 +1354,14 @@ _TOOL_RETRIEVAL_TOOL_NAMES = frozenset(
         "tool_search",
     }
 )
-# The fallback notice is read by the user, unlike the image-tool prompt that
-# ``_image_input_status_message`` also feeds, which the model reads and which
-# stays Chinese. So the English copy lives here rather than beside it.
-#
-# ``_native_image_input_status`` returns one of four values. ``supported`` never
-# reaches the notice, because a model that reads the image natively needs no
-# explanation, so the three below are the ones a reader can see. Each states a
-# different reason, and English must keep them apart exactly as Chinese does.
-_IMAGE_TOOL_FALLBACK_STATUS_EN = {
-    "disabled": (
-        "Native image input is disabled in configuration for the current "
-        "model{model_label}."
-    ),
-    "unsupported": (
-        "The current model{model_label} interface did not accept native image "
-        "input in the capability check."
-    ),
-}
-_IMAGE_TOOL_FALLBACK_UNKNOWN_EN = (
-    "It is not confirmed whether the current model{model_label} interface "
-    "accepts native image input."
-)
+# Status wording for the fallback notice comes from
+# ``image_input_status_message`` (shared with the model-facing toolHint).
+# These suffixes are notice-only: they tell the user what happens next.
+_IMAGE_TOOL_FALLBACK_TOOL_CN = "已切换为图片理解工具处理。"
 _IMAGE_TOOL_FALLBACK_TOOL_EN = "An image understanding tool is used instead."
+_IMAGE_TOOL_FALLBACK_UNAVAILABLE_CN = (
+    "未配置可用的视觉模型工具，本次图片未作为原生图片输入发送。"
+)
 _IMAGE_TOOL_FALLBACK_UNAVAILABLE_EN = (
     "No vision model tool is configured; this image was not sent as native input."
 )
@@ -8881,6 +8866,7 @@ class JiuWenSwarmDeepAdapter:
         vision_tool_available: bool,
         image_input_status: str = "unknown",
         steer_image_tool: str | None = None,
+        language: str = "cn",
     ) -> dict[str, Any]:
         """Delegate image prompt serialization to the shared user prompt builder."""
         from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
@@ -8893,6 +8879,7 @@ class JiuWenSwarmDeepAdapter:
             vision_tool_available=vision_tool_available,
             image_input_status=image_input_status,
             steer_image_tool=steer_image_tool,
+            language=language,
         )
 
     @staticmethod
@@ -8927,24 +8914,20 @@ class JiuWenSwarmDeepAdapter:
             else _IMAGE_TOOL_FALLBACK_MODEL_LABEL_CN
         )
         model_label = label_template.format(model_name=model_name) if model_name else ""
+        content = JiuWenSwarmDeepAdapter._image_input_status_message(
+            image_input_status, model_label, language=language,
+        )
         if english:
-            template = _IMAGE_TOOL_FALLBACK_STATUS_EN.get(
-                image_input_status, _IMAGE_TOOL_FALLBACK_UNKNOWN_EN
-            )
-            content = template.format(model_label=model_label)
             content += " " + (
                 _IMAGE_TOOL_FALLBACK_TOOL_EN
                 if vision_tool_available
                 else _IMAGE_TOOL_FALLBACK_UNAVAILABLE_EN
             )
         else:
-            content = JiuWenSwarmDeepAdapter._image_input_status_message(
-                image_input_status, model_label
-            )
             content += (
-                "已切换为图片理解工具处理。"
+                _IMAGE_TOOL_FALLBACK_TOOL_CN
                 if vision_tool_available
-                else "未配置可用的视觉模型工具，本次图片未作为原生图片输入发送。"
+                else _IMAGE_TOOL_FALLBACK_UNAVAILABLE_CN
             )
         notice = {
             "event_type": "chat.notice",
@@ -8966,10 +8949,14 @@ class JiuWenSwarmDeepAdapter:
         return JiuWenSwarmDeepAdapter._native_image_input_status(config, model) == "supported"
 
     @staticmethod
-    def _image_input_status_message(status: str, model_label: str = "") -> str:
+    def _image_input_status_message(
+        status: str,
+        model_label: str = "",
+        language: str = "cn",
+    ) -> str:
         from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import image_input_status_message
 
-        return image_input_status_message(status, model_label)
+        return image_input_status_message(status, model_label, language=language)
 
     @staticmethod
     def _native_image_input_status(config: dict[str, Any], model: Any | None) -> str:
@@ -18755,6 +18742,7 @@ class JiuWenSwarmDeepAdapter:
                 vision_tool_available=(
                     getattr(self, "_vision_model_config", None) is not None
                 ),
+                language=self._resolve_runtime_language(),
             )
             from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
                 set_current_multimodal_image_files,
@@ -19448,6 +19436,7 @@ class JiuWenSwarmDeepAdapter:
                     getattr(self, "_vision_model_config", None) is not None
                 ),
                 image_input_status=image_input_status,
+                language=self._resolve_runtime_language(),
             )
             if rewrite_turn_text:
                 inputs[TEAM_USER_TURN_KEY] = team_turn.with_text(inputs["query"])
@@ -19991,6 +19980,7 @@ class JiuWenSwarmDeepAdapter:
                     getattr(self, "_vision_model_config", None) is not None
                 ),
                 image_input_status=image_input_status,
+                language=self._resolve_runtime_language(),
             )
             if image_tool_fallback_notice is not None:
                 yield AgentResponseChunk(
@@ -24553,6 +24543,7 @@ class JiuWenSwarmDeepAdapter:
             enable_read_image_multimodal=False,
             vision_tool_available=tool_name == "visual_question_answering",
             steer_image_tool=tool_name,
+            language=self._resolve_runtime_language(),
         )
         return prepared, media_items
 
