@@ -432,6 +432,7 @@ def _work_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSp
 
         def __init__(self, provider: Any, **kwargs: Any) -> None:
             super().__init__(provider, **kwargs)
+            self._closing = False
             self._sync_lock = asyncio.Lock()
             self._pending_syncs: set[asyncio.Task[None]] = set()
 
@@ -440,6 +441,9 @@ def _work_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSp
                 return
             completed = self._turn_buffer.finish(ctx)
             if completed is None:
+                return
+            if self._closing:
+                logger.warning("[JiuwenRailBuilder] memory rail closing; skipping turn extraction")
                 return
             if len(self._pending_syncs) >= self.MAX_PENDING_SYNCS:
                 logger.warning("[JiuwenRailBuilder] memory sync backlog full; skipping turn extraction")
@@ -479,6 +483,7 @@ def _work_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSp
                     self._sync_consecutive_failures = 0
 
         async def drain_pending_syncs(self) -> None:
+            self._closing = True
             tasks = tuple(self._pending_syncs)
             if not tasks:
                 return
@@ -498,6 +503,7 @@ def _work_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSp
                 await asyncio.gather(*tasks, return_exceptions=True)
 
         def uninit(self, agent: Any) -> None:
+            self._closing = True
             if self._pending_syncs:
                 logger.warning(
                     "[JiuwenRailBuilder] cancelling %s pending memory syncs on unload",

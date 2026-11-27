@@ -846,6 +846,8 @@ async def test_work_memory_sync_does_not_hold_next_turn_open(monkeypatch, tmp_pa
         await asyncio.sleep(0)
         assert not drain.done()
         provider.shutdown.assert_not_awaited()
+        await rail.after_invoke(SimpleNamespace(agent=agent, query="during-close", output="ignored"))
+        assert len(rail._pending_syncs) == 2
     finally:
         release.set()
         await asyncio.wait_for(rail.drain_pending_syncs(), timeout=1)
@@ -853,6 +855,8 @@ async def test_work_memory_sync_does_not_hold_next_turn_open(monkeypatch, tmp_pa
             await asyncio.wait_for(drain, timeout=1)
 
     provider.shutdown.assert_awaited_once()
+    await rail.after_invoke(SimpleNamespace(agent=agent, query="after-close", output="ignored"))
+    assert not rail._pending_syncs
     assert writes == [
         ("first", "one", jrb.resolve_coding_memory_project_name(str(tmp_path / "first"))),
         ("second", "two", jrb.resolve_coding_memory_project_name(str(tmp_path / "second"))),
