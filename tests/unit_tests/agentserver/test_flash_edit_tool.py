@@ -16,6 +16,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import pytest_asyncio
@@ -30,11 +31,12 @@ from openjiuwen.harness.tools.filesystem import (
     ReadFileTool,
     _FILE_READ_REGISTRY,
 )
+from openjiuwen.harness.tools import filesystem as core_filesystem
 
 from jiuwenswarm.agents.harness.flash.tools import flash_file_history
 from jiuwenswarm.agents.harness.flash.tools import flash_edit_tool
 from jiuwenswarm.agents.harness.flash.tools.flash_edit_tool import FlashEditFileTool
-from jiuwenswarm.agents.harness.flash.tools.flash_file_meta import clear_file_meta_cache
+from jiuwenswarm.agents.harness.flash.tools.flash_file_meta import clear_file_meta_cache, pop_file_meta
 from jiuwenswarm.agents.harness.flash.tools.flash_read_tool import FlashReadFileTool
 
 
@@ -117,6 +119,13 @@ def temp_dir():
     shutil.rmtree(dir_path, ignore_errors=True)
 
 
+@pytest.fixture
+def flash_history_path(temp_dir, monkeypatch):
+    monkeypatch.setattr(flash_edit_tool, "get_current_session", lambda: _FakeSession())
+    monkeypatch.setattr(flash_file_history, "get_workspace", lambda: str(temp_dir))
+    return Path(temp_dir) / ".agent_history" / "file_ops_flash_flash-edit-agent_sess-flash-edit.jsonl"
+
+
 def _make_tools(sys_op):
     proxy = _CountingOpProxy(sys_op)
     read_tool = FlashReadFileTool(proxy)
@@ -159,6 +168,165 @@ async def test_read_then_edit_single(sys_op, temp_dir):
     assert edit_res.success is True, edit_res.error
     assert edit_res.data["replacements"] == 1
     assert Path(file_path).read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
+
+
+@pytest.mark.parametrize("drop_sidecar", [False, True], ids=["cache", "fresh-read"])
+@pytest.mark.parametrize("use_hunks", [False, True], ids=["legacy", "single-hunk"])
+async def test_retry_applied_edit_hints_without_writing(
+    sys_op, temp_dir, flash_history_path, drop_sidecar, use_hunks,
+):
+    """成功后的重复编辑应给出核实提示，失败本身不再写文件或历史。"""
+    read_tool, edit_tool, proxy = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "applied.ts")
+    old = "    wrapLabel(row, likes, 16, GRAY, 380, 30, 70, -44);"
+    new = "    wrapLabel(row, likes, 16, 380, 30, GRAY, 70, -44);"
+    Path(file_path).write_bytes(f"line one\n{old}\nline three\n".encode())
+    assert (await read_tool.invoke({"file_path": file_path})).success
+    edit = {"old_string": old, "new_string": new}
+    inputs = {"file_path": file_path, "hunks": [edit]} if use_hunks else {"file_path": file_path, **edit}
+    first = await edit_tool.invoke(inputs)
+    assert first.success, first.error
+    assert Path(file_path).read_bytes() == f"line one\n{new}\nline three\n".encode()
+    file_before_retry = Path(file_path).read_bytes()
+    history_before_retry = flash_history_path.read_bytes()
+    reads_before_retry = proxy.fs_proxy.read_calls
+    writes_before_retry = proxy.fs_proxy.write_calls
+    # 成功编辑会回填侧车；在重试前移除它才能实际覆盖全量读取分支。
+    if drop_sidecar:
+        pop_file_meta(file_path)
+
+    retry = await edit_tool.invoke(inputs)
+
+    assert retry.success is False
+    assert retry.error.startswith("old_string not found in ")
+    assert "already exists at line 2" in retry.error
+    assert "already applied" in retry.error
+    assert "Verify with read_file" in retry.error
+    assert Path(file_path).read_bytes() == file_before_retry
+    assert flash_history_path.read_bytes() == history_before_retry
+    assert proxy.fs_proxy.write_calls == writes_before_retry
+    assert proxy.fs_proxy.read_calls == reads_before_retry + int(drop_sidecar)
+
+
+@pytest.mark.parametrize(
+    "content,old,new",
+    [
+        ("def run():\n    return None\n", "    raise RuntimeError('not implemented yet')", "return None"),
+        ("alpha\nbeta\n", "gamma", ""),
+        ("keep this\n", "keep this extra", "keep this"),
+        ("alpha\nbeta\n", "gamma", "delta"),
+    ],
+    ids=["generic-new", "empty-new", "shrinking-edit", "both-missing"],
+)
+async def test_missing_old_string_keeps_plain_error(sys_op, temp_dir, content, old, new):
+    """新文本的无关命中和删除类编辑不足以证明编辑已经应用。"""
+    read_tool, edit_tool, proxy = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "missing.py")
+    original = content.encode()
+    Path(file_path).write_bytes(original)
+    assert (await read_tool.invoke({"file_path": file_path})).success
+
+    result = await edit_tool.invoke({"file_path": file_path, "old_string": old, "new_string": new})
+
+    assert result.success is False
+    assert result.error == f"old_string not found in '{file_path}'."
+    assert Path(file_path).read_bytes() == original
+    assert proxy.fs_proxy.write_calls == 0
+
+
+async def test_applied_hunk_hint_preserves_batch_atomicity(sys_op, temp_dir, flash_history_path):
+    """后续 hunk 可能已应用时，前面已规划的修改也不能写入。"""
+    read_tool, edit_tool, proxy = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "hunks-applied.ts")
+    original = b"const a = 1;\nconst b = 2;\n"
+    Path(file_path).write_bytes(original)
+    assert (await read_tool.invoke({"file_path": file_path})).success
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "hunks": [
+            {"old_string": "const a = 1;", "new_string": "const a = 3;"},
+            {"old_string": "const b = 1;", "new_string": "const b = 2;"},
+        ],
+    })
+
+    assert result.success is False
+    assert result.error.startswith("hunks[1] not found in ")
+    assert "already exists at line 2" in result.error
+    assert "already applied" in result.error
+    assert Path(file_path).read_bytes() == original
+    assert proxy.fs_proxy.write_calls == 0
+    assert not flash_history_path.exists()
+
+
+async def test_retry_quote_variant_edit_hints_already_applied(sys_op, temp_dir):
+    """重复参数仍用直引号时，也能识别已按文件弯引号风格应用的修改。"""
+    read_tool, edit_tool, proxy = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "quotes-applied.ts")
+    Path(file_path).write_bytes("wrapLabel(‘旅行人’, 17);\n".encode())
+    assert (await read_tool.invoke({"file_path": file_path})).success
+    inputs = {
+        "file_path": file_path,
+        "old_string": "wrapLabel('旅行人', 17);",
+        "new_string": "wrapLabel('旅人', 17);",
+    }
+    first = await edit_tool.invoke(inputs)
+    assert first.success, first.error
+    assert Path(file_path).read_bytes() == "wrapLabel(‘旅人’, 17);\n".encode()
+
+    retry = await edit_tool.invoke(inputs)
+
+    assert retry.success is False
+    assert "already exists at line 1" in retry.error
+    assert "already applied" in retry.error
+    assert Path(file_path).read_bytes() == "wrapLabel(‘旅人’, 17);\n".encode()
+    assert proxy.fs_proxy.write_calls == 1
+
+
+@pytest.mark.parametrize("length", [513, 3900])
+async def test_large_repetitive_edit_miss_skips_similarity(
+    sys_op, temp_dir, flash_history_path, monkeypatch, length,
+):
+    """长重复文本只给普通未命中错误，不进入二次复杂度的比较。"""
+    read_tool, edit_tool, proxy = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "repetitive.txt")
+    old = "a" * (length - 1) + "b"
+    new = "a" * (length - 1) + "c"
+    original = (new + "\n").encode()
+    Path(file_path).write_bytes(original)
+    assert (await read_tool.invoke({"file_path": file_path})).success
+    reads = proxy.fs_proxy.read_calls
+    matcher = Mock(side_effect=AssertionError("相似度比较不应执行"))
+    monkeypatch.setattr(core_filesystem.difflib, "SequenceMatcher", matcher)
+
+    result = await edit_tool.invoke({"file_path": file_path, "old_string": old, "new_string": new})
+
+    assert result.success is False
+    assert result.error == f"old_string not found in '{file_path}'."
+    matcher.assert_not_called()
+    assert Path(file_path).read_bytes() == original
+    assert proxy.fs_proxy.read_calls == reads
+    assert proxy.fs_proxy.write_calls == 0
+    assert not flash_history_path.exists()
+
+
+async def test_similarity_budget_boundary_still_hints(sys_op, temp_dir):
+    """预算内的重复片段仍能获得提示，收紧成本不关闭整个能力。"""
+    read_tool, edit_tool, proxy = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "boundary.txt")
+    old = "a" * 511 + "b"
+    new = "a" * 511 + "c"
+    original = (new + "\n").encode()
+    Path(file_path).write_bytes(original)
+    assert (await read_tool.invoke({"file_path": file_path})).success
+
+    result = await edit_tool.invoke({"file_path": file_path, "old_string": old, "new_string": new})
+
+    assert result.success is False
+    assert "already exists at line 1" in result.error
+    assert "already applied" in result.error
+    assert Path(file_path).read_bytes() == original
+    assert proxy.fs_proxy.write_calls == 0
 
 
 async def test_cache_hit_zero_fs_reads(sys_op, temp_dir):

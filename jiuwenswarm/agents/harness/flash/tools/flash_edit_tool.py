@@ -282,6 +282,9 @@ def get_flash_edit_input_params(language: str = "cn") -> Dict[str, Any]:
 class FlashEditFileTool(EditFileTool):
     """EditFileTool with snapshot-cache matching, JSONL history and hunks."""
 
+    # 同步提示只比较短片段，限制重复文本对 Flash／Team 共享事件循环的占用。
+    _APPLIED_EDIT_SIMILARITY_MAX_CHARS = 512
+
     def __init__(self, operation, language: str = "cn", agent_id: Optional[str] = None):
         super().__init__(operation, language, agent_id)
         lang = language or "cn"
@@ -580,7 +583,9 @@ class FlashEditFileTool(EditFileTool):
                 if variant is None:
                     return ToolOutput(
                         success=False,
-                        error=f"{where} not found in '{file_path}'.",
+                        error=self._old_string_not_found_error(
+                            file_path, old_clean, new_clean, content_lf, where=where
+                        ),
                     )
                 match_str = variant
                 new_clean = self._preserve_quote_style(old_clean, match_str, new_clean)
