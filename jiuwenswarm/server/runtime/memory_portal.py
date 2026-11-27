@@ -27,6 +27,8 @@ from jiuwenswarm.common.memory_config import is_memory_portal_enabled
 
 logger = logging.getLogger(__name__)
 
+_CONFIGURE_LOCK_WAIT_SECONDS = 1.0
+
 
 def portal_enabled(config: dict[str, Any]) -> bool:
     return (
@@ -61,8 +63,15 @@ class MemoryPortalService:
             self._owned = None
 
     async def configure(self, config: dict[str, Any]) -> None:
-        async with self._lock:
+        if memory_portal_configuration(config) == self._configuration:
+            return
+        # A slow Portal open must not hold configuration saves behind initialization.
+        # If admission times out, the next open reconciles the latest saved config.
+        await asyncio.wait_for(self._lock.acquire(), timeout=_CONFIGURE_LOCK_WAIT_SECONDS)
+        try:
             await self._configure(config)
+        finally:
+            self._lock.release()
 
     async def _configure(self, config: dict[str, Any]) -> None:
         configuration = memory_portal_configuration(config)

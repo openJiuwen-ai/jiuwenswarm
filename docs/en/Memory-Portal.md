@@ -41,9 +41,17 @@ data permissions and model management. Swarm does not duplicate these features.
 ## Optional HTTP deployment
 
 Set `memory.builtin.jiuwen.mode: http` and provide `base_url`, `api_key`, `identity_org` and `identity_user` in the config file.
-A nonempty `api_key` takes precedence; a missing or empty value falls back to `JIUWEN_MEMORY_API_KEY`.
+A nonempty `api_key` takes precedence and is decrypted when possible; decryption failure preserves the original value
+for compatibility with existing plaintext settings. A missing or empty value uses `JIUWEN_MEMORY_API_KEY` as plaintext.
 Both Swarm and the browser must reach the service. Swarm does not start a local Runtime in this mode.
 No `http.portal_frame_origins` setting is needed; browser authorization still requires the launch URL issued by Memory.
 
 Saved page-switch changes synchronize both navigation and the visible settings switch across tabs on the same browser origin,
 without rebuilding teams or saving the configuration again.
+
+Do not share Portal launch URLs. The iframe sandbox and no-referrer policy do not replace server-side clickjacking protection.
+Deployments requiring an embedding restriction should set CSP `frame-ancestors` on the Memory server or reverse proxy,
+allowing only trusted Swarm origins.
+
+Saving the page switch does not wait for Portal initialization. Connection changes wait at most one second for the service lock.
+If that wait times out, normal configuration reload continues; the next Portal open or reconnect reconciles the latest settings.

@@ -117,13 +117,18 @@ def get_jiuwen_builtin_mode(config: Optional[Dict[str, Any]] = None) -> str:
 
 
 def _http_api_key(settings: Mapping[str, Any]) -> str:
-    raw = settings.get("api_key") or os.environ.get("JIUWEN_MEMORY_API_KEY", "")
+    raw = settings.get("api_key")
     if not raw:
-        return ""
+        return str(os.environ.get("JIUWEN_MEMORY_API_KEY", ""))
     from jiuwenswarm.common.security.base_crypto import get_crypto_provider
 
-    crypto = get_crypto_provider()
-    return str(crypto.decrypt(str(raw))) if crypto is not None else str(raw)
+    value = str(raw)
+    try:
+        crypto = get_crypto_provider()
+        return str(crypto.decrypt(value)) if crypto is not None else value
+    except Exception:
+        # Existing deployments may store plaintext instead of provider-specific ciphertext.
+        return value
 
 
 def _http_memory_options(settings: Mapping[str, Any]) -> dict[str, str]:

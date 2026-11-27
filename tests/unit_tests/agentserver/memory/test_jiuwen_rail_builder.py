@@ -18,7 +18,7 @@ sdk 模式的内核配置优先级（2026-10-17 起 builder 不再自行缝合�
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -175,17 +175,28 @@ def test_http_mode_builds_network_provider():
     ({"api_key": ""}, "env-test-key", "env-test-key"),
     ({"api_key": None}, "env-test-key", "env-test-key"),
     ({"api_key": "encrypted-test-key"}, "env-test-key", "config-test-key"),
+    ({"api_key": "plaintext-test-key"}, "env-test-key", "plaintext-test-key"),
     ({"api_key": ""}, "", ""),
 ])
-def test_http_provider_preserves_key_fallback_and_decryption(monkeypatch, settings, env_key, expected):
+def test_http_provider_preserves_key_fallback_and_decryption(monkeypatch, caplog, settings, env_key, expected):
     monkeypatch.setenv("JIUWEN_MEMORY_API_KEY", env_key)
-    crypto = SimpleNamespace(decrypt=lambda value: {"encrypted-test-key": "config-test-key"}.get(value, value))
+
+    def decrypt(value):
+        if value == "encrypted-test-key":
+            return "config-test-key"
+        raise ValueError(f"Cannot decrypt {value}")
+
+    crypto = SimpleNamespace(decrypt=Mock(side_effect=decrypt))
     monkeypatch.setattr("jiuwenswarm.common.security.base_crypto.get_crypto_provider", lambda: crypto)
 
     rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "http", **settings}))
 
     assert isinstance(rail, _FakeJiuwenRail)
     assert _FakeAgentMemoryProvider.last_init_kwargs["api_key"] == expected
+    if not settings.get("api_key"):
+        crypto.decrypt.assert_not_called()
+    assert "Cannot decrypt" not in caplog.text
+    assert "plaintext-test-key" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

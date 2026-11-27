@@ -10,6 +10,8 @@ files: [jiuwenswarm/server/runtime/memory_portal.py, jiuwenswarm/agents/harness/
 
 # 记忆 Portal 页面开关契约
 
+最近一次修订日期：2026-11-27
+
 ## 边界与请求
 
 Swarm 提供 Portal 页面开关、独立记忆页面并获取授权链接。连接与身份沿用宿主配置。Memory 提供 Portal 页面、记忆业务、鉴权和模型配置管理。
@@ -29,8 +31,10 @@ URL 不持久化到配置，不进入日志；HTTP 服务 API Key 不返回前�
 ## 身份与实例
 
 身份沿用 get_jiuwen_memory_scope，运行 Agent 名称不覆盖配置 agent_id，session_id 原样透传。
+普通 Provider 仅在构建时启用 Portal、初始化成功且绑定身份匹配时登记。
 按配置指纹和配置 Agent 身份选择最早注册且仍有效的普通 Provider，绑定在有效期间保持稳定。
 Team 成员 Provider 不参与管理页的自动候选选择。无匹配者则创建记忆专用 Provider。
+初始关闭、后来首次开启时可走专用 Provider 路径；符合共享条件的 SDK Provider 仍复用 holder 中的底层 Runtime。
 SDK 使用现有 document_runtime_holder，页面不分配聊天会话级 instance_id，不指定固定端口。
 跨循环调用回到 Provider 初始化时的事件循环；服务只关闭自己创建的 Provider，不关闭借用的会话 Provider。
 连接、身份或模型配置改变时丢弃旧页面绑定并释放自有 Provider；页面开关不改变实例绑定。
@@ -49,7 +53,12 @@ Work/Code 的模式开关、mode/engine 限制及 Team 的 provider 选择保持
 仅保存页面开关时更新前端可见性和新链接签发许可，不重载 Agent、不回收暂停团队。
 页面开关不计入记忆 Rail 或 Portal 连接配置指纹；与模型等配置一起保存时，其他字段仍按原规则生效。
 Portal 配置同步异常仅记录异常类型，不阻断 Agent 配置重载；Agent 自身重载失败仍按原接口报告。
-HTTP API Key 优先使用非空配置值，缺失或空值回退到 `JIUWEN_MEMORY_API_KEY`；非空值沿用凭据解密流程。
+连接配置指纹未变化时，配置同步直接返回，不等待正在初始化的 Portal。
+连接配置改变时等待服务锁最多 1 秒；等待超时不取消正在进行的初始化，下次打开按最新配置重新绑定。
+获取锁后的资源释放仍沿用原有清理流程，1 秒限制仅针对锁等待。
+HTTP API Key 优先使用非空配置值，尝试凭据解密，解密失败沿用原值以兼容历史明文配置。
+配置值缺失或为空时直接使用 `JIUWEN_MEMORY_API_KEY` 明文值，不调用解密器；不记录凭据或解密异常正文。
+Provider 签发新链接时读取宿主当前页面开关，不使用构建时快照，以响应关闭和重新开启。
 关闭不删除已有记忆；已经签发给浏览器的授权会话仍遵循 Memory 原有有效期，本开关不代替权限撤销。
 
 左侧导航及菜单的「记忆」入口读取同一页面开关，关闭时隐藏并卸载 iframe；
@@ -63,7 +72,10 @@ Portal 独立于 Settings 上下文，首次进入或重连调用 `memory.portal
 JiuwenMate 的记忆菜单复用同一 MemoryPage 和页面开关，不回退到设置页面。
 SDK 不传 `allowed_frame_origins`，HTTP 不要求 `http.portal_frame_origins`；
 嵌入不再需要来源白名单，但仍通过 Memory 签发的链接建立浏览器授权会话。
-保留 iframe sandbox 和 no-referrer。HTTP 部署仍由配置文件指定，Swarm 不启动远程服务。
+保留 iframe sandbox 和 no-referrer。它们不等价于服务端的抗点击劫持保护，授权链接也不得复制分享。
+需要限制嵌入来源的 HTTP 部署，应由 Memory 服务端或反向代理配置 CSP `frame-ancestors`，仅允许可信 Swarm 来源；
+Swarm 不重新透传已取消的来源白名单参数，也不承诺替代服务端的嵌入控制。
+HTTP 部署仍由配置文件指定，Swarm 不启动远程服务。
 
 Portal 的模型配置属于 Memory，Swarm 不另存一套。只读状态、应用范围及持久化由 Memory 返回。
 
