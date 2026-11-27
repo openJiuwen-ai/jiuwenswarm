@@ -6221,7 +6221,8 @@
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
       "missingReadme": "插件包缺少 README.md 文件",
-      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径"
+      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径",
+      "alreadyInstalled": "该插件包（相同 ID 和版本）已安装，请勿重复上传"
     },
     "systemPlugin": {
       "badge": "系统插件",
@@ -6275,6 +6276,7 @@
       "switchVersionConfirm": "将「{{name}}」从 v{{installed}} 切换到 v{{target}}？切换后当前版本将停止生效，但文件会保留在工作区（不会删除），之后可随时切回。",
       "publish": "发布",
       "uninstallConfirm": "请选择卸载方式：「仅卸载 v{{version}}」只删除该版本，其他已安装版本会保留但不再生效；「全部卸载」会删除「{{name}}」留在工作区的所有版本文件，不可恢复。",
+      "uninstallSingleConfirm": "确认卸载「{{name}}」？工作区只保留 v{{version}} 一个版本，卸载会删除其全部文件，不可恢复。",
       "uninstallVersion": "仅卸载 v{{version}}",
       "uninstallAll": "全部卸载"
     },

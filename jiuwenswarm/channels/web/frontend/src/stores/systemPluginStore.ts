@@ -42,6 +42,8 @@ interface SystemPluginState {
   mine: SystemPluginSummary[];
   detailCache: Record<string, SystemPluginDetail>;
   busyIds: Record<string, boolean>;
+  /** 安装请求进行中（卡片展示“安装中”），区别于卸载/开关的 busy。 */
+  installingIds: Record<string, boolean>;
   loading: boolean;
   error: string | null;
   loadCatalog: (options?: SystemPluginLoadOptions) => Promise<boolean>;
@@ -50,8 +52,8 @@ interface SystemPluginState {
   install: (id: string, version?: string) => Promise<MutationResult>;
   importPath: (path: string) => Promise<MutationResult>;
   uninstall: (id: string, version?: string, detailId?: string) => Promise<UninstallResult>;
-  reload: (id: string) => Promise<MutationResult>;
-  setEnabled: (id: string, enable: boolean) => Promise<MutationResult>;
+  reload: (id: string, version?: string) => Promise<MutationResult>;
+  setEnabled: (id: string, enable: boolean, version?: string) => Promise<MutationResult>;
   clearError: () => void;
 }
 
@@ -187,6 +189,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
     mine: [],
     detailCache: {},
     busyIds: {},
+    installingIds: {},
     loading: false,
     error: null,
 
@@ -209,7 +212,18 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       }
     },
 
-    install: (id, version) => mutateAndSync(id, () => systemPluginApi.install(id, version)),
+    install: async (id, version) => {
+      set((state) => ({ installingIds: { ...state.installingIds, [id]: true } }));
+      try {
+        return await mutateAndSync(id, () => systemPluginApi.install(id, version));
+      } finally {
+        set((state) => {
+          const installingIds = { ...state.installingIds };
+          delete installingIds[id];
+          return { installingIds };
+        });
+      }
+    },
     importPath: async (path) => {
       set({ loading: true });
       try {
@@ -241,9 +255,9 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
         });
         return { ok: true, detail: !version || installed === false ? 'removed' : 'unavailable' };
       }),
-    reload: (id) => mutateAndSync(id, () => systemPluginApi.reload(id)),
-    setEnabled: (id, enable) =>
-      mutateAndSync(id, () => systemPluginApi.setEnabled(id, enable), {
+    reload: (id, version) => mutateAndSync(id, () => systemPluginApi.reload(id, version)),
+    setEnabled: (id, enable, version) =>
+      mutateAndSync(id, () => systemPluginApi.setEnabled(id, enable, version), {
         tolerateTransient: true,
         confirmed: () => applyEnabled(id, enable),
       }),
