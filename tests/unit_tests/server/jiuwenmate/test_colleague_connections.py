@@ -907,11 +907,13 @@ async def test_gateway_does_not_block_another_colleague(colleague_gateway, platf
     gateway.client.send_request = pause_one_colleague
     binding = asyncio.create_task(gateway.bind(platform, gateway.config_id))
     try:
-        await asyncio.wait_for(entered.wait(), timeout=2)
-        other = await asyncio.wait_for(gateway.bind(platform, gateway.other_id, "app-test" if platform == "welink" else "app-other"), timeout=2)
-        assert other["ok"] and not binding.done()
-        resume.set()
-        assert (await asyncio.wait_for(binding, timeout=2))["ok"]
+        # This deadline also covers the Gateway's threaded config I/O on CI workers.
+        async with asyncio.timeout(15):
+            await entered.wait()
+            other = await gateway.bind(platform, gateway.other_id, "app-other")
+            assert other["ok"] and not binding.done()
+            resume.set()
+            assert (await binding)["ok"]
         gateway.assert_bindings_live()
         assert (await gateway.delete(gateway.config_id))["ok"]
         gateway.assert_removed(gateway.config_id, "purge")

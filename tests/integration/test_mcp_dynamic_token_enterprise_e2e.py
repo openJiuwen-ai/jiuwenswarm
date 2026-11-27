@@ -12,7 +12,7 @@
      并把请求方身份回显到工具结果里。
 
 覆盖的企业场景：
-- 企业模板 ``data.custom_config`` → 实例凭据 → 条目 ``dynamic_token_url``
+- Agent registration credentials → entry ``dynamic_token_url``
   → 适配器注册 mark / 真实 preflight → 真实 MCP 客户端连接与工具调用
   → 注销 unmark 的完整链路；
 - 逐轮换用户、无令牌轮次回退静态、并发会话隔离、actor token 每请求刷新
@@ -83,8 +83,8 @@ def _turn_ext(ext: dict[str, Any] | None):
 
 class TokenAuthority:
     def __init__(self, client_id: str, client_secret: str) -> None:
-        self.client_id = client_id
-        self.client_secret = client_secret
+        self.registrations = {client_id: client_secret}
+        self.token_clients: dict[str, str] = {}
         self.mode = "ok"
         self.ttl = 300.0
         self.delay = 0.0
@@ -177,14 +177,17 @@ def build_keycloak_app(authority: TokenAuthority):
             if mode == "nested_token":
                 await _respond(send, 200, b'{"access_token": {"nested": "x"}}')
                 return
+            client_id = form.get("client_id", "")
+            expected_secret = authority.registrations.get(client_id)
             if (
                 form.get("grant_type") != "client_credentials"
-                or form.get("client_id") != authority.client_id
-                or form.get("client_secret") != authority.client_secret
+                or not expected_secret
+                or form.get("client_secret") != expected_secret
             ):
                 await _respond(send, 401, b'{"error":"invalid_client"}')
                 return
             token = authority.issue(audience)
+            authority.token_clients[token] = client_id
             await _respond(
                 send,
                 200,
@@ -513,13 +516,7 @@ def _cfg(entry: dict[str, Any]) -> McpServerConfig:
 
 def _enterprise(client_id: str, client_secret: str) -> Any:
     return SimpleNamespace(
-        agent_template={
-            "data": {
-                "custom_config": [
-                    {"client_id": client_id, "client_secret": client_secret}
-                ]
-            }
-        },
+        agent_client_credentials={"client_id": client_id, "client_secret": client_secret},
         resource_id="e2e-bot",
         ref_template_id="e2e-template",
     )
@@ -585,7 +582,7 @@ def _last_tool_call(state: GatewayState) -> dict[str, Any]:
 
 
 async def _scenario_full_chain():
-    """企业链路全打通：模板凭据 → dynamic_token_url → mark/preflight →
+    """Enterprise chain: Agent registration → dynamic_token_url → mark/preflight →
     真实 MCP 连接调用 → unmark。"""
     from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
         StreamableHttpClient,
@@ -602,14 +599,65 @@ async def _scenario_full_chain():
     async with _serve(build_keycloak_app(authority)) as keycloak_url, _serve(
         build_streamable_gateway(state)
     ) as gateway_url:
-        _enable_enterprise()
         entry = _entry(
             name="e2e-stream",
             url=gateway_url + "/mcp",
             transport="streamable-http",
             dynamic_token_url=keycloak_url + "/token/aud-1",
         )
-        cfg = _cfg(entry)
+        from starlette.requests import Request
+        from jiuwenswarm.enterprise.config.effective import loader
+        from jiuwenswarm.server.agent_http_routes import _rebuild_identity_from_headers
+
+        custom = [{"client_id": "ordinary", "client_secret": "ordinary-data"}]
+        clients = {
+            "e2e-agent": {
+                "client_id": "e2e-agent", "client_secret": "e2e-secret", "runtime_template_id": "runtime",
+            },
+            "another-agent": {
+                "client_id": "another-agent", "client_secret": "other-secret", "runtime_template_id": "another-runtime",
+            },
+        }
+        row = {
+            "template_id": "config",
+            "template_ref": {"mcp": ["mcp"]},
+            "data": {"custom_config": custom, "managed_agent_clients": clients},
+        }
+
+        async def list_records(table, *, filters):
+            if table == "instance_agent_resource":
+                return [{"resource_id": "bot", "ref_template_id": "config"}]
+            if table == "advanced_config":
+                return []
+            assert table == "agent_template"
+            return [row]
+
+        async def entities(slot, template_ids):
+            return [{"template_id": "mcp", "mcp_entry": entry}]
+
+        http_request = Request({"type": "http", "headers": [
+            (b"x-user-id", b"user-A"), (b"x-bot-id", b"bot"), (b"x-agent-id", b"routing-agent"),
+            (b"x-agent-identity-id", b"e2e-agent"), (b"x-agent-template-id", b"config"),
+            (b"x-runtime-template-id", b"runtime"),
+        ]})
+        _, metadata = _rebuild_identity_from_headers(http_request)
+        with pytest.MonkeyPatch.context() as patches:
+            patches.setattr(loader, "is_enterprise", lambda: True)
+            patches.setattr(config_provider, "is_enterprise", lambda: True)
+            patches.setattr(loader.db_queries, "list_records", list_records)
+            patches.setattr(loader, "_fetch_slot_entities", entities)
+            loader.invalidate_enterprise_config_caches()
+            try:
+                loaded = await loader.load_effective_enterprise_config(
+                    SimpleNamespace(metadata=metadata), [loader.TemplateRefSlot.MCP],
+                )
+                merged = config_provider._apply_enterprise_policy({}, loaded)
+            finally:
+                loader.invalidate_enterprise_config_caches()
+        assert loaded.agent_template["data"] == {"custom_config": custom}
+        assert loaded.agent_client_credentials == {"client_id": "e2e-agent", "client_secret": "e2e-secret"}
+        dt.apply_mcp_dynamic_token_patch()
+        cfg = _cfg(merged["mcp"]["servers"][0])
         adapter = _bare_adapter()
 
         added: list[Any] = []
@@ -666,7 +714,7 @@ async def _scenario_full_chain():
 
         await adapter._unregister_mcp_server("e2e-stream")
         assert not dt.is_dynamic_token_server("e2e-stream")
-        assert dt._LATEST_PROVIDERS.get("e2e-stream") is None
+        assert all(provider.server_id != "e2e-stream" for provider in dt._ACTIVE_PROVIDERS)
         mp.undo()
 
 
@@ -733,7 +781,8 @@ async def _scenario_concurrent():
         StreamableHttpClient,
     )
 
-    authority = TokenAuthority("e2e-agent", "e2e-secret")
+    authority = TokenAuthority("agent-A", "secret-A")
+    authority.registrations["agent-B"] = "secret-B"
     state = GatewayState("gw-concurrent", authority, "aud-c")
     async with _serve(build_keycloak_app(authority)) as keycloak_url, _serve(
         build_streamable_gateway(state)
@@ -755,7 +804,12 @@ async def _scenario_concurrent():
         # 与真实 AgentServer 的会话执行模型一致）；两个会话并发交替执行。
         results: dict[str, list[str]] = {"user-A": [], "user-B": []}
 
+        ready = asyncio.Barrier(2)
+
         async def session(client, label: str, user: str) -> None:
+            suffix = label[-1]
+            dt.apply_dispatched_credentials(_enterprise(f"agent-{suffix}", f"secret-{suffix}"))
+            await ready.wait()
             with _turn(user):
                 assert await client.connect(timeout=10) is True
             try:
@@ -782,6 +836,8 @@ async def _scenario_concurrent():
         for record in state.records:
             if not record["authorized"] or record["jsonrpc_method"] != "tools/call":
                 continue
+            client_id = authority.token_clients[record["actor"].removeprefix("Bearer ")]
+            assert client_id == record["authorization"].replace("Bearer user-", "agent-")
             session = record["session"]
             by_session.setdefault(session, set()).add(record["authorization"])
         assert len(by_session) == 2
@@ -929,7 +985,7 @@ async def _scenario_recover():
 
                 authority.mode = "ok"
                 # 直接把负缓存窗口拨到已结束（等价于窗口自然到期，避免真实 sleep）
-                dt._LATEST_PROVIDERS["gw-recover"]._negative_until = 0.0
+                client._session._write_stream._provider._negative_until = 0.0
                 assert await client.call_tool("whoami", {}, timeout=10) == "user-A"
                 recovered = _last_tool_call(state)["actor"]
                 assert recovered
@@ -1287,17 +1343,16 @@ def _scenario_config_wiring():
 
 def _scenario_extract():
     enterprise = SimpleNamespace(
+        agent_client_credentials={"client_id": " agent-1 ", "client_secret": " secret-1 "},
         agent_template={
             "data": {
                 "custom_config": [
-                    {"client_id": "", "client_secret": "x"},
-                    "not-a-dict",
-                    {"client_id": " agent-1 ", "client_secret": " secret-1 "},
+                    {"client_id": "ordinary", "client_secret": "ordinary-data"},
                 ]
             }
         }
     )
-    assert dt.extract_dispatched_credentials(enterprise.agent_template) == {
+    assert dt.extract_dispatched_credentials(enterprise) == {
         "client_id": "agent-1",
         "client_secret": "secret-1",
     }
@@ -1341,7 +1396,7 @@ async def _scenario_unregister():
         dt.unmark_dynamic_token_server("gw-evict")
         assert not dt.is_dynamic_token_server("gw-evict")
         assert not any(p._server_id == "gw-evict" for p in dt._ACTIVE_PROVIDERS)
-        assert dt._LATEST_PROVIDERS.get("gw-evict") is None
+        assert all(provider.server_id != "gw-evict" for provider in dt._ACTIVE_PROVIDERS)
 
         # 注销后重新连接：无 actor token、保留静态 Authorization（普通 MCP 语义）
         client_static = StreamableHttpClient(cfg)
@@ -1462,10 +1517,10 @@ async def _scenario_provider_lifecycle():
             with _turn("Bearer user-A"):
                 assert await client.connect(timeout=10) is True
                 assert await client.call_tool("whoami", {}, timeout=10) == "user-A"
-                providers.append(dt._LATEST_PROVIDERS["gw-lifecycle"])
+                providers.append(client._session._write_stream._provider)
                 for _ in range(2):
                     assert await client.reconnect(timeout=10) is True
-                    providers.append(dt._LATEST_PROVIDERS["gw-lifecycle"])
+                    providers.append(client._session._write_stream._provider)
                 # 重连时旧会话关闭 → 旧 provider 已回收，只保留当前连接
                 live = [
                     p for p in dt._ACTIVE_PROVIDERS if p._server_id == "gw-lifecycle"
@@ -1480,7 +1535,7 @@ async def _scenario_provider_lifecycle():
         assert not [
             p for p in dt._ACTIVE_PROVIDERS if p._server_id == "gw-lifecycle"
         ]
-        assert dt._LATEST_PROVIDERS.get("gw-lifecycle") is None
+        assert all(provider.server_id != "gw-lifecycle" for provider in dt._ACTIVE_PROVIDERS)
         for provider in providers:
             assert provider._client is None
 

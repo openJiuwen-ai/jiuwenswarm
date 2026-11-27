@@ -260,6 +260,38 @@ async def test_a_child_outliving_its_launcher_is_stopped_too(tmp_path, stop):
     assert await _child_of_a_hung_command(tmp_path, stop, launcher_waits=False) is False
 
 
+@pytest.mark.asyncio
+async def test_cancellation_during_spawn_stops_the_command(tmp_path, monkeypatch):
+    import asyncio
+
+    from jiuwenswarm.clouddoc.providers.feishu import cli as cli_module
+
+    started, return_process = asyncio.Event(), asyncio.Event()
+    process = object()
+    stopped = []
+
+    async def spawn(*args, **kwargs):
+        started.set()
+        await return_process.wait()
+        return process
+
+    async def stop(proc):
+        stopped.append(proc)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(cli_module, "_stop_tree", stop)
+    cli = LarkCli(binary=str(_fake_cli(tmp_path, "")))
+    task = asyncio.create_task(cli.run(["whoami"]))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel()
+    await asyncio.sleep(0)
+    return_process.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+    assert stopped == [process]
+
+
 def test_an_unmapped_envelope_still_reads_its_own_message():
     """A structured error whose ``type`` is unknown must not throw away its message.
 

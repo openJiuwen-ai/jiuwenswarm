@@ -120,15 +120,28 @@ async def test_agent_catalog_checks_live_admission_and_resource_scope():
                 "login_policy": "allow", "enabled": True,
             }])
             await db.execute(insert(catalog.agents), [{
-                "jiuwenclaw_id": "X", "resource_id": "1",
+                "jiuwenclaw_id": "X", "resource_id": "1", "ref_template_id": "cfg",
                 "match_expr": "group_id in('A',)", "enabled": True,
             }, {
-                "jiuwenclaw_id": "Y", "resource_id": "1",
+                "jiuwenclaw_id": "Y", "resource_id": "1", "ref_template_id": "cfg",
                 "match_expr": "group_id == 'B'", "enabled": True,
+            }])
+            await db.execute(insert(catalog.service_resources), [{
+                "jiuwenclaw_id": "X", "resource_id": "scope-x",
+                "ref_template_id": "rt", "priority": 0, "enabled": True,
+            }, {
+                "jiuwenclaw_id": "Y", "resource_id": "scope-y",
+                "ref_template_id": "rt", "priority": 0, "enabled": True,
+            }])
+            await db.execute(insert(catalog.agent_definitions), [{
+                "agent_config_template_id": "cfg", "runtime_template_id": "rt",
+                "agent_name": "Agent One",
             }])
 
         async with engine.connect() as db:
-            assert [row["bot_id"] for row in await catalog.contexts(db, user)] == ["1"]
+            contexts, matched = await catalog.contexts(db, user)
+            assert [row["bot_id"] for row in contexts] == ["1"]
+            assert matched == 1
             assert await catalog.resolve(db, user, "X", "1", "A") is not None
             assert await catalog.resolve(db, user, "X", "1", "B") is None
             assert await catalog.resolve(db, user, "Y", "1", "A") is None
@@ -141,8 +154,69 @@ async def test_agent_catalog_checks_live_admission_and_resource_scope():
             await db.execute(update(catalog.agents).values(enabled=False))
 
         async with engine.connect() as db:
-            assert not await catalog.contexts(db, user)
+            assert await catalog.contexts(db, user) == ([], 0)
             assert await catalog.resolve(db, user, "X", "1", "A") is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_agent_catalog_requires_configured_agent_template():
+    engine = create_async_engine("sqlite+aiosqlite://")
+    catalog = Catalog(None)
+    user = User("Alice", {"A": "Organization A"})
+    try:
+        async with engine.begin() as db:
+            await db.run_sync(catalog.instances.metadata.create_all)
+            await db.execute(insert(catalog.instances), [{
+                "jiuwenclaw_id": "X", "jiuwenclaw_name": "Cluster X",
+            }])
+            await db.execute(insert(catalog.grants), [{
+                "jiuwenclaw_id": "X", "subject_type": "org", "subject_id": "A",
+                "login_policy": "allow", "enabled": True,
+            }])
+            await db.execute(insert(catalog.agents), [{
+                "jiuwenclaw_id": "X", "resource_id": "bot", "ref_template_id": "cfg",
+                "enabled": True,
+            }])
+            await db.execute(insert(catalog.service_resources), [{
+                "jiuwenclaw_id": "X", "resource_id": "scope-a",
+                "ref_template_id": "rt-a", "priority": 0, "enabled": True,
+            }, {
+                "jiuwenclaw_id": "X", "resource_id": "scope-b",
+                "ref_template_id": "rt-b", "priority": 1, "enabled": True,
+            }])
+
+        async with engine.connect() as db:
+            # No configured Agent template: hidden, but still counted as matched.
+            assert await catalog.contexts(db, user) == ([], 1)
+
+        async with engine.begin() as db:
+            await db.execute(insert(catalog.agent_definitions), [{
+                "agent_config_template_id": "cfg", "runtime_template_id": "rt-b",
+                "agent_name": "Wrong runtime",
+            }])
+
+        async with engine.connect() as db:
+            # First-fit resolves the highest-priority scope (rt-a), not rt-b.
+            assert await catalog.contexts(db, user) == ([], 1)
+
+        async with engine.begin() as db:
+            await db.execute(insert(catalog.agent_definitions), [{
+                "agent_config_template_id": "cfg", "runtime_template_id": "rt-a",
+                "agent_name": "Configured",
+            }])
+
+        async with engine.connect() as db:
+            contexts, matched = await catalog.contexts(db, user)
+            assert matched == 1
+            assert contexts == [{
+                "bot_id": "bot", "group_id": "A", "user_id": "Alice",
+                "jiuwenclaw_id": "X", "runtime_template_id": "rt-a",
+                "agent_template_id": "cfg", "agent_name": "Configured",
+                "allow_local_skill_upload": False,
+                "group_name": "Organization A", "jiuwenclaw_name": "Cluster X",
+            }]
     finally:
         await engine.dispose()
 

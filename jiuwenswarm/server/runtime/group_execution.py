@@ -99,6 +99,26 @@ class GroupExecutions:
         records.sort(key=lambda item: (item["created_at"], item["execution_id"]))
         return copy.deepcopy(records)
 
+    async def cancel_for_member(self, member_name: str, *, phase: str = "member_removed") -> list[dict]:
+        """Cancel unfinished executions owned by a removed member and publish card updates."""
+        changed: list[dict] = []
+        async with group_lock(self.group_id):
+            records = self.read()
+            now = time.time()
+            for record in records.values():
+                if record.get("execution_kind") == "organization":
+                    continue
+                if record.get("member_name") != member_name or record.get("status") in TERMINAL:
+                    continue
+                record.update(status="cancelled", phase=phase, updated_at=now)
+                record["revision"] = int(record.get("revision", 0)) + 1
+                changed.append(copy.deepcopy(record))
+            if changed:
+                self.save(records)
+        for record in changed:
+            await self.publish(record, "updated")
+        return changed
+
     async def upsert_organization_card(
         self,
         execution_id: str,

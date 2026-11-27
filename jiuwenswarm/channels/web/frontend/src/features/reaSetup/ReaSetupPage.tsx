@@ -11,11 +11,13 @@ import detectArt from '../../assets/rea/detect.png';
 import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import { reaSetupApi } from './reaSetupApi';
 import {
+  cancelReaSetupJob,
   estimatePaceRemainingSeconds,
   estimateRemainingSeconds,
   formatProgressDuration,
   messageWithoutEta,
   persistActiveJob,
+  pollReaSetupJob,
   readPersistedActiveJob,
   selectDisplayedRemainingSeconds,
   shouldDeferEnhancedDetection,
@@ -96,6 +98,15 @@ function writeCachedScan(scan: ReaSetupScan): void {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(SCAN_CACHE_KEY, JSON.stringify(scan));
+  } catch {
+    // Storage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+function clearCachedScan(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(SCAN_CACHE_KEY);
   } catch {
     // Storage can be unavailable in private or restricted browser contexts.
   }
@@ -208,6 +219,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   );
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [cancelPending, setCancelPending] = useState(false);
   const [clock, setClock] = useState(Date.now());
   const [scanStartedAt, setScanStartedAt] = useState(Date.now());
   const [decisionPending, setDecisionPending] = useState(false);
@@ -231,6 +243,9 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     updatedAt: number;
   } | null>(null);
   const resumedJobRef = useRef(false);
+  const mountedRef = useRef(true);
+  const pollGenerationRef = useRef(0);
+  const cancelActiveRef = useRef(false);
 
   const setJob = useCallback((next: ReaSetupJob | null) => {
     setJobState(next);
@@ -294,28 +309,39 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     }
   }, [applyScan]);
 
-  const pollJob = useCallback(async (initial: ReaSetupJob): Promise<ReaSetupJob> => {
-    let current = initial;
-    setJob(current);
-    while (current.status === 'queued' || current.status === 'running') {
-      await new Promise((resolve) => window.setTimeout(resolve, 750));
-      let retry = 0;
-      for (;;) {
-        try {
-          current = await reaSetupApi.progress(current.job_id);
-          break;
-        } catch (cause) {
-          retry += 1;
-          if (retry >= 3) throw cause;
-          await new Promise((resolve) => window.setTimeout(resolve, 1500));
-        }
-      }
-      setJob(current);
-    }
-    return current;
-  }, [setJob]);
+  const recoverStaleJob = useCallback(async () => {
+    pollGenerationRef.current += 1;
+    cancelActiveRef.current = false;
+    if (!mountedRef.current) return;
+    initialActiveJobRef.current = null;
+    scanRef.current = null;
+    setCancelPending(false);
+    setJob(null);
+    setScan(null);
+    setEnhancedResult(null);
+    setError('');
+    stableRemainingRef.current = null;
+    displayedRemainingRef.current = null;
+    clearCachedScan();
+    await refresh('all');
+  }, [refresh, setJob]);
+
+  const pollJob = useCallback((initial: ReaSetupJob): Promise<ReaSetupJob | null> => {
+    const generation = pollGenerationRef.current + 1;
+    pollGenerationRef.current = generation;
+    return pollReaSetupJob({
+      initial,
+      load: reaSetupApi.progress,
+      onUpdate: setJob,
+      onStale: recoverStaleJob,
+      isCurrent: () => mountedRef.current && pollGenerationRef.current === generation,
+    });
+  }, [recoverStaleJob, setJob]);
 
   const applyCompletedJob = useCallback((current: ReaSetupJob) => {
+    if (current.status === 'queued' || current.status === 'running') return;
+    cancelActiveRef.current = false;
+    setCancelPending(false);
     if (current.status === 'cancelled') {
       setError(t('reaSetup.installCancelled'));
     } else if (current.result?.scan) {
@@ -343,7 +369,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     try {
       const initial = await reaSetupApi.installEnhanced(components);
       const current = await pollJob(initial);
-      applyCompletedJob(current);
+      if (current && mountedRef.current) applyCompletedJob(current);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -363,13 +389,21 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     try {
       const initial = await reaSetupApi.installBase();
       const current = await pollJob(initial);
-      applyCompletedJob(current);
+      if (current && mountedRef.current) applyCompletedJob(current);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       baseStartingRef.current = false;
     }
   }, [applyCompletedJob, installing, pollJob]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      pollGenerationRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     if (cachedScanRef.current === null && initialActiveJobRef.current === null) {
@@ -382,9 +416,13 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     if (!persisted || resumedJobRef.current) return;
     resumedJobRef.current = true;
     void pollJob(persisted)
-      .then(applyCompletedJob)
+      .then((current) => {
+        if (current && mountedRef.current) applyCompletedJob(current);
+      })
       .catch((cause) => {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        if (mountedRef.current) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        }
       });
   }, [applyCompletedJob, pollJob]);
 
@@ -406,14 +444,29 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   }, []);
 
   const cancelInstallation = useCallback(async () => {
-    if (!job || !installing) return;
+    if (!job || !installing || cancelActiveRef.current) return;
+    cancelActiveRef.current = true;
+    setCancelPending(true);
+    setError('');
     try {
-      const current = await reaSetupApi.cancel(job.job_id);
+      const current = await cancelReaSetupJob({
+        jobId: job.job_id,
+        cancel: reaSetupApi.cancel,
+        onStale: recoverStaleJob,
+        isCurrent: () => mountedRef.current,
+      });
+      if (!current || !mountedRef.current) return;
       setJob(current);
+      const settled = await pollJob(current);
+      if (settled && mountedRef.current) applyCompletedJob(settled);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      cancelActiveRef.current = false;
+      if (mountedRef.current) {
+        setCancelPending(false);
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
     }
-  }, [installing, job]);
+  }, [applyCompletedJob, installing, job, pollJob, recoverStaleJob, setJob]);
 
   const openConfigure = useCallback((item: ReaSetupEnhancedItem) => {
     if (item.code === 'unsupported_host' || item.inventory?.state === 'unsupported') {
@@ -963,8 +1016,15 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
                 </div>
               </div>
               {installing ? (
-                <button type="button" className="rea-button rea-button--outline rea-button--small" onClick={() => void cancelInstallation()}>
-                  {t('reaSetup.cancelInstall')}
+                <button
+                  type="button"
+                  className="rea-button rea-button--outline rea-button--small"
+                  disabled={cancelPending}
+                  onClick={() => void cancelInstallation()}
+                  data-testid="rea-setup-cancel-install"
+                  data-variant={cancelPending ? 'pending' : 'idle'}
+                >
+                  {t(cancelPending ? 'reaSetup.cancelling' : 'reaSetup.cancelInstall')}
                 </button>
               ) : decisionPending ? (
                 <button type="button" className="rea-button rea-button--outline rea-button--small" disabled>

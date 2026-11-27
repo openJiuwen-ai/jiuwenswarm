@@ -24,7 +24,6 @@ if [ "${ROLE}" != "gateway" ] && [ "${ROLE}" != "agentserver" ]; then
     exit 1
 fi
 
-
 # 生成企业版配置（app 身份执行 → 覆盖上一步稀疏版；失败即退出，不 startup）
 echo "[start.sh] generating config via update_conf.py"
 echo "[start.sh] JIUWENSWARM_CONFIG_DIR='${JIUWENSWARM_CONFIG_DIR}'"

@@ -38,6 +38,9 @@ def host():
         add_member=AsyncMock(
             return_value={"status": "registered", "event_type": "group.member.added"}
         ),
+        remove_member=AsyncMock(
+            return_value={"status": "removed", "event_type": "group.member.removed"}
+        ),
         history=AsyncMock(return_value={"messages": []}),
         file_rename=AsyncMock(return_value={"name": "renamed.md"}),
         file_delete=AsyncMock(return_value={"deleted": True}),
@@ -67,7 +70,8 @@ async def test_management_methods_return_wire_result(host, method):
     assert wire["request_id"] == "request"
     assert "response_kind" in wire
     name = {
-        "group.member.add": "add_member", "group.history.get": "history",
+        "group.member.add": "add_member", "group.member.remove": "remove_member",
+        "group.history.get": "history",
         "group.execution.list": "execution_list", "group.execution.get": "execution_get",
         "group.file.rename": "file_rename", "group.file.delete": "file_delete",
         "group.history.clear": "clear_history",
@@ -157,15 +161,16 @@ async def test_chat_checks_group_ownership_and_rejects_session_mismatch(host):
     assert "BAD_REQUEST" in ws.send.await_args.args[0]
 
 
-def test_group_methods_are_forwarded_by_gateway_and_no_remove_method():
+def test_group_methods_are_forwarded_by_gateway_with_member_remove_passthrough():
     from agent_gateway.channel_manager.web.app_web_handlers import (
         _FORWARD_REQ_METHODS,
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
     )
 
-    assert GROUP_METHODS <= _FORWARD_REQ_METHODS
-    assert GROUP_METHODS <= _FORWARD_NO_LOCAL_HANDLER_METHODS
-    assert "group.member.remove" not in {method.value for method in ReqMethod}
+    pinned_gateway_methods = GROUP_METHODS - {"group.member.remove"}
+    assert pinned_gateway_methods <= _FORWARD_REQ_METHODS
+    assert pinned_gateway_methods <= _FORWARD_NO_LOCAL_HANDLER_METHODS
+    assert "group.member.remove" in {method.value for method in ReqMethod}
 
 
 def test_chat_send_contract_declares_optional_group_id():

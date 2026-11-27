@@ -57,11 +57,15 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
     return requestJson<EnterpriseUser>('/idp/v1/auth/me');
   },
   async listAgentContexts() {
-    const result = await requestJson<ManagerResponse<{ contexts: EnterpriseAgentContext[] }>>(
-      '/manager-api/v1/user-console/agent-contexts',
-    );
+    const result = await requestJson<ManagerResponse<{
+      contexts: EnterpriseAgentContext[];
+      empty_reason?: 'no_grant' | 'no_agent_template' | null;
+    }>>('/manager-api/v1/user-console/agent-contexts');
     if (result.code !== 200) throw new EnterpriseAuthError(result.code, result.message || i18n.t('auth.manager.contextFailed'));
-    return result.data?.contexts ?? [];
+    return {
+      contexts: result.data?.contexts ?? [],
+      emptyReason: result.data?.empty_reason ?? null,
+    };
   },
   async setActiveCluster(jiuwenclawId: string) {
     const result = await requestJson<ManagerResponse<{ jiuwenclaw_id: string }>>(
