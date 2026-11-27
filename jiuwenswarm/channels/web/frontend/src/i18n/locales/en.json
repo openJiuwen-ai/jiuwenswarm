@@ -6302,7 +6302,8 @@
       "importSuccess": "Plugin imported successfully",
       "missingManifest": "The plugin package is missing manifest.json, or the file is corrupt.",
       "missingReadme": "The plugin package is missing README.md.",
-      "skillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths."
+      "skillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths.",
+      "alreadyInstalled": "This package (same ID and version) is already installed; upload a different version."
     },
     "systemPlugin": {
       "badge": "System plugin",
@@ -6356,6 +6357,7 @@
       "switchVersionConfirm": "Switch \"{{name}}\" from v{{installed}} to v{{target}}? The current version will stop running, but its files stay in the workspace and are not deleted, so you can switch back later.",
       "publish": "Publish",
       "uninstallConfirm": "Choose how to uninstall: \"Uninstall v{{version}}\" removes only the active version and keeps other installed versions (inactive); \"Uninstall all\" deletes every version of \"{{name}}\" from the workspace and cannot be undone.",
+      "uninstallSingleConfirm": "Uninstall \"{{name}}\"? v{{version}} is the only version in the workspace, so uninstalling deletes all of its files and cannot be undone.",
       "uninstallVersion": "Uninstall v{{version}}",
       "uninstallAll": "Uninstall all"
     },

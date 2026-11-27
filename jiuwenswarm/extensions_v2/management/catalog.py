@@ -343,6 +343,15 @@ def find_entry(
             return entry
         raise PackageNotFound(package_id)
     if install_dir is not None:
+        # A bundle id resolves through its active version. Startup also accepts
+        # every installed bundle root, so the accepted-root scan below would
+        # otherwise return the newest copy even when an older version is loaded.
+        bundle_record = store.active_bundle(package_id)
+        if bundle_record is not None:
+            bundle_root = bundle_version_dir(install_dir, bundle_record.bundle_id, bundle_record.version)
+            resolved = entry_from_root(bundle_root) if bundle_root.is_dir() else None
+            if resolved is not None:
+                return resolved
         standalone = store.get(package_id)
         if standalone is not None:
             standalone_root = install_dir / package_id / standalone.version
