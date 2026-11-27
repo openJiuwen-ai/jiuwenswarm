@@ -326,6 +326,69 @@ async def test_portal_failure_does_not_change_agent_reload_result(config, monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('change_connection', [False, True])
+async def test_config_save_during_initialization_remains_responsive(config, monkeypatch, change_connection):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.server.runtime import memory_portal
+    from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import reload_runtime_after_config_save
+
+    started, resume = asyncio.Event(), asyncio.Event()
+
+    class SlowProvider(Provider):
+        async def initialize(self, **identity):
+            started.set()
+            await resume.wait()
+            await super().initialize(**identity)
+
+    providers = [SlowProvider(), Provider()]
+    made = []
+
+    def factory(*_):
+        provider = providers[len(made)]
+        made.append(provider)
+        return provider
+
+    service = MemoryPortalService(ProviderRegistry(), factory)
+    manager = SimpleNamespace(reload_agents_config=AsyncMock())
+    monkeypatch.setattr(memory_portal, 'get_memory_portal_service', lambda: service)
+    monkeypatch.setattr(memory_portal, '_CONFIGURE_LOCK_WAIT_SECONDS', 0.01, raising=False)
+    saved = copy.deepcopy(config)
+    if change_connection:
+        saved['memory']['builtin']['jiuwen']['space'] = 'new-space'
+    else:
+        saved['memory']['builtin']['jiuwen']['portal']['enabled'] = False
+    opening = asyncio.create_task(service.open(config))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        changed_keys = {'memory_connection'} if change_connection else {'memory_portal_enabled'}
+        assert await asyncio.wait_for(reload_runtime_after_config_save(
+            manager, changed_keys, config_payload=saved,
+        ), 1)
+        assert not opening.done()
+        if change_connection:
+            manager.reload_agents_config.assert_awaited_once()
+        else:
+            manager.reload_agents_config.assert_not_awaited()
+        resume.set()
+        assert (await opening)['status'] == 'ready'
+        result = await service.open(saved)
+        if change_connection:
+            assert result['status'] == 'ready'
+            assert providers[0].closed == 1
+            assert providers[1].identity['space'] == 'new-space'
+        else:
+            assert result['status'] == 'disabled'
+            assert providers[0].closed == 0
+            assert (await service.open(config))['status'] == 'ready'
+            assert len(made) == 1
+    finally:
+        resume.set()
+        await opening
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_borrowed_provider_is_called_on_its_initialization_loop(config):
     from threading import Thread
 

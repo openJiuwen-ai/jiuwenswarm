@@ -58,7 +58,14 @@ memory:
       identity_user: developer
 ```
 
-密钥优先使用非空 `api_key`；未填写或留空时读取环境变量 `JIUWEN_MEMORY_API_KEY`。
+密钥优先使用非空 `api_key`；配置值尝试解密，无法解密时保留原值以兼容历史明文配置。
+未填写或留空时直接读取环境变量 `JIUWEN_MEMORY_API_KEY` 的明文值。
 
 Swarm 后端和浏览器都须能访问该服务。HTTP 不创建本地 Memory Runtime，
 也不要求配置 `http.portal_frame_origins`。必须由后端获取授权链接，不能用裸 `/portal/` 替代。
+
+Portal 授权链接不得复制分享。iframe 的 sandbox 和 no-referrer 不替代服务端抗点击劫持保护；
+需要限制嵌入来源时，请在 Memory 服务端或反向代理设置 CSP `frame-ancestors`，仅允许可信 Swarm 来源。
+
+Portal 初始化期间保存开关无需等待初始化；连接配置变化时等待服务锁最多 1 秒。
+若锁等待超时，普通配置重载继续执行，下一次打开或重新连接 Portal 时按最新配置重新绑定。
