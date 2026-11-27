@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,7 @@ from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
     ExtensionInstallState,
 )
 
-from .support import METADATA_EXTENSION, make_bus
+from .support import METADATA_EXTENSION, archive_package, make_bus
 
 
 def _request(method: ReqMethod, params: Any) -> AgentRequest:
@@ -1720,3 +1721,286 @@ async def test_uninstalling_an_agentserver_only_bundle_removes_it_immediately(
     assert store.get_bundle("demo.bundle") is None
     assert store.bundle_members("demo.bundle") == []
     assert not bundle_version_dir(manager.install_dir, "demo.bundle", "1.0.0").exists()
+
+
+@pytest.mark.asyncio
+async def test_uninstalling_a_standalone_copy_keeps_a_same_version_member_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    await containers.install_sources(
+        manager, store, [_build_bundle_version(tmp_path / "bundle", "1.0.0")], origin="user",
+    )
+    standalone = _write_member(tmp_path / "standalone", "demo.base", "agentserver")
+    await containers.install_sources(manager, store, [standalone], origin="user")
+    standalone_root = manager.install_dir / "demo.base" / "1.0.0"
+    member_root = (
+        bundle_version_dir(manager.install_dir, "demo.bundle", "1.0.0") / "plugins" / "demo.base"
+    )
+    assert standalone_root.is_dir()
+    assert store.get("demo.base", "1.0.0").status == "standby"
+    assert store.active_instance("demo.base").kind == "bundle"
+
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
+
+    response = await PackageManagementAdapter().handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_UNINSTALL,
+            {"package_id": "demo.base", "version": "1.0.0"},
+        )
+    )
+
+    assert response.ok
+    assert not standalone_root.exists()
+    assert member_root.is_dir()
+    member = _member(store, "demo.bundle", "1.0.0", "demo.base")
+    assert member is not None and member.active is True and member.status == "active"
+    assert store.active_instance("demo.base").kind == "bundle"
+    assert manager.active_packages()[0].root == member_root
+    assert store.get("demo.base", "1.0.0") is None
+
+
+@pytest.mark.asyncio
+async def test_set_enabled_with_version_targets_that_bundle_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    first = _build_bundle_version(tmp_path / "v1", "1.0.0")
+    second = _build_bundle_version(tmp_path / "v2", "1.0.1")
+    await containers.install_sources(manager, store, [first], origin="user")
+    await containers.install_sources(manager, store, [second], origin="user")
+    await containers.install_sources(manager, store, [first], origin="user")
+    assert store.active_bundle("demo.bundle").version == "1.0.0"
+
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
+
+    adapter = PackageManagementAdapter()
+    disabled = await adapter.handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_SET_ENABLED,
+            {"package_id": "demo.bundle", "enable": False, "version": "1.0.0"},
+        )
+    )
+    assert disabled.ok
+    assert store.get_bundle("demo.bundle", "1.0.0").active is False
+    assert store.get_bundle("demo.bundle", "1.0.1").active is False
+
+    enabled = await adapter.handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_SET_ENABLED,
+            {"package_id": "demo.bundle", "enable": True, "version": "1.0.0"},
+        )
+    )
+
+    assert enabled.ok
+    assert store.active_bundle("demo.bundle").version == "1.0.0"
+    member = _member(store, "demo.bundle", "1.0.0", "demo.base")
+    assert member is not None and member.active is True
+    assert [record.version for record in manager.active_packages()] == ["1.0.0"]
+
+    missing = await adapter.handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_SET_ENABLED,
+            {"package_id": "demo.bundle", "enable": True, "version": "9.9.9"},
+        )
+    )
+    assert not missing.ok
+    assert missing.payload["code"] == "PACKAGE_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_reimporting_an_installed_bundle_version_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    archive = archive_package(_build_bundle_version(tmp_path / "bundle", "1.0.0"))
+
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
+
+    adapter = PackageManagementAdapter()
+    first = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(archive)]})
+    )
+    again = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(archive)]})
+    )
+
+    assert first.ok
+    assert again.ok
+    failed = again.payload["reports"][0]
+    assert failed["status"] == "FAILED"
+    assert failed["error"]["code"] == StatusCode.EXTENSION_PACKAGE_EXISTS.name
+    assert "already installed" in failed["error"]["message"]
+    assert manager.active_packages()[0].version == "1.0.0"
+
+
+@pytest.mark.asyncio
+async def test_restart_show_follows_the_loaded_bundle_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    first = _build_bundle_version(tmp_path / "v1", "1.0.0")
+    second = _build_bundle_version(tmp_path / "v2", "1.0.1")
+    await containers.install_sources(manager, store, [first], origin="user")
+    await containers.install_sources(manager, store, [second], origin="user")
+    await containers.install_sources(manager, store, [first], origin="user")
+
+    restarted = ExtensionManager(manager.install_dir, report_path=tmp_path / "report-restart.yaml")
+    await restarted.init(make_bus())
+    containers.register_active_managed_roots(restarted)
+    await restarted.load_installed()
+    state = await restarted.query()
+
+    entry = catalog.find_entry(
+        "demo.bundle",
+        tmp_path / "examples",
+        state,
+        install_dir=restarted.install_dir,
+        accepted_roots=restarted.accepted_roots("demo.bundle"),
+    )
+    detail = catalog.project_detail(entry, state, install_dir=restarted.install_dir)
+
+    assert entry.version == "1.0.0"
+    assert detail["version"] == "1.0.0"
+    assert detail["installedVersion"] == "1.0.0"
+    assert detail["overallStatus"] != "disabled"
+
+
+@pytest.mark.asyncio
+async def test_uninstalling_every_standalone_version_keeps_the_member_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    await containers.install_sources(
+        manager, store, [_build_bundle_version(tmp_path / "bundle", "1.0.0")], origin="user",
+    )
+    standalone = _write_member(tmp_path / "standalone", "demo.base", "agentserver")
+    await containers.install_sources(manager, store, [standalone], origin="user")
+    older = _write_member(tmp_path / "standalone-old", "demo.base", "agentserver", version="0.9.0")
+    older_root = manager.install_dir / "demo.base" / "0.9.0"
+    older_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(older, older_root)
+
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
+
+    response = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_UNINSTALL, {"package_id": "demo.base"})
+    )
+
+    assert response.ok
+    assert not (manager.install_dir / "demo.base").exists()
+    member_root = (
+        bundle_version_dir(manager.install_dir, "demo.bundle", "1.0.0") / "plugins" / "demo.base"
+    )
+    assert member_root.is_dir()
+    assert member_root.resolve() in manager.accepted_roots("demo.base")
+    assert store.active_instance("demo.base").kind == "bundle"
+    assert manager.active_packages()[0].root == member_root
+
+
+@pytest.mark.asyncio
+async def test_file_preview_reads_the_requested_bundle_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    first = _build_bundle_version(tmp_path / "v1", "1.0.0")
+    (first / "only_v1.py").write_text("VERSION = 1\n", encoding="utf-8")
+    second = _build_bundle_version(tmp_path / "v2", "1.0.1")
+    (second / "only_v2.py").write_text("VERSION = 2\n", encoding="utf-8")
+    await containers.install_sources(manager, store, [first], origin="user")
+    await containers.install_sources(manager, store, [second], origin="user")
+
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
+
+    adapter = PackageManagementAdapter()
+    older_tree = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_FILE_LIST, {"package_id": "demo.bundle", "version": "1.0.0"})
+    )
+    newer_tree = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_FILE_LIST, {"package_id": "demo.bundle", "version": "1.0.1"})
+    )
+    older_read = await adapter.handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_FILE_READ,
+            {"package_id": "demo.bundle", "path": "only_v1.py", "version": "1.0.0"},
+        )
+    )
+    wrong_read = await adapter.handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_FILE_READ,
+            {"package_id": "demo.bundle", "path": "only_v1.py", "version": "1.0.1"},
+        )
+    )
+
+    assert older_tree.ok and "only_v1.py" in json.dumps(older_tree.payload)
+    assert newer_tree.ok and "only_v2.py" in json.dumps(newer_tree.payload)
+    assert "only_v1.py" not in json.dumps(newer_tree.payload)
+    assert older_read.ok and "VERSION = 1" in json.dumps(older_read.payload)
+    assert not wrong_read.ok
+
+
+@pytest.mark.asyncio
+async def test_uninstalling_a_member_only_id_reports_not_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    await containers.install_sources(
+        manager, store, [_build_bundle_version(tmp_path / "bundle", "1.0.0")], origin="user",
+    )
+
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
+
+    response = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_UNINSTALL, {"package_id": "demo.base"})
+    )
+
+    assert response.ok
+    failed = response.payload["reports"][0]
+    assert failed["status"] == "FAILED"
+    assert failed["error"]["code"] == StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED.name
+    member = _member(store, "demo.bundle", "1.0.0", "demo.base")
+    assert member is not None and member.active is True
+    assert bundle_version_dir(manager.install_dir, "demo.bundle", "1.0.0").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_versioned_enable_is_rejected_for_a_standalone_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    standalone = _write_member(tmp_path / "standalone", "demo.base", "agentserver")
+    await containers.install_sources(manager, store, [standalone], origin="user")
+
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
+
+    adapter = PackageManagementAdapter()
+    enabled = await adapter.handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_SET_ENABLED,
+            {"package_id": "demo.base", "enable": False, "version": "1.0.0"},
+        )
+    )
+    reloaded = await adapter.handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_RELOAD,
+            {"package_id": "demo.base", "version": "1.0.0"},
+        )
+    )
+
+    assert not enabled.ok and enabled.payload["code"] == "INVALID_PARAMS"
+    assert not reloaded.ok and reloaded.payload["code"] == "INVALID_PARAMS"
+    assert store.get("demo.base", "1.0.0").active is True
