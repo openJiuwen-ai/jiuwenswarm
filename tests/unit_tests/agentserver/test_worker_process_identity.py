@@ -12,6 +12,7 @@ import psutil
 import pytest
 
 from jiuwenswarm.common import process_identity as identity
+from jiuwenswarm.server.ipc.stream import StreamConnection
 from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor import resident_lifecycle
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
@@ -320,13 +321,17 @@ def test_resident_validation_and_reconnect_use_ticks(monkeypatch, restricted_pro
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("identity_case", ["timestamp_drift", "changed_ticks", "missing_identity"])
+@pytest.mark.parametrize(("identity_case", "platform"), [
+    ("timestamp_drift", "linux"), ("timestamp_drift", "darwin"),
+    ("changed_ticks", "linux"), ("missing_identity", "linux"),
+])
 async def test_replacement_reclaims_timestamp_drift_but_refuses_unverified_identity(
-    monkeypatch, tmp_path, restricted_process, identity_case,
+    monkeypatch, tmp_path, restricted_process, identity_case, platform,
 ):
     from jiuwenswarm.server.supervisor import identity as deployment_identity
     from jiuwenswarm.server.supervisor import runtime_supervisor
 
+    monkeypatch.setattr(runtime_supervisor, "sys", SimpleNamespace(platform=platform))
     socket_path = str(tmp_path / "worker")
     restricted_process.create_time.side_effect = None
     restricted_process.create_time.return_value = 2.0
@@ -354,10 +359,11 @@ async def test_replacement_reclaims_timestamp_drift_but_refuses_unverified_ident
     front = RuntimeSupervisor(Readiness(), stub=True, socket_path=socket_path)
     monkeypatch.setattr(front, "_migrate_legacy_workers", AsyncMock())
 
-    if identity_case != "timestamp_drift":
+    if identity_case != "timestamp_drift" or platform == "darwin":
         expected_error = {
             "missing_identity": "requires a process identity",
             "changed_ticks": "PID identity changed",
+            "timestamp_drift": "PID identity changed",
         }[identity_case]
         with pytest.raises(RuntimeError, match=expected_error):
             await front._connect_resident()
@@ -512,3 +518,51 @@ def test_dead_launcher_witness_can_use_tick_identity(monkeypatch, restricted_pro
     assert status._has_live_group_witness(record, launcher_pid)
     monkeypatch.setattr(identity, "proc_start_ticks", lambda pid: 4243)
     assert not status._has_live_group_witness(record, launcher_pid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("frozen", "peer_pid", "has_deployment"), [
+    (True, 123, True), (True, 456, True), (True, None, True),
+    (False, 123, True), (False, 456, True), (False, None, True),
+    (False, 123, False),
+])
+async def test_macos_retires_drifted_worker_only_with_verified_unix_peer(
+    monkeypatch, restricted_process, tmp_path, frozen, peer_pid, has_deployment,
+):
+    monkeypatch.setattr(resident_lifecycle, "sys", SimpleNamespace(
+        platform="darwin", frozen=frozen, executable=sys.executable,
+    ))
+    monkeypatch.setattr(resident_lifecycle, "deployment_scope", lambda: "deployment")
+    monkeypatch.setattr(resident_lifecycle, "data_scope", lambda: "data")
+    socket_path = str(tmp_path / "worker")
+    monkeypatch.setattr(restricted_process, "cmdline", lambda: [
+        sys.executable, "-m", "jiuwenswarm.server.worker.main", "--socket", socket_path,
+    ])
+    restricted_process.create_time.side_effect = None
+    restricted_process.create_time.return_value = 1700000001.0
+    hello = {
+        "kind": "hello", "protocol": 2, "pid": 123,
+        "deployment_scope": "deployment" if has_deployment else None, "data_scope": "data",
+        "process_created": 1700000000.0,
+    }
+    connection = Mock(spec=StreamConnection)
+    connection.macos_unix_peer_pid.return_value = peer_pid
+    connection.recv.return_value = {"kind": "shutdown.done", "ok": True}
+    wait_exit = AsyncMock()
+    monkeypatch.setattr(resident_lifecycle, "_wait_exit", wait_exit)
+
+    if peer_pid == hello["pid"] and has_deployment:
+        outcome = await resident_lifecycle.retire_worker(
+            connection, hello, socket_path, deadline=time.monotonic() + 5, allow_legacy=True,
+        )
+        assert outcome == {"kind": "shutdown.done", "ok": True}
+        connection.send.assert_awaited_once_with({"kind": "shutdown"})
+        assert wait_exit.await_args.args[:2] == (restricted_process, 1700000001.0)
+    else:
+        message = "Worker PID identity changed" if has_deployment else "has no deployment identity"
+        with pytest.raises(RuntimeError, match=message):
+            await resident_lifecycle.retire_worker(
+                connection, hello, socket_path, deadline=time.monotonic() + 5, allow_legacy=True,
+            )
+        connection.send.assert_not_awaited()
+        wait_exit.assert_not_awaited()

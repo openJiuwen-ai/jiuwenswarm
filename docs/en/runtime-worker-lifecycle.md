@@ -15,6 +15,8 @@ When a HarmonyOS sandbox denies access to global `/proc/stat`, the Worker and Su
 
 Successful shutdown requires a successful acknowledgement and observed PID exit. Forced termination, missing acknowledgements, and negative acknowledgements report failure. Install helpers also require this update attempt's successful shutdown receipt before replacing backend files. Legacy peers without acknowledgement support use verified process exit as their compatibility condition.
 
+On macOS, both native desktop builds and wheel installations may observe clock drift when retiring an older Worker that reports only a wall-clock creation time. Shutdown may proceed over the existing Unix socket if the kernel reports the same peer PID and the usual deployment, user, executable, and socket checks pass.
+
 Instances sharing a data directory retain distinct endpoint and deployment identities through `JIUWENSWARM_RUNTIME_INSTANCE` (preferred) or `HOSTNAME`. Stop commands must retain that instance's environment. Historical Workers owned by another instance are left running.
 
 The final owner command also checks historical endpoints before AgentServer has run startup migration. It retires only Workers with verifiable ownership; an unversioned Python Worker still requires explicit PID selection.
