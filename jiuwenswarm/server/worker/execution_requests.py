@@ -1465,18 +1465,10 @@ class ExecutionRequests:
 
     @staticmethod
     def _is_stateless_method_request(request: AgentRequest) -> bool:
-        """Return True for prefix-matched read-only RPCs that skip adapter setup."""
-        return request.req_method is not None and request.req_method.value.startswith(
-            (
-                "skills.",
-                "skilldev.",
-                "plugins.",
-                "symphony.",
-                "agent_groups.",
-                "agent_templates.",
-                "plugin_packages.",
-            )
-        )
+        """Return True for RPCs that skip session adapter setup."""
+        from jiuwenswarm.runtime.service import is_stateless_method_request
+
+        return is_stateless_method_request(request)
 
     @staticmethod
     def _is_readonly_goal_get_request(request: AgentRequest) -> bool:
@@ -3232,6 +3224,8 @@ class ExecutionRequests:
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
+            if result.session_equipment is not None:
+                payload["session_equipment"] = result.session_equipment
             if result.execution_profile != "default":
                 payload["execution_profile"] = result.execution_profile
                 payload["mode"] = result.canonical_mode

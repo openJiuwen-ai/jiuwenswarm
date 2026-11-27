@@ -1,5 +1,7 @@
-import { Box, House, LayoutGrid, MessageCirclePlus, Puzzle, Settings2, Zap, type LucideIcon } from 'lucide-react';
+import { Box, House, LayoutGrid, MessageCirclePlus, Puzzle, Settings2, Zap } from 'lucide-react';
+import type { ComponentType, SVGProps } from 'react';
 import { useTranslation } from 'react-i18next';
+import MemoryIcon from '../../../assets/memory.svg?react';
 import logo from '../../../assets/jiuwenmate/icons/logo.svg';
 import { visibleJiuwenMatePublicPages } from '../publicNav';
 import type { JiuwenMateExistingPage } from '../types';
@@ -21,9 +23,10 @@ const localItems = [
   { value: 'messages' as const, labelKey: 'jiuwenmate.nav.messages', icon: MessageCirclePlus },
 ];
 
-const existingIcons: Record<string, LucideIcon> = {
+const existingIcons: Record<string, ComponentType<SVGProps<SVGSVGElement>>> = {
   'jiuwenmate.nav.plaza': LayoutGrid,
   'jiuwenmate.nav.assets': Box,
+  'nav.memory': MemoryIcon,
   'jiuwenmate.nav.skills': Zap,
   'jiuwenmate.nav.extensions': Puzzle,
   'jiuwenmate.nav.settings': Settings2,

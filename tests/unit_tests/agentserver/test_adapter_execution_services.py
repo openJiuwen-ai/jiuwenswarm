@@ -686,6 +686,8 @@ async def test_injected_memory_hooks_own_before_execution_and_completed_turn(
         module, "append_history_record", lambda **record: writes.append(record)
     )
     monkeypatch.setattr(module, "is_auto_memory_enabled", lambda *_args: False)
+    # This contract exercises the legacy provider, outside plugin-owned modes.
+    monkeypatch.setattr(module, "supported_memory_session", lambda _params: False)
     swarm = object.__new__(module.JiuWenSwarm)
     swarm._sdk_name = "test"
     swarm._session_manager = SimpleNamespace(get_session_id=lambda value: value)
@@ -718,3 +720,73 @@ async def test_injected_memory_hooks_own_before_execution_and_completed_turn(
             ("execute", "hook-request"),
             ("after", "hook-request", "answer"),
         ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent", "code"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_plugin_memory_skips_legacy_hooks_and_extraction(monkeypatch, mode, stream):
+    from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+    from jiuwenswarm.server.runtime.agent_adapter import interface as module
+
+    calls, writes = [], []
+
+    class Adapter:
+        handle_heartbeat = AsyncMock(return_value=None)
+
+        async def process_message_impl(self, request, inputs):
+            assert "memory_block" not in inputs
+            calls.append(request.request_id)
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True, payload={"content": "plugin memory answer"},
+            )
+
+        async def process_message_stream_impl(self, request, inputs):
+            response = await self.process_message_impl(request, inputs)
+            yield AgentResponseChunk(
+                request_id=request.request_id, channel_id=request.channel_id,
+                payload={"event_type": "chat.final", **response.payload}, is_complete=False,
+            )
+
+    async def history_io(function, **record):
+        function(**record)
+
+    monkeypatch.setattr(module, "restore_chat_send_equipment_params", lambda *_args: None)
+    monkeypatch.setattr(module, "_run_history_io", history_io)
+    monkeypatch.setattr(module, "append_history_record", lambda **record: writes.append(record))
+    monkeypatch.setattr(module, "is_auto_memory_enabled", lambda *_args: True)
+    monkeypatch.setattr(module, "is_memory_enabled", lambda *_args: True)
+    extract = Mock(side_effect=AssertionError("plugin memory must not run legacy extraction"))
+    monkeypatch.setattr(module, "_trigger_auto_memory_extraction", extract)
+    hooks = SimpleNamespace(
+        before_memory=AsyncMock(side_effect=AssertionError("legacy recall must not run")),
+        after_memory=AsyncMock(side_effect=AssertionError("legacy writeback must not run")),
+    )
+    swarm = object.__new__(module.JiuWenSwarm)
+    swarm._sdk_name = "test"
+    swarm._session_manager = SimpleNamespace(get_session_id=lambda value: value)
+    swarm._ensure_adapter = lambda **_kwargs: Adapter()
+    swarm._build_inputs = lambda _request: (
+        {"query": "hello"}, "cloud", SimpleNamespace(text="hello"),
+    )
+    swarm.reconcile_session_mcp = AsyncMock()
+    swarm._make_retry_without_a2ui_call = lambda **_kwargs: None
+    swarm.set_hook_services(hooks)
+    request = AgentRequest(
+        request_id="plugin-memory-request", session_id="plugin-memory-session",
+        channel_id="web", params={"mode": mode, "query": "hello"}, is_stream=stream,
+    )
+
+    if stream:
+        chunks = [chunk async for chunk in swarm.process_message_stream(request)]
+        assert chunks[-1].is_complete
+        assert any(chunk.payload.get("content") == "plugin memory answer" for chunk in chunks)
+    else:
+        response = await swarm.execute_message(request)
+        assert response.ok and response.payload["content"] == "plugin memory answer"
+    assert calls == [request.request_id]
+    assert any(record.get("event_type") == "chat.final" for record in writes)
+    hooks.before_memory.assert_not_awaited()
+    hooks.after_memory.assert_not_awaited()
+    extract.assert_not_called()

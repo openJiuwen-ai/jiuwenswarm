@@ -169,6 +169,12 @@ def get_projectless_task_workspace(
     outputs_dir = root / "outputs"
     work_dir.mkdir(parents=True, exist_ok=True)
     outputs_dir.mkdir(parents=True, exist_ok=True)
+    # AgentServer may create these as root; jiuwenbox daemon writes as uid 1000.
+    from jiuwenswarm.common.sandbox_fs import ensure_sandbox_writable
+
+    ensure_sandbox_writable(root)
+    ensure_sandbox_writable(work_dir)
+    ensure_sandbox_writable(outputs_dir)
     return ProjectlessTaskWorkspace(
         root_dir=root,
         work_dir=work_dir,

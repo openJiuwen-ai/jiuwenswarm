@@ -83,7 +83,9 @@ export const systemPluginApi = {
       ...(refresh ? { refresh: true } : {}),
     });
     const payload = result as { packages?: SystemPluginSummary[]; cache?: CatalogCacheMetadata } | null;
-    return withCatalogCache(Array.isArray(payload?.packages) ? payload.packages : [], payload?.cache);
+    const packages = Array.isArray(payload?.packages) ? payload.packages : null;
+    if (!packages && scope === 'mine') throw new Error('INVALID_CATALOG_RESPONSE');
+    return withCatalogCache(packages ?? [], payload?.cache);
   },
 
   async show(packageId: string, version?: string): Promise<SystemPluginDetail | null> {
@@ -144,20 +146,20 @@ export const systemPluginApi = {
     if (failure) throw new Error(failure);
   },
 
-  async reload(packageId: string): Promise<void> {
+  async reload(packageId: string, version?: string): Promise<void> {
     const result = (await webRequest(
       'extensions.v2.reload',
-      { package_id: packageId },
+      { package_id: packageId, ...(version ? { version } : {}) },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
     const failure = result ? reportFailure(result) : 'RELOAD_FAILED';
     if (failure) throw new Error(failure);
   },
 
-  async setEnabled(packageId: string, enable: boolean): Promise<void> {
+  async setEnabled(packageId: string, enable: boolean, version?: string): Promise<void> {
     const result = (await webRequest(
       'extensions.v2.set_enabled',
-      { package_id: packageId, enable },
+      { package_id: packageId, enable, ...(version ? { version } : {}) },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
     const failure = result ? reportFailure(result) : 'SET_ENABLED_FAILED';

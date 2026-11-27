@@ -141,8 +141,8 @@ def test_session_slot_still_requires_a_chat_id() -> None:
     assert report.code == CODE_SCHEMA_ERROR
 
 
-@pytest.mark.parametrize("slot_id", ["task.function", "task.function.main"])
-def test_task_slots_require_a_connection_instead_of_a_chat(slot_id: str) -> None:
+@pytest.mark.parametrize("slot_id", ["application.menu", "application.menu.main", "task.function", "task.function.main"])
+def test_navigation_slots_require_a_connection_instead_of_a_chat(slot_id: str) -> None:
     target = RenderTarget("", slot_id, "webui.workbench-v2", "task-inspector", connection_id="socket-a")
     assert target.resolved_scope == "application"
     assert validate_target(target).ok
@@ -150,6 +150,62 @@ def test_task_slots_require_a_connection_instead_of_a_chat(slot_id: str) -> None
     assert validate_target(RenderTarget("", slot_id)).code == CODE_CONNECTION_REQUIRED
     assert validate_target(RenderTarget("chat-a", slot_id, connection_id="socket-a")).code == CODE_SCHEMA_ERROR
     assert validate_target(RenderTarget("chat-a", slot_id, scope="session")).code == CODE_SCHEMA_ERROR
+
+
+@pytest.mark.asyncio
+async def test_application_menu_compatibility_and_session_scope_rejection() -> None:
+    from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, Event, ExtensionEventBus
+    from jiuwenswarm.extensions_v2.webui.models import UiActionInput
+    from jiuwenswarm.extensions_v2.webui.schema import apply_slot_scope
+
+    # apply_slot_scope drops a legacy session_id when scope is omitted, while explicit scope="session" fails.
+    normalized, report = apply_slot_scope(
+        RenderTarget("legacy-chat", "application.menu", "probe.slot-app-menu", "menu"),
+        "sock-1",
+    )
+    assert report.ok is True
+    assert normalized.resolved_scope == "application"
+    assert normalized.session_id == ""
+    assert normalized.connection_id == "sock-1"
+
+    rejected, bad_report = apply_slot_scope(
+        RenderTarget("legacy-chat", "application.menu", "probe.slot-app-menu", "menu", scope="session"),
+        "sock-1",
+    )
+    assert bad_report.ok is False
+    assert bad_report.code == CODE_SCHEMA_ERROR
+    assert rejected.scope == "session"
+
+    bus = ExtensionEventBus()
+    push = _Push()
+    runtime = WebUIRuntime(bus=bus, transport=RenderTransport(push=push))
+    runtime.register_events()
+    await bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
+
+    observed_contexts: list[object] = []
+
+    async def on_menu_ready(event, ops, next_handler):
+        observed_contexts.append(ops.session_context)
+        await ops.ui.render(
+            UiRenderInput(
+                target=RenderTarget("", "application.menu", "probe.slot-app-menu", "menu"),
+                root=RenderNode("Button", {"value": "菜单探针"}),
+            )
+        )
+        return await next_handler(event)
+
+    bus.register_event_handler("ui.ready", on_menu_ready, {"target.slot_id": "application.menu"})
+    receipt = await runtime.dispatch(
+        UiActionInput(
+            "ui.ready",
+            RenderTarget("", "application.menu", scope="application", connection_id="sock-1"),
+        ),
+        user_id="user-1",
+    )
+    assert receipt is not None and receipt.accepted is True
+    assert observed_contexts == [None]
+    assert push.messages[-1]["metadata"] == {"ws_id": "sock-1"}
+    assert "session_id" not in push.messages[-1]
 
 
 def test_application_slot_rejects_a_chat_id_and_a_missing_connection() -> None:

@@ -70,6 +70,7 @@ from jiuwenswarm.server.runtime.agent_adapter.management_routes import (
     _AGENT_GROUP_PACKAGE_METHODS as _AGENT_GROUP_PACKAGE_METHODS,
 )
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_auto_memory_enabled, is_memory_enabled
+from jiuwenswarm.agents.harness.common.memory.plugin import supported_memory_session
 from jiuwenswarm.server.runtime.session.history_io import run_history_io as _run_history_io
 from jiuwenswarm.server.runtime.session.history_context import history_context_request, history_context_stream
 from jiuwenswarm.server.runtime.session.session_history import (
@@ -3150,7 +3151,8 @@ class JiuWenSwarm:
                 raise
 
             # cloud memory: before chat hook
-            if memory_mode == "cloud":
+            plugin_owns_memory = supported_memory_session(request.params or {})
+            if memory_mode == "cloud" and not plugin_owns_memory:
                 try:
                     inputs["memory_block"] = await self._get_hook_services().before_memory(request)
                 except asyncio.CancelledError:
@@ -3237,14 +3239,14 @@ class JiuWenSwarm:
                 _schedule_feedback_once("success")
 
                 # cloud memory: after chat hook
-                if memory_mode == "cloud":
+                if memory_mode == "cloud" and not plugin_owns_memory:
                     await self._get_hook_services().after_memory(request, content_str)
 
                 # auto memory: extract memories after conversation ends
                 # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
                 mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
                 config = get_config()
-                if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
+                if not plugin_owns_memory and is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                     _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
 
             if not feedback_scheduled:
@@ -3419,6 +3421,7 @@ class JiuWenSwarm:
             get_config=get_config,
             is_auto_memory_enabled=is_auto_memory_enabled,
             is_memory_enabled=is_memory_enabled,
+            supported_memory_session=supported_memory_session,
             team_a2ui_block_buffer=TeamA2UIBlockBuffer,
             team_plan_approval_payload_error=_TeamPlanApprovalPayloadError,
             person_drove_turn=_person_drove_turn,

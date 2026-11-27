@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import io
 import os
@@ -37,20 +38,29 @@ OWNER = "alice"
 ASSET = "0f1e2d3c4b5a"
 HUB_URL = "https://hub.example.test"
 DOWNLOAD_URL = "https://downloads.example.test/gomoku.zip"
+ICON_URL = "https://downloads.example.test/icon.png?X-Amz-Expires=60"
+PNG_ICON = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRuoAAAAASUVORK5CYII="
+)
+SVG_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5"/></svg>'
 
 
-def _app_zip(version: str = "1.2.3", marker: str = "v1") -> bytes:
+def _app_zip(version: str = "1.2.3", marker: str = "v1", *, wrapper_icon: bool = False) -> bytes:
     stream = io.BytesIO()
     html = (
         "<!doctype html><html><head>"
         '<meta name="application-name" content="五子棋">'
         '<meta name="description" content="对弈应用">'
         f'<meta name="application-version" content="{version}">'
+        '<link rel="icon" href="assets/icon.svg">'
         "</head><body><script>/* WorkSwarmApp */</script></body></html>"
     )
     with zipfile.ZipFile(stream, "w") as archive:
         archive.writestr("gomoku/plugin.yaml", f"name: gomoku\nversion: {version}\n")
+        if wrapper_icon:
+            archive.writestr("gomoku/icon.png", base64.b64decode(PNG_ICON))
         archive.writestr("gomoku/gomoku/index.html", html)
+        archive.writestr("gomoku/gomoku/assets/icon.svg", SVG_ICON)
         archive.writestr("gomoku/gomoku/assets/app.js", f"const marker = '{marker}';\n")
         archive.writestr("gomoku/gomoku/scripts/app_server.py", "print('ok')\n")
         archive.writestr("gomoku/gomoku/README.md", f"# gomoku {version}\n")
@@ -64,6 +74,7 @@ class FakePort:
         self.payload = payload
         self.version = version
         self.requires_project = requires_project
+        self.icon_uri = ""
         self.checksum = hashlib.sha256(payload).hexdigest()
 
     async def search_assets(self, request) -> HubSearchPage:
@@ -99,7 +110,7 @@ class FakePort:
             display_name="五子棋 · Gomoku",
             short_description="对弈应用",
             detail_description="",
-            icon_uri="",
+            icon_uri=self.icon_uri,
             tags=("game",),
             package_name="gomoku",
             file_size=len(self.payload),
@@ -141,9 +152,10 @@ def _manager(tmp_path: Path) -> AppMarketManager:
 
 
 def test_install_writes_manifest_scripts_and_install_record(tmp_path):
-    payload = _app_zip()
+    payload = _app_zip(wrapper_icon=True)
     manager = _manager(tmp_path)
     port = FakePort(payload)
+    port.icon_uri = ICON_URL
     result = asyncio.run(
         hub_install.install_hub_app(
             manager=manager,
@@ -169,6 +181,8 @@ def test_install_writes_manifest_scripts_and_install_record(tmp_path):
     assert manifest.hub_asset_id == ASSET
     assert manifest.artifact_sha256 == port.checksum
     assert manifest.permissions == ["ai"]
+    assert manifest.icon_url == f"data:image/png;base64,{PNG_ICON}"
+    assert manager.list_apps(OWNER)["apps"][0]["icon_url"] == manifest.icon_url
     assert manager.service._skill_adapter.has_generated_static_start(manifest)
     record = manager.storage.load_install_record(app_id)
     assert record is not None
@@ -176,6 +190,34 @@ def test_install_writes_manifest_scripts_and_install_record(tmp_path):
     assert record["version"] == "1.2.3"
     assert record["artifact_sha256"] == port.checksum
     assert record["work_dir"] == str(destination)
+
+
+def test_list_legacy_hub_app_uses_installed_icon(tmp_path):
+    manager = _manager(tmp_path)
+    root = tmp_path / "installed"
+    root.mkdir()
+    (root / "index.html").write_text('<link rel="icon" href="icon.svg">', encoding="utf-8")
+    (root / "icon.svg").write_text(SVG_ICON, encoding="utf-8")
+    manifest = AppManifest(
+        app_id="hub-legacy",
+        name="Legacy app",
+        version="1.2.3",
+        run_type="static",
+        work_dir=str(root),
+        description="Description",
+        owner_id=OWNER,
+        source="hub",
+        icon_url=ICON_URL,
+    )
+    manager.storage.save_manifest(manifest.app_id, manifest)
+
+    icon = manager.list_apps(OWNER)["apps"][0]["icon_url"]
+    assert icon == "data:image/svg+xml;base64," + base64.b64encode(SVG_ICON.encode()).decode()
+    assert manager.storage.load_manifest(manifest.app_id).icon_url == ICON_URL
+
+    (root / "index.html").write_text('<link rel="icon" href="../icon.svg">', encoding="utf-8")
+    (tmp_path / "icon.svg").write_text(SVG_ICON, encoding="utf-8")
+    assert manager.list_apps(OWNER)["apps"][0]["icon_url"] == ""
 
 
 def test_install_rejects_existing_destination(tmp_path):
@@ -495,7 +537,7 @@ def test_delete_waits_for_conversion_and_registration_stays_removed(tmp_path):
 
 
 def test_update_preserves_data_git_and_project_binding(tmp_path):
-    payload_v1 = _app_zip("1.0.0", "v1")
+    payload_v1 = _app_zip("1.0.0", "v1", wrapper_icon=True)
     manager = _manager(tmp_path)
     port = FakePort(payload_v1, version="1.0.0")
     result = asyncio.run(
@@ -531,6 +573,7 @@ def test_update_preserves_data_git_and_project_binding(tmp_path):
 
     payload_v2 = _app_zip("2.0.0", "v2")
     port2 = FakePort(payload_v2, version="2.0.0")
+    port2.icon_uri = ICON_URL
     port2.base_url = "https://other.example.test"
     with pytest.raises(hub_install.AppInstallError, match="original Hub"):
         asyncio.run(hub_install.update_hub_app(
@@ -557,6 +600,7 @@ def test_update_preserves_data_git_and_project_binding(tmp_path):
     assert (destination / ".git" / "HEAD").is_file()
     manifest = manager.service.get_app(app_id)
     assert manifest.version == "2.0.0"
+    assert manifest.icon_url == "data:image/svg+xml;base64," + base64.b64encode(SVG_ICON.encode()).decode()
     assert manifest.project_id == "proj_1"
     assert manifest.project_dir == str(destination)
     assert manifest.project_work_mode == "code"

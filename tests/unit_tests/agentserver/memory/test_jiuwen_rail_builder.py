@@ -18,7 +18,7 @@ sdk 模式的内核配置优先级（2026-10-17 起 builder 不再自行缝合�
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -175,17 +175,28 @@ def test_http_mode_builds_network_provider():
     ({"api_key": ""}, "env-test-key", "env-test-key"),
     ({"api_key": None}, "env-test-key", "env-test-key"),
     ({"api_key": "encrypted-test-key"}, "env-test-key", "config-test-key"),
+    ({"api_key": "plaintext-test-key"}, "env-test-key", "plaintext-test-key"),
     ({"api_key": ""}, "", ""),
 ])
-def test_http_provider_preserves_key_fallback_and_decryption(monkeypatch, settings, env_key, expected):
+def test_http_provider_preserves_key_fallback_and_decryption(monkeypatch, caplog, settings, env_key, expected):
     monkeypatch.setenv("JIUWEN_MEMORY_API_KEY", env_key)
-    crypto = SimpleNamespace(decrypt=lambda value: {"encrypted-test-key": "config-test-key"}.get(value, value))
+
+    def decrypt(value):
+        if value == "encrypted-test-key":
+            return "config-test-key"
+        raise ValueError(f"Cannot decrypt {value}")
+
+    crypto = SimpleNamespace(decrypt=Mock(side_effect=decrypt))
     monkeypatch.setattr("jiuwenswarm.common.security.base_crypto.get_crypto_provider", lambda: crypto)
 
     rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "http", **settings}))
 
     assert isinstance(rail, _FakeJiuwenRail)
     assert _FakeAgentMemoryProvider.last_init_kwargs["api_key"] == expected
+    if not settings.get("api_key"):
+        crypto.decrypt.assert_not_called()
+    assert "Cannot decrypt" not in caplog.text
+    assert "plaintext-test-key" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +428,7 @@ async def test_memory_rail_rebuilds_for_web_media_settings_and_permission_change
     adapter._memory_embedding_fingerprint = ""
     adapter._drain_jiuwen_memory_rail = AsyncMock()
 
-    await adapter._handle_memory_rail_by_config("agent")
+    await adapter._handle_memory_rail_by_config("team.design.normal")
     first = adapter._memory_rail
     globals_config = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]
     assert globals_config["llm_model"] == "text-model"
@@ -425,22 +436,22 @@ async def test_memory_rail_rebuilds_for_web_media_settings_and_permission_change
     assert "video-test-key" not in adapter._memory_embedding_fingerprint
     assert config["memory"]["builtin"]["jiuwen"]["sdk"] == {"globals": {"llm_model": "text-model"}}
 
-    await adapter._handle_memory_rail_by_config("agent")
+    await adapter._handle_memory_rail_by_config("team.design.normal")
     assert adapter._memory_rail is first
     adapter._config_base_cache["models"]["audio"]["model_client_config"]["api_key"] = "rotated"
-    await adapter._handle_memory_rail_by_config("agent")
+    await adapter._handle_memory_rail_by_config("team.design.normal")
     adapter._instance.unregister_rail.assert_awaited_once_with(first)
     assert _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]["asr_api_key"] == "rotated"
 
     other_project = tmp_path / "other-project"
     other_project.mkdir()
     adapter._memory_media_workspace = str(other_project)
-    await adapter._handle_memory_rail_by_config("agent")
+    await adapter._handle_memory_rail_by_config("team.design.normal")
     bindings = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]["local_media_roots"]
     assert [binding["root"] for binding in bindings] == [str(other_project.resolve()), str(sessions)]
 
     adapter._config_base_cache["permissions"]["enabled"] = True
-    await adapter._handle_memory_rail_by_config("agent")
+    await adapter._handle_memory_rail_by_config("team.design.normal")
     globals_config = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]
     assert "local_media_roots" not in globals_config
     assert globals_config["video_api_key"] == "video-test-key"
@@ -448,10 +459,10 @@ async def test_memory_rail_rebuilds_for_web_media_settings_and_permission_change
 
     roots = [{"scope": {"org": "__default__"}, "root": str(tmp_path)}]
     config["memory"]["builtin"]["jiuwen"]["sdk"]["globals"]["local_media_roots"] = roots
-    await adapter._handle_memory_rail_by_config("agent")
+    await adapter._handle_memory_rail_by_config("team.design.normal")
     adapter._config_base_cache["models"]["video"]["model_client_config"]["api_key"] = "new-video-key"
     previous = adapter._memory_rail
-    await adapter._handle_memory_rail_by_config("agent")
+    await adapter._handle_memory_rail_by_config("team.design.normal")
     assert adapter._memory_rail is not previous
     globals_config = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]
     assert globals_config["local_media_roots"] == roots
@@ -553,6 +564,27 @@ def test_fingerprint_sensitive_to_http_endpoint():
     a = jrb.jiuwen_builtin_config_fingerprint(_cfg({"mode": "http", "base_url": "http://a:1"}))
     b = jrb.jiuwen_builtin_config_fingerprint(_cfg({"mode": "http", "base_url": "http://b:1"}))
     assert a != b
+
+
+def test_http_connection_and_fingerprint_agree_on_empty_api_key(monkeypatch):
+    explicit = _cfg({"mode": "http", "api_key": ""})
+    inherited = _cfg({"mode": "http"})
+    monkeypatch.setenv("JIUWEN_MEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("jiuwenswarm.common.security.base_crypto.get_crypto_provider", lambda: None)
+
+    explicit_options, _ = jrb.memory_connection_options(explicit)
+    inherited_options, _ = jrb.memory_connection_options(inherited)
+    assert explicit_options["api_key"] == inherited_options["api_key"] == "test-key"
+    with_key = jrb.jiuwen_builtin_config_fingerprint(explicit)
+    assert with_key == jrb.jiuwen_builtin_config_fingerprint(inherited)
+
+    monkeypatch.delenv("JIUWEN_MEMORY_API_KEY")
+    explicit_options, _ = jrb.memory_connection_options(explicit)
+    inherited_options, _ = jrb.memory_connection_options(inherited)
+    assert explicit_options["api_key"] == inherited_options["api_key"] == ""
+    without_key = jrb.jiuwen_builtin_config_fingerprint(explicit)
+    assert without_key == jrb.jiuwen_builtin_config_fingerprint(inherited)
+    assert without_key != with_key
 
 
 @pytest.mark.parametrize("mode", ["sdk", "http"])

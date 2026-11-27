@@ -57,9 +57,11 @@ from jiuwenswarm.server.runtime.extension_package_manager import (
 )
 from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
     ActiveInstance,
+    ExtensionBundleRecord,
     ExtensionInstallRecord,
     ExtensionInstallState,
 )
+from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
 from jiuwenswarm.server.runtime.marketplace.hub_extensions import download_system_plugin_archive
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
 
@@ -125,7 +127,9 @@ class PackageManagementAdapter(GatewayAdapter):
             return _error_response(request, str(exc), code="INVALID_PARAMS")
         except ExtensionFailure as exc:
             return await _failed_request(request, manager, parsed.package_id, exc.message, code=exc.status.name)
-        except Exception:  # noqa: BLE001 - keep management failures at the request boundary
+        except Exception as exc:  # noqa: BLE001 - keep management failures at the request boundary
+            if method == ReqMethod.EXTENSIONS_V2_SHOW.value and isinstance(exc, HubNotFoundError):
+                return _error_response(request, str(exc), code=_PACKAGE_NOT_FOUND)
             logger.exception("[ExtensionsV2] management request failed: %s", method)
             return await _failed_request(request, manager, parsed.package_id, "V2 package management failed")
         if method in (ReqMethod.EXTENSIONS_V2_INSTALL.value, ReqMethod.EXTENSIONS_V2_IMPORT.value) or (
@@ -264,6 +268,7 @@ async def _dispatch(
                 state,
                 install_dir=install_dir,
                 accepted_roots=manager.accepted_roots(package_id),
+                version=parsed.version,
             )
         except PackageNotFound:
             return await _hub_file_payload(
@@ -290,6 +295,7 @@ async def _dispatch(
                     timeout=_dependency_timeout(),
                     preempt=False,
                     require_all_members=require_all_members,
+                    reject_installed=True,
                 )
             )
         if parsed.package_ids:
@@ -356,9 +362,13 @@ async def _dispatch(
         return {"reports": [report]}
     if method == ReqMethod.EXTENSIONS_V2_RELOAD.value:
         store = ExtensionInstallState.for_install_dir(resolve_install_dir())
-        bundle = store.active_bundle(parsed.package_id) or store.get_bundle(parsed.package_id)
+        bundle = _selected_bundle(store, parsed)
         if bundle is not None:
             return await containers.apply_container_action(manager, store, bundle, "reload")
+        if parsed.version and store.get_bundle(parsed.package_id) is not None:
+            raise PackageNotFound(parsed.package_id)
+        if parsed.version:
+            raise ValueError("version is only supported for bundle packages")
         record = store.get(parsed.package_id)
         if record is not None and record.domain == DOMAIN_GATEWAY:
             store.mark(parsed.package_id, status="pending")
@@ -371,12 +381,16 @@ async def _dispatch(
         return {"reports": [report]}
     if method == ReqMethod.EXTENSIONS_V2_SET_ENABLED.value:
         store = ExtensionInstallState.for_install_dir(resolve_install_dir())
-        bundle = store.active_bundle(parsed.package_id) or store.get_bundle(parsed.package_id)
+        bundle = _selected_bundle(store, parsed)
         if bundle is not None:
             return await containers.apply_container_action(
                 manager, store, bundle, "set_enabled", enable=parsed.enable is True,
                 require_all_members=require_all_members,
             )
+        if parsed.version and store.get_bundle(parsed.package_id) is not None:
+            raise PackageNotFound(parsed.package_id)
+        if parsed.version:
+            raise ValueError("version is only supported for bundle packages")
         record = store.get(parsed.package_id)
         if record is not None and record.domain == DOMAIN_GATEWAY:
             if parsed.enable is True:
@@ -555,6 +569,21 @@ def _success_report(package_id: str, operation: str) -> ActivationReport:
     return ActivationReport("", package_id, operation, "SUCCESS", None, None)
 
 
+def _selected_bundle(
+    store: ExtensionInstallState, parsed: _Request,
+) -> ExtensionBundleRecord | None:
+    """Return the bundle version a management request targets.
+
+    The detail page acts on the version the user is looking at; a request
+    without ``version`` keeps the previous active-or-newest behaviour used by
+    the market cards.
+    """
+
+    if parsed.version:
+        return store.get_bundle(parsed.package_id, parsed.version)
+    return store.active_bundle(parsed.package_id) or store.get_bundle(parsed.package_id)
+
+
 def _active_version(manager: ExtensionManager, package_id: str) -> str:
     for record in manager.active_packages():
         if record.package_id == package_id:
@@ -680,12 +709,24 @@ def _parse_request(method: object, params: object) -> _Request:
         )
 
     if method == ReqMethod.EXTENSIONS_V2_SET_ENABLED.value:
-        if set(params) != {"package_id", "enable"}:
-            raise ValueError("set enabled requires package_id and enable")
+        if set(params) - {"package_id", "enable", "version"} or "package_id" not in params:
+            raise ValueError("set enabled requires package_id, enable and an optional version")
         enable = params.get("enable")
         if not isinstance(enable, bool):
             raise ValueError("enable must be a boolean")
-        return _Request(package_id=_package_id(params["package_id"]), enable=enable)
+        return _Request(
+            package_id=_package_id(params["package_id"]),
+            enable=enable,
+            version=_version(params.get("version")),
+        )
+
+    if method == ReqMethod.EXTENSIONS_V2_RELOAD.value:
+        if set(params) - {"package_id", "version"} or "package_id" not in params:
+            raise ValueError("reload requires package_id and an optional version")
+        return _Request(
+            package_id=_package_id(params["package_id"]),
+            version=_version(params.get("version")),
+        )
 
     if method == ReqMethod.EXTENSIONS_V2_UNINSTALL.value:
         if set(params) - {"package_id", "version"} or "package_id" not in params:

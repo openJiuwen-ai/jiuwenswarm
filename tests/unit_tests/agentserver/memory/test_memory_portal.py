@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -50,6 +51,31 @@ def config(tmp_path, monkeypatch):
             },
         }},
     }
+
+
+@pytest.mark.asyncio
+async def test_offline_managed_portal_does_not_fall_back_to_sdk(config):
+    launch = AsyncMock(side_effect=ValueError('listener stopped'))
+    service = MemoryPortalService(factory=lambda *_: pytest.fail('must not create SDK'), managed_open=launch)
+    assert await service.open(config) == {'mode': 'http', 'status': 'unavailable', 'code': 'portal_unavailable'}
+    launch.assert_awaited_once_with(config)
+    config['memory']['builtin']['jiuwen']['portal']['enabled'] = False
+    assert await service.open(config) == {'mode': 'http', 'status': 'disabled', 'code': 'not_enabled'}
+    assert launch.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_external_http_portal_keeps_existing_provider(config):
+    config['memory']['builtin']['jiuwen'].update(mode='http', base_url='http://127.0.0.1:8137')
+    launch = AsyncMock()
+    provider = Provider()
+    service = MemoryPortalService(ProviderRegistry(), lambda *_: provider, managed_open=launch)
+    try:
+        assert (await service.open(config))['status'] == 'ready'
+        assert provider.links == 1
+        launch.assert_not_awaited()
+    finally:
+        await service.close()
 
 
 @pytest.mark.asyncio
@@ -212,6 +238,8 @@ def test_config_save_preserves_connection_and_mode_options(tmp_path, monkeypatch
     path.write_text('memory:\n  builtin:\n    provider: jiuwen\n    jiuwen:\n      mode: sdk\n      sdk:\n        globals:\n          untouched: true\n')
     monkeypatch.setattr(config_module, 'CONFIG_YAML_PATH', path)
     monkeypatch.setattr(handlers, 'get_config_raw', lambda: config_module.load_yaml_round_trip(path))
+    monkeypatch.setattr('jiuwenswarm.common.utils.external_cli_state_sidecar_path',
+                        lambda _workspace: tmp_path / 'external-cli-state.json')
     original = copy.deepcopy(config_module.load_yaml_round_trip(path)['memory']['builtin'])
     for enabled in ('false', 'true'):
         changed = handlers.apply_config_payload({'memory_portal_enabled': enabled})
@@ -323,6 +351,69 @@ async def test_portal_failure_does_not_change_agent_reload_result(config, monkey
     reload.assert_awaited_once()
     assert 'Memory Portal configuration update failed (RuntimeError)' in caplog.text
     assert 'portal-fake-secret' not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change_connection', [False, True])
+async def test_config_save_during_initialization_remains_responsive(config, monkeypatch, change_connection):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.server.runtime import memory_portal
+    from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import reload_runtime_after_config_save
+
+    started, resume = asyncio.Event(), asyncio.Event()
+
+    class SlowProvider(Provider):
+        async def initialize(self, **identity):
+            started.set()
+            await resume.wait()
+            await super().initialize(**identity)
+
+    providers = [SlowProvider(), Provider()]
+    made = []
+
+    def factory(*_):
+        provider = providers[len(made)]
+        made.append(provider)
+        return provider
+
+    service = MemoryPortalService(ProviderRegistry(), factory)
+    manager = SimpleNamespace(reload_agents_config=AsyncMock())
+    monkeypatch.setattr(memory_portal, 'get_memory_portal_service', lambda: service)
+    monkeypatch.setattr(memory_portal, '_CONFIGURE_LOCK_WAIT_SECONDS', 0.01, raising=False)
+    saved = copy.deepcopy(config)
+    if change_connection:
+        saved['memory']['builtin']['jiuwen']['space'] = 'new-space'
+    else:
+        saved['memory']['builtin']['jiuwen']['portal']['enabled'] = False
+    opening = asyncio.create_task(service.open(config))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        changed_keys = {'memory_connection'} if change_connection else {'memory_portal_enabled'}
+        assert await asyncio.wait_for(reload_runtime_after_config_save(
+            manager, changed_keys, config_payload=saved,
+        ), 1)
+        assert not opening.done()
+        if change_connection:
+            manager.reload_agents_config.assert_awaited_once()
+        else:
+            manager.reload_agents_config.assert_not_awaited()
+        resume.set()
+        assert (await opening)['status'] == 'ready'
+        result = await service.open(saved)
+        if change_connection:
+            assert result['status'] == 'ready'
+            assert providers[0].closed == 1
+            assert providers[1].identity['space'] == 'new-space'
+        else:
+            assert result['status'] == 'disabled'
+            assert providers[0].closed == 0
+            assert (await service.open(config))['status'] == 'ready'
+            assert len(made) == 1
+    finally:
+        resume.set()
+        await opening
+        await service.close()
 
 
 @pytest.mark.asyncio
@@ -490,7 +581,7 @@ async def test_existing_provider_keeps_memory_operations_when_portal_is_disabled
     Base.open_portal.assert_awaited_once()
 
 
-def test_portal_switch_preserves_memory_mode_and_engine_gates(config, monkeypatch):
+def test_portal_switch_preserves_memory_mode_and_engine_gates(config):
     from types import SimpleNamespace
     from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
     from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
@@ -507,14 +598,14 @@ def test_portal_switch_preserves_memory_mode_and_engine_gates(config, monkeypatc
         assert is_memory_enabled(mode, config)
     assert is_builtin_memory_allowed(config)
     assert is_external_memory_allowed(config)
-    rail = object()
-    monkeypatch.setattr(team_memory, 'build_jiuwen_memory_rail', lambda *args, **kwargs: rail)
     for mode in ('team.work.normal', 'team.code.normal'):
         ctx = SimpleNamespace(config=config, mode=mode, memory_team='team-key', extras={},
                               memory_project='project', member_name='leader', memory_group='',
                               memory_experts={}, role='leader')
         assert uses_jiuwen_team_memory(config, mode)
-        assert team_memory.build_team_memory({}, ctx)[-1] is rail
+        rail = team_memory.build_team_memory({}, ctx)[-1]
+        assert isinstance(rail, team_memory.TeamMemoryPluginMount)
+        assert ctx.extras['_coding_memory_rail'] is rail
     config['modes']['code']['memory']['enabled'] = False
     assert not is_memory_enabled('agent.code.normal', config)
     assert is_memory_enabled('agent.work.normal', config)

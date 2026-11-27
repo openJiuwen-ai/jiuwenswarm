@@ -18,6 +18,8 @@ files:
   - jiuwenswarm/server/runtime/marketplace/asset_publish_adapters.py
   - jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/AppMarketAiRoles.tsx
   - jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx
+  - jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/SKILL.md
+  - jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/legacy_versions.json
   - jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md
 designs: []
 design_note: 依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。
@@ -40,3 +42,13 @@ design_note: 依据对话中确认的 Skill 优化、角色清单及已安装应
 - 审查修订补充 UTF-8 文本校验。Windows 项目 `.venv` 定向 pytest 4 项通过，覆盖未配对 Unicode 代理字符在详情与本地发布入口被拒绝、旧登记保留、补充平面字符正常返回，以及 Hub 发布快照兼容。
 - 基于 `upstream/develop` 的 `d5bc9f237` 解决冲突后，Windows 项目 `.venv` 定向 pytest 11 项通过，覆盖内置能力升级与自定义保留、AI 角色详情、无效清单拒绝、Hub 应用转换和发布快照。
 - 本次未连接真实模型或实际 Hub 发布服务。
+
+## 2026-11-26 布局修订
+
+- 单角色卡片共享响应式网格，卡片包含角色简介和会话说明。团队继续按会话分组展示，并保留团队说明和队长标记。
+- Windows 上 `npm run test:app-market` 90 项通过。使用实际已安装的黄沙镇往事和篝火狼人角色数据，在 Edge 的 1280px 和 390px 视口验证卡片顺序、单角色说明位置、团队的六张头像及窄屏无横向溢出。
+
+## 2026-11-26 上架流程修订
+
+- 首次市场启动依赖已登记的 `app_id`。Skill 先要求从应用目录联调，再在获得本机授权后登记，从市场执行启停验收。Hub 发布使用独立授权。验收按应用类型选择，登记结果不明时查询市场状态，启动验收失败时保留登记供修复。
+- 总目录与应用开发入口登记了 `releases/0.2.10` 的历史发行指纹。Windows 项目 `.venv` 的 Skill 契约、按需读取和目录升级定向测试 5 项通过。用本机安装副本在临时目录验证新入口可更新和归档，重复迁移后结果稳定，自定义文本保留。此次验证未执行真实应用上架。

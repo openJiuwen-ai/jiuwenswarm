@@ -32,6 +32,7 @@ class StreamResponsePipeline:
         session_id,
         inputs,
         memory_mode,
+        plugin_owns_memory,
         user_turn,
         is_team_mode,
         ports,
@@ -48,6 +49,7 @@ class StreamResponsePipeline:
         self.cid = request.channel_id
         self.inputs = inputs
         self.memory_mode = memory_mode
+        self.plugin_owns_memory = plugin_owns_memory
         self.user_turn = user_turn
         self.is_team_mode = is_team_mode
         self.ports = ports
@@ -1049,7 +1051,7 @@ class StreamResponsePipeline:
         self.completion.complete()
 
         # cloud memory: after chat hook
-        if self.memory_mode == "cloud":
+        if self.memory_mode == "cloud" and not self.plugin_owns_memory:
             assistant_message = self.projector.assistant_message
             await self.hooks.after_memory(self.request, assistant_message)
 
@@ -1061,7 +1063,7 @@ class StreamResponsePipeline:
             else "code"
         )
         config = self.ports.get_config()
-        if self.ports.is_auto_memory_enabled(
+        if not self.plugin_owns_memory and self.ports.is_auto_memory_enabled(
             mode, config
         ) and self.ports.is_memory_enabled(mode, config):
             self.ports.trigger_auto_memory_extraction(

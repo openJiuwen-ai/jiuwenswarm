@@ -2560,6 +2560,103 @@ test('task navigation and its page mount without a session and retain their inst
   }
 });
 
+test('application menu navigation and page mount without a session and stay mounted across session switches', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  function Harness({ sessionId }) {
+    const [page, setPage] = useState(null);
+    return createElement(
+      WebUIProvider,
+      { runtime, registry: componentRendererRegistry },
+      createElement(
+        WebUISlotProvider,
+        { sessionId, onOpenPage: setPage, activePage: page },
+        createElement(WebUINavigationHost, { slotId: 'application.menu' }),
+        page ? createElement(WebUIPageHost, { target: page }) : null,
+      ),
+    );
+  }
+  const render = async (sessionId) => act(async () => root.render(createElement(Harness, { sessionId })));
+  const menuTarget = {
+    scope: 'application',
+    slot_id: 'application.menu',
+    package_id: 'probe.slot-app-menu',
+    instance_key: 'menu-probe',
+  };
+  try {
+    await render(null);
+    const ready = transport.dispatches[0];
+    assert.equal(ready.event, 'ui.ready');
+    assert.equal(ready.target.scope, 'application');
+    assert.equal(ready.target.sessionId, '');
+    await act(async () =>
+      transport.injectRenderFrame(
+        frame(
+          {
+            component: 'Button',
+            props: { value: '菜单探针' },
+            events: { 'ui.click': { id: 'menu.open' } },
+          },
+          1,
+          menuTarget,
+        ),
+      ),
+    );
+    const entry = container.querySelector('[data-testid="webui-button"]');
+    assert.ok(entry);
+    assert.equal(entry.textContent, '菜单探针');
+
+    for (const sessionId of ['session-a', 'session-b', null, 'session-c']) {
+      await render(sessionId);
+      assert.equal(container.querySelector('[data-testid="webui-button"]'), entry);
+      assert.equal(transport.dispatches.filter((request) => request.event === 'ui.ready').length, 1);
+    }
+
+    await click(entry);
+    const pageReady = transport.dispatches.find((request) => request.target.slotId === 'application.menu.main');
+    assert.ok(pageReady);
+    assert.deepEqual(pageReady.target, {
+      scope: 'application',
+      sessionId: '',
+      slotId: 'application.menu.main',
+      packageId: menuTarget.package_id,
+      instanceKey: menuTarget.instance_key,
+    });
+    await act(async () =>
+      transport.injectRenderFrame(
+        frame(
+          {
+            component: 'Box',
+            children: [{ component: 'Text', props: { value: '菜单探针主页面' } }],
+          },
+          1,
+          { ...menuTarget, slot_id: 'application.menu.main' },
+        ),
+      ),
+    );
+    const pageText = container.querySelector('[data-testid="webui-text"]');
+    assert.ok(pageText);
+    assert.equal(pageText.textContent, '菜单探针主页面');
+
+    for (const sessionId of ['session-a', 'session-b', null]) {
+      await render(sessionId);
+      assert.equal(container.querySelector('[data-testid="webui-button"]'), entry);
+      assert.equal(container.querySelector('[data-testid="webui-text"]'), pageText);
+      assert.equal(transport.dispatches.filter((request) => request.event === 'ui.ready').length, 2);
+    }
+    assert.equal(runtime.getScopeSnapshot('', 'application.menu').instanceKeys.length, 1);
+    assert.equal(runtime.getScopeSnapshot('', 'application.menu.main').instanceKeys.length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    runtime.dispose();
+  }
+});
+
 test('WebUIEntryHost renders application.entry with Avatar and closes on clear frame', async () => {
   window.localStorage.removeItem('workswarm.webui.entry.visited');
   const transport = createMockTransport();

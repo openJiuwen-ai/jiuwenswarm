@@ -591,6 +591,16 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         # 端口已 listen, 后台预热 checkpointer, 不阻塞启动与握手.
         # _checkpointer_warmup_task 供 shutdown 时 cancel, 避免任务悬挂.
         async def _start_runtime() -> None:
+            from jiuwenswarm.server.runtime.managed_memory_http import start_bundled_memory_http
+
+            memory_start = asyncio.create_task(asyncio.to_thread(start_bundled_memory_http))
+            try:
+                await asyncio.shield(memory_start)
+            except asyncio.CancelledError:
+                await asyncio.gather(memory_start, return_exceptions=True)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] built-in memory HTTP startup failed (%s)", type(exc).__name__)
             retry_delay = 1.0
             while True:
                 try:
@@ -1194,6 +1204,12 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             # Runtime so outstanding provision leases can still be finalized.
             # Never allocate a replacement Runtime while shutting down.
             if runtime_close_completed or closing_runtime.closed:
+                from jiuwenswarm.server.runtime.managed_memory_http import managed_memory_http
+
+                try:
+                    await asyncio.to_thread(managed_memory_http.stop)
+                except Exception:  # noqa: BLE001
+                    logger.warning("[AgentWebSocketServer] managed memory HTTP shutdown failed")
                 self._runtime_services_started = False
 
         try:

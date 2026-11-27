@@ -15,14 +15,20 @@ const { createRoot } = await import('react-dom/client');
 await build({
   entryPoints: {
     page: 'src/features/memory/MemoryPage.tsx',
+    rail: 'src/features/jiuwenmate/components/JiuwenMateRail.tsx',
     state: 'src/features/memory/featureConfig.ts',
     settings: 'src/features/settings/modules/memory/definition.ts',
     config: 'src/features/settings/services/useSettingsConfig.ts',
   },
   outdir: 'node_modules/.cache/memory-portal', outExtension: { '.js': '.mjs' },
   bundle: true, splitting: true, packages: 'external', platform: 'node', format: 'esm', jsx: 'automatic',
-  loader: { '.css': 'empty' },
+  loader: { '.css': 'empty', '.svg': 'dataurl' },
   plugins: [{ name: 'boundaries', setup(builder) {
+    builder.onResolve({ filter: /\.svg\?react$/ }, args => ({ path: args.path, namespace: 'icon' }));
+    builder.onLoad({ filter: /.*/, namespace: 'icon' }, () => ({
+      contents: "import {createElement} from 'react'; export default props => createElement('svg', props);",
+      loader: 'js', resolveDir: process.cwd(),
+    }));
     builder.onResolve({ filter: /\/components\/ui$|\/assets\/settings$|^react-i18next$|SettingsServicesProvider$/ },
       (args) => ({ path: args.path, namespace: 'boundary' }));
     builder.onLoad({ filter: /.*/, namespace: 'boundary' }, ({ path }) => ({
@@ -40,6 +46,7 @@ await build({
   } }],
 });
 const { MemoryPage } = await import('../node_modules/.cache/memory-portal/page.mjs');
+const { JiuwenMateRail } = await import('../node_modules/.cache/memory-portal/rail.mjs');
 const state = await import('../node_modules/.cache/memory-portal/state.mjs');
 const { useSettingsConfig } = await import('../node_modules/.cache/memory-portal/config.mjs');
 const { memoryModule } = await import('../node_modules/.cache/memory-portal/settings.mjs');
@@ -188,6 +195,34 @@ test('JiuwenMate memory navigation mounts the Portal and respects the switch', a
     assert.equal(document.querySelector('iframe').src, url);
     await act(async () => root.render(renderer(createElement, MemoryPage, false, true, request)('memory')));
     assert.equal(document.querySelector('iframe'), null);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+
+test('JiuwenMate sidebar renders and opens memory when enabled, and hides it when disabled', async () => {
+  const root = createRoot(document.getElementById('root'));
+  const opened = [];
+  const props = {
+    activeView: 'office', activePublicLabel: null, onViewChange: () => {}, onExit: () => {},
+    onOpenExistingPage: (...args) => opened.push(args),
+  };
+  const memoryItem = () => document.querySelector('[data-variant="nav.memory"]');
+  try {
+    await act(async () => root.render(createElement(JiuwenMateRail, { ...props, hiddenPages: ['memory'] })));
+    assert.equal(memoryItem(), null);
+    await act(async () => root.render(createElement(JiuwenMateRail, props)));
+    assert.ok(memoryItem().querySelector('svg'));
+    await act(async () => memoryItem().click());
+    assert.deepEqual(opened, [['memory', 'nav.memory']]);
+    for (const language of ['zh', 'en']) {
+      const strings = JSON.parse(readFileSync(new URL(`../src/i18n/locales/${language}.json`, import.meta.url), 'utf8'));
+      assert.ok(strings.nav.memory);
+    }
+    await act(async () => root.render(createElement(JiuwenMateRail, { ...props, hiddenPages: ['memory'] })));
+    assert.equal(memoryItem(), null);
+    assert.ok(document.querySelector('[data-variant="jiuwenmate.nav.settings"]'));
   } finally {
     await act(async () => root.unmount());
   }

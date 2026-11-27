@@ -43,6 +43,7 @@ export interface PluginPackageSummary {
   avatar?: string;
   /** 是否已安装；未登记时后端按目录存在视为 true。 */
   installed: boolean;
+  defaultEnabled?: boolean;
   /**
    * 插件依赖的 connector（MCP）是否就绪；v2 §3.1 list/show 都下发。`connected` 才能
    * chat.send（§1.3 硬拒绝），装了但未连接走"已装重连"（§1.6.4）。
@@ -57,7 +58,15 @@ export interface PluginCapabilityRef {
   displayDescription: LocalizedText;
 }
 
+export interface MemoryPluginAccess {
+  mode: 'http';
+  managed_http: ManagedMemoryHttpStatus;
+}
+
+export type ManagedMemoryHttpStatus = { running: false } | { running: true; base_url: string };
+
 export interface PluginPackageDetail extends PluginPackageSummary {
+  memoryAccess?: MemoryPluginAccess;
   version?: string;
   details?: string;
   tags: LocalizedText[];

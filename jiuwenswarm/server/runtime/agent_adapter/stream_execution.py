@@ -64,6 +64,7 @@ class StreamExecutionPorts:
     get_config: Callable[..., Any]
     is_auto_memory_enabled: Callable[..., Any]
     is_memory_enabled: Callable[..., Any]
+    supported_memory_session: Callable[..., Any]
     team_a2ui_block_buffer: Callable[..., Any]
     team_plan_approval_payload_error: Callable[..., Any]
     person_drove_turn: Callable
@@ -365,7 +366,8 @@ class StreamExecutionService:
                 )
 
             # cloud memory: before chat hook
-            if memory_mode == "cloud":
+            plugin_owns_memory = ports.supported_memory_session(request.params or {})
+            if memory_mode == "cloud" and not plugin_owns_memory:
                 inputs["memory_block"] = await facade._get_hook_services().before_memory(
                     request
                 )
@@ -380,6 +382,7 @@ class StreamExecutionService:
                 session_id=session_id,
                 inputs=inputs,
                 memory_mode=memory_mode,
+                plugin_owns_memory=plugin_owns_memory,
                 user_turn=user_turn,
                 is_team_mode=is_team_mode,
                 ports=ports,

@@ -103,18 +103,25 @@ filesystem_policy:
 
 # Process identity inside the sandbox.
 process:
-  # User name to run as. If the user cannot be resolved, runtime falls back to nobody-style IDs.
-  run_as_user: sandbox
+  # Must match a user that exists in Dockerfile.sandbox (``app`` uid 1000).
+  # ``sandbox`` is absent there → resolve fails → uid 65534 (nobody) →
+  # Permission denied on /home/app/... (HTTP 409). Aligned with origin/dev-stable.
+  run_as_user: app
 
-  # Group name to run as. If the group cannot be resolved, runtime falls back to nobody-style IDs.
-  run_as_group: sandbox
+  # Same as run_as_user.
+  run_as_group: app
 
 # Linux namespace isolation controlled by bubblewrap.
 namespace:
   # user:
   #   true: create a new user namespace
   #   false: reuse the current user namespace
-  user: true
+  # Enterprise/k8s (origin/dev-stable): keep false. With user:true, bwrap's
+  # single-id userns map makes host-owned parents (/home/app) show up as
+  # root/nobody inside the sandbox and blocks traversal to bind-mounted
+  # workspaces (write_file → Permission denied / HTTP 409). Container
+  # isolation already covers the multi-tenant boundary here.
+  user: false
 
   # pid:
   #   true: create a new PID namespace

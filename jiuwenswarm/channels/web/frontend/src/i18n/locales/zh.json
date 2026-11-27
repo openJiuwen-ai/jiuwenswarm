@@ -208,7 +208,6 @@
       "title": "AI 角色",
       "empty": "尚未声明 AI 角色",
       "loadFailed": "加载 AI 角色失败",
-      "agent": "单角色会话",
       "team": "团队会话",
       "teamBadge": "团队",
       "leader": "队长"
@@ -293,7 +292,7 @@
     "editSessionTitle": "编辑 {{name}}",
     "reloadPreview": "重新加载应用预览",
     "reloadFailed": "重新加载应用预览失败",
-    "editPrompt": "帮我修改应用“{{name}}”（v{{version}}）。\n应用简介：{{description}}\n源码入口：{{entryPath}}\n\n请先阅读现有代码和数据，保留已有的数据与存档。建议按以下步骤进行：\n1. 说明当前实现、入口文件和关键数据；\n2. 按我的需求做最小修改并自测；\n3. 需要发布新版本时提醒我。\n我要修改的内容是：",
+    "editPrompt": "帮我修改应用“{{name}}”（v{{version}}）。\n应用简介：{{description}}\n源码入口：{{entryPath}}\n\n请先参考 WorkSwarm 内置能力目录中的应用开发技能 workswarm-app-builder，再阅读现有代码和数据，保留已有的数据与存档。建议按以下步骤进行：\n1. 说明当前实现、入口文件和关键数据；\n2. 按我的需求做最小修改并自测；\n3. 需要发布新版本时提醒我。\n我要修改的内容是：",
     "noDescription": "暂无简介",
     "expandPane": "展开应用面板",
     "restorePane": "恢复分栏",
@@ -6184,6 +6183,17 @@
     "detail": {
       "breadcrumbMy": "我的扩展",
       "breadcrumbPlugin": "插件详情",
+      "memoryConnection": {
+        "edit": "编辑连接配置",
+        "hint": "填写完整的 MCP 服务 URL 和 API Key，保存后重新连接记忆服务。",
+        "url": "MCP 服务 URL",
+        "key": "API Key"
+      },
+      "memoryAccess": {
+        "managedHttp": "内置 HTTP 服务",
+        "serviceRunning": "服务运行中",
+        "serviceStopped": "服务未启动"
+      },
       "breadcrumbMcp": "连接器详情",
       "mcpDisconnectedBanner": "当前插件依赖的连接器未连接，无法正常使用",
       "mcpDisconnectedBannerSelf": "尚未连接，连接后即可使用",
@@ -6300,7 +6310,8 @@
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
       "missingReadme": "插件包缺少 README.md 文件",
-      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径"
+      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径",
+      "alreadyInstalled": "该插件包（相同 ID 和版本）已安装，请勿重复上传"
     },
     "systemPlugin": {
       "badge": "系统插件",
@@ -6354,6 +6365,7 @@
       "switchVersionConfirm": "将「{{name}}」从 v{{installed}} 切换到 v{{target}}？切换后当前版本将停止生效，但文件会保留在工作区（不会删除），之后可随时切回。",
       "publish": "发布",
       "uninstallConfirm": "请选择卸载方式：「仅卸载 v{{version}}」只删除该版本，其他已安装版本会保留但不再生效；「全部卸载」会删除「{{name}}」留在工作区的所有版本文件，不可恢复。",
+      "uninstallSingleConfirm": "确认卸载「{{name}}」？工作区只保留 v{{version}} 一个版本，卸载会删除其全部文件，不可恢复。",
       "uninstallVersion": "仅卸载 v{{version}}",
       "uninstallAll": "全部卸载"
     },
@@ -6883,6 +6895,7 @@
     "enhancedProgressHint": "增强能力配置预计需要 {{range}}，完成后可随时查看详情。",
     "enhancedEstimateFallback": "30–40 分钟",
     "cancelInstall": "取消安装",
+    "cancelling": "正在取消…",
     "installingComponents": "正在安装工具链组件",
     "componentCountHint": "共 {{count}} 个组件，可执行组件会按依赖关系并行安装。",
     "completedCount": "已完成 {{completed}} / {{total}} 项",
