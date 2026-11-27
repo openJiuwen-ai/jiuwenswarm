@@ -302,8 +302,10 @@ def _resolved_config() -> dict[str, Any]:
     if cached is not None and parsed is not None and stamp is not None:
         current_file = cached.stamp == stamp == parsed[0]
         current_readers = cached.crypto_provider is provider and cached.reader is reader
-        if (current_file and current_readers and not _has_credential_env_refs(cached.names)
-                and cached.values == tuple(os.getenv(name) for name in cached.names)):
+        reusable_snapshot = (
+            current_file and current_readers and not _has_credential_env_refs(cached.names)
+        )
+        if reusable_snapshot and cached.values == tuple(os.getenv(name) for name in cached.names):
             return deepcopy(cached.config)
     base = reader(path)
     names = tuple(sorted(_config_env_names(base)))

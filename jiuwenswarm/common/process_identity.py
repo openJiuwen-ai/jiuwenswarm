@@ -116,7 +116,8 @@ def validate_process_identity(
     created, ticks = hello.get("process_created"), hello.get("process_start_ticks")
     started = hello.get("process_started")
     protocol = hello.get("protocol")
-    if type(protocol) is int and protocol >= 2 and created is None and ticks is None:
+    requires_birth_identity = type(protocol) is int and protocol >= 2
+    if requires_birth_identity and created is None and ticks is None:
         raise RuntimeError(f"Worker protocol {protocol} HELLO requires a process identity")
     if created is not None:
         invalid_type = isinstance(created, bool) or not isinstance(created, (int, float))
