@@ -1,5 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -105,6 +106,49 @@ async def test_finalize_a2ui_assistant_content_repairs_parseable_invalid_respons
 
     assert result == VALID_A2UI_RESPONSE
     assert len(repair_prompts) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ("web", "officeclaw"))
+async def test_finalize_repairs_parent_id_conflicting_with_text_usage_hint(monkeypatch, channel):
+    from jiuwenswarm.server.runtime.a2ui import integration
+
+    monkeypatch.setattr(integration, "_get_runtime_a2ui_config", lambda: SimpleNamespace(enabled=True))
+
+    def build_response(root_id):
+        surface = {"surfaceId": "form"}
+        messages = [
+            {"beginRendering": {**surface, "root": root_id}},
+            {"surfaceUpdate": {**surface, "components": [
+                {"id": root_id, "component": {"Column": {"children": {"explicitList": ["copy"]}}}},
+                {"id": "copy", "component": {"Text": {
+                    "text": {"literalString": "Content"}, "usageHint": "body",
+                }}},
+            ]}},
+        ]
+        return f"<a2ui-json>{json.dumps(messages)}</a2ui-json>"
+
+    original = build_response("body")
+    repaired = build_response("form-root")
+    repair_results = iter((original, repaired))
+    prompts = []
+
+    async def repair_call(prompt):
+        prompts.append(prompt)
+        assert "Text 'copy' usageHint 'body'" in prompt
+        assert "rename component id 'body'" in prompt
+        return SimpleNamespace(content=next(repair_results))
+
+    result = await integration.finalize_assistant_response_if_a2ui(
+        original,
+        channel=channel,
+        user_query="generate a form",
+        request_id="req-usage-hint-collision",
+        repair_call=repair_call,
+    )
+
+    assert result == repaired
+    assert len(prompts) == 2
 
 
 @pytest.mark.asyncio

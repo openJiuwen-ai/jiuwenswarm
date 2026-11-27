@@ -130,6 +130,10 @@ class A2UIMessage:
 response_finalization → stream_guard → validator → a2ui 输出
 ```
 
+A2UI v0.8 终稿校验按消息顺序维护各 surface 的组件定义，包括同一回复的多个协议块。
+`Text.usageHint` 的值若与同一 surface 内任意组件 id 相同，终稿进入既有修复流程。
+修复时为冲突组件换用唯一 id，并同步更新引用，保留原 `usageHint` 的排版语义。
+
 ## 执行路径 / 装配关系
 
 ### P1：Agent 装配（默认路径 fallback 里的 _handle_stream / _handle_unary）

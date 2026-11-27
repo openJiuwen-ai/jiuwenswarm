@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from itertools import chain
 from typing import Any
 
 from jiuwenswarm.server.runtime.a2ui.parser import (
@@ -272,12 +273,53 @@ def _validate_template_runtime_semantics(messages: list[dict[str, Any]]) -> None
                     )
 
 
+def _validate_text_usage_hint_collisions(messages: Iterable[dict[str, Any]]) -> None:
+    """Check explicit Text hints against the IDs retained by the v0.8 renderer."""
+    surfaces: dict[str, dict[str, str | None]] = {}
+    for message in messages:
+        deleted = message.get("deleteSurface")
+        if isinstance(deleted, dict):
+            surface_id = deleted.get("surfaceId")
+            if isinstance(surface_id, str):
+                surfaces.pop(surface_id, None)
+            continue
+        update = message.get("surfaceUpdate")
+        if not isinstance(update, dict):
+            continue
+
+        surface_id = update.get("surfaceId")
+        components = update.get("components")
+        if not isinstance(surface_id, str) or not isinstance(components, list):
+            continue
+
+        # Web Core 0.8 upserts components by id until deleteSurface.
+        hints_by_id = surfaces.setdefault(surface_id, {})
+        for component in components:
+            if not isinstance(component, dict) or not isinstance(component.get("id"), str):
+                continue
+            definition = component.get("component")
+            text = definition.get("Text") if isinstance(definition, dict) else None
+            hint = text.get("usageHint") if isinstance(text, dict) else None
+            hints_by_id[component["id"]] = hint if isinstance(hint, str) else None
+
+        # An omitted usageHint has no string for Web Core to resolve as a reference.
+        for text_id, usage_hint in hints_by_id.items():
+            if usage_hint is not None and usage_hint in hints_by_id:
+                raise ValueError(
+                    f"Text {text_id!r} usageHint {usage_hint!r} matches a component id in "
+                    f"surface {surface_id!r}. To prevent a renderer reference collision, "
+                    f"rename component id {usage_hint!r} and update its references. "
+                    "Keep the Text usageHint unchanged."
+                )
+
+
 def validate_a2ui_messages(catalog: Any, messages: list[dict[str, Any]]) -> None:
     if not messages:
         raise ValueError("A2UI message list is empty")
     catalog.validator.validate(messages)
     _validate_template_runtime_semantics(messages)
     _validate_image_runtime_semantics(messages)
+    _validate_text_usage_hint_collisions(messages)
 
 
 def validate_a2ui_response(
@@ -288,6 +330,7 @@ def validate_a2ui_response(
 ) -> A2UIValidationResult:
     try:
         tagged_blocks = iter_tagged_block_bodies(content or "")
+        batches: list[list[dict[str, Any]]] = []
         if tagged_blocks:
             for block_index, body in tagged_blocks:
                 try:
@@ -316,11 +359,15 @@ def validate_a2ui_response(
                         valid=False,
                         error=f"A2UI block {block_index}: {exc}",
                     )
-            return A2UIValidationResult(valid=True)
-
-        for part in parse_response(content):
-            if part.kind == "a2ui":
-                validate_messages(part.messages or [])
+                batches.append(messages)
+        else:
+            for part in parse_response(content):
+                if part.kind == "a2ui":
+                    messages = part.messages or []
+                    validate_messages(messages)
+                    batches.append(messages)
+        if len(batches) > 1:
+            _validate_text_usage_hint_collisions(chain.from_iterable(batches))
         return A2UIValidationResult(valid=True)
     except Exception as exc:  # noqa: BLE001
         return A2UIValidationResult(valid=False, error=str(exc))
