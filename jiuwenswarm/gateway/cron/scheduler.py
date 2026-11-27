@@ -44,6 +44,40 @@ def _now_utc_ts() -> float:
     return time.time()
 
 
+def _pid_alive(pid: int) -> bool:
+    """判断同主机上某进程是否仍存活（孤儿回收用，跨平台）。
+
+    pid 复用导致的误判方向是“误认为存活→跳过回收”，属安全侧（宁可留僵尸，
+    绝不误杀活 run）。
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        # PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == 259  # STILL_ACTIVE
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 _WORKSPACE_OPEN = "<claw_workspace>"
 _WORKSPACE_CLOSE = "</claw_workspace>"
 
@@ -499,33 +533,48 @@ class CronSchedulerService:
     async def _reclaim_orphan_runs(self, rows: list[dict]) -> None:
         """启动时回收崩溃/硬杀遗留的 running 记录（问题3 / TC-PROP-H03 ①）。
 
-        仅由 start() 调用——此刻 _loop 尚未创建、内存 _runs 为空，任何
-        status=="running" 且无 finishedAt 的记录都必然来自上一个已死进程
-        （唯一落终态的写入在 _run_agent 的 finally 里，taskkill /F 硬杀会跳过它），
-        不可能是在飞行的活 run。活 run 只会出现在运行期 reload()，故本方法
-        **绝不可挂到 reload()**——否则会把活 run 误判成孤儿、错误落 failed。
+        由 start() 调用做开机对账。安全依据是**进程归属**而非“单写入者”假设：
+        每条运行记录由 _persist_run 写入 ownerPid；只有当 ownerPid 既非本进程、
+        又确已死亡时，该 running 记录才是上一个死进程遗留的孤儿，方可回收。
 
-        落 failed 终态并打 [orphaned_by_restart] 标记，使 cron.run.list 不再
-        返回永久 running 僵尸。与崩溃恢复 grace 机制（_on_wake 已决定"宁可丢
-        结果"不重跑）互补：这里只补记录侧收尾，不重排 wake/push。
+        这一点至关重要：cron_run_records.json 路径与 gateway/agentserver **共享**
+        （utils.get_cron_jobs_path），agentserver 侧经 cron 工具 create/update 会
+        另起一个 CronSchedulerService 实例并 start()。若仅凭“running 且 startedAt
+        早于本实例 boot”判定，就会把 gateway 上**正在飞行的活 run** 误杀成 failed。
+        ownerPid 存活检查正好挡住这种跨进程误判；又因只动“死主”记录（死主不会再
+        写该 run），save_run_record 的快照-覆盖 TOCTOU 也随之消解。
+
+        无 ownerPid 的历史记录、归属即本进程、或 owner 仍存活的，一律保守跳过。
+        回收只做记录侧收尾（落 failed+finishedAt+[orphaned_by_restart]），不重排
+        wake/push，与崩溃恢复 grace 机制互补。
         """
         if not rows:
             return
         boot_ms = int(self._boot_time * 1000)
         mark = " [orphaned_by_restart]"
+        self_pid = os.getpid()
         swept = 0
         for r in rows:
-            if (
-                r.get("status") == "running"
-                and not r.get("finishedAt")
-                and int(r.get("startedAt", 0)) < boot_ms
-                and mark not in str(r.get("summary") or "")
-            ):
-                r["status"] = "failed"
-                r["finishedAt"] = boot_ms
-                r["summary"] = str(r.get("summary") or "") + mark
-                await self._store.save_run_record(r)
-                swept += 1
+            if not (r.get("status") == "running" and not r.get("finishedAt")):
+                continue
+            if int(r.get("startedAt", 0)) >= boot_ms:
+                continue
+            if mark in str(r.get("summary") or ""):
+                continue
+            owner = r.get("ownerPid")
+            if owner is None:
+                continue
+            try:
+                owner_pid = int(owner)
+            except (TypeError, ValueError):
+                continue
+            if owner_pid == self_pid or _pid_alive(owner_pid):
+                continue
+            r["status"] = "failed"
+            r["finishedAt"] = boot_ms
+            r["summary"] = str(r.get("summary") or "") + mark
+            await self._store.save_run_record(r)
+            swept += 1
         if swept:
             logger.info(
                 "[Cron] 重启回收孤儿 running 记录 %d 条 → failed[orphaned_by_restart]",
@@ -1658,6 +1707,7 @@ class CronSchedulerService:
                     "success" if state.status == "succeeded" else "failed"),
                 **({"finishedAt": int(state.finished_at * 1000)} if state.finished_at else {}),
                 "summary": state.result_text or state.error or "",
+                "ownerPid": os.getpid(),
             })
             return True
         except Exception:

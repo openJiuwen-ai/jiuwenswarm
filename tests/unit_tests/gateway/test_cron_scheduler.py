@@ -2706,14 +2706,19 @@ class TestUnaryEmptyFinalAnswerClassification:
 
 
 class TestOrphanRunReclaim:
-    """start() 回收硬杀/崩溃遗留的 running 记录；reload() 绝不回收（活 run 保护）。"""
+    """start() 回收硬杀遗留的 running 记录；ownerPid 存活判定防跨进程误杀。"""
+
+    DEAD_PID = 2_000_000_000  # 远超系统 pid 上限，作“已死”归属占位
 
     @staticmethod
-    def _rec(rid, started_at, status="running", **extra):
-        return {
+    def _rec(rid, started_at, status="running", owner_pid=DEAD_PID, **extra):
+        rec = {
             "id": rid, "taskId": "job", "taskName": "僵尸巡检", "scope": "my-pc",
             "startedAt": started_at, "status": status, **extra,
         }
+        if owner_pid is not None:
+            rec["ownerPid"] = owner_pid
+        return rec
 
     @pytest.mark.asyncio
     async def test_start_sweeps_orphan_running_to_failed(self, tmp_path):
@@ -2721,7 +2726,8 @@ class TestOrphanRunReclaim:
         (tmp_path / "cron_run_records.json").write_text(
             json.dumps([self._rec("job:1", 1_000)]), encoding="utf-8")
         svc = _make_scheduler(store)
-        await svc.start()
+        with patch("jiuwenswarm.gateway.cron.scheduler._pid_alive", return_value=False):
+            await svc.start()
         await svc.stop()
         rows = await CronJobStore(path=store.path).list_run_records()
         assert len(rows) == 1
@@ -2731,39 +2737,69 @@ class TestOrphanRunReclaim:
         assert "[orphaned_by_restart]" in r["summary"]
 
     @pytest.mark.asyncio
+    async def test_owner_alive_is_not_reclaimed(self, tmp_path):
+        """P2 守卫：owner 进程存活（gateway 在飞 run，被 agentserver 侧调度器
+        start() 的回收扫到）绝不能被误杀。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        (tmp_path / "cron_run_records.json").write_text(
+            json.dumps([self._rec("job:live", 1_000, owner_pid=424242)]), encoding="utf-8")
+        svc = _make_scheduler(store)
+        with patch("jiuwenswarm.gateway.cron.scheduler._pid_alive", return_value=True):
+            await svc.start()
+        await svc.stop()
+        rows = await CronJobStore(path=store.path).list_run_records()
+        assert rows[0]["status"] == "running"
+        assert "orphaned_by_restart" not in (rows[0].get("summary") or "")
+        assert "finishedAt" not in rows[0]
+
+    @pytest.mark.asyncio
+    async def test_record_without_owner_pid_is_skipped(self, tmp_path):
+        """历史记录无 ownerPid → 无法证明已死 → 保守跳过，不误杀。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        (tmp_path / "cron_run_records.json").write_text(
+            json.dumps([self._rec("job:legacy", 1_000, owner_pid=None)]), encoding="utf-8")
+        svc = _make_scheduler(store)
+        with patch("jiuwenswarm.gateway.cron.scheduler._pid_alive", return_value=False):
+            await svc.start()
+        await svc.stop()
+        rows = await CronJobStore(path=store.path).list_run_records()
+        assert rows[0]["status"] == "running"
+
+    @pytest.mark.asyncio
     async def test_start_only_sweeps_stale_running(self, tmp_path):
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         future_ms = int(time.time() * 1000) + 3_600_000
         rows_in = [
-            self._rec("job:stale", 1_000),                                   # 孤儿 → 扫
+            self._rec("job:stale", 1_000),                                   # 死主孤儿 → 扫
             self._rec("job:future", future_ms),                              # startedAt>=boot → 不动
             self._rec("job:done", 1_000, status="success", finishedAt=1_500),  # 已终态 → 不动
             self._rec("job:fin_running", 1_000, finishedAt=1_500),           # running 但有 finishedAt → 不动
         ]
         (tmp_path / "cron_run_records.json").write_text(json.dumps(rows_in), encoding="utf-8")
         svc = _make_scheduler(store)
-        await svc.start()
+        with patch("jiuwenswarm.gateway.cron.scheduler._pid_alive", return_value=False):
+            await svc.start()
         await svc.stop()
         got = {r["id"]: r for r in await CronJobStore(path=store.path).list_run_records()}
         assert got["job:stale"]["status"] == "failed"
         assert "[orphaned_by_restart]" in got["job:stale"]["summary"]
-        assert got["job:future"]["status"] == "running"          # 未误杀未来态/活 run
+        assert got["job:future"]["status"] == "running"
         assert "orphaned_by_restart" not in (got["job:future"].get("summary") or "")
-        assert got["job:done"]["status"] == "success"            # 终态原样
-        assert got["job:fin_running"]["status"] == "running"     # 有 finishedAt 不动
+        assert got["job:done"]["status"] == "success"
+        assert got["job:fin_running"]["status"] == "running"
         assert got["job:fin_running"]["finishedAt"] == 1_500
 
     @pytest.mark.asyncio
-    async def test_reload_does_not_sweep_live_running(self, tmp_path):
-        """关键陷阱守卫：清扫只能在 start()。reload() 运行期若扫会误杀活 run。"""
+    async def test_reload_does_not_reclaim(self, tmp_path):
+        """reclaim 只挂 start()：死主孤儿记录经 reload() 也不动（运行期绝不清扫）。"""
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         (tmp_path / "cron_run_records.json").write_text(
-            json.dumps([self._rec("job:live", int(time.time() * 1000))]), encoding="utf-8")
+            json.dumps([self._rec("job:orphan", 1_000)]), encoding="utf-8")
         svc = _make_scheduler(store)
-        await svc.reload()
+        with patch("jiuwenswarm.gateway.cron.scheduler._pid_alive", return_value=False):
+            await svc.reload()
         rows = await CronJobStore(path=store.path).list_run_records()
         assert rows[0]["status"] == "running"
-        assert "orphaned_by_restart" not in (rows[0].get("summary") or "")
 
     @pytest.mark.asyncio
     async def test_reclaim_is_idempotent_across_restarts(self, tmp_path):
@@ -2772,9 +2808,10 @@ class TestOrphanRunReclaim:
             json.dumps([self._rec("job:1", 1_000)]), encoding="utf-8")
         for _ in range(2):
             svc = _make_scheduler(store)
-            await svc.start()
+            with patch("jiuwenswarm.gateway.cron.scheduler._pid_alive", return_value=False):
+                await svc.start()
             await svc.stop()
         rows = await CronJobStore(path=store.path).list_run_records()
         assert len(rows) == 1
         assert rows[0]["status"] == "failed"
-        assert rows[0]["summary"].count("[orphaned_by_restart]") == 1   # 不重复追加
+        assert rows[0]["summary"].count("[orphaned_by_restart]") == 1
