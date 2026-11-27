@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -461,6 +462,80 @@ def test_render_success_uses_data_content_no_duplicate() -> None:
     assert "base64" not in rendered
 
 
+_B64 = "iVBORw0KGgoAAAANSUhEUg" * 40
+
+
+def _image_item(name: str) -> dict:
+    return {
+        "type": "image",
+        "source": "read_file",
+        "source_path": f"D:/ws/img/{name}",
+        "mime_type": "image/png",
+        "data_url": f"data:image/png;base64,{_B64}",
+    }
+
+
+def _multi_file_read_payload() -> SimpleNamespace:
+    """flash ``read_file(file_paths=[...])`` 的真实返回形状：副本在两层。
+
+    ``files[*].multimodal`` 与顶层 ``multimodal`` 各带一份像素；``data`` 无顶层
+    ``content`` 键，渲染走 JSON 视图。
+    """
+    names = ["chushe_p1.png", "chushe_p2.png", "kxing_p1.png"]
+    return SimpleNamespace(
+        success=True,
+        error=None,
+        data={
+            "files": [
+                {
+                    "file_path": f"D:/ws/img/{name}",
+                    "content": f"Image file read: D:/ws/img/{name}",
+                    "type": "image",
+                    "multimodal": [_image_item(name)],
+                }
+                for name in names
+            ],
+            "total": 3,
+            "succeeded": 3,
+            "failed": 0,
+            "parallel_read": True,
+            "multimodal": [_image_item(name) for name in names],
+        },
+    )
+
+
+def test_render_multi_file_read_redacts_base64_keeps_shape() -> None:
+    # 回归（2026-11-25 事故）：flash 多文件 read_file 的 data 无顶层 content 键，
+    # 渲染走 JSON 视图，两层 multimodal 的 base64 以纯文本进入上下文——3 张 1.3MB
+    # 扫描页约 5MB 文本，按文本 token 计量超端点 input token limit（1,048,576）。
+    rendered = render_tool_result_for_llm(normalize_tool_result(_multi_file_read_payload()))
+    assert _B64 not in rendered
+    # 结构与元数据不变：仍是同形状 JSON，模型据 file_path / content 知道读了什么。
+    parsed = json.loads(rendered)
+    assert list(parsed) == ["files", "total", "succeeded", "failed", "parallel_read", "multimodal"]
+    assert len(parsed["files"]) == 3
+    assert parsed["files"][0]["file_path"] == "D:/ws/img/chushe_p1.png"
+    assert parsed["files"][0]["type"] == "image"
+    first = parsed["files"][0]["multimodal"][0]
+    assert first["source"] == "read_file"
+    assert first["mime_type"] == "image/png"
+    assert first["data_url"] == "data:image/png;base64,<multimodal payload omitted>"
+    assert len(parsed["multimodal"]) == 3
+
+
+def test_render_keeps_data_url_without_multimodal_channel() -> None:
+    # 普通工具输出里的 data URL 是数据本身（如 bash 构造 data URI），无像素副本可依，
+    # 清掉即丢数据——必须逐字保留。
+    payload = SimpleNamespace(
+        success=True,
+        data={"output": f"data:text/plain;base64,{_B64}", "exit_code": 0},
+        error=None,
+    )
+    rendered = render_tool_result_for_llm(normalize_tool_result(payload))
+    assert _B64 in rendered
+    assert "<multimodal payload omitted>" not in rendered
+
+
 def test_render_keeps_sibling_keys() -> None:
     rendered = render_tool_result_for_llm(
         normalize_tool_result({"data": {"a": 1}, "summary": "ok", "warnings": ["w"]})
@@ -469,7 +544,8 @@ def test_render_keeps_sibling_keys() -> None:
     assert '"warnings":["w"]' in rendered
 
 
-_IMAGE_DATA_URL = "data:image/png;base64," + "A" * 4096
+_IMAGE_BASE64 = "A" * 4096
+_IMAGE_DATA_URL = f"data:image/png;base64,{_IMAGE_BASE64}"
 
 
 def _multi_file_image_result() -> SimpleNamespace:
@@ -502,7 +578,7 @@ def test_render_strips_image_base64_copies_from_text() -> None:
     # 同一份 base64 在 files[i] 与顶层各一份；文本视图必须两份都换成占位符
     normalized = normalize_tool_result(_multi_file_image_result())
     rendered = render_tool_result_for_llm(normalized)
-    assert "data:image/" not in rendered
+    assert _IMAGE_BASE64 not in rendered
     assert rendered.count("data_url") == 2
     # 结构化载荷一个字节都不动：像素靠 data.multimodal 送 image 块
     assert normalized["data"]["multimodal"][0]["data_url"] == _IMAGE_DATA_URL
@@ -606,7 +682,8 @@ async def test_rail_strips_image_base64_from_msg_but_keeps_payload() -> None:
     rail = ToolResultNormalizeRail(normalize_enabled=True, llm_render_enabled=True)
     ctx = _make_ctx(_multi_file_image_result())
     await rail.after_tool_call(ctx)
-    assert "data:image/" not in ctx.inputs.tool_msg.content
+    assert _IMAGE_BASE64 not in ctx.inputs.tool_msg.content
+    assert ctx.inputs.tool_msg.content.count("data:image/png;base64,<multimodal payload omitted>") == 2
     # 结构化 data 不动，react_agent 仍能从中提升出 1 个 image 块
     assert ctx.inputs.tool_result.data["multimodal"][0]["data_url"] == _IMAGE_DATA_URL
 

@@ -36,8 +36,6 @@ import json
 import re
 from typing import Any
 
-from openjiuwen.core.context_engine.content_sanitize import sanitize_value_for_text
-
 STATUS_SUCCESS = "success"
 STATUS_ERROR = "error"
 STATUS_TIMEOUT = "timeout"
@@ -423,27 +421,6 @@ def normalize_tool_result(result: Any) -> dict[str, Any]:
     return _normalize_text(str(result))
 
 
-def _carries_image_payload(normalized: dict[str, Any]) -> bool:
-    """归一结果是否携带结构化多模态载荷（图片像素另有 image 块通道）。
-
-    只看 ``data.multimodal`` / ``data.files[].multimodal`` / 平铺到顶层的
-    ``multimodal``：这些是 react_agent 提升 image 块的来源。bash/HTML 文本里的
-    data URI 不属于多模态载荷，渲染必须原样保留。
-    """
-    data = normalized.get("data")
-    if isinstance(data, dict):
-        multimodal = data.get("multimodal")
-        if isinstance(multimodal, list) and multimodal:
-            return True
-        files = data.get("files")
-        if isinstance(files, list):
-            for item in files:
-                if isinstance(item, dict) and item.get("multimodal"):
-                    return True
-    multimodal = normalized.get("multimodal")  # _flatten_data 会平铺一份到顶层
-    return isinstance(multimodal, list) and bool(multimodal)
-
-
 def render_tool_result_for_llm(normalized: dict[str, Any]) -> str:
     """LLM 视图渲染（S6）：失败给错误文本，成功给 display / content / JSON。
 
@@ -453,8 +430,14 @@ def render_tool_result_for_llm(normalized: dict[str, Any]) -> str:
     框架 ``_build_tool_message_content`` 的 content 提取语义（data["content"]
     优先），其余情况只 dump data 或（无 data 的 dict 输入）normalized。
 
-    带多模态载荷时，dump 出的文本里 base64 data URL 替换为占位符（像素仍由
-    结构化 ``data.multimodal`` 经 image 块通道送达）。
+    ``data["content"]`` 不存在时走 JSON 视图，多模态像素此时只能靠占位符保留
+    在文本之外：像素有正规通道（``data.multimodal`` → react_agent 提升出的
+    image 块），文本里的 base64 属于冗余副本。flash 多文件 ``read_file`` 的
+    ``{"files": [{"multimodal": [...]}], "multimodal": [...]}`` 两层都带副本，
+    按文本 token 计量可达百万级并触发端点 input token limit 拒收
+    （2026-11-25 事故：3 张 1.3MB 扫描页 → 5MB 文本 → 超 1,048,576）。
+    与 agent-core ``_build_tool_message_content`` 的占位符同一语义：仅对携带
+    ``multimodal`` 通道的结果生效，普通工具输出里的 data URL 是数据本身，不动。
     """
     display = normalized.get("display")
     if isinstance(display, str) and display.strip():
@@ -476,16 +459,47 @@ def render_tool_result_for_llm(normalized: dict[str, Any]) -> str:
             if key in _RENDER_SCHEMA_KEYS or key in merged:
                 continue
             merged[key] = value
-        text = _json_text(merged)
-        if _carries_image_payload(normalized):
-            # 只清洗序列化后的字符串；merged 是浅拷贝，嵌套 data_url 原样保留，
-            # 否则 react_agent 提取 image 块会拿不到像素。
-            sanitized = sanitize_value_for_text(text)
-            return sanitized if isinstance(sanitized, str) else text
-        return text
+        return _json_text_redacting_multimodal(merged)
     if data is not None:
         return _json_text(data)
     return _json_text(normalized)
+
+
+#: 多模态载荷的传输编码形态（``data:<mime>;base64,<payload>``）。裸 base64 文本
+#: （无 data: 前缀）不匹配，不受影响。
+_MULTIMODAL_DATA_URL_RE = re.compile(r"data:[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+_MULTIMODAL_PAYLOAD_PLACEHOLDER = "<multimodal payload omitted>"
+
+
+def _has_multimodal_channel(data: Any) -> bool:
+    """结果是否带 ``multimodal`` 通道（顶层，或列表元素 ``files[*]`` 里）。"""
+    if not isinstance(data, dict):
+        return False
+    multimodal = data.get("multimodal")
+    if isinstance(multimodal, list) and multimodal:
+        return True
+    files = data.get("files")
+    if isinstance(files, list):
+        return any(_has_multimodal_channel(item) for item in files)
+    return False
+
+
+def _json_text_redacting_multimodal(value: Any) -> str:
+    """紧凑 JSON 序列化；带 ``multimodal`` 通道时把数据 URL 的 base64 换成占位符。
+
+    输出仍是同结构的 JSON，只是 ``data:<mime>;base64,<payload>`` 的 payload 段被
+    换成占位符——模型看到的键、层级、元数据（路径 / 尺寸 / mime）都不变。像素有
+    正规通道（``data.multimodal`` → react_agent 提升出的 image 块），文本里的
+    base64 是按文本 token 计量的冗余副本。无 multimodal 通道的结果原样序列化：
+    普通工具（bash 等）输出里的 data URL 是数据本身，清掉即丢数据。
+    """
+    text = _json_text(value)
+    if _has_multimodal_channel(value) and "base64," in text:
+        return _MULTIMODAL_DATA_URL_RE.sub(
+            lambda match: match.group(0).split(",", 1)[0] + "," + _MULTIMODAL_PAYLOAD_PLACEHOLDER,
+            text,
+        )
+    return text
 
 
 def _json_text(value: Any) -> str:
