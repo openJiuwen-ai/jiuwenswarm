@@ -444,13 +444,11 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.adapter_statics import (
 from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import (
     _build_avatar_rail,
     _build_extension_config_debug_rail,
-    _build_fact_premise_observation_rail,
     _build_heartbeat_rail,
     _build_llm_retry_rail,
     _build_skill_protocol_prompt_rail,
     _build_task_execution_rail,
     _build_work_plan_approval_rail,
-    _config_bool,
     _is_sandbox_bound_rail,
     _load_extra_rails_from_env,
     _load_extra_tools_from_env,
@@ -8865,30 +8863,6 @@ class JiuWenSwarmDeepAdapter:
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
         ]
-
-        # 纯观测 rail（只测不治）：时间敏感事实题的零检索率尺子。
-        # enabled 才挂载（默认 false 灰度）——避免 disabled 时每次装配都走
-        # builder 返回 None、打出与「构建失败」无法区分的 warning。
-        guard_cfg = (
-            config_base.get("execution_guard", {})
-            if isinstance(config_base, dict)
-            else {}
-        )
-        obs_cfg = (
-            guard_cfg.get("fact_premise_observation")
-            if isinstance(guard_cfg, dict)
-            else {}
-        )
-        if not isinstance(obs_cfg, dict):
-            obs_cfg = {}
-        if _config_bool(obs_cfg.get("enabled"), False):
-            rail_infos.append(
-                _RailBuildInfo(
-                    "_fact_premise_observation_rail",
-                    _build_fact_premise_observation_rail,
-                    {"config_base": config_base},
-                )
-            )
 
         if not mode.startswith("team") and not mode.startswith("code"):
             rail_infos.append(

@@ -338,59 +338,6 @@ def _build_work_plan_approval_rail() -> Any | None:
         return None
 
 
-def _config_bool(value: Any, default: bool) -> bool:
-    """严格布尔解析：配置中心可能下发字符串 "false"，``bool("false")`` 会误判为 True。"""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return value != 0
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _build_fact_premise_observation_rail(
-    config_base: dict[str, Any] | None = None,
-) -> Any | None:
-    """构建纯观测 rail：时间敏感事实题的零检索率尺子（只测不治）。"""
-    try:
-        config_base = config_base or get_config()
-        guard_cfg = (
-            config_base.get("execution_guard", {})
-            if isinstance(config_base, dict)
-            else {}
-        )
-        obs_cfg = (
-            guard_cfg.get("fact_premise_observation")
-            if isinstance(guard_cfg, dict)
-            else {}
-        )
-        if not isinstance(obs_cfg, dict):
-            obs_cfg = {}
-        if not _config_bool(obs_cfg.get("enabled"), False):
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] FactPremiseObservationRail disabled by config"
-            )
-            return None
-        from jiuwenswarm.agents.harness.common.rails.fact_premise_observation_rail import (
-            FactPremiseObservationRail,
-        )
-
-        rail = FactPremiseObservationRail()
-        logger.info("[JiuWenSwarmDeepAdapter] FactPremiseObservationRail create success")
-        return rail
-    except Exception as exc:
-        logger.warning(
-            "[JiuWenSwarmDeepAdapter] FactPremiseObservationRail create failed: %s", exc
-        )
-        return None
-
-
 def _should_register_acp_runtime_tools(
     channel_id: str | None,
     request_id: str | None,

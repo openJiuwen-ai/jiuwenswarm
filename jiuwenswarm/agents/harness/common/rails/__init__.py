@@ -34,9 +34,6 @@ from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import 
 from jiuwenswarm.agents.harness.common.rails.model_routing.model_routing_rail import (
     ModelRoutingRail,
 )
-from jiuwenswarm.agents.harness.common.rails.fact_premise_observation_rail import (
-    FactPremiseObservationRail,
-)
 
 __all__ = [
     "JiuSwarmStreamEventRail",
@@ -56,5 +53,4 @@ __all__ = [
     "DeepResearchExecutionRail",
     "DisabledToolsRail",
     "ModelRoutingRail",
-    "FactPremiseObservationRail",
 ]
