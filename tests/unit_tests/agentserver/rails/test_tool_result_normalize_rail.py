@@ -611,6 +611,31 @@ async def test_rail_strips_image_base64_from_msg_but_keeps_payload() -> None:
     assert ctx.inputs.tool_result.data["multimodal"][0]["data_url"] == _IMAGE_DATA_URL
 
 
+@pytest.mark.asyncio
+async def test_mcp_app_block_excluded_from_model_face() -> None:
+    # MCP Apps：mcp_app 块只进 raw_output（original）供前端渲染，模型可见面
+    # （tool_result 与 tool_msg.content）必须剔除——完整 CallToolResult 含
+    # 宿主侧 _meta，与 result 重复进模型上下文会放大 token（PR !10997 评审）。
+    rail = ToolResultNormalizeRail(normalize_enabled=True, llm_render_enabled=True)
+    block = {
+        "server": "mcp-apps-debug",
+        "tool": "debug-tool",
+        "resourceUri": "ui://debug-tool/mcp-app.html",
+        "arguments": {},
+        "toolResult": {
+            "content": [{"type": "text", "text": "t"}],
+            "_meta": {"ui": {"resourceUri": "ui://debug-tool/mcp-app.html"}},
+        },
+    }
+    ctx = _make_ctx({"result": "grid shown", "mcp_app": dict(block)})
+    ctx.extra = {}
+    await rail.after_tool_call(ctx)
+    # 模型可见面剔除
+    assert "mcp_app" not in ctx.inputs.tool_result
+    assert "mcp_app" not in ctx.inputs.tool_msg.content
+    # raw_output 侧（original 经 PRE_NORMALIZE_RESULT_KEY 透传）保留给前端
+    assert ctx.extra[PRE_NORMALIZE_RESULT_KEY]["mcp_app"] == block
+
 
 @pytest.mark.asyncio
 async def test_rail_disabled_keeps_original() -> None:

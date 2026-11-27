@@ -7,9 +7,13 @@ import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { SkillTreePath } from './SkillTreePath';
 import { BeamSearchTree } from './BeamSearchTree';
 import { classifyToolCall, describeToolCall, type ToolCategory } from './toolCategory';
+import { McpAppView } from './McpAppView';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
+  /** MCP Apps：交付物折叠分组传 false——主内容分支已常驻渲染并注册实例，避免同实例双挂载互删（PR !10997 评审）。 */
+  renderMcpApps?: boolean;
+  sessionId?: string | null;
   notices?: string[];
   showAvatar?: boolean;
   teamLayout?: boolean;
@@ -344,6 +348,8 @@ export { formatDurationPrecise, useNow } from './chatTimelineClock';
 
 export function ToolGroupDisplay({
   executions,
+  sessionId = null,
+  renderMcpApps = true,
   notices = [],
   showAvatar = true,
   teamLayout = false,
@@ -370,6 +376,7 @@ export function ToolGroupDisplay({
     .reverse()
     .find((execution) => execution.result?.beamSearch)
     ?.result?.beamSearch;
+  const mcpAppExecutions = visibleExecutions.filter((execution) => execution.result?.mcpApp);
   const viewedSkillIds = Array.from(new Set([
     ...turnViewedSkillIds,
     ...collectViewedSkillIds(executions),
@@ -447,6 +454,15 @@ export function ToolGroupDisplay({
             );
           })}
         </div>
+
+        {renderMcpApps && mcpAppExecutions.map((execution) => (
+          <McpAppView
+            key={execution.toolCallId}
+            app={execution.result!.mcpApp!}
+            sessionId={sessionId}
+            appInstanceId={execution.toolCallId}
+          />
+        ))}
 
         {skillTrees.length > 0 && (
           <SkillTreePath

@@ -163,6 +163,7 @@ import {
   restoreRemindersFromInbox,
 } from '../features/longHorizon/reminderState';
 import type { LongHorizonInboxItem } from '../types/longHorizon';
+import { getMcpAppContexts } from '../features/mcpApps/mcpAppContext';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 
@@ -1264,6 +1265,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       params?: Record<string, unknown>,
       requestOptions?: WebRequestOptions
     ): Promise<T> => {
+      if (method === 'chat.send') {
+        // MCP Apps：chat.send 的全部构造点在此汇合——按目标会话注入 App
+        // 交互上下文快照（metadata.mcp_app_contexts，后端消费缺座为已知
+        // 限制；已携带时不覆盖）。send 路径与 App 确认流路径统一在此生效。
+        const wireSession = String(params?.session_id ?? '');
+        const contexts = getMcpAppContexts(wireSession);
+        if (contexts.length > 0) {
+          const existing = params?.metadata;
+          const base = existing && typeof existing === 'object' && !Array.isArray(existing)
+            ? existing as Record<string, unknown>
+            : {};
+          if (!('mcp_app_contexts' in base)) {
+            params = { ...(params ?? {}), metadata: { ...base, mcp_app_contexts: contexts } };
+          }
+        }
+      }
       return webClient.request<T>(method, params, requestOptions);
     },
     []
@@ -3729,6 +3746,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             summary: toolResult.summary,
             skillTree: toolResult.skillTree,
             beamSearch: toolResult.beamSearch,
+            ...(toolResult.mcpApp ? { mcpApp: toolResult.mcpApp } : {}),
             ...(toolResult.timedOut ? { timedOut: true } : {}),
           },
           {

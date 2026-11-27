@@ -118,6 +118,7 @@ import {
 } from './utils/desktopSave';
 import type { DesktopSaveApiResult } from './utils/desktopSave';
 import { generateUuidV4 } from './utils/uuid';
+import { setMcpAppMessageHandler } from './features/mcpApps/mcpAppContext';
 import {
   ModelSetupGuide,
   type ModelSetupGuideStep,
@@ -950,6 +951,7 @@ function AppContent() {
             toolCallId: n.toolCallId,
             summary: n.summary,
             skillTree: n.skillTree,
+            ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
             ...(n.timedOut ? { timedOut: true } : {}),
             ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
           },
@@ -1760,6 +1762,7 @@ function AppContent() {
                 toolCallId: n.toolCallId,
                 summary: n.summary,
                 skillTree: n.skillTree,
+                ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
                 ...(n.timedOut ? { timedOut: true } : {}),
                 ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
               },
@@ -2350,6 +2353,13 @@ function AppContent() {
       );
     });
   }, [sendStructuredChatContent]);
+
+  useEffect(() => setMcpAppMessageHandler(async (targetSessionId, content) => {
+    if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return false;
+    const runtime = useChatStore.getState().getRuntime(targetSessionId);
+    if (runtime?.isProcessing || runtime?.queuePaused) return false;
+    return sendMessage(content, targetSessionId);
+  }), [sendMessage]);
 
   const handleInterrupt = useCallback((newInput?: string) => {
     const currentSessionId = sessionIdRef.current;

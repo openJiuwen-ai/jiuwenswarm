@@ -372,6 +372,10 @@ class ReqMethod(Enum):
     RSI_HARNESS_VERSIONS_LIST = "rsi.harness.versions.list"
     RSI_HARNESS_ROLLBACK = "rsi.harness.rollback"
     RSI_CAPABILITIES = "rsi.capabilities"
+    # MCP Apps host bridge (io.modelcontextprotocol/ui)。
+    MCP_APP_LIST_TOOLS = "mcp_app.list_tools"
+    MCP_APP_READ_RESOURCE = "mcp_app.read_resource"
+    MCP_APP_CALL_TOOL = "mcp_app.call_tool"
 
 
 class EventType(Enum):

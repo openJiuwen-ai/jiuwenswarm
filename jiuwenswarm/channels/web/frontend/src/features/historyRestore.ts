@@ -992,6 +992,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       toolCallId: n.toolCallId,
       summary: n.summary,
       skillTree: n.skillTree,
+      ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
       ...(n.timedOut ? { timedOut: true as const } : {}),
       ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
     };

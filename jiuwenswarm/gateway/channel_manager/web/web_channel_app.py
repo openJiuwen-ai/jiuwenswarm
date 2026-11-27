@@ -73,10 +73,16 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
 def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     """Register optional HTTP routes on the WebChannel port.
 
-    Intentionally empty in Phase 1. Future uploads/downloads should be added here
-    (or via included routers) so ``/ws`` remains unchanged.
+    MCP Apps sandbox proxy first; future uploads/downloads should be added
+    here (or via included routers) so ``/ws`` remains unchanged.
     """
-    _ = (app, channel)
+    _ = channel
+    # MCP Apps sandbox proxy (separate origin from the UI for app iframes)
+    from jiuwenswarm.gateway.channel_manager.web.mcp_app_sandbox_http import (
+        register_mcp_app_sandbox_routes,
+    )
+
+    register_mcp_app_sandbox_routes(app)
 
 
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:

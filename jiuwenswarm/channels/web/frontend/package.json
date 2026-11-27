@@ -74,6 +74,9 @@
     "test:trajectory-window": "esbuild src/features/trajectory/trajectoryWindow.ts --bundle --platform=node --format=esm --define:import.meta.env.VITE_API_BASE=undefined --outfile=node_modules/.cache/trajectory-window/trajectoryWindow.mjs && esbuild src/features/trajectory/trajectoryClient.ts --bundle --platform=node --format=esm --define:import.meta.env.VITE_API_BASE=undefined --outfile=node_modules/.cache/trajectory-window/trajectoryClient.mjs && esbuild src/features/trajectory/trajectoryArchive.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-window/trajectoryArchive.mjs && esbuild src/features/trajectory/trajectory/record.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-window/record.mjs && node --test tests/trajectoryWindow.test.mjs",
     "test:long-horizon-reminder": "esbuild src/features/longHorizon/index.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/long-horizon-reminder/index.js && node --test tests/longHorizonReminder.test.mjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "test:mcp-app-document": "esbuild src/features/mcpApps/mcpAppDocument.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/mcp-app-document/mcpAppDocument.mjs && node --test tests/mcpAppDocument.test.mjs",
+    "test:mcp-app-context": "esbuild src/features/mcpApps/mcpAppContext.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/mcp-app-context/mcpAppContext.mjs && node --test tests/mcpAppContext.test.mjs",
+    "test:mcp-app-view": "esbuild src/components/ChatPanel/McpAppView.tsx src/features/mcpApps/mcpAppContext.ts src/services/webClient.ts --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/mcp-app-view --loader:.css=empty --define:import.meta.env={} && node --test tests/mcpAppView.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -97,6 +100,7 @@
     "@codemirror/view": "6.43.7",
     "@dagrejs/dagre": "^3.1.3",
     "@fontsource/material-symbols-outlined": "^5.3.9",
+    "@modelcontextprotocol/ext-apps": "^2.0.0",
     "@shikijs/langs": "^4.3.1",
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-virtual": "^3.14.9",

@@ -830,6 +830,7 @@ from jiuwenswarm.server.runtime.agent_adapter.deepagent_task_plan_binding_patch 
     apply_deepagent_task_plan_binding_patch,
 )
 from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
+from jiuwenswarm.server.runtime.mcp.apps import apply_mcp_apps_patch
 from jiuwenswarm.common.mcp_http_hook import apply_mcp_http_auth_patch
 from jiuwenswarm.common.mcp_tool_list_refresh_patch import (
     apply_mcp_tool_list_refresh_patch,
@@ -1129,6 +1130,9 @@ class JiuWenSwarmDeepAdapter:
         # (TC_MCP_CALL_014). AbilityManager __init_subclass__ hook is a
         # classmethod. Honors config ``timeout_s``. Idempotent (_PATCHED).
         apply_mcp_call_timeout_patch()
+        # MCP Apps: tag UI-linked MCP tool results with an ``mcp_app`` block
+        # (resourceUri + raw CallToolResult) for the web renderer. Idempotent.
+        apply_mcp_apps_patch()
         # 企业 MCP 模板：远端 list_tools 结果可按 TTL 刷新进 ResourceMgr，
         # 避免会话中途新加工具一直看不到。幂等。
         apply_mcp_tool_list_refresh_patch()

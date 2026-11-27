@@ -43,6 +43,8 @@ interface ChatTimelineListProps {
    * 不依赖当前会话的 isProcessing / store 思考段。
    */
   staticTimeline?: boolean;
+  /** MCP Apps：App 交互上下文归属会话；静态时间线不传（不挂快照）。 */
+  sessionId?: string | null;
   mode?: string;
   disableA2UIInteraction?: boolean;
   renderAfterMessage?: (message: Message) => ReactNode;
@@ -319,6 +321,7 @@ export function ChatTimelineList({
   executions = [],
   reasoningSegments: reasoningSegmentsProp,
   staticTimeline = false,
+  sessionId = null,
   mode = 'default',
   disableA2UIInteraction = false,
   renderAfterMessage,
@@ -577,6 +580,7 @@ export function ChatTimelineList({
                 <ToolGroupDisplay
                   key={`${item.key}-deliverable`}
                   executions={deliverables}
+                  sessionId={sessionId}
                   notices={[]}
                   showAvatar={false}
                   teamLayout={isTeamMode}
@@ -606,6 +610,8 @@ export function ChatTimelineList({
             ) : (
               <ToolGroupDisplay
                 executions={item.executions}
+                sessionId={sessionId}
+                renderMcpApps={(turnFoldable || streak) ? contentOpen : true}
                 notices={item.notices}
                 showAvatar={hideAvatar ? false : item.showAvatar}
                 teamLayout={isTeamMode}
@@ -675,6 +681,7 @@ export function MessageList({ messages, renderAfterMessage }: MessageListProps) 
       messages={messages}
       executions={executions}
       mode={mode}
+      sessionId={activeSessionId}
       renderAfterMessage={renderAfterMessage}
     />
   );

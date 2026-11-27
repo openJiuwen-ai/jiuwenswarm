@@ -1,3 +1,4 @@
+import type { McpAppResult } from '../../types/message';
 import { parseSkillTreePath, type SkillTreePath } from '../../types/skillTree';
 import {
   parseBeamSearchProgress,
@@ -89,6 +90,25 @@ export interface NormalizedToolResult {
   summary?: string;
   skillTree?: SkillTreePath;
   beamSearch?: BeamSearchProgress;
+  mcpApp?: McpAppResult;
+}
+
+/** Project the backend's ``raw_output.mcp_app`` block (MCP Apps tool UI). */
+export function parseMcpAppResult(value: unknown): McpAppResult | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const { server, tool, resourceUri } = record;
+  if (typeof server !== 'string' || !server) return undefined;
+  if (typeof tool !== 'string' || !tool) return undefined;
+  if (typeof resourceUri !== 'string' || !resourceUri.startsWith('ui://')) return undefined;
+  const toolResult = asRecord(record.toolResult);
+  return {
+    server,
+    tool,
+    resourceUri,
+    arguments: asRecord(record.arguments) ?? {},
+    ...(toolResult ? { toolResult } : {}),
+  };
 }
 
 export interface NormalizedToolUpdate {
@@ -181,6 +201,7 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
     parseSkillTreePath(toolResultPayload.rawOutput);
   const beamSearch =
     parseBeamSearchProgress(rawOutputRecord?.beam_search);
+  const mcpApp = parseMcpAppResult(rawOutputRecord?.mcp_app);
 
   return {
     toolName,
@@ -191,6 +212,7 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
     summary,
     skillTree,
     beamSearch,
+    ...(mcpApp ? { mcpApp } : {}),
   };
 }
 

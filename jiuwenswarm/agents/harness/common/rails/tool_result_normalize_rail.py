@@ -167,6 +167,12 @@ class ToolResultNormalizeRail(DeepAgentRail):
                 return
             # 先完整计算，再一次性改写：归一抛错时不落任何部分状态（fail-open）
             normalized = _ResultDict(normalize_tool_result(original))
+            # MCP Apps：mcp_app 块只进 raw_output（original）供前端渲染，模型
+            # 可见面（normalized 与 tool_msg.content）必须剔除——完整
+            # CallToolResult（含宿主侧 _meta）与 arguments 与 result 重复，
+            # 进模型上下文会放大 token。
+            if isinstance(original, dict):
+                normalized.pop("mcp_app", None)
             # 保留原 dict 子类的实例属性（如 TodoResult.todo_snapshot）：
             # 归一后仍可能有按属性读取框架元数据的消费方
             extra_attrs = getattr(original, "__dict__", None)
