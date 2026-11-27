@@ -904,6 +904,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         stream_sse: bool = False, login_surface: str | None = None,
         stream_body: bool = False, upstream_host: str | None = None,
         omit_request_headers: frozenset[str] = frozenset(),
+        stream_response: bool = False,
     ) -> None:
         outer_host = self._clean_outer_host()
         if outer_host is None:
@@ -973,8 +974,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 and self.command != "HEAD"
                 and resp.getheader("Content-Type", "").startswith("text/event-stream")
             )
-            stream_response = streaming or self._is_extension_asset_route() or self._is_extension_transfer_route()
-            resp_body = b"" if stream_response else resp.read()
+            # ``stream_response`` forces chunked forwarding for callers whose
+            # upstream body may be large (e.g. file downloads) — ``resp.read()``
+            # buffers the whole response in memory with no size cap.
+            should_stream = (
+                streaming or stream_response
+                or self._is_extension_asset_route() or self._is_extension_transfer_route()
+            )
+            resp_body = b"" if should_stream else resp.read()
 
             self.send_response(resp.status, resp.reason)
             document_policy = self._host_document_policy()
@@ -989,7 +996,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.send_header("Connection", "close")
             self.end_headers()
             headers_sent = True
-            if stream_response and self.command != "HEAD":
+            if should_stream and self.command != "HEAD":
                 # Keep SSE flushing and start extension media before the upstream finishes.
                 try:
                     chunk = resp.read1(self._HTTP_PROXY_CHUNK_BYTES)
@@ -2449,7 +2456,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         # 已在 URL 中附带 user_id；直接将同一请求转发到 WebChannel，避免再按
         # 单机 AgentServer HTTP bridge（18092）解析并错误返回 503。
         if _uses_agentos_routing() and query.get("user_id", "").strip():
-            self._proxy_http()
+            # Download bodies can be arbitrarily large; forward them chunked
+            # instead of buffering the whole upstream response in memory.
+            self._proxy_http(stream_response=True)
             return
 
         try:
@@ -2643,8 +2652,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         - 透传上游全部相关响应头（Content-Type/Length/Disposition、
           Accept-Ranges/Content-Range、Cache-Control）与状态码（200/206/416）；
         - 上游 4xx/5xx（如 AgentServer 校验 token 失败 403、文件缺失 404）
-          原样透传，避免误报 503；仅网络级不可达返回 False（→ 503）。
+          原样透传，避免误报 503；仅网络级不可达返回 False（→ 503）；
+        - 返回值语义：True 表示响应头已完整写出（含 body 中途断流——此时
+          连接已标记关闭，截断即错误信号）；False 仅表示请求尚未发出或
+          响应头尚未写出，调用方才可以安全回退本地下载或返回 503。
         """
+        headers_sent = False
         try:
             import urllib.error
             import urllib.request
@@ -2692,6 +2705,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     (content_type or "text/html") if inline_document else ""
                 )
                 self.end_headers()
+                headers_sent = True
                 if self.command != "HEAD":
                     shutil.copyfileobj(upstream, self.wfile, length=65536)
             return True
@@ -2722,6 +2736,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return True
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("[file-api/download] 代理转发失败: %s", exc)
+            if headers_sent:
+                # The response head (and likely a partial body) already went out
+                # on this socket. Writing a second response — a local-file retry
+                # or an error JSON — would corrupt the download stream, so mark
+                # the connection for closure and report the response as handled;
+                # the truncation itself is the client-visible failure signal.
+                self.close_connection = True
+                return True
             return False
 
     def _handle_file_upload_proxy(self, parsed) -> None:
