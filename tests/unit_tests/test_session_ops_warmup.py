@@ -7,6 +7,43 @@ from unittest.mock import AsyncMock
 import pytest
 
 
+def _warmup_with_single_history_message(monkeypatch, *, deep_agent, session=None):
+    """让 warmup 走到 create_context：磁盘上有一轮可回灌的历史。"""
+    from jiuwenswarm.agents.harness.common import session_ops_service
+
+    if session is None:
+        session = object()
+    monkeypatch.setattr(session_ops_service, "history_exists", lambda _session_id: True)
+    monkeypatch.setattr(
+        session_ops_service,
+        "load_history_records",
+        lambda _session_id: [
+            {"role": "user", "request_id": "request-old", "content": "旧问题"},
+            {
+                "role": "assistant",
+                "request_id": "request-old",
+                "event_type": "chat.final",
+                "content": "旧回答",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        session_ops_service,
+        "resolve_live_agent_session",
+        lambda _deep_agent, _session_id: session,
+    )
+    return deep_agent
+
+
+async def _warmup(deep_agent):
+    from jiuwenswarm.agents.harness.common import session_ops_service
+
+    return await session_ops_service.warmup_session_context(
+        deep_agent=deep_agent,
+        session_id="session-1",
+    )
+
+
 def _deep_agent_with_empty_context():
     context_engine = SimpleNamespace(
         get_context=lambda *, session_id: None,
@@ -17,6 +54,79 @@ def _deep_agent_with_empty_context():
         _config=SimpleNamespace(context_processors=[]),
     )
     return SimpleNamespace(react_agent=react_agent), context_engine
+
+
+@pytest.mark.asyncio
+async def test_warmup_passes_configured_context_processors_to_create_context(monkeypatch):
+    """warmup 建 context 时必须挂上 agent 已配置的 processor。
+
+    回归 OA.05001002：预热建的裸 context 进池后，后续 _init_context 命中池内
+    对象无法补挂，超限恢复轨找不到 FullCompactProcessor，只能原样重发。
+    """
+    deep_agent, context_engine = _deep_agent_with_empty_context()
+    configured = [("FullCompactProcessor", object())]
+    deep_agent.react_agent._config.context_processors = configured
+    _warmup_with_single_history_message(monkeypatch, deep_agent=deep_agent)
+
+    assert await _warmup(deep_agent) is True
+
+    kwargs = context_engine.create_context.await_args.kwargs
+    assert kwargs["processors"] is configured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("processors", [
+    pytest.param([], id="empty"),
+    pytest.param([("FullCompactProcessor", object()), ("invalid",)], id="mixed-entry-lengths"),
+    pytest.param(["ab"], id="string-entry"),
+    pytest.param([(None, object())], id="invalid-name"),
+])
+async def test_warmup_restores_history_without_processors_for_empty_or_malformed_config(monkeypatch, processors):
+    deep_agent, context_engine = _deep_agent_with_empty_context()
+    deep_agent.react_agent._config.context_processors = processors
+    _warmup_with_single_history_message(monkeypatch, deep_agent=deep_agent)
+
+    assert await _warmup(deep_agent) is True
+
+    kwargs = context_engine.create_context.await_args.kwargs
+    assert "processors" not in kwargs
+    assert [message.content for message in kwargs["history_messages"]] == ["旧问题", "旧回答"]
+
+
+@pytest.mark.asyncio
+async def test_warmup_context_keeps_processors_when_pool_is_hit_later(monkeypatch):
+    """真实 ContextEngine：warmup 挂上的 processor 必须能在池命中后存活。
+
+    ContextEngine.create_context 的池命中分支不会补挂 processor，所以压缩器
+    只能在 warmup 这一次创建机会里挂上。
+    """
+    from openjiuwen.core.context_engine.context_engine import ContextEngine
+    from openjiuwen.core.context_engine.processor.compressor import (
+        FullCompactProcessorConfig,
+    )
+    from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
+    from openjiuwen.core.foundation.llm.schema.message import UserMessage
+
+    engine = ContextEngine(ContextEngineConfig(enable_tiktoken_counter=False))
+    configured = [("FullCompactProcessor", FullCompactProcessorConfig())]
+    react_agent = SimpleNamespace(context_engine=engine, _config=SimpleNamespace(context_processors=configured))
+    deep_agent = SimpleNamespace(react_agent=react_agent)
+    session = SimpleNamespace(get_session_id=lambda: "session-1", get_state=lambda _key=None: None)
+    _warmup_with_single_history_message(monkeypatch, deep_agent=deep_agent, session=session)
+
+    assert await _warmup(deep_agent) is True
+
+    restored = engine.get_context(session_id="session-1")
+    assert restored is not None
+    # 模拟下一轮 ReactAgent._init_context：同样的 processors 再次 create_context，命中池内对象。
+    hit = await engine.create_context(
+        session=session,
+        history_messages=[UserMessage(content="新问题")],
+        processors=configured,
+    )
+
+    assert hit is restored
+    assert [type(p).__name__ for p in hit._processors] == ["FullCompactProcessor"]
 
 
 @pytest.mark.asyncio

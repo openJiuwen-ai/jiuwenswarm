@@ -1123,6 +1123,33 @@ def _seed_warmup_prompt_tokens(context: Any, session_id: str, messages: list[Any
     )
 
 
+def _restore_context_processors_kwargs(react_agent: Any) -> dict[str, Any]:
+    """回灌历史建 context 时，带上 agent 已配置的 processor（与 _init_context 同源）。
+
+    agent-core ``ContextEngine.create_context`` 的池命中分支只刷新 session 引用和
+    消息，不会补挂 processor；``SessionModelContext._processors`` 也只在构造时赋值。
+    所以 warmup / rewind 若裸建 context，该对象在池内的整个生命周期都没有压缩器：
+    上下文超限后恢复轨找不到 FullCompactProcessor，只能把同一份超长 prompt 原样重发。
+
+    配置源与 ``ReactAgent._init_context`` 相同：``react_agent._config.context_processors``
+    （由 ContextProcessorRail.init 写入，早于本模块的调用点）。未配置或形状未知时不传，
+    保持 agent-core 的默认行为。
+    """
+    config = getattr(react_agent, "_config", None)
+    processors = getattr(config, "context_processors", None)
+    if not isinstance(processors, (list, tuple)) or not processors:
+        return {}
+    for entry in processors:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2 or not isinstance(entry[0], str):
+            logger.warning("Ignoring malformed context_processors during session restore")
+            return {}
+    logger.info(
+        "restore context with configured processors: %s",
+        [name for name, _processor_config in processors],
+    )
+    return {"processors": processors}
+
+
 async def warmup_session_context(
     *,
     deep_agent: "DeepAgent",
@@ -1208,6 +1235,7 @@ async def warmup_session_context(
         context = await context_engine.create_context(
             session=session,
             history_messages=context_messages,
+            **_restore_context_processors_kwargs(react_agent),
         )
     except Exception as exc:
         logger.warning("warmup_session_context: create_context failed for %s: %s", session_id, exc)
@@ -1461,6 +1489,7 @@ async def _apply_rewound_context(
         await context_engine.create_context(
             session=session,
             history_messages=context_messages,
+            **_restore_context_processors_kwargs(react_agent),
         )
     except Exception as exc:
         logger.warning("rewind_session_context: create_context failed for %s: %s", session_id, exc)
