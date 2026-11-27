@@ -73,6 +73,8 @@ class EffectiveEnterpriseConfig:
     a2a_access_policy: list[dict[str, Any]] | None = None
     # Gateway advanced_config 表行（按 agent_template_id）；含 a4p_enabled 等。
     advanced_config: dict[str, Any] | None = None
+    # expert_package_template.swarmflow（JSON 列）里的 Swarmflow 企业策略。
+    swarmflow: dict[str, Any] | None = None
     service_id: str | None = None
     send_file_allowed: bool = True
     debug: dict[str, Any] = field(default_factory=dict)
@@ -95,6 +97,7 @@ class EffectiveEnterpriseConfig:
             "execution_guard": self.execution_guard,
             "a2a_access_policy": self.a2a_access_policy,
             "advanced_config": self.advanced_config,
+            "swarmflow": self.swarmflow,
             "service_id": self.service_id,
             "send_file_allowed": self.send_file_allowed,
             "debug": dict(self.debug),

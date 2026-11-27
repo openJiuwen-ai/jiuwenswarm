@@ -2357,8 +2357,21 @@ function AppContent({
           const cfg = sfConfig as {
             enable_swarmflow?: boolean;
             swarmflow_budget?: number | null;
+            swarmflow_budget_cap?: number | null;
+            swarmflow_allowed?: boolean;
           };
-          if (cfg.enable_swarmflow) {
+          // 企业门禁快照：禁止时禁用入口；即使历史启用了也不恢复启用态。
+          useSessionStore.getState().setSwarmflowAllowed(
+            targetSessionId,
+            cfg.swarmflow_allowed !== false,
+          );
+          useSessionStore.getState().setSwarmflowBudgetCap(
+            targetSessionId,
+            typeof cfg.swarmflow_budget_cap === 'number' && cfg.swarmflow_budget_cap > 0
+              ? cfg.swarmflow_budget_cap
+              : null,
+          );
+          if (cfg.enable_swarmflow && cfg.swarmflow_allowed !== false) {
             useSessionStore.getState().setSwarmflowActive(
               targetSessionId,
               true,
