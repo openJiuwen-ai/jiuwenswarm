@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
@@ -17,9 +19,12 @@ from openjiuwen.core.session.stream.base import OutputSchema
 from openjiuwen.core.single_agent.interrupt.response import InterruptKind
 from openjiuwen.harness.resources import RuntimeSpec, read_agent_template_card
 from openjiuwen.harness_protocol import (
+    DeliveryMode,
     HarnessCapability,
     HarnessCheckpoint,
+    HarnessInput,
     HarnessState,
+    HarnessStateError,
     ResumePolicy,
     UnsupportedHarnessCapabilityError,
     json_value_to_builtin,
@@ -29,7 +34,7 @@ from openjiuwen.harness_providers import (
     build_harness_context,
     create_harness,
 )
-from openjiuwen.harness_providers.io_adapter import TURN_LIFECYCLE
+from openjiuwen.harness_providers.io_adapter import TURN_LIFECYCLE, to_harness_input
 
 from jiuwenswarm.common.schema.agent import (
     AgentRequest,
@@ -830,6 +835,237 @@ async def stream_turn_output(
             return
 
 
+async def _with_input_boundaries(
+    outputs: AsyncIterator[OutputSchema],
+    boundaries: asyncio.Queue[dict[str, Any]],
+) -> AsyncIterator[tuple[str, Any]]:
+    """Interleave the turn's output with the input steered into it.
+
+    Yields ``("output", chunk)`` for the turn's own output and
+    ``("input", boundary)`` for each steered input, in the order they arrive;
+    a boundary that is ready is yielded before the output that follows it.
+    """
+    iterator = outputs.__aiter__()
+    next_output: asyncio.Future[Any] | None = None
+    next_boundary: asyncio.Future[Any] | None = None
+    try:
+        while True:
+            if next_output is None:
+                next_output = asyncio.ensure_future(iterator.__anext__())
+            if next_boundary is None:
+                next_boundary = asyncio.ensure_future(boundaries.get())
+            done, _ = await asyncio.wait(
+                {next_output, next_boundary},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if next_boundary in done:
+                boundary = next_boundary.result()
+                next_boundary = None
+                yield "input", boundary
+                continue
+            try:
+                chunk = next_output.result()
+            except StopAsyncIteration:
+                return
+            next_output = None
+            yield "output", chunk
+    finally:
+        taken = None
+        if next_boundary is not None and next_boundary.done() and not next_boundary.cancelled():
+            taken = next_boundary.result()
+        for pending in (next_output, next_boundary):
+            if pending is not None and not pending.done():
+                pending.cancel()
+                try:
+                    await pending
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+        if taken is not None:
+            # A steered input taken from the queue but not yielded stays first in it.
+            rest = [boundaries.get_nowait() for _ in range(boundaries.qsize())]
+            for boundary in (taken, *rest):
+                boundaries.put_nowait(boundary)
+        closer = getattr(iterator, "aclose", None)
+        if callable(closer):
+            await closer()
+
+
+# How long a steer that finds its turn ended waits for the provider to leave
+# RUNNING, so that its request starts the next turn.
+_TURN_RELEASE_WAIT_S = 1.0
+_TURN_RELEASE_POLL_S = 0.01
+
+
+def _steer_lock(adapter: Any) -> asyncio.Lock:
+    """The lock that orders a steer's send with the end of the turn's stream.
+
+    A steer holds it from its last check of the turn's queue until its
+    boundary is on it; the stream takes it to close the queue.
+    """
+    lock = getattr(adapter, "_external_harness_steer_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        adapter._external_harness_steer_lock = lock  # pylint: disable=protected-access
+    return lock
+
+
+async def _declined_at_turn_end(io: Any) -> bool:
+    """Decline a steer whose turn has ended, once the provider has released it.
+
+    The request then takes the path of a new message, which starts the next
+    turn only when the provider is no longer RUNNING.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TURN_RELEASE_WAIT_S
+    while io.state is HarnessState.RUNNING and loop.time() < deadline:
+        await asyncio.sleep(_TURN_RELEASE_POLL_S)
+    return False
+
+
+async def _close_steer_intake(
+    adapter: Any,
+    boundaries: asyncio.Queue[dict[str, Any]],
+    merged: AsyncIterator[tuple[str, Any]],
+) -> list[dict[str, Any]]:
+    """Stop the turn taking steers; return the steered inputs it has not shown.
+
+    A steer that was sending while the turn ended has its boundary on the
+    queue once the lock is free. A later steer finds the queue closed and
+    becomes the next turn.
+    """
+    async with _steer_lock(adapter):
+        if getattr(adapter, "_external_harness_boundaries", None) is boundaries:
+            adapter._external_harness_boundaries = None  # pylint: disable=protected-access
+    await merged.aclose()
+    return [boundaries.get_nowait() for _ in range(boundaries.qsize())]
+
+
+_STEER_IMAGES_LEAD = (
+    "The user attached these images to this message. "
+    "They are files on this machine; read them from their paths."
+)
+
+
+async def _steer_images(request: AgentRequest, params: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The steer's uploaded images, checked against the session's uploads off the event loop.
+
+    An image that is not an upload of this session, or cannot be read as an
+    image, raises ``ValueError``; the steer is then not sent.
+    """
+    if not params.get("media_items"):
+        return []
+    from jiuwenswarm.server.runtime.attachments.steer_images import (
+        resolve_steer_image_references,
+    )
+
+    return await asyncio.to_thread(resolve_steer_image_references, params, request.session_id)
+
+
+def _steer_content(query: Any, images: list[dict[str, Any]]) -> HarnessInput:
+    """The provider input of a steer: its prompt and, after it, the paths of its images.
+
+    A new message gives the provider its images as upload paths in the
+    prompt (``files_updated_by_user``); a steer names them in a text block of
+    the same input, with the same records.
+    """
+    if not images:
+        return to_harness_input(query)
+    records = [
+        {key: image.get(key) for key in ("filename", "path", "mime_type", "size_bytes")}
+        for image in images
+    ]
+    listing = json.dumps({"uploaded_images": records}, ensure_ascii=False)
+    return to_harness_input([
+        {"type": "text", "text": str(query or "")},
+        {"type": "text", "text": f"{_STEER_IMAGES_LEAD}\n{listing}"},
+    ])
+
+
+async def steer_external_harness(
+    adapter: Any,
+    request: AgentRequest,
+    inputs: dict[str, Any],
+) -> bool:
+    """Steer the session's running External Harness turn with new input.
+
+    The input goes to the provider as a steer of its active turn, and its
+    boundary, ``chat.input_received``, enters the stream of that turn as it
+    does for a turn of Swarm's own agent. Return False, before sending, when
+    there is no running turn whose stream this adapter projects or the
+    provider does not steer; the input then takes the path of a new message.
+    A steer that finds the turn ended waits until the provider has released
+    it first, so that this path starts the next turn.
+    """
+    from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
+    io = getattr(adapter, "_external_harness", None)
+    boundaries = getattr(adapter, "_external_harness_boundaries", None)
+    if io is None or io.state is not HarnessState.RUNNING:
+        return False
+    if io.has_pending_interrupt():
+        raise SessionInputRejectedError(_error_text("waiting_for_interaction"))
+    if io.delivery_mode(immediate=True) is not DeliveryMode.STEER:
+        return False
+    if boundaries is None:
+        return await _declined_at_turn_end(io)
+    params = request.params if isinstance(request.params, dict) else {}
+    query = inputs.get("query")
+    images = await _steer_images(request, params)
+    async with _steer_lock(adapter):
+        if io.state is not HarnessState.RUNNING or (
+            getattr(adapter, "_external_harness_boundaries", None) is not boundaries
+        ):
+            # The turn ended while the images were checked.
+            ended = True
+        else:
+            try:
+                await io.harness.send(_steer_content(query, images), mode=DeliveryMode.STEER)
+            except HarnessStateError:
+                # The turn ended before the provider took the input.
+                ended = True
+            else:
+                boundaries.put_nowait(_steer_boundary(request, params, query, images))
+                ended = False
+    if ended:
+        return await _declined_at_turn_end(io)
+    return True
+
+
+def _steer_boundary(
+    request: AgentRequest,
+    params: Mapping[str, Any],
+    query: Any,
+    images: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The input boundary of a steer the provider took."""
+    from agent_gateway.common.session_message import (
+        SESSION_MESSAGE_INTERNAL_KEY,
+        SESSION_MESSAGE_ORIGIN,
+    )
+
+    if images:
+        # An image-only steer has no text of its own; the prompt is not the person's words.
+        content = str(params.get("content") or params.get("query") or "")
+    else:
+        content = str(params.get("content") or params.get("query") or query or "")
+    boundary: dict[str, Any] = {
+        "input_request_id": request.request_id,
+        "content": content,
+        "timestamp": time.time() * 1000,
+    }
+    if images:
+        boundary["media_items"] = images
+    cross_session = params.get(SESSION_MESSAGE_INTERNAL_KEY)
+    if isinstance(cross_session, dict):
+        boundary.update({
+            "message_origin": SESSION_MESSAGE_ORIGIN,
+            "session_message_id": cross_session.get("message_id"),
+            "cross_session": {**cross_session, "content": boundary["content"]},
+        })
+    return boundary
+
+
+
 def _response_chunk(
     request: AgentRequest,
     payload: dict[str, Any],
@@ -1029,6 +1265,7 @@ async def process_external_harness_stream(
     inputs: dict[str, Any],
 ) -> AsyncIterator[AgentResponseChunk]:
     """Run one External Harness request and project its ordered chat stream."""
+    input_timestamp_ms = time.time() * 1000
     _bind_external_workspace(adapter, inputs)
     try:
         io = await _ensure_external_harness(adapter, request)
@@ -1106,12 +1343,54 @@ async def process_external_harness_stream(
 
     has_streamed_answer = False
     receipt_turn_id = None if receipt is None else receipt.turn_id
-    try:
-        async for chunk in stream_turn_output(
+    # Input steered into this turn (steer_external_harness) and not yet answered.
+    boundaries: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    pending_input_ids: list[str] = []
+    adapter._external_harness_boundaries = boundaries  # pylint: disable=protected-access
+
+    def output_phase() -> AgentResponseChunk:
+        applied = list(pending_input_ids)
+        pending_input_ids.clear()
+        return _response_chunk(
+            request,
+            {
+                "event_type": "chat.output_phase",
+                "output_phase_id": f"phase-{uuid.uuid4().hex}",
+                "applied_input_ids": applied,
+                "input_timestamp": input_timestamp_ms,
+                # The stream clock in milliseconds, which history takes from
+                # every record of an output phase.
+                "timestamp": time.time() * 1000,
+            },
+            complete=False,
+        )
+
+    def input_received(boundary: dict[str, Any]) -> AgentResponseChunk:
+        return _response_chunk(
+            request,
+            {"event_type": "chat.input_received", **boundary},
+            complete=False,
+        )
+
+    merged = _with_input_boundaries(
+        stream_turn_output(
             io,
             receipt_turn_id,
             resume=resume,
-        ):
+        ),
+        boundaries,
+    )
+    try:
+        async for source, chunk in merged:
+            if source == "input":
+                pending_input_ids.append(chunk["input_request_id"])
+                yield input_received(chunk)
+                continue
+            if chunk.type in (TURN_LIFECYCLE, INTERACTION):
+                # The provider took these steers as the turn ended or asked;
+                # they are shown, not answered by this turn's output.
+                for boundary in await _close_steer_intake(adapter, boundaries, merged):
+                    yield input_received(boundary)
             if chunk.type == TURN_LIFECYCLE:
                 payload = chunk.payload if isinstance(chunk.payload, dict) else {}
                 kind = str(payload.get("kind") or "")
@@ -1123,6 +1402,8 @@ async def process_external_harness_stream(
                 if kind == "finished":
                     final_output = payload.get("final_output")
                     content = final_output if isinstance(final_output, str) else ""
+                    if pending_input_ids:
+                        yield output_phase()
                     yield _response_chunk(
                         request,
                         {"event_type": "chat.final", "content": content},
@@ -1157,6 +1438,9 @@ async def process_external_harness_stream(
             )
             if parsed is None:
                 continue
+            if pending_input_ids:
+                # The first output after steered input answers it.
+                yield output_phase()
             if chunk.type == "llm_output" and parsed.get("event_type") == "chat.delta":
                 has_streamed_answer = True
             is_interaction = chunk.type == INTERACTION
@@ -1183,6 +1467,9 @@ async def process_external_harness_stream(
             complete=True,
         )
         return
+    finally:
+        if getattr(adapter, "_external_harness_boundaries", None) is boundaries:
+            adapter._external_harness_boundaries = None  # pylint: disable=protected-access
 
     yield _response_chunk(
         request,

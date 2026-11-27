@@ -2112,6 +2112,7 @@
     },
     "errors": {
       "loadTeams": "Failed to load teams",
+      "partialLoad": "Some team data failed to load. Showing available data",
       "deleteTeam": "Failed to delete team: {{team}}",
       "stopTeam": "Failed to stop team"
     }

@@ -73,9 +73,18 @@ from jiuwenswarm.server.runtime.session.session_history import (
     resolve_final_record_timestamp,
 )
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
-from jiuwenswarm.server.utils.stream_utils import decode_stream_chunk as parse_stream_chunk
+from jiuwenswarm.server.utils.stream_utils import (
+    decode_stream_chunk as parse_stream_chunk,
+    normalize_occupancy_rate,
+)
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
+from jiuwenswarm.extensions_v2.event_types.context_usage import (
+    MODEL_USAGE_COUNTERS,
+    TEAM_LEADER_MODEL_USAGE_FIELD,
+    ContextUsageUpdate,
+    notify_context_usage,
+)
 from jiuwenswarm.runtime.session_input import SessionInputMode, resolve_session_input_mode
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EvolutionProgressStatus,
@@ -5774,6 +5783,114 @@ def _is_team_recovered_chunk(chunk: Any) -> bool:
     return isinstance(payload, dict) and payload.get("event_type") == "team.recovered"
 
 
+@dataclass(slots=True)
+class _TeamLeaderRoundUsage:
+    """Pair a leader's observed model-call counters and context by Core call ID."""
+
+    request_id: str = ""
+    reported: bool = False
+    contexts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    counters: dict[str, tuple[int, ...]] = field(default_factory=dict)
+
+    def _reset(self, request_id: str) -> None:
+        self.request_id = request_id
+        self.reported = False
+        self.contexts.clear()
+        self.counters.clear()
+
+    def observe(
+        self,
+        chunk: Any,
+        parsed: dict[str, Any] | None,
+        *,
+        session_id: str,
+        request_id: str,
+        leader_name: str | None,
+    ) -> None:
+        if not request_id:
+            return
+        if request_id != self.request_id:
+            self._reset(request_id)
+        if self.reported or not leader_name:
+            return
+        role = getattr(chunk, "role", None)
+        role_value = getattr(role, "value", role)
+        if str(role_value).strip().lower() != TeamRole.LEADER.value:
+            return
+        if getattr(chunk, "source_member", None) not in (None, "", leader_name):
+            return
+        if parsed is not None and parsed.get("event_type") == "context.usage":
+            self._observe_context(parsed, session_id, leader_name)
+        elif getattr(chunk, "type", None) == "llm_call_end":
+            payload = getattr(chunk, "payload", None)
+            usage = payload.get(TEAM_LEADER_MODEL_USAGE_FIELD) if isinstance(payload, dict) else None
+            if isinstance(usage, dict):
+                call_id = usage.get("request_id")
+                counts = tuple(usage.get(name) for name in MODEL_USAGE_COUNTERS)
+                if isinstance(call_id, str) and call_id.strip() and all(
+                    type(count) is int and count >= 0 for count in counts
+                ):
+                    self.counters.setdefault(call_id, counts)
+
+    def _observe_context(self, context: dict[str, Any], session_id: str, leader_name: str) -> None:
+        if context.get("phase") != "post_call" or context.get("session_id") != session_id:
+            return
+        if context.get("product_session_id") not in (None, "", session_id):
+            return
+        depth = context.get("depth", 0)
+        if context.get("member_name") not in (None, "", leader_name) or type(depth) is not int or depth != 0:
+            return
+        child_fields = ("parent_invocation_id", "delegation_id", "subagent_id")
+        if any(map(context.get, child_fields)) or context.get("mode") == "subagent":
+            return
+        call_id = context.get("request_id")
+        if not isinstance(context.get("context_window"), dict) or not isinstance(call_id, str) or not call_id.strip():
+            return
+        self.contexts[call_id] = {**context, "role": TeamRole.LEADER.value}
+
+    def finish(self, session_id: str, request_id: str) -> None:
+        if not request_id:
+            logger.warning("[TeamHelpers] cannot finish leader usage without a round request ID: %s", session_id)
+            return
+        if request_id != self.request_id:
+            self._reset(request_id)
+            return
+        if self.reported:
+            return
+        paired = [
+            (context, self.counters[call_id])
+            for call_id, context in self.contexts.items() if call_id in self.counters
+        ]
+        self.contexts.clear()
+        self.counters.clear()
+        if not paired:
+            return
+        self.reported = True
+        latest_context = paired[-1][0]
+        input_tokens, output_tokens, total_tokens, cache_tokens = (
+            sum(column) for column in zip(*(counts for _, counts in paired), strict=True)
+        )
+        window = latest_context["context_window"]
+        limit = window.get("limit_tokens")
+        rate = normalize_occupancy_rate(window.get("occupancy_rate"))
+        model = latest_context.get("model")
+        notify_context_usage(
+            ContextUsageUpdate(
+                session_id=session_id,
+                request_id=request_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cache_tokens=cache_tokens,
+                context_window_tokens=limit if type(limit) is int and limit > 0 else None,
+                usage_percent=rate * 100 if rate is not None else None,
+                model=model if isinstance(model, str) else None,
+            ),
+            context_usage=latest_context,
+            team_leader=True,
+        )
+
+
 async def _consume_stream_with_query(
     channel_id: str | None,
     session_id: str,
@@ -5812,6 +5929,8 @@ async def _consume_stream_with_query(
     npc_expected_speakers = {team_spec.leader.member_name, *npc_titles} if npc_team else set()
     npc_spoken: set[str] = set()
     npc_turn_id = str(round_request_id or "")
+    leader_name = getattr(getattr(team_spec, "leader", None), "member_name", None)
+    leader_usage = _TeamLeaderRoundUsage()
     lg: TeamStreamLogger | None = None
     stream_cancelled = False
     # History writer for frames that no waiter receives: the durable pipeline
@@ -5831,6 +5950,14 @@ async def _consume_stream_with_query(
         """Broadcast one event and persist it when no waiter received it."""
         nonlocal writer, npc_turn_id
         context = _ACTIVE_ROUND_HISTORY_CONTEXT.get(session_id)
+        if (
+            event.get("event_type") == "chat.processing_status"
+            and event.get("is_processing") is False and event.get("is_complete") is True
+        ):
+            try:
+                leader_usage.finish(session_id, context.request_id if context is not None else "")
+            except Exception:
+                logger.warning("[TeamHelpers] leader round usage unavailable", exc_info=True)
         if npc_team and event.get("event_type") in {"chat.final", "chat.processing_status"}:
             turn_id = context.request_id if context is not None else npc_turn_id
             if turn_id != npc_turn_id:
@@ -6130,6 +6257,14 @@ async def _consume_stream_with_query(
             parsed = await run_stream_parser(
                 parse_stream_chunk, chunk, projection_parent_session_id=session_id,
             )
+            if getattr(chunk, "type", None) in ("context.usage", "llm_call_end"):
+                context = _ACTIVE_ROUND_HISTORY_CONTEXT.get(session_id)
+                leader_usage.observe(
+                    chunk, parsed, session_id=session_id, leader_name=leader_name,
+                    request_id=context.request_id if context is not None else "",
+                )
+                if parsed is not None:
+                    parsed.pop(TEAM_LEADER_MODEL_USAGE_FIELD, None)
             hide_teammate = (
                 _team_hide_teammate_enabled()
                 and not is_leader

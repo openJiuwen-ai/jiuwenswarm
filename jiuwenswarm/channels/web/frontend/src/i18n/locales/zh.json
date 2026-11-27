@@ -2112,6 +2112,7 @@
     },
     "errors": {
       "loadTeams": "团队列表加载失败",
+      "partialLoad": "部分团队数据加载失败，已显示可获取的数据",
       "deleteTeam": "删除团队失败：{{team}}",
       "stopTeam": "停止团队失败"
     }

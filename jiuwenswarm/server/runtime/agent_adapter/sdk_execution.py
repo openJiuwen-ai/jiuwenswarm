@@ -748,6 +748,14 @@ class SDKExecutionDriver:
         )
         if cross_session_steer:
             owner._require_cross_session_task_admission(request)
+        if getattr(owner, "_external_harness_binding", None) is not None:
+            if mode is not InputDispatchMode.STEER:
+                return False
+            from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
+                steer_external_harness,
+            )
+
+            return await steer_external_harness(owner, request, inputs)
         image_steer = mode is InputDispatchMode.STEER and bool(request.params.get("media_items"))
         instance = owner._instance
         if instance is None or instance.active_round is None or not instance.has_output_stream():
