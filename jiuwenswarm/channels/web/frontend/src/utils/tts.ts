@@ -89,7 +89,6 @@ export function onTtsStop(handler: () => void): () => void {
 
 export async function fetchTtsAudio(
   text: string,
-  sessionId?: string,
   signal?: AbortSignal
 ): Promise<TtsResponse | null> {
   const trimmed = text.trim();
@@ -98,11 +97,10 @@ export async function fetchTtsAudio(
   }
 
   try {
-    const params: Record<string, unknown> = { text: trimmed };
-    if (sessionId) {
-      params.session_id = sessionId;
-    }
-    const response = await webRequest<TtsResponse>('tts.synthesize', params, {
+    // TTS is a stateless media request. Do not attach a chat session here.
+    // A session id makes the RPC look like an Agent turn and can keep the
+    // session worker busy while the client is starting diagnostics.
+    const response = await webRequest<TtsResponse>('tts.synthesize', { text: trimmed }, {
       signal,
     });
     return response;

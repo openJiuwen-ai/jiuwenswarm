@@ -88,9 +88,9 @@ async def test_core_finishing_lease_reproduces_lost_output_without_barrier():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel_id", ["process_cli", "tui", "web"])
 @pytest.mark.parametrize(
-    "source", ["ask_user_interrupt", "confirm_interrupt", "permission_interrupt"]
+    "source", ["", "ask_user_interrupt", "confirm_interrupt", "permission_interrupt"]
 )
-async def test_interrupt_waits_for_old_owner_and_sends_once(channel_id, source):
+async def test_next_turn_waits_for_old_owner_and_sends_once(channel_id, source):
     core = LeaseCore()
     adapter = _adapter(core)
     old, _ = await adapter._attach_and_send_inputs(
@@ -99,7 +99,7 @@ async def test_interrupt_waits_for_old_owner_and_sends_once(channel_id, source):
     await core.output.finish_current()
     task = asyncio.create_task(
         adapter._attach_and_send_inputs(
-            _request(source, channel_id), {"query": "answer"}, send_without_output=True
+            _request(source, channel_id), {"query": "answer"}, send_without_output=bool(source)
         )
     )
     try:
@@ -120,6 +120,21 @@ async def test_interrupt_waits_for_old_owner_and_sends_once(channel_id, source):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await core.output.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_new_turn_rejects_an_output_lease_it_cannot_claim():
+    core = LeaseCore()
+    adapter = _adapter(core)
+    owner = await core.attach_output()
+    try:
+        with pytest.raises(RuntimeError, match="未执行"):
+            await adapter._attach_and_send_inputs(
+                _request(channel_id="web"), {"query": "next"}, send_without_output=False
+            )
+        assert not core.sent
+    finally:
+        await owner.close(abort_active_round=False)
 
 
 @pytest.mark.asyncio

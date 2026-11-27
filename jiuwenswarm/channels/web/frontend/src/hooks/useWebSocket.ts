@@ -1360,11 +1360,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       void (async () => {
         const versionAtStart = userInputVersionRef.current;
-        const ttsSessionId = sessionId;
-        const response = await fetchTtsAudio(
-          sanitized,
-          ttsSessionId && ttsSessionId !== 'new' ? ttsSessionId : undefined
-        );
+        const response = await fetchTtsAudio(sanitized);
         if (!response?.success || !response.audio_base64) {
           return;
         }

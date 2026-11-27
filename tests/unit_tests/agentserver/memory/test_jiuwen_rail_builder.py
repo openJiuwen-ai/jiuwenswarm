@@ -795,6 +795,45 @@ async def test_jiuwen_rail_routes_same_named_projects_by_absolute_path(monkeypat
     assert tool_handler.call_args.args[1]["project"] == "testMemory"
 
 
+@pytest.mark.asyncio
+async def test_work_memory_sync_does_not_hold_next_turn_open(monkeypatch, tmp_path):
+    rail_module = pytest.importorskip("openjiuwen.harness.rails.memory.jiuwen_memory_rail")
+    monkeypatch.setattr("openjiuwen.harness.rails.JiuwenMemoryRail", rail_module.JiuwenMemoryRail, raising=False)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    writes = []
+
+    async def sync_turn(query, output, *, project, **_identity):
+        writes.append((query, output, project))
+        if query == "first":
+            started.set()
+            await release.wait()
+
+    factory = jrb._work_memory_spec({}, "").rail_factory
+    rail = factory(SimpleNamespace(sync_turn=sync_turn))
+    rail._initialized = True
+    rail._turn_buffer = SimpleNamespace(finish=lambda ctx: (ctx.query, ctx.output))
+    agent = SimpleNamespace(_jiuwenswarm_memory_project_dir=str(tmp_path / "first"))
+    first = SimpleNamespace(agent=agent, query="first", output="one")
+    second = SimpleNamespace(agent=agent, query="second", output="two")
+
+    await rail.after_invoke(first)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        agent._jiuwenswarm_memory_project_dir = str(tmp_path / "second")
+        await asyncio.wait_for(rail.after_invoke(second), timeout=1)
+        assert [write[0] for write in writes] == ["first"]
+        agent._jiuwenswarm_memory_project_dir = str(tmp_path / "other")
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*rail._pending_syncs), timeout=1)
+
+    assert writes == [
+        ("first", "one", jrb.resolve_coding_memory_project_name(str(tmp_path / "first"))),
+        ("second", "two", jrb.resolve_coding_memory_project_name(str(tmp_path / "second"))),
+    ]
+
+
 @pytest.mark.parametrize("scene", ["agent", "code", "team"])
 def test_shared_video_root_admits_future_sessions_from_first_assembly(tmp_path, monkeypatch, scene):
     from jiuwen_memory.api import Scope
