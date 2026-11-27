@@ -2290,7 +2290,12 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <span>{sessionProjectName}</span>
               </div>
             )}
-            <WebUIHost slotId="conversation.header.title.after" sessionId={activeSessionId} layout="row" />
+            <WebUIHost
+              slotId="conversation.header.title.after"
+              sessionId={activeSessionId}
+              layout="row"
+              className="chat-panel-header__plugin-title"
+            />
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
             {diagnosisEntryAvailable && onToggleDiagnosis && (
@@ -2310,6 +2315,7 @@ export const ChatPanel = React.memo(function ChatPanel({
               slotId="conversation.header.actions"
               sessionId={activeSessionId}
               layout="row"
+              className="chat-panel-header__plugin-actions"
               instanceClassName="flex min-w-0 items-center gap-2"
               styles={pluginHeaderActionStyles}
             />
