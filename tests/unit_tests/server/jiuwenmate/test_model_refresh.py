@@ -13,7 +13,11 @@ from tests.unit_tests.server.test_gateway_adapter import _request
 
 
 @pytest.mark.asyncio
-async def test_model_save_returns_before_persistent_refresh_completes():
+async def test_model_save_returns_before_persistent_refresh_completes(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.agent_ws_server.reload_runtime_after_config_save",
+        AsyncMock(return_value=True),
+    )
     started, release = asyncio.Event(), asyncio.Event()
     adapter = JiuwenMateWebAdapter()
 

@@ -20,9 +20,13 @@ def _work_lifecycle(base: type) -> type:
 
     class WorkPluginMemoryRail(base):
         async def aclose(self, *, timeout: float = 10.0, grace_timeout: float = 5.0) -> None:
-            task = self._sync_task
-            if task is not None:
-                await task
+            drain = getattr(self, "drain_pending_syncs", None)
+            if callable(drain):
+                await drain()
+            else:
+                task = self._sync_task
+                if task is not None:
+                    await task
             if self.attachment_manager is not None:
                 await self.attachment_manager.clear_source(source="agent_core.jiuwen_memory_rail")
             if self._session_end_extract and self._initialized:
