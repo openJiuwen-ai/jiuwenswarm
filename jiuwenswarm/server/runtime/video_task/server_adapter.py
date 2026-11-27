@@ -11,6 +11,7 @@ from .bridge import resolve_checkpoint_ack
 
 class VoiceTaskServerAdapter(GatewayAdapter):
     methods = frozenset({
+        ReqMethod.VIDEO_CONVERSATION_APPEND.value,
         ReqMethod.VOICE_TASK_CHECKPOINT_ACK.value, ReqMethod.VOICE_TASK_FILES.value,
         ReqMethod.VOICE_SESSION_RECEIPTS.value, ReqMethod.VOICE_TASK_PENDING_INTERRUPT.value,
     })
@@ -70,7 +71,11 @@ class VoiceTaskServerAdapter(GatewayAdapter):
         return {"card_state": state, "card_binding": binding, "pending": state == "pending"}
 
     async def handle(self, request):
-        if request.req_method == ReqMethod.VOICE_TASK_CHECKPOINT_ACK:
+        if request.req_method == ReqMethod.VIDEO_CONVERSATION_APPEND:
+            from jiuwenswarm.server.handlers.video_conversation import append_video_conversation
+
+            payload = await asyncio.to_thread(append_video_conversation, request)
+        elif request.req_method == ReqMethod.VOICE_TASK_CHECKPOINT_ACK:
             payload = {"accepted": resolve_checkpoint_ack(request)}
         elif request.req_method == ReqMethod.VOICE_TASK_PENDING_INTERRUPT:
             from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, guard

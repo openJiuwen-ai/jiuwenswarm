@@ -691,3 +691,34 @@ async def test_starting_task_cancel_revokes_admission_without_scheduler_cancel(r
     with pytest.raises(RuntimeError, match="TASK_CANCELLED_BEFORE_EXECUTION"):
         async with bind_task_execution(r.request, adapter, {}):
             pytest.fail("A cancelled admission must never start Core")
+
+
+async def test_transcript_append_routes_to_history_without_starting_agent(monkeypatch):
+    from e2a.wire_codec import parse_agent_server_wire_unary
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.handlers import video_conversation
+    from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
+    from jiuwenswarm.server.runtime.session import lifecycle
+
+    server = object.__new__(AgentWebSocketServer)
+    server._adapter_registry = AdapterRegistry()
+    server._adapter_registry.register(VoiceTaskServerAdapter())
+    server._handle_gateway_cron_callback = AsyncMock(return_value=False)
+    server._handle_lifecycle_request = AsyncMock(return_value=False)
+    server._trigger_before_chat_request_hook = AsyncMock(side_effect=AssertionError("History must not start chat"))
+    monkeypatch.setattr(lifecycle, "guard", Mock())
+    append = Mock(return_value={"updated_title": "voice title"})
+    monkeypatch.setattr(video_conversation, "append_video_conversation", append)
+    ws = SimpleNamespace(send=AsyncMock())
+    envelope = e2a_from_agent_fields(
+        request_id="transcript", req_method=ReqMethod.VIDEO_CONVERSATION_APPEND,
+        session_id="saved", channel_id="video_tool", user_id="alice",
+        params={"role": "user", "content": "Read the desktop file", "event_id": "voice-1"},
+    )
+    await server._handle_message(ws, json.dumps(envelope.to_dict()), asyncio.Lock())
+    response = parse_agent_server_wire_unary(json.loads(ws.send.call_args.args[0]))
+    assert response.ok
+    assert response.payload == {"updated_title": "voice title"}
+    append.assert_called_once()
+    assert append.call_args.args[0].params["content"] == "Read the desktop file"
+    server._trigger_before_chat_request_hook.assert_not_awaited()
