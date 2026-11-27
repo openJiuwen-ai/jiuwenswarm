@@ -232,7 +232,15 @@ class LoggingLevels:
 
 
 class SafeRotatingFileHandler(BaseRotatingHandler):
-    """Safe rotating file handler"""
+    """Safe rotating file handler.
+
+    maxBytes is a UTF-8 byte budget: shouldRollover measures the UTF-8
+    encoded message, matching the byte offsets stream.tell() reports for a
+    UTF-8 stream. Callers should pass encoding="utf-8"; with another (or
+    the locale-default) encoding the measured size diverges from what is
+    actually written, though only in the conservative direction for CJK
+    locales (rolls earlier, never later).
+    """
 
     def __init__(self, filename, maxBytes=0, backupCount=0, encoding=None,
                  delay=False, errors=None):
@@ -256,7 +264,12 @@ class SafeRotatingFileHandler(BaseRotatingHandler):
         if self.max_bytes > 0:
             msg = "%s\n" % self.format(record)
             self.stream.seek(0, 2)  # Seek to end of file
-            if self.stream.tell() + len(msg) >= self.max_bytes:
+            # max_bytes is a byte budget; measure the encoded message, not
+            # code points. The cheap code-point bound suffices when it alone
+            # exceeds the budget, so only encode in the uncertain range.
+            if len(msg) >= self.max_bytes:
+                return True
+            if self.stream.tell() + len(msg.encode("utf-8", "replace")) >= self.max_bytes:
                 return True
         return False
 
