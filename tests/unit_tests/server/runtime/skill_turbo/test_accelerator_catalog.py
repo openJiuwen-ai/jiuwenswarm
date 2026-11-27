@@ -51,6 +51,14 @@ def test_catalog_changes_preserve_legacy_public_tool_schema(isolated):
     assert schema['required'] == ['query']
 
 
+def test_description_recovery_failure_is_logged_and_clears_catalog(monkeypatch, isolated, caplog):
+    monkeypatch.setattr(isolated, '_collect_skill_entries', Mock(side_effect=OSError('initial scan failed')))
+    monkeypatch.setattr(isolated, '_resolve_skill_roots', Mock(side_effect=OSError('roots recovery failed')))
+    assert isolated.refresh_skill_acceleration_description() == []
+    assert 'roots recovery failed' in caplog.text
+    assert '当前内部支持：暂无' in isolated.skill_turbo.card.description
+
+
 def rewrite(skill, raw):
     (skill / "turbo/accelerators.json").write_text(json.dumps(raw), encoding="utf-8")
 

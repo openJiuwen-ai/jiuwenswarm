@@ -377,7 +377,7 @@ async def test_interrupt_cleanup_skips_other_sessions_and_pure_ask_user(
 # ────────────────── P2-2: resume 重放按 plan_code 继承 node_artifacts ──────────────────
 
 _PLAN_CODE = "root = PlanNode(name='p', description='d')"
-_PLAN_HASH = executor_module.SkillTurboExecutor._hash_code(_PLAN_CODE)
+_PLAN_HASH = executor_module.SkillTurboExecutor.hash_plan_code(_PLAN_CODE)
 
 
 def _make_replay_executor() -> executor_module.SkillTurboExecutor:

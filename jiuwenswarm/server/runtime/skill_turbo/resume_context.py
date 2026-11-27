@@ -97,6 +97,12 @@ def skill_state_identity(session: Any) -> tuple[str, str]:
     return str(card_id), sid
 
 
+def _runtime_agent_id(session: Any) -> str | None:
+    # SDK 的 get_agent_id 读取原始 card，不是隔离后的运行时配置 ID。
+    inner = getattr(session, "_inner", None)
+    return inner.agent_id() if inner is not None else None
+
+
 def _new_isolated_session(session: Any) -> Any:
     from openjiuwen.core.session.agent import create_agent_session
 
@@ -104,7 +110,7 @@ def _new_isolated_session(session: Any) -> Any:
     card = _resolve_card(session)
     isolated = create_agent_session(session_id=sid, card=card)
     set_skill_turbo_id(isolated, card)
-    if isolated._inner.agent_id() != f"{card_id}{SKILL_TURBO_ID_SUFFIX}":
+    if _runtime_agent_id(isolated) != f"{card_id}{SKILL_TURBO_ID_SUFFIX}":
         raise SkillStateError("skill state isolation could not be established")
     return isolated
 
@@ -166,8 +172,7 @@ class IsolatedSkillState:
     def _sync_callers(self, current: dict) -> None:
         # 只同步已参与本通道且本身位于turbo键空间的Session，不污染主ReAct。
         for caller in _state_callers.get(self.identity, ()):
-            inner = getattr(caller, "_inner", None)
-            if inner is None or inner.agent_id() != self.session._inner.agent_id():
+            if _runtime_agent_id(caller) != _runtime_agent_id(self.session):
                 continue
             for key, value in current.items():
                 caller.update_state({key: None})

@@ -14,7 +14,9 @@ from jiuwenswarm.server.runtime.skill_turbo.executor import PlanCodeLoadError
 from jiuwenswarm.server.runtime.skill_turbo.node_artifact_store import segment_artifact_namespace
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 from jiuwenswarm.server.runtime.skill_turbo.resume_context import ResumeContextManager, SkillStateError
-from jiuwenswarm.server.runtime.skill_turbo.segment_context import SegmentContext, data_fingerprint, execution_snapshot
+from jiuwenswarm.server.runtime.skill_turbo.segment_context import (
+    SegmentContext, SegmentRunState, data_fingerprint, execution_snapshot,
+)
 from jiuwenswarm.server.runtime.skill_turbo.segment_inputs import (
     SegmentInputError, assemble_segment_inputs, finalize_segment_result,
     validate_segment_replay_inputs,
@@ -29,6 +31,7 @@ from jiuwenswarm.server.runtime.skill_turbo.validator import PlanCodeValidationE
 
 
 logger = logging.getLogger(__name__)
+
 
 def resolve_execution_skill(env, name: str):
     # 直接发现，不使用环境注册或描述的TTL/last-good缓存授权执行。
@@ -76,34 +79,54 @@ def _verify_resume(resume, *, skill, accelerator, query, params, workspace, task
     if any(control.get(key) != value for key, value in expected.items()):
         raise ValueError('segment_definition_or_identity_changed')
     inputs = resume.get('inputs')
-    if (not isinstance(inputs, dict) or not isinstance(control.get('initial_inputs'), dict)
-            or control.get('inputs_fingerprint') != data_fingerprint(inputs)
-            or not isinstance(control.get('task_key'), str) or not control['task_key']
-            or inputs.get('task_key') != control['task_key'] or inputs.get('skill_name') != skill
-            or resume.get('plan_code') != spec.plan_code
-            or not isinstance(resume.get('pending_tool_call_id'), str) or not resume['pending_tool_call_id']
-            or resume['pending_tool_call_id'] != control.get('pending_tool_call_id')
-            or not isinstance(resume.get('task_states'), list)
-            or control.get('task_states_fingerprint') != data_fingerprint(resume['task_states'])
-            or not isinstance(control.get('child_statuses'), list)
-            or not isinstance(control.get('answered_tools'), list)
-            or any(not isinstance(item, dict) or set(item) != {'node', 'arguments', 'index', 'result'}
-                   or not isinstance(item['node'], str) or not isinstance(item['arguments'], dict)
-                   or type(item['index']) is not int or item['index'] < 0
-                   for item in control.get('answered_tools', []))
-            or any(not isinstance(item, dict) or set(item) != {'node', 'status'}
-                   or not isinstance(item['node'], str) or not isinstance(item['status'], str)
-                   for item in control.get('child_statuses', []))):
+    if not isinstance(inputs, dict) or not isinstance(control.get('initial_inputs'), dict):
         raise ValueError('segment_checkpoint_corrupt')
+    if control.get('inputs_fingerprint') != data_fingerprint(inputs):
+        raise ValueError('segment_checkpoint_corrupt')
+    task_key = control.get('task_key')
+    if not isinstance(task_key, str) or not task_key:
+        raise ValueError('segment_checkpoint_corrupt')
+    if inputs.get('task_key') != task_key or inputs.get('skill_name') != skill:
+        raise ValueError('segment_checkpoint_corrupt')
+    if resume.get('plan_code') != spec.plan_code:
+        raise ValueError('segment_checkpoint_corrupt')
+    pending_call = resume.get('pending_tool_call_id')
+    if not isinstance(pending_call, str) or not pending_call:
+        raise ValueError('segment_checkpoint_corrupt')
+    if pending_call != control.get('pending_tool_call_id'):
+        raise ValueError('segment_checkpoint_corrupt')
+    task_states = resume.get('task_states')
+    if not isinstance(task_states, list):
+        raise ValueError('segment_checkpoint_corrupt')
+    if control.get('task_states_fingerprint') != data_fingerprint(task_states):
+        raise ValueError('segment_checkpoint_corrupt')
+    child_statuses = control.get('child_statuses')
+    answered_tools = control.get('answered_tools')
+    if not isinstance(child_statuses, list) or not isinstance(answered_tools, list):
+        raise ValueError('segment_checkpoint_corrupt')
+    for item in answered_tools:
+        if not isinstance(item, dict) or set(item) != {'node', 'arguments', 'index', 'result'}:
+            raise ValueError('segment_checkpoint_corrupt')
+        if not isinstance(item.get('node'), str) or not isinstance(item.get('arguments'), dict):
+            raise ValueError('segment_checkpoint_corrupt')
+        index = item.get('index')
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            raise ValueError('segment_checkpoint_corrupt')
+    for item in child_statuses:
+        if not isinstance(item, dict) or set(item) != {'node', 'status'}:
+            raise ValueError('segment_checkpoint_corrupt')
+        if not isinstance(item.get('node'), str) or not isinstance(item.get('status'), str):
+            raise ValueError('segment_checkpoint_corrupt')
     return control
 
 
-async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, session, request_id, channel_id,
-                             task_id='', resume_ctx=None, user_input=None, ledger_override=None, batch_control=None, force=False):
-    env, executor = turbo._env, turbo._executor
+async def run_segment_stream(
+    env, executor, state: SegmentRunState, *, skill, accelerator, params, inputs, session, request_id, channel_id,
+    task_id='', resume_ctx=None, user_input=None, ledger_override=None, batch_control=None, force=False,
+):
     task_id = str(task_id or '').removeprefix('todo:')
     query = inputs.get('query', '')
-    turbo._segment_result = _result(skill, accelerator, 'failed')
+    state.result = _result(skill, accelerator, 'failed')
     ledger = context = None
     manager = ResumeContextManager(session)
     validated_resume = marked = paused = reusable = False
@@ -117,7 +140,7 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
         registry = AcceleratorRegistry(env)
         spec = registry.get(skill, accelerator)
         if not accelerator:
-            turbo._segment_result = _result(skill, accelerator, 'needs_accelerator', candidates=[
+            state.result = _result(skill, accelerator, 'needs_accelerator', candidates=[
                 {'id': s.id, 'summary': s.summary} for s in registry.list_for(skill)
             ])
             return
@@ -129,8 +152,7 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
         if batch_control is not None and snapshot != batch_control['execution_snapshot']:
             raise SegmentInputError('failed', 'batch_execution_definition_changed')
         if not await asyncio.to_thread(
-            env._validate_skill_code_dir, record.name, Path(record.turbo_codes_dir) / record.name,
-            validator=env._validator_for_external_skill(record.name),
+            env.validate_external_skill_code, record.name, Path(record.turbo_codes_dir) / record.name,
         ):
             raise PlanCodeValidationError(['current_skill_source_invalid'])
         workspace = inputs.get('metadata', {}).get('output_dir', '')
@@ -141,7 +163,7 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
         control = None
         if resume_ctx is not None:
             if resume_ctx.get('resume_in_flight'):
-                turbo._segment_result = _result(skill, accelerator, 'busy', error='resume_in_flight')
+                state.result = _result(skill, accelerator, 'busy', error='resume_in_flight')
                 return
             if bool(resume_ctx.get('segment', {}).get('batch')) != (batch_control is not None):
                 raise SegmentInputError('failed', 'resume_execution_mode_changed')
@@ -151,10 +173,15 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
             )
             validated_resume = True
         async with skill_execution_lease(session, resume_ctx=resume_ctx):
-            ctx = {**copy.deepcopy(inputs), 'inputs': copy.deepcopy(inputs), 'metadata': copy.deepcopy(inputs.get('metadata', {})),
-                   'skill_root': skill_root, 'skill_name': skill, 'capabilities': list(env.tools)}
+            ctx = {
+                **copy.deepcopy(inputs), 'inputs': copy.deepcopy(inputs),
+                'metadata': copy.deepcopy(inputs.get('metadata', {})),
+                'skill_root': skill_root, 'skill_name': skill, 'capabilities': list(env.tools),
+            }
             if control is not None:
-                ledger = ledger_override or await SkillRunLedger.load(session, skill=skill, task_key=control['task_key'])
+                ledger = ledger_override or await SkillRunLedger.load(
+                    session, skill=skill, task_key=control['task_key'],
+                )
                 if ledger is None or ledger.data['workspace_base'] != control['workspace_base']:
                     raise ValueError('segment_task_identity_mismatch')
                 actual_inputs = copy.deepcopy(resume_ctx['inputs'])
@@ -169,18 +196,24 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
                                             user_input=user_input, task_states=resume_ctx.get('task_states'))
                 initial_inputs = copy.deepcopy(control['initial_inputs'])
             else:
-                ledger = ledger_override or await SkillRunLedger.current(session, skill=skill, workspace_base=workspace, task_id=task_id)
+                ledger = ledger_override or await SkillRunLedger.current(
+                    session, skill=skill, workspace_base=workspace, task_id=task_id,
+                )
                 if ledger is None:
                     ledger = await SkillRunLedger.open(session, skill=skill, workspace_base=workspace,
                                                        task_id=task_id, query=query)
                 actual_inputs, warnings = await assemble_segment_inputs(ctx, spec, params, ledger)
                 previous = ledger.data['latest_runs'].get(accelerator)
                 if previous and previous['status'] == 'ok' and not force:
-                    facts = {key: ledger.data['facts'][key] for key in spec.outputs.facts if key in ledger.data['facts']}
+                    facts = {
+                        key: ledger.data['facts'][key] for key in spec.outputs.facts if key in ledger.data['facts']
+                    }
                     checked = await finalize_segment_result(
                         ctx, spec, {'status': 'ok', 'facts': facts}, actual_inputs, initial_inputs=actual_inputs,
                     )
-                    trusted = all(ledger.data['facts_provenance'].get(key, {}).get('verified') for key in spec.outputs.facts)
+                    trusted = all(
+                        ledger.data['facts_provenance'].get(key, {}).get('verified') for key in spec.outputs.facts
+                    )
                     if checked['status'] == 'ok' and trusted:
                         historical = copy.deepcopy(previous.get('delivery_evidence', {}))
                         historical_matches = bool(historical.get('sha256')) and any(
@@ -192,17 +225,24 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
                             checked['warnings'].append({'code': 'completed_params_not_reapplied_use_step_force'})
                         if stale:
                             checked['warnings'].append({'code': 'upstream_revision_changed', 'keys': stale})
-                        turbo._segment_result = {**_result(skill, accelerator, 'ok'), **checked,
+                        state.result = {**_result(skill, accelerator, 'ok'), **checked,
                             'already_done': True, 'ledger': ledger.digest(), 'verified': True,
                             'next_steps': list(spec.handoff.next_steps), 'continue_hint': spec.handoff.continue_hint,
                             'covered_steps': list(spec.covers.steps), 'warnings': warnings + checked['warnings'],
-                            'delivery_confirmed': previous.get('delivery_confirmed', False) is True and historical_matches and not stale,
+                            'delivery_confirmed': (
+                                previous.get('delivery_confirmed', False) is True and historical_matches and not stale
+                            ),
                             'delivery_owner': previous.get('delivery_owner', ''),
-                            'historical_delivery': historical, 'historical_delivery_matches_current_file': historical_matches}
+                            'historical_delivery': historical,
+                            'historical_delivery_matches_current_file': historical_matches}
                         return
                     if batch_control is not None:
-                        raise SegmentInputError('blocked', 'completed_artifacts_invalid_repair_or_force', checked['warnings'])
-                if previous is not None or any(p.get('produced_by') == accelerator for p in ledger.data['facts_provenance'].values()):
+                        raise SegmentInputError(
+                            'blocked', 'completed_artifacts_invalid_repair_or_force', checked['warnings'],
+                        )
+                if previous is not None or any(
+                    p.get('produced_by') == accelerator for p in ledger.data['facts_provenance'].values()
+                ):
                     if not await ledger.prepare_rerun(session, spec=spec):
                         raise SegmentInputError('blocked', 'rerun_invalidation_not_persisted')
                 initial_inputs = copy.deepcopy(actual_inputs)
@@ -218,10 +258,12 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
                 batch.pop('fingerprint', None)
                 batch['fingerprint'] = data_fingerprint(batch)
                 control['batch'] = batch
-            context = SegmentContext(skill, accelerator, ledger.task_key, spec, control['namespace'], control, initial_inputs)
+            context = SegmentContext(
+                skill, accelerator, ledger.task_key, spec, control['namespace'], control, initial_inputs,
+            )
             if resume_ctx is not None:
-                context.child_statuses = {item['node']: item['status'] for item in control['child_statuses']}
-                context.answered_tools = copy.deepcopy(control['answered_tools'])
+                context.child_statuses = {item['node']: item['status'] for item in control.get('child_statuses')}
+                context.answered_tools = copy.deepcopy(control.get('answered_tools'))
             executor.segment_context = context
             try:
                 async for chunk in executor.execute_plan_stream(spec.plan_code, actual_inputs, request_id, channel_id):
@@ -248,7 +290,7 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
                     reusable = True
                 context.error = str(exc)
             if reusable:
-                turbo._segment_result = _result(skill, accelerator, 'failed', error=context.error,
+                state.result = _result(skill, accelerator, 'failed', error=context.error,
                                                 checkpoint_reusable=True, ledger=ledger.digest())
                 return
             checked = await finalize_segment_result(
@@ -274,14 +316,16 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
                     entry['delivery_evidence'] = evidence
                     checked['delivery_evidence'] = evidence
             if context.executed:
-                ledger.record_segment(spec=spec, result=checked, plan_code_hash=executor._hash_code(spec.plan_code))
+                ledger.record_segment(spec=spec, result=checked, plan_code_hash=executor.hash_plan_code(spec.plan_code))
                 if not await ledger.save(session):
                     checked['warnings'].append({'code': 'ledger_save_failed'})
-            next_steps = context.handoff.get('next_steps', spec.handoff.next_steps) if isinstance(context.handoff, dict) else spec.handoff.next_steps
+            next_steps = spec.handoff.next_steps
+            if isinstance(context.handoff, dict):
+                next_steps = context.handoff.get('next_steps', next_steps)
             if not isinstance(next_steps, (list, tuple)) or any(not isinstance(step, str) for step in next_steps):
                 checked['warnings'].append({'code': 'handoff_next_steps_invalid'})
                 next_steps = spec.handoff.next_steps
-            turbo._segment_result = {**_result(skill, accelerator, checked['status']), **checked,
+            state.result = {**_result(skill, accelerator, checked['status']), **checked,
                 'ledger': ledger.digest(), 'verified': checked['status'] == 'ok',
                 'covered_steps': list(spec.covers.steps) if checked['status'] == 'ok' else [],
                 'remaining_steps': [] if checked['status'] == 'ok' else list(spec.covers.steps),
@@ -290,29 +334,34 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
                 'delivery_confirmed': bool(delivery)}
             error = context.error or context.root_output.get('error')
             if error:
-                turbo._segment_result['error'] = str(error)
+                state.result['error'] = str(error)
             if delivery:
                 owner, entry = delivery[-1]
-                turbo._segment_result['delivery_owner'] = owner
+                state.result['delivery_owner'] = owner
                 if entry.get('delivery_evidence'):
-                    turbo._segment_result['delivery_evidence'] = copy.deepcopy(entry['delivery_evidence'])
+                    state.result['delivery_evidence'] = copy.deepcopy(entry['delivery_evidence'])
                 if entry.get('delivery_summary'):
-                    turbo._segment_result['delivery_summary'] = entry['delivery_summary']
+                    state.result['delivery_summary'] = entry['delivery_summary']
     except AbortError:
         raise
-    except (SegmentInputError, LedgerBusy, LedgerError, SkillStateError, PlanCodeValidationError, PlanCodeLoadError, OSError, ValueError, TypeError) as exc:
-        status = 'busy' if isinstance(exc, LedgerBusy) else ('failed' if resume_ctx is not None else getattr(exc, 'status', 'failed'))
-        turbo._segment_result = _result(skill, accelerator, status, error=str(exc),
+    except (
+        LedgerError, SkillStateError,
+        PlanCodeValidationError, PlanCodeLoadError, OSError, ValueError, TypeError,
+    ) as exc:
+        status = 'failed' if resume_ctx is not None else getattr(exc, 'status', 'failed')
+        if isinstance(exc, LedgerBusy):
+            status = 'busy'
+        state.result = _result(skill, accelerator, status, error=str(exc),
                                        warnings=getattr(exc, 'warnings', []), ledger=ledger.digest() if ledger else {},
                                        remaining_steps=list(spec.covers.steps) if spec else [],
                                        continue_hint=spec.handoff.continue_hint if spec else '')
         for owner, entry in executor.node_artifacts.items():
             if entry.get('info', {}).get('send_file_status') == 'sent':
-                turbo._segment_result.update(delivery_confirmed=True, delivery_owner=owner,
+                state.result.update(delivery_confirmed=True, delivery_owner=owner,
                     delivery_evidence=copy.deepcopy(entry.get('delivery_evidence', {})))
     finally:
-        turbo._segment_ledger = ledger
-        turbo._segment_result['executed'] = bool(context and context.executed)
+        state.ledger = ledger
+        state.result['executed'] = bool(context and context.executed)
         try:
             if resume_ctx is not None and not paused:
                 expected_checkpoint = {**resume_ctx, 'resume_in_flight': True} if marked else resume_ctx
@@ -331,6 +380,6 @@ async def run_segment_stream(turbo, *, skill, accelerator, params, inputs, sessi
                 if pending and pending.get('segment', {}).get('task_key') == context.task_key:
                     await manager.clear()
         except (SkillStateError, OSError, ValueError) as exc:
-            turbo._segment_result['warnings'].append({'code': 'resume_cleanup_failed', 'reason': str(exc)})
+            state.result['warnings'].append({'code': 'resume_cleanup_failed', 'reason': str(exc)})
         finally:
-            turbo.release_registered_tools()
+            env.release_registered_tools()

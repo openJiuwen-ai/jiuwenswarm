@@ -11,6 +11,7 @@ from jiuwenswarm.server.runtime.skill_turbo.executor import PlanCodeLoadError, S
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 from jiuwenswarm.server.runtime.skill_turbo.validator import PlanCodeValidationError
 from jiuwenswarm.server.runtime.skill_turbo.planner import SkillTurboPlanner
+from jiuwenswarm.server.runtime.skill_turbo.segment_context import SegmentRunState
 
 if TYPE_CHECKING:
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
@@ -27,18 +28,18 @@ class SkillTurbo:
         self._env = SkillTurboEnvironment(config)
         self._planner = SkillTurboPlanner(self._env)
         self._executor = SkillTurboExecutor(self._env)
-        self._segment_result: dict[str, Any] = {}
+        self._segment_state = SegmentRunState()
 
     def segment_result(self) -> dict[str, Any]:
         import copy
 
-        return copy.deepcopy(self._segment_result)
+        return copy.deepcopy(self._segment_state.result)
 
     async def run_accelerator_stream(self, **kwargs) -> AsyncIterator[AgentResponseChunk]:
         """准确单段门面；复用台账、装配与执行器，不调用 planner。"""
         from jiuwenswarm.server.runtime.skill_turbo.segment_execution import run_segment_stream
 
-        async for chunk in run_segment_stream(self, **kwargs):
+        async for chunk in run_segment_stream(self._env, self._executor, self._segment_state, **kwargs):
             yield chunk
 
     async def run_skill_stream(self, skill: str, inputs: dict, request_id: str, channel_id: str):

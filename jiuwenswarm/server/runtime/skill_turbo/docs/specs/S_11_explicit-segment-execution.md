@@ -42,7 +42,10 @@
 
 ## 接口契约 / 数据结构
 
-`SkillTurbo.run_accelerator_stream` + `segment_result()` 为段门面。executor 的实例级
+`SkillTurbo.run_accelerator_stream` + `segment_result()` 为段门面。
+门面向编排函数显式传入 Environment、Executor 与 SegmentRunState，不跨类读写门面的私有属性。
+SegmentRunState 仅保存本次结果与台账引用，不新增持久化键；结果对外读取仍返回深拷贝。
+executor 的实例级
 SegmentContext 含准确身份、spec、namespace 和首次执行快照，结果 holder 记录实际执行、根返回、
 handoff、子终态、错误与 fallback_count。断点 segment 为可验证的纯数据控制状态，包含原 inputs、task_states 和 pending tcid 的完整性依据，及连续卡片重放所需的已回答工具记录。
 段结果包含 success、mode、skill、accelerator、status、facts、artifacts、verified、covered_steps、

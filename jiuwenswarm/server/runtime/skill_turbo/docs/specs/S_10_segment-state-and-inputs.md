@@ -85,3 +85,6 @@ P4 assembly/finalize：有界 offload→路径/事实/来源/文件检查→sche
 ## 与其它 spec 的关系
 
 [[S_01]] 保持 legacy 执行路径；[[S_06]] 保持断点 owner 和隔离规则；[[S_09]] 保持显式工作区来源。内部单段门面已接入状态和数据校验，公开工具仍保留 legacy 调用方式。
+
+节点入口哈希通过 Executor.hash_plan_code 统一计算，沿用原 MD5 前八位算法；方法名调整不
+改变已持久化桶的 hash 匹配规则，也不以新算法使原断点失效。

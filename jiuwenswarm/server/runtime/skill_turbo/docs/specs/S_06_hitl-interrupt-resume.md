@@ -459,3 +459,7 @@ P5 步 5 cancel 保留的 `node_artifacts` 需要消费方，否则"停止后继
 | [[S_07]] fallback-and-degradation | AbortError 不进 fallback 是两 spec 的共同边界：plan_node 模板方法中 AbortError / FallbackContractError 直通，fallback_handler validator 内 AbortError 也原样上抛。本 spec P1 步 6 的透传链在 S_07 有降级矩阵视角。 |
 | [[S_08]] event-stream-protocol | 三件套事件（tool_call(pending_approval) / tool_update / ask_user_question）与 invocation_paused 终结帧的字段定义、前端消费契约归 S_08；本 spec 只定"何时发、谁发、发几张"。 |
 | [[S_09]] outer-integration | ContextVar 桥（9 通道 bind / reset、`skill_turbo_resume_answers` / `skill_turbo_hitl_tic` 等）的机制细节归 S_09；本 spec 引用其结论：跨上下文主信号走工具返回值，ContextVar 仅同上下文兜底。 |
+
+隔离通道的运行时 agent_id 读取由 resume_context 的 SDK 适配函数统一负责。锁定 SDK 的
+Session.get_agent_id() 返回原始 card ID，不含隔离后缀，不能替代运行时配置 ID。
+该接缝读取现有内部 Session 并验证 ID，不改变隔离键或同步主会话的边界。

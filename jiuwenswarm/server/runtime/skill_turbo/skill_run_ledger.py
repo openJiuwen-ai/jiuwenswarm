@@ -64,9 +64,13 @@ def _read_book(state) -> dict:
     book = state.get(SkillRunLedger.KEY)
     if book is None:
         return {"version": 1, "sequence": 0, "active": {}, "tasks": {}}
-    if (not isinstance(book, dict) or book.get("version") != 1
-            or not isinstance(book.get("tasks"), dict) or not isinstance(book.get("active"), dict)
-            or type(book.get("sequence")) is not int):
+    if not isinstance(book, dict):
+        raise SkillStateError("invalid skill ledger book")
+    if (book.get("version") != 1 or not isinstance(book.get("tasks"), dict)
+            or not isinstance(book.get("active"), dict)):
+        raise SkillStateError("invalid skill ledger book")
+    sequence = book.get("sequence")
+    if not isinstance(sequence, int) or isinstance(sequence, bool):
         raise SkillStateError("invalid skill ledger book")
     return book
 
@@ -80,8 +84,11 @@ def _touch(task: dict) -> None:
 
 
 def _coverage(task: dict) -> list[str]:
-    return sorted({stage for run in task["latest_runs"].values() if run["status"] == "ok"
-                   for stage in run["covered_stages"]})
+    stages = set()
+    for run in task["latest_runs"].values():
+        if run["status"] == "ok":
+            stages.update(run["covered_stages"])
+    return sorted(stages)
 
 
 @asynccontextmanager
@@ -277,7 +284,9 @@ class SkillRunLedger:
             provenance["verified"] = bool(provenance.get("verified")) and result["status"] in {"ok", "partial"}
             if key in result.get("facts", {}):
                 if old:
-                    updated[key] = {"produced_by": spec.id, "previous_revision": old.get("revision"), "revision": revision}
+                    updated[key] = {
+                        "produced_by": spec.id, "previous_revision": old.get("revision"), "revision": revision,
+                    }
                 self.data["facts"][key] = copy.deepcopy(result["facts"][key])
             else:
                 provenance["verified"] = False
@@ -285,7 +294,10 @@ class SkillRunLedger:
         run = {"accelerator": spec.id, "status": result["status"], "revision": revision,
                "plan_code_hash": plan_code_hash, "covered_stages": list(spec.covers.stages),
                "consumed_facts": copy.deepcopy(result.get("consumed_facts", {}))}
-        for key in ("batch_id", "batch_index", "elapsed_seconds", "delivery_confirmed", "delivery_owner", "delivery_evidence", "params"):
+        for key in (
+            "batch_id", "batch_index", "elapsed_seconds", "delivery_confirmed",
+            "delivery_owner", "delivery_evidence", "params",
+        ):
             if key in result:
                 run[key] = result[key]
         self.data["artifacts"] = [a for a in self.data["artifacts"] if a.get("produced_by") != spec.id]

@@ -4,6 +4,23 @@ from jiuwenswarm.server.runtime.skill_turbo.node_artifact_store import (
     save_node_artifacts, segment_artifact_namespace,
 )
 from jiuwenswarm.server.runtime.skill_turbo.skill_run_ledger import SkillRunLedger
+from jiuwenswarm.server.runtime.skill_turbo.resume_context import isolated_skill_state
+
+
+async def test_isolated_sync_uses_runtime_identity_instead_of_original_card(storage):
+    main = storage.session(turbo=False)
+    await main.pre_run(inputs=None)
+    main.update_state({'owner_probe': 'main'})
+    await main.post_run()
+    turbo = storage.session()
+    assert main.get_agent_id() == turbo.get_agent_id()
+    async with isolated_skill_state(turbo, write=True) as state:
+        state.replace('owner_probe', 'turbo')
+    async with isolated_skill_state(main) as state:
+        assert state.get('owner_probe') == 'turbo'
+    async with isolated_skill_state(turbo, write=True) as state:
+        state.replace('owner_probe', 'updated turbo')
+    assert main.get_state('owner_probe') == 'main'
 
 
 async def test_legacy_tasks_segments_and_hashes_are_isolated(storage, tmp_path):

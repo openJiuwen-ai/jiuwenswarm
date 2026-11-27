@@ -80,10 +80,10 @@ def _collect_catalog_snapshot() -> AcceleratorCatalogSnapshot:
         roots = _resolve_skill_roots()
         cached = _entries_cache.get(roots)
         metadata = external_metadata_snapshot([Path(p) for p in roots])
-        if (cached is not None and roots not in _catalog_failed_roots
-                and cached.metadata_snapshot == metadata
-                and now - cached.collected_at < _ENTRIES_CACHE_TTL_SECONDS):
-            return copy.deepcopy(cached)
+        if cached is not None and roots not in _catalog_failed_roots:
+            if (cached.metadata_snapshot == metadata
+                    and now - cached.collected_at < _ENTRIES_CACHE_TTL_SECONDS):
+                return copy.deepcopy(cached)
         discovered = discover_external_turbo_skills(skill_roots=[Path(p) for p in roots])
     except Exception as exc:
         # 声明扫描没有业务调用，异常仅记为当前无效，绝不授权执行旧快照。
@@ -246,7 +246,7 @@ def refresh_skill_acceleration_description() -> list[str]:
             if _last_good_roots == _resolve_skill_roots():
                 return sorted(_last_good_entries)
         except Exception:
-            pass
+            logger.warning("[ToolsLoader] skill roots recovery failed", exc_info=True)
         card_obj = getattr(globals().get("skill_turbo"), "card", None)
         if card_obj is not None:
             card_obj.description = _render_tool_description({}) + _TEMPLATE_EXCLUSION_SUFFIX

@@ -58,7 +58,9 @@ class Condition(DeclarationModel):
 
 def _check_glob(value: str) -> None:
     path = PureWindowsPath(value)
-    if path.is_absolute() or path.drive or value.startswith(("/", "\\")) or ".." in path.parts:
+    if path.is_absolute() or path.drive:
+        raise ValueError("path_glob必须是无..的相对路径")
+    if value.startswith(("/", "\\")) or ".." in path.parts:
         raise ValueError("path_glob必须是无..的相对路径")
 
 
@@ -207,13 +209,21 @@ def _parse_manifest(raw: Any, *, skill: str, skill_name: str, code_dir: Path | N
     errors: list[str] = []
     if not isinstance(raw, dict):
         return ManifestRecord(valid=False, errors=("清单顶层必须为对象",))
-    if (type(raw.get("manifest_version")) is not int or raw["manifest_version"] != 1
-            or raw.get("skill", skill) != skill or raw.get("skill_name", skill_name) != skill_name
-            or not isinstance(raw.get("accelerators"), list) or type(raw.get("enabled", True)) is not bool
-            or set(raw) - {"manifest_version", "skill", "skill_name", "accelerators", "enabled"}):
-        return ManifestRecord(valid=False, errors=("清单版本、身份或顶层字段错误",))
+    invalid = ManifestRecord(valid=False, errors=("清单版本、身份或顶层字段错误",))
+    version = raw.get("manifest_version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        return invalid
+    if version != 1:
+        return invalid
+    if raw.get("skill", skill) != skill or raw.get("skill_name", skill_name) != skill_name:
+        return invalid
+    if not isinstance(raw.get("accelerators"), list) or not isinstance(raw.get("enabled", True), bool):
+        return invalid
+    if set(raw) - {"manifest_version", "skill", "skill_name", "accelerators", "enabled"}:
+        return invalid
     try:
-        fingerprint = hashlib.sha256(json.dumps(raw, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+        encoded = json.dumps(raw, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()
+        fingerprint = hashlib.sha256(encoded).hexdigest()
     except (ValueError, TypeError) as exc:
         return ManifestRecord(valid=False, errors=(str(exc),))
     specs: list[AcceleratorSpec] = []
@@ -240,7 +250,8 @@ def _parse_manifest(raw: Any, *, skill: str, skill_name: str, code_dir: Path | N
                 entry = code_dir / (spec.entry.module + ".py")
                 if not entry.resolve().is_relative_to(code_dir.resolve()) or not entry.is_file():
                     raise ValueError("入口文件不存在或越界")
-            spec = spec.model_copy(update={"plan_code": f"from {dynamic_package_prefix(skill_name)}{skill_name}.{spec.entry.module} import root"})
+            module = f"{dynamic_package_prefix(skill_name)}{skill_name}.{spec.entry.module}"
+            spec = spec.model_copy(update={"plan_code": f"from {module} import root"})
             specs.append(spec)
         except (ValueError, TypeError, SchemaError, SchemaValidationError, ValidationError, Unresolvable) as exc:
             errors.append(f"条目{index}: {exc}")
@@ -285,7 +296,7 @@ def load_manifest_record(skill_dir: Path, *, skill_name: str, meta: dict[str, An
             return ManifestRecord()
         source = str(skill_dir / "turbo/meta.json")
         raw = {"manifest_version": meta.get("manifest_version", 1), "accelerators": meta["accelerators"]}
-    except (ValueError, UnicodeError) as exc:
+    except ValueError as exc:
         logger.warning("清单非法 skill=%s file=%s: %s", skill_name, source, exc)
         return ManifestRecord(source=source, valid=False, errors=(str(exc),))
     try:

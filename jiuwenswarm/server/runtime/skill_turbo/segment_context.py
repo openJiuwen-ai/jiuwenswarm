@@ -21,6 +21,7 @@ def execution_snapshot(skill_root: str) -> dict:
     root = Path(skill_root).resolve(strict=True)
     sources = []
     excluded = {'.git', '__pycache__', '.pytest_cache', '.venv', 'node_modules', 'skill_runs'}
+
     def unreadable(error):
         raise error
 
@@ -33,7 +34,10 @@ def execution_snapshot(skill_root: str) -> dict:
             if not path.resolve(strict=True).is_relative_to(root):
                 raise ValueError('execution_source_outside_skill')
             # SDK把字典键中的点解析为路径；文件名必须放在值内，不能作状态键。
-            sources.append({'path': path.relative_to(root).as_posix(), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+            sources.append({
+                'path': path.relative_to(root).as_posix(),
+                'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+            })
     sources.sort(key=lambda item: item['path'])
     if not sources:
         raise ValueError('execution_sources_missing')
@@ -47,6 +51,12 @@ def public_segment_output(value: Any) -> Any:
     if isinstance(value, list):
         return [public_segment_output(child) for child in value]
     return value
+
+
+@dataclass
+class SegmentRunState:
+    result: dict[str, Any] = field(default_factory=dict)
+    ledger: Any = None
 
 
 @dataclass
@@ -105,7 +115,8 @@ class SegmentContext:
         return value
 
     def capture_repair(self, node, result: Any) -> None:
-        if not isinstance(result, dict) or result.get('status') not in {'ok', 'partial', 'completed'} or result.get('success') is False:
+        if (not isinstance(result, dict) or result.get('status') not in {'ok', 'partial', 'completed'}
+                or result.get('success') is False):
             return
         result = copy.deepcopy(result)
         if result['status'] == 'completed':
@@ -124,9 +135,12 @@ class SegmentContext:
     def outcome(self) -> dict:
         value = copy.deepcopy(self.root_output)
         status = value.get('status')
-        if status == 'error' or value.get('success') is False or value.get('error') or self.error:
+        if status == 'error' or value.get('success') is False:
             status = 'failed'
-        elif isinstance(self.handoff, dict) and self.handoff.get('status') in {'failed', 'blocked', 'not_applicable', 'partial'}:
+        elif value.get('error') or self.error:
+            status = 'failed'
+        elif (isinstance(self.handoff, dict)
+                and self.handoff.get('status') in {'failed', 'blocked', 'not_applicable', 'partial'}):
             if status not in {'failed', 'blocked', 'not_applicable'}:
                 status = self.handoff['status']
         if 'failed' in self.child_statuses.values():

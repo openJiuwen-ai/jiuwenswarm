@@ -64,7 +64,11 @@ def test_file_precedence_inline_and_no_manifest(tmp_path):
     assert load(skill, meta) == ()
 
 
-@pytest.mark.parametrize("key,value", [("manifest_version", True), ("manifest_version", 2), ("skill", "wrong"), ("skill_name", "other")])
+@pytest.mark.parametrize("key,value", [
+    ("manifest_version", True), ("manifest_version", False), ("manifest_version", 1.0),
+    ("manifest_version", 2), ("enabled", 0), ("enabled", 1),
+    ("skill", "wrong"), ("skill_name", "other"),
+])
 def test_top_level_fail_closed(tmp_path, key, value):
     skill, meta, raw = make_skill(tmp_path)
     raw[key] = value

@@ -108,6 +108,27 @@ async def test_corrupt_control_cannot_resume(segment):
     assert not segment.calls.get('root')
 
 
+@pytest.mark.parametrize('field,value', [
+    ('child_statuses', None), ('child_statuses', [{'node': 'first'}]),
+    ('child_statuses', [{'node': 'first', 'status': 1}]),
+    ('answered_tools', None),
+    ('answered_tools', [{'node': 'first', 'arguments': {}, 'index': True, 'result': {}}]),
+    ('answered_tools', [{'node': 'first', 'arguments': {}, 'index': -1, 'result': {}}]),
+])
+async def test_replay_structure_rejects_invalid_fields_with_valid_fingerprint(segment, field, value):
+    from jiuwenswarm.server.runtime.skill_turbo.segment_context import data_fingerprint
+
+    checkpoint = await pause(segment)
+    control = checkpoint['segment']
+    control[field] = value
+    control.pop('control_fingerprint')
+    control['control_fingerprint'] = data_fingerprint(control)
+    result, _ = await segment.run(params={'pause': True}, resume_ctx=checkpoint, answers=[{}])
+    assert result['status'] == 'failed'
+    assert 'segment_checkpoint_corrupt' in result['error']
+    assert not segment.calls.get('root')
+
+
 async def test_legacy_save_explicitly_removes_segment_and_inflight_merge(segment):
     checkpoint = await pause(segment)
     manager = ResumeContextManager(segment.storage.session())

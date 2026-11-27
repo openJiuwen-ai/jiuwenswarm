@@ -424,6 +424,9 @@ for name, kwargs in tool_attempts:
 
 ## 阶段清单发现边界
 
+外部扫描及执行前复核共用 Environment.validate_external_skill_code，统一构建技能专属 validator
+并委托已有目录校验；调用方不直接操作 Environment 的私有校验方法。
+
 发现仍要求旧根入口，按有序roots同内部名first-wins，enable_turbo=false仍是整个外部技能的跳过点。发现结果携带同源accelerators、声明来源、读取/校验状态和规范JSON SHA-256指纹；加载不import业务入口。入口限制为安全模块stem及root属性，resolve后不得越出本技能代码目录；运行时前置文件不在声明期检查存在性。
 
 仅独立坏项逐项丢弃，全局身份/唯一性/覆盖/owner/producer冲突整份拒绝。门面和CONTRACT_VERSION不变。动态包碰撞与目录全量安全校验不被清单绕过。规范JSON指纹不包含Python源码，不能作为恢复凭证。

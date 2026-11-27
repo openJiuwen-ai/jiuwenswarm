@@ -66,7 +66,7 @@ async def save_node_artifacts(
         session: openjiuwen Session 实例。
         skill: 当前执行的 skill 标识（如 "ppt"），仅作溯源记录存储，不参与注入时比对。
         nodes: 以 plan_name 为 key 的节点产物字典，结构见模块文档。
-        plan_code_hash: 当前 plan_code 的哈希（executor._hash_code）。HITL resume
+        plan_code_hash: 当前 plan_code 的哈希（executor.hash_plan_code）。HITL resume
             重放时按此比对，只有同一 plan 的产物才继承进新 executor（P2-2）。
             旧记录无此字段时视为匹配（fail-open 兼容）。
         skip_post_run: 跳过 post_run（仅 pre_run + update_state）。用于调用方随后
@@ -157,8 +157,10 @@ async def load_node_artifacts(session: Any, *, namespace: str | None = None,
         async with isolated_skill_state(session) as isolated:
             raw = isolated.get(SKILL_TURBO_NODE_ARTIFACTS_KEY)
         entry = _artifact_book(raw)["segments"].get(namespace)
-        if (not isinstance(entry, dict) or entry.get("namespace") != namespace
-                or entry.get("plan_code_hash") != plan_code_hash or not entry.get("nodes")):
+        if not isinstance(entry, dict):
+            return None
+        if (entry.get("namespace") != namespace or entry.get("plan_code_hash") != plan_code_hash
+                or not entry.get("nodes")):
             return None
         return copy.deepcopy(entry)
     if session is None:

@@ -41,3 +41,8 @@ uv lock --check --offline 通过，328 个包解析一致。未运行格式化�
 日志位于本机临时目录 skill-turbo-pr1-20261127-trbzqzhe 下的 pr1-regression.log、pr1-locked-sdk-regression.log、pr1-boundary-tests.log 和 pr1-lock-check.log。历史候选的测试结果不作为本分支通过证据。
 
 测试使用临时技能、临时文件及隔离内存或临时 SQLite 存储；外部模型、发送和 fallback 边界按各测试说明替换。未做真实模型、产品 UI、完整服务重启或技能侧四段流程验收。独立代码检视与用户验收不由本次行为测试替代。
+
+## CodeCheck 后续修订
+
+2026-11-27，按用户要求整理 PR 11161 的规范与模块边界问题，公开工具签名、恢复和存储协议保持。
+本轮修复、验证及本地检查适用范围见 [B_09](../bugfix/B_09_codecheck-foundation-boundaries.md)。

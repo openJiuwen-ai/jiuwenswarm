@@ -162,7 +162,8 @@ def _assemble(ctx, spec, params, ledger, upstream_facts):
         if explicit:
             inputs[selected] = copy.deepcopy(params[selected])
             sources[selected] = "explicit"
-        elif not inputs.get(selected) or sources.get(selected) not in {"ledger", "upstream"} or not provenance.get(selected, {}).get("verified"):
+        elif (not inputs.get(selected) or sources.get(selected) not in {"ledger", "upstream"}
+                or not provenance.get(selected, {}).get("verified")):
             raise SegmentInputError("blocked", "exclusive_source_missing_or_unverified", warnings)
     for key, value in list(inputs.items()):
         if _path_key(key) and key not in _CONTEXT_KEYS and value is not None:
@@ -305,8 +306,12 @@ def _finalize(ctx, spec, root_output, inputs, handoff, initial_inputs):
                 warnings.append({"code": "handoff_artifact_undeclared", "path": normalized})
         except SegmentInputError:
             warnings.append({"code": "handoff_artifact_invalid"})
-    candidates = {key: value for key, value in inputs.items() if key in spec.outputs.facts
-                  and (key not in initial_inputs or initial_inputs[key] != value)}
+    candidates = {}
+    for key, value in inputs.items():
+        if key not in spec.outputs.facts:
+            continue
+        if key not in initial_inputs or initial_inputs[key] != value:
+            candidates[key] = value
     root_facts = root_output.get("facts", {key: value for key, value in root_output.items()
                                           if key not in {"status", "success", "error", "handoff", "__artifact__"}})
     for source in (root_facts, handoff.get("facts", {})):
@@ -364,8 +369,9 @@ def _finalize(ctx, spec, root_output, inputs, handoff, initial_inputs):
         if not passed:
             failed_postcondition = True
             warnings.append({"code": "postcondition_failed", "key": condition.key, "path_glob": condition.path_glob})
-    if status == "ok" and (missing_artifact or failed_postcondition or invalid_fact):
-        status = "partial"
+    if status == "ok":
+        if missing_artifact or failed_postcondition or invalid_fact:
+            status = "partial"
     return {"status": status, "facts": facts, "facts_provenance": provenance,
             "artifacts": list(artifacts.values()), "warnings": warnings}
 
@@ -408,7 +414,8 @@ def _validate_batch_inputs(ctx, spec, params, data, future, earlier_artifacts, s
             continue
         field = '#/properties/' + key.replace('~', '~0').replace('/', '~1')
         try:
-            valid = Draft202012Validator(spec.input_schema, registry=Registry()).evolve(schema={'$ref': field}).is_valid(value)
+            validator = Draft202012Validator(spec.input_schema, registry=Registry()).evolve(schema={'$ref': field})
+            valid = validator.is_valid(value)
         except Unresolvable as exc:
             raise SegmentInputError('invalid_args', 'schema_reference_invalid') from exc
         if not valid:
@@ -426,14 +433,19 @@ def _validate_batch_inputs(ctx, spec, params, data, future, earlier_artifacts, s
                 not requirement.producer or provenance.get('produced_by') == requirement.producer)
             if current and _path_key(key):
                 paths = _path_value(key, data['facts'][key], run_dir, roots)
-                current = all(Path(path).exists() for path in paths) if isinstance(paths, list) else Path(paths).exists()
+                current = (
+                    all(Path(path).exists() for path in paths) if isinstance(paths, list) else Path(paths).exists()
+                )
             if not current and not reachable:
                 reason = 'unreachable_ledger_fact'
-            if current and not reachable and key in params and params[key] is not None:
-                supplied = _path_value(key, params[key], run_dir, roots) if _path_key(key) else params[key]
-                expected = _path_value(key, data['facts'][key], run_dir, roots) if _path_key(key) else data['facts'][key]
-                if supplied != expected:
-                    reason = 'fact_provenance_mismatch'
+            if current and not reachable:
+                if key in params and params[key] is not None:
+                    supplied = _path_value(key, params[key], run_dir, roots) if _path_key(key) else params[key]
+                    expected = (
+                        _path_value(key, data['facts'][key], run_dir, roots) if _path_key(key) else data['facts'][key]
+                    )
+                    if supplied != expected:
+                        reason = 'fact_provenance_mismatch'
         elif requirement.kind == 'argument':
             if key not in values and key not in future:
                 reason = 'argument_missing'
@@ -442,7 +454,8 @@ def _validate_batch_inputs(ctx, spec, params, data, future, earlier_artifacts, s
                 reason = 'capability_missing'
         elif requirement.kind == 'workspace_file':
             reachable = any(item.base == requirement.base and (
-                fnmatchcase(item.path_glob, requirement.path_glob) or fnmatchcase(requirement.path_glob, item.path_glob))
+                fnmatchcase(item.path_glob, requirement.path_glob)
+                or fnmatchcase(requirement.path_glob, item.path_glob))
                 for item in earlier_artifacts)
             if not reachable and not _glob_records(requirement, bases, roots):
                 reason = 'artifact_missing'
@@ -483,4 +496,6 @@ def _validate_batch_inputs(ctx, spec, params, data, future, earlier_artifacts, s
 async def validate_batch_inputs(ctx, spec, params, data, future, earlier_artifacts, shared_params=None):
     """只读批前检查；仅允许可达的前序声明解释尚未产生的必填值。"""
     async with _file_io:
-        return await asyncio.to_thread(_validate_batch_inputs, ctx, spec, params, data, future, earlier_artifacts, shared_params)
+        return await asyncio.to_thread(
+            _validate_batch_inputs, ctx, spec, params, data, future, earlier_artifacts, shared_params,
+        )

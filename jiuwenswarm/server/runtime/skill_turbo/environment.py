@@ -95,6 +95,7 @@ class SkillTurboEnvironment:
 
     def __init__(self, config: dict[str, Any]):
         self._config = config
+        self.external_scan_ok = True
         self._soul: str = config.get("soul", "")
         self._tools: dict[str, Any] = {}
         self._tools_loaded: bool = False
@@ -850,11 +851,7 @@ class SkillTurboEnvironment:
         scanned: list[Skill] = []
         for item in discovered:
             skill_dir = Path(item.turbo_codes_dir) / item.skill_name
-            if not self._validate_skill_code_dir(
-                item.skill_name,
-                skill_dir,
-                validator=self._validator_for_external_skill(item.skill_name),
-            ):
+            if not self.validate_external_skill_code(item.skill_name, skill_dir):
                 self.external_scan_ok = False
                 continue
             package_name = ensure_turbo_package(item.skill_name, item.turbo_codes_dir)
@@ -916,6 +913,12 @@ class SkillTurboEnvironment:
             )
             return 0.0
         return max(mtimes, default=0.0)
+
+    def validate_external_skill_code(self, skill_name: str, skill_dir: Path) -> bool:
+        """扫描和执行前复核共用同一外部技能安全校验。"""
+        return self._validate_skill_code_dir(
+            skill_name, skill_dir, validator=self._validator_for_external_skill(skill_name),
+        )
 
     def _validator_for_external_skill(self, skill_name: str) -> PlanCodeValidator:
         """外部 turbo skill 专用 validator：内置前缀 + 该技能自身动态包前缀"""

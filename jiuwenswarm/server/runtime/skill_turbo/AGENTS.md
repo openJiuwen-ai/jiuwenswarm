@@ -98,7 +98,7 @@ skill_turbo/
 ├── accelerator_registry.py # 已注册 Skill 的只读精确索引；__full__ 兼容入口；不读盘/调用模型
 ├── skill_run_ledger.py     # 跨段任务身份/事实/有限历史；会话执行租约；不接管HITL断点
 ├── segment_inputs.py       # 唯一装配/前置与后置验证；路径和文件检查有界offload
-├── segment_context.py      # 单次段结果/控制状态/原始文件内容快照
+├── segment_context.py      # 显式门面结果状态/单次段控制状态/原始文件内容快照
 ├── segment_execution.py    # 精确选择与单段门面；复用状态/装配owner，不调用planner
 ├── validator.py            # PlanCodeValidator 三 profile（import 白黑名单/危险函数/require_abort_reraise 静态强制）
 ├── rails/                  # ask_user_rail（HITL）/ artifact_rail（产物检测+事件）/ delivery_summary_rail（交付骨架时序）/ permission_rail（审批卡）/ skill_prompt_rail（指南注入）
