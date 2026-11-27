@@ -383,6 +383,7 @@ class _ClaudeProjectFiles:
     def __init__(self, projects: Path, target_key: str) -> None:
         self._projects = projects
         self._target_key = target_key
+        self._created: set[Path] = set()
 
     def _read(self, key: Mapping[str, str]) -> list[dict[str, Any]] | None:
         name = f"{key['session_id']}.jsonl"
@@ -404,7 +405,15 @@ class _ClaudeProjectFiles:
     def _write(self, key: Mapping[str, str], entries: list[Any]) -> None:
         folder = self._projects / self._target_key
         folder.mkdir(parents=True, exist_ok=True)
-        with (folder / f"{key['session_id']}.jsonl").open("a", encoding="utf-8") as out:
+        path = folder / f"{key['session_id']}.jsonl"
+        if path in self._created:
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
+        else:
+            # A new transcript is private and never an existing file or link,
+            # as the SDK's own fork_session creates it.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            self._created.add(path)
+        with os.fdopen(fd, "a", encoding="utf-8") as out:
             for entry in entries:
                 out.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
 

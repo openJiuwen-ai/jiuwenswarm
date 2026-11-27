@@ -641,3 +641,30 @@ async def test_a_codex_fork_no_copy_is_bound_to_is_archived(
 
     assert archived == ["thread-forked"]
     assert [config["env"]["PATH"] for config in codex.configs] == [os.environ["PATH"]] * 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+@pytest.mark.asyncio
+async def test_a_forked_transcript_is_private_and_never_an_existing_file(tmp_path: Path) -> None:
+    previous = os.umask(0o022)
+    try:
+        store = external_harness_helpers._ClaudeProjectFiles(tmp_path, "target")
+        await store.append({"project_key": "target", "session_id": "fork-1"}, [{"type": "user"}])
+        await store.append({"project_key": "target", "session_id": "fork-1"}, [{"type": "assistant"}])
+        written = tmp_path / "target" / "fork-1.jsonl"
+        assert written.stat().st_mode & 0o777 == 0o600
+        assert [json.loads(line)["type"] for line in written.read_text().splitlines()] == ["user", "assistant"]
+
+        # A file or link already at the fork's path is neither appended to nor followed.
+        (tmp_path / "target" / "fork-2.jsonl").write_text("kept\n")
+        outside = tmp_path / "outside.jsonl"
+        outside.write_text("outside\n")
+        (tmp_path / "target" / "fork-3.jsonl").symlink_to(outside)
+        fresh = external_harness_helpers._ClaudeProjectFiles(tmp_path, "target")
+        for session in ("fork-2", "fork-3"):
+            with pytest.raises(FileExistsError):
+                await fresh.append({"project_key": "target", "session_id": session}, [{"type": "user"}])
+        assert (tmp_path / "target" / "fork-2.jsonl").read_text() == "kept\n"
+        assert outside.read_text() == "outside\n"
+    finally:
+        os.umask(previous)
