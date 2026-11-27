@@ -792,7 +792,13 @@ class TeamQuotaService(TeamQuotaPolicyStore):
             "status": _clean(found["status"]),
         }
 
-    def drop_occupancy(self, *, session_id: str = "", team_id: str = "") -> None:
+    def drop_occupancy(
+        self,
+        *,
+        session_id: str = "",
+        team_id: str = "",
+        session_only: bool = False,
+    ) -> None:
         """Physically delete X/Y lease rows for a deleted session or team.
 
         ``team.stop`` keeps rows as ``released``. Session delete follows develop
@@ -800,10 +806,14 @@ class TeamQuotaService(TeamQuotaPolicyStore):
 
         When only ``session_id`` is known, the create-lease ``team_id`` is
         resolved so teammate (Y) rows are dropped with the X row.
+
+        ``session_only`` drops just this Session's create lease. A team delete
+        that failed for some Sessions keeps the team and its survivors, so their
+        rows must stay.
         """
         sid = _clean(session_id)
-        tid = _clean(team_id)
-        if not tid and sid:
+        tid = "" if session_only else _clean(team_id)
+        if not session_only and not tid and sid:
             try:
                 peeked = self.peek_team_create_lease(sid)
             except Exception:  # noqa: BLE001

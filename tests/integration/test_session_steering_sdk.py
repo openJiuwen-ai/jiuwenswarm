@@ -363,6 +363,7 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
     from jiuwenswarm.common.schema.message import Message
     from agent_gateway.message_handler.message_handler import MessageHandler
     from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+    from tests._support.null_session_login_bindings import NullSessionLoginBindings
     from jiuwenswarm.runtime.service import AgentRuntime
     from jiuwenswarm.runtime.events import RuntimeEvent
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
@@ -454,7 +455,7 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
 
     client = WebSocketAgentServerClient()
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    gateway = MessageHandler(client)
+    gateway = MessageHandler(client, session_login_bindings=NullSessionLoginBindings())
     gateway._sync_agentos_cron_jobs = AsyncMock()
     gateway._broadcast_task_global_running = AsyncMock()
     gateway._trigger_before_chat_request_hook = AsyncMock()

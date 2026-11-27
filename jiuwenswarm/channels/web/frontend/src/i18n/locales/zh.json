@@ -25,6 +25,8 @@
     "backToLogin": "返回登录页",
     "language": "界面语言",
     "noContext": "当前账号没有可用的Agent，请先在管理面完成授权。",
+    "emptyTitleNoTemplate": "暂无可用 Agent",
+    "noContextNoTemplate": "当前账号没有可用的 Agent，请联系管理员在管理面新增 Agent 模板。",
     "loadFailed": "加载 Agent 上下文失败。",
     "switchFailed": "切换身份失败。",
     "errorTitle": "无法进入工作空间",
@@ -3047,6 +3049,8 @@
     "enterpriseContext": {
       "user": "用户",
       "userContext": "用户上下文",
+      "agentNameLabel": "Agent 名称",
+      "agentNameHint": "Agent名称",
       "modeAria": "上下文设定方式",
       "selectAgent": "选择 Agent",
       "custom": "自定义",
@@ -4923,7 +4927,9 @@
       "updating": "保存中…"
     },
     "confirm": {
+      "deleteTitle": "删除专家「{{name}}」？",
       "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。",
+      "uninstallGroupTitle": "卸载专家团「{{name}}」？",
       "uninstallGroupMessage": "确定要卸载专家团「{{name}}」吗？"
     },
     "card": {
@@ -5239,6 +5245,7 @@
     "paused": "已暂停",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
+    "queuedUploadDocument": "上传文档",
     "crossSessionMessageQueue": "跨会话消息",
     "localMessageQueue": "本地消息",
     "turnStarting": "正在启动…",
@@ -7569,7 +7576,9 @@
         "failures": {
           "org_access_denied": "钉钉账号已确认，但所选组织未授权此账号通过 CLI 访问数据。请联系组织主管理员开通权限后重新授权，或选择已有权限的组织。",
           "authorization_expired": "本次设备授权已过期，请重新点击“授权钉钉账号”获取新链接和设备码。",
-          "authorization_failed": "本次授权未完成或授权进程已结束，请重新授权，勿重复使用旧设备码。"
+          "authorization_failed": "本次授权未完成或授权进程已结束，请重新授权，勿重复使用旧设备码。",
+          "authorization_process_unverified": "暂时无法确认钉钉授权状态，已保留授权记录。请稍后重试。",
+          "authorization_cleanup_failed": "授权已超时，但清理尚未完成，已保留授权记录。请稍后重试。"
         },
         "status": {
           "loading": "正在检查授权状态…",

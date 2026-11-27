@@ -19,6 +19,7 @@ COVERAGE_REPORT="term"
 VERBOSE="-v"
 TEST_PATH="tests/"
 PARALLEL=false
+CHANGED=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -43,6 +44,14 @@ while [[ $# -gt 0 ]]; do
             PARALLEL=true
             shift
             ;;
+        --changed)
+            CHANGED=true
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -51,7 +60,9 @@ while [[ $# -gt 0 ]]; do
             echo "  -v, --verbose        Increase verbosity"
             echo "  -u, --unit-only      Run only unit tests"
             echo "  -i, --integration-only Run only integration tests"
-            echo "  -p, --parallel       Run tests in parallel (requires pytest-xdist)"
+            echo "  -p, --parallel       Run tests with 2 workers, grouped by file"
+            echo "  --changed            Select unit tests against UT_BASE_SHA (full UT on fallback)"
+            echo "  --                   Pass remaining options to pytest"
             echo "  -h, --help           Show this help message"
             echo ""
             echo "Examples:"
@@ -69,55 +80,44 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Check if pytest is installed
-if ! command -v pytest &> /dev/null; then
-    echo -e "${RED}pytest is not installed!${NC}"
-    echo "Install test dependencies:"
-    echo "  pip install -e '.[test]'"
-    exit 1
+if [[ "$CHANGED" == true && "$TEST_PATH" != "tests/unit_tests/" ]]; then
+    echo "--changed requires --unit-only" >&2
+    exit 2
 fi
 
-# Build pytest command
-PYTEST_CMD="pytest $VERBOSE"
-
-# Add coverage
+PYTEST_ARGS=("$VERBOSE" -p scripts.ut_schedule)
 if [[ "$COVERAGE_REPORT" == "html" ]]; then
-    echo -e "${YELLOW}Generating HTML coverage report...${NC}"
-    PYTEST_CMD="$PYTEST_CMD --cov=jiuwenswarm --cov-report=html --cov-report=term-missing"
+    PYTEST_ARGS+=(--cov=jiuwenswarm --cov-report=html --cov-report=term-missing)
 fi
-
-# Add parallel execution
 if [[ "$PARALLEL" == true ]]; then
-    if ! python -c "import xdist" 2>/dev/null; then
-        echo -e "${YELLOW}pytest-xdist not installed, running sequentially...${NC}"
-        echo "Install it with: pip install pytest-xdist"
+    if python -c "import xdist" 2>/dev/null; then
+        PYTEST_ARGS+=(-n 2 --dist=loadfile --max-worker-restart=0)
     else
-        echo -e "${YELLOW}Running tests in parallel...${NC}"
-        PYTEST_CMD="$PYTEST_CMD -n auto"
+        echo "pytest-xdist is unavailable. Running sequentially."
     fi
 fi
 
-# Add test path
-PYTEST_CMD="$PYTEST_CMD $TEST_PATH"
+TEST_PATHS=("$TEST_PATH")
+if [[ "$CHANGED" == true ]]; then
+    if SELECTION=$(python scripts/select_ut.py "${UT_BASE_SHA:-}") && [[ -n "$SELECTION" ]]; then
+        TEST_PATHS=()
+        while IFS= read -r path; do
+            TEST_PATHS+=("$path")
+        done <<< "$SELECTION"
+    else
+        echo "UT full suite: selector did not return test paths" >&2
+    fi
+fi
 
-# Print command
-echo -e "${YELLOW}Running command:${NC}"
-echo "$PYTEST_CMD"
-echo ""
-
-# Run tests
-echo -e "${GREEN}Running tests...${NC}"
-echo ""
-
-# set -e 会在此处直接退出脚本，导致下方失败横幅分支不可达；
-# 先置零再用 || 捕获，保证 EXIT_CODE 拿到 pytest 退出码。
+echo "Running test paths:"
+printf '  %s\n' "${TEST_PATHS[@]}"
 EXIT_CODE=0
-eval $PYTEST_CMD || EXIT_CODE=$?
+python -u -m pytest "${PYTEST_ARGS[@]}" "$@" "${TEST_PATHS[@]}" || EXIT_CODE=$?
 
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  All tests passed! ✓${NC}"
+    echo -e "${GREEN}  All tests passed!${NC}"
     echo -e "${GREEN}========================================${NC}"
 
     if [[ "$COVERAGE_REPORT" == "html" ]]; then
@@ -127,7 +127,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     fi
 else
     echo -e "${RED}========================================${NC}"
-    echo -e "${RED}  Some tests failed! ✗${NC}"
+    echo -e "${RED}  Some tests failed!${NC}"
     echo -e "${RED}========================================${NC}"
 fi
 

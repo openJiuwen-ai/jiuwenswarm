@@ -59,6 +59,7 @@ import { findDefaultDefinitionFile } from './DefinitionFilePreview';
 import './agentManagement.css';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
 import { Button, CategoryTabs, CloseButton, Dialog, PageHeader, PageToolbarSearch, Tabs, toast } from '../ui';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 import { webRequest } from '../../services/webClient';
 
 type PanelView = 'catalog' | 'teams' | 'mine' | 'detail' | 'group-detail' | 'create' | 'group-create';
@@ -308,6 +309,8 @@ export function AgentManagementPanel({
   const [groupCreateError, setGroupCreateError] = useState<string | null>(null);
   const [groupUploadDialogOpen, setGroupUploadDialogOpen] = useState(false);
   const [groupUploadError, setGroupUploadError] = useState<string | null>(null);
+  const [pendingUninstallGroup, setPendingUninstallGroup] = useState<{ id: string; name: string } | null>(null);
+  const [pendingDeleteAgent, setPendingDeleteAgent] = useState<{ id: string; name: string } | null>(null);
   const catalogRevisionRef = useRef(0);
   const skillsRevisionRef = useRef(0);
   const panelMountedRef = useRef(false);
@@ -1072,10 +1075,14 @@ export function AgentManagementPanel({
     }
   };
 
-  const handleUninstallGroup = async (id: string) => {
+  const requestUninstallGroup = (id: string) => {
     const before = groupDetail?.id === id ? groupDetail : [...groupCatalogRef.current, ...groupMineRef.current].find(item => item.id === id);
-    const confirmed = window.confirm(t('agentManagement.confirm.uninstallGroupMessage', { name: before?.displayName ?? id }));
-    if (!confirmed) return;
+    setPendingUninstallGroup({ id, name: before?.displayName ?? id });
+  };
+
+  const confirmUninstallGroup = async () => {
+    if (!pendingUninstallGroup) return;
+    const { id } = pendingUninstallGroup;
     markBusy(id);
     setActionNotice(null);
     try {
@@ -1093,6 +1100,7 @@ export function AgentManagementPanel({
       showActionError(formatActionError(error, t('agentManagement.group.states.actionError')));
     } finally {
       clearBusy(id);
+      setPendingUninstallGroup(null);
     }
   };
 
@@ -1217,9 +1225,13 @@ export function AgentManagementPanel({
     }
   };
 
-  const handleDelete = async (id: string, name: string) => {
-    const confirmed = window.confirm(t('agentManagement.confirm.deleteMessage', { name }));
-    if (!confirmed) return;
+  const requestDeleteAgent = (id: string, name: string) => {
+    setPendingDeleteAgent({ id, name });
+  };
+
+  const confirmDeleteAgent = async () => {
+    if (!pendingDeleteAgent) return;
+    const { id } = pendingDeleteAgent;
     markBusy(id);
     setActionNotice(null);
     try {
@@ -1230,6 +1242,7 @@ export function AgentManagementPanel({
       showActionError(formatActionError(error, t('agentManagement.states.actionError')));
     } finally {
       clearBusy(id);
+      setPendingDeleteAgent(null);
     }
   };
 
@@ -1603,7 +1616,7 @@ export function AgentManagementPanel({
           onReconnect={handleReconnect}
           onInstall={handleInstall}
           onUninstall={handleUninstall}
-          onDelete={handleDelete}
+          onDelete={requestDeleteAgent}
           onEdit={handleEdit}
         />
       )}
@@ -1659,7 +1672,7 @@ export function AgentManagementPanel({
           onUse={handleUseGroup}
           onUsePrompt={handleUseGroupPrompt}
           onInstall={handleInstallGroup}
-          onUninstall={handleUninstallGroup}
+          onUninstall={requestUninstallGroup}
         />
       )}
       {view === 'group-create' && (
@@ -1710,6 +1723,34 @@ export function AgentManagementPanel({
           </Button>
         </footer>
       </Dialog>
+      {pendingUninstallGroup ? (
+        <ConfirmDialog
+          title={t('agentManagement.confirm.uninstallGroupTitle', { name: pendingUninstallGroup.name })}
+          message={t('agentManagement.confirm.uninstallGroupMessage', { name: pendingUninstallGroup.name })}
+          confirmLabel={t('agentManagement.group.actions.uninstall')}
+          loading={busyIds.has(pendingUninstallGroup.id)}
+          onCancel={() => {
+            if (!busyIds.has(pendingUninstallGroup.id)) setPendingUninstallGroup(null);
+          }}
+          onConfirm={() => {
+            void confirmUninstallGroup();
+          }}
+        />
+      ) : null}
+      {pendingDeleteAgent ? (
+        <ConfirmDialog
+          title={t('agentManagement.confirm.deleteTitle', { name: pendingDeleteAgent.name })}
+          message={t('agentManagement.confirm.deleteMessage', { name: pendingDeleteAgent.name })}
+          confirmLabel={t('agentManagement.actions.delete')}
+          loading={busyIds.has(pendingDeleteAgent.id)}
+          onCancel={() => {
+            if (!busyIds.has(pendingDeleteAgent.id)) setPendingDeleteAgent(null);
+          }}
+          onConfirm={() => {
+            void confirmDeleteAgent();
+          }}
+        />
+      ) : null}
       {pendingConnectorModals}
       {uploadDialog}
       {groupUploadDialog}

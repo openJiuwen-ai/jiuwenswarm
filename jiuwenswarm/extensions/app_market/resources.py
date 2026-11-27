@@ -5,6 +5,7 @@ from typing import Any
 
 import psutil
 
+from jiuwenswarm.common.process_identity import read_process_identity
 from .app_market.models import AppInstance
 
 
@@ -47,7 +48,7 @@ class AppServiceResources:
                 warm = True
                 for process in processes:
                     with process.oneshot():
-                        identity = (process.pid, process.create_time())
+                        identity = (process.pid, read_process_identity(process.pid, process=process))
                         times = process.cpu_times()
                         seconds = times.user + times.system
                         memory += process.memory_info().rss

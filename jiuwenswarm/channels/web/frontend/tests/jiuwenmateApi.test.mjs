@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -57,6 +58,31 @@ test('DingTalk authorization methods keep their RPC names, scope and response en
   assert.equal(calls[2].params.operation_id, 'operation');
   assert.equal(calls[3].params.operation_id, 'operation');
 });
+
+for (const code of ['authorization_process_unverified', 'authorization_cleanup_failed']) {
+  test(`DingTalk status and polling retain ${code} without treating it as expiry`, async () => {
+    const status = { status: 'error', cli_version: '1.0.65', error_code: code };
+    const calls = [];
+    const api = createJiuwenMateApi(async (method, params) => {
+      calls.push({ method, params });
+      return { dingtalk_auth: status };
+    });
+
+    assert.deepEqual(await api.dingtalkAuthStatus('agent-1', 'ding-app'), status);
+    assert.deepEqual(await api.pollDingTalkAuth('agent-1', 'ding-app', 'operation'), status);
+    assert.deepEqual(calls.map(({ method }) => method), [
+      'jiuwenmate.dingtalk_auth.status', 'jiuwenmate.dingtalk_auth.poll',
+    ]);
+    for (const language of ['zh', 'en']) {
+      const locale = JSON.parse(readFileSync(new URL(`../src/i18n/locales/${language}.json`, import.meta.url), 'utf8'));
+      const message = locale.jiuwenmate.profile.dingtalkAuth.failures[status.error_code];
+      assert.equal(typeof message, 'string', `${language} must describe the returned authorization error`);
+      assert.ok(message.trim());
+    }
+    assert.ok(calls.every(({ params }) => params.agent_id === 'agent-1' && params.connection_key === 'ding-app'));
+    assert.equal(calls[1].params.operation_id, 'operation');
+  });
+}
 
 const wireColleague = {
   agent_id: 'agent-1',
