@@ -1,0 +1,17 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+RUN useradd --create-home --shell /bin/bash app
+
+WORKDIR /app/jiuwenclaw
+COPY . /app/jiuwenclaw/
+RUN chown -R app:app /app/jiuwenclaw
+
+USER app
+ENV PATH=$PATH:/home/app/.local/bin
+
+RUN pip install -e ".[all]" --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN mkdir -p /home/app/.jiuwenclaw && printf 'yes\nzh\n' | jiuwenclaw-init
+
+EXPOSE 19000
+CMD ["jiuwenclaw-gateway"]

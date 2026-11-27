@@ -1,0 +1,259 @@
+.extensions-panel {
+  width: 100%;
+  padding: 20px;
+}
+
+.extensions-panel__title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--text);
+}
+
+.extensions-panel__description {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  margin-bottom: 1.5rem;
+}
+
+/* 导入区域 */
+.extensions-panel__import-section {
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+}
+
+.extensions-panel__import-title {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  margin-bottom: 0.75rem;
+  color: var(--text);
+}
+
+.extensions-panel__import-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast) ease;
+}
+
+.extensions-panel__import-button:hover {
+  background: var(--accent-hover);
+}
+
+.extensions-panel__import-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.extensions-panel__import-hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  margin-left: 0.75rem;
+}
+
+/* 扩展列表 */
+.extensions-panel__list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+}
+
+.extensions-panel__empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.extensions-panel__loading {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+/* 扩展项 */
+.extensions-panel__item {
+  padding: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+
+.extensions-panel__item:last-child {
+  border-bottom: none;
+}
+
+.extensions-panel__item-content {
+  flex: 1;
+  min-width: 0;
+  margin-right: 1rem;
+}
+
+.extensions-panel__item-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.extensions-panel__item-name {
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.extensions-panel__item-class {
+  padding: 0.25rem 0.5rem;
+  font-size: var(--font-size-xs);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border-radius: var(--radius-sm);
+}
+
+.extensions-panel__item-description {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.extensions-panel__item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* 开关按钮 */
+.extensions-panel__toggle {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.extensions-panel__toggle-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.extensions-panel__toggle-track {
+  width: 2.5rem;
+  height: 1.25rem;
+  border-radius: 9999px;
+  background: var(--input);
+  position: relative;
+  transition: background var(--duration-fast) ease;
+}
+
+.extensions-panel__toggle-track.enabled {
+  background: var(--accent);
+}
+
+.extensions-panel__toggle-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0.25rem;
+  transform: translateY(-50%);
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 9999px;
+  background: white;
+  transition: transform var(--duration-fast) ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.extensions-panel__toggle-track.enabled .extensions-panel__toggle-thumb {
+  transform: translate(1.25rem, -50%);
+}
+
+/* 删除按钮 */
+.extensions-panel__delete-button {
+  padding: 0.375rem 0.75rem;
+  font-size: var(--font-size-sm);
+  color: var(--danger);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast) ease;
+}
+
+.extensions-panel__delete-button:hover {
+  background: var(--danger-subtle);
+}
+
+.extensions-panel__delete-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* 错误提示 */
+.extensions-panel__error {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: var(--danger-subtle);
+  border: 1px solid var(--border-danger);
+  border-radius: var(--radius-md);
+  color: var(--danger);
+  font-size: var(--font-size-sm);
+}
+
+/* 帮助说明区域 */
+.extensions-panel__help {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: var(--secondary);
+  border-radius: var(--radius-md);
+}
+
+.extensions-panel__help-title {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  margin-bottom: 0.75rem;
+  color: var(--text);
+}
+
+.extensions-panel__help-list {
+  list-style: disc;
+  padding-left: 1.5rem;
+  margin: 0;
+}
+
+.extensions-panel__help-list li {
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  line-height: 1.5;
+  margin-bottom: 0.5rem;
+}
+
+.extensions-panel__help-list li:last-child {
+  margin-bottom: 0;
+}
+
+/* Light theme 适配 */
+:root[data-theme="light"] .extensions-panel__import-section {
+  background: var(--bg);
+}
+
+:root[data-theme="light"] .extensions-panel__list {
+  background: var(--bg);
+}
+
+:root[data-theme="light"] .extensions-panel__help {
+  background: var(--bg-muted);
+}

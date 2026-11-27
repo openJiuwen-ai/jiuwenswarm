@@ -1,0 +1,88 @@
+.toolpanel-status-card {
+  padding: 1rem;
+  overflow-y: auto;
+  max-height: 13rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow:
+    0 2px 8px rgba(15, 23, 42, 0.06),
+    inset 0 1px 0 var(--card-highlight);
+  transition:
+    box-shadow var(--duration-fast) ease,
+    border-color var(--duration-fast) ease,
+    transform var(--duration-fast) ease;
+}
+
+.toolpanel-status-card:hover {
+  border-color: var(--border-strong);
+  box-shadow:
+    0 8px 20px rgba(15, 23, 42, 0.10),
+    inset 0 1px 0 var(--card-highlight);
+  transform: translateY(-1px);
+}
+
+.toolpanel-status-card__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.75rem;
+}
+
+.toolpanel-status-card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+}
+
+.toolpanel-status-card__heartbeat {
+  border-radius: var(--radius-md);
+  border: 1px solid;
+  padding: 0.5rem 0.625rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.toolpanel-status-card__heartbeat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.toolpanel-status-card__heartbeat-row + .toolpanel-status-card__heartbeat-row {
+  margin-top: 0.25rem;
+}
+
+.toolpanel-status-card__heartbeat-value {
+  text-align: right;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: inherit;
+  opacity: 0.8;
+}
+
+.toolpanel-status-card__heartbeat-link {
+  text-align: right;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: inherit;
+  opacity: 0.9;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.toolpanel-status-card__heartbeat-link:hover {
+  opacity: 1;
+}

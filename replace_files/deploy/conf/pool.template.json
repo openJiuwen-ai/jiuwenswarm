@@ -1,0 +1,25 @@
+{
+  "pools": [
+    {
+      "id": "<<POOL_ID>>",
+      "size": <<POOL_SIZE>>,
+      "max_size": <<POOL_MAX_SIZE>>,
+      "group": "jiuwen",
+      "reuse": false,
+      "resources": {
+        "limits": {
+          "cpu": "<<CLAW_MGR_CPU>>m",
+          "memory": "<<CLAW_MGR_MEMORY>>Mi"
+        },
+        "requests": {
+          "cpu": "<<CLAW_MGR_CPU>>m",
+          "memory": "<<CLAW_MGR_MEMORY>>Mi"
+        }
+      },
+      "image": "<<CLAW_MGR_IMAGE>>",
+      "volumes": "[{\"name\":\"jiuwenclaw\",\"hostPath\":{\"path\":\"<<REG_FUNC_DIR>>\",\"type\":\"Directory\"}},{\"name\": \"pv-function\",\"persistentVolumeClaim\": {\"claimName\": \"<<PVC_NAME>>\"}}]",
+      "volume_mounts": "[{\"name\":\"jiuwenclaw\",\"mountPath\":\"/home/sn/jiuwenclaw\"},{\"name\": \"pv-function\",\"mountPath\": \"/home/snuser/.jiuwenclaw\"}]"
+    }
+  ]
+}
+

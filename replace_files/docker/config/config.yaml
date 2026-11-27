@@ -1,0 +1,36 @@
+preferred_language: zh
+
+models:
+  default:
+    model_client_config:
+      api_base: ${API_BASE}
+      api_key: ${API_KEY}
+      model_name: ${MODEL_NAME}
+      client_provider: ${MODEL_PROVIDER}
+
+gateway:
+  agent_client:
+    type: yuanrong
+    frontend_endpoint: ${YR_FRONTEND_ENDPOINT}
+    function_version_urn: ${YR_FUNCTION_VERSION_URN}
+    concurrency: ${YR_FRONTEND_CONCURRENCY:-1}
+    invoke_timeout_s: ${YR_INVOKE_TIMEOUT_S:-60}
+  session_map_scope: per_chat_bot_user
+
+channels:
+  feishu_enterprise:
+    bot_a:
+      enabled: false
+      app_id:
+      app_secret:
+      encrypt_key:
+      verification_token:
+      allow_from: []
+
+extensions:
+  extension_dirs: ${EXTENSION_DIRS:-/app/jiuwenclaw/extensions}
+  # docker/extensions/agent_client REST（FastAPI）；由环境变量覆盖，未设置则用默认值
+  agent_client_rest:
+    enabled: ${AGENT_CLIENT_REST_ENABLED:-true}
+    host: ${AGENT_CLIENT_REST_HOST:-0.0.0.0}
+    port: ${AGENT_CLIENT_REST_PORT:-18080}

@@ -1,0 +1,13 @@
+services:
+  jiuwenclaw-gateway:
+    image: swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-gateway:0.0.1
+    pull_policy: if_not_present
+    container_name: jiuwenclaw-gateway
+    networks:
+      - jiuwenclaw-network
+    restart: unless-stopped
+    volumes:
+      - ./config/config.yaml:/home/app/.jiuwenclaw/config/config.yaml
+networks:
+  jiuwenclaw-network:
+    driver: bridge

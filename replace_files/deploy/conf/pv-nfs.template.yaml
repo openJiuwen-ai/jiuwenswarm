@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: <<PV_NAME>>
+  labels:
+    type: nfs-storage
+    app: openjiuwen
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany                       # RWX: 多个 Pod 可同时读写
+  persistentVolumeReclaimPolicy: Retain   # 删除 PVC 时保留数据
+  storageClassName: ""                    # 不使用 StorageClass
+  nfs:
+    server: <<NFS_SERVER_ADDR>>            # NFS 服务器地址
+    path: <<NFS_SHARE_PATH>>               # NFS 共享路径
+    readOnly: false
+  mountOptions:
+    - nfsvers=4
+    - hard
+    - noatime

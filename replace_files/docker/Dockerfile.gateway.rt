@@ -1,0 +1,15 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+WORKDIR /app/jiuwenclaw
+COPY . /app/jiuwenclaw/
+
+ENV PATH=$PATH:/home/app/.local/bin
+
+RUN pip install -e ".[all]" --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install kubernetes --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+RUN mkdir -p /home/app/.jiuwenclaw && printf 'yes\nzh\n' | jiuwenclaw-init
+
+EXPOSE 19000
+CMD ["jiuwenclaw-gateway"]

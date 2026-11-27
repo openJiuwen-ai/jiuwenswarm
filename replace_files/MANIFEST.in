@@ -1,0 +1,9 @@
+# 包含 package resources 目录
+recursive-include jiuwenclaw/resources *
+
+# 包含 skilldev_agent skills 目录完整内容
+recursive-include jiuwenclaw/agentserver/skilldev_agent/skills *
+
+# 排除 node_modules，避免打包进 wheel
+prune jiuwenclaw/web/node_modules
+global-exclude node_modules

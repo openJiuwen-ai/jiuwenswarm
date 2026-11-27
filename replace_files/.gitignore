@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+coverage/
+
+# Node.js / Frontend
+**/node_modules/
+dist/
+build/
+coverage/
+jiuwenclaw/web/logs/
+jiuwenclaw/web/cd
+jiuwenclaw/web/tsc
+jiuwenclaw/web/openjiuwen-web@0.1.0
+jiuwenclaw/cli/bun.lock
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env_personal
+!.env.example
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.claude
+CLAUDE.md
+AGENTS.md
+.cursorrules
+.traerules
+workspace/agent-data.json
+*.iml
+
+# reference
+reference/
+openspec/
+docs/ai/
+
+# logs
+logs/
+
+# workspace
+workspace/session
+workspace/agent/memory/*.db
+workspace/agent/memory/*.db-shm
+workspace/agent/memory/*.db-wal
+
+jiuwenclaw/agentserver/tools/browser-move/.browser
+jiuwenclaw/agentserver/tools/browser-move/.browser-profiles
+jiuwenclaw/agentserver/tools/browser-move/screenshots
+
+jiuwenclaw/workspace/.whatsapp-auth/
+jiuwenclaw/resources/agent/workspace/
+jiuwenclaw/resources/tui/bin/
+packages/jiuwenclaw-tui/jiuwenclaw_tui/resources/tui/bin/
+packages/jiuwenclaw-tui/jiuwenclaw_tui/resources/tui-bin/

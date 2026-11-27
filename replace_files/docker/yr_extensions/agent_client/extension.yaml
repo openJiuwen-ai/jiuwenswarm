@@ -1,0 +1,9 @@
+id: yuanrong_agent_client
+name: Yuanrong AgentServer Client
+version: 0.1.0
+description: Provide Yuanrong frontend-backed AgentServerClient via extension
+author: jiuwenclaw
+min_jiuwenclaw_version: "0.1.0"
+dependencies: {}
+config_schema:
+  type: object
