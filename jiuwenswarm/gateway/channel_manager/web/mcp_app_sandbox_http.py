@@ -39,22 +39,41 @@ _NONE = "'none'"
 _CSP_SOURCE = re.compile(r"^(https?://[a-z0-9.*-]+(:\d+)?(/[^\s;,'\"]*)?|data:|blob:)$", re.IGNORECASE)
 
 
-def _sources(value: Any, own_key: str | None = None) -> str:
+def _matches_own_origin(source: str, own_origin: str) -> bool:
+    """True 当 CSP source 按浏览器匹配语义可能命中服务自身 origin。
+
+    覆盖四种形态：精确相等、host 含 ``*``（任意/子域通配）、点后缀
+    （``.0.0.1`` 结尾匹配 ``127.0.0.1``）、空宿主 + 端口（``http://:1900``
+    匹配任意宿主的该端口）；scheme 不同或端口不同则不匹配。
+    （PR !10997 CR-10997-04：精确串比对漏掉后三种绕过形态。）
+    """
+    src = urlsplit(source)
+    own = urlsplit(own_origin)
+    if src.scheme.lower() != own.scheme.lower():
+        return False
+    src_port = src.port if src.port is not None else (443 if src.scheme.lower() == "https" else 80)
+    own_port = own.port if own.port is not None else (443 if own.scheme.lower() == "https" else 80)
+    if src_port != own_port:
+        return False
+    src_host = (src.hostname or "").lower()
+    own_host = (own.hostname or "").lower()
+    if "*" in src_host or src_host == "":
+        return True
+    if src_host.startswith("."):
+        return own_host.endswith(src_host)
+    return src_host == own_host
+
+
+def _sources(value: Any, own_origin: str | None = None) -> str:
     if not isinstance(value, list):
         return ""
     sources = [item for item in value if isinstance(item, str) and _CSP_SOURCE.match(item)]
-    if own_key:
-        # 服务自身 origin 一律剔除（含 frameDomains）：内层 iframe 在该
-        # origin 上 allow-same-origin，放行 frame-src 即给 App 一个同源
-        # 嵌套 frame，可读写后端 /api/v1/*（PR !10997 CR-11）。
-        sources = [item for item in sources if _origin_key(item) != own_key]
+    if own_origin:
+        # 服务自身 origin 一律剔除（含 frameDomains，四域统一）：内层
+        # iframe 在该 origin 上 allow-same-origin，放行 frame-src 即给
+        # App 一个同源嵌套 frame，可读写后端 /api/v1/*（CR-11/CR-04）。
+        sources = [item for item in sources if not _matches_own_origin(item, own_origin)]
     return " ".join(sources)
-
-
-def _origin_key(source: str) -> str:
-    """Scheme://netloc of a CSP source string (path/query stripped)."""
-    parts = urlsplit(source)
-    return f"{parts.scheme.lower()}://{parts.netloc.lower()}"
 
 
 def build_mcp_app_csp(csp: Any, own_origin: str | None = None) -> str:
@@ -63,17 +82,19 @@ def build_mcp_app_csp(csp: Any, own_origin: str | None = None) -> str:
     Script/worker allowances match the ext-apps reference host (basic-host):
     bundled and WebGL apps (CesiumJS, Three.js) need eval, WebAssembly and
     blob: workers. ``connect-src`` stays limited to declared domains. All
-    source domains (connect/frame/resource/baseUri) drop a source matching
-    the serving origin: the inner iframe is allow-same-origin on that
-    origin, so a server could otherwise declare its way to same-origin
-    frames and read/write the backend API (PR !10997 CR-11).
+    source domains (connect/frame/resource/baseUri) drop sources that
+    could match the serving origin under browser matching semantics
+    (exact/wildcard/dot-suffix/omitted-host): the inner iframe is
+    allow-same-origin on that origin, so a server could otherwise declare
+    its way to same-origin frames and read/write the backend API
+    (PR !10997 CR-11/CR-10997-04).
     """
     csp = csp if isinstance(csp, dict) else {}
-    own_key = _origin_key(own_origin) if own_origin else None
-    resources = _sources(csp.get("resourceDomains"), own_key)
-    connect = _sources(csp.get("connectDomains"), own_key)
-    frames = _sources(csp.get("frameDomains"), own_key)
-    bases = _sources(csp.get("baseUriDomains"), own_key)
+    own_origin = own_origin or None
+    resources = _sources(csp.get("resourceDomains"), own_origin)
+    connect = _sources(csp.get("connectDomains"), own_origin)
+    frames = _sources(csp.get("frameDomains"), own_origin)
+    bases = _sources(csp.get("baseUriDomains"), own_origin)
     directives = [
         "default-src 'none'",
         f"script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: {resources}".strip(),
