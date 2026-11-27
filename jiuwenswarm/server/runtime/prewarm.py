@@ -11,6 +11,7 @@ monkeypatch）：走通 DeepAgent 全链路构建，只短路最终 LLM HTTP 调
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import os
 import time
@@ -142,19 +143,9 @@ def warmup_tiktoken_counter() -> None:
         logger.warning("[Prewarm] stage=0.5 tiktoken warm-up failed", exc_info=True)
 
 
-async def warmup_import_and_checkpointer() -> None:
-    """阶段1/2：interface_deep import + checkpointer。
-
-    快速、有界、不抛异常（失败仅告警）。本函数由 ``_startup_warmup_task`` 承载，
-    ``ensure_interface_deep_and_checkpointer`` 兜底 await 本 task 时只会等待
-    阶段1/2 完成，不会被阶段3 的慢速 query 拖住。
-    """
-    # 延迟 import：避免模块加载时拉起 interface_deep（破坏 fire-and-forget 语义）。
+async def _warm_config_and_runtime() -> None:
     from jiuwenswarm.server.agent_ws_server import (
         _warm_interface_deep_module,
-    )
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        ensure_persistent_checkpointer,
     )
 
     # 阶段0：合并配置缓存预热。
@@ -188,16 +179,31 @@ async def warmup_import_and_checkpointer() -> None:
         (time.perf_counter() - t0) * 1000,
     )
 
-    # 阶段2：checkpointer（原 ensure_persistent_checkpointer 职责，DeepAgent 构建前置）。
+
+async def _warm_checkpointer() -> None:
     t0 = time.perf_counter()
     try:
-        await ensure_persistent_checkpointer()
+        # Import the backend directly: importing its adapter re-export here
+        # would wait on the runtime import that this I/O should overlap.
+        backend = await asyncio.to_thread(
+            importlib.import_module, "jiuwenswarm.server.runtime.agent_adapter.deep.checkpoint_db",
+        )
+        await backend.ensure_persistent_checkpointer()
     except Exception:  # noqa: BLE001
         logger.warning("[Prewarm] stage=2 checkpointer failed", exc_info=True)
     logger.info(
         "[Prewarm] stage=2 name=checkpointer elapsed_ms=%.1f",
         (time.perf_counter() - t0) * 1000,
     )
+
+
+async def warmup_import_and_checkpointer(*, parallel_checkpoint: bool = False) -> None:
+    """Join both startup stages before requests or the optional warmup query proceed."""
+    if parallel_checkpoint:
+        await asyncio.gather(_warm_config_and_runtime(), _warm_checkpointer())
+    else:
+        await _warm_config_and_runtime()
+        await _warm_checkpointer()
 
 
 async def warmup_deep_agent_query(

@@ -35,8 +35,7 @@ flash 行为由类常量定义：
 - 工具工厂与生命周期 — ``_build_web_tools`` / ``_build_cron_tools`` /
   ``_cron_tool_names`` / ``_build_progressive_tool_rail``，仅为 flash 注册
   ``web_flash`` 与 ``cron_flash``。
-- :meth:`create_instance` — 先合并 flash react 覆盖进 config_base，再
-  ``await super().create_instance(...)``。
+- :meth:`_prepare_instance_config_and_checkpoint` — 在 checkpoint I/O 期间补全基础配置并应用 Flash 覆盖。
 - :meth:`_apply_reload_config_snapshot` — super 把 ``_config_cache`` 重置成全局
   react，这里再合一次 flash 覆盖并重置两个 cache，防止热重载把 task_loop 翻回 true。
 - :meth:`_instantiate_rails` — super 的 ``_build_agent_rails`` 实例化前调用本方法；
@@ -877,8 +876,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     ) -> None:
         """初始化 DeepAgent 实例（flash 模式）.
 
-        先 resolve config_base（合并模板默认），再把 flash 的 react/evolution 覆盖
-        合并进去，然后委托父类 ``create_instance`` 完成其余初始化。父类会再 resolve
+        准备 checkpoint 时合并模板默认值和 Flash 的 react/evolution 覆盖。
+        父类绑定请求环境后会再 resolve
         一次 config_base（``fill_template_defaults`` 幂等补缺，flash 的显式 react 值
         不被覆盖），且后续 coalesce / merge_memory / merge_enterprise_models 各只动
         自己的字段，故 flash 的 ``enable_task_loop=false`` 等配置一路传到
@@ -886,11 +885,35 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """
         request = config.get("request") if isinstance(config, dict) else None
         with self._prepare_flash_startup(request):
-            resolved = _resolve_instance_config_base(config_base)
-            resolved = self._apply_flash_react_override(resolved)
             await super().create_instance(
-                config=config, mode=mode, sub_mode=sub_mode, config_base=resolved
+                config=config, mode=mode, sub_mode=sub_mode, config_base=config_base
             )
+
+    async def _prepare_instance_config_and_checkpoint(
+        self, config_base: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if self._checkpointer is not None:
+            # Session children normally inherit the tenant handle from the parent.
+            resolved = self._resolve_flash_instance_config(config_base)
+            await self.set_checkpoint()
+            return resolved
+
+        checkpoint = asyncio.create_task(self.set_checkpoint())
+        try:
+            # to_thread copies the tenant context and lets database round trips
+            # progress while the local template is read and parsed.
+            resolved = await asyncio.to_thread(self._resolve_flash_instance_config, config_base)
+            await checkpoint
+            return resolved
+        except BaseException:
+            checkpoint.cancel()
+            await asyncio.gather(checkpoint, return_exceptions=True)
+            raise
+
+    def _resolve_flash_instance_config(
+        self, config_base: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        return self._apply_flash_react_override(_resolve_instance_config_base(config_base))
 
     async def _apply_reload_config_snapshot(
         self,

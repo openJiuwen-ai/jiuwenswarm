@@ -263,7 +263,8 @@ async def ensure_interface_deep_and_checkpointer() -> None:
     """
     task = _startup_warmup_task
     if task is not None and not task.done():
-        await task
+        # A disconnected request owns its wait, not the server's startup work.
+        await asyncio.shield(task)
     if _INTERFACE_DEEP_MODULE not in sys.modules:
         await _warm_interface_deep_module()
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -711,14 +712,18 @@ class AgentWebSocketServer:
         #     避免首请求被预热 query（mock ~2-3s / 真实 LLM 最长 120s）阻塞。
         global _startup_warmup_task
 
-        wm = (get_config().get("startup") or {}).get("warmup") or {}
+        config = get_config()
+        wm = (config.get("startup") or {}).get("warmup") or {}
         if not wm.get("enabled", True):  # 默认开启；关闭时跳过预热
             _startup_warmup_task = None
         else:
+            flash = config.get("flash")
+            parallel_checkpoint = isinstance(flash, dict) and flash.get("enabled") is True
+
             async def _warmup_phase12() -> None:
                 from jiuwenswarm.server.runtime.prewarm import warmup_import_and_checkpointer
 
-                await warmup_import_and_checkpointer()
+                await warmup_import_and_checkpointer(parallel_checkpoint=parallel_checkpoint)
 
             async def _warmup_phase3() -> None:
                 from jiuwenswarm.server.runtime.prewarm import warmup_deep_agent_query
