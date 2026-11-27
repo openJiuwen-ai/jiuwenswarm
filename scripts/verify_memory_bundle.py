@@ -8,8 +8,14 @@ import os
 import subprocess
 import sys
 import traceback
+from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+
+def verify_memory_portal_resources() -> None:
+    """Fail if the browser entry page was omitted from the frozen bundle."""
+    files("jiuwen_memory_entry.portal").joinpath("index.html").read_bytes()
 
 
 async def verify_memory_runtime(root: Path) -> None:
@@ -102,6 +108,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     if getattr(sys, "frozen", False):
         try:
+            verify_memory_portal_resources()
             with TemporaryDirectory(prefix="memory-profile-check-") as directory:
                 asyncio.run(verify_memory_runtime(Path(directory)))
         except Exception:
