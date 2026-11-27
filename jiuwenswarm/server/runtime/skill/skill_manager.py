@@ -170,6 +170,11 @@ _SKILL_ZIP_MAX_SINGLE_FILE_BYTES = 32 * 1024 * 1024
 _SKILL_ZIP_MAX_PATH_DEPTH = 20
 
 
+def format_size_mb(num_bytes: int) -> str:
+    """Format byte counts for i18n detail_params (one decimal MB)."""
+    return f"{max(0, int(num_bytes)) / (1024 * 1024):.1f}"
+
+
 def _discard_uploaded_skill_zip(src: Path) -> None:
     """删除两阶段上传留下的临时 zip（仅限上传专属目录，best-effort）。"""
     from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
@@ -313,10 +318,22 @@ class SkillRpcError(Exception):
 
     code: str
     message: str
+    detail_key: str
+    detail_params: dict[str, Any]
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        detail_key: str = "",
+        detail_params: dict[str, Any] | None = None,
+    ) -> None:
         self.code = code
         self.message = message
+        # 前端按 detail_key 走 i18n 渲染；message 保留完整文案做兜底。
+        self.detail_key = detail_key
+        self.detail_params = detail_params or {}
         super().__init__(message)
 
 
@@ -5974,6 +5991,8 @@ class SkillManager:
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_PACKAGE,
                 "不是有效的 Skill zip/.skill 包",
+                detail_key="skills.errors.uploadUnpackFailed",
+                detail_params={"error": str(exc)},
             ) from exc
         except SkillRpcError:
             raise
@@ -5983,7 +6002,11 @@ class SkillManager:
             path_related = "路径" in msg or "path" in lower
             zip_or_link = "zip" in lower or "symlink" in lower
             if path_related or zip_or_link:
-                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, msg) from exc
+                raise SkillRpcError(
+                    ERROR_SKILL_UNSAFE_PATH,
+                    msg,
+                    detail_key="skills.errors.uploadUnsafePath",
+                ) from exc
             raise
 
         skill_dir = self._locate_skill_dir(dest_dir)
@@ -5991,6 +6014,7 @@ class SkillManager:
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_PACKAGE,
                 "包内未找到 SKILL.md，不是有效 Skill 包",
+                detail_key="skills.errors.uploadMissingSkillMd",
             )
         self._assert_skill_package_safe(skill_dir)
         return skill_dir
@@ -6004,7 +6028,11 @@ class SkillManager:
         path_str = str(params.get("path") or "").strip()
         overwrite = self._parse_overwrite(params.get("overwrite", False))
         if not path_str:
-            raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少上传文件 path")
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                "缺少上传文件路径",
+                detail_key="skills.errors.uploadMissingPath",
+            )
 
         src = Path(path_str)
         try:
@@ -6013,21 +6041,29 @@ class SkillManager:
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_PACKAGE,
                 f"上传文件不存在: {path_str}",
+                detail_key="skills.errors.uploadFileMissing",
+                detail_params={"path": path_str},
             ) from exc
 
         try:
             if not src.is_file():
-                raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "上传内容不是文件")
+                raise SkillRpcError(
+                    ERROR_SKILL_INVALID_PACKAGE,
+                    "上传内容不是文件",
+                    detail_key="skills.errors.uploadMustBeFile",
+                )
             name_lower = src.name.lower()
             if name_lower.endswith(".skill") or name_lower.endswith(".skill.zip"):
                 raise SkillRpcError(
                     ERROR_SKILL_INVALID_PACKAGE,
                     "仅接受 .zip 文件",
+                    detail_key="skills.errors.uploadSkillZipRejected",
                 )
             if not name_lower.endswith(".zip"):
                 raise SkillRpcError(
                     ERROR_SKILL_INVALID_PACKAGE,
                     "仅接受 .zip 文件",
+                    detail_key="skills.errors.uploadZipOnly",
                 )
 
             size = src.stat().st_size
@@ -6035,6 +6071,11 @@ class SkillManager:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"上传包超过限制（{SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
+                    detail_key="skills.errors.skillPackageTooLarge",
+                    detail_params={
+                        "sizeMB": format_size_mb(size),
+                        "limitMB": format_size_mb(SKILL_ZIP_MAX_UPLOAD_BYTES),
+                    },
                 )
 
             with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_upload_") as tmpdir:
@@ -6476,23 +6517,35 @@ class SkillManager:
         try:
             metadata, _ = SkillManager._parse_skill_frontmatter(_read_text_long(path))
         except (OSError, ValueError) as exc:
-            raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_METADATA,
+                str(exc),
+                detail_key="skills.errors.invalidMetadata",
+                detail_params={"error": str(exc)},
+            ) from exc
         name = metadata.get("name")
         if not isinstance(name, str) or not name.strip():
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_METADATA,
                 "SKILL.md YAML 须明确包含非空字符串 name",
+                detail_key="skills.errors.invalidMetadataName",
             )
         description = metadata.get("description")
         if not isinstance(description, str) or not description.strip():
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_METADATA,
                 "SKILL.md YAML 须明确包含非空字符串 description",
+                detail_key="skills.errors.invalidMetadataDescription",
             )
         try:
             metadata["name"] = _validate_skill_name(name.strip())
         except ValueError as exc:
-            raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_METADATA,
+                str(exc),
+                detail_key="skills.errors.invalidMetadata",
+                detail_params={"error": str(exc)},
+            ) from exc
         metadata["description"] = description.strip()
         return metadata
 
@@ -6507,18 +6560,27 @@ class SkillManager:
             raise SkillRpcError(
                 ERROR_SKILL_RESERVED_PATH,
                 "Skill 包不得包含根级 .archive/",
+                detail_key="skills.errors.reservedArchivePath",
             )
         md = skill_dir / "SKILL.md"
         if not _is_file_long(md):
             # locate 可能找到子目录
             found = self._try_find_skill_file(skill_dir)
             if found is None:
-                raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少 SKILL.md")
+                raise SkillRpcError(
+                    ERROR_SKILL_INVALID_PACKAGE,
+                    "缺少 SKILL.md",
+                    detail_key="skills.errors.uploadMissingSkillMd",
+                )
             md = found
         declared = self._validate_skill_metadata(md)
         meta = self._parse_skill_md(md)
         if meta is None:
-            raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, "无法解析 SKILL.md")
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_METADATA,
+                "无法解析 SKILL.md",
+                detail_key="skills.errors.invalidMetadataUnparsable",
+            )
         if str(meta.get("kind") or "").strip().casefold() == "skillpack":
             if not allow_skillpack:
                 raise SkillRpcError(
@@ -6528,7 +6590,12 @@ class SkillManager:
             try:
                 load_skillpack(skill_dir)
             except SkillPackValidationError as exc:
-                raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+                raise SkillRpcError(
+                    ERROR_SKILL_INVALID_METADATA,
+                    str(exc),
+                    detail_key="skills.errors.invalidMetadata",
+                    detail_params={"error": str(exc)},
+                ) from exc
         meta["name"] = declared["name"]
         meta["description"] = declared["description"]
         return meta
@@ -6580,11 +6647,15 @@ class SkillManager:
                     raise SkillRpcError(
                         ERROR_SKILL_NAME_CONFLICT,
                         f"skill `{skill_name}` is prebuilt and cannot be overwritten",
+                        detail_key="skills.errors.prebuiltReadOnly",
+                        detail_params={"name": skill_name},
                     )
                 if existing_type == "builtin":
                     raise SkillRpcError(
                         ERROR_SKILL_BUILTIN_READ_ONLY,
                         f"内置 Skill 不可覆盖: {skill_name}",
+                        detail_key="skills.errors.builtinReadOnly",
+                        detail_params={"name": skill_name},
                     )
 
         if existing:
@@ -6592,11 +6663,15 @@ class SkillManager:
                 raise SkillRpcError(
                     ERROR_SKILL_BUILTIN_READ_ONLY,
                     f"内置 Skill 不可覆盖: {skill_name}",
+                    detail_key="skills.errors.builtinReadOnly",
+                    detail_params={"name": skill_name},
                 )
             if not force:
                 raise SkillRpcError(
                     conflict_code or ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
                     f"skill {skill_name} 已存在，需确认覆盖",
+                    detail_key="skills.errors.importOverwriteRequired",
+                    detail_params={"name": skill_name},
                 )
             preserved_source = self._resolve_display_source_for_import(skill_name)
             try:
@@ -9405,7 +9480,11 @@ class SkillManager:
         # zipfile 会在 NUL 处截断文件名，须在写入任何成员前检查原始名称和路径。
         for info in zf.infolist():
             if "\0" in info.orig_filename:
-                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "ZIP 包含非法文件名")
+                raise SkillRpcError(
+                    ERROR_SKILL_UNSAFE_PATH,
+                    "ZIP 包含非法文件名",
+                    detail_key="skills.errors.uploadUnsafePath",
+                )
             raw = info.orig_filename.replace("\\", "/")
             if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw) or ".." in PurePosixPath(raw).parts:
                 raise RuntimeError("ZIP 包含非法路径")
@@ -9426,6 +9505,8 @@ class SkillManager:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 目录深度超过限制（{_SKILL_ZIP_MAX_PATH_DEPTH}）",
+                    detail_key="skills.errors.uploadZipDepthExceeded",
+                    detail_params={"limit": _SKILL_ZIP_MAX_PATH_DEPTH},
                 )
             dest_path = dest_root.joinpath(*rel.parts)
             try:
@@ -9441,17 +9522,29 @@ class SkillManager:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 文件数量超过限制（{_SKILL_ZIP_MAX_FILE_COUNT}）",
+                    detail_key="skills.errors.uploadZipFileCountExceeded",
+                    detail_params={"limit": _SKILL_ZIP_MAX_FILE_COUNT},
                 )
             declared = int(getattr(info, "file_size", 0) or 0)
             if declared > _SKILL_ZIP_MAX_SINGLE_FILE_BYTES:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 单文件超过限制（{_SKILL_ZIP_MAX_SINGLE_FILE_BYTES} 字节）",
+                    detail_key="skills.errors.skillPackageSingleFileTooLarge",
+                    detail_params={
+                        "fileName": rel_str,
+                        "sizeMB": format_size_mb(declared),
+                        "limitMB": format_size_mb(_SKILL_ZIP_MAX_SINGLE_FILE_BYTES),
+                    },
                 )
             if total_uncompressed + max(declared, 0) > _SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 解包总大小超过限制（{_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES} 字节）",
+                    detail_key="skills.errors.skillPackageUncompressedTooLarge",
+                    detail_params={
+                        "limitMB": format_size_mb(_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES),
+                    },
                 )
             # 越界校验已在上方完成，此处仅处理超长路径的落盘兜底
             _mkdir_long(dest_path.parent)
@@ -9461,12 +9554,21 @@ class SkillManager:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 单文件超过限制（{_SKILL_ZIP_MAX_SINGLE_FILE_BYTES} 字节）",
+                    detail_key="skills.errors.skillPackageSingleFileTooLargeStreaming",
+                    detail_params={
+                        "fileName": rel_str,
+                        "limitMB": format_size_mb(_SKILL_ZIP_MAX_SINGLE_FILE_BYTES),
+                    },
                 )
             total_uncompressed += len(data)
             if total_uncompressed > _SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 解包总大小超过限制（{_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES} 字节）",
+                    detail_key="skills.errors.skillPackageUncompressedTooLarge",
+                    detail_params={
+                        "limitMB": format_size_mb(_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES),
+                    },
                 )
             _write_bytes_long(dest_path, data)
 

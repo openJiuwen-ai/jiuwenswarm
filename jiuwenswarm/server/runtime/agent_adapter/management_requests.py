@@ -280,6 +280,13 @@ class ManagementRequests:
             code = getattr(exc, "code", None)
             if isinstance(code, str) and code.strip():
                 err_payload["code"] = code.strip()
+            # Preserve localization fields through the deferred management boundary.
+            detail_key = getattr(exc, "detail_key", None)
+            if isinstance(detail_key, str) and detail_key.strip():
+                err_payload["detail_key"] = detail_key.strip()
+                detail_params = getattr(exc, "detail_params", None)
+                if isinstance(detail_params, dict) and detail_params:
+                    err_payload["detail_params"] = detail_params
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
