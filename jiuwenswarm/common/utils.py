@@ -1815,6 +1815,9 @@ def prepare_local_gateway_config(env: dict[str, str]) -> None:
     gateway_config = get_gateway_config_file(env=env)
     if env.get(key, "").strip():
         env[key] = str(gateway_config.parent)
+        if not is_agentos_runtime():
+            if gateway_config.is_file():
+                _migrate_local_gateway_extension_dirs(gateway_config)
         return
     if is_agentos_runtime():
         return
