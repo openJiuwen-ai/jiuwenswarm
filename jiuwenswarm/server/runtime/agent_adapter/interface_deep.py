@@ -21476,8 +21476,6 @@ class JiuWenSwarmDeepAdapter:
                         send_without_output=False,
                     )
                 )
-                if interaction_stream is None and not permission_dispatched:
-                    self._permission_dispatch.release(inputs)
             # ``update_state`` alone is process-local. Checkpoint the resolved
             # turn before waiting on the runner so a server restart cannot
             # reset this session's next turn number to 1.
@@ -23112,11 +23110,6 @@ class JiuWenSwarmDeepAdapter:
                         send_without_output=False,
                     )
                 )
-                if interaction_stream is None:
-                    async for chunk in _yield_runtime_accepted():
-                        yield chunk
-                    interaction_stream_abort = False
-                    return
                 server_logger.info(
                     "[AgentServer] message dispatched to runner streaming: session_id=%s "
                     "request_id=%s channel_id=%s mode=%s dispatch_ms=%.1f query=%s",
