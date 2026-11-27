@@ -18751,22 +18751,23 @@ class JiuWenSwarmDeepAdapter:
             raise RootPermissionQueueError("permission_dispatch_handoff_missing")
         stream = None
         try:
-            # Ordinary and Smart interrupt answers wait for the old reader.
-            # An ACK-only inject into a lease with EOF already queued can lose
-            # all resumed output. Active Goal readers keep their live-owner
-            # injection path instead of waiting for a stream that stays open.
+            # An idle follow-on chat can arrive before the old reader has
+            # closed. It needs its own output lease before we send the input.
+            # Interrupt answers also wait unless an active Goal owns the stream.
             previous = getattr(self, "_interaction_output_handoff", None)
             if previous is not None and previous.owner is self._instance:
-                if (
-                    self._is_interrupt_resume_dispatch(request.params)
-                    and not self._goal_record_is_active()
-                ):
+                resume_interrupt = self._is_interrupt_resume_dispatch(request.params)
+                needs_new_reader = not send_without_output and not previous.drained.is_set() and (
+                    getattr(self._instance, "active_round", None) is None
+                )
+                if (resume_interrupt or needs_new_reader) and not self._goal_record_is_active():
                     await previous.wait()
             stream = await self._instance.attach_output()
-            if stream is None and (answer is not None or not send_without_output):
+            if stream is None:
                 if answer is not None:
                     raise RootPermissionQueueError("permission_queue_output_unavailable")
-                return None, False
+                if not send_without_output:
+                    raise RuntimeError("会话仍有活动的输出流，本条消息未执行，请稍后重试。")
             if (
                 stream is not None
                 and answer is None

@@ -49,10 +49,12 @@ Work/Code retain their existing mode switches and local-memory gate.
 `memory.builtin.jiuwen.portal.enabled` only controls the management page.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
+import time
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -421,9 +423,65 @@ class MemoryRailSpec:
 
 def _work_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSpec:
     from openjiuwen.harness.rails import JiuwenMemoryRail
+    from openjiuwen.harness.rails.memory.jiuwen_memory_rail import _SYNC_BREAKER_THRESHOLD, _SYNC_TURN_TIMEOUT
 
     class SwarmJiuwenMemoryRail(JiuwenMemoryRail):
         """Route turn callbacks and tool defaults using the bound project path."""
+
+        MAX_PENDING_SYNCS = 16
+
+        def __init__(self, provider: Any, **kwargs: Any) -> None:
+            super().__init__(provider, **kwargs)
+            self._sync_lock = asyncio.Lock()
+            self._pending_syncs: set[asyncio.Task[None]] = set()
+
+        async def after_invoke(self, ctx: Any) -> None:
+            if not self._initialized or not self._available:
+                return
+            completed = self._turn_buffer.finish(ctx)
+            if completed is None:
+                return
+            if len(self._pending_syncs) >= self.MAX_PENDING_SYNCS:
+                logger.warning("[JiuwenRailBuilder] memory sync backlog full; skipping turn extraction")
+                return
+
+            query, output = completed
+            # Capture the project now. The next invocation may change it
+            # while this turn waits for its background write.
+            project = self._resolve_project(ctx)
+            task = asyncio.create_task(self._sync_completed_turn(query, output, project))
+            self._pending_syncs.add(task)
+            task.add_done_callback(self._pending_syncs.discard)
+
+        async def _sync_completed_turn(self, query: str, output: str, project: str | None) -> None:
+            async with self._sync_lock:
+                if self._sync_consecutive_failures >= _SYNC_BREAKER_THRESHOLD:
+                    if time.monotonic() < self._sync_breaker_until:
+                        return
+                    self._sync_consecutive_failures = 0
+                try:
+                    await asyncio.wait_for(
+                        self._provider.sync_turn(
+                            query, output,
+                            user_id=self._user_id,
+                            scope_id=self._scope_id,
+                            agent_id=self._agent_id,
+                            session_id=self._session_id,
+                            project=project,
+                        ),
+                        timeout=_SYNC_TURN_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    self._record_sync_failure(f"sync_turn timed out after {_SYNC_TURN_TIMEOUT}s")
+                except Exception as exc:
+                    self._record_sync_failure(str(exc))
+                else:
+                    self._sync_consecutive_failures = 0
+
+        def uninit(self, agent: Any) -> None:
+            for task in self._pending_syncs:
+                task.cancel()
+            super().uninit(agent)
 
         @staticmethod
         def _resolve_project_from_agent(agent: Any) -> str | None:
