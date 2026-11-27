@@ -1179,7 +1179,7 @@ class RuntimeSupervisor:
     async def _migrate_legacy_workers(self, *, deadline: float) -> None:
         """Retire verified predecessors; unrelated historical IPC cannot block boot."""
         from jiuwenswarm.server.supervisor.worker_process import legacy_socket_paths
-        from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, worker_process
+        from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker
 
         if self._socket_path != default_socket_path():
             return
@@ -1193,11 +1193,6 @@ class RuntimeSupervisor:
             try:
                 remaining = max(0, deadline - time.monotonic())
                 hello = await asyncio.wait_for(connection.recv(), timeout=min(.25, remaining))
-                try:
-                    worker_process(hello, path, allow_legacy=True)
-                except RuntimeError as exc:
-                    logger.warning("[Supervisor] leaving historical Worker isolated at %s: %s", path, exc)
-                    continue
                 await retire_worker(connection, hello, path,
                     deadline=min(deadline, time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT), allow_legacy=True)
             except (OSError, RuntimeError, asyncio.IncompleteReadError) as exc:

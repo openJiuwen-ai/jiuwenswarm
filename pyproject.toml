@@ -28,7 +28,7 @@ dependencies = [
     "filelock>=3.25.0,<4",
     "openjiuwen-e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@10ad4a2eeff11e0600c06a8235a797c5dd9f0a38#subdirectory=openjiuwen-e2a",
     # Gateway 传输层已拆分为独立仓 agent-gateway
-    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@5b156a4df54cec0f747c7503ce800cdf406e6cfe",
+    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@e4eb71beb91778752910c5f2fa4dffea0b80b601",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -47,6 +47,8 @@ dependencies = [
     "greenlet>=3.3.2,<4",
     "skillnet-ai==0.0.16",
     "mutagen>=1.47.0,<2",
+    "olefile==0.47",
+    "python-oxmsg==0.0.2",
     "google-genai>=2.30,<3",
     # Surface transitive compatibility caps early to avoid resolver backtracking.
     "google-api-core>=1.26,<2.36",
@@ -99,7 +101,7 @@ dependencies = [
 harmony = [
     "a4p==0.1.0",
     "openjiuwen-e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@10ad4a2eeff11e0600c06a8235a797c5dd9f0a38#subdirectory=openjiuwen-e2a",
-    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@5b156a4df54cec0f747c7503ce800cdf406e6cfe",
+    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@e4eb71beb91778752910c5f2fa4dffea0b80b601",
     "a2ui-agent-sdk==0.2.1",
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
@@ -119,6 +121,8 @@ harmony = [
     "greenlet>=3.3.2",
     "skillnet-ai==0.0.16",
     "mutagen>=1.47.0",
+    "olefile==0.47",
+    "python-oxmsg==0.0.2",
     "google-genai>=2.30",
     "opentelemetry-api>=1.28.0",
     "opentelemetry-sdk>=1.28.0",
@@ -262,7 +266,7 @@ override-dependencies = [
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "5b156a4df54cec0f747c7503ce800cdf406e6cfe" }
+agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "e4eb71beb91778752910c5f2fa4dffea0b80b601" }
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "61421984467d4b8f3ccdf82043fe356218754eb1" }
 openjiuwen-e2a = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "10ad4a2eeff11e0600c06a8235a797c5dd9f0a38", subdirectory = "openjiuwen-e2a" }
 

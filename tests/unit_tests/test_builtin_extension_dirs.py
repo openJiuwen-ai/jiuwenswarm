@@ -73,6 +73,27 @@ def test_gateway_migrates_stock_config(tmp_path: Path, monkeypatch):
         assert swarm_config.read_text(encoding="utf-8") == original
 
 
+def test_explicit_stock_gateway_config_is_migrated(tmp_path: Path, monkeypatch):
+    config = tmp_path / "config" / "config-gateway.yaml"
+    config.parent.mkdir(parents=True)
+    legacy_dirs = "${EXTENSION_DIRS:-agent_gateway/extensions}"
+    original = f'extensions:\n  extension_dirs: "{legacy_dirs}"\n'
+    config.write_text(original, encoding="utf-8")
+    swarm_config = tmp_path / "config" / "config.yaml"
+    swarm_config.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(utils, "is_agentos_runtime", lambda: False)
+
+    env = {"JIUWENSWARM_GATEWAY_CONFIG_DIR": str(config.parent)}
+    for _ in range(2):
+        utils.prepare_local_gateway_config(env)
+        assert env == {"JIUWENSWARM_GATEWAY_CONFIG_DIR": str(config.parent)}
+        assert config.read_text(encoding="utf-8") == original.replace(
+            legacy_dirs, f"{legacy_dirs};jiuwenswarm/extensions",
+        )
+        assert swarm_config.read_text(encoding="utf-8") == original
+
+
 @pytest.mark.parametrize("existing_gateway_config", [False, True])
 def test_desktop_gateway_prepares_config_before_import(tmp_path, monkeypatch, existing_gateway_config):
     from jiuwenswarm.channels.desktop.gateway_entry import main

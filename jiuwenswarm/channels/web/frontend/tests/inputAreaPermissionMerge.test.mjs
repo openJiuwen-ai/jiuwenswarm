@@ -334,7 +334,7 @@ test('web plus opens browser picker directly without a server file dialog', asyn
 });
 
 for (const edition of ['personal', 'enterprise']) {
-  test(`${edition} picker accepts EML and sends it through document persistence`, async () => {
+  test(`${edition} picker sends EML and MSG files through document persistence`, async () => {
     window.__JIUWENSWARM_EDITION__ = edition;
     try {
       await mount({}, async ({ props, render }) => {
@@ -349,19 +349,23 @@ for (const edition of ['personal', 'enterprise']) {
         assert.ok(accept.includes('.eml'));
         assert.ok(accept.includes('message/rfc822'));
         assert.ok(accept.includes('.pdf'));
-        assert.ok(!accept.includes('.msg'));
+        assert.ok(accept.includes('.msg'));
+        assert.ok(accept.includes('application/vnd.ms-outlook'));
         const email = new dom.window.File(['Subject: Example\r\n\r\nBody'], 'invoice.eml');
-        Object.defineProperty(input, 'files', { value: [email] });
+        const msgBytes = Uint8Array.of(0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1);
+        const msg = new dom.window.File([msgBytes], 'invoice.msg', { type: 'application/vnd.ms-outlook' });
+        Object.defineProperty(input, 'files', { value: [email, msg] });
         await act(async () => {
           input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-          for (let attempts = 0; received.length === 0 && attempts < 100; attempts += 1) {
+          for (let attempts = 0; received.length < 2 && attempts < 100; attempts += 1) {
             await new Promise((resolve) => setTimeout(resolve, 5));
           }
         });
-        assert.equal(received.length, 1);
-        assert.equal(received[0].type, 'document');
-        assert.equal(received[0].filename, 'invoice.eml');
-        assert.ok(received[0].base64Data);
+        assert.equal(received.length, 2);
+        assert.ok(received.every((item) => item.type === 'document'));
+        assert.ok(received.find((item) => item.filename === email.name)?.base64Data);
+        const persistedMsg = received.find((item) => item.filename === msg.name);
+        assert.equal(persistedMsg?.base64Data, Buffer.from(msgBytes).toString('base64'));
       });
     } finally {
       delete window.__JIUWENSWARM_EDITION__;
@@ -1641,6 +1645,12 @@ test('paused Owner retains its pause state while organization work exposes stop 
 
 
 test('actual Owner composer remains disabled after stop and metadata refresh while child runs', async () => {
+  const { maySnapshotRelightProcessing } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/interruptSettleGuard.js'
+  );
+  const { shouldKeepLocalCronProcessing } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/cron/cronProcessingGuard.js'
+  );
   const { startExpertRequest, clearOrganizationRequests, setOrganizationOwnerStopped,
     isOrganizationOwnerStopped, organizationOwnerStateRevision } = await import(
     '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/processing.js'
@@ -1652,6 +1662,12 @@ test('actual Owner composer remains disabled after stop and metadata refresh whi
     const chat = useChatStore.getState();
     const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
       useChatStore,
+      browserClientCapabilities: { getEpoch: () => 0 },
+      metadataDowngradeAllowedRef: { current: new Set() },
+      useCronStore: { getState: () => ({ lastRunSessionId: {} }) },
+      webClient,
+      maySnapshotRelightProcessing,
+      shouldKeepLocalCronProcessing,
       request: async () => ({ session_id: sessionId, is_processing: true, status: 'processing' }),
       sessionIdRef: { current: 'other-session' },
       upsertSessionMetadata() {},
@@ -1676,7 +1692,7 @@ test('actual Owner composer remains disabled after stop and metadata refresh whi
       t: key => key,
     });
     const cancel = loadCallback('hooks/useWebSocket.ts', 'cancel', {
-      interrupt, organizationOwnerStopTarget,
+      interrupt, organizationOwnerStopTarget, useChatStore,
       useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled: () => assert.fail('child cancelled') }) },
       onErrorRef: { current: error => assert.fail(error) }, t: key => key,
     });

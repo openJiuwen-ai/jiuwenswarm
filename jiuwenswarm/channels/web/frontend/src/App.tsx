@@ -325,7 +325,6 @@ function normalizeConfigBoolean(value: unknown): boolean {
 
 const rightPanelWebUIStyles: WebUIStyleOverrides = {
   Panel: { className: 'flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-auto p-3' },
-  Box: { style: { minWidth: 0, minHeight: 0 } },
 };
 
 type MainNavKey = SidebarNavKey | 'connectorMarket' | 'webui' | ApplicationPluginNavKey;

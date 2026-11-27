@@ -129,6 +129,8 @@ export interface Message {
   inputRequestId?: string | null;
   /** Terminal input outcome retained after transient request notices disappear. */
   inputOutcome?: 'failed' | 'stopped';
+  /** Error from a foreground chat turn, available on live and restored messages. */
+  turnError?: string;
   /** A displayed supplement belongs to the existing execution, not a new user turn. */
   supplementalInput?: {
     executionId: string;

@@ -16,13 +16,13 @@ def test_app_web_exports_enterprise_backend(monkeypatch):
 
     for name, value in {
         "JIUWENSWARM_EDITION": "enterprise",
-        "USER_BACKEND_DB_USER": "fixture_reader",
-        "USER_BACKEND_DB_PASSWORD": "fixture-value",
-        "USER_BACKEND_DB_TYPE": "mariadb",
-        "USER_BACKEND_DB_HOST": "manager-db.example",
-        "USER_BACKEND_DB_PORT": "3306",
-        "USER_BACKEND_DB_NAME": "manager",
-        "USER_BACKEND_IDENTITY_URL": "http://identity.example",
+        "WEB_SERVER_DB_USER": "fixture_reader",
+        "WEB_SERVER_DB_PASSWORD": "fixture-value",
+        "WEB_SERVER_DB_TYPE": "mariadb",
+        "WEB_SERVER_DB_HOST": "manager-db.example",
+        "WEB_SERVER_DB_PORT": "3306",
+        "WEB_SERVER_DB_NAME": "manager",
+        "WEB_SERVER_IDENTITY_URL": "http://identity.example",
     }.items():
         monkeypatch.setenv(name, value)
 
@@ -241,9 +241,9 @@ def test_proxy_preserves_query_parameters_and_escapes_raw_utf8(path):
 
 
 @pytest.mark.parametrize("username", ["root", "postgres", ""])
-def test_user_backend_rejects_builtin_or_missing_database_user(monkeypatch, username):
-    monkeypatch.setenv("USER_BACKEND_DB_TYPE", "mariadb")
-    monkeypatch.setenv("USER_BACKEND_DB_USER", username)
-    monkeypatch.setenv("USER_BACKEND_DB_PASSWORD", "fixture-value")
+def test_web_server_rejects_builtin_or_missing_database_user(monkeypatch, username):
+    monkeypatch.setenv("WEB_SERVER_DB_TYPE", "mariadb")
+    monkeypatch.setenv("WEB_SERVER_DB_USER", username)
+    monkeypatch.setenv("WEB_SERVER_DB_PASSWORD", "fixture-value")
     with pytest.raises(ValueError, match="dedicated user-plane database account"):
         Settings.from_env()

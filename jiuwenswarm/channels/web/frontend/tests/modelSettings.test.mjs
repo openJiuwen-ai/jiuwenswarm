@@ -1257,7 +1257,7 @@ test('model dialog uses provider terminology and validates as part of confirmati
   assert.equal(zh.settingsPanel.models.vendorPlaceholder, '请选择');
   assert.equal(zh.settingsPanel.models.apiKeyLabel, 'API Key');
   assert.equal(zh.settingsPanel.models.outputTokens, '模型单次最大输出');
-  assert.equal(zh.settingsPanel.models.outputTokensUnlimited, '不限');
+  assert.equal(zh.settingsPanel.models.outputTokensUnlimited, '模型默认值');
   assert.equal(zh.settingsPanel.models.apiKeyTooLong, 'API Key 过长，请控制在 2048 字符以内');
   assert.equal(zh.settingsPanel.models.fetchModelsLoading, '获取中...');
   assert.equal(zh.settingsPanel.models.testingConnection, '正在测试连接…');
@@ -1265,7 +1265,7 @@ test('model dialog uses provider terminology and validates as part of confirmati
   assert.equal(zh.settingsPanel.models.continueSave, '忽略测试并保存');
   assert.equal(en.settingsPanel.models.vendor, 'Model provider');
   assert.equal(en.settingsPanel.models.outputTokens, 'Maximum output per request');
-  assert.equal(en.settingsPanel.models.outputTokensUnlimited, 'Unlimited');
+  assert.equal(en.settingsPanel.models.outputTokensUnlimited, 'Model default');
   assert.equal(en.settingsPanel.models.vendorPlaceholder, 'Select');
   assert.equal(en.settingsPanel.models.apiKeyTooLong, 'API key is too long. Use 2048 characters or fewer');
   assert.equal(en.settingsPanel.models.fetchModelsLoading, 'Fetching...');
