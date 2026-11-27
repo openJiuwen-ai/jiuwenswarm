@@ -580,7 +580,9 @@ class FlashEditFileTool(EditFileTool):
                 if variant is None:
                     return ToolOutput(
                         success=False,
-                        error=f"{where} not found in '{file_path}'.",
+                        error=self._old_string_not_found_error(
+                            file_path, old_clean, new_clean, content_lf, where=where
+                        ),
                     )
                 match_str = variant
                 new_clean = self._preserve_quote_style(old_clean, match_str, new_clean)
