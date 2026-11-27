@@ -85,6 +85,45 @@ async def test_every_other_question_is_kept(guard):
     assert await _level(guard, "read_file", {"file_path": str(guard.skill / ".env.local")}) != PermissionLevel.ALLOW
 
 
+def _with_rules(defaults=None, paths=()) -> dict:
+    permissions = _permissions()
+    if defaults:
+        permissions["file_guard"]["defaults"].update(defaults)
+    permissions["file_guard"]["paths"].extend(paths)
+    return permissions
+
+
+@pytest.mark.parametrize(
+    ("rules", "expected"),
+    [
+        pytest.param({"paths": [{"path": "{skill}", "match": "prefix", "read": "ask"}]},
+                     PermissionLevel.ASK, id="prefix-ask-on-the-skill-folder"),
+        pytest.param({"paths": [{"path": "**/capabilities/**", "match": "glob", "read": "ask"}]},
+                     PermissionLevel.ASK, id="glob-ask-on-the-skill-file"),
+        pytest.param({"paths": [{"path": "{skill}", "match": "prefix", "read": "deny"}]},
+                     PermissionLevel.DENY, id="prefix-deny-on-the-skill-folder"),
+        pytest.param({"paths": [{"path": "**/capabilities/**", "match": "glob", "read": "deny"}]},
+                     PermissionLevel.DENY, id="glob-deny-on-the-skill-file"),
+        pytest.param({"defaults": {"read": "deny"}}, PermissionLevel.DENY, id="default-deny"),
+    ],
+)
+async def test_an_explicit_rule_or_a_deny_on_a_skill_file_is_kept(guard, rules, expected):
+    """The exemption only lifts the question that file_guard.defaults asks; it changes no other rule."""
+    paths = [{**rule, "path": rule["path"].format(skill=guard.skill)} for rule in rules.get("paths", ())]
+    guard.rail.set_skill_read_roots(lambda: [str(guard.skills)])
+    guard.rail.update_config(_with_rules(rules.get("defaults"), paths))
+
+    assert await _level(guard, "read_file", {"file_path": str(guard.guide)}) == expected
+    assert await _level(guard, "bash", {"command": f"cat {guard.guide}"}) == expected
+
+
+async def test_a_deny_on_dev_null_is_kept(guard):
+    """A redirect to /dev/null is exempt only from the default question; a rule that denies it is kept."""
+    guard.rail.update_config(_with_rules(paths=[{"path": "/dev/null", "match": "prefix", "write": "deny"}]))
+
+    assert await _level(guard, "bash", {"command": "ls 2>/dev/null"}) == PermissionLevel.DENY
+
+
 async def test_exemption_survives_a_config_update(guard):
     guard.rail.set_skill_read_roots(lambda: [str(guard.skills)])
     guard.rail.update_config(_permissions())
