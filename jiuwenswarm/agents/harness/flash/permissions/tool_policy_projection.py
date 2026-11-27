@@ -6,6 +6,8 @@ from typing import Any
 
 from jiuwenswarm.common.tool_display import extract_call_goal
 
+from ..tools.todo_arguments import parse_todo_operation
+
 
 @dataclass(frozen=True)
 class Operation:
@@ -93,22 +95,11 @@ def project_operations(name: str, args: dict, config: dict) -> list[Operation]:
         ]
 
     if name == "todo":
-        action = str(args.get("action") or "").strip().lower()
-        if action not in {"create", "list", "get", "modify"}:
-            raise ValueError("invalid todo action")
+        action, modify = parse_todo_operation(args)
         inner = {k: v for k, v in args.items() if k != "action"}
         if action != "modify":
             return [Operation(f"todo_{action}", inner)]
-        modify = str(inner.pop("modify_action", "") or "").strip().lower()
-        if modify not in {
-            "update",
-            "append",
-            "delete",
-            "cancel",
-            "insert_before",
-            "insert_after",
-        }:
-            raise ValueError("invalid todo modify_action")
+        inner.pop("modify_action", None)
         operations = [Operation("todo_modify", {"action": modify, **inner})]
         names = set()
         if modify in {"append", "insert_before", "insert_after"}:

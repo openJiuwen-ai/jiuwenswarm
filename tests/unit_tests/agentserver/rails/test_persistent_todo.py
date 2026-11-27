@@ -207,8 +207,8 @@ async def test_list_merge_returns_old_generation_reminder() -> None:
         meta_data={"persistent": True},
     )
     tool = _TodoFile([reminder])
-    merged = await merge_persistent_list_items(tool, _State(), {"tasks": []})
-    assert merged["tasks"] == [
+    merged = await merge_persistent_list_items(tool, _State(), {"todos": []})
+    assert merged["todos"] == [
         {
             "id": "submit_test_report",
             "content": "明天下午2点提交测试报告",

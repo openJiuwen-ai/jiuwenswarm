@@ -187,3 +187,105 @@ def test_product_window_reaches_member_spec_and_survives_serialization(mode, rol
         restored.context_engine_config,
     ).context_window_tokens == 131_072
     assert base.context_engine_config is None
+
+
+def _defaults_config(*, model_name: str, catalog_window: int | None) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "model_client_config": {"model_name": model_name},
+        "model_config_obj": {},
+        "is_default": True,
+    }
+    if catalog_window is not None:
+        entry["context_window_tokens"] = catalog_window
+    return {
+        "models": {"defaults": [entry]},
+        "react": {"context_engine_config": {}},
+    }
+
+
+def test_selected_window_bypasses_team_hard_cap() -> None:
+    config = _defaults_config(model_name=_MODEL, catalog_window=1_048_576)
+    base = DeepAgentSpec(
+        context_engine_config={
+            "model_name": _MODEL,
+            "model_context_window_tokens": {_MODEL: 1_000_000},
+        }
+    )
+
+    result = _team_context_engine_config(config, base, selected_window=300_000)
+
+    assert result.context_window_tokens == 300_000
+
+
+def test_selected_ignored_under_enable_routing_falls_back_to_min() -> None:
+    config = _defaults_config(model_name=_MODEL, catalog_window=1_048_576)
+    base = DeepAgentSpec(
+        context_engine_config={
+            "model_name": _MODEL,
+            "model_context_window_tokens": {_MODEL: 1_000_000},
+        }
+    )
+
+    result = _team_context_engine_config(
+        config, base, selected_window=300_000, ignore_selected=True,
+    )
+
+    assert result.context_window_tokens == 200_000
+
+
+def test_catalog_window_enters_team_min_below_hard_cap() -> None:
+    config = _defaults_config(model_name=_MODEL, catalog_window=32_000)
+    base = DeepAgentSpec(
+        context_engine_config={
+            "model_name": _MODEL,
+            "model_context_window_tokens": {_MODEL: 1_000_000},
+        }
+    )
+
+    result = _team_context_engine_config(config, base)
+
+    assert result.context_window_tokens == 32_000
+
+
+def test_catalog_window_above_hard_cap_still_capped_at_200k() -> None:
+    config = _defaults_config(model_name=_MODEL, catalog_window=1_048_576)
+    base = DeepAgentSpec(
+        context_engine_config={
+            "model_name": _MODEL,
+            "model_context_window_tokens": {_MODEL: 1_000_000},
+        }
+    )
+
+    result = _team_context_engine_config(config, base)
+
+    assert result.context_window_tokens == 200_000
+
+
+def test_invalid_selected_falls_back_like_absent() -> None:
+    config = _defaults_config(model_name=_MODEL, catalog_window=32_000)
+    base = DeepAgentSpec(
+        context_engine_config={
+            "model_name": _MODEL,
+            "model_context_window_tokens": {_MODEL: 1_000_000},
+        }
+    )
+
+    result = _team_context_engine_config(config, base, selected_window="300000")
+
+    assert result.context_window_tokens == 32_000
+
+
+def test_build_member_spec_honours_selected_window() -> None:
+    config = _defaults_config(model_name=_MODEL, catalog_window=1_048_576)
+    base = DeepAgentSpec(
+        context_engine_config={
+            "model_name": _MODEL,
+            "model_context_window_tokens": {_MODEL: 1_000_000},
+        }
+    )
+
+    spec = build_member_deep_agent_spec(
+        config, "team", "leader", base, selected_window=300_000,
+    )
+
+    assert spec.context_engine_config.context_window_tokens == 300_000

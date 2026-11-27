@@ -17,6 +17,8 @@ Fixed schema maximizes LLM prefix caching while keeping rarely used tools reacha
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager, nullcontext
@@ -38,6 +40,9 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     build_native_image_tool_error,
     is_vision_tool,
     vision_tool_targets_all_provided,
+)
+from jiuwenswarm.agents.harness.common.tool_result_schema import (
+    normalize_tool_result,
 )
 from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
     InvokeToolInput,
@@ -70,13 +75,16 @@ _REQUIRED_SKILL_KEY = "required_skill"
 # name here does not register the tool; an input list without it is unchanged.
 _PINNED_SCHEMA_TOOL_NAME = "recall_compressed_context"
 _EAGER_DEEPRESEARCH_BINDINGS_KEY = "__eager_deepresearch_bindings__"
-_DEEPRESEARCH_CONTEXT_TOOLS = frozenset({
+_DEEPRESEARCH_DIRECT_CONTEXT_TOOLS = frozenset({
     "deepresearch_execute",
     "deepresearch_stream",
+    "deepresearch_register_report",
+})
+_DEEPRESEARCH_CONTEXT_TOOLS = _DEEPRESEARCH_DIRECT_CONTEXT_TOOLS | {
     "deepresearch_prepare_rewrite",
     "deepresearch_commit_rewrite",
     "deepresearch_generate_rewrite_html",
-})
+}
 _OFFICE_CLAW_SCHEDULE_THREAD_PIN_TOOLS = frozenset(
     {
         "office_claw_register_scheduled_task",
@@ -84,6 +92,208 @@ _OFFICE_CLAW_SCHEDULE_THREAD_PIN_TOOLS = frozenset(
         "office_claw_update_scheduled_task",
     }
 )
+# Terminal tool-failure loop guard (issue #6368). A tool that keeps returning
+# the same error for the same arguments carries no new information; waiting for
+# the model to notice wastes iterations and tokens. The counter lives in
+# ctx.extra, so it is scoped to one invocation and cleared by before_invoke.
+_FAILURE_LOOP_EXTRA_KEY = "__progressive_tool_failure_loop__"
+_FAILURE_LOOP_TRIPPED_KEY = "__progressive_tool_failure_loop_tripped__"
+_DEFAULT_FAILURE_LOOP_THRESHOLD = 3
+_FAILURE_LOOP_ERROR_MAX_CHARS = 300
+
+
+def _try_parse_json_dict(value: Any) -> dict | None:
+    """Parse a JSON-object string; return None for anything else."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _payload_error_text(payload: Any) -> str:
+    """Best-effort human-readable error text from a tool payload."""
+    if isinstance(payload, BaseException):
+        return str(payload).strip()
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            for key in ("message", "msg", "code", "error_message"):
+                value = error.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        if isinstance(error, str) and error.strip() and error.strip().lower() != "none":
+            return error.strip()
+        for key in ("error_message", "error_msg", "errMessage", "message", "content"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if isinstance(payload, str):
+        return payload.strip()
+    return ""
+
+
+def _unwrap_tool_failure(value: Any) -> tuple[bool, str]:
+    """Return (failed, error_text) for a tool result, unwrapping MCP envelopes.
+
+    ``RequestScopedOfficeClawMcpTool`` returns ``{"result": "<json text>"}``,
+    so a tool-level error sits one or more envelopes below the dict that this
+    rail used to stamp as ``success: True``. Normalize first (covers
+    ``success: false`` / status / error keys / exit codes), then peel
+    ``result`` wrappers and JSON strings until a payload remains.
+    """
+    if value is None:
+        return False, ""
+    if isinstance(value, BaseException):
+        return True, str(value).strip()
+    normalized = normalize_tool_result(value)
+    if normalized.get("status") != "success":
+        text = (
+            _payload_error_text(value)
+            or normalized.get("error_message")
+            or normalized.get("error")
+            or ""
+        )
+        return True, str(text).strip()
+    if isinstance(value, dict):
+        inner = value.get("result")
+        if isinstance(inner, str):
+            parsed = _try_parse_json_dict(inner)
+            if parsed is not None:
+                inner = parsed
+        if isinstance(inner, (dict, list)):
+            return _unwrap_tool_failure(inner)
+    return False, ""
+
+
+def _read_failure_loop_config() -> tuple[bool, int]:
+    """Read ``execution_guard.tool_failure_loop`` with fail-open defaults."""
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        guard = (get_config() or {}).get("execution_guard") or {}
+        policy = guard.get("tool_failure_loop") if isinstance(guard, Mapping) else None
+        if not isinstance(policy, Mapping):
+            policy = {}
+        enabled = policy.get("enabled", True) is not False
+        try:
+            threshold = int(policy.get("threshold", _DEFAULT_FAILURE_LOOP_THRESHOLD))
+        except (TypeError, ValueError):
+            logger.warning(
+                "%s invalid tool_failure_loop.threshold=%r; using default %s",
+                _LOG_PREFIX,
+                policy.get("threshold"),
+                _DEFAULT_FAILURE_LOOP_THRESHOLD,
+            )
+            threshold = _DEFAULT_FAILURE_LOOP_THRESHOLD
+        if threshold < 2:
+            logger.warning(
+                "%s tool_failure_loop.threshold=%s is below 2; using default %s",
+                _LOG_PREFIX,
+                threshold,
+                _DEFAULT_FAILURE_LOOP_THRESHOLD,
+            )
+            threshold = _DEFAULT_FAILURE_LOOP_THRESHOLD
+        return enabled, threshold
+    except Exception:
+        logger.warning(
+            "%s tool_failure_loop config unreadable; using defaults",
+            _LOG_PREFIX,
+            exc_info=True,
+        )
+        return True, _DEFAULT_FAILURE_LOOP_THRESHOLD
+
+# BUG20261117410859 注册即可见 floor 默认名单。
+# pptx-mcp 套件（生产 93 工具 request-scoped 注册实测名单）由通道在 PPT 会话
+# 按需挂载，却不在运维窄版 eager_tools 里：glm/deepseek 白名单模型下整组被裁，
+# 模型意图（继续建页/交付）与 schema 脱节，退化为 todo 空转直到 agent_ras
+# 熔断 OA.05000060。这些工具只在已注册（会话真的处于 PPT 语境）时才存在，
+# floor 对非 PPT 会话零影响。交付/委派/计划模式三组是窄版 eager 列表的
+# 已知缺口（send_file_to_user 缺失曾阻塞交付；plan 两件套见 BUG20261105402443）。
+# 主 / subagent / team 三个装配 profile 共用同一份名单（S_08）。
+DEFAULT_PROGRESSIVE_PROTECTED_EAGER_TOOLS: tuple[str, ...] = (
+    # —— pptx-mcp 套件 ——
+    "open_pptx",
+    "switch_file",
+    "ping",
+    "get_deck_outline",
+    "read_slide",
+    "suggest_font_size",
+    "render_slide",
+    "snapshot_slide",
+    "check_layout",
+    "execute_slide_script",
+    "get_native_capabilities",
+    "check_native_contract",
+    "read_template_structure",
+    "create_template_family",
+    "install_template",
+    "register_media",
+    "register_asset",
+    "describe_ops",
+    "apply_ops",
+    "prepare_slide_shell",
+    "compose_deck",
+    "batch_add_label",
+    "replace_text",
+    "batch_replace_text",
+    "replace_text_with_reflow",
+    "find_replace_display_text",
+    "organize_deck_sections",
+    "apply_semantic_theme",
+    "normalize_title_style",
+    "light_cleanup_slides",
+    "reflow_cards",
+    "refresh_executive_style",
+    "append_slide",
+    "compose_slide",
+    "duplicate_slide",
+    "move_slide",
+    "delete_slide",
+    "add_chart_to_slide",
+    "add_table_to_slide",
+    "begin_ai_run",
+    "commit_ai_run",
+    "list_ai_snapshots",
+    "restore_ai_snapshot",
+    "cancel_ai_run",
+    "undo",
+    "redo",
+    "save_pptx",
+    "insert_web_image",
+    "replace_image",
+    # —— 交付 / 委派 / 计划模式 ——
+    "send_file_to_user",
+    "task_tool",
+    "enter_plan_mode",
+    "exit_plan_mode",
+)
+
+
+def resolve_protected_eager_tools(lazy_cfg: Any) -> list[str]:
+    """Resolve ``tool_lazy_load.protected_eager_tools`` with the shared semantics.
+
+    Absent key / ``None`` / malformed value → code default list (existing ops
+    configs gain the floor without edits); explicit ``[]`` disables the floor.
+    Returns an order-preserving deduplicated list. Shared by the main / subagent
+    build (``agent_adapter/deep/progressive_tools.py``) and the team-member
+    build (``agents/swarm/providers/team_progressive.py``).
+    """
+    value = lazy_cfg.get("protected_eager_tools") if isinstance(lazy_cfg, Mapping) else None
+    if value is None:
+        names = list(DEFAULT_PROGRESSIVE_PROTECTED_EAGER_TOOLS)
+    elif isinstance(value, str):
+        names = [item.strip() for item in value.split(",") if item.strip()]
+    elif isinstance(value, list):
+        names = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        names = list(DEFAULT_PROGRESSIVE_PROTECTED_EAGER_TOOLS)
+    return list(dict.fromkeys(names))
 
 
 def _is_pinned_schema_tool(tool_name: str, registered_card: Any) -> bool:
@@ -133,16 +343,30 @@ class ProgressiveToolRail(DeepAgentRail):
     """Progressive tool visibility with a stable base eager-tools schema.
 
     - eager_tools: always visible in the model tools schema
+    - protected_eager_tools: eager floor (BUG20261117410859). Request-scoped MCP
+      suites (pptx-mcp) and delivery/delegation tools are registered by the
+      channel exactly when the session needs them; hiding them for whitelisted
+      models decouples model intent from the schema and degrades into
+      no-progress loops until the agent_ras breaker fires (OA.05000060).
+      Floor-ranked names stay schema-visible whenever registered, overriding
+      the eager intersection. Declared (required_skill) tools are NOT floor-
+      ranked: they follow the skill gate so "schema-visible" stays equivalent
+      to "directly callable". DisabledToolsRail blacklist still wins
     - skill-gated tools: direct-visible only while their declared skill is active
     - recall_compressed_context: schema-visible when registered and ungated,
-      ordered after eager and active skill-gated tools. Disabled and skill
-      gates still win. Absent from the input list, it is not invented
+      ordered after eager, floor-ranked and active skill-gated tools. Disabled
+      and skill gates still win. Absent from the input list, it is not invented
     - deferred_tools: registered in ability_manager but hidden from schema;
       accessed via tools_search (get schema) + invoke_tool (proxy call)
     - ordinary tool schema stays stable, maximizing LLM prefix cache
     """
 
     priority = 80
+    # Class-level fallbacks so bare instances (object.__new__ in tests) do not
+    # raise when the failure-loop policy is read before __init__ ran.
+    language: str = "cn"
+    _failure_loop_enabled: bool | None = None
+    _failure_loop_threshold: int = _DEFAULT_FAILURE_LOOP_THRESHOLD
     # Do NOT inherit this rail into a general-purpose subagent. init() /
     # before_invoke bind ``_deep_agent`` / ``_runtime_agent`` and refresh the
     # deferred-tool cache from that agent's ability_manager. Factory injects
@@ -154,6 +378,13 @@ class ProgressiveToolRail(DeepAgentRail):
     # already false — this flag makes factory honor that.
     inherit_to_subagents = False
 
+    # 裸实例兜底：仓内既有 UT 以 object.__new__ 绕过 __init__ 构造 rail、只补
+    # 必要属性；类级默认保证 floor 读取点（invoke 代理、before_model_call
+    # 排序、prompt_tool_allowlist）不因缺属性抛 AttributeError。正常实例由
+    # __init__ 以实例属性覆盖。
+    _protected_eager_tools: frozenset[str] = frozenset()
+    _protected_eager_tools_order: tuple[str, ...] = ()
+
     def __init__(
         self,
         *,
@@ -163,6 +394,7 @@ class ProgressiveToolRail(DeepAgentRail):
         agent_id: str | None = None,
         agent_card_id: str | None = None,
         enable_for_models: list[str] | None = None,
+        protected_eager_tools: list[str] | None = None,
         deepresearch_context_provider: Callable[[], dict[str, Any]] | None = None,
         active_skill_provider: Callable[[], str | None] | None = None,
         disabled_tools: list[str] | None = None,
@@ -178,6 +410,23 @@ class ProgressiveToolRail(DeepAgentRail):
             for item in (enable_for_models or [])
             if str(item).strip()
         ]
+        # 注册即可见 floor（BUG20261117410859）：名单内工具只要注册就保留在
+        # schema 中，优先于懒加载裁剪（eager 交集）。declared（required_skill）
+        # 名单名不适用 floor，保持既有技能门控（激活才可见可调用）。保序去重，
+        # 供 before_model_call 拼接 canonical 排序 key（_order_tools_by_name_list
+        # 只输出 key 内的名字，漏 key 会被静默丢弃）。
+        # 名单按裸工具名匹配（CR-4 权衡记录）：与 eager_tools 同一语义——同为
+        # 管理员配置的信任边界，不做套件前缀限定。ping/undo 等高通用名理论上
+        # 存在跨套件同名命中，该风险对 eager_tools 同样存在；默认名单已人工
+        # 核对无歧义名，若后续出现真实冲突套件再按套件前缀收紧。
+        self._protected_eager_tools_order = list(
+            dict.fromkeys(
+                str(name).strip()
+                for name in (protected_eager_tools or [])
+                if str(name).strip()
+            )
+        )
+        self._protected_eager_tools = frozenset(self._protected_eager_tools_order)
         self._cached_model_name = ""
         self._bypass_logged_model: str | None = None
         self._deepresearch_context_provider = deepresearch_context_provider
@@ -201,6 +450,10 @@ class ProgressiveToolRail(DeepAgentRail):
         self._owned_tool_ids: set[str] = set()
         self._cached_all_tool_infos: list[Any] = []
         self._cached_deferred_tool_infos: list[Any] = []
+        # CR-13 allowlist 再同步：装配期缓存空窗返回未过滤名单，缓存填充后
+        # 经 listener 回调补同步；变更检测基线见 _notify_prompt_allowlist_listeners。
+        self._prompt_allowlist_listeners: list = []
+        self._last_prompt_allowlist: list[str] | None = None
         # Fingerprint of deferred tool *names* last written into TOOL_NAVIGATION.
         # Instance id churn (OfficeClaw request-scoped MCP rebind) must refresh
         # invoke caches but must not rewrite this system prompt section.
@@ -211,6 +464,9 @@ class ProgressiveToolRail(DeepAgentRail):
         self._office_claw_active_tool_ids: frozenset[str] | None = None
         self._office_claw_delivery_thread_id: str | None = None
         self._office_claw_invocation_id: str | None = None
+        # None = resolve execution_guard.tool_failure_loop lazily on first use.
+        self._failure_loop_enabled: bool | None = None
+        self._failure_loop_threshold: int = _DEFAULT_FAILURE_LOOP_THRESHOLD
 
     def update_disabled_tools(self, disabled_tools: list[str] | None) -> None:
         """Replace the local blacklist mirror and drop stale deferred cache.
@@ -225,6 +481,79 @@ class ProgressiveToolRail(DeepAgentRail):
             if str(name).strip()
         }
         self.invalidate_deferred_tool_cache()
+
+    def prompt_tool_allowlist(self) -> list[str]:
+        """Stable schema-visible names for the prompt ``# 可用工具`` section.
+
+        eager + floor-ranked (BUG20261117410859) in schema order. ContextAssembleRail's
+        ``tool_name_allowlist`` must cover the same stable set as the tools schema —
+        eager-only would describe fewer tools than the model can actually call.
+        Skill-gated / pinned names stay out: they are conditional by design.
+        Registered cards declaring ``required_skill`` are dropped as well (the
+        schema gates them identically), so the prompt never advertises a tool
+        the model cannot call. Timing (CR-13): BOTH first assembly and
+        hot-reload sync run before tool cards register (empty
+        ``_cached_all_tool_infos``), so the declared filter cannot apply yet
+        and the unfiltered list is returned at those moments. Adapters must
+        register an allowlist listener (``add_prompt_allowlist_listener``) so
+        the saved allowlist is re-synced once the cache fills; without that
+        re-sync the stale unfiltered list persists in ContextAssembleRail.
+        """
+        allowlist = [*self.eager_tools, *self._protected_eager_tools_order]
+        # declared（required_skill）名单名不走 floor，eager 同理被技能门控：
+        # 从 prompt 宣传面剔除，保持 宣传面 == schema 可见面 == 可直接调用面
+        # （BUG20261117410859 / CR-11）。装配/热更时缓存空窗（卡片未注册）
+        # 则不过滤，由 allowlist listener 在缓存填充后补同步（CR-13）。
+        # 名单项大小写 ≠ 注册名时输出对齐注册卡片规范名（CR-16）；eager 与
+        # floor 名单重叠经对齐后可能产生重复，去重保持宣传面单次出现。
+        canonical: dict[str, str] = {}
+        declared: set[str] = set()
+        for card in getattr(self, "_cached_all_tool_infos", ()):
+            name = str(getattr(card, "name", "") or "").strip()
+            if not name:
+                continue
+            canonical.setdefault(name.lower(), name)
+            if _required_skill_requirement(card)[0]:
+                declared.add(name)
+        resolved = (canonical.get(name.lower(), name) for name in allowlist)
+        return [name for name in dict.fromkeys(resolved) if name not in declared]
+
+    def add_prompt_allowlist_listener(self, callback) -> None:
+        """Register a zero-arg callback fired when the prompt allowlist changes.
+
+        CR-13：首次装配与热更同步先于卡片注册发生（缓存空窗），declared 过滤
+        彼时无从判定，ContextAssemble 保存的是未过滤名单；缓存填充后无既有
+        再同步点，过期名单会长期驻留。适配器经本接口登记回调，rail 在缓存
+        刷新后检测到 allowlist 变化时触发，补一次同步。回调实现须自取当前
+        rail/assemble 实例（重建后引用会变）。
+        """
+        listeners = getattr(self, "_prompt_allowlist_listeners", None)
+        if listeners is None:
+            listeners = []
+            self._prompt_allowlist_listeners = listeners
+        listeners.append(callback)
+
+    def _notify_prompt_allowlist_listeners(self) -> None:
+        listeners = getattr(self, "_prompt_allowlist_listeners", None)
+        if not listeners:
+            return
+        try:
+            allowlist = self.prompt_tool_allowlist()
+        except Exception as exc:
+            logger.warning(
+                "%s prompt allowlist recompute failed: %s", _LOG_PREFIX, exc
+            )
+            return
+        if allowlist == getattr(self, "_last_prompt_allowlist", None):
+            return
+        self._last_prompt_allowlist = list(allowlist)
+        for callback in list(listeners):
+            try:
+                callback()
+            except Exception as exc:
+                logger.warning(
+                    "%s prompt allowlist listener failed: %s", _LOG_PREFIX, exc
+                )
 
     def _current_disabled_tools(self) -> frozenset[str]:
         """Union of constructor seed and live DisabledToolsRail when reachable.
@@ -578,6 +907,8 @@ class ProgressiveToolRail(DeepAgentRail):
         self._cached_all_tool_infos = []
         self._cached_deferred_tool_infos = []
         self._navigation_name_fingerprint = None
+        # 缓存已清空，下次填充按"首次"触发 allowlist listener（CR-13）。
+        self._last_prompt_allowlist = None
 
     def _resolve_runtime_agent(
         self,
@@ -679,7 +1010,7 @@ class ProgressiveToolRail(DeepAgentRail):
         if tool_name and await self._skill_gate_blocks_direct_call(ctx, tool_name):
             self._reject_tool_not_available(ctx, tool_name)
             return
-        if tool_name not in {"deepresearch_execute", "deepresearch_stream"}:
+        if tool_name not in _DEEPRESEARCH_DIRECT_CONTEXT_TOOLS:
             return
         manager = self._bind_deepresearch_context(tool_name)
         manager.__enter__()
@@ -688,7 +1019,12 @@ class ProgressiveToolRail(DeepAgentRail):
         bindings[tool_call_id] = manager
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
-        """Release a direct DeepResearch entry's tenant bindings."""
+        """Release DeepResearch bindings, then stop identical failure loops.
+
+        The failure-loop guard is observation-only and must never block the
+        cleanup below (or the tool lifecycle): it runs after the release and
+        swallows its own exceptions.
+        """
         inputs = getattr(ctx, "inputs", None)
         tool_call = getattr(inputs, "tool_call", None)
         tool_name = str(
@@ -696,15 +1032,141 @@ class ProgressiveToolRail(DeepAgentRail):
             or getattr(tool_call, "name", "")
             or ""
         ).strip()
-        if tool_name not in {"deepresearch_execute", "deepresearch_stream"}:
+        if tool_name in _DEEPRESEARCH_DIRECT_CONTEXT_TOOLS:
+            tool_call_id = str(getattr(tool_call, "id", "") or id(inputs))
+            bindings = ctx.extra.get(_EAGER_DEEPRESEARCH_BINDINGS_KEY, {})
+            manager = bindings.pop(tool_call_id, None) if isinstance(bindings, dict) else None
+            if not bindings:
+                ctx.extra.pop(_EAGER_DEEPRESEARCH_BINDINGS_KEY, None)
+            if manager is not None:
+                manager.__exit__(None, None, None)
+        await self._stop_repeated_tool_failure(ctx)
+
+    def _failure_loop_policy(self) -> tuple[bool, int]:
+        """Resolve (enabled, threshold) once; defaults apply when config is absent."""
+        if self._failure_loop_enabled is None:
+            enabled, threshold = _read_failure_loop_config()
+            self._failure_loop_enabled = enabled
+            self._failure_loop_threshold = threshold
+        return bool(self._failure_loop_enabled), int(self._failure_loop_threshold)
+
+    @staticmethod
+    def _failure_loop_key(ctx: AgentCallbackContext) -> tuple[str, str]:
+        """Return (target_tool_name, canonical_arguments) for this call.
+
+        ``invoke_tool`` calls are keyed by the deferred target they proxy;
+        direct calls are keyed by the tool that ran.
+        """
+        inputs = getattr(ctx, "inputs", None)
+        tool_call = getattr(inputs, "tool_call", None)
+        tool_name = str(
+            getattr(inputs, "tool_name", "")
+            or getattr(tool_call, "name", "")
+            or ""
+        ).strip()
+        arguments: Any = getattr(tool_call, "arguments", None)
+        if isinstance(arguments, str):
+            parsed = _try_parse_json_dict(arguments)
+            if parsed is not None:
+                arguments = parsed
+        target_name = tool_name
+        target_arguments = arguments
+        if tool_name == "invoke_tool" and isinstance(arguments, dict):
+            target_name = str(arguments.get("tool_name") or tool_name).strip()
+            target_arguments = arguments.get("arguments") or {}
+        try:
+            digest = json.dumps(
+                target_arguments,
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            )
+        except (TypeError, ValueError):
+            digest = str(target_arguments)
+        return target_name, digest
+
+    def _failure_loop_output(self, tool_name: str, count: int, error_text: str) -> str:
+        if str(self.language or "").lower().startswith("en"):
+            return (
+                f"Tool {tool_name} returned the same error {count} times in a row; "
+                "this round has been stopped to avoid more ineffective retries. "
+                f"Last error: {error_text}. Fix the underlying issue first, "
+                "then start a new request."
+            )
+        return (
+            f"工具 {tool_name} 连续 {count} 次返回相同错误，本轮已停止以免继续无效重试。"
+            f"最后一次错误：{error_text}。请先处理该问题，再新开一轮请求重试。"
+        )
+
+    async def _stop_repeated_tool_failure(self, ctx: AgentCallbackContext) -> None:
+        """Force-finish after the same tool+args+error repeats to the threshold.
+
+        Observation-only: any internal failure is logged and swallowed so the
+        tool lifecycle (in particular DeepResearch binding release) is never
+        blocked by this guard.
+        """
+        try:
+            self._enforce_repeated_tool_failure(ctx)
+        except Exception:
+            logger.warning(
+                "%s failure-loop guard skipped; keep tool result unchanged",
+                _LOG_PREFIX,
+                exc_info=True,
+            )
+
+    def _enforce_repeated_tool_failure(self, ctx: AgentCallbackContext) -> None:
+        enabled, threshold = self._failure_loop_policy()
+        if not enabled:
             return
-        tool_call_id = str(getattr(tool_call, "id", "") or id(inputs))
-        bindings = ctx.extra.get(_EAGER_DEEPRESEARCH_BINDINGS_KEY, {})
-        manager = bindings.pop(tool_call_id, None) if isinstance(bindings, dict) else None
-        if not bindings:
-            ctx.extra.pop(_EAGER_DEEPRESEARCH_BINDINGS_KEY, None)
-        if manager is not None:
-            manager.__exit__(None, None, None)
+        extra = getattr(ctx, "extra", None)
+        if not isinstance(extra, dict) or extra.get(_FAILURE_LOOP_TRIPPED_KEY):
+            return
+        inputs = getattr(ctx, "inputs", None)
+        if inputs is None:
+            return
+        failed, error_text = _unwrap_tool_failure(getattr(inputs, "tool_result", None))
+        target_name, digest = self._failure_loop_key(ctx)
+        store = extra.get(_FAILURE_LOOP_EXTRA_KEY)
+        if not isinstance(store, dict):
+            store = {}
+            extra[_FAILURE_LOOP_EXTRA_KEY] = store
+        key = f"{target_name}:{digest}"
+        if not failed:
+            store.pop(key, None)
+            return
+        raw_error = error_text or "unknown error"
+        # Compare the full error via digest: a 300-char display prefix could
+        # otherwise treat two different errors as the same one and stop early.
+        error_digest = hashlib.sha256(
+            raw_error.encode("utf-8", "replace")
+        ).hexdigest()
+        display_error = raw_error[:_FAILURE_LOOP_ERROR_MAX_CHARS]
+        count, last_digest, last_error = store.get(key, (0, "", ""))
+        if last_digest != error_digest:
+            # A new error is new information, not a stuck loop.
+            count = 0
+            last_digest = error_digest
+            last_error = display_error
+        count += 1
+        store[key] = (count, last_digest, last_error)
+        if count < threshold:
+            return
+        extra[_FAILURE_LOOP_TRIPPED_KEY] = True
+        logger.warning(
+            "%s terminal tool failure loop: tool=%s count=%s error=%s",
+            _LOG_PREFIX,
+            target_name,
+            count,
+            last_error,
+        )
+        finish = getattr(ctx, "request_force_finish", None)
+        if callable(finish):
+            finish(
+                {
+                    "output": self._failure_loop_output(target_name, count, last_error),
+                    "result_type": "answer",
+                }
+            )
 
     # ------------------------------------------------------------------
     # Meta tool management
@@ -846,6 +1308,10 @@ class ProgressiveToolRail(DeepAgentRail):
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         """Register meta tools when active; cache deferred tools for navigation."""
+        extra = getattr(ctx, "extra", None)
+        if isinstance(extra, dict):
+            extra.pop(_FAILURE_LOOP_EXTRA_KEY, None)
+            extra.pop(_FAILURE_LOOP_TRIPPED_KEY, None)
         if getattr(ctx, "agent", None) is not None:
             self._runtime_agent = ctx.agent
         self._resolve_runtime_agent(ctx)
@@ -897,6 +1363,9 @@ class ProgressiveToolRail(DeepAgentRail):
         # 仍带着它们；模型调用会得到 "Ability not found: invoke_tool"。直接从
         # schema 摘掉，避免一次必然失败的往返。
         unavailable_meta = set() if lazy_load_active else self._meta_tool_names()
+        # 名单比较统一小写归一（CR-14）：与 deferred 池排除、反查、invoke
+        # 代理同一策略，避免配置侧大小写差异造成可见性判定分裂。
+        protected_lowered = {item.lower() for item in self._protected_eager_tools}
         active_gated_names: list[str] = []
         filtered_tools = []
         for tool in tools:
@@ -919,6 +1388,16 @@ class ProgressiveToolRail(DeepAgentRail):
                     if name not in active_gated_names:
                         active_gated_names.append(name)
                 continue
+            if lazy_load_active and name.lower() in protected_lowered:
+                # BUG20261117410859 注册即可见 floor。request-scoped MCP（pptx-mcp
+                # 等）与交付/委派类工具由通道按会话状态注册，注册即代表该会话需要；
+                # 懒加载裁剪使模型意图与 schema 脱节，会退化成无进展空转直到
+                # agent_ras 熔断（OA.05000060）。保护名单优先于 eager 交集；
+                # declared（required_skill）工具不走 floor，保持既有技能门控
+                # 路径（激活才可见可调用），保证"可见 ⟺ 可直接调用"。
+                # DisabledToolsRail 黑名单仍最高优先。
+                filtered_tools.append(tool)
+                continue
             if (
                 not lazy_load_active
                 or name in self.eager_tools
@@ -928,9 +1407,20 @@ class ProgressiveToolRail(DeepAgentRail):
         if lazy_load_active:
             # Canonical eager order — never follow ability_manager / MCP rebind order.
             # Mid-task send_file_to_user <-> tools_search swaps break LLM prefix cache.
-            # _order_tools_by_name_list emits every name in the key, so the pinned
-            # tool is appended only when eager and active gates do not already place it.
-            ordered_names = [*self.eager_tools, *active_gated_names]
+            # _order_tools_by_name_list emits every name in the key, so floor-ranked
+            # (BUG20261117410859) and pinned tools must be keyed here too — a kept
+            # tool missing from the key is silently dropped by the ordering step.
+            # key 匹配大小写不敏感（CR-16）：floor 分支按小写命中，名单项
+            # 大小写与注册名失配时不得在此被静默丢出 schema。
+            ordered_names = list(
+                dict.fromkeys(
+                    [
+                        *self.eager_tools,
+                        *self._protected_eager_tools_order,
+                        *active_gated_names,
+                    ]
+                )
+            )
             if _PINNED_SCHEMA_TOOL_NAME not in ordered_names:
                 ordered_names.append(_PINNED_SCHEMA_TOOL_NAME)
             inputs.tools = self._order_tools_by_name_list(
@@ -968,13 +1458,24 @@ class ProgressiveToolRail(DeepAgentRail):
     def _order_tools_by_name_list(
         tools: list[Any], ordered_names: Iterable[str]
     ) -> list[Any]:
-        """Stable-sort filtered tools to match an explicit canonical order."""
+        """Stable-sort filtered tools to match an explicit canonical order.
+
+        key 匹配小写归一（CR-16）：排序 key 携带配置名单原始大小写，schema
+        工具是注册卡片名——floor 分支已按小写命中保留工具，此处若精确匹配
+        会把失配工具静默丢出 schema（deferred 池同刻排除 → 全失联）。
+        输出保持工具的注册名（schema 不得出现注册面之外的名字）。
+        """
         by_name: dict[str, Any] = {}
         for tool in tools:
             name = str(getattr(tool, "name", "") or "")
-            if name and name not in by_name:
-                by_name[name] = tool
-        return [by_name[name] for name in ordered_names if name in by_name]
+            key = name.lower()
+            if key and key not in by_name:
+                by_name[key] = tool
+        return [
+            by_name[name.lower()]
+            for name in ordered_names
+            if name.lower() in by_name
+        ]
 
     def _visible_deferred_tool_infos(self, agent: Any = None) -> list[Any]:
         """返回导航 / 搜索可见的按需工具。
@@ -1282,10 +1783,14 @@ class ProgressiveToolRail(DeepAgentRail):
     def _deferred_tools(self, tools: list[Any], disabled: Iterable[str]) -> list[Any]:
         """Return tools that stay hidden and are advertised as not directly callable.
 
-        Skill-gated and disabled tools are omitted. The pinned recall tool is
-        schema-visible, so leaving it here would tell the model a direct call fails.
+        Skill-gated and disabled tools are omitted. The pinned recall tool and
+        floor-ranked protected tools are schema-visible, so leaving them here
+        would tell the model a direct call fails.
         """
         blocked = set(disabled)
+        # 与 schema floor 分支同一小写归一策略（CR-14）：两处判定必须一致，
+        # 否则配置侧大小写差异会让同一工具既进 schema 又留在 deferred 池。
+        protected_lowered = {item.lower() for item in self._protected_eager_tools}
         deferred: list[Any] = []
         for tool in tools:
             name = str(getattr(tool, "name", "") or "")
@@ -1295,6 +1800,10 @@ class ProgressiveToolRail(DeepAgentRail):
             if name in self.eager_tools or name in blocked:
                 continue
             if name == _PINNED_SCHEMA_TOOL_NAME:
+                continue
+            if name.lower() in protected_lowered:
+                # BUG20261117410859 floor 名单内的工具在 schema 直接可见，
+                # 不能再进 deferred 池被导航描述为"需 tools_search 间接调用"。
                 continue
             deferred.append(tool)
         return deferred
@@ -1316,6 +1825,9 @@ class ProgressiveToolRail(DeepAgentRail):
             all_tools,
             self._current_disabled_tools(),
         )
+        # 缓存填充/刷新后 declared 判定才可用：allowlist 相对上次有变化时
+        # 触发 listener，适配器补一次 ContextAssemble 同步（CR-13）。
+        self._notify_prompt_allowlist_listeners()
 
     @staticmethod
     def _tool_name_set(tools: list[Any]) -> set[str]:
@@ -1414,7 +1926,14 @@ class ProgressiveToolRail(DeepAgentRail):
                 "message": "tool_name is required",
             }
 
-        if tool_name in self._current_disabled_tools():
+        # disabled 复核与反查同契约做大小写归一（CR-14）：非规范大小写查询
+        # 禁用工具不得绕过入口检查，落到"直接可见"指引与 disabled > floor
+        # 优先级矛盾。
+        disabled_lowered = {
+            str(item).strip().lower()
+            for item in (self._current_disabled_tools() or ())
+        }
+        if tool_name_key in disabled_lowered:
             return {
                 "success": False,
                 "matches": [],
@@ -1490,6 +2009,24 @@ class ProgressiveToolRail(DeepAgentRail):
                 getattr(self, "_cached_all_tool_infos", ()),
                 tool_name,
             )
+            if registered_card is None:
+                # deferred 池匹配为大小写不敏感（_deferred_tools 归一小写）；
+                # 名单工具移出 deferred 池后反查保持同一契约（CR-12）：按
+                # 小写命中真实注册卡片，后续用卡片规范名判断与回复。
+                lowered = tool_name.strip().lower()
+                for card in getattr(self, "_cached_all_tool_infos", ()):
+                    if str(getattr(card, "name", "") or "").strip().lower() == lowered:
+                        registered_card = card
+                        break
+            if (
+                registered_card is not None
+                and str(getattr(registered_card, "name", "") or "").strip().lower()
+                in disabled_lowered
+            ):
+                # disabled > declared/floor（N5）：禁用工具对 schema/导航/
+                # 探测链路整体不可见，反查不得给出技能或"直接可见"指引，
+                # 统一回落"未找到"（CR-14）。置空后 required_skill 随 None 重算。
+                registered_card = None
             _, required_skill = _required_skill_requirement(registered_card)
             if required_skill:
                 if required_skill == self._current_active_skill():
@@ -1515,6 +2052,27 @@ class ProgressiveToolRail(DeepAgentRail):
                         "不可用，不要据此降级或改用其他工具绕过。"
                     ),
                 }
+            # BUG20261117410859 floor 名单内、未声明 required_skill 的工具已
+            # 被移出 deferred 池（schema 直接可见），但仍可能被模型按旧习惯
+            # 反查。此时不得答复"未找到"——对已注册且可见的工具给出错误陈述
+            # 会诱导模型改写策略或反复探测（无进展熔断敏感路径）。反之，未
+            # 注册的名单名（如 web 模式未挂 pptx 套件）必须回落下方"未找到"
+            # 文案，"已注册且直接可见"的虚假指引会诱导模型调用不存在的工具。
+            # 名单比较与回复均用卡片规范名（大小写不敏感，CR-12）。
+            if registered_card is not None:
+                canonical_name = str(getattr(registered_card, "name", "") or "").strip()
+                floor_names = {name.lower() for name in self._protected_eager_tools}
+                if canonical_name.lower() in floor_names:
+                    return {
+                        "success": False,
+                        "matches": [],
+                        "count": 0,
+                        "message": (
+                            f"工具 '{canonical_name}' 已注册且在当前 schema 中"
+                            "直接可见（保护名单内），请直接调用，无需"
+                            " tools_search。"
+                        ),
+                    }
 
         return {
             "success": bool(result_matches),
@@ -1523,7 +2081,13 @@ class ProgressiveToolRail(DeepAgentRail):
             "message": (
                 f"已找到工具 '{tool_name}'，请根据 input_schema 构造 arguments 后调用 invoke_tool。"
                 if result_matches
-                else f"未找到名为 '{tool_name}' 的按需可见工具，请检查名称是否与导航列表一致。"
+                else (
+                    f"未找到名为 '{tool_name}' 的按需可见工具，请检查名称是否与导航列表一致。"
+                    "若确认本请求没有该工具：不要因此改交用户没要求的交付格式，"
+                    "也不要把替代品说成已完成。"
+                    "没有工具能产出用户要求的格式时，先告知用户该工具不可用并说明可选方案，"
+                    "等用户同意后再继续。"
+                )
             ),
         }
 
@@ -1557,11 +2121,22 @@ class ProgressiveToolRail(DeepAgentRail):
         ]
         if not matches:
             return ""
-        preferred = []
-        for tool_id in matches:
-            if is_request_scoped_mcp_tool_id(tool_id) and tool_id.endswith(suffix):
-                preferred.append(tool_id)
-        return preferred[0] if preferred else matches[0]
+        # ``owned`` is a frozenset, so iteration order is arbitrary. A request can
+        # own several ids for one name (e.g. pptx-lazy.open_pptx and, after the
+        # lazy open swaps in the real catalog, pptx-mcp.open_pptx); the lazy
+        # card's instance may already be gone. Sort for determinism and prefer
+        # an id that still resolves, staying inside this request's allowlist.
+        matches.sort()
+        preferred = [
+            tool_id
+            for tool_id in matches
+            if is_request_scoped_mcp_tool_id(tool_id) and tool_id.endswith(suffix)
+        ]
+        candidates = preferred or matches
+        for tool_id in candidates:
+            if self._lookup_tool_instance(tool_id) is not None:
+                return tool_id
+        return candidates[0]
 
     def _is_foreign_office_claw_tool_id(
         self,
@@ -1759,7 +2334,12 @@ class ProgressiveToolRail(DeepAgentRail):
                 "tool_name": "",
             }
 
-        if tool_name in self._current_disabled_tools():
+        # 禁用复核大小写归一（CR-14），与 tools_search 入口同契约。
+        disabled_lowered = {
+            str(item).strip().lower()
+            for item in (self._current_disabled_tools() or ())
+        }
+        if tool_name.lower() in disabled_lowered:
             return {
                 "success": False,
                 "error": f"工具 '{tool_name}' 已禁用，无法通过 invoke_tool 调用。",
@@ -1780,6 +2360,14 @@ class ProgressiveToolRail(DeepAgentRail):
             getattr(self, "_cached_all_tool_infos", ()),
             tool_name,
         )
+        if registered_card is None:
+            # 与 tools_search 反查同契约：小写归一命中注册卡片（CR-14），
+            # 避免同一非规范大小写查询两条代理路径结论相反。
+            lowered = tool_name.strip().lower()
+            for card in getattr(self, "_cached_all_tool_infos", ()):
+                if str(getattr(card, "name", "") or "").strip().lower() == lowered:
+                    registered_card = card
+                    break
         declared, required_skill = _required_skill_requirement(registered_card)
         if declared:
             skill_hint = f"（required_skill={required_skill}）" if required_skill else ""
@@ -1795,9 +2383,22 @@ class ProgressiveToolRail(DeepAgentRail):
                 "tool_name": tool_name,
             }
 
-        if tool_name in self.eager_tools or _is_pinned_schema_tool(
-            tool_name, registered_card
-        ):
+        # 常驻可见判定（G.CTL.03：条件细节前置为 bool 变量）。floor 仅在
+        # 已注册时视为常驻可见；未注册名单名走下方"未注册"回落，不得声称
+        # 常驻可见（BUG20261117410859）。floor 命中按卡片规范名小写归一
+        # 比较（CR-14），与 schema floor 分支 / deferred 池 / 反查同一策略。
+        floor_names = {item.lower() for item in self._protected_eager_tools}
+        resident_floor = (
+            registered_card is not None
+            and str(getattr(registered_card, "name", "") or "").strip().lower()
+            in floor_names
+        )
+        resident_visible = (
+            tool_name in self.eager_tools
+            or _is_pinned_schema_tool(tool_name, registered_card)
+            or resident_floor
+        )
+        if resident_visible:
             return {
                 "success": False,
                 "error": f"工具 '{tool_name}' 是常驻可见工具，可直接调用，无需通过 invoke_tool。",
@@ -1979,9 +2580,28 @@ class ProgressiveToolRail(DeepAgentRail):
             owned = self._office_claw_active_tool_ids
             if owned is not None:
                 kwargs_without_session[OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG] = owned
-            call_timeout = getattr(AbilityManager, "_resolve_call_timeout")(
-                target_tool_card
+            # Prefer the arguments-aware resolver (agent-core >= the 300s-cap
+            # fix); fall back to the card-only one on an older runtime so this
+            # fork keeps working across the version boundary.
+            args_resolver = getattr(
+                AbilityManager, "_resolve_call_timeout_for_args", None
             )
+            if args_resolver is not None:
+                call_timeout = args_resolver(target_tool_card, arguments)
+            else:
+                call_timeout = getattr(AbilityManager, "_resolve_call_timeout")(
+                    target_tool_card
+                )
+            # Same fallback as AbilityManager's own call site: exemption
+            # (timeout_s=None / no argument timeout) means "no 300s default",
+            # not "no ceiling" - ``anyio.fail_after(None)`` would otherwise
+            # hang this round forever.
+            if call_timeout is None:
+                from openjiuwen.core.single_agent.ability_manager import (
+                    MAX_TOOL_CALL_TIMEOUT_HARD_LIMIT,
+                )
+
+                call_timeout = MAX_TOOL_CALL_TIMEOUT_HARD_LIMIT
             with self._bind_deepresearch_context(tool_name):
                 try:
                     with anyio.fail_after(call_timeout) as timeout_scope:
@@ -1991,12 +2611,41 @@ class ProgressiveToolRail(DeepAgentRail):
                 except TimeoutError as exc:
                     if not timeout_scope.cancel_called:
                         raise
-                    raise TimeoutError(
-                        f"Tool '{tool_name}' timed out after {call_timeout}s"
-                    ) from exc
+                    describe = getattr(
+                        AbilityManager, "_describe_timeout_layer", None
+                    )
+                    message = (
+                        describe(tool_name, call_timeout, arguments)
+                        if describe is not None
+                        else f"Tool '{tool_name}' timed out after {call_timeout}s"
+                    )
+                    raise TimeoutError(message) from exc
             env_inv = _office_claw_tool_env_value(
                 target_tool, "OFFICE_CLAW_INVOCATION_ID"
             )
+            safe_result = _json_safe_value(result)
+            # MCP tools can return a tool-level error inside the payload
+            # ({"result": '{"error": {...}}'}). Reporting that as success left
+            # the model with contradictory signals and fed loop detectors a
+            # false "progress" marker (issue #6368).
+            failed, error_text = _unwrap_tool_failure(safe_result)
+            if failed:
+                logger.warning(
+                    "%s invoke tool=%s failed inside result: %s tool_id=%s "
+                    "env_invocation_id=%s delivery_thread_id=%s",
+                    _LOG_PREFIX,
+                    tool_name,
+                    error_text or "unknown error",
+                    target_tool_id,
+                    (env_inv[:8] + "…") if env_inv else "-",
+                    pinned_thread or "-",
+                )
+                return {
+                    "success": False,
+                    "error": error_text or f"工具 '{tool_name}' 返回失败结果",
+                    "tool_name": tool_name,
+                    "result": safe_result,
+                }
             logger.info(
                 "%s invoke tool=%s success=True result_type=%s tool_id=%s "
                 "env_invocation_id=%s delivery_thread_id=%s",
@@ -2010,7 +2659,7 @@ class ProgressiveToolRail(DeepAgentRail):
             return {
                 "success": True,
                 "tool_name": tool_name,
-                "result": _json_safe_value(result),
+                "result": safe_result,
             }
         except Exception as exc:
             logger.warning(

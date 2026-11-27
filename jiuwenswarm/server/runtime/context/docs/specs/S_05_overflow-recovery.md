@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_05 / overflow-recovery |
 | 关联模块 | agents/harness/common/rails/context_overflow_recovery_rail.py + deep/adapter_statics.py 构建 / interface_deep 注册 |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联 feature | 暂无（初版建档） |
 
 ## 范围 / 边界
@@ -28,10 +28,11 @@
 ## 不变量
 
 - **N1（检测三分支）**：`_is_context_overflow_error` 判定顺序——**413** 直接成立；**400 且** 消息含 overflow 关键词；**status 缺失** 且含关键词。ModelArts 变体有两条路径：组合模式（`Error code: 400` + `ModelArts.81001` + 关键词）与纯文本 `input token limit is N`（关键词 `input token limit`，limit 由 `_parse_token_limits` 解析）。Good：参数错误 400 无关键词不触发。Bad：所有 400 触发 compact。
-- **N2（force_compact GET 触发）**：恢复动作对 `FullCompactProcessor` 调 `set_force_compact(True)`；可选 `threshold_override = limit * RECOVERY_THRESHOLD_RATIO`（**0.85**）；随后 `ctx.request_retry()` 重入 LLM。processor 缺失时仍 retry 但记录 warning（见实现）。**limit 解析优先级**：显式窗口（`context._context_window_tokens` / 配置）→ 模型窗口表 → 默认窗口（agent-core `DEFAULT_CONTEXT_MAX_TOKENS` = **200000**）。未知模型**不得静默跳过**，按默认窗口兜底并打 warning：漏登记窗口表的新模型否则会在长会话中失去全部预压缩保护。是否压得动由 FullCompact 自身的阈值判断决定（压不到 `threshold_override` 时拒绝替换），rail 层不重复做预算判断。
+- **N2（force_compact GET 触发）**：恢复动作对 `FullCompactProcessor` 调 `set_force_compact(True)`；可选 `threshold_override = limit * RECOVERY_THRESHOLD_RATIO`（**0.85**）；随后 `ctx.request_retry()` 重入 LLM。processor 缺失时仍 retry 但记录 warning（见实现）。**首次盲重试保留，之后 payload 必须变小或变化**：连续两次溢出的 `payload_fingerprint`（消息数 + 各条角色/长度 + 图片块数）相同说明压缩没产生替换，直接熔断而不是耗完剩余次数。**limit 解析优先级**：显式窗口（`context._context_window_tokens` / 配置）→ 模型窗口表 → 默认窗口（agent-core `DEFAULT_CONTEXT_MAX_TOKENS` = **200000**）。未知模型**不得静默跳过**，按默认窗口兜底并打 warning：漏登记窗口表的新模型否则会在长会话中失去全部预压缩保护。是否压得动由 FullCompact 自身的阈值判断决定（压不到 `threshold_override` 时拒绝替换），rail 层不重复做预算判断。
 - **N3（熔断）**：连续溢出次数 **>** `max_recovery_attempts` 时 `_circuit_break`：写 `OutputSchema(type="error")`，`payload.error_type="context_overflow_circuit_break"`，message 建议 `/compact` 或新会话；**熔断事件发送成功后计数归零**，正常成功也由 `after_model_call` 清零。
 - **N4（Priority）**：`priority = 100`，保证 `on_model_exception` 早于 priority 85 的 context 工程 rail 与 80 的 StreamEventRail（见类 docstring）。
 - **N5（构造默认值 vs 产品）**：类 `__init__` 默认 `max_recovery_attempts=2`；**deep adapter** `_build_context_overflow_recovery_rail` 使用 **3**。文档以 adapter 装配为准；单测覆盖 adapter 行为。
+- **N6（冷启动水位播种）**：磁盘回灌历史的消息没有 `usage_metadata`，占用计数为 0，主动预压缩会整段跳过。`warmup_session_context` 恢复时一次性称重写入 `context._jiuwenswarm_warmup_prompt_tokens`（`bottleneck.llm[].input_tokens` 与回灌消息计数的 `max`）；`_last_prompt_tokens` 先读 usage，取不到才回落播种值，成功调用后删除该属性。热路径不发生全量 tokenize。
 
 ## 接口契约
 
@@ -40,9 +41,9 @@
 | 方法 / 属性 | 语义 |
 |---|---|
 | `priority` | 100 |
-| `before_model_call` | 上一轮真实 usage ≥ 窗口 90% 时主动 `set_force_compact`（每 invoke 至多一次） |
-| `on_model_exception` | 检测溢出 → compact 标志 → `request_retry` 或熔断 |
-| `after_model_call` | 成功则清零 `_consecutive_overflow_count` |
+| `before_model_call` | 上一轮真实 usage ≥ 窗口 90% 时主动 `set_force_compact`（每 invoke 至多一次）；无 usage 时回落播种值（N6） |
+| `on_model_exception` | 检测溢出 → payload 指纹未变则熔断（N2）→ compact 标志 → `request_retry` 或熔断 |
+| `after_model_call` | 成功则清零 `_consecutive_overflow_count`、payload 指纹与播种值 |
 | `RECOVERY_THRESHOLD_RATIO` | 0.85，用于 threshold_override |
 | `PROACTIVE_TRIGGER_RATIO` | 0.90，主动预压缩触发阈值 |
 
@@ -66,6 +67,8 @@
 - Rail 实例状态：`_consecutive_overflow_count`（内存，随 successful model call 或熔断事件发送成功重置）。
 - `_context_engineering_rail`：可选桥（若未来挂接 SessionMemory 增量更新，改时同步本 spec）。
 - `ctx.extra["_context_overflow_proactive_done"]`：invoke 级幂等标记，保证主动预压缩每次 invoke 至多一次；随请求上下文生命周期清理。
+- `ctx.extra["_overflow_payload_fp"]`：请求级 payload 指纹（N2），成功调用后清除。
+- `context._jiuwenswarm_warmup_prompt_tokens`：warmup 回灌时播种的占用水位（N6），成功调用后删除。
 
 ## 执行路径全景
 
@@ -74,7 +77,7 @@
 ```
 before_model_call（每个 invoke 至多一次，ctx.extra["_context_overflow_proactive_done"] 幂等）
   → _resolve_model_context_limit（显式窗口 → 配置 → 模型窗口表 → 默认 200000，未知模型 warning）
-  → _last_prompt_tokens（最近一条消息 usage；dict/Pydantic/dataclass 兼容，input_tokens → prompt_tokens → total_tokens）
+  → _last_prompt_tokens（最近一条消息 usage；dict/Pydantic/dataclass 兼容，input_tokens → prompt_tokens → total_tokens；无 usage 回落 warmup 播种值，N6）
   → used ≥ limit × PROACTIVE_TRIGGER_RATIO(0.90) → set_force_compact(threshold_override = limit × 0.85)
 ```
 
@@ -83,7 +86,8 @@ before_model_call（每个 invoke 至多一次，ctx.extra["_context_overflow_pr
 ```
 LLM 抛错 → on_model_exception
   → _is_context_overflow_error?
-  → count += 1; if count > max_attempts → circuit_break
+  → count += 1; payload 指纹与上次相同 → circuit_break（N2）
+  → if count > max_attempts → circuit_break
   → _resolve_threshold_override(limit from 413 parse or deep_config.context_window_limit_tokens)
   → _find_full_compact_processor(ctx.context) by processor_type() == "FullCompactProcessor"
   → set_force_compact(True); optional set_overflow_threshold_override
@@ -93,7 +97,7 @@ LLM 抛错 → on_model_exception
 ### P2：成功后复位
 
 ```
-after_model_call (exception is None) → reset count
+after_model_call (exception is None) → reset count; clear _overflow_payload_fp / warmup seed
 ```
 
 ### P3：装配

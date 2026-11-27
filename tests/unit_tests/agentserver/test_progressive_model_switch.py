@@ -17,7 +17,8 @@ from openjiuwen.harness.prompts.sections import SectionName
 from jiuwenswarm.agents.harness.common.rails import progressive_tool_rail
 from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import ProgressiveToolRail
 
-# Mirrors config.yaml react.tool_lazy_load.enable_for_models.
+# Representative whitelist used by the behavior tests below. The shipped
+# config.yaml leaves enable_for_models empty, i.e. lazy load for every model.
 _ENABLE_FOR_MODELS = ["glm", "deepseek", "kimi", "openpangu"]
 _OUT_OF_WHITELIST_MODEL = "qwen3-32b"
 
@@ -99,14 +100,33 @@ def test_whitelist_entries_are_case_and_whitespace_normalized():
     assert rail._is_lazy_load_enabled_for_model("glm-5.3") is False
 
 
-def test_rail_fixture_matches_shipped_tool_lazy_load_whitelist():
+def test_shipped_tool_lazy_load_whitelist_is_empty_for_all_models():
     repo_root = Path(__file__).resolve().parents[3]
     config_file = repo_root / "jiuwenswarm" / "resources" / "config.yaml"
     config = yaml.safe_load(config_file.read_text(encoding="utf-8"))
 
     whitelist = config["react"]["tool_lazy_load"]["enable_for_models"]
 
-    assert whitelist == _ENABLE_FOR_MODELS
+    assert whitelist == []
+
+
+@pytest.mark.parametrize("model", ["qwen3-32b", "glm-5.3", "unregistered-model"])
+@pytest.mark.asyncio
+async def test_empty_whitelist_enables_lazy_load_for_every_model(model):
+    """空 enable_for_models 表示全部模型启用懒加载，而不是没有任何模型启用。"""
+    rail, agent = _build_rail(enable_for_models=[])
+
+    result = await _run_turn(rail, agent, model)
+
+    assert result["navigation"] is True
+    assert {"tools_search", "invoke_tool", "read_file"} <= result["tools"]
+    assert "mcp_x" not in result["tools"]
+
+
+def test_empty_whitelist_enables_lazy_load_when_model_name_unresolved():
+    rail = ProgressiveToolRail(eager_tools=["read_file"], enable_for_models=[])
+
+    assert rail._is_lazy_load_enabled_for_model("") is True
 
 
 @pytest.mark.asyncio

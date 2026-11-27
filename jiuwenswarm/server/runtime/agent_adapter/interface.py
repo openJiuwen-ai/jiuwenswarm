@@ -25,6 +25,7 @@ from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
 from jiuwenswarm.common.local_env_config import promote_staged_env
 from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.perf.interface_hooks import mark_request_stage
 from jiuwenswarm.server.runtime.reload_result import ReloadResult
 from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
     AgentAdapter,
@@ -108,6 +109,19 @@ PLAN_REMINDER_ORIGINAL_QUERY_KEY = getattr(
 
 class _TeamPlanApprovalPayloadError(ValueError):
     """Raised when a structured team.plan approval payload is malformed."""
+
+
+# relay-claw 服务端调度入口（reminder / web-digest / TaskRunnerV2 敏感重试）在信封 metadata
+# 写入 officeace_scheduler = {source: "scheduler", task_id, template_id}，HITL 续跑帧同样携带；
+# 用户点击重试、普通聊天不带。只认这个结构化字段，不认 query 文本，避免用户自行伪造。
+_SCHEDULER_METADATA_KEY = "officeace_scheduler"
+
+
+def _is_scheduler_trigger(metadata: Any) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    marker = metadata.get(_SCHEDULER_METADATA_KEY)
+    return isinstance(marker, dict) and marker.get("source") == "scheduler"
 
 
 def _permission_response_key(request: AgentRequest) -> str | None:
@@ -2112,6 +2126,8 @@ class JiuWenSwarm:
                 "kind": "cron",
                 "context": {"extra": {"cron": cron}},
             }
+        elif not run and _is_scheduler_trigger(request.metadata):
+            inputs["run"] = {"kind": "cron"}
 
         if inputs.get("skip_a2ui") is True:
             # Harness 归一化只保留 RunContext 中的扩展字段。
@@ -3872,6 +3888,7 @@ class JiuWenSwarm:
                                 "[latency] stage=4 name=first_token request_id=%s",
                                 rid,
                             )
+                            mark_request_stage(rid, "first_out")
                         await stream_queue.put(("chunk", chunk))
                 except asyncio.CancelledError:
                     logger.info("[JiuWenSwarm] 流式任务被取消: request_id=%s session_id=%s", rid, session_id)
@@ -4766,6 +4783,26 @@ class JiuWenSwarm:
             return processor_cleaned
         adapter_cleaned = bool(await cleanup_fn(session_id))
         return processor_cleaned or adapter_cleaned
+
+    async def evict_idle_session_adapters(self) -> int:
+        """Best-effort TTL eviction of idle session adapters on the root adapter.
+
+        Manager-level idle-root sweeps (issue#6787) call this so per-project
+        roots with no recent traffic still get their expired session adapters
+        released; TTL/lock/approval rules stay owned by the adapter itself.
+        """
+        adapter = self._adapter
+        evict_fn = getattr(adapter, "_evict_idle_session_adapters", None)
+        if not callable(evict_fn):
+            return 0
+        try:
+            return int(await evict_fn() or 0)
+        except Exception:
+            logger.warning(
+                "[JiuWenSwarm] idle session adapter eviction failed",
+                exc_info=True,
+            )
+            return 0
 
     def has_session_runtime(self, session_id: str | None = None) -> bool:
         """Return whether this facade still owns session-scoped runtime."""

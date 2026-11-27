@@ -349,3 +349,126 @@ async def test_registry_keeps_workspace_and_filesystem_bindings_isolated(
         for rail, expected in ((first, "a"), (second, "b")):
             for tool in rail.tools:
                 assert [todo.id for todo in await tool.load_todos("same-session")] == [expected]
+
+
+@pytest.mark.asyncio
+async def test_close_deregisters_only_self_registered_tools(tmp_path, monkeypatch):
+    """rail.close() 注销自己绑定且无其他持有者的 todo 工具；幂等。"""
+    registry = {}
+    removed: list[str] = []
+    manager = SimpleNamespace(
+        get_tool=lambda tool_id: registry.get(tool_id),
+        add_tool=lambda tool: registry.setdefault(tool.card.id, tool),
+        remove_tool=lambda tool_id: removed.append(tool_id) or registry.pop(tool_id, None),
+    )
+    monkeypatch.setattr(module, "Runner", SimpleNamespace(resource_mgr=manager))
+    fs = LocalFiles()
+    rail = module.ConcurrentSafeTaskPlanningRail()
+    rail.init(make_agent(tmp_path, fs))
+    registered = list(rail._registered_tool_ids)
+    assert len(registered) == 3
+    assert all(rid in registry for rid in registered)
+
+    # 同一 rail 再次 init：命中 registry 走复用路径，binder 集合不重复。
+    rail.init(make_agent(tmp_path, fs))
+    assert rail._registered_tool_ids == registered
+
+    rail.close()
+    assert removed == registered
+    assert all(rid not in registry for rid in registered)
+    assert rail._registered_tool_ids == []
+
+    # 幂等：重复 close 不再移除、不抛错。
+    rail.close()
+    assert removed == registered
+
+
+@pytest.mark.asyncio
+async def test_close_keeps_entries_while_another_rail_still_bound(tmp_path, monkeypatch):
+    """binding 一致时第二个 rail 复用条目：前者 close 只摘自己，不移除条目；
+    最后一个持有者关闭时才真正注销。"""
+    registry = {}
+    removed: list[str] = []
+    manager = SimpleNamespace(
+        get_tool=lambda tool_id: registry.get(tool_id),
+        add_tool=lambda tool: registry.setdefault(tool.card.id, tool),
+        remove_tool=lambda tool_id: removed.append(tool_id) or registry.pop(tool_id, None),
+    )
+    monkeypatch.setattr(module, "Runner", SimpleNamespace(resource_mgr=manager))
+    fs = LocalFiles()
+    first = module.ConcurrentSafeTaskPlanningRail()
+    first.init(make_agent(tmp_path, fs))
+    second = module.ConcurrentSafeTaskPlanningRail()
+    second.init(make_agent(tmp_path, fs))
+    # 同 fs、同 workspace → binding 一致 → 第二个 rail 复用并记账。
+    first_ids = list(first._registered_tool_ids)
+    assert first_ids
+    assert second._registered_tool_ids == first_ids
+
+    first.close()
+    assert removed == []                       # second 仍持有，条目保留
+    assert all(rid in registry for rid in first_ids)
+
+    second.close()
+    assert sorted(removed) == sorted(first_ids)
+    assert all(rid not in registry for rid in first_ids)
+
+
+def _make_cleanup_adapter():
+    """构造仅含 cleanup() 所需状态/桩的 adapter（检视回归：rail 缺失时的清理）。"""
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    adapter = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = "sess-x"
+    adapter._memory_reindex_task = None
+    adapter._instance = None
+    adapter.stop_interaction = AsyncMock()
+    adapter._cancel_evolution_watchers = AsyncMock()
+    adapter._sync_personal_context_rail = AsyncMock()
+    adapter._release_session_agent_callbacks = AsyncMock()
+    adapter._release_sys_operations = Mock()
+    adapter._close_a2x_client = AsyncMock()
+    adapter._forget_skill_sleep_session = Mock()
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_adapter_cleanup_runs_session_cleanups_without_task_planning_rail(monkeypatch):
+    """检视回归：_task_planning_rail 为 None（code 模式/import 失败）时，
+    else 分支的既有清理不得被 rail close 的条件块吞掉。"""
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    import jiuwenswarm.agents.harness.common.tools.send_file_to_user as send_file_mod
+
+    adapter = _make_cleanup_adapter()
+    sent = Mock()
+    monkeypatch.setattr(send_file_mod, "clear_sent_files_for_session", sent)
+    skill_state = Mock()
+    monkeypatch.setattr(interface_deep, "clear_session_skill_state", skill_state)
+
+    await adapter.cleanup()
+
+    sent.assert_called_once_with("sess-x")
+    skill_state.assert_called_once_with("sess-x", local_only=True)
+    adapter._forget_skill_sleep_session.assert_called_once_with("sess-x")
+
+
+@pytest.mark.asyncio
+async def test_adapter_cleanup_calls_rail_close_and_still_runs_session_cleanups(monkeypatch):
+    """rail 存在时：close 被调用，且既有清理不被条件块吞掉。"""
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    import jiuwenswarm.agents.harness.common.tools.send_file_to_user as send_file_mod
+
+    adapter = _make_cleanup_adapter()
+    rail_close = Mock()
+    adapter._task_planning_rail = SimpleNamespace(close=rail_close)
+    sent = Mock()
+    monkeypatch.setattr(send_file_mod, "clear_sent_files_for_session", sent)
+    skill_state = Mock()
+    monkeypatch.setattr(interface_deep, "clear_session_skill_state", skill_state)
+
+    await adapter.cleanup()
+
+    rail_close.assert_called_once()
+    sent.assert_called_once_with("sess-x")
+    skill_state.assert_called_once_with("sess-x", local_only=True)

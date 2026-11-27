@@ -41,6 +41,9 @@ from jiuwenswarm.agents.swarm.registry import (
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import build_enabled_mcp_server_configs
 from jiuwenswarm.common.utils import primary_team_skill_library_dir
+from jiuwenswarm.server.runtime.agent_adapter.deep.context_window import (
+    SELECTED_CONTEXT_WINDOW_KEY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +179,10 @@ def enrich_team_spec_for_swarm(
         server_id_scope=f"team:{spec.team_name}",
     )
 
+    meta = request_metadata if isinstance(request_metadata, dict) else {}
+    selected_window = meta.get(SELECTED_CONTEXT_WINDOW_KEY)
+    ignore_selected = meta.get("enable_routing") is True
+
     for role in _MEMBER_ROLES:
         if role in spec.agents:
             member_spec = build_member_deep_agent_spec(
@@ -185,6 +192,8 @@ def enrich_team_spec_for_swarm(
                 spec.agents[role],
                 enable_permissions=spec.enable_permissions,
                 mcp_configs=mcp_configs,
+                selected_window=selected_window,
+                ignore_selected=ignore_selected,
             )
             member_spec = _with_project_cwd(member_spec, project_dir)
             spec.agents[role] = member_spec
@@ -199,6 +208,8 @@ def enrich_team_spec_for_swarm(
             member_name=member_name,
             enable_permissions=spec.enable_permissions,
             mcp_configs=mcp_configs,
+            selected_window=selected_window,
+            ignore_selected=ignore_selected,
         )
         member_spec = _with_project_cwd(member_spec, project_dir)
         spec.agents[member_name] = member_spec

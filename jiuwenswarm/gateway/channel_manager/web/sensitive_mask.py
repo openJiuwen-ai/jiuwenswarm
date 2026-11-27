@@ -1,14 +1,16 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""敏感信息脱敏。个人版和企业版共用，不按版本分叉。
+"""敏感信息脱敏。个人版和企业版共用同一条替换链路，配置来源按版本分叉。
 
-开关和正则在 config.yaml 的 sensitive_mask。开关关闭时原文直出。
-开启后作用于各通道展示副本（网页出站文本、权限审批文案等），
+个人版读 config.yaml 的 sensitive_mask；企业版由管理端下发到 Gateway 本地库
+（``content_masking_config``），删除下发配置后回退 config.yaml。
+开关关闭时原文直出。开启后作用于各通道展示副本（网页出站文本、权限审批文案等），
 不改历史文件，也不改送给模型的上下文。
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -19,6 +21,7 @@ from jiuwenswarm.common.config import (
     get_merged_config_dict,
     load_yaml_round_trip,
 )
+from jiuwenswarm.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +35,20 @@ _USER_ROLES = frozenset({"user", "human"})
 _STREAM_EVENTS = frozenset({"chat.delta", "chat.reasoning"})
 _COMPLETE_EVENTS = frozenset({"chat.final", "chat.tool_result", "chat.tool_update"})
 _UNSAFE_PATTERN = re.compile(r"\(\.[*+]\)[*+{]")
+# 管理端下发额外收紧：拒绝 ``(a+)+`` / ``(a*)*`` 这类嵌套量词（个人版存量规则不受影响）。
+_UNSAFE_NESTED_QUANTIFIER = re.compile(
+    r"\((?:[^()\[\]]|\[[^\]]*\])*[*+](?:[^()\[\]]|\[[^\]]*\])*\)[*+]"
+)
 _STREAMS: dict[tuple[str, str], Any] = {}
 _COMPILED: tuple[tuple[str, ...], list[str]] | None = None
 _IMPORT_WARNED = False
+# 企业版：管理端下发的整段配置。None 表示无下发配置，回退 config.yaml。
+_ENTERPRISE_CONFIG: dict[str, Any] | None = None
+_ENTERPRISE_AUTHORITATIVE = False
+
+
+class SensitiveMaskConfigReadOnly(PermissionError):
+    """企业版内容脱敏配置由管理端管控，本端只读。"""
 
 
 def _load_mask_types() -> tuple[Any, Any] | None:
@@ -50,6 +64,8 @@ def _load_mask_types() -> tuple[Any, Any] | None:
 
 
 def _section() -> dict[str, Any]:
+    if is_enterprise() and _ENTERPRISE_AUTHORITATIVE:
+        return _ENTERPRISE_CONFIG or {"enabled": False, "rules": []}
     raw = get_merged_config_dict()
     section = raw.get("sensitive_mask") if isinstance(raw, dict) else None
     if not isinstance(section, dict):
@@ -57,9 +73,18 @@ def _section() -> dict[str, Any]:
     return section
 
 
-def _rules_from_section(section: dict[str, Any]) -> list[dict[str, str]]:
-    rules = section.get("rules")
+def _coerce_rules(rules: Any) -> list[dict[str, str]]:
+    """把 DB JSON / config.yaml 规则统一成 ``[{title, pattern}]``。"""
+    if isinstance(rules, str):
+        try:
+            rules = json.loads(rules)
+        except (TypeError, ValueError):
+            logger.warning("[sensitive_mask] rules JSON 解析失败，按无规则处理")
+            return []
+    if rules is None:
+        return []
     if not isinstance(rules, list):
+        logger.warning("[sensitive_mask] rules 不是列表，按无规则处理")
         return []
     out: list[dict[str, str]] = []
     for item in rules:
@@ -73,13 +98,85 @@ def _rules_from_section(section: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
+def _rules_from_section(section: dict[str, Any]) -> list[dict[str, str]]:
+    return _coerce_rules(section.get("rules"))
+
+
+def apply_content_masking_row(row: dict[str, Any] | None) -> None:
+    """企业版：应用管理端下发的内容脱敏配置；``None`` 表示回退 config.yaml。"""
+    global _ENTERPRISE_CONFIG, _ENTERPRISE_AUTHORITATIVE
+    if not is_enterprise():
+        return
+    if row is None:
+        _ENTERPRISE_CONFIG = None
+        _ENTERPRISE_AUTHORITATIVE = False
+        message = "[sensitive_mask] 管理端配置已清除，回退 config.yaml"
+    else:
+        _ENTERPRISE_CONFIG = {
+            "enabled": bool(row.get("enabled", False)),
+            "rules": _coerce_rules(row.get("rules")),
+        }
+        _ENTERPRISE_AUTHORITATIVE = True
+        message = "[sensitive_mask] 管理端配置已生效 enabled=%s rules=%d" % (
+            _ENTERPRISE_CONFIG["enabled"],
+            len(_ENTERPRISE_CONFIG["rules"]),
+        )
+    reset_sensitive_mask_state()
+    logger.info(message)
+
+
+def select_content_masking_row(rows: list[Any] | None) -> dict[str, Any] | None:
+    """单文档表取行：多行时按 revision 取最大并告警（自愈前先保证行为确定）。"""
+    normalized = [dict(row) for row in (rows or []) if isinstance(row, dict)]
+    if not normalized:
+        return None
+    if len(normalized) > 1:
+        normalized.sort(key=lambda row: int(row.get("revision") or 0), reverse=True)
+        logger.warning(
+            "[sensitive_mask] content_masking_config 期望单行，实际 %d 行，取 revision 最大行",
+            len(normalized),
+        )
+    return normalized[0]
+
+
+async def reload_content_masking_from_db() -> None:
+    """企业版启动冷加载：从 Gateway 本地库读入管理端下发配置。
+
+    启动时 Web 通道可能先于 config_poll 首轮就绪，这里在监听前同步加载一次，
+    避免重启后首个会话按未下发状态出站。
+    """
+    if not is_enterprise():
+        return
+    try:
+        rows: list[Any]
+        from jiuwenswarm.gateway.config.enterprise.access import (
+            get_enterprise_record_repository,
+        )
+
+        repo = get_enterprise_record_repository("content_masking_config")
+        if repo is not None:
+            rows = await repo.list(limit=50)
+        else:
+            from jiuwenswarm.server.runtime.enterprise_config import db_queries
+
+            rows = await db_queries.list_records("content_masking_config")
+    except Exception:  # noqa: BLE001 - 冷加载失败不阻断 Gateway 启动，poll 会重试
+        logger.warning("[sensitive_mask] 启动冷加载内容脱敏配置失败", exc_info=True)
+        return
+    apply_content_masking_row(select_content_masking_row(rows))
+
+
 def get_sensitive_mask_config() -> dict[str, Any]:
     section = _section()
     enabled = bool(section.get("enabled"))
     return {"enabled": enabled, "rules": _rules_from_section(section)}
 
 
-def validate_sensitive_mask_rules(rules: list[Any]) -> list[dict[str, str]]:
+def validate_sensitive_mask_rules(
+    rules: list[Any],
+    *,
+    strict: bool = False,
+) -> list[dict[str, str]]:
     if len(rules) > _MAX_RULES:
         raise ValueError(f"规则不能超过 {_MAX_RULES} 条")
     cleaned: list[dict[str, str]] = []
@@ -94,7 +191,9 @@ def validate_sensitive_mask_rules(rules: list[Any]) -> list[dict[str, str]]:
             raise ValueError(f"规则名称不能超过 {_MAX_TITLE} 个字符")
         if not pattern or len(pattern) > _MAX_PATTERN:
             raise ValueError(f"正则长度必须在 1 到 {_MAX_PATTERN} 之间")
-        if _UNSAFE_PATTERN.search(pattern):
+        if _UNSAFE_PATTERN.search(pattern) or (
+            strict and _UNSAFE_NESTED_QUANTIFIER.search(pattern)
+        ):
             raise ValueError(f"正则可能卡死，已拒绝: {title}")
         try:
             re.compile(pattern)
@@ -105,6 +204,9 @@ def validate_sensitive_mask_rules(rules: list[Any]) -> list[dict[str, str]]:
 
 
 def set_sensitive_mask_config(enabled: bool, rules: list[Any]) -> dict[str, Any]:
+    if is_enterprise():
+        # 企业版 config.yaml 是只读挂载，且该配置由管理端统一管控。
+        raise SensitiveMaskConfigReadOnly("内容脱敏配置由管理端下发，本端不支持修改")
     cleaned = validate_sensitive_mask_rules(rules)
     path = get_config_file()
     data = load_yaml_round_trip(path)

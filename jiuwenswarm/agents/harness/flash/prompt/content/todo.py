@@ -30,6 +30,7 @@ _TODO_DISCIPLINE_CN = """# todo 纪律
 - 新计划用 create，调整用 modify
 - 已有未完成计划时，继续或追加使用 todo(action=modify)；只有明确新建或重建时才传 plan_action=new/rebuild 调用 todo(action=create)
 - 状态变化时立即更新，不积攒多个后统一更新
+- 修改时必填 modify_action。状态更新示例：todo({"action":"modify","modify_action":"update","todos":[{"id":"<任务ID>","status":"<新状态>"}]})
 - 每次只传入发生变化的字段（通常只有 id 和 status）
 - 创建或更新任务时严禁填写 selected_model_id 字段（即使工具定义里出现该字段）；统一使用 Agent 默认模型执行
 - 同一时间只能有一个任务处于 in_progress
@@ -59,6 +60,7 @@ _TODO_DISCIPLINE_EN = """# todo Discipline
 - Use create for a new plan, modify to adjust
 - For an unfinished plan, use todo(action=modify) to continue or append; replace it only by explicitly passing plan_action=new/rebuild to todo(action=create)
 - Update status as soon as it changes; do not accumulate multiple changes and update them all later
+- Always supply modify_action when modifying a task. Status update example: todo({"action":"modify","modify_action":"update","todos":[{"id":"<task_id>","status":"<new_status>"}]})
 - Each call should only include the fields that changed (usually just id and status)
 - When creating or updating a task, never fill in the selected_model_id field (even if it appears in the tool definition); always use the Agent's default model
 - Only one task can be in_progress at a time

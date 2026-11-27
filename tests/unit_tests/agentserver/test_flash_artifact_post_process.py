@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -37,6 +40,22 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_flash import JiuwenSwarm
 _MARKER = "AI生成".encode()
 
 
+@pytest.fixture
+def workspace_dir():
+    """不含撇号的临时工作区，避免 Windows 用户名中的撇号破坏产物路径正则。
+
+    产物检测的正则把 ``'`` 当作路径终止符，含撇号的用户目录路径会被截断成
+    用户名前半段，导致 ``detect_artifact_paths`` 提取不到文件、后处理 hook
+    不触发。默认 %TEMP% 路径带撇号时，改用当前工作目录作临时基址。
+    """
+    base = tempfile.gettempdir()
+    if any(quote in base for quote in ("'", '"')):
+        base = os.getcwd()
+    dir_path = Path(tempfile.mkdtemp(dir=base))
+    yield dir_path
+    shutil.rmtree(dir_path, ignore_errors=True)
+
+
 def _assemble_flash(monkeypatch, *, turbo_enabled=True):
     adapter = object.__new__(JiuwenSwarmFlashAdapter)
     config = adapter._apply_flash_react_override({"react": {
@@ -63,14 +82,20 @@ def _assemble_flash(monkeypatch, *, turbo_enabled=True):
     monkeypatch.setattr(adapter, "_task_execution_rail_enabled", lambda: True)
     task_builder = Mock(return_value=None)
     skill_protocol_builder = Mock(return_value=None)
+    flash_skill_protocol_builder = Mock(return_value=None)
     monkeypatch.setattr(interface_deep, "_build_task_execution_rail", task_builder)
     monkeypatch.setattr(interface_deep, "_build_skill_protocol_prompt_rail", skill_protocol_builder)
+    monkeypatch.setattr(interface_flash, "_build_skill_protocol_prompt_rail", flash_skill_protocol_builder)
     monkeypatch.setattr(interface_deep, "_build_heartbeat_rail", lambda: None)
     monkeypatch.setattr(interface_deep, "_build_avatar_rail", lambda: None)
     monkeypatch.setattr(interface_deep, "_build_llm_retry_rail", lambda **_: None)
     rails = adapter._build_agent_rails(config["react"], config, mode="flash")
     task_builder.assert_not_called()
+    # 父类 _build_agent_rails 的 mode.startswith("agent") 门控对 flash 不触发
+    # （interface_deep 侧不调用），但 flash 适配器 _instantiate_rails 显式补装配
+    # 技能执行规范（interface_flash 侧调用一次）。
     skill_protocol_builder.assert_not_called()
+    flash_skill_protocol_builder.assert_called_once()
     artifact_rails = [rail for rail in rails if isinstance(rail, CodingArtifactPostProcessRail)]
     assert artifact_rails == [adapter._flash_artifact_post_process_rail]
     assert not artifact_rails[0]._coauthor_header_enabled
@@ -127,7 +152,7 @@ class _Model:
 @pytest.mark.parametrize("turbo_enabled", [True, False])
 @pytest.mark.parametrize("extension_enabled", [True, False])
 async def test_export_is_post_processed_before_send_and_reprocessed_after_edit(
-    monkeypatch, tmp_path, extension_registry, mode, turbo_enabled, extension_enabled,
+    monkeypatch, workspace_dir, extension_registry, mode, turbo_enabled, extension_enabled,
 ):
     _, rails = _assemble_flash(monkeypatch, turbo_enabled=turbo_enabled)
     events = []
@@ -164,15 +189,15 @@ async def test_export_is_post_processed_before_send_and_reprocessed_after_edit(
     core = create_deep_agent(
         model=model, tools=[_Tool("bash", bash), _Tool("invoke_tool", send)],
         rails=rails, system_prompt="Test", enable_task_loop=False,
-        max_iterations=5, workspace=str(tmp_path),
+        max_iterations=5, workspace=str(workspace_dir),
     )
-    token = set_effective_request_workspace_dir(str(tmp_path))
+    token = set_effective_request_workspace_dir(str(workspace_dir))
     session_id = f"flash-artifact-{uuid4().hex}"
     try:
         await core._ensure_initialized()
         # New version, followed by an overwrite of the same path in a later turn.
         for filename in ("销售复盘.pptx", "销售复盘_v2.pptx", "销售复盘_v2.pptx"):
-            path = tmp_path / filename
+            path = workspace_dir / filename
             events.clear()
             model.steps = iter([
                 ("bash", {"command": "export", "path": str(path)}),

@@ -297,7 +297,7 @@ def test_config_specs_maps_review_trigger_for_leader(
     member_params = {spec.type: spec.params for spec in member_rails}
 
     assert leader_params[registry.TEAM_SKILL_EVOLUTION]["review_trigger"] is True
-    assert "signal_trigger" not in leader_params[registry.TEAM_SKILL_EVOLUTION]
+    assert leader_params[registry.TEAM_SKILL_EVOLUTION]["signal_trigger"] is True
     assert member_params[registry.MEMBER_SKILL_EVOLUTION]["signal_trigger"] is True
     assert member_params[registry.MEMBER_SKILL_EVOLUTION]["review_trigger"] is False
 
@@ -321,7 +321,7 @@ def test_config_specs_keeps_explicit_review_trigger_override(
     member_params = {spec.type: spec.params for spec in member_rails}
 
     assert leader_params[registry.TEAM_SKILL_EVOLUTION]["review_trigger"] is False
-    assert "signal_trigger" not in leader_params[registry.TEAM_SKILL_EVOLUTION]
+    assert leader_params[registry.TEAM_SKILL_EVOLUTION]["signal_trigger"] is True
     assert member_params[registry.MEMBER_SKILL_EVOLUTION]["signal_trigger"] is True
     assert member_params[registry.MEMBER_SKILL_EVOLUTION]["review_trigger"] is False
 

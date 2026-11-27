@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
@@ -40,16 +42,14 @@ class _FakeAutoHarnessService:
 @pytest.mark.asyncio
 async def test_auto_harness_syncs_tui_channel_before_service(monkeypatch):
     """AutoHarness must preserve the TUI channel before downstream model rails run."""
-    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter.mark_as_session_scoped("tui_session_1")
+    adapter._session_instance_mode = "auto_harness"
     adapter._instance = object()
-    adapter._is_session_scoped_adapter = True
-    adapter._parent_session_id = None
+    adapter._agent_name = "main_agent"
+    adapter._sys_operation = None
     adapter._auto_harness_service = _FakeAutoHarnessService()
     adapter._stream_event_rail = None
-    adapter._deepresearch_rewrite_tx_uncertain = False
-    # process_message_stream_impl refreshes enterprise MCP lists before mode
-    # routing; __new__ skips __init__, so seed the set used by that hook.
-    adapter._registered_mcp_server_ids = set()
 
     captured = {}
 
@@ -100,15 +100,15 @@ def test_prompt_channel_resolver_keeps_tui_prefix_non_web():
 @pytest.mark.asyncio
 async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
     """Runtime config must sync the channel and task paths into inner rails."""
-    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter = JiuWenSwarmDeepAdapter()
     adapter._instance = object()
     adapter._is_session_scoped_adapter = True
     adapter._parent_session_id = None
     adapter._project_dir = None
     adapter._workspace_dir = "/tmp"
     adapter._runtime_prompt_rail = None
-    adapter._stream_event_rail = None
-    adapter._permission_rail = None
+    adapter._circuit_breaker_rail = None
+    adapter._subagent_rail = None
 
     captured = {}
 
@@ -129,7 +129,7 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
     monkeypatch.setattr(
         JiuWenSwarmDeepAdapter,
         "_seed_runtime_cwd",
-        lambda self, cwd=None, workspace=None: captured.update(
+        lambda self, cwd=None, workspace=None, session_id=None: captured.update(
             cwd=cwd,
             workspace=workspace,
         ),
@@ -163,11 +163,12 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
         )
     )
 
+    first_project_dir = os.path.abspath("/different/project")
     assert captured == {
         "channel": "web",
         "skip_a2ui": True,
-        "cwd": "/different/project",
-        "workspace": "/different/project",
+        "cwd": first_project_dir,
+        "workspace": first_project_dir,
     }
 
     await adapter._update_runtime_config(
@@ -179,9 +180,10 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
         )
     )
 
+    second_project_dir = os.path.abspath("/task/second-project")
     assert captured == {
         "channel": "web",
         "skip_a2ui": False,
-        "cwd": "/task/second-project",
-        "workspace": "/task/second-project",
+        "cwd": second_project_dir,
+        "workspace": second_project_dir,
     }

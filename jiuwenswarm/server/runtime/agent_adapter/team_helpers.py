@@ -2631,6 +2631,23 @@ async def process_team_message_stream(
                 session_id,
                 _safe_query_preview(query),
             )
+        # 卡片窗口选用只信本请求 params（对齐 Deep）；params 未带/非 dict 时显式
+        # 清掉信封 metadata 注入，与下方图片清单「外部 metadata 同键不可信」同边界。
+        from jiuwenswarm.server.runtime.agent_adapter.deep.context_window import (
+            SELECTED_CONTEXT_WINDOW_KEY,
+        )
+
+        params_for_window = getattr(request, "params", None)
+        if (
+            isinstance(params_for_window, dict)
+            and SELECTED_CONTEXT_WINDOW_KEY in params_for_window
+        ):
+            request_metadata[SELECTED_CONTEXT_WINDOW_KEY] = params_for_window.get(
+                SELECTED_CONTEXT_WINDOW_KEY
+            )
+        else:
+            request_metadata.pop(SELECTED_CONTEXT_WINDOW_KEY, None)
+
         if isinstance(getattr(request, "params", None), dict):
             request_metadata.setdefault("mode", request.params.get("mode"))
             request_metadata.setdefault(

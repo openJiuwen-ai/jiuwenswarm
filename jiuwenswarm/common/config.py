@@ -588,6 +588,11 @@ def get_evolution_signal_trigger_enabled(
     return fallback
 
 
+def get_team_evolution_signal_trigger_enabled(config: dict[str, Any] | None) -> bool:
+    """Leader signal scans historically default on, independently of member signal_trigger."""
+    return _get_evolution_config(config).get("team_signal_trigger") is not False
+
+
 def get_passive_skill_evolution_triggers(
     config: dict[str, Any] | None,
 ) -> dict[str, bool]:
@@ -3016,7 +3021,11 @@ def _prune_override_keys(
             continue
         tmpl_val = template[key]
         if isinstance(tmpl_val, dict) and isinstance(over_val, dict):
-            if not tmpl_val:
+            if parent_key == "permissions" and key in _PERMISSIONS_OVERRIDE_KEEP_KEYS:
+                # host_guard 等扩展段在模板里只声明了部分键（如 enabled），
+                # 递归裁剪会把用户自定义的嵌套键（protected_patterns）删掉。
+                result[key] = over_val
+            elif not tmpl_val:
                 result[key] = over_val
             else:
                 result[key] = _prune_override_keys(
@@ -3350,7 +3359,7 @@ def _normalize_preserve_file_sharing_mode(value: Any) -> str | None:
     return text
 
 
-_VALID_SANDBOX_STARTUP_MODES = ("internal", "external")
+_VALID_SANDBOX_STARTUP_MODES = ("internal", "external", "dll")
 _DEFAULT_SANDBOX_STARTUP_MODE = "internal"
 _DEFAULT_SANDBOX_POLICY_FILE = "code-agent-policy.yaml"
 
@@ -3395,8 +3404,8 @@ def _normalize_sandbox_startup_mode(value: Any) -> str:
 
 
 def get_sandbox_startup_mode() -> str:
-    """返回 ``sandbox.startup_mode``: ``internal`` (agent-server 拉起 jiuwenbox)
-    或 ``external`` (用户自己启动 jiuwenbox)。
+    """返回 ``sandbox.startup_mode``: ``internal`` (agent-server 拉起 jiuwenbox)、
+    ``external`` (用户自己启动 jiuwenbox)，或 ``dll`` (Windows x64 本机 DLL Guard)。
 
     未配置时默认 ``internal`` (当前 code-agent 模式预期行为)。
     """
@@ -3405,9 +3414,20 @@ def get_sandbox_startup_mode() -> str:
     return _normalize_sandbox_startup_mode(sandbox.get("startup_mode"))
 
 
+def get_jiuwenbox_startup_mode() -> str:
+    """返回 jiuwenbox sysop 可执行的启动方式。
+
+    ``dll`` 是个人版 Windows 的本地执行 Guard，不启动 jiuwenbox；企业链路
+    （Linux）或个人版非 Windows 即使配置残留 ``dll`` 也按 ``internal`` 处理，
+    避免把企业 sidecar sysop 误换成 local。
+    """
+    mode = get_sandbox_startup_mode()
+    return "internal" if mode == "dll" else mode
+
+
 def get_sandbox_startup_mode_explicit() -> str | None:
     """同 :func:`get_sandbox_startup_mode`, 但仅返回 ``config.yaml`` 里**显式**
-    写出的合法值 (``internal`` / ``external``); 未配置 / 空串 / 非法值都返回
+    写出的合法值 (``internal`` / ``external`` / ``dll``); 未配置 / 空串 / 非法值都返回
     ``None``。
 
     用途: agent-server boot 时判断要不要自动拉起 jiuwenbox 子进程。
@@ -3427,12 +3447,39 @@ def get_sandbox_startup_mode_explicit() -> str | None:
     return text
 
 
+def is_dll_sandbox_enabled(cfg: dict[str, Any] | None = None) -> bool:
+    """DLL Guard 只在个人版显式选择 ``startup_mode: dll`` 且沙箱开关为真时启用。
+
+    DLL Guard 仅面向 Windows x64 个人链路；企业链路跑在 Linux、由 jiuwenbox
+    sidecar 提供沙箱，配置里残留 ``dll`` 也不能启用本机 Guard。
+
+    本函数只做配置判定；原生包校验与执行装配在
+    ``jiuwenswarm.server.runtime.runtime_guard``（common 不反向依赖 server）。
+    """
+    if is_enterprise() or sys.platform != "win32":
+        return False
+    cfg = (get_config() or {}) if cfg is None else cfg
+    sandbox = cfg.get("sandbox") or {}
+    if not isinstance(sandbox, dict):
+        raise TypeError("sandbox must be an object")
+    if _normalize_sandbox_startup_mode(sandbox.get("startup_mode")) != "dll":
+        return False
+    enabled = sandbox.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise TypeError("sandbox.enabled must be a boolean")
+    return enabled
+
+
 def update_sandbox_startup_mode(mode: str) -> str:
     """写入 ``sandbox.startup_mode`` 到 config.yaml; 返回归一化后的值。"""
     normalized = _normalize_sandbox_startup_mode(mode)
     if str(mode or "").strip().lower() not in _VALID_SANDBOX_STARTUP_MODES:
         raise ValueError(
             f"startup_mode must be one of {_VALID_SANDBOX_STARTUP_MODES}, got {mode!r}",
+        )
+    if normalized == "dll" and (is_enterprise() or sys.platform != "win32"):
+        raise ValueError(
+            "startup_mode 'dll' is only available for personal edition on Windows x64",
         )
     data = _load_yaml_round_trip(_current_config_yaml_path())
     if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):

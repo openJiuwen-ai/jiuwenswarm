@@ -25,7 +25,7 @@ def test_todo_modify_prompt_avoids_todo_only_rounds():
 
 def test_todo_create_schema_describes_outcome_milestones():
     params = get_code_todo_create_input_params()
-    tasks_desc = params["properties"]["tasks"]["description"]
+    tasks_desc = params["properties"]["todos"]["description"]
     assert "2–3" in tasks_desc
     assert "4–6 max" in tasks_desc
     assert "Outcome-based" in tasks_desc

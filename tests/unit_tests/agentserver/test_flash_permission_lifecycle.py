@@ -400,13 +400,13 @@ async def test_todo_native_dispatch_keeps_each_session(permission_adapter, tmp_p
     _, rail = permission_adapter({"todo": "allow", "todo_create": "allow"})
     a = tool_context(
         "todo",
-        {"action": "create", "tasks": [{"id": "task-a", "content": "A"}]},
+        {"action": "create", "todos": [{"id": "task-a", "content": "A"}]},
         session_id="a",
         call_id="a",
     )
     b = tool_context(
         "todo",
-        {"action": "create", "tasks": [{"id": "task-b", "content": "B"}]},
+        {"action": "create", "todos": [{"id": "task-b", "content": "B"}]},
         session_id="b",
         call_id="b",
     )

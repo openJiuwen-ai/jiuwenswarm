@@ -210,6 +210,10 @@ class RequestSummaryRail(DeepAgentRail):
         increment_react_iteration()
         call_id = str(time.monotonic_ns())
         set_current_llm_call(call_id, time.monotonic())
+        req_ctx = self._active_request_context(ctx)
+        request_id = _resolve_request_id(req_ctx)
+        if request_id is not None:
+            get_perf_collector().mark_llm_in_flight(request_id, True)
 
     @_hook_safe
     async def after_model_call(self, ctx: Any) -> None:
@@ -225,6 +229,7 @@ class RequestSummaryRail(DeepAgentRail):
         if request_id is None:
             clear_current_llm_call()
             return
+        get_perf_collector().mark_llm_in_flight(request_id, False)
 
         duration_ms = max(0.0, (time.monotonic() - start_monotonic) * 1000.0)
         agent = getattr(ctx, "agent", None)
@@ -269,6 +274,7 @@ class RequestSummaryRail(DeepAgentRail):
         if request_id is None:
             clear_current_llm_call()
             return
+        get_perf_collector().mark_llm_in_flight(request_id, False)
 
         duration_ms = max(0.0, (time.monotonic() - start_monotonic) * 1000.0)
         agent = getattr(ctx, "agent", None)
@@ -295,6 +301,34 @@ class RequestSummaryRail(DeepAgentRail):
             return
         tool_name, tool_call_id, _ = extract_tool_call_info(ctx)
         set_tool_start(tool_call_id, tool_name, time.monotonic())
+        self._record_skill_usage(ctx, tool_name)
+        req_ctx = self._active_request_context(ctx)
+        request_id = _resolve_request_id(req_ctx)
+        if request_id is not None:
+            get_perf_collector().mark_tool_in_flight(request_id, True)
+
+    def _record_skill_usage(self, ctx: Any, tool_name: str) -> None:
+        """Attribute skill_tool / skill_complete invocations on the summary.
+
+        Reuses the telemetry extractor (plain functions, no OTel dependency);
+        skipped silently when the tool is not a skill call.
+        """
+        try:
+            from jiuwenswarm.telemetry.enrichment.skills import extract_skill
+
+            skill = extract_skill(tool_name, getattr(ctx, "inputs", None), None)
+        except Exception as exc:
+            logger.debug("[request_summary] skill usage extract skipped: %s", exc)
+            return
+        if skill is None or not str(getattr(skill, "name", "") or "").strip():
+            return
+        req_ctx = self._active_request_context(ctx)
+        request_id = _resolve_request_id(req_ctx)
+        if request_id is None:
+            return
+        get_perf_collector().record_skill_usage(
+            request_id, str(getattr(skill, "name") or "").strip()
+        )
 
     @_hook_safe
     async def after_tool_call(self, ctx: Any) -> None:
@@ -314,6 +348,7 @@ class RequestSummaryRail(DeepAgentRail):
         request_id = _resolve_request_id(req_ctx)
         if request_id is None:
             return
+        get_perf_collector().mark_tool_in_flight(request_id, False)
 
         result = extract_tool_result(ctx)
         tool_status = tool_status_from_result(result)

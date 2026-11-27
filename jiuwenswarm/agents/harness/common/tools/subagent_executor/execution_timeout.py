@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -34,6 +35,25 @@ _MAX_ITERATIONS_REASON = (
     "max_iterations_reached: the subagent ran out of iterations before finishing. "
     "Files it already wrote remain in the workspace; inspect them before retrying or redoing the work."
 )
+# SQLAlchemy wraps driver errors as "(sqlite3.OperationalError) ..." and inlines the
+# failing statement — storage failures reach this boundary as sqlite3.Error or as a
+# SQLAlchemy DBAPIError whose ``.orig`` is one; detection is type-based, never text-based.
+# 业务执行与进度保存不是同一事务：checkpoint 在子代理每步执行前后落盘，存储层故障
+# 不代表业务失败。错误消息可能内嵌大对象参数（生产日志见 51 万字符 blob），进结果
+# 文本前必须脱敏截断。
+_MAX_REASON_CHARS = 400
+_CHECKPOINT_DEGRADED_NOTE = (
+    "\n\n[checkpoint_degraded] The subagent's progress checkpoint failed to save "
+    "before delivery ({reason}). The text above is what the child produced before the "
+    "interruption and may not be the final delivery. Verify the files it already wrote "
+    "in the workspace before retrying; do not redo the whole task blindly."
+)
+_PROGRESS_UNKNOWN_REASON = (
+    "subagent_progress_unknown: the subagent's checkpoint save failed, so its progress "
+    "record is unreliable; business may have completed and files may already exist in "
+    "the workspace. Verify the workspace before retrying; do not redo the whole task "
+    "blindly. persist_error: {reason}"
+)
 
 
 @dataclass
@@ -41,6 +61,19 @@ class _CallState:
     session_id: str
     active: bool = False
     unavailable: bool = False
+
+
+class _SubagentReportedFailure(RuntimeError):
+    """raise_for_subagent_error 构造的上报失败：携带来源异常类名供边界判定。
+
+    debug 捕获通道把子代理内部异常转成 error chunk（SDK 流式层 str(e) 文本化，
+    异常链丢失），结构化来源只能靠转换层写入 payload 的 error_origin_class
+    保留——invoke 通道异常自带完整链，origin_class 为 None，行为不变。
+    """
+
+    def __init__(self, reason: str, origin_class: str | None = None) -> None:
+        super().__init__(reason)
+        self.origin_class = origin_class
 
 
 class _CompletionDeadline(Exception):
@@ -60,7 +93,10 @@ def raise_for_subagent_error(result: Any) -> None:
             reason = result.get("error") or result.get("message")
             if not reason and result.get("finish_reason") == "max_iterations":
                 reason = _MAX_ITERATIONS_REASON
-            raise RuntimeError(f"subagent_failed: {reason or 'subagent_error'}")
+            raise _SubagentReportedFailure(
+                f"subagent_failed: {reason or 'subagent_error'}",
+                origin_class=str(result.get("error_origin_class") or "") or None,
+            )
 
 
 def ensure_subagent_available(child: Any) -> None:
@@ -68,6 +104,21 @@ def ensure_subagent_available(child: Any) -> None:
     state = getattr(child, _STATE_ATTRIBUTE, None)
     if state is not None and state.unavailable:
         raise RuntimeError("subagent unavailable after failed or cancelled execution")
+
+
+def _mark_stream_error_text(payload: dict) -> dict:
+    """仅对 SDK 转换层异常帧把 output 失败文本补进 error 字段。
+
+    type=answer 的 error 帧有两种来源：SDK 流式转换层的异常帧（output=str(e)
+    失败文本，且带 error_origin_class 标记）与 invoke 返回的 error dict
+    （output 是业务输出，不得进错误文本）。以 origin_class 为门区分两者；
+    锁定 core 过渡期（无标记）保持 fail-closed，reason 仍为 subagent_error。
+    """
+    if not payload.get("error_origin_class"):
+        return payload
+    if payload.get("result_type") == "error" and not payload.get("error"):
+        return {**payload, "error": str(payload.get("output") or "")[:_MAX_REASON_CHARS]}
+    return payload
 
 
 def raise_for_subagent_stream_error(chunk: Any) -> None:
@@ -79,8 +130,15 @@ def raise_for_subagent_stream_error(chunk: Any) -> None:
         error["result_type"] = "error"
         if isinstance(payload, str):
             error["message"] = payload
+        elif isinstance(payload, dict) and not error.get("error"):
+            # SDK 流式转换层把失败文本写进 output（error_result 无 error 字段），
+            # 不兜底的话 reason 只剩 subagent_error，失败阶段完全不可定位；
+            # 与 _mark_stream_error_text 同口径截断，巨型原文不进异常与日志。
+            error["error"] = str(payload.get("output") or "")[:_MAX_REASON_CHARS]
         raise_for_subagent_error(error)
     elif kind == "answer":
+        if isinstance(payload, dict):
+            payload = _mark_stream_error_text(payload)
         raise_for_subagent_error(payload)
     elif kind is None:
         raise_for_subagent_error(chunk)
@@ -97,6 +155,126 @@ def _observe_cleanup(task: asyncio.Task[Any]) -> None:
                 logger.warning("Subagent cleanup ended with %s", type(error).__name__)
 
     task.add_done_callback(finished)
+
+
+def _is_sqlite_storage_error(exc: BaseException) -> bool:
+    """只认异常类型：sqlite3 驱动直抛，或 SQLAlchemy DBAPIError 的 ``.orig``。
+
+    不做消息文本嗅探——业务异常（工具结果文本、``subagent_failed`` 原因）可能恰好
+    携带 "(sqlite3." 字样，按文本判定会把业务失败误送进降级分支。
+    """
+    if isinstance(exc, sqlite3.Error):
+        return True
+    return isinstance(getattr(exc, "orig", None), sqlite3.Error)
+
+
+def _storage_error_summary(exc: BaseException) -> str:
+    """模型可见摘要：保异常类型与简短原因，截掉 SQL 语句与绑定参数原文。
+
+    checkpoint 库存的是会话/状态 blob，SQLAlchemy 错误串会内联它们（生产日志见
+    51 万字符参数）；这段原文只留在异常链与日志里，不进父代理可见结果。
+    """
+    text = str(exc).split("[SQL:", 1)[0].strip()
+    if not text:
+        return type(exc).__name__
+    return text[:_MAX_REASON_CHARS]
+
+
+def _persistence_failure_reason(exc: BaseException) -> str | None:
+    """Return bounded storage-error text when *exc* is a checkpoint-save failure.
+
+    沿异常链做类型判定，命中即返回脱敏摘要；只有存储层故障才进入降级分支。
+    单节点判定/推进包保护：链上异常 ``__str__`` 或属性损坏时按「非存储层」
+    处理返回 None，走原样 re-raise 路径——边界判定不得引入新的失败模式
+    掩盖原异常（与 _recover_last_assistant_text 同一口径）。
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        try:
+            if _is_sqlite_storage_error(current):
+                return _storage_error_summary(current)
+            current = current.__cause__ or current.__context__
+        except Exception:  # noqa: BLE001 — 判定失败 = 非存储层，原样 re-raise 不掩盖
+            return None
+    return None
+
+
+# error chunk 转换层（agent-core stream except）写入 payload 的来源异常类名前缀，
+# 覆盖 SQLite 驱动直抛与 SQLAlchemy 包装两种存储层形态。
+_STORAGE_ORIGIN_MODULE_PREFIXES = ("sqlite3.", "sqlalchemy.exc.")
+
+
+def _reported_storage_reason(exc: BaseException) -> str | None:
+    """error chunk 通道异常链丢失时的补充判定：来源类名是否存储层。
+
+    debug 捕获通道经 SDK 流式转换层后抛出的是 _SubagentReportedFailure（无链），
+    只能按 origin_class 判定；invoke 通道 origin_class 为 None 不受影响。
+    """
+    origin_class = getattr(exc, "origin_class", None)
+    if not origin_class or not origin_class.startswith(_STORAGE_ORIGIN_MODULE_PREFIXES):
+        return None
+    return _storage_error_summary(exc)
+
+
+def _assistant_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "".join(parts)
+    return ""
+
+
+def _recover_last_assistant_text(child: Any, session_id: str) -> str | None:
+    """Best-effort read of the child's final answer from its in-memory context.
+
+    对话消息只存在 context_engine 的进程内存（不落 checkpointer），进度保存失败发生在
+    最终回答生成之后时，回答仍可读。只认最后一条无 tool_calls 的 assistant 消息
+    （ReAct 最终回答形态）：最后一条 assistant 还挂着 tool_calls 说明业务中断在半途，
+    不能把中间叙述当作交付结果。
+    """
+    try:
+        # DeepAgent 暴露公开 property react_agent；其余形态回落私有属性名兜底。
+        react = getattr(child, "react_agent", None) or getattr(child, "_react_agent", None)
+        engine = getattr(react, "context_engine", None)
+        if engine is None:
+            engine = getattr(child, "context_engine", None)
+        get_context = getattr(engine, "get_context", None)
+        if not callable(get_context):
+            return None
+        context = get_context(session_id=session_id)
+        if context is None:
+            return None
+        for message in reversed(list(context.get_messages())):
+            if isinstance(message, dict):
+                role = message.get("role")
+                tool_calls = message.get("tool_calls")
+                content = message.get("content")
+            else:
+                role = getattr(message, "role", None)
+                tool_calls = getattr(message, "tool_calls", None)
+                content = getattr(message, "content", None)
+            if role == "user":
+                # 本轮边界：越过 user 会把上一轮（或父会话兜底场景）的旧回答当成
+                # 本次交付，恰是要消除的「结果与执行状态不一致」的反向形态。
+                return None
+            if role != "assistant":
+                continue
+            if tool_calls:
+                return None
+            text = _assistant_text(content)
+            return text if text and text.strip() else None
+        return None
+    except Exception as exc:  # noqa: BLE001 — 回收是尽力而为，任何读取问题都不得掩盖原异常
+        logger.debug("Subagent answer recovery skipped: %s", type(exc).__name__)
+        return None
 
 
 async def _cancel_and_observe(child: Any, task: asyncio.Task[Any], session_id: str) -> str:
@@ -137,6 +315,11 @@ async def run_subagent_with_timeout(
 
     A successful or interrupted child may resume with a fresh time budget.
     Failed instances cannot be reused, even when their cancellation is delayed.
+
+    存储层（checkpoint 保存）失败按阶段降级：能从子代理内存上下文确认最终回答时，
+    返回带 ``checkpoint_degraded`` 标注的回答（实例仍永久退役）；确认不了则抛
+    ``subagent_progress_unknown``，保留「业务可能已完成」的不确定性，由上层核对
+    工作区后自行决定是否重试。
     """
     state = getattr(child, _STATE_ATTRIBUTE, None)
     if state is None:
@@ -170,12 +353,36 @@ async def run_subagent_with_timeout(
         return result
     except (Exception, asyncio.CancelledError) as exc:
         state.unavailable = True
+        deadline = isinstance(exc, _CompletionDeadline)
+        # 先回收再取消：回收是纯内存读，且任何内部失败都会被吞掉，不得影响取消时序。
+        # 取消不进降级判定：CancelledError 的 __context__ 可能挂着 sqlite 错误，
+        # 命中会把取消吞成 answer 返回，破坏取消必须重抛的契约。
+        degraded = (
+            None
+            if deadline or isinstance(exc, asyncio.CancelledError)
+            else _persistence_failure_reason(exc) or _reported_storage_reason(exc)
+        )
+        recovered = None if degraded is None else _recover_last_assistant_text(child, session_id)
         cleanup = await _cancel_and_observe(child, task, session_id)
-        if isinstance(exc, _CompletionDeadline):
+        if deadline:
             raise RuntimeError(
                 f"completion_timeout: subagent session={session_id}, "
                 f"limit={timeout:g}s, coroutine_cleanup={cleanup}"
             ) from None
+        if degraded is not None:
+            # 存储层故障 ≠ 业务失败：能确认已生成最终回答就随降级标注一并交付，
+            # 确认不了就保留「结果未知」，绝不能当成业务没执行引导上层整段重做。
+            if recovered:
+                logger.warning(
+                    "Subagent checkpoint save failed; delivering recovered answer: "
+                    "session=%s, error=%s",
+                    session_id, degraded,
+                )
+                return {
+                    "result_type": "answer",
+                    "output": recovered + _CHECKPOINT_DEGRADED_NOTE.format(reason=degraded),
+                }
+            raise RuntimeError(_PROGRESS_UNKNOWN_REASON.format(reason=degraded)) from exc
         raise
     finally:
         state.active = False

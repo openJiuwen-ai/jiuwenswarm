@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..core.application_config.audit_log_config import AuditLogConfigService
+from ..core.application_config.content_masking_config import ContentMaskingConfigService
 from ..core.application_config.cron_policy import CronPolicyService
 from ..core.application_config.log_masking_rule import LogMaskingRuleService
 from ..core.application_config.logging_config import LoggingConfigService
@@ -15,6 +16,7 @@ from ..core.application_config.memory_config import MemoryConfigService
 from ..core.application_config.task_memory_config import TaskMemoryConfigService
 from ..schemas.application_config_schemas import (
     AuditLogUpsertRequest,
+    ContentMaskingConfigUpsertRequest,
     CronPolicyUpsertRequest,
     LoggingConfigUpsertRequest,
     LogMaskingRuleCreateRequest,
@@ -44,6 +46,9 @@ LogMaskingCreateSyncBody = make_sync_body(
 )
 LogMaskingUpdateSyncBody = make_sync_body(
     "LogMaskingUpdateSyncBody", LogMaskingRuleUpdateRequest
+)
+ContentMaskingSyncBody = make_sync_body(
+    "ContentMaskingSyncBody", ContentMaskingConfigUpsertRequest
 )
 
 
@@ -162,6 +167,28 @@ async def delete_audit_log(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     trigger_runtime_config_update()
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+@application_config_router.put("/content-masking", response_model=ResponseModel)
+async def upsert_content_masking(
+    sync: Annotated[SyncContext, Depends(verify_sync(ContentMaskingSyncBody))],
+):
+    try:
+        result = await ContentMaskingConfigService().upsert(**sync.business)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
+
+
+@application_config_router.delete("/content-masking", response_model=ResponseModel)
+async def delete_content_masking(
+    sync: VerifySyncEnvelopeOnly,
+):
+    try:
+        await ContentMaskingConfigService().delete()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
 
 

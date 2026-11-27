@@ -77,6 +77,7 @@ WEB_FETCH = _tools.WEB_FETCH
 VISION = _OJ_VISION
 AUDIO = _OJ_AUDIO
 PERSONAL_CONTEXT = _member_rails.PERSONAL_CONTEXT
+OFFICE_ACE_USER_PROFILE = _member_rails.OFFICE_ACE_USER_PROFILE
 RUNTIME_PROMPT = _member_rails.RUNTIME_PROMPT
 TEAM_SKILL_STORAGE_POLICY = _member_rails.TEAM_SKILL_STORAGE_POLICY
 TEAM_SKILL_LIBRARY_RELOAD = _member_rails.TEAM_SKILL_LIBRARY_RELOAD
@@ -135,6 +136,8 @@ STATUSLINE_SETUP_AGENT = _code_subagents.STATUSLINE_SETUP_AGENT
 
 # Swarm-owned rails declared in ``builtin_rails``.
 RESPONSE_PROMPT = _builtin_rails.RESPONSE_PROMPT
+TEAM_ACCEL_PROMPT = _builtin_rails.TEAM_ACCEL_PROMPT
+TEAM_ACCEL_SYS = _builtin_rails.TEAM_ACCEL_SYS
 STREAM_EVENT = _builtin_rails.STREAM_EVENT
 AVATAR_PROMPT = _builtin_rails.AVATAR_PROMPT
 WORKSPACE_QUOTA = _builtin_rails.WORKSPACE_QUOTA
@@ -176,6 +179,14 @@ def register_swarm_providers() -> None:
     wires the build-context seed factory. Safe to call multiple times, but only
     the first call performs the registration.
     """
+    # Always (re)assert the accel worktree guard patch: early returns must not
+    # leave a process that imported registry before accel with the stock guard.
+    from jiuwenswarm.agents.harness.team.accel.worktree_sys_rail_patch import (
+        apply_team_accel_sys_rail_patch,
+    )
+
+    apply_team_accel_sys_rail_patch()
+
     global _REGISTERED
     if _REGISTERED:
         return
@@ -192,6 +203,7 @@ def register_swarm_providers() -> None:
 
 __all__ = [
     "PERSONAL_CONTEXT",
+    "OFFICE_ACE_USER_PROFILE",
     "register_swarm_providers",
     "SKILL_TOOLKIT",
     "SKILL_RETRIEVAL",
@@ -233,6 +245,8 @@ __all__ = [
     "TEAM_TTSE",
     "MEMBER_TTSE",
     "RESPONSE_PROMPT",
+    "TEAM_ACCEL_PROMPT",
+    "TEAM_ACCEL_SYS",
     "SYS_OPERATION",
     "STREAM_EVENT",
     "TASK_PLANNING",

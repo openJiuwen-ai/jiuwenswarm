@@ -6,8 +6,8 @@
 |---|---|
 | 类型 | spec |
 | 编号 / slug | S_09 / mcp-integration |
-| 关联模块 | jiuwenswarm/common/{mcp_config, mcp_server_registry, mcp_call_timeout_patch, mcp_tool_list_refresh_patch}.py |
-| 最近一次修订日期 | 2026-11-11 |
+| 关联模块 | jiuwenswarm/common/{mcp_config, mcp_server_registry, mcp_call_timeout_patch, mcp_tool_list_refresh_patch, mcp_http_hook}.py |
+| 最近一次修订日期 | 2026-11-23 |
 | 关联 feature | F_01_deepresearch-mcp-delegation.md、F_03_mcp-registration-decoupled-from-chat.md |
 
 ## 范围 / 边界
@@ -45,6 +45,12 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   `headers` 别名）。
 - **N3 超时与缓存**：调用 / 发现超时默认 300s；schema 缓存 env
   `JIUWENSWARM_MCP_SCHEMA_CACHE`（bundle 指纹作 key）。
+  sse / streamable-http 传输共享一个 SSL 上下文：timeout 补丁的 connect 包装先在工作线程里
+  用 `httpx.create_ssl_context()` 构建一次，按 (`SSL_CERT_FILE`, `SSL_CERT_DIR`) 缓存。
+  SDK 工厂包装在调用方未指定 `httpx_client_factory`、未按位置传参、SDK 签名接受该参数，
+  且缓存已就绪时，才注入与 `create_mcp_http_client` 同口径、只多传 `verify` 的工厂。
+  任一条件不满足或构建失败，都回到 SDK 默认路径。事件循环上不得同步加载 CA：
+  Windows 上单次可达秒级，周期扫描会让整个 AgentServer 停摆。
 - **N4 OfficeClaw 身份 pin**：启动身份经 `OFFICE_CLAW_MCP_COMMAND / ARGS_JSON / CWD`
   + env key 白名单锁定；allowlist 经 ContextVar + 共享 ability_manager 双通道跨 task
   传递。
@@ -69,6 +75,14 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   call_tool/list_tools 的内部取消（等待者无 cancel 请求）在所属任务清理成功后
   最多重连重试一次；再次内部取消映射为普通工具错误。清理失败不得当作成功重试，
   调用或清理期间的真实外部取消继续传播。
+  池化 worker 的 owner 被取消从来不是调用者的取消：SDK 的 task group 进入在 owner
+  内，transport 子任务崩溃（如 POST 收到非 2xx 后 raise_for_status）取消的是 owner
+  本身（`cancelling()>0`，上面的单次 I/O 判定会视作外部取消）。owner 收到取消时，
+  一律向在途及排队调用者映射为 `McpWorkerStoppedError`（无 `close_reason` 时文案为
+  "transport cancelled internally"），owner 本身继续传播取消；请求级工具 invoke 据此
+  走既有的一次重建重试。`shutdown_pooled_mcp_worker` 只在关闭方自身被取消时传播
+  取消；owner 已以取消结束而关闭方未被取消时视为已停止，不得把 owner 的取消冒给
+  关闭方（否则重建重试本身会变成裸取消）。
   建连/调用用 `asyncio.timeout`
   保持任务归属；`wait_for` 仅可用于完整生命周期或不持有上下文的单次 I/O。
   超时/死会话先 await disconnect 再重置状态，禁止延迟跨任务 aclose；False 必须报错。
@@ -181,6 +195,33 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   请求下发的远程服务且它有活动连接。同一服务的自动复扫在途时再次触发只补扫一次，补扫用最后一次触发它的那个 worker。worker 内列工具的上限是 30s，不按调用超时占着串行队列。远程
   服务的 `tools/list_changed` 不处理，靠周期扫描收敛。扫描结果统一经 `_commit_scan_locked`
   写入缓存。
+- **N25 MCP HTTP 出口可逐请求改写鉴权头**：`apply_mcp_http_auth_patch()` 在
+  `interface_deep` 的 DeepAdapter 构造时装配（与 N9 同一装配点、幂等），包装
+  openjiuwen 的 `AuthHeaderAndQueryProvider.async_auth_flow` / `HeaderQueryAuthStrategy.authenticate`。
+  两个包装点必须同时可用才装：类缺一或那两个方法不可调用即整体放弃（只装一半会让 provider
+  没有 `server_name`，归属静默退化）。包装后的 flow 是**透传代理**：httpx 回填的响应经
+  `asend` 转给原 flow，不得用 `__anext__`（那会送 `None`）。
+  每次发往 MCP 服务端的 HTTP 请求（`initialize` / `tools/list` / `tools/call` / SSE 建流）
+  都会先触发 `agent_server:before_mcp_http`，扩展往 `McpHttpHookContext.headers` 写值，
+  宿主按白名单过滤后合并。协议与传输头（`Content-Type` / `Content-Encoding` / `Accept` /
+  `Accept-Encoding` / `Mcp-Session-Id` / `MCP-Protocol-Version` / `Host` / `Content-Length` /
+  `Transfer-Encoding` 等报文级头，见 `PROTECTED_HEADERS`）即使扩展写了也丢弃——扩展或运维
+  把 `header_name` 误配成这些会确定性打断握手/解码；头名必须匹配
+  `^[!#$%&'*+\-.^_\`|~0-9A-Za-z]+$`，值不得含 `\r` `\n` `\0`、必须是 latin-1 可编码
+  （否则 httpx 编码请求时会抛错，等于打断调用）、单值上限 32768 字符，非字符串值丢弃。
+  合并写入本身也包 `try/except`：被传输层拒绝的值只丢该头、发 warning，照常发送（与
+  `llm_sse_patch._merge_model_http_hook_ctx` 同一容错口径）。**无订阅者时直接返回**
+  （用 `CallbackFramework.has_subscribers` 判定，不解析请求体）；扩展未注册、handler 抛错、
+  框架未初始化、无订阅者四种情况都**回落到静态配置头**，不得让 MCP 调用失败。请求归属经 ContextVar 从调用方传入 worker
+  （`request_scope` = `(request_id, session_id)`，由工具对象在 `invoke` 期间绑定、
+  `finally` 复位，`_PooledMcpWorker.call_tool` 读 ContextVar 盖到 `_McpCallRequest`，worker
+  owner task 再转绑一次），未绑定时两字段为空串。**归属可见性有边界**：ContextVar 只在
+  发起该次 MCP 调用的任务树内可见；走本仓 worker owner task 的路径（streamable-http、
+  请求级池）能拿到；SDK 自持 owner task 的路径（如 SSE 的 `_SseClient` owner loop）发出的
+  请求可能拿不到，表现为 `request_id` / `session_id` 为空而头仍生效。provider 的
+  `server_name` 取自 `ToolAuthConfig.tool_type`（MCP 客户端传的就是服务名）。该钩子不改
+  连接复用：头值变化仍要靠 N20 的池键隔离或 `connection_scope: request`，钩子本身不重建连接。
+
 - **N24 工具对象构造收口**：本轮 MCP 工具对象一律经 `create_request_scoped_mcp_tool` 构造
   （标识 `<前缀><会话与请求的摘要>.<服务名>.<工具名>`、超时属性、执行时参数与连接模型）。
   对话装载（`_stage_request_mcp_tools`）与进程内扩展的按需装载
@@ -213,6 +254,7 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 | `mcp_server_registry.py` | `snapshot_for_deepresearch(name) -> tuple[dict, list, dict]` | N10；缺失抛 `UnknownMcpServerError`，停用抛 `DisabledMcpServerError` |
 | `mcp_call_timeout_patch.py` | `apply_mcp_call_timeout_patch` / `force_invalidate_mcp_client` / `is_retryable_mcp_dead_session_error` / `DEFAULT_CALL_TIMEOUT = 30.0` | N7 |
 | `mcp_tool_list_refresh_patch.py` | `apply_mcp_tool_list_refresh_patch` / `refresh_registered_mcp_tool_lists` / `resolve_mcp_tool_list_ttl_s` / `DEFAULT_MCP_TOOL_LIST_TTL_S = 60` | N8 |
+| `mcp_http_hook.py` | `apply_mcp_http_auth_patch` / `apply_mcp_http_hook(server_name, request)` / `set_mcp_request_scope` / `reset_mcp_request_scope` / `current_mcp_request_scope` / `PROTECTED_HEADERS`；`extensions.McpHttpHookContext` / `AgentServerHookEvents.BEFORE_MCP_HTTP` | N25；`_PooledMcpWorker.call_tool` 签名不变（`meta` / `reserved`），归属从 ContextVar 取；`RequestScopedOfficeClawMcpTool(..., session_id=...)` 仅供归属使用 |
 
 ## 执行路径 / 消费者
 
@@ -270,6 +312,13 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 - 改 patch 目标（上游 SDK 升级）→ 属性名常量表（N8 G.CLS.11）同步 +
   `inspect` 确认新签名 + 两个 patch 测试文件回归 + 列出全部同构包装点逐个确认。
 - 自建 remote MCP client → **必须补 `_jws_call_timeout` 印章**（N7 契约耦合）。
+- 改 `_run_mcp_worker` / `shutdown_pooled_mcp_worker` 的取消分支 → 用真实 AnyIO task
+  group 子任务崩溃（取消 owner 本身）回归：调用者拿到普通错误且 `cancelling()==0`，
+  请求级工具重建一次后成功（N7）。只 mock 一个 CancelledError 不会取消 owner，覆盖不到。
+- 升级 mcp / httpx → 跑共享 SSL 工厂的防漂移测试（与 `create_mcp_http_client` 的 timeout /
+  headers / follow_redirects / trust_env / auth 一致）；SDK 工厂签名变了要核对注入条件（N3）。
+  用内存传输、预算很小的测试 fixture 需预置 `_mcp_ssl_contexts`，否则首个建连要在线程里真实
+  加载 CA。
 - 改扫描节奏 / 池 TTL → env 覆盖路径回归（N5/N6 的四个 env）。
 - 扩 stdio 白名单 → 安全评审（N2 是 fail-closed 边界，[[S_01]] 铁律 6）。
 - 改 OfficeClaw 启动身份 → pin 字段（N4）+ env 白名单同步；注册面多放行的键在
@@ -286,6 +335,12 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   新建 worker 一律经 `GlobalMcpWorkerPool._start`，否则收不到工具变更通知（N23）。
 - 新增 `mcp.server.*` 方法 → `ReqMethod`、`dispatch.HANDLERS`、`agent_http_routes`、Gateway 的
   `agent_rest_map` 与 Web / TUI 转发名单、`tests/transport/test_dispatch_matrix.py` 一起改。
+- 改 `before_mcp_http` 触发点或合并规则 → 协议头保留集合（`PROTECTED_HEADERS`）、
+  订阅者短路（`has_subscribers`）、latin-1 校验、flow 代理的 `asend` 透传、归属传递链
+  （工具 `set_mcp_request_scope` → `_McpCallRequest` → worker owner task 转绑），
+  以及 `tests/unit_tests/common/test_mcp_http_hook.py` 一起改；扩展写鉴权头是新能力（N25），
+  但**不要**允许改写协议头，否则 MCP 握手会坏。改传输层 `call_tool` 签名是禁止的
+  （会打断第三方 client 与测试替身），归属只能走 ContextVar。
 - 改工具对象的标识、超时属性或构造参数 → 只改 `create_request_scoped_mcp_tool`，不要在
   调用方另拼一份；进程内扩展依赖两条路径一致（N24）。
 - 改分组池的选取或调用路径 → 核对每条提前返回、异常、取消路径都归还了占位（N19）；

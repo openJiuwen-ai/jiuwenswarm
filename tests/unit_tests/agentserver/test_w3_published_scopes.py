@@ -184,7 +184,7 @@ def test_session_policy_write_updates_memory_overlay_only(publisher, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_native_tool_execution_carries_key_and_resets_after_exception_and_cancel():
+async def test_native_tool_execution_carries_key_and_resets_after_exception_and_cancel(request):
     import asyncio
     from types import SimpleNamespace
     from flash_sdk import sdk_tools
@@ -203,6 +203,7 @@ async def test_native_tool_execution_carries_key_and_resets_after_exception_and_
         "net_guard": {"enabled": True},
     }
     rail = PermissionInterruptRail(config=config, permission_key=key)
+    request.addfinalizer(lambda: rail.uninit(None))
     started, observed = asyncio.Event(), []
 
     async def probe(mode):

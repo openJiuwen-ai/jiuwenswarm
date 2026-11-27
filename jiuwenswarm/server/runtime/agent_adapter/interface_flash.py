@@ -76,6 +76,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import json
 import logging
 import os
 from contextlib import contextmanager
@@ -142,6 +143,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
     _RailBuildInfo,
     _build_context_assemble_rail,
+    _build_skill_protocol_prompt_rail,
     _resolve_instance_config_base,
     acp_chat,
     create_vision_tools,
@@ -165,6 +167,24 @@ from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
 
 logger = logging.getLogger(__name__)
 _FLASH_TURBO_TOOL_NAME = "skill_acceleration_exec"
+
+# flash 专属配置开关的键名（双读：flash.<key> 优先、react.<key> 兜底）。
+# 只覆盖「flash 自有、docstring 声明为 flash.*」的开关；skill_turbo / disabled_tools
+# 等与 Deep 共享的 react.* 键不在此列，仍走 react.* 单一语义，避免命名空间串味。
+_FLASH_OWNED_CONFIG_KEYS: frozenset[str] = frozenset({
+    "persona",
+    "safety",
+    "tool_guide",
+    "response",
+    "composer",
+    "repeat_call_guard",
+    "skill_catalog",
+    "state",
+    "pressure",
+    "relay_merge",
+    "section_order",
+    "audit",
+})
 
 
 def _flash_evolution_enabled(config: dict[str, Any] | None) -> bool:
@@ -213,7 +233,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     #   tool_lazy_load.eager_tools   — 渐进式工具呈现的常驻名单。深合并对 list 是
     #                                  整表替换，须写全 flash 最终列表（统一 todo
     #                                  替换 todo_create/list/get/modify，去掉
-    #                                  list_files；tools_search/invoke_tool 由
+    #                                  list_files；记忆 5→1 归 FlashMemoryRail，
+    #                                  「主动模式」任务开始检索一次须直接可调，故入常驻；
+    #                                  tools_search/invoke_tool 由
     #                                  _normalize_progressive_eager_tools 自动补回）。
     #                                  enabled 不强制——flash 的精简来自 rail 构建层，
     #                                  lazy load 只影响呈现方式，交给部署配置。
@@ -237,6 +259,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 "skill_tool",
                 "skill_complete",
                 "todo",
+                "memory",
                 "office_claw_list_wishes",
             ],
         },
@@ -280,7 +303,11 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_skill_turbo_delivery_summary_rail",
         # Turbo routing must remain available when skill retrieval is disabled.
         "_skill_turbo_prompt_rail",
-        
+        # 技能执行规范（skill_protocol 段，含「执行 skill 前必须建 todo」）。
+        # 父类在 _build_agent_rails 用 mode.startswith("agent") 门控，flash 模式
+        # 被挡在外；此处进 keep 并在 _instantiate_rails 显式补装配（不改原生门控）。
+        "_skill_protocol_prompt_rail",
+
         "_task_planning_rail",
         # auto 档动态路由：请求级 enable_routing / 进程级 model_routing.enabled
         # 均开启时，Flash 必须保留该 rail 才能执行分类器并真实 set_llm。
@@ -321,7 +348,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_skill_authorization_rail",
         # Workspace identity files are assembled on the request path.
         "_context_assemble_rail",
-        # _memory_rail: FlashMemoryRail（flash override，统一 memory 工具）挂在
+        # _memory_rail: FlashMemoryRail（5→1 统一 memory 工具）挂在
         #   动态挂载路径上，进 keep 才不会被 _drop_non_whitelist_dynamic_rails
         #   卸载；闸门是 modes.agent.memory.enabled（flash 记忆档归一 agent）。
         "_memory_rail",
@@ -329,6 +356,26 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_office_ace_user_profile_rail",
         # ask_user：交互请求动态挂载，留白名单避免 churn（见上方注释）。
         "_ask_user_rail",
+        # 最后审计器：所有段注入后跑 check_compliance（撞号/重复/未渲染/幽灵工具/静态区 hash）。
+        "_flash_prompt_audit_rail",
+        # 重复调用守卫：attachment 只提醒不否决（瞬态，不占段号）。
+        "_flash_repeat_call_guard_rail",
+        # 7xx 技能域常驻重组：把原生全量 skills 段翻牌为 700–730 + 精简清单。
+        "_flash_skill_rail",
+        # ③ 运行时收口：820 时间事实迁 attachment（静态区 hash 稳定）。
+        "_flash_state_rail",
+        # ⑥ 水位压力注入：70/85 阶梯提醒，挂 90% 强制层之下（瞬态 attachment）。
+        "_flash_pressure_rail",
+        # Static prompt text reconciliation: identity/safety/tools/response.
+        "_flash_prompt_composer_rail",
+        # relay 注入内容去重归并：剥除 request_system_prompt 末尾的
+        # [文件输出约束]（220 覆盖）+ [记忆纠正规则]（640/120 覆盖）。
+        "_flash_relay_merge_rail",
+        # 技能执行规范正文修正：skill_protocol 里旧 todo 工具名 → 统一 todo(action=…)，
+        # 消除与 430「todo 纪律」段的两套工具名冲突（不改其它规则、不改 priority）。
+        "_flash_skill_protocol_rail",
+        # 段序收口：旧段迁号/剥除 + 动态段 1000 带。
+        "_flash_section_order_rail",
     })
 
     # PROTECTED rails are always built even under a keep-whitelist (dropping
@@ -879,6 +926,52 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             "_flash_artifact_post_process_rail",
             self._build_flash_artifact_post_process_rail,
         ))
+        rail_infos.append(_RailBuildInfo(
+            "_flash_prompt_audit_rail",
+            self._build_flash_prompt_audit_rail,
+        ))
+        rail_infos.append(_RailBuildInfo(
+            "_flash_prompt_composer_rail",
+            self._build_flash_prompt_composer_rail,
+        ))
+        rail_infos.append(_RailBuildInfo(
+            "_flash_repeat_call_guard_rail",
+            self._build_flash_repeat_call_guard_rail,
+        ))
+        rail_infos.append(_RailBuildInfo(
+            "_flash_skill_rail",
+            self._build_flash_skill_rail,
+        ))
+        rail_infos.append(_RailBuildInfo(
+            "_flash_state_rail",
+            self._build_flash_state_rail,
+        ))
+        rail_infos.append(_RailBuildInfo(
+            "_flash_pressure_rail",
+            self._build_flash_pressure_rail,
+        ))
+        rail_infos.append(_RailBuildInfo(
+            "_flash_relay_merge_rail",
+            self._build_flash_relay_merge_rail,
+        ))
+        rail_infos.append(_RailBuildInfo(
+            "_flash_section_order_rail",
+            self._build_flash_section_order_rail,
+        ))
+        rail_infos.append(_RailBuildInfo(
+            "_flash_skill_protocol_rail",
+            self._build_flash_skill_protocol_rail,
+        ))
+        # 父类 _build_agent_rails 对 skill_protocol 用 mode.startswith("agent") 门控，
+        # flash 模式拿不到；这里显式补装配技能执行规范（不改原生门控）。
+        # 两个 rail 均常开、无开关、保持同步装配：上方 FlashSkillProtocolRail 负责把
+        # 原生段里的旧 todo 工具名改成 todo(action=…)，本原生 skill_protocol_prompt_rail
+        # 负责注入该段正文。只装原生段会重新带出 Deep 旧工具名（todo_create/todo_modify），
+        # 与 430「todo 纪律」段的两套工具名冲突会复现。
+        rail_infos.append(_RailBuildInfo(
+            "_skill_protocol_prompt_rail",
+            _build_skill_protocol_prompt_rail,
+        ))
         rails = super()._instantiate_rails(rail_infos, config_base)
         selection = self._build_flash_skill_selection_rail(config_base)
         if selection is not None:
@@ -893,6 +986,293 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         )
 
         return CodingArtifactPostProcessRail(coauthor_header_enabled=False)
+
+    def _flash_config(self, key: str, default: Any = None) -> Any:
+        """双读 flash.* 优先、react.* 兜底。
+
+        flash 专属开关读 ``flash.<key>``（新命名空间），缺省回退 ``react.<key>``
+        （旧命名空间），迁移期两者并存。仅用于 :data:`_FLASH_OWNED_CONFIG_KEYS` 内的
+        键；与 Deep 共享的 react.* 键（disabled_tools / skill_turbo 等）不走本方法。
+        """
+        base = getattr(self, "_config_base_cache", None)
+        flash_section = base.get("flash") if isinstance(base, dict) else None
+        if isinstance(flash_section, dict) and key in flash_section:
+            return flash_section[key]
+        cache = getattr(self, "_config_cache", None)
+        if isinstance(cache, dict):
+            return cache.get(key, default)
+        return default
+
+    @staticmethod
+    def _rail_enabled(config: Any) -> bool:
+        if not isinstance(config, dict):
+            return True
+        return bool(config.get("enabled", True))
+
+    def _build_flash_prompt_audit_rail(self) -> Any | None:
+        """最后审计器：运行期只告警，fail_closed 由 flash.audit.fail_closed 控制（默认关）。
+
+        fail_closed 经 provider 每轮现读，热重载后下一轮即生效（评审 #6）；
+        配置指纹 provider 用于在合法配置变更后重置静态 hash 基线（评审 #2）。
+        """
+        try:
+            from jiuwenswarm.agents.harness.flash.rails.flash_prompt_audit_rail import (
+                FlashPromptAuditRail,
+            )
+
+            return FlashPromptAuditRail(
+                fail_closed_provider=self._read_audit_fail_closed,
+                config_fingerprint_provider=self._read_prompt_config_fingerprint,
+            )
+        except Exception as exc:
+            logger.warning("[FlashAdapter] FlashPromptAuditRail create failed: %s", exc, exc_info=True)
+            return None
+
+    def _read_audit_fail_closed(self) -> bool:
+        """每轮现读 fail_closed（热重载同步，评审 #6）。"""
+        audit_config = self._flash_config("audit", {})
+        return bool(audit_config.get("fail_closed", False)) if isinstance(audit_config, dict) else False
+
+    def _read_prompt_config_fingerprint(self) -> str:
+        """提示词配置指纹（评审 #2）：覆盖影响静态区正文的 flash 开关。
+
+        指纹变化 = 已生效的合法配置变更，audit 据此重置静态 hash 基线；verify_only /
+        fail_closed 不影响提示词正文，不纳入。语言由 audit rail 拼入指纹（热重载改语言同触发）。
+        """
+        composer = self._read_composer_config()
+        section_order = self._flash_config("section_order", {})
+        try:
+            disabled_tools = sorted(
+                resolve_string_or_list_config((self._config_cache or {}).get("disabled_tools"))
+            )
+        except Exception as exc:
+            logger.warning(
+                "[FlashAdapter] ignore malformed disabled_tools for prompt fingerprint: %s", exc
+            )
+            disabled_tools = []
+        payload = {
+            "persona_enabled": composer.get("persona_enabled"),
+            "safety_enabled": composer.get("safety_enabled"),
+            "tool_guide_enabled": composer.get("tool_guide_enabled"),
+            "response_enabled": composer.get("response_enabled"),
+            "takeover_domains": sorted(composer.get("takeover_domains") or ()),
+            "section_order_enabled": (
+                bool(section_order.get("enabled", True))
+                if isinstance(section_order, dict) else True
+            ),
+            # 禁用 todo/task_tool/skill_acceleration_exec 会撤下对应 system 段
+            # （430/440/skill_turbo_guide），改静态 hash；把 disabled_tools 纳入指纹，
+            # 让这类合法配置变更触发基线重设，而不是被判成静态漂移。
+            "disabled_tools": disabled_tools,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+
+    def _read_disabled_tools(self) -> list[str]:
+        """每轮现读 react.disabled_tools（供各 rail 判断 todo 是否被禁，评审 #2）。"""
+        try:
+            return resolve_string_or_list_config(
+                (self._config_cache or {}).get("disabled_tools")
+            )
+        except Exception as exc:
+            logger.warning("[FlashAdapter] ignore malformed disabled_tools: %s", exc)
+            return []
+
+    def _read_fallback_skills(self) -> list[tuple[str, str]]:
+        """实际已加载且允许执行的技能清单，供 manifest 缺失时兜底（评审 #3）。"""
+        skill_rail = self._skill_rail
+        if skill_rail is None:
+            return []
+        try:
+            metas = skill_rail.skills_meta
+        except Exception as exc:
+            logger.warning("[FlashAdapter] skills_meta read failed: %s", exc)
+            return []
+        disabled: set[str] = set()
+        try:
+            if self._skill_manager is not None:
+                disabled = set(self._skill_manager.list_execution_disabled_skills())
+        except Exception as exc:
+            logger.debug("[FlashAdapter] list_execution_disabled_skills failed: %s", exc)
+        out: list[tuple[str, str]] = []
+        for meta in (metas or []):
+            name = getattr(meta, "name", None)
+            if not name or str(name) in disabled:
+                continue
+            desc = getattr(meta, "description", None)
+            out.append((str(name), str(desc or "")))
+        return out
+
+    def _build_flash_prompt_composer_rail(self) -> Any | None:
+        """Build the single static text-composition entry for Flash.
+
+        ``flash.composer.takeover_domains``（列表或逗号分隔串）指定走声明式接管的域；
+        缺省接管 safety/response（已证明与 rail 路径字节等价），显式空列表可全部关闭。
+        ``flash.composer.verify_only`` 开启漂移校验（仅告警不裁决）。
+        双读：``flash.composer.*`` 优先，``react.composer.*`` 兜底（见 ``_flash_config``）。
+
+        各域 enabled / takeover_domains / verify_only 经 provider 每轮现读，热重载后
+        下一轮即生效（评审 #6）。
+        """
+        try:
+            from jiuwenswarm.agents.harness.flash.prompt.composer import (
+                FlashPromptComposerRail,
+            )
+
+            return FlashPromptComposerRail(config_provider=self._read_composer_config)
+        except Exception as exc:
+            # Composer 是 Flash 静态提示词的唯一入口：构建失败会让 persona/safety/
+            # tools/response 四域重组整段静默丢失，影响面远大于单个瞬态 rail，故提级 error。
+            logger.error(
+                "[FlashAdapter] FlashPromptComposerRail create failed: %s",
+                exc,
+                exc_info=True,
+            )
+            return None
+
+    def _read_composer_config(self) -> dict[str, Any]:
+        """每轮现读 composer 各域配置（热重载同步，评审 #6）。"""
+        persona = self._flash_config("persona", {})
+        safety = self._flash_config("safety", {})
+        tool_guide = self._flash_config("tool_guide", {})
+        response = self._flash_config("response", {})
+        composer_config = self._flash_config("composer", {})
+        composer_config = composer_config if isinstance(composer_config, dict) else {}
+        from jiuwenswarm.agents.harness.flash.prompt.composer import (
+            TAKEOVERABLE_DOMAINS,
+            coerce_takeover_domains,
+        )
+
+        raw_takeover = composer_config.get("takeover_domains")
+        if raw_takeover is None:
+            takeover_domains = frozenset(TAKEOVERABLE_DOMAINS)
+        else:
+            takeover_domains = coerce_takeover_domains(
+                frozenset(resolve_string_or_list_config(raw_takeover))
+            )
+        return {
+            "persona_enabled": self._rail_enabled(persona),
+            "safety_enabled": self._rail_enabled(safety),
+            "tool_guide_enabled": self._rail_enabled(tool_guide),
+            "response_enabled": self._rail_enabled(response),
+            "verify_only": bool(composer_config.get("verify_only", False)),
+            "takeover_domains": takeover_domains,
+        }
+
+    def _build_flash_skill_protocol_rail(self) -> Any | None:
+        """技能执行规范正文修正：旧 todo 工具名 → 统一 todo(action=…)（常开，不可关）。
+
+        此修正 rail 必须常开：单独关闭会让原生 skill_protocol 段（及 FlashSkillRail
+        输出的 730 执行规范）重新带上 Deep 的旧工具名，与 430「todo 纪律」段的两套
+        工具名冲突重新出现，故不读配置、不暴露开关。
+        """
+        try:
+            from jiuwenswarm.agents.harness.flash.rails.flash_skill_protocol_rail import (
+                FlashSkillProtocolRail,
+            )
+
+            return FlashSkillProtocolRail(
+                disabled_tools_provider=self._read_disabled_tools,
+            )
+        except Exception as exc:
+            logger.warning("[FlashAdapter] FlashSkillProtocolRail create failed: %s", exc, exc_info=True)
+            return None
+
+    def _build_flash_repeat_call_guard_rail(self) -> Any | None:
+        """重复调用守卫：attachment 只提醒不否决（flash.repeat_call_guard，每轮现读）。"""
+        try:
+            from jiuwenswarm.agents.harness.flash.rails.flash_repeat_call_guard_rail import (
+                FlashRepeatCallGuardRail,
+            )
+
+            return FlashRepeatCallGuardRail(
+                config_provider=lambda: self._flash_config("repeat_call_guard", {}),
+            )
+        except Exception as exc:
+            logger.warning("[FlashAdapter] FlashRepeatCallGuardRail create failed: %s", exc, exc_info=True)
+            return None
+
+    def _build_flash_skill_rail(self) -> Any | None:
+        """7xx 技能域常驻重组：manifest 启用集精简清单翻牌（flash.skill_catalog，enabled 每轮现读）。"""
+        try:
+            catalog_config = self._flash_config("skill_catalog", {})
+            if not isinstance(catalog_config, dict):
+                catalog_config = {}
+            kwargs: dict[str, Any] = {}
+            manifest_path = catalog_config.get("manifest_path")
+            if isinstance(manifest_path, str) and manifest_path.strip():
+                kwargs["manifest_path"] = manifest_path
+            max_len = catalog_config.get("catalog_description_max_length")
+            if isinstance(max_len, int) and max_len >= 1:
+                kwargs["catalog_description_max_length"] = max_len
+            max_entries = catalog_config.get("catalog_max_entries")
+            if isinstance(max_entries, int) and max_entries >= 1:
+                kwargs["catalog_max_entries"] = max_entries
+            try:
+                kwargs["skills_dirs"] = list(self._resolve_skill_dirs())
+            except Exception:
+                kwargs["skills_dirs"] = []
+            from jiuwenswarm.agents.harness.flash.rails.flash_skill_rail import (
+                FlashSkillRail,
+            )
+
+            return FlashSkillRail(
+                config_provider=lambda: self._flash_config("skill_catalog", {}),
+                fallback_skills_provider=self._read_fallback_skills,
+                **kwargs,
+            )
+        except Exception as exc:
+            logger.warning("[FlashAdapter] FlashSkillRail create failed: %s", exc, exc_info=True)
+            return None
+
+    def _build_flash_state_rail(self) -> Any | None:
+        """③ 运行时收口：820 时间事实迁 attachment（flash.state，每轮现读）。"""
+        try:
+            from jiuwenswarm.agents.harness.flash.rails.flash_state_rail import (
+                FlashStateRail,
+            )
+
+            return FlashStateRail(config_provider=lambda: self._flash_config("state", {}))
+        except Exception as exc:
+            logger.warning("[FlashAdapter] FlashStateRail create failed: %s", exc, exc_info=True)
+            return None
+
+    def _build_flash_pressure_rail(self) -> Any | None:
+        """⑥ 水位压力注入：70/85 阶梯提醒（flash.pressure，每轮现读）。"""
+        try:
+            from jiuwenswarm.agents.harness.flash.rails.flash_pressure_rail import (
+                FlashPressureRail,
+            )
+
+            return FlashPressureRail(config_provider=lambda: self._flash_config("pressure", {}))
+        except Exception as exc:
+            logger.warning("[FlashAdapter] FlashPressureRail create failed: %s", exc, exc_info=True)
+            return None
+
+    def _build_flash_relay_merge_rail(self) -> Any | None:
+        """relay 注入去重归并：剥 [文件输出约束]（flash.relay_merge，每轮现读）。"""
+        try:
+            from jiuwenswarm.agents.harness.flash.rails.flash_relay_merge_rail import (
+                FlashRelayMergeRail,
+            )
+
+            return FlashRelayMergeRail(config_provider=lambda: self._flash_config("relay_merge", {}))
+        except Exception as exc:
+            logger.warning("[FlashAdapter] FlashRelayMergeRail create failed: %s", exc, exc_info=True)
+            return None
+
+    def _build_flash_section_order_rail(self) -> Any | None:
+        """段序收口：旧段迁号/剥除 + 动态段 1000 带（flash.section_order，每轮现读）。"""
+        try:
+            from jiuwenswarm.agents.harness.flash.rails.flash_section_order_rail import (
+                FlashSectionOrderRail,
+            )
+
+            return FlashSectionOrderRail(config_provider=lambda: self._flash_config("section_order", {}))
+        except Exception as exc:
+            logger.warning("[FlashAdapter] FlashSectionOrderRail create failed: %s", exc, exc_info=True)
+            return None
 
     def _build_skill_turbo_prompt_rail(self) -> Any | None:
         """Use Flash guidance independently of the optional skill retriever."""
@@ -955,6 +1335,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         context_rail = getattr(self, "_context_assemble_rail", None)
         if context_rail is not None:
             rails = [rail for rail in rails if rail is not context_rail]
+        # FlashTodoRail 实例在 reload 时保留，而 DisabledToolsRail 已按最新
+        # react.disabled_tools 重建——须重灌 todo rail 的 disabled_tools 快照，
+        # 否则 todo 被禁后仍会注入 430 todo 纪律段（提示词要求调 todo、工具面没有）。
+        self._sync_flash_todo_disabled_tools()
         old = getattr(self, "_flash_skill_selection_rail", None)
         selection = self._build_flash_skill_selection_rail(config_base)
         if selection is not None:
@@ -968,6 +1352,21 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             self._flash_skill_selection_rail = None
         return rails, removed
 
+    def _sync_flash_todo_disabled_tools(self) -> None:
+        """reload 后把最新 disabled_tools 重灌给 FlashTodoRail（实例保留，避免旧值）。"""
+        todo_rail = getattr(self, "_task_planning_rail", None)
+        update = getattr(todo_rail, "update_disabled_tools", None)
+        if not callable(update):
+            return
+        live_disabled = getattr(self._disabled_tools_rail, "_disabled_tools", None)
+        try:
+            update(list(live_disabled or ()))
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenSwarmFlashAdapter] FlashTodoRail update_disabled_tools failed: %s",
+                exc,
+            )
+
     async def _update_rails_for_mode(self, mode: str) -> None:
         """flash 的 rail 生命周期：闭合白名单，不动态注册全量 rail.
 
@@ -979,10 +1378,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         flash 覆盖此方法：**不调** ``_update_agent_rails()``，仅装配身份上下文和记忆，
         并卸载白名单外的动态 rail——
         1. 记 ``_last_mode``（父类首行本就做）；
-        2. 身份上下文及记忆 rail：flash 的统一 memory 工具（FlashMemoryRail）走动态挂载路径，
-           这里按归一后的 agent 档调 ``_handle_memory_rail_by_config``（闸门
-           ``modes.agent.memory.enabled``，未开启则卸载）；``_memory_rail`` 在 keep
-           白名单内，不会被后续卸载步骤误删。外接记忆与云画像沿用父类的
+        2. 身份上下文及记忆 rail：flash 用 FlashMemoryRail（5→1 统一工具 +
+           巨石记忆段），走动态挂载路径，这里按归一后的 agent 档调
+           ``_handle_memory_rail_by_config``（闸门 ``modes.agent.memory.enabled``，未开启则卸载）；
+           ``_memory_rail`` 在 keep 白名单内，不会被后续卸载步骤误删。外接记忆与云画像沿用父类的
            engine/provider 配置入口，独立于内置 memory 的模式开关。
         3. 受限自演进 reconcile：只挂载/卸载 ``SkillEvolutionRail``、
            ``EvolutionInterruptRail`` 和 ``SkillSleepRail``，不进入父类全量
@@ -1020,11 +1419,15 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         concurrent requests and reloads. The register→await→cache sequence has
         suspend points, so sharing the context-rail lock would mix two
         unrelated failure domains and permit interleaved half-mounted state.
+
+        Registration is best-effort: both rails are auxiliary to answering the
+        user, so a rail that cannot be mounted is skipped for this turn instead
+        of aborting it.
         """
         async with self._flash_evolution_rail_lock:
             full_config = self._config_base_cache
             if _flash_evolution_enabled(full_config):
-                await self._ensure_active_evolution_rails_registered()
+                await self._ensure_active_evolution_rails_registered_best_effort()
             elif (
                 self._skill_evolution_rail is not None
                 or self._evolution_interrupt_rail is not None
@@ -1038,7 +1441,13 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                     )
 
             if _flash_skill_sleep_enabled(full_config):
-                await self._reconcile_skill_sleep_rail()
+                try:
+                    await self._reconcile_skill_sleep_rail()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[JiuwenSwarmFlashAdapter] SkillSleepRail reconcile failed: %s",
+                        exc,
+                    )
             elif self._skill_sleep_rail is not None:
                 try:
                     await self._unconfigure_skill_sleep_rail()
@@ -1106,7 +1515,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             progressive = self._progressive_tool_rail
             rail = _build_context_assemble_rail(
                 disabled_tools=disabled or None,
-                tool_name_allowlist=list(progressive.eager_tools) if progressive is not None else None,
+                tool_name_allowlist=(
+                    progressive.prompt_tool_allowlist() if progressive is not None else None
+                ),
             )
             if rail is None:
                 return
@@ -1206,11 +1617,16 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     ) -> FlashTodoRail | None:
         """flash 用统一 todo rail 替换 TaskPlanningRail（todo 4→1）.
 
-        兼容两处调用：冷启动 rail 表传 react config（统一 todo 无配置项，忽略），
-        agent 模式动态挂载不传参。
+        兼容两处调用：冷启动 rail 表传 react config，agent 模式动态挂载不传参。
+        ``react.disabled_tools`` 含 "todo" 时，本 rail 不再注入 430 todo 纪律段
+        （避免提示词要求调用 todo、工具面却没有 todo）。
         """
         try:
-            todo_rail = FlashTodoRail()
+            source = config if isinstance(config, dict) else self._config_cache
+            disabled_tools = resolve_string_or_list_config(
+                (source or {}).get("disabled_tools")
+            )
+            todo_rail = FlashTodoRail(disabled_tools=disabled_tools)
             logger.info("[JiuwenSwarmFlashAdapter] FlashTodoRail create success")
         except Exception as exc:
             logger.warning("[JiuwenSwarmFlashAdapter] FlashTodoRail create failed: %s", exc)
@@ -1527,7 +1943,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         ("_ask_user_rail", "StructuredAskUserRail"),
         ("_context_assemble_rail", "ContextAssembleRail"),
         ("_context_processor_rail", "ContextProcessorRail"),
-        ("_memory_rail", "MemoryRail"),
+        ("_memory_rail", "FlashMemoryRail"),
         ("_external_memory_rail", "ExternalMemoryRail"),
         ("_office_ace_user_profile_rail", "OfficeAceUserProfileRail"),
         ("_skill_evolution_rail", "SkillEvolutionRail"),

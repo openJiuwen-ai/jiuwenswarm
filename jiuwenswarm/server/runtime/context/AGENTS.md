@@ -20,7 +20,7 @@ LLM **上下文窗口**与**系统提示词**的产品化子系统。本模块�
 - `docs/specs/S_01_overview-and-boundaries.md` — 总览与包边界（跨目录管辖 / 两仓协作 / 与 PersonalContext·RequestContext 的切割）
 - `docs/specs/S_02_context-engine-and-processors.md` — ContextEngine、forked processor 链、FullCompact GET 路径语义
 - `docs/specs/S_03_context-engineer-rails.md` — AssembleRail vs ProcessorRail、priority、AbortError 循环中止
-- `docs/specs/S_04_compression-recall-and-reload.md` — recall 工具、`[[HANDLE]]` 重载、enable 门控
+- `docs/specs/S_04_compression-recall-and-reload.md` — recall 工具、`[[OFFLOAD]]` 读回、enable 门控
 - `docs/specs/S_05_overflow-recovery.md` — 413/400+关键词检测、force_compact、主动预压缩、熔断事件、`/compact`
 - `docs/specs/S_06_product-assembly-and-config.md` — interface_deep/code/flash 门控、context_read_patch、config 键、allowlist 与渐进工具同步
 - `docs/specs/S_07_system-prompt-layering.md` — 工作区人设文件 vs Runtime/Response rails vs 压缩召回段的分层归属
@@ -33,13 +33,13 @@ LLM **上下文窗口**与**系统提示词**的产品化子系统。本模块�
 ```
 ContextEngine     agent-core 上下文引擎：会话消息池 + processor 链 + checkpointer 落盘
 processor 链      forked.activate → … → RoundLevel；FullCompact 由 swarm 按需注入（非 preset 默认项）
-[[HANDLE:…]]      enable_reload 下 core 注入 reload prompt 段；标记的实际触发由调用方/模型按提示完成
+[[OFFLOAD:…]]     enable_reload 下 core 注入 reload prompt 段；模型按 path 用 read_file 读回（path 指向 .txt 文本副本）
 [[COMPRESSION_RECALL:…]]  压缩召回标记（compression_recall_config.enabled 时）
 ```
 
 | 术语 | 含义 |
 |---|---|
-| **ContextAssembleRail** | agent-core（priority=85）：向 system prompt 注入 workspace / 人设文件（AGENT/SOUL/…）/ tools 段；`tool_name_allowlist` 与 progressive eager 对齐 |
+| **ContextAssembleRail** | agent-core（priority=85）：向 system prompt 注入 workspace / 人设文件（AGENT/SOUL/…）/ tools 段；`tool_name_allowlist` 与 progressive 稳定可见集合 `prompt_tool_allowlist()`（eager + floor）对齐 |
 | **ContextProcessorRail** | agent-core（priority=85）：挂载 ContextEngine processor 链；受 `context_engine_config.enabled` 门控 |
 | **ContextOverflowRecoveryRail** | swarm（priority=100）：模型调用前 proactive 预压缩 + LLM 上下文溢出时 reactive 恢复 + 熔断流式事件 |
 | **FullCompactProcessor** | 整窗兜底压缩；日常 add 路径不触发，溢出时经 `set_force_compact` 在 GET 路径触发 |
@@ -56,7 +56,7 @@ processor 链      forked.activate → … → RoundLevel；FullCompact 由 swar
 | 域 | 入口 | 说明 |
 |---|---|---|
 | 引擎配置对象 | `_deep_agent_context_engine_config(react_cfg)` | 实现在 `deep/agent_config_helpers.py`，`interface_deep` 转 import → `create_deep_agent(..., context_engine_config=…)` |
-| Assemble 构建 | `_build_context_assemble_rail(disabled_tools, tool_name_allowlist)` | 与 ProgressiveToolRail.eager_tools 对齐 tools 段（[[S_06]]） |
+| Assemble 构建 | `_build_context_assemble_rail(disabled_tools, tool_name_allowlist)` | 与 ProgressiveToolRail.prompt_tool_allowlist()（eager + floor）对齐 tools 段（[[S_06]]） |
 | Processor 构建 | `_build_context_processor_rail(config)` | 从 `context_engine_config` 子键组装 user_processors + preset 链 |
 | 溢出恢复 | `_build_context_overflow_recovery_rail()` → `ContextOverflowRecoveryRail(max_recovery_attempts=3)` | 构建在 `deep/adapter_statics.py`，`interface_deep` 以实例方法注册；deep/code/flash 均装配（flash `_FLASH_RAIL_KEEP` 保留本 rail，`_llm_retry_rail` 同在 keep 名单；未列入白名单的动态 rail 会被裁剪）（[[S_05]]） |
 | 人设读补丁 | `apply_context_read_patch()` / `remove_context_read_patch()` | 企业版 `__init__` 分支安装，个人版 no-op；单测可 remove |
@@ -124,7 +124,7 @@ agent-core（姊妹实现归档 — 改 core 代码读那边）：
 5. **熔断后用户可行动**（[[S_05]] N3）。连续失败超过 `max_recovery_attempts` 发 `context_overflow_circuit_break` 流式 error，提示 `/compact` 或新会话；不得 silent 无限 retry。
 6. **Processor 循环中止必须 AbortError + CONTEXT_EXECUTION_ERROR**（[[S_03]] N2，agent-core 契约）。swarm 不得在 processor rail 外包一层"吞掉中止"的兜底。
 7. **压缩召回与重载独立门控**（[[S_04]] N1）。`compression_recall_config.enabled` 与 `enable_reload` 分别生效；工具 `recall_compressed_context` 仅在前者开启且压缩归档存在时才有意义。
-8. **Tools 段与 eager schema 对齐**（[[S_06]] N2）。`ContextAssembleRail.tool_name_allowlist` 须与 `ProgressiveToolRail.eager_tools` 同步（`_sync_context_assemble_tool_allowlist`），避免任务中途改写 prompt 前缀。
+8. **Tools 段与稳定 schema 对齐**（[[S_06]] N2）。`ContextAssembleRail.tool_name_allowlist` 须与 `ProgressiveToolRail.prompt_tool_allowlist()`（eager + floor，BUG20261117410859）同步（`_sync_context_assemble_tool_allowlist`），避免任务中途改写 prompt 前缀。
 9. **人设读 patch 只放宽读、不改写**（[[S_06]] N3）。`apply_context_read_patch` 仅对 persona 读路径设 `only_read=True`；写文件与原锁语义不变。安装点是企业版 `__init__` 分支，个人版 no-op。
 10. **双仓归档、就近生效**（[[S_01]] N4）。产品装配 / 溢出 / prompt 契约在本目录 `docs/`；engine / processor / core rails 契约在 agent-core `context_engine/docs/`。同一不变量只在「拥有实现」的一侧写死，另一侧引用——禁止两边各写一套互相漂移的全文。
 
@@ -135,7 +135,8 @@ agent-core（姊妹实现归档 — 改 core 代码读那边）：
 | 配置 | 消费点 | 语义摘要 |
 |---|---|---|
 | `enabled` | deep `_update_agent_rails` / team `get_context_engine_enabled` | ProcessorRail 总开关（见双默认漂移） |
-| `enable_reload` | `_deep_agent_context_engine_config` → core `ContextProcessorRail` | core 仅记录并注入 reload prompt 段；`ContextMessageBuffer.reload` 可用但无 core 内调用方，`[[HANDLE]]` 实际触发由调用方/模型按提示完成 |
+| `enable_tiktoken_counter` | ContextEngineConfig | 精确 token 计数；词表不可用时 core 回退字符估算 |
+| `enable_reload` | `_deep_agent_context_engine_config` → core `ContextProcessorRail` | core 仅记录并注入 reload prompt 段；`OffloadMessageBuffer.reload` 可用但无 core 内调用方，模型按 `[[OFFLOAD]]` 的 path 用 read_file 读回 |
 | `compression_recall_config` | ContextEngineConfig + 压缩器 | 归档分块 + `[[COMPRESSION_RECALL]]` |
 | `*_compressor_config` / `message_summary_offloader_config` | `_build_context_processor_rail` | 各 processor 阈值与行为 |
 | `full_compact_processor_config` | user_processors 注入 FullCompact | 溢出兜底；与 RecoveryRail 联动 |

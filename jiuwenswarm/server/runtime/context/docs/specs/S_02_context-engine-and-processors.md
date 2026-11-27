@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / context-engine-and-processors |
 | 关联模块 | agent-core `openjiuwen/core/context_engine/` + jiuwenswarm `agent_adapter/deep/context_assembly._build_context_processor_rail` |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-17 |
 | 关联 feature | 暂无（初版建档） |
 
 ## 范围 / 边界
@@ -39,7 +39,8 @@
 
 | 配置键 | ContextEngineConfig 字段 |
 |---|---|
-| `enable_reload` | `enable_reload`（core `ContextProcessorRail` 仅记录并注入 reload prompt 段；`ContextMessageBuffer.reload` 可用但无 core 内调用方，`[[HANDLE]]` 实际触发由调用方/模型按提示完成） |
+| `enable_tiktoken_counter` | `enable_tiktoken_counter`（精确 token 计数；词表不可用时 core 回退字符估算，不阻断会话创建） |
+| `enable_reload` | `enable_reload`（core `ContextProcessorRail` 仅记录并注入 reload prompt 段；`OffloadMessageBuffer.reload` 可用但无 core 内调用方，模型按 `[[OFFLOAD]]` 的 path 用 read_file 读回） |
 | `enable_openrouter_model_context_window_tokens` | 同名 |
 | `context_window_tokens` | 解析为 int 或 None |
 | `enable_context_debug` / `context_debug_dir` | debug 落盘 |

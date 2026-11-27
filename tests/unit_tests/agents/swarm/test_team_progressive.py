@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
+    DEFAULT_PROGRESSIVE_PROTECTED_EAGER_TOOLS,
     ProgressiveToolRail,
 )
 from jiuwenswarm.agents.harness.team.rails.request_scoped_mcp_tools_rail import (
@@ -78,8 +79,10 @@ def test_leader_eager_tuple_order_and_role_diff():
     only_teammate = set(teammate) - set(leader)
     assert only_leader == set(TEAM_LEADER_EXTRA_EAGER_TOOLS)
     assert only_teammate == set(TEAM_TEAMMATE_EXTRA_EAGER_TOOLS)
-    assert "verify_task" not in leader
-    assert "verify_task" not in teammate
+    assert "verify_task" in leader
+    assert "verify_task" in teammate
+    assert "memory_get" not in leader
+    assert "powershell" not in leader
     assert "shutdown_member" not in leader
 
 
@@ -382,12 +385,13 @@ async def test_filter_skips_unregistered_role_tools_and_keeps_verify_in_nav():
     visible = [t.name for t in ctx.inputs.tools]
     assert "claim_task" in visible
     assert "create_task" not in visible
-    assert "verify_task" not in visible  # deferred: nav only, not schema
+    assert "verify_task" in visible  # eager: board completion hot path
     assert "todo_list" not in visible
 
     deferred_names = {t.name for t in rail._cached_deferred_tool_infos}
-    assert "verify_task" in deferred_names
+    assert "verify_task" not in deferred_names
     assert "create_task" not in deferred_names
+    assert "todo_list" in deferred_names
 
 
 @pytest.mark.asyncio
@@ -555,3 +559,49 @@ async def test_request_scoped_mcp_pins_member_progressive_rail():
         assert progressive._office_claw_active_tool_ids is None
     finally:
         revoke_request_scoped_mcp_registration(registration)
+
+
+def test_team_rail_receives_default_protected_eager_tools():
+    """BUG20261117410859 floor：成员 rail 缺省拿到代码默认保护名单（request-scoped
+    MCP 工具会挂到成员 ability_manager，白名单模型下不得被角色 eager 名单裁掉）。"""
+    ctx = SwarmBuildContext(
+        session_id="sess-protected",
+        member_card_id="team_m",
+        member_name="m",
+        role="teammate",
+        language="cn",
+        config={
+            "react": {
+                "tool_lazy_load": {
+                    "enabled": True,
+                    "enable_for_models": ["glm", "deepseek"],
+                },
+            }
+        },
+    )
+    rail = _build_team_progressive_tool_rail({}, ctx)
+
+    assert rail._protected_eager_tools == frozenset(DEFAULT_PROGRESSIVE_PROTECTED_EAGER_TOOLS)
+
+
+def test_team_rail_honors_explicit_empty_protected_eager_tools():
+    """显式置空 [] 时成员 rail 同样整体关闭保护，与主链路语义一致。"""
+    ctx = SwarmBuildContext(
+        session_id="sess-protected-off",
+        member_card_id="team_m",
+        member_name="m",
+        role="teammate",
+        language="cn",
+        config={
+            "react": {
+                "tool_lazy_load": {
+                    "enabled": True,
+                    "enable_for_models": ["glm", "deepseek"],
+                    "protected_eager_tools": [],
+                },
+            }
+        },
+    )
+    rail = _build_team_progressive_tool_rail({}, ctx)
+
+    assert rail._protected_eager_tools == frozenset()

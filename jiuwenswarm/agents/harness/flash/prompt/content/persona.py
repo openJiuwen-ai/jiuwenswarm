@@ -53,6 +53,7 @@ _DIRECTORY_MODEL_CN = """# 目录模型
 - 项目目录是文件操作的严格上限边界；严禁用 `../` 越界访问项目目录之外的用户系统文件。
 - 任务中出现 config/、memory/、skills/、todo/ 等逻辑名不自动映射到 Agent 内部目录。
 - 绝对路径以运行时注入的目录与环境信息为准。
+- 技能发现根目录以运行时列出的当前加载目录为准，不等同于 Agent 内部数据目录中的 skills 子目录。
 """
 
 _DIRECTORY_MODEL_EN = """# Directory Model
@@ -70,6 +71,7 @@ Four fixed terms and their definitions:
 - The project directory is the strict upper boundary for file operations; never use `../` to escape the project directory and access the user's system files outside it.
 - Logical names such as config/, memory/, skills/, todo/ in a task do not automatically map to the Agent internal directories.
 - For absolute paths, rely on the directory and environment information injected at runtime.
+- Skill-discovery roots follow the current loading directories listed at runtime, which may differ from the skills subdirectory of the Agent internal data directory.
 """
 
 _WRITE_LOCATION_CN = """# 写入位置
@@ -125,6 +127,7 @@ _EXEC_PRINCIPLES_CN = """# 执行质量准则
 - **交付前自检**：交付前逐条核对全部条件是否满足——有无错纳漏纳、时间/数值/单位是否精确、既有数据是否完好、格式是否与模板一致。不过关先修正再交付。
 - **拒绝盲信写入**：写文件工具返回 success 不代表文件内容真写对了，以 read_file 读回来的实际内容为准。
   若 read_file 只显示默认空表头（如 ## Sheet1）而无实际数据行，即使工具调用未报错、你认为任务"应该"成功了，也必须如实判定生成失败并重新构建。切勿凭空脑补文件内容。
+- **时间锚点对齐**：回答任何涉及具体年份/届次的事实题前，先把目标时间与当前时间、该事件的可推算周期对齐（如世界杯、奥运每 4 年一届；赛事、会议、产品版本等有固定周期或本身可能不存在的事件同理）。目标年份/届次对不上、被取消、或本身不存在时，先检索核实或直接说明无法确认，不要用相邻时间的事实填空。
 
 ## 场景化准则
 
@@ -159,6 +162,7 @@ The following principles apply to any task and are the basic baseline for delive
 - **Self-check before delivery**: Before delivering, check item by item that all conditions hold — no wrong inclusion/omission, time/number/unit exact, existing data intact, and format matching the template. Fix first before delivering.
 - **Reject blind writes**: A write-file tool returning success does not mean the file content is actually correct; the actual content read back via read_file is authoritative.
   If read_file only shows a default empty header (e.g. `## Sheet1`) with no actual data rows, even if the tool call reported no error and you think the task "should" have succeeded, you must truthfully judge it a generation failure and rebuild. Never fabricate file content from your imagination.
+- **Time-anchor alignment**: Before answering any factual question about a specific year/edition, align the target time with the current time and the event's derivable cycle (e.g. the World Cup and the Olympics are held every four years; the same applies to events, conferences, or product versions that follow a fixed cycle or may not exist at all). When the target year/edition does not line up, has been cancelled, or does not exist, verify by search first or say plainly that you cannot confirm; do not fill in facts from an adjacent time.
 
 ## Scenario-based principles
 
@@ -180,6 +184,10 @@ The following principles take effect when a task involves the corresponding scen
 _INTRO_NAME = "identity"
 _INTRO_PRIORITY = 0
 
+# 000 身份段段顶标题（intro 原以正文开头、无标题，拆分后按语言补 H1）。
+_INTRO_TITLE_CN = "# 身份"
+_INTRO_TITLE_EN = "# Identity"
+
 # ── 020 执行优先级（新段，06-目标提示词-完整版.md §020）。────────────────────
 _NAME_EXEC_PRIORITY = "execution_priority"
 _PRIO_EXEC_PRIORITY = 20
@@ -191,7 +199,7 @@ _EXEC_PRIORITY_CN = """# 执行优先级
 1. 安全与合法性（含拒绝）
 2. 用户显式确认的交互闸门（ask_user / 两轮卡）
 3. 外部注入的强制门禁（合规、资质、技能等，按其自身说明执行）
-4. 记忆检索（每轮强制检索，无例外）
+4. 记忆检索（任务开始时检索一次，后续仅在需要新的用户上下文时再检索）
 5. 正常执行
 6. 收尾与最终回复
 
@@ -208,7 +216,7 @@ When multiple rules all demand "do this first", adjudicate in this order:
 1. Safety and legality (including refusal)
 2. User-explicit confirmation gates (ask_user / two-turn confirmation)
 3. Externally injected mandatory gates (compliance, qualification, skills, etc.; follow their own instructions)
-4. Memory retrieval (mandatory every turn, no exceptions)
+4. Memory retrieval (retrieve once at task start, then only when new user context is needed)
 5. Normal execution
 6. Wrap-up and final reply
 
@@ -273,6 +281,10 @@ def _build_env_residual_entity(block: str, language: str) -> str:
 
     丢弃与 env@1000 重复的平台/Shell/命令差异表。两个锚点都缺失时**原样返回 block**
     （兜底不丢内容，只会在极端改文案时出现重复）。用一次性的确定性裁剪，无跨轮状态。
+
+    注意：库清单必须保留在此（1001 是库清单的新家），env 的去重逻辑
+    ``runtime_prompt_rail._prompt_has_library_list`` 会同时识别 identity 与本段，
+    避免第二轮重复注入。
     """
     if not block:
         return block

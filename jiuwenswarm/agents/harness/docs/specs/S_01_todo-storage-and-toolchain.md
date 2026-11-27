@@ -8,7 +8,7 @@
 | 编号 / slug | S_01 / todo-storage-and-toolchain |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/tools/todo_resume.py`、`todo_compat.py`、`todo_toolkits.py`；装配点 `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`install_todo_modify_compat_patch` 模块级调用） |
 | 关联模块（agent-core 仓，跨仓契约） | `openjiuwen/harness/tools/todo.py`（主链四工具）、`openjiuwen/harness/schema/task.py`（`TodoItem` / `TodoStatus`）、`openjiuwen/harness/workspace/workspace.py`（workspace 布局中的 `todo` 目录） |
-| 最近一次修订日期 | 2026-11-10 |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -58,8 +58,8 @@
 
 | 工具 | 输入 | 语义 | 返回 |
 |---|---|---|---|
-| `todo_create` | `tasks: [{content 必填非空, id?, activeForm?, description?, selected_model_id?}]` | **整表覆盖**。id 优先取模型提供值，缺省 uuid4；批内 id 重复拒绝。首任务自动 `in_progress`，其余 `pending` | message 含逐条 `task_id / content` 与 `Next step: Immediately execute task '<首任务>'` |
-| `todo_list` | 无参 | 过滤 `completed` / `cancelled`，再过滤旧代（N6 口径） | `{"tasks": [{id, content, status, depends_on}]}` 精简四字段 |
+| `todo_create` | `todos: [{content 必填非空, id?, activeForm?, description?, selected_model_id?}]`（历史调用携带 `tasks` 键时，由 `todo_operation` 装饰器在调用 `_validate_inputs` **之前**搬运为 `todos`；flash 统一工具与 code 子类在分发层另按已安装 Core 的契约选择边界键名，兼容键统一未落地的部署窗口；两键同时出现一律拒绝，不按取值有无判定） | **整表覆盖**。id 优先取模型提供值，缺省 uuid4；批内 id 重复拒绝。首任务自动 `in_progress`，其余 `pending` | message 含逐条 `task_id / content` 与 `Next step: Immediately execute task '<首任务>'` |
+| `todo_list` | 无参 | 过滤 `completed` / `cancelled`，再过滤旧代（N6 口径） | `{"todos": [{id, content, status, depends_on}]}` 精简四字段；旧 Core 返回 `tasks` 时由 flash/code 分发层归一为 `todos` 再交模型 |
 | `todo_get` | `id: str` 必填 | 全表精确匹配，**不做**状态/代际过滤 | `{"todo": <TodoItem.to_dict()>}` 完整结构；未找到 `TOOL_TODOS_INVOKE_FAILED` |
 | `todo_modify` | `action` + 各 action 参数（下表） | 六 action 分派 | message 字符串 |
 
@@ -88,7 +88,7 @@
 
 1. 双命名空间换类：`openjiuwen.harness.tools.TodoModifyTool` 与 `openjiuwen.harness.tools.todo.TodoModifyTool` 都指向 `CompatibleTodoModifyTool`
 2. `_install_backlog_create_patch(TodoCreateTool)`（幂等标志 `backlog_create_patched`）：invoke 前快照（`_load_todos_or_empty`，读失败降级空表）→ 原 invoke → `restore_persistent_reminders`（把仍活跃的 reminder 按 id 去重追加回被整表覆盖的新表）→ `persist_backlog_create`（本轮是 backlog query 时，把新表中非 persistent 条目全部标记 persistent + 置 pending，并从 message 删除 `Next step:` 行、追加 reminder 说明后缀）
-3. `_install_backlog_list_patch(TodoListTool)`（幂等标志 `backlog_list_patched`）：原 invoke 后 `merge_persistent_list_items` 把被代际过滤掉的活跃 reminder 以精简四字段合并回 `tasks`
+3. `_install_backlog_list_patch(TodoListTool)`（幂等标志 `backlog_list_patched`）：原 invoke 后 `merge_persistent_list_items` 把被代际过滤掉的活跃 reminder 以精简四字段合并回 `todos`
 
 `CompatibleTodoModifyTool` 自身三处重写：
 
@@ -133,7 +133,7 @@
 | `selected_model_id` | Optional[str] | 执行该任务的模型 |
 | `generation_token` | Optional[str] | 代际标记（N5/N9） |
 
-`todo.json` 新格式为 `{plan_id, revision, todos}`；旧数组可读，只读不改文件，实际修改在同一条件提交中迁移。未修改条目及扩展字段保留。工具仍返回原 message/tasks/todo 字典；TodoResult 的来源格式、read_authoritative、结果/条目计数和提交状态仅为内部属性，不进入模型 JSON 或默认 legacy wire。
+`todo.json` 新格式为 `{plan_id, revision, todos}`；旧数组可读，只读不改文件，实际修改在同一条件提交中迁移。未修改条目及扩展字段保留。工具返回 message/todos/todo 字典（create/list 容器键统一为 `todos`）；TodoResult 的来源格式、read_authoritative、结果/条目计数和提交状态仅为内部属性，不进入模型 JSON 或默认 legacy wire。
 
 session state 三键：`todo_generation_token`（常量定义在 agent-core `tools/todo.py`，jiuwenswarm 侧 import 共享——跨仓改键名两边同时改）、`todo_turn_user_query`、`jiuwenclaw_todo_resume_snapshot_pending`。
 
@@ -153,7 +153,7 @@ session state 三键：`todo_generation_token`（常量定义在 agent-core `too
 
 | 分型 | 触发 | 行为 |
 |---|---|---|
-| 参数无效 | tasks 空 / content 缺 / id 重复 / ids 非法 / action 未知 / 二次 create（N4）/ 多 in_progress（N3） | `TOOL_TODOS_VALIDATION_INVALID`，不落盘 |
+| 参数无效 | todos 空 / content 缺 / id 重复 / ids 非法 / action 未知 / 二次 create（N4）/ 多 in_progress（N3）/ create 双容器键（`todos` 与 `tasks` 同传） | `TOOL_TODOS_VALIDATION_INVALID`，不落盘 |
 | 读写失败 | `read_file` / `write_file` 非 0 或抛异常 | `TOOL_TODOS_LOAD_FAILED` / `TOOL_TODOS_SAVE_FAILED`；沙箱内文件不存在同样走此路径（N10，不预检） |
 | 未命中 | delete / cancel 的 ids 全部不存在 | **不报错**，返回 `No tasks ...: None of the provided IDs ... were found` 消息 |
 | update 部分失败 | 主链：某条 id 未找到 | 聚合进消息继续（`Updated N task(s). M item(s) failed: ...`） |

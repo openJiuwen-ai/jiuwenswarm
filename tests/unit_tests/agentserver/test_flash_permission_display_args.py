@@ -256,11 +256,11 @@ def test_projection_removes_only_top_level_display_metadata():
     args = {
         "action": "create",
         "display_name": "业务名称",
-        "tasks": [{"content": "保留任务内容", "call_goal": "嵌套数据"}],
+        "todos": [{"content": "保留任务内容", "call_goal": "嵌套数据"}],
         "call_goal": "创建待办",
         "callGoal": "展示别名",
     }
     original = deepcopy(args)
     (operation,) = project_operations("todo", args, {})
-    assert operation.args == {"display_name": "业务名称", "tasks": args["tasks"]}
+    assert operation.args == {"display_name": "业务名称", "todos": args["todos"]}
     assert args == original

@@ -41,6 +41,7 @@ from openjiuwen.harness.rails import (
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.common.config import get_team_evolution_signal_trigger_enabled
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     merge_evolution_disabled_skills,
 )
@@ -407,6 +408,10 @@ harness_element(
 class TeamSkillEvolutionInput(ConstructionInput):
     """Construction inputs for the leader team skill-evolution rail."""
 
+    signal_trigger: bool | None = param_field(
+        default=None, description="Leader completion signal scan; older specs defer to the build context.",
+    )
+
     evolution_model_config: dict[str, Any] = param_field(
         default_factory=dict,
         description="Serializable evolution model config (LLM built at build time).",
@@ -487,6 +492,10 @@ def build_team_skill_evolution_rail(
             trajectory_span_processor=get_trajectory_span_processor(),
             member_role=inp.role,
             auto_save=inp.auto_save,
+            signal_trigger=(
+                inp.signal_trigger if inp.signal_trigger is not None
+                else get_team_evolution_signal_trigger_enabled(ctx.config)
+            ),
             review_trigger=inp.review_trigger,
             team_id=inp.team_id,
             disabled_skills=merge_evolution_disabled_skills(

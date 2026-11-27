@@ -28,7 +28,10 @@ class PromptPriority(IntEnum):
     TODO = 85
     # thinking_discipline 紧挨最终可见回复之前：思考与 tool_calls 职责分工，高于 RESPONSE。
     THINKING_DISCIPLINE = 115
+    # 专家团成本意识（含精简写作/协作要点）。夹在思考纪律和最终可见回复之间。
+    # A2UI_BOOST 保持 117；116/118 空出，避免与旧写作/协作段冲突。
     A2UI_BOOST = 117
+    TEAM_COST_DISCIPLINE = 119
     # final_visible_reply 放在 system 最末，强调约束工具/todo 结束后必须再发一轮完整纯文本 final；
     # UI 主要展示「最后一轮无 tool_calls」的正文。
     FINAL_VISIBLE_REPLY = 120
@@ -40,6 +43,7 @@ class LocalSectionName:
     A2UI = "a2ui"
     A2UI_BOOST = "a2ui_boost"
     THINKING_DISCIPLINE = "thinking_discipline"
+    TEAM_COST_DISCIPLINE = "team_cost_discipline"
     FINAL_VISIBLE_REPLY = "final_visible_reply"
 
 
@@ -292,7 +296,8 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
 | JiuwenSwarm 启动配置目录 | JiuwenSwarm 启动配置目录 | 保存 `config.yaml` 和 `.env` | 只有用户明确要求修改 JiuwenSwarm 自身配置时才访问；绝对路径见「运行时目录上下文」 |
 | Agent 内部数据目录 | Agent 内部数据目录 | 保存身份、记忆、技能、待办和运行状态 | 不要在其中搜索或运行用户项目文件；绝对路径见「运行时目录上下文」 |
 | Agent 内部数据目录/memory | Agent 记忆目录 | 保存持久化记忆 | 将其视为 Agent 记忆的一部分 |
-| Agent 内部数据目录/skills | Agent 技能目录 | 保存和读取技能 | 可以读取和调用，不要作为项目目录使用 |
+| Agent 内部数据目录/skills | JiuwenSwarm 内部技能存储目录 \
+| 保存内部技能文件和安装账本 | 若运行时提供加载目录，则以其为准 |
 | Agent 内部数据目录/todo | Agent 待办目录 | 保存任务和待办状态 | 用于任务状态管理 |
 
 ## 目录理解规则
@@ -423,7 +428,9 @@ They are not the default meaning of relative paths in user tasks.
 | Startup config directory | Startup config | `config.yaml` / `.env` | Config only; abs path in runtime context |
 | Agent internal data directory | Agent data | identity/memory/skills/todos | Not project files; see runtime context |
 | Agent internal data directory/memory | Agent memory | Persistent memory | Part of Agent memory |
-| Agent internal data directory/skills | Agent skills | Skill storage | Read/invoke; not a project dir |
+| Agent internal data directory/skills | JiuwenSwarm internal skill storage directory \
+| Internal skill files and installation state \
+| Use runtime skill loading directories when provided |
 | Agent internal data directory/todo | Agent todo | Tasks and todo state | For task-state management |
 
 ## Directory Interpretation Rules

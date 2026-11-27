@@ -38,12 +38,12 @@
 ```text
 _build_context_assemble_rail(
   disabled_tools: list[str] | None,
-  tool_name_allowlist: list[str] | None,  # 通常 ProgressiveToolRail.eager_tools
+  tool_name_allowlist: list[str] | None,  # 通常 ProgressiveToolRail.prompt_tool_allowlist()（eager + floor）
 ) -> ContextAssembleRail | None
 ```
 
 - `disabled_tools`：来自 DisabledToolsRail 或 `react.disabled_tools`。
-- `tool_name_allowlist`：与渐进式工具 eager 列表对齐（[[S_06]] N2）。
+- `tool_name_allowlist`：与渐进式工具稳定可见集合对齐（`prompt_tool_allowlist()`，eager + floor；[[S_06]] N2）。
 
 热更新：`_sync_context_assemble_tool_allowlist(assemble, progressive)`。
 

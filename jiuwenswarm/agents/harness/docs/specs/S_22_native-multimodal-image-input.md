@@ -8,8 +8,8 @@
 | 编号 / slug | S_22 / native-multimodal-image-input |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/tools/model_capabilities.py`（能力解析纯函数）；`.../common/multimodal/`（`image_reference.py` 引用行 / 上传清单通道，`image_history.py` 像素物化 / 视图过滤 / 预算与状态行，`image_processing.py` 缩放编码）；`.../common/rails/multimodal_image_rail.py`（发送侧唯一决策点）；`.../common/rails/stream_event_rail.py`（工具侧读图 / 视觉工具护栏）；`.../common/rails/read_file_validation.py`（拦截文案与扩展名判定）；`.../common/rails/concurrent_safe_rails.py`（ReadFileTool resolver 装配）；`.../common/rails/progressive_tool_rail.py`（工具渐进式披露）；team 通道 `jiuwenswarm/agents/swarm/config_specs.py`（成员能力位 / 成员 rail 声明）与 `jiuwenswarm/agents/swarm/providers/multimodal.py`（`swarm.multimodal_image` provider）；装配点 `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`_resolve_enable_read_image_multimodal` / `_build_multimodal_image_rail` / `_build_image_tool_fallback_notice` / `_multimodal_image_files` 参数归一）与 `.../agent_adapter/team_helpers.py`（team 轮次清单写入 build context）；`interface_code.py`、`interface_flash.py`；配置 `jiuwenswarm/resources/config.yaml`（`react.multimodal_image_*` 三预算） |
 | 关联模块（agent-core 仓，跨仓契约） | `openjiuwen.harness.tools.filesystem.ReadFileTool`（`enable_image_multimodal` + `image_multimodal_resolver`，调用时求值；`READ_IMAGE_MAX_BYTES` / `READ_IMAGE_MAX_DIMENSION` 为可覆盖的类属性）、`openjiuwen.harness.rails.DeepAgentRail`（`before_model_call` / `priority`）、`openjiuwen.harness.image_modality_probe`（`get_declared_image_support` 读 `ModelClientConfig.supports_vision`）、ContextWindow `model_copy` / window mutator 机制；team 侧 `openjiuwen.agent_teams.agent.agent_configurator`（成员 `enable_read_image_multimodal` None→False 兜底）、`openjiuwen.agent_teams.harness.TeamHarness`（每轮按 build context 重建 NativeHarness） |
-| 最近一次修订日期 | 2026-11-06 |
-| 关联 feature | B_05_team-native-multimodal-image-input.md（bugfix） |
+| 最近一次修订日期 | 2026-11-24 |
+| 关联 feature | B_05_team-native-multimodal-image-input.md（bugfix）、B_09_multimodal-image-unsafe-retry.md（bugfix） |
 
 ## 范围 / 边界
 
@@ -31,12 +31,14 @@
 - **N2（模型条目是唯一依据）**：解析顺序——模型条目 `modalities` 含 `image` → **True**；未声明 / 不含 `image` / 其它不可识别值 → **False**（走 VQA / 视觉工具链）。不再内置模型能力表、不按模型名前缀猜测，也不接受单独的布尔开关；`coerce_modalities` 只负责把 YAML 里的列表或逗号 / 空白分隔字符串归一成规范小写列表。agent-core 另提供 `ModelClientConfig.supports_vision` 作为探针前置兜底（`get_declared_image_support`），但仅在 `deep_config.enable_read_image_multimodal` 尚未写入时生效；jiuwenswarm 链路恒由 `modalities` 解析并显式写入该值，故不构成第二真源。
 - **N3（发送侧唯一决策点）**：像素是否真的发给模型，只由 `MultimodalImageRail.before_model_call` 决定——enabled 时安装"物化" window mutator（把引用行替换成 image content，写进历史）；disabled 时安装"视图过滤" mutator（只对本次发送的视图副本剥掉 image_url，历史里的 base64 原样保留，供后续切回视觉模型复用）。
 - **N4（工具侧与发送侧同源）**：原生开启时，stream rail 对 read_file 的**已提供图片路径**一律拒绝（像素已在上下文，重复读只会多一份 base64）；对非图片的非文本扩展名仍拒绝；未提供的图片放行，由 `ReadFileTool` 按 resolver 内联像素。原生开启时视觉工具（`visual_question_answering` / `image_reading`）直接拒绝并提示"已提供像素"；原生关闭时视觉工具是唯一读图通道，不拦截。判定细节见 [[S_10]] N13/N14。
-- **N5（预算与降级可追溯）**：单次请求的图片受三预算约束（总字节 / 视觉 token / 张数，0 表示不限），超预算按**最老优先**降级为 `[image #n omitted: reason]` 文本状态行并写入历史；成功注入的记 `[image #n attached]`。状态行是模型可见的事实来源，后续轮次据此知道"这张图当时没给 / 给过"。两类状态行都是**终态**：同一消息内 `attached` / `omitted`（含 `omitted: duplicate`）对应的路径，成员确定性分发一律不再补引用行、不再重复读盘物化——预算淘汰 / 读取失败的图不会在每次 LLM 迭代（每轮 `before_model_call`）被重新补行、重新缩放编码，否则上下文无界膨胀。
+- **N5（预算与降级可追溯）**：单次请求的图片受三预算约束（总字节 / 视觉 token / 张数，0 表示不限），超预算按**最老优先**降级为 `[image #n omitted: reason]` 文本状态行并写入历史；成功注入的记 `[image #n attached]`。状态行是模型可见的事实来源，后续轮次据此知道"这张图当时没给 / 给过"。两类状态行都是**终态**：同一消息内 `attached` / `omitted`（含 `omitted: duplicate`）对应的路径，成员确定性分发一律不再补引用行、不再重复读盘物化——预算淘汰 / 读取失败的图不会在每次 LLM 迭代（每轮 `before_model_call`）被重新补行、重新缩放编码，否则上下文无界膨胀。read_file 注入的图没有引用行 / 状态行：摘除或预算卸载后残留的 `Image loaded from read_file: <path>` 说明行与紧随其后的 `[image omitted: ...]` 占位按**相邻配对**也视为已处理（`_processed_image_paths`），成员确定性分发不得再按说明行里的路径补引用行重新物化。
 - **N6（视图过滤不改历史）**：非视觉模型的剥离只发生在 `model_copy` 出的视图上，不得就地修改历史消息——否则切回视觉模型后图片永久丢失，且 checkpointer 里的原始内容被污染。
 - **N7（已提供图片判定不依赖 ContextVar）**：invoke 开始时把本次请求的图片路径快照写入 `ctx.extra["_jiuwenswarm_provided_image_paths"]`；工具跨任务 / 线程执行时 ContextVar 可能丢失，护栏必须读快照（路径归一化后比较，兼容绝对 / 相对 / `..` 形态）。ContextVar（`set_current_multimodal_image_files`）只在同一调用栈内的 prompt 组装侧使用。
 - **N8（提示一致性）**：仅当解析结果为 False 且请求确实带图片引用时，才向用户发"已切换为图片工具"提示；解析为 True 时不得再发该提示（否则与"像素已直接发送"自相矛盾）。系统提示里的 `multimodal_image_policy` 段同样按解析值二选一。
 - **N9（失败降级不阻断）**：单张图片读取 / 解码 / 缩放失败时跳过该图并记状态行，不让整个请求失败；rail 构建异常降级为 None（装配失败不阻断 agent 创建）。
 - **N10（team 成员同源）**：team 模式下**每个成员**（leader / teammate / 命名成员）都挂 `swarm.multimodal_image` rail，三要素必须成对存在——(a) 成员的 `DeepAgentSpec.enable_read_image_multimodal` 按**该成员模型**的 `modalities` 显式写 bool（成员 None 会被 SDK 固化为 False）；成员 spec 指定的模型名按条目 `model_client_config.model_name` 或 `alias` 命中，查不到条目按 N2 判 False 而**不回落**默认条目的能力位；(b) 成员挂 `swarm.multimodal_image` rail（provider 构造 `MultimodalImageRail`）；(c) 本轮上传清单经 `BuildContext.request_metadata["multimodal_image_files"]` 到达 rail（adapter 的 `self._instance` 属性镜像与请求 ContextVar 都到不了成员任务）。live build context 的清单绑定只发生在**确实会开新一轮**的请求：控制续写（权限 / ask_user 作答，`reuse_active_waiter`）只向既有 waiter 投递作答、adapter 传 `image_files=[]`，不得覆盖写；slash 命令早退同样不写。否则"上传图片 → 权限确认 → 继续"会清空在该轮生效的 live 清单，本轮后续新建的成员 harness / 上下文溢出重建读到空清单，`[image #n]` 被判不在清单内丢弃。绑定位置固定在 slash 早退之后、投递 query（`team_manager.interact` / `_start_team_stream_round`）之前——`TeamHarness` 每轮按同一 build context 重建 NativeHarness，投递后再写赶不上本轮成员的 rail 构造。授权边界在物化处而不在挂载处：只有**清单内路径**且出现在该成员**自己历史中的 user-authored 引用行**才出图（任务看板正文 / 工具结果里的路径不物化）；leader 把图片交给成员时须用 `send_message` 原样转述 `[image #n] path=...` 引用行，leader rail 的 `dispatch_hint` 负责把这条规则写进系统提示；并且 leader rail 在 `before_tool_call` 对 `send_message` 做**确定性兜底**——消息正文若提到本轮上传图的文件名或完整路径，自动在正文末尾补对应引用行（广播 `to="*"` / 回用户 `to="user"` 不补，单条最多补 4 张），避免模型只写任务看板或只写占位符时成员仍拿不到像素。成员侧再兜一层**确定性分发**：成员 rail 在 `before_model_call` 扫描自身上下文（含任务看板 / 工具结果等任意角色的文本）是否提到清单图（文件名或完整路径），命中且该路径**未处理**（`attached` 与 `omitted` 都是终态，见 N5）时主动把引用行补到最近一条 user 消息再物化；清单图全部已处理时直接返回，不再对全部消息做归一扫描。"提到清单图"的判定是**带边界的 token 匹配**：路径 / 文件名先统一分隔符（`\` → `/`）并忽略大小写，命中片段前后不得是 `[0-9A-Za-z_-]`（正则 lookaround），因此 `1.png` 不命中 `11.png` / `data.png`、`C:\Uploads\3.JPG` 能命中清单里的 `C:/uploads/3.jpg`、`请识别3.jpg` 仍命中；leader 分发兜底与成员确定性分发共用 `image_reference` 的同一套判定（不是裸 `in` 子串）。因此"模型声明原生能力 + 图在本轮上传清单内"时不由 leader 的消息格式决定是否出图；像素一旦提供，既有护栏会拒绝成员对同一图的 VQA/OCR（N4）。成员还有一条**超时/跨轮可用的模型可见路径**：原生开启时 `ReadFileTool` 的 resolver 每次调用读 `deep_config.enable_read_image_multimodal`，`read_file(本地图片路径)` 会把图片以图像内容返回原生模型（S_22 N4 的"未提供图片放行"分支）；成员 rail 在 `enabled` 且本轮 0 像素时写策略段引导"本地路径优先 read_file，不要 VQA/OCR"，且 read_file 返回的图片块会计入下一次 `native_images_sent`，从而继续拦住 VQA。清单是请求级的：进程内成员共享同一 `request_metadata` dict（跨轮刷新可见），子进程 / 分布式成员取 spawn 时的 seed 快照（不随后续轮次刷新，见遗留）。
+
+- **N11（图片被上游拦截的降级重试）**：上游以「`image_url` + `unsafe`」拒绝请求（华为 AgentArts `the content of image_url.url field is unsafe`）时，`MultimodalImageRail.on_model_exception` 先把本轮**已发出像素的全部图片路径**记为请求级黑名单（`multimodal_image_state.mark_unsafe_image_paths`，写 `ctx.extra` + agent 属性），再就地摘除历史图片块并把 `attached` 改写为 `omitted: unsafe`（终态），然后 `request_retry(0)` 用纯文本窗口重发一次。这里**有意**就地改历史（区别于 N6 的非视觉视图过滤）——图片已被上游判为不可用，必须阻止重试 / 后续轮次再次把同一图发给模型；同一 ctx 只降级一次（`_multimodal_image_unsafe_stripped` 护栏，防无限重试）。**黑名单是单次降级的必要配套**：摘图后 `provided_paths` 变空，read_file 对同一张图的重复读会被重新放行；若模型再次 read_file 同一张图，上游二次 400 时护栏已置位、异常直接上抛，本轮仍 0 chunk 失败。因此同一 invoke 内 `read_file` 护栏命中黑名单即拒绝（`build_unsafe_image_read_error`），引用行注入也按黑名单跳过物化（写 `omitted: unsafe`）。黑名单请求级：新 invoke 的首次 `before_model_call`（guard 未置位）清空，降级重试重跑时保留。
 
 ## 接口契约
 
@@ -53,7 +55,7 @@
 |---|---|
 | `build_image_reference_line(image_file, index)` | 生成 `[image #n] path=... filename=... mime=... size=...`；路径含空格也按行解析（正则见 `_IMAGE_REFERENCE_LINE_RE`） |
 | `parse_image_references(text)` / `collect_image_references_from_messages(messages)` | 从历史文本反解引用，供物化 mutator 定位"哪些消息要换成像素" |
-| `inject_image_content_from_references(messages, ...)` | 读文件 → 校验 MIME / 尺寸 → 缩放到 `_MAX_VISION_INLINE_IMAGE_DIMENSION` 内并按质量阶梯压到字节预算 → 生成 data URL → 就地把引用行所在消息改成多模态 content；超预算 / 失败按 N5 写状态行 |
+| `inject_image_content_from_references(messages, ..., blocked_paths=None)` | 读文件 → 校验 MIME / 尺寸 → 缩放到 `_MAX_VISION_INLINE_IMAGE_DIMENSION` 内并按质量阶梯压到字节预算 → 生成 data URL → 就地把引用行所在消息改成多模态 content；超预算 / 失败按 N5 写状态行；`blocked_paths`（N11 黑名单）命中的引用行不读盘，写 `omitted: unsafe` 终态 |
 | `filter_image_content_from_view(messages)` | N6：返回视图副本 + 被剥离块数；历史不动 |
 | `ensure_multimodal_image_window_mutator(context, ...)` / `ensure_multimodal_image_filter_window_mutator(context)` | 在 ContextWindow 上安装物化 / 过滤 mutator；属性名 `_jiuwenswarm_multimodal_image_window_mutator` 防重复安装 |
 | `estimate_image_visual_tokens(width, height)` | 512px tile 计费：85 + 170 × tiles，用于 token 预算 |
@@ -62,6 +64,8 @@
 | `set_current_multimodal_image_files` / `current_multimodal_image_files` / `reset_current_multimodal_image_files` | ContextVar 版"本次请求图片列表"，仅同调用栈使用；跨任务判定走 N7 快照 |
 | `store_team_request_image_files(metadata, files)` / `team_request_image_files(metadata)` | N10 team 通道：覆盖写 / 读 `BuildContext.request_metadata` 的清单；空列表是"本轮无上传"的权威事实，未写入返回 None（调用方回退 agent 属性 / ContextVar）；读侧返回副本 |
 | `strip_image_content_blocks(content)` | 纯函数：剥掉 content 里的 image 块并保留文本，返回 `(new_content, removed)`；供视图过滤复用 |
+| `strip_image_content_from_messages(messages, *, reason="unsafe")` | 就地摘除历史里全部 image 块并把 `attached` 改写为 `omitted: reason`（终态）；read_file 注入、无状态行的像素块换成 `[image omitted: reason]` 文本并保留路径说明行；返回摘除块数。供图片被上游内容安全拦截后的降级重试（N11，`MultimodalImageRail.on_model_exception`）调用 |
+| `collect_image_content_paths(messages)` | N11 黑名单建库：收集历史里**当前确实携带像素块**的图片路径（`attached` 状态行按消息作用域配对引用行 + read_file 的 `Image loaded from read_file: <path>` 说明行），按归一化路径去重；`omitted` 状态的图本轮没发出，不收录 |
 
 ### swarm 装配（team 成员）
 
@@ -83,6 +87,7 @@
 | `__init__(enable_image_multimodal=None, *, max_total_bytes=0, max_visual_tokens=0, max_count=0, image_files=None, dispatch_hint=False)` | 显式值优先；None 时在 `before_model_call` 读 `deep_config.enable_read_image_multimodal`（N1）；`image_files` 非 None 时装配期绑定本轮清单（team 成员，N10），空列表不回退 agent 属性；`dispatch_hint=True`（leader）在原生策略段追加"用 send_message 转述引用行"的提示 |
 | `_resolve_request_image_files()` | 顺序：装配期绑定清单 → agent 实例镜像（单 agent 旧行为）→ `None`（inject 回退 ContextVar） |
 | `before_model_call(ctx)` | N3：enabled → 物化 mutator；disabled → 过滤 mutator；`ctx.context is None` 直接返回；同时刷新系统提示 `multimodal_image_policy` 段（N8） |
+| `on_model_exception(ctx)` | N11：异常命中 `image_url` + `unsafe` 时先把本轮已发出像素的路径写入请求级黑名单，再摘除历史图片（`strip_image_content_from_messages`）并 `request_retry(0)` 用纯文本窗口重发一次；同一 ctx 只降级一次（`_multimodal_image_unsafe_stripped` 护栏），重试仍失败则异常上抛。`before_model_call` 在 guard 未置位时清空黑名单（新请求），guard 置位时保留（同一次降级重试） |
 
 ### stream_event_rail / read_file_validation（工具侧）
 
@@ -90,7 +95,9 @@
 |---|---|
 | `_native_read_image_enabled()` | 读 `deep_config.enable_read_image_multimodal`；异常 / 缺失 → False |
 | `_provided_image_paths(ctx)` / `_cache_provided_image_paths(ctx)` | N7 快照：优先 `ctx.extra`，缺失时从 ContextVar 懒缓存一次写回 |
+| `_unsafe_image_paths(ctx)` | N11 黑名单读取：优先 `ctx.extra`，缺失回退 agent 属性（无 rail ctx 的工具执行）；空列表 / 未写入都不拦截 |
 | `build_provided_image_read_error(path, language)` | `[READ_FILE_ERROR]` + "已随消息提供像素，直接使用" |
+| `build_unsafe_image_read_error(path, language)` | N11：`[READ_FILE_ERROR]` + "已被上游内容安全拦截（image_url unsafe），不能再次读取同一张图" + 继续任务路径 |
 | `build_native_image_tool_error(language)` | `[VISION_TOOL_SKIPPED]` + "不要调用视觉工具" |
 | `build_non_text_read_error(path, language)` | 图片 / 二进制分型引导（[[S_10]] N6） |
 
@@ -108,6 +115,8 @@
 - 状态行：`[image #n attached]` / `[image #n omitted: <reason>]`（reason 含预算 / 读取失败 / 尺寸非法等）
 - 图片项：`{"path": str, "filename": str, "mime_type": str, "size": int}`；`extract_multimodal_image_files(params)` 从请求参数归一
 - `ctx.extra` 键：`"_jiuwenswarm_provided_image_paths"`（invoke 级快照，list[str]，路径已归一）
+- `ctx.extra` 键：`"_multimodal_image_unsafe_stripped"`（image unsafe 单次降级重试护栏，bool；置位后本 ctx 不再降级重试）
+- `ctx.extra` 键：`"_jiuwenswarm_unsafe_image_paths"`（N11 请求级黑名单，list[str]，摘图前写入、新 invoke 首次 `before_model_call` 清空、同一次降级重试保留；同时镜像到 agent 属性供无 ctx 的工具执行读取）
 - ContextVar：`_CURRENT_MULTIMODAL_IMAGE_FILES`（tuple[dict]，同调用栈生效，用完 reset）
 - `BuildContext.request_metadata` 键：`"multimodal_image_files"`（team 轮次上传清单，list[dict]；team_helpers 覆盖写、成员侧 provider 读；随 `build_context_seed` 跨序列化边界）——覆盖写分两处：fresh spec 的 metadata（首轮 / 冷恢复）与 live team agent 的 `harness.build_context`（仅确实会开新一轮的请求，slash 早退后、投递前）
 - 配置：`react.multimodal_image_budget`（总字节，0 不限，默认 0）、`react.multimodal_image_token_budget`（视觉 token，0 不限，默认 0）、`react.multimodal_image_max_count`（张数，默认 8）
@@ -124,6 +133,8 @@
 - **P7 失败提示**：`_build_image_tool_fallback_notice` 仅在解析 False 时发"已切换为工具"提示（N8）；系统提示策略段与 rail 决策同源。
 - **P8 配置读取**：adapter 读 `react.multimodal_image_*` → 传给 rail 构造；0 值表示不限。
 - **P9 team 成员通道（N10）**：adapter team 分支 `_prepare_multimodal_image_inputs` 生成引用行并 `pop` 出清单 → 作为 `image_files` 参数传给 `process_team_message_stream` → 覆盖写 `request_metadata["multimodal_image_files"]`（首轮 / 冷恢复随 fresh spec 的 build context 生效）→ 同一清单写进 live team agent 的 `harness.build_context.request_metadata`（跨轮复用 runtime 每轮据此重建 NativeHarness；进程内 teammate 共享同一 dict；**只在该请求确实会开新一轮时写**——slash 早退之后、投递 query 之前、`reuse_active_waiter` 为假，控制续写 / slash 命令不覆盖写）→ `swarm.multimodal_image` provider 为每个成员构造 `MultimodalImageRail(image_files=清单)` → 成员的 `before_model_call` 按 P3/P4 物化像素；SDK 侧 `enable_read_image_multimodal` 由 `config_specs` 按成员模型 `modalities` 显式写入。leader rail 的 `dispatch_hint` 在原生策略段追加"交给成员时用 send_message 保留引用行"的规则；`before_tool_call` 再对 `send_message` 做确定性兜底（正文提到上传图文件名 / 路径 → 自动补引用行）；成员 rail 在 `before_model_call` 还会扫描自身上下文任意位置的清单图提及并补引用行（`ensure_manifest_images_referenced`，含任务看板 tool result 文本；边界归一判定、`attached` ∪ `omitted` 终态、清单全处理即早退），成员只在自身历史出现该引用行时才物化对应上传图。像素提供后，stream 护栏按 N4 拒绝同一图的 VQA/OCR。成员 `enabled` 且 0 像素时另写 `multimodal_image_policy` 策略段引导"本地路径用 read_file 原生读图"；`read_file` 命中 resolver 后图片块进入历史，下一次模型调用 `native_images_sent>0`，同样触发 VQA/OCR 拦截。
+
+- **P10 图片上游不安全降级重试（N11）**：模型调用抛 `image_url ... unsafe` → `MultimodalImageRail.on_model_exception`（priority 82）识别 → `collect_image_content_paths` 收集本轮已发出像素的路径并 `mark_unsafe_image_paths` 写请求级黑名单（ctx.extra + agent 属性）→ `strip_image_content_from_messages` 摘图 + 状态行改写 → `request_retry(0)` → agent-core 重试循环重跑 `before_model_call`（guard 已置位，保留黑名单；注入因 `omitted` 状态行与黑名单跳过）与窗口构建（从已摘图历史重建纯文本）。重试后模型再 `read_file` 黑名单路径 → stream rail `before_tool_call` 命中 `_unsafe_image_paths` → `reject_read_file(build_unsafe_image_read_error)`，同一张图不会重新进入窗口。同一 ctx 第二次命中直接上抛。
 
 ## 异常分支与退出路径
 
@@ -147,6 +158,7 @@
 | teammate 上下文已 `attached` / 已 `omitted` | 跨模型调用重复进 before_model_call；预算淘汰或读取失败已写 `omitted` | `attached` ∪ `omitted`（含 `omitted: duplicate`）都是终态：不重复补引用行、不重复读盘物化（N5） | `test_already_attached_is_not_repeated`、`test_omitted_image_is_not_rematerialized` |
 | 成员 pinned 模型名未声明 | 成员 spec 指定 `not-listed-model`，`models.defaults` 无该条目 | 能力位 False + warning（含成员模型名），**不回落**默认条目的 `modalities`（N2） | `test_unknown_pinned_model_does_not_inherit_default_modalities` |
 | 成员只有路径（清单提及未命中，如跨轮清单已清空） | 策略段引导用 read_file 原生读图 | 不引导则惯性 VQA/OCR；read_file 返回图像块后 `native_images_sent>0` 仍会拦 VQA | `test_team_member_path_guidance_points_to_native_read_file` |
+| 上游 400 `image_url.url field is unsafe` | 图片内容安全被拦 | `on_model_exception` 先写请求级黑名单再摘图 + 纯文本重试一次（N11）；重试后 read_file 命中黑名单被拒；重试仍失败则异常上抛 | `test_on_model_exception_strips_images_and_retries_once`、`test_on_model_exception_retries_only_once`、`test_on_model_exception_ignores_non_image_unsafe`、`test_on_model_exception_blacklists_every_sent_image_path`、`test_before_tool_call_rejects_blacklisted_unsafe_image` |
 
 ## 边界 case 清单
 
@@ -185,6 +197,10 @@
 | 成员 pinned 用 alias 声明 | 按条目顶层 `alias` 命中同一份 `modalities` | alias 被当成未声明 → 视觉成员退化为工具链 | `test_pinned_model_matches_alias` |
 | config 无 `models` 段 / 只有 `models.default` | 前者 False（未声明即不支持），后者按单条目声明解析 | env 兜底条目没有 `modalities` 却参与判定 | `test_config_without_models_section_disables_native_image`、`test_legacy_single_default_entry_is_honored` |
 | 能力位解析对模型条目 deepcopy / 解密 | 只读声明字段，不触发 `deepcopy` / `api_key` 解密 | 每成员每轮深拷贝 + 解密纯浪费 | `test_capability_resolution_skips_entry_copy_and_decryption` |
+| 摘图重试后模型再次 read_file 同一张图 | 命中请求级 unsafe 黑名单 → 拒绝并提示不要重读（N11） | 同一张图重新进窗口二次 400，护栏已置位 → 仍 0 chunk 失败 | `test_before_tool_call_rejects_blacklisted_unsafe_image`、`test_before_tool_call_allows_unrelated_unprovided_image` |
+| 同一张图经团队 steer / 成员确定性分发重新补引用行 | 注入按黑名单跳过并写 `omitted: unsafe` 终态（N11） | 摘图后引用行注入重新物化同一张 unsafe 图 | `test_injection_skips_blacklisted_reference_path` |
+| 新请求复用同一 rail 实例 | 首次 `before_model_call`（guard 未置位）清空黑名单 | 上一请求的 unsafe 路径误伤下一请求 | `test_before_model_call_clears_blacklist_for_new_request`、`test_before_model_call_keeps_blacklist_on_degrade_retry` |
+| read_file 图被摘除 / 预算卸载后 | `Image loaded from read_file: <path>` + `[image omitted: ...]` 相邻对视为已处理，清单门不再补引用行（N5） | 说明行被当成未处理清单图重新补行物化：二次 400 / 预算淘汰失效 | `test_stripped_read_file_image_is_not_referenced_again`、`test_budget_evicted_read_file_image_is_not_referenced_again` |
 
 ## 修改检查单
 
@@ -193,13 +209,14 @@
 - 改发送侧决策 → `MultimodalImageRail.before_model_call` 是唯一入口；新增分支必须同时覆盖 enabled / disabled 两种 mutator，且 disabled 只能是视图级（N6）
 - 改预算 / 降级顺序 → 保持"最老优先"与状态行可追溯（N5）；0 语义是不限，不能当"禁用"用
 - 改已提供图片判定 → 只读 `ctx.extra` 快照（N7）；快照写入点在 `before_invoke`，新增读取方不得依赖 ContextVar
-- 改工具护栏 → 同步 [[S_10]] N13/N14 与 `build_provided_image_read_error` / `build_native_image_tool_error`；批量 `file_paths` 必须与单路径同判定
+- 改工具护栏 → 同步 [[S_10]] N13/N14 与 `build_provided_image_read_error` / `build_native_image_tool_error` / `build_unsafe_image_read_error`；批量 `file_paths` 必须与单路径同判定
+- 改图片上游降级重试（N11）→ 三处必须同时改：`on_model_exception` 摘图前写黑名单（`collect_image_content_paths` + `mark_unsafe_image_paths`）、read_file 护栏按 `_unsafe_image_paths` 拒绝（`build_unsafe_image_read_error`）、引用行注入把黑名单传给 `inject_image_content_from_references(blocked_paths=...)`；黑名单生命周期跟 `_multimodal_image_unsafe_stripped` 绑定（新 invoke 清、降级重试保留），改护栏键 / 改动 `before_model_call` 的清理条件会让同一张图重新进入窗口后二次 400
 - 改 fallback notice → 只在解析 False 时发（N8）；同时检查系统提示 `multimodal_image_policy` 段与 `ProgressiveToolRail` 的工具披露
 - 改 ReadFileTool 构造 → `ConcurrentSafeSysOperationRail.init` 必须同时传 `enable_image_multimodal` 与 `image_multimodal_resolver`；resolver 读 rail 显式值 → `deep_config` → False
 - 改上传 / 引用行格式 → `_IMAGE_REFERENCE_LINE_RE` / `parse_image_references` / `build_image_reference_line` 三处同改；旧历史里的旧格式必须仍可解析
 - 改 team 原生图片（N10 三要素）→ 能力位（`config_specs` 的 `update["enable_read_image_multimodal"]`）、全成员 rail 挂载（leader 带 `dispatch_hint`）、清单通道（`team_helpers` 的 `request_metadata` 覆盖写 + live build context 刷新）三处必须同时改；只改其一 = 挂 rail 也 0 张。清单键只允许 adapter/team_helpers 覆盖写，禁止信任请求 metadata 里同名外部值
 - 改成员授权边界 → 物化前提保持"清单内路径 + 该成员 user-authored 引用行"两条同时成立；任务看板 / 工具结果里的路径不得物化（否则读文件内容可被诱导成像素注入）。想收紧到"按任务分配图"需另建 task→paths 授权表，不能靠放宽安全门实现
-- 改成员确定性分发的幂等口径 → "已处理"集合是 `attached` ∪ `omitted`（同消息作用域内 index→path 配对，`omitted: duplicate`、`omitted: compacted` 均为终态）；新增状态行类型必须在此显式决定是否终态，并保留"清单图全部已处理 → 直接返回 0"的早退，否则每轮模型调用都会做全量文本扫描
+- 改成员确定性分发的幂等口径 → "已处理"集合是 `attached` ∪ `omitted`（同消息作用域内 index→path 配对，`omitted: duplicate`、`omitted: compacted` 均为终态），外加 read_file 图的「路径说明行紧邻 `[image omitted: ...]`」配对；新增状态行类型必须在此显式决定是否终态，并保留"清单图全部已处理 → 直接返回 0"的早退，否则每轮模型调用都会做全量文本扫描
 - 改提及判定（分发兜底 / 成员确定性分发）→ 单源在 `image_reference` 的 `normalize_image_mention_text` / `normalized_text_mentions_image` / `text_mentions_image`：禁止恢复裸 `in` 子串匹配，"分隔符 + 大小写"归一与边界字符集 `[0-9A-Za-z_-]` 是契约；批量场景先按消息归一一次再逐图判定，不要逐 (图, 文本) 重复归一
 - 改 leader 分发提示 → 同步 `MultimodalImageRail` 策略段文案与 `dispatch_hint` 装配点；提示变了要重验"leader 用 send_message 转发引用行 → 团员出图"的端到端路径
 - 改分发兜底（`before_tool_call`）→ 保持"只补消息真正提到的图（文件名 / 路径）、只对具体成员单播生效、广播 / 回用户不改写"；新增改写必须同步 `augment_message_with_reference_lines` 纯函数测试与 rail 参数改写测试
@@ -212,6 +229,6 @@
 - [[S_10]]（输入侧守卫）：本 spec 是其 N13/N14 的语义来源；S_10 保留"何时拦截、注入什么文案"的宿主切片，不复制能力解析与预算细节
 - [[S_20]]（事件流主通道）：宿主 `JiuSwarmStreamEventRail` 的发射 / sid / cwd 契约归彼处；本 spec 只占用其 `before_tool_call` 的读图分支与 `before_invoke` 的快照缓存点
 - [[S_09]]（并发安全）：`ConcurrentSafeSysOperationRail.init` 的 ReadFileTool resolver 装配属本 spec N1/N4 的落地，注册安全仍归 S_09
-- [[S_07]]（LLM 调用层失败恢复）：像素预算造成的裁剪不触发溢出恢复；本 spec 的降级发生在发送前，不应与 413 恢复链混用
+- [[S_07]]（LLM 调用层失败恢复）：像素预算造成的裁剪不触发溢出恢复；本 spec 的降级发生在发送前，不应与 413 恢复链混用。S_07 的 `on_model_exception` 三原因分流（repeat / stream_timeout / transient_invoke）不含 `image_url unsafe`——该类错误由本 spec N11 的 `MultimodalImageRail.on_model_exception` 承接降级重试，两者优先级互斥、不重叠
 - `jiuwenswarm/server/runtime/agent_adapter/AGENTS.md`：适配器层"模型缓存 / fallback notice / rail 构建"的散件说明在彼处；本 spec 登记其解析契约（N1/N2/N8），不复制适配器其它铁律
 - `jiuwenswarm/common/AGENTS.md`（其 S_11 文件传输 / S_13 请求上下文）：上传件来源与 `_multimodal_image_files` 参数透传归彼处；本 spec 从"引用行已生成"开始

@@ -149,7 +149,7 @@ ReqMethod command.compact
 
 - [[S_02]]：ContextEngine 与 processor 链（含 FullCompact GET 语义）
 - [[S_03]]：ContextAssembleRail / ContextProcessorRail
-- [[S_04]]：压缩召回与 `[[HANDLE]]` 重载
+- [[S_04]]：压缩召回与 `[[OFFLOAD]]` 读回
 - [[S_05]]：溢出恢复与 `/compact`
 - [[S_06]]：adapter 装配、config、allowlist、双默认漂移
 - [[S_07]]：系统提示词分层（人设文件 vs swarm rails）

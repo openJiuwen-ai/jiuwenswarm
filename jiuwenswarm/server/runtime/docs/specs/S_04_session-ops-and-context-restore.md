@@ -73,6 +73,14 @@ checkpointer（DeepAgentState / HITL 状态）、file_ops 日志 + 工作区文�
   state、不强写 checkpointer**（消息持久化由 history.jsonl 承担；agent 状态已由
   checkpointer pre_run 恢复）；rewind_session_context 是"已截断后的重建"，
   history 破坏性动作全在 rewind_session。
+- **N11 回灌建 context 必须带 processor**：warmup / rewind 的 `create_context`
+  统一经 `_restore_context_processors_kwargs(react_agent)` 传入
+  `react_agent._config.context_processors`（与 `ReactAgent._init_context` 同源）。
+  配置为空，或任一项不符合“字符串名称、配置对象”二元结构时，省略
+  `processors` 参数，继续回灌历史。
+  agent-core `ContextEngine.create_context` 的池命中分支**不补挂** processor，
+  `SessionModelContext._processors` 只在构造时赋值——回灌若裸建 context，该对象
+  在池内的整个生命周期都没有压缩器，溢出恢复轨找不到 FullCompactProcessor。
 
 ## 接口契约
 
@@ -107,11 +115,11 @@ compact 落盘结构：`context.compact_boundary` + `context.rewind_summary`（�
 - **P1 rewind**：flush → load → 定位 turn（user_positions[turn_index-1]）→
   解析 project_dir（N2）→ truncate_history_records → update metadata（N3）→
   soft truncate file_ops（N1）→ 调用方择机 `rewind_session_context`（清 + 重建 +
-  commit/post_run）。
+  commit/post_run；create_context 带 processor，N11）。
 - **P2 fork**：flush + load → 逐条 forked_from → 写目标 history → 读源 metadata →
   算唯一标题 → 写目标 metadata → 调用方配 copy_session_state/context。
 - **P3 warmup**：内存 context 存在则短路 → 磁盘 history → N4 限界 → N5 状态机
-  重建消息 → live/临时 session → create_context。
+  重建消息 → live/临时 session → create_context（带 processor，N11）。
 - **P4 restore/redo**：DiffService 求文件集 → 逐文件 write/delete（异常逐条收集
   不中断）。
 
@@ -121,6 +129,9 @@ compact 落盘结构：`context.compact_boundary` + `context.rewind_summary`（�
   `tests/unit_tests/test_rewind_project_dir_race.py` 与 `test_compact_partial.py`。
 - 改 `_build_context_messages_from_history` → 跑 `test_session_ops_warmup.py`；
   新增 history 事件类型时明确归入 N5 的 skip / 处理清单。
+- 改回灌建 context 的参数（N11）→ 跑 `test_session_ops_warmup.py` 中
+  processors 相关用例与 `test_session_context_message_origin.py`；真实
+  `ContextEngine` 用例必须断言池命中后 `_processors` 仍在。
 - 改 HITL 清理（N7）→ 同查 adapter 的 stale 卡拒绝路径（agent_adapter 侧）。
 - 改 fork 状态移植（N8）→ 跑 `test_session_ops_state_copy.py` /
   `test_session_ops_fork.py`；DeepAgentState 加字段时评估是否需要 fork 重置。

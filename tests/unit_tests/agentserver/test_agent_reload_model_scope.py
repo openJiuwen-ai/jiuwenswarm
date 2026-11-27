@@ -31,7 +31,7 @@ class FakeTeamManager:
         self.channel_id = channel_id
         self.calls = calls
 
-    async def update_evolution_config(self, config):
+    async def update_evolution_config(self, config, *, session_id=None):
         self.calls.append((self.channel_id, config))
 
 

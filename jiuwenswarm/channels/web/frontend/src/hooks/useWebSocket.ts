@@ -4141,6 +4141,34 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           timestamp: new Date().toISOString(),
         });
       }),
+      // agent_ras 恢复通知（semantic_deadlock 等）：与 chat.notice 同构的
+      // 侧道系统消息，渲染为 role:system 气泡；relay-claw 部署形态下由
+      // relay 侧消费映射（system_info warning 提示条），本 handler 覆盖
+      // web 直连渠道。
+      webClient.on('chat.system_notice', ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+        if (shouldDropDuplicatedEvent('chat.system_notice', payload)) return;
+        const content = pickString(payload.content, payload.message, payload.text);
+        if (!content) return;
+        const requestId = getPayloadRequestId(payload) || `${Date.now()}`;
+        const messageId = `notice-agent_ras_recovery-${requestId}`;
+        const chatState = useChatStore.getState();
+        const existing = chatState.getRuntime(sessionId)?.messages.find((message) => message.id === messageId);
+        if (existing) {
+          chatState.updateMessage(sessionId, messageId, {
+            content,
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+        chatState.addMessage(sessionId, {
+          id: messageId,
+          role: 'system',
+          content,
+          timestamp: new Date().toISOString(),
+        });
+      }),
       webClient.on('config.changed', ({ payload }) => {
         const updatedKeys = Array.isArray(payload?.updated_keys)
           ? payload.updated_keys.filter((key): key is string => typeof key === 'string')

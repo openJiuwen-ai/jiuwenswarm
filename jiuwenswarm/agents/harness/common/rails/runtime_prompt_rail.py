@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Callable
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -45,23 +46,28 @@ _LIBRARY_LIST_MARKERS = ("运行时探测", "runtime probe")
 def _prompt_has_library_list(builder: Any) -> bool:
     """Return True when *builder* already carries the runtime library list.
 
-    The list lives in the static identity section, which is absent for agents
-    that build their prompt elsewhere (e.g. code mode). The env section must
-    add it only in that case, otherwise the same list is injected twice.
+    库清单可能位于静态 identity 段（FlashPersonaRail 拆分前），或已迁到
+    runtime_environment@1001（拆分后）。env 段只在两处都缺失时补一份，否则同一份
+    清单会在同一 system prompt 里出现两次（第二轮起重复注入，评审 #1）。
     """
     get_section = getattr(builder, "get_section", None)
     if not callable(get_section):
         return False
-    try:
-        section = get_section("identity")
-    except Exception:  # noqa: BLE001 — 诊断能力缺失时按「没有」处理，宁可多注入一份
-        return False
-    content = getattr(section, "content", None)
-    texts = content.values() if isinstance(content, dict) else [content]
-    return any(
-        isinstance(text, str) and any(marker in text for marker in _LIBRARY_LIST_MARKERS)
-        for text in texts
-    )
+    for name in ("identity", "runtime_environment"):
+        try:
+            section = get_section(name)
+        except Exception:  # noqa: BLE001 — 诊断能力缺失时按「没有」处理，宁可多注入一份
+            continue
+        if section is None:
+            continue
+        content = getattr(section, "content", None)
+        texts = content.values() if isinstance(content, dict) else [content]
+        if any(
+            isinstance(text, str) and any(marker in text for marker in _LIBRARY_LIST_MARKERS)
+            for text in texts
+        ):
+            return True
+    return False
 
 
 class RuntimePromptRail(DeepAgentRail):
@@ -76,6 +82,7 @@ class RuntimePromptRail(DeepAgentRail):
         timezone_offset: int = 8,
         agent_id: str | None = None,
         service_id: str | None = None,
+        skill_dirs_provider: Callable[[], str | list[str]] | None = None,
     ) -> None:
         super().__init__()
         self._agent = None
@@ -100,6 +107,7 @@ class RuntimePromptRail(DeepAgentRail):
         self._request_system_prompt: str = ""
         self._agent_id = agent_id
         self._service_id = service_id
+        self._skill_dirs_provider = skill_dirs_provider
 
     def init(self, agent) -> None:
         """从 agent 获取 system_prompt_builder 引用。"""
@@ -271,14 +279,19 @@ class RuntimePromptRail(DeepAgentRail):
         if language == "cn":
             return (
                 f"- Agent 内部数据目录：{agent_workspace_dir}\n"
-                f"- Agent 技能目录：{skills}\n"
+                f"- JiuwenSwarm 内部技能存储目录：{skills}\n"
+                "- 注意：内部技能存储目录中存在技能文件，不代表该技能已安装或当前可用；"
+                "请通过安装管理查询工具核实。\n"
                 f"- Agent 记忆目录：{memory}\n"
                 f"- Agent 待办目录：{todo}\n"
                 f"- JiuwenSwarm 启动配置目录：{config_dir}\n"
             )
         return (
             f"- Agent internal data directory: {agent_workspace_dir}\n"
-            f"- Agent skills directory: {skills}\n"
+            f"- JiuwenSwarm internal skill storage directory: {skills}\n"
+            "- Note: Skill files in the internal skill storage directory do not establish "
+            "that the skill is installed or currently available; "
+            "verify through the installation-management query tool.\n"
             f"- Agent memory directory: {memory}\n"
             f"- Agent todo directory: {todo}\n"
             f"- JiuwenSwarm startup configuration directory: {config_dir}\n"
@@ -762,6 +775,26 @@ class RuntimePromptRail(DeepAgentRail):
             en_agent_paths = self._format_agent_data_paths(
                 agent_workspace_dir, config_dir, language="en"
             )
+            if self._skill_dirs_provider is not None:
+                skill_dirs = self._skill_dirs_provider()
+                if isinstance(skill_dirs, str):
+                    skill_dirs = [skill_dirs]
+                if skill_dirs:
+                    loading_paths = "\n".join(f"  - {path}" for path in skill_dirs)
+                    cn_agent_paths += f"\n- 当前会话技能加载目录：\n{loading_paths}\n"
+                    en_agent_paths += f"\n- Current session skill loading directories:\n{loading_paths}\n"
+                else:
+                    cn_agent_paths += "\n- 当前会话技能加载目录：暂无可用目录\n"
+                    en_agent_paths += "\n- Current session skill loading directories: none available\n"
+            if self._channel == "officeclaw":
+                cn_agent_paths += (
+                    "\nOfficeAce 技能安装通过宿主提供的安装工具完成，"
+                    "由安装工具选择目标目录并完成注册。\n"
+                )
+                en_agent_paths += (
+                    "\nInstall OfficeAce skills through the host-provided installation tool. "
+                    "The installation tool selects the destination and registers the skill.\n"
+                )
             logger.info(
                 "[RuntimePromptRail] directory context: channel=%s project_dir=%s "
                 "cwd=%s agent_workspace=%s has_project=%s",

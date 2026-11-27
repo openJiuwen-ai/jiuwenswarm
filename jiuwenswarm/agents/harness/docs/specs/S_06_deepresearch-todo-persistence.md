@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_06 |
 | 状态 | 当前实现的真实描述 |
-| 修订日期 | 2026-11-12 |
+| 修订日期 | 2026-11-24 |
 | 关联模块 | `jiuwenswarm/agents/harness/common/tools/deepresearch/todo_progress.py`（落盘件：路径解析 + 安全校验 + 原子写，313 行）<br>`jiuwenswarm/agents/harness/common/tools/deepresearch/tools.py`（两处 send 通道调用点：~3230 race-completed 通道、~3476 主 push 通道）<br>`jiuwenswarm/agents/harness/common/tools/deepresearch/stream_router.py`（`DEEPRESEARCH_STAGES` 四阶段常量 ~94、节点→阶段映射 `_NODE_STAGE`、task.update 生产侧） |
 | 消费点 | 落盘文件即 [[S_01]] 布局的标准 `{workspace}/todo/{session_id}/todo.json`——`TaskExecutionRail._load_todo_from_json` / `_format_tasks_for_update`（[[S_02]]）可直接读，供历史 / 恢复视图展示 |
 | 测试锚点 | `tests/unit_tests/agentserver/test_deepresearch_todo_progress.py`（全量）；`test_deepresearch_stream_tool.py`（~1913 路径异常容忍、~4468/~5153 persist mock） |
@@ -67,6 +67,9 @@ Flash 宿主通过现有研究上下文显式传递内部 `todo_owner_required=T
 启动前从实际工具/宿主 provider 捕获 ResearchTodoTarget，包含引擎、session、plan、普通/Flash 策略及调用级 write_scope。两种策略都绑定原 asyncio.Task；取消处理先关闭 scope，正常返回/异常/finally 同样关闭。完成竞速交付沿用原目标，不重领修改资格。读取前、等待锁后及发布前重新检查 owner/scope；请求失效或计划改变拒绝新回写。在途请求的提交结果可能已确认或未知，不能宣称取消会撤回已发出的写入。
 
 目标捕获的普通/Flash 策略与 owner 有效性分开，不能用 owner=None 表示普通模式无需检查。重复回调遵循原计划、内容指纹和作用域；不提供跨请求 exactly-once 保证。
+
+**N11 主 Agent 停止续跑保留外层待办**
+主 Agent 模式下，四阶段 `task.update` 不替换外层清单。确认从 stopped 快照续跑时，可以从本次捕获的同一计划读取仍为 in_progress 的父待办标题，在子节点前发送父级 `task.start`。节点标题和完成边界继续通过 `stream_source_id` 归入父段下的节点，父任务完成由外层待办更新决定。读取或发射失败不阻断研究，轮首外层快照补发见 [[S_20]]。
 
 ## 3. 接口契约
 

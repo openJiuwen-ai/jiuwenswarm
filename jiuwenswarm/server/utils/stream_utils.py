@@ -95,6 +95,17 @@ def build_tool_result_payload(result_info: Any) -> dict[str, Any]:
 
 _PLACEHOLDER_FINISH_REASONS = frozenset({"", "null", "none"})
 
+# 图片被上游内容安全拦截的识别词法：与 harness 域 MultimodalImageRail 的判定一致，
+# 给 chat.error 帧补结构化 code，供下游分类器映射（缺 code 会落到 unknown/OA.05000090）。
+_IMAGE_UNSAFE_MARKERS = ("image_url", "unsafe")
+
+
+def _image_unsafe_error_code(message: Any) -> str | None:
+    msg = str(message or "").lower()
+    if all(marker in msg for marker in _IMAGE_UNSAFE_MARKERS):
+        return "image_url_unsafe"
+    return None
+
 
 def _structured_error_code(source: Any) -> str | None:
     """Derive the structured error code to forward on a ``chat.error`` frame.
@@ -128,9 +139,19 @@ def build_chat_error_event(source: Any, message: Any) -> dict[str, Any]:
     error kind; dropping them — e.g. ``finish_reason="max_iterations"``
     from ``last_iteration_finalize_rail`` — makes the failure fall through to
     ``unknown`` / OA.05000090 instead of a proper max-iterations message.
+
+    All model-exception ``chat.error`` emission points must use this builder
+    (adapter top-level run failure / exception, skill_turbo node error chunks)
+    instead of constructing a bare ``{"event_type": "chat.error", "error": ...}``
+    dict — otherwise the image_url unsafe lexical fallback is silently lost on
+    those paths.
     """
     event: dict[str, Any] = {"event_type": "chat.error", "error": message}
     code = _structured_error_code(source)
+    if not code:
+        # 结构化 code 缺失时按错误正文兜底识别一次（image_url unsafe 等已知分型），
+        # 避免落入 unknown / OA.05000090 的未分类兜底。
+        code = _image_unsafe_error_code(message)
     if code:
         event["code"] = code
     return event
@@ -558,7 +579,7 @@ def _parse_typed_chunk(
                     ),
                     "任务执行失败",
                 )
-            return {"event_type": "chat.error", "error": error}
+            return build_chat_error_event({}, error)
         if inner_val == "task_interaction":
             # native-harness ask_user interrupts (deep-agent
             # task loop) surface as a bare task_interaction controller payload
@@ -588,6 +609,22 @@ def _parse_typed_chunk(
                 inner_val,
             )
         return None
+
+    if chunk_type == "system_notice":
+        # agent_ras recovery notices (semantic_deadlock etc.): side-channel
+        # system information. Explicit handler keeps this entry point aligned
+        # with deep/stream_parse.py — the generic dict fallback would already
+        # emit chat.system_notice, but without whitespace-only dropping.
+        content = (
+            (payload.get("content") or "") if isinstance(payload, dict) else str(payload)
+        )
+        if not str(content).strip():
+            return None
+        return {
+            "event_type": "chat.system_notice",
+            "content": content,
+            **_propagate_stream_source_id(payload),
+        }
 
     if chunk_type == "llm_output":
         # openjiuwen streams payload.output; SkillTurbo uses payload.content.

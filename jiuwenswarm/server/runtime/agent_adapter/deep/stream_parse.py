@@ -464,7 +464,7 @@ def _parse_stream_chunk(
                             ),
                             "任务执行失败",
                         )
-                    return {"event_type": "chat.error", "error": error or "任务执行失败"}
+                    return build_chat_error_event({}, error or "任务执行失败")
                 if inner_val == "task_interaction":
                     # native-harness ask_user interrupts
                     # surface here without __interaction__ payloads reaching
@@ -652,6 +652,23 @@ def _parse_stream_chunk(
                     }
                 return None
 
+            # agent_ras recovery notices are side-channel system information.
+            # Must be intercepted BEFORE the dict-payload fallthrough, which
+            # would turn {"content": ...} into chat.delta (assistant text) and
+            # pollute the answer body with "⚠️ ..." lines.
+            if chunk_type == "system_notice":
+                content = (
+                    (payload.get("content") or "") if isinstance(payload, dict) else str(payload)
+                )
+                if not str(content).strip():
+                    return None
+                # 透传 stream_source_id / task_id（与 utils 入口及同文件
+                # tool_call 等既有 handler 一致），并发流下前端据此路由。
+                return _propagate_stream_source_id(
+                    payload if isinstance(payload, dict) else {},
+                    {"event_type": "chat.system_notice", "content": content},
+                )
+
             if chunk_type == "chat.retract":
                 if isinstance(payload, dict):
                     return {
@@ -681,7 +698,10 @@ def _parse_stream_chunk(
 
             if chunk_type == "todo.updated":
                 todos = payload.get("todos", []) if isinstance(payload, dict) else []
-                return {"event_type": "todo.updated", "todos": todos}
+                result = {"event_type": "todo.updated", "todos": todos}
+                if isinstance(payload, dict) and payload.get("todo_meta") is not None:
+                    result["todo_meta"] = payload["todo_meta"]
+                return result
 
             if chunk_type == "task.start":
                 if isinstance(payload, dict):

@@ -17,6 +17,7 @@ from openjiuwen.harness.prompts import resolve_language
 
 from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
     ProgressiveToolRail,
+    resolve_protected_eager_tools,
 )
 from jiuwenswarm.common.config import (
     _get_ttse_config,
@@ -222,6 +223,12 @@ def build_progressive_tool_rail_from_config(
             _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
         )
 
+    # BUG20261117410859：缺省键时代码内置默认名单生效（存量运维配置无需改动
+    # 即获得 floor）；显式置空 [] 表示整体关闭保护。主 / subagent / team
+    # profile 共用同一份名单与解析语义（resolve_protected_eager_tools），
+    # 未注册的名字在过滤循环里天然是 no-op。
+    protected_eager_tools = resolve_protected_eager_tools(lazy_cfg)
+
     eager_tools = _ensure_ttse_consult_eager_tool(eager_tools, config)
 
     normalized_language = resolve_language(language)
@@ -238,7 +245,8 @@ def build_progressive_tool_rail_from_config(
     logger.info(
         "[ProgressiveToolRail] mounted lazy_load_enabled=%s profile=%s "
         "kind=%s eager_tools=%s "
-        "agent_id=%s agent_card_id=%s enable_for_models=%s disabled_tools=%s",
+        "agent_id=%s agent_card_id=%s enable_for_models=%s disabled_tools=%s "
+        "protected_eager_tools_count=%s",
         lazy_load_enabled,
         normalized_profile,
         subagent_kind or "",
@@ -247,6 +255,7 @@ def build_progressive_tool_rail_from_config(
         agent_card_id,
         enable_for_models,
         disabled_tools,
+        len(protected_eager_tools),
     )
 
     return ProgressiveToolRail(
@@ -256,6 +265,7 @@ def build_progressive_tool_rail_from_config(
         agent_id=agent_id,
         agent_card_id=agent_card_id,
         enable_for_models=enable_for_models,
+        protected_eager_tools=protected_eager_tools,
         deepresearch_context_provider=deepresearch_context_provider,
         active_skill_provider=active_skill_provider,
         disabled_tools=disabled_tools,

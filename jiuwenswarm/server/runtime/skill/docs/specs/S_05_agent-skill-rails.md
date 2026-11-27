@@ -6,9 +6,9 @@
 |---|---|
 | 类型 | spec |
 | 编号 / slug | S_05 / agent-skill-rails |
-| 关联模块 | jiuwenswarm/agents/harness/common/rails/skill_*.py + subagent_skill_authorization_rail.py + rails/permissions/skill_authorization/（file_store + runtime） |
-| 最近一次修订日期 | 2026-11-17 |
-| 关联 feature | B_02_skill-state-storage-failure-degradation.md（bugfix 归档：存储失败双路径语义） |
+| 关联模块 | jiuwenswarm/agents/harness/common/rails/skill_*.py + runtime_prompt_rail.py + subagent_skill_authorization_rail.py + rails/permissions/skill_authorization/（file_store + runtime）；flash/prompt/content/{tools,persona}.py |
+| 最近一次修订日期 | 2026-11-26 |
+| 关联 feature | B_02_skill-state-storage-failure-degradation.md、B_03_skill-install-state-and-runtime-paths.md、B_04_code-adapter-missing-skill-rails.md（bugfix 归档） |
 
 ## 范围 / 边界
 
@@ -18,19 +18,19 @@ swarm 侧 7 个技能 rail 的**运行时行为契约**：priority、挂载条�
 
 rail 回调框架按 **priority 数值大者先执行**。技能链装配点与优先级：
 
-| Rail | priority | 挂载条件 / 装配点（interface_deep.py） |
+| Rail | priority | 挂载条件 / 装配点（interface_deep / interface_code） |
 |---|---|---|
 | `SkillUseRail`（core） | 95 | `_build_skill_rail`；skill_mode 检索开启时强制 `auto_list` |
 | `SkillAuthorizationRail`（swarm 子类） | 95（继承 core） | `_build_skill_authorization_rail`，**须在 `_permission_rail` 之后构建**（复用其 engine） |
 | `SkillRetrievalPromptRail` | `SkillUseRail.priority - 1`（= 94，**动态推导**） | `_build_skill_retrieval_prompt_rail`；`is_skill_retrieval_enabled()` 门控 |
-| `SkillSleepRail` | 26 | `_build_skill_sleep_rail`，**始终挂载**（是否跑休眠周期由 per-skill 配置在 runner 内裁决） |
-| `SkillActiveStateRail` | 25 | `_build_skill_active_state_rail` |
+| `SkillSleepRail` | 26 | `_build_skill_sleep_rail`，**agent 模式始终挂载**（是否跑休眠周期由 per-skill 配置在 runner 内裁决）；**code 模式不挂**——`_reconcile_evolution_rails` 每次 reload 主动停用演进链 |
+| `SkillActiveStateRail` | 25 | `_build_skill_active_state_rail`；**code 与 agent 一致固定挂载**（`interface_code._build_agent_rails` insert(1)） |
 | `SkillProtocolPromptRail` | 8 | `_build_skill_protocol_prompt_rail`，**仅 `mode.startswith("agent")`** |
-| `SkillCredentialInjectionRail` | 5 | `_build_skill_credential_injection_rail`（`react.skill_envs`） |
+| `SkillCredentialInjectionRail` | 5 | `_build_skill_credential_injection_rail`（`react.skill_envs`）；**code 与 agent 一致固定挂载**（`interface_code._build_agent_rails` insert(0)） |
 
 衍生装配：flash 模式 `_FLASH_RAIL_KEEP` 白名单保留 `SkillUseRail`（钉 `SKILL_MODE_ALL`，仅注册 skill_tool）/ credential / active_state / authorization；swarm 成员经 `agents/swarm/providers/`（`swarm.skill_retrieval_prompt` / `swarm.skill_retrieval` / `swarm.member_skill_toolkit`）；团队技能工作区经 `MemberSkillToolkitRail`（team/rails/）。
 
-**热重载原位更新约定**：`SkillUseRail`（skill_mode / disabled_skills 原位改，不重建——保住动态加载技能）、`SkillCredentialInjectionRail.update_skill_envs`（**空 overlay 不清空已有凭据目录**）、`SkillActiveStateRail.update_stale_invoke_limit`、`_sync_skill_retrieval_prompt_rail_for_runtime`（按开关动态注册 / 注销）、`_reconcile_skill_sleep_rail`（惰性补挂）。
+**热重载原位更新约定**：`SkillUseRail`（skill_mode / disabled_skills 原位改，不重建——保住动态加载技能）、`SkillCredentialInjectionRail.update_skill_envs`（**空 overlay 不清空已有凭据目录**）、`SkillActiveStateRail.update_stale_invoke_limit`、`_sync_skill_retrieval_prompt_rail_for_runtime`（按开关动态注册 / 注销）、`_reconcile_skill_sleep_rail`（惰性补挂）。code 模式创建期已挂 credential / active_state（见上表），reload 只走原位更新，不重建实例。
 
 ## SkillActiveStateRail — 会话级活跃技能状态
 
@@ -141,6 +141,13 @@ swarm 子类只做四件事：
 实现要点：每次从 `ctx.agent` 现取最新 `system_prompt_builder`（防热重载后指向旧 builder）；`uninit` 先同步到当前生效 builder 再 `remove_section`。
 
 与相邻 prompt 段的分工：技能**清单与加载约定**归 core `SkillUseRail` 的 `skills` 段（priority 40）；**加速通道指引**归 `SkillTurboPromptRail` 的 `skill_turbo_guide` 段（skill_turbo 模块）；本段只管**执行过程规范**，互不重复。
+
+### 运行时目录提示与查询去重
+
+- `RuntimePromptRail` 每次模型调用通过 Adapter 注入的 `skill_dirs_provider` 读取当前 `self._skill_rail.skills_dir`，不保存旧加载器的目录快照。沿用上游唯一的目录提供机制，不另行通过 `find_rails_by_type` 重复生成目录提示。
+- 提示区分“JiuwenSwarm 内部技能存储目录”和“当前会话技能加载目录”。提供者返回空列表时显示暂无可用目录，不用工作区存储路径替代；目录存在不能证明已安装或可用，应通过安装管理查询工具核实。OfficeAce 安装由宿主安装工具选择目标目录并注册。
+- Flash 工具选择规则的去重范围限定在本次用户请求内。新请求需要核实安装、卸载或当前可用状态时，相同工具和参数也必须重新查询；保留同一请求内无状态变化的重复调用约束。
+- 验证覆盖真实 Adapter 构建、中英文目录提示与去重规则、加载器替换/禁用、多种技能来源，以及共享根目录与工作区残留目录分离；目录提示只输出一套加载目录。故障与验证记录见 [B_03_skill-install-state-and-runtime-paths.md](../bugfix/B_03_skill-install-state-and-runtime-paths.md)。
 
 ## SkillRetrievalPromptRail — Agentic 树检索提示
 

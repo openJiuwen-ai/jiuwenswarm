@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import inspect
+import os
 from contextlib import AsyncExitStack
 from typing import Any, Optional
 
@@ -31,6 +33,9 @@ _wrapped_connects: set[tuple[type, str]] = set()
 _pending_sdk_read_timeout: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "_jws_pending_sdk_read_timeout", default=None
 )
+#: MCP HTTP 传输共享的 SSL 上下文，key 为 httpx 选证书源用到的环境变量
+#: (SSL_CERT_FILE, SSL_CERT_DIR)。见 ``_ensure_mcp_ssl_context``。
+_mcp_ssl_contexts: dict[tuple[str, str], Any] = {}
 #: Fallback per-call timeout for process-level ToolMgr MCP clients when
 #: ``--timeout_s`` is not supplied. Request-scoped MCP workers use their
 #: separate 300s default in ``mcp_config._MCP_CALL_TOOL_TIMEOUT_S`` because
@@ -638,6 +643,67 @@ def _stamp_is_valid(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
 
 
+def _mcp_ssl_context_key() -> tuple[str, str]:
+    return (os.environ.get("SSL_CERT_FILE") or "", os.environ.get("SSL_CERT_DIR") or "")
+
+
+def _cached_mcp_ssl_context() -> Any:
+    return _mcp_ssl_contexts.get(_mcp_ssl_context_key())
+
+
+async def _ensure_mcp_ssl_context() -> None:
+    key = _mcp_ssl_context_key()
+    if key in _mcp_ssl_contexts:
+        return
+    import httpx
+
+    try:
+        ssl_context = await asyncio.to_thread(httpx.create_ssl_context)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[mcp-ssl] shared SSL context build failed; MCP transports keep the SDK default",
+            exc_info=True,
+        )
+        return
+    if _mcp_ssl_context_key() == key:
+        _mcp_ssl_contexts.setdefault(key, ssl_context)
+
+
+def _mcp_http_client_factory(ssl_context: Any) -> Any:
+    import httpx
+    from mcp.shared._httpx_utils import (
+        MCP_DEFAULT_SSE_READ_TIMEOUT,
+        MCP_DEFAULT_TIMEOUT,
+    )
+
+    def factory(
+        headers: dict[str, str] | None = None,
+        timeout: Any = None,
+        auth: Any = None,
+    ) -> Any:
+        if timeout is None:
+            timeout = httpx.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT)
+        kwargs: dict[str, Any] = {"timeout": timeout, "verify": ssl_context}
+        if headers is not None:
+            kwargs["headers"] = headers
+        if auth is not None:
+            kwargs["auth"] = auth
+        return httpx.AsyncClient(**kwargs)
+
+    factory._jws_mcp_shared_ssl = True  # type: ignore[attr-defined]
+    return factory
+
+
+def _accepts_httpx_client_factory(func: Any) -> bool:
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+    return "httpx_client_factory" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
 def _patch_sdk_read_timeouts() -> None:
     """Lift the MCP SDK transports' ``sse_read_timeout`` to the connector timeout.
 
@@ -669,8 +735,19 @@ def _patch_sdk_read_timeouts() -> None:
         orig_factory = getattr(module, factory_name)
         if getattr(orig_factory, "_jws_mcp_wrapper", None) == "transport-read-timeout":
             continue
+        orig_accepts_factory = _accepts_httpx_client_factory(orig_factory)
 
-        def factory_with_read_timeout(*args: Any, orig=orig_factory, name=factory_name, **kwargs: Any):
+        def factory_with_read_timeout(
+            *args: Any,
+            orig=orig_factory,
+            name=factory_name,
+            accepts_factory=orig_accepts_factory,
+            **kwargs: Any,
+        ):
+            if accepts_factory and len(args) <= 1 and "httpx_client_factory" not in kwargs:
+                ssl_context = _cached_mcp_ssl_context()
+                if ssl_context is not None:
+                    kwargs["httpx_client_factory"] = _mcp_http_client_factory(ssl_context)
             hint = _pending_sdk_read_timeout.get()
             if _stamp_is_valid(hint):
                 current = kwargs.get("sse_read_timeout")
@@ -718,6 +795,9 @@ def _patch_sdk_read_timeouts() -> None:
             current = asyncio.current_task()
             cancelling = current.cancelling() if current is not None else 0
             try:
+                # 先在线程里备好共享 SSL 上下文，SDK 工厂随后同步建 httpx 客户端时直接复用，
+                # 不在事件循环上加载 CA（远程连接器周期扫描曾因此让主循环停摆数秒）。
+                await _ensure_mcp_ssl_context()
                 connected = await orig(self, *args, **kwargs)
                 # 锁文件中的旧 SDK 会捕获 BaseException 并返回 False，不能让它
                 # 吞掉本次建连收到的取消（含 asyncio.timeout 发出的取消）。

@@ -199,7 +199,8 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.TEAM_SKILL_STORAGE_POLICY,
         registry.TEAM_SKILL_LIBRARY_RELOAD,
         registry.RESPONSE_PROMPT,
-        registry.SYS_OPERATION,
+        registry.TEAM_ACCEL_PROMPT,
+        registry.TEAM_ACCEL_SYS,
         registry.STREAM_EVENT,
         registry.SECURITY,
         registry.HEARTBEAT,
@@ -209,12 +210,14 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.CONTEXT_OVERFLOW_RECOVERY,
         registry.TEAM_ADMISSION,
         registry.PERSONAL_CONTEXT,
+        registry.OFFICE_ACE_USER_PROFILE,
         registry.PLUGIN_RAILS,
         registry.SKILL_RETRIEVAL_PROMPT,
         registry.SYMPHONY_ORCHESTRATION_PROMPT,
         registry.A2A_OUTBOUND_TOOLKIT,
         registry.REQUEST_SCOPED_MCP_TOOLS,
         registry.MEMBER_SKILL_TOOLKIT,
+        registry.TEAM_PROGRESSIVE_TOOL,
         registry.DISABLED_TOOLS,
     }
 )
@@ -556,7 +559,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 23
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 26
     # core.team.skill_use is always appended for Leader+Teammate same track (M2).
     assert TEAM_SKILL_USE in rail_names
     assert rail_names == expected | {TEAM_SKILL_USE}
@@ -1682,9 +1685,39 @@ def test_team_skill_evolution_provider_passes_review_runtime(
         language="cn",
     )
     rail = built[1]
-    assert "signal_trigger" not in rail.kwargs
+    assert rail.kwargs["signal_trigger"] is True
     assert rail.kwargs["auto_save"] is auto_save
     assert rail.kwargs["review_trigger"] is True
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team"])
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.asyncio
+async def test_leader_policy_reaches_the_mounted_rail(tmp_path, monkeypatch, mode, enterprise):
+    from jiuwenswarm.agents.swarm.config_specs import build_member_capability_specs
+
+    # A personal user's existing signal_trigger=false affects teammates only.
+    evolution = {"signal_trigger": False, "review_trigger": False}
+    if enterprise:
+        evolution["team_signal_trigger"] = False
+    config = {"react": {"evolution": evolution}}
+    specs, _ = build_member_capability_specs(config, mode, "leader")
+    params = next(spec.params for spec in specs if spec.type == registry.TEAM_SKILL_EVOLUTION)
+    monkeypatch.setattr(evolution_rails, "_build_evolution_llm_from", lambda _: (None, "offline"))
+    ctx = SwarmBuildContext(role="leader", global_skills_dir=str(tmp_path), config=config)
+    # A recovered spec written before signal_trigger was added uses the active build context.
+    for supplied in (params, {k: v for k, v in params.items() if k != "signal_trigger"}):
+        built = evolution_rails.build_team_skill_evolution_rail(supplied, ctx)
+        leader = next(rail for rail in built if isinstance(rail, evolution_rails.SwarmTeamSkillEvolutionRail))
+        assert leader.signal_trigger is (not enterprise)
+        assert leader.review_trigger is False
+        capture = SimpleNamespace(session_id="s", member_id="leader", team_id="team")
+        monkeypatch.setattr(leader, "_resolve_capture", lambda **kwargs: capture)
+        read_trajectory = MagicMock(return_value=object())
+
+        monkeypatch.setattr(leader, "get_trajectory", read_trajectory)
+        assert await leader.notify_team_completed() is (not enterprise)
+        assert read_trajectory.call_count == int(not enterprise)
 
 
 def test_swarm_team_skill_evolution_registration_retries_deferred_watcher(
@@ -1890,11 +1923,12 @@ _EXPECTED_CODE_RAIL_NAMES_LEADER: frozenset[str] = frozenset(
     {
         registry.CODE_RUNTIME_PROMPT,
         registry.RESPONSE_PROMPT,
+        registry.TEAM_ACCEL_PROMPT,
         registry.STREAM_EVENT,
         registry.SECURITY,
         registry.CODE_LSP,
         registry.CODE_PROJECT_MEMORY,
-        registry.SYS_OPERATION,
+        registry.TEAM_ACCEL_SYS,
         registry.CODE_CODING_MEMORY,
         registry.CODE_AGENT_MODE,
         registry.STRUCTURED_ASK_USER,

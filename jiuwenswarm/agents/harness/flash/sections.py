@@ -49,7 +49,7 @@ FLASH_SECTION_BANDS: dict[str, range] = {
     "identity": range(0, 40),  # 0xx 身份与总则（020/030 存疑）
     "security": range(100, 130),  # 1xx 安全与边界
     "workspace": range(200, 230),  # 2xx 工作空间（230/240 已迁 4xx，留空号）
-    "tools": range(300, 360),  # 3xx 工具（320 存疑；350 渐进式工具导航，tool_nav 大块静态驻留）
+    "tools": range(300, 360),  # 3xx 工具（320 存疑；350 渐进式工具导航，tool_navigation 大块静态驻留）
     "execution": range(400, 470),  # 4xx 任务执行（400–460 连续段）
     "interaction": range(500, 550),  # 5xx 交互与输出（530 空号，已迁 410）
     "memory": range(600, 660),  # 6xx 记忆（内容回退 deep 原样巨石段，仅占 600 一号）
@@ -148,10 +148,12 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
     300: SectionSpec("工具选择总则", "system", "merged",
                      current=[("bash使用原则段", 0, "ContextAssembleRail（可用工具/去重）")],
                      plan="FlashToolGuideRail 拆出；删「一个问题只用一个工具」绝对禁"),
-    310: SectionSpec("可用工具", "system", "active",
+    310: SectionSpec("可用工具", "attachment", "active",
                      current=[("tools", 30, "ContextAssembleRail build_tools_section")],
                      plan=("SDK tools 段（# 可用工具 目录 + ## task_tool 使用原则）迁号 310；"
-                           "300/330 已拆出，工具发现规则（tools_search/invoke_tool）归 350 渐进式工具导航")),
+                           "300/330 已拆出，工具发现规则（tools_search/invoke_tool）归 350 渐进式工具导航；"
+                           "carrier=attachment：工具目录随 enabled_tools/渐进加载每请求动态，"
+                           "不入静态 hash（评审 #5）")),
     320: SectionSpec("call_goal 约定", "system", "adjudicate",
                      source="stream_event_rail.py:1195",
                      current=[("tool_call_goal", 40, "StreamEventRail")],
@@ -163,9 +165,15 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
                      source=":362",
                      current=[("identity", 10, "构造期"), ("BrowserToolPolicy", 0, "SDK 待核验")],
                      plan="从 400 第 8 条拆出 + Browser Policy 合并"),
-    350: SectionSpec("渐进式工具导航", "system", "merged",
-                     current=[("tool_nav", 70, "ProgressiveToolRail 清单全量")],
-                     plan="工具导航大块静态驻留工具域（拍板：大块不沉动态 1000+）；flash 侧 re-add 迁号 350，ProgressiveToolRail 注入不动（deep 共用）"),
+    345: SectionSpec("浏览器任务强制路由", "attachment", "dynamic",
+                     current=[("browser_routing", 345, "FlashToolGuideRail / registry _render_tools")],
+                     plan=("自 340 拆出的独立动态段（评审 C1）：task_tool+browser_agent 条件注入，"
+                           "子代理/工具面变化时正文变、不入静态 hash")),
+    350: SectionSpec("渐进式工具导航", "attachment", "merged",
+                     current=[("tool_navigation", 70, "ProgressiveToolRail 清单全量")],
+                     plan=("工具导航大块静态驻留工具域（拍板：大块不沉动态 1000+）；flash 侧 re-add 迁号 350，"
+                           "ProgressiveToolRail 注入不动（deep 共用）；carrier=attachment：导航段随按需工具"
+                           "列表每请求动态、不入静态 hash（评审 #5）")),
 
     # ═══ 4xx 任务执行（400–460 连续段）═══
     400: SectionSpec("执行质量准则", "system", "merged",
@@ -213,10 +221,11 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
                      plan="已落地：迁号 540 + 运行时缺失说「当前环境未提供该信息」、不断言「未配置」（值迁 1030）"),
 
     # ═══ 6xx 记忆（内容回退 deep 原样，仅迁号）═══
-    600: SectionSpec("记忆（deep 原样巨石段）", "system", "active",
+    600: SectionSpec("记忆（deep 原样巨石段）", "durable", "active",
                      source="MemoryRail build_memory_section（deep 原样）",
                      current=[("memory", 50, "MemoryRail build_memory_section")],
-                     plan="内容回退 deep 原样、仅迁号 600；610-650 六段拆分撤销、留空号（memory@50 → 600）"),
+                     plan=("内容回退 deep 原样、仅迁号 600；610-650 六段拆分撤销、留空号（memory@50 → 600）；"
+                           "carrier=durable：记忆正文随检索 session 级变化、不入静态 hash（评审 C2）")),
 
     # ═══ 7xx 技能（常驻，v1 新增域）═══
     700: SectionSpec("技能总则", "system", "merged",
@@ -239,7 +248,7 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
                            "（启用集 ~5k，非旧全量 10,772）"),
                      relay=("relay 技能仓 relay_claw/office-claw-skills/manifest.yaml"
                             "（部署侧 /opt/officeace/office-claw-skills/）——只读数据源，不改 relay")),
-    750: SectionSpec("技能加速通道（原 740 顺延）", "system", "merged",
+    750: SectionSpec("技能加速通道（原 740 顺延）", "attachment", "merged",
                      current=[("skill_turbo_guide", 45, "FlashTurboPromptRail / skill_acceleration_exec")],
                      plan="触发/排除/降级/暂停定型；终态归 750；shared skill_protocol 段在被 730 接管后剥除"),
 
@@ -287,7 +296,7 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
 _SAME_ORDER_GROUPS: list[dict[str, Any]] = [
     {"code_priority": 40, "members": {"skills", "tool_call_goal", "skill_selection"}},
     {"code_priority": 45, "members": {"skill_turbo_guide", "skill_protocol"}},
-    {"code_priority": 70, "members": {"workspace", "tool_nav"}},
+    {"code_priority": 70, "members": {"workspace", "tool_navigation"}},
 ]
 
 

@@ -257,6 +257,11 @@ class FlashTodoRail(DeepAgentRail):
         self._todo_revision = -1
 
     async def before_model_call(self, ctx) -> None:
+        # 每轮从 ctx.agent 现取活 builder（评审 D3）：热重载重建 builder 时用旧实例会把
+        # todo@430 写进旧 builder。
+        builder = getattr(getattr(ctx, "agent", None), "system_prompt_builder", None) or self.system_prompt_builder
+        if builder is not None:
+            self.system_prompt_builder = builder
         self._inject_todo_section()
         if self._waiting_or_stopped(ctx):
             return
@@ -338,8 +343,10 @@ class FlashTodoRail(DeepAgentRail):
         if _todo_action(ctx.inputs.tool_args) not in ("create", "modify"):
             return
         result = ctx.inputs.tool_result
-        if (getattr(ctx, "exception", None) is not None or result is None
-                or getattr(result, "success", True) is False):
+        if getattr(ctx, "exception", None) is not None or result is None:
+            return
+        success = result.get("success") if isinstance(result, dict) else getattr(result, "success", None)
+        if success is False:
             return
         snapshot = snapshot_from_result(ctx.inputs.tool_result)
         if snapshot is not None:

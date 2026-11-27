@@ -412,11 +412,15 @@ async def test_deferred_target_keeps_its_own_timeout_policy():
             InvokeToolInput(tool_name="ordinary_deferred", arguments={}),
         )
 
-    assert result == {
-        "success": False,
-        "error": "Tool 'ordinary_deferred' timed out after 0.01s",
-        "tool_name": "ordinary_deferred",
-    }
+    # openjiuwen AbilityManager now returns a self-correcting timeout message
+    # (outer deadline + no-retry guidance), not the short legacy one-liner.
+    assert result["success"] is False
+    assert result["tool_name"] == "ordinary_deferred"
+    assert result["error"].startswith(
+        "Tool 'ordinary_deferred' timed out after 0.01s"
+    )
+    assert "outer tool-call deadline" in result["error"]
+    assert "Do not re-run the same call synchronously" in result["error"]
 
 
 @pytest.mark.asyncio

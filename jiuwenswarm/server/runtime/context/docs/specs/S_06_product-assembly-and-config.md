@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_06 / product-assembly-and-config |
 | 关联模块 | interface_deep / interface_code / interface_flash + context_read_patch + config.yaml |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联 feature | 暂无（初版建档） |
 
 ## 范围 / 边界
@@ -17,7 +17,7 @@
 - 三适配器 **interface_deep / code / flash** 对 context rails、overflow recovery、config 的消费差异。
 - **`react.context_engine_config`** 与 `_config_cache` 形状（agent 模式 = react 段）。
 - **`context_read_patch`** 安装时机与语义。
-- **ContextAssembleRail** 与 **ProgressiveToolRail.eager_tools** allowlist 同步。
+- **ContextAssembleRail** 与 **ProgressiveToolRail.prompt_tool_allowlist()**（eager + floor）allowlist 同步。
 - **`get_context_engine_enabled` 与 deep adapter 的双默认漂移**（已知遗留，改默认须两端对齐）。
 
 ### 本规约不管什么
@@ -28,7 +28,7 @@
 ## 不变量
 
 - **N1（双默认漂移）**：`interface_deep._update_agent_rails` 使用 `context_engine_config.enabled` **缺省 False**；`team_runtime_inheritance.get_context_engine_enabled` 缺省 **True**。Good：文档与 issue 明确写调用路径。Bad：假设全仓统一默认。消除漂移时**必须**同一 PR 改两处并更新本 N1。
-- **N2（Allowlist 同步）**：Progressive 工具变更 eager 列表后须调 `_sync_context_assemble_tool_allowlist`，使 Assemble 的 `# 可用工具` 段与固定 schema 一致；见 `test_context_assemble_allowlist_compat.py`。
+- **N2（Allowlist 同步）**：Progressive 工具变更（eager / floor）后须调 `_sync_context_assemble_tool_allowlist`，使 Assemble 的 `# 可用工具` 段与稳定 schema 集合（`prompt_tool_allowlist()`，eager + floor）一致；见 `test_context_assemble_allowlist_compat.py`。装配/热更同步先于卡片注册（缓存空窗），declared 过滤彼时不生效：**deep** 的 `_build_progressive_tool_rail`（interface_deep.py）注册 `add_prompt_allowlist_listener`，**flash 经 super() 复用同一构建方法**一并生效，rail 缓存填充后 allowlist 变化时回调 `_sync_context_assemble_allowlist_from_progressive` 补同步（CR-13）；**code 模式当前无 allowlist 同步**（`ContextAssembleRail()` 裸构造、不接收 `tool_name_allowlist`，无 `_sync_context_assemble_tool_allowlist` 调用，CR-15）——日后若给 code 接入 allowlist，须同步注册 listener，否则将复现 CR-13 缓存空窗缺口。
 - **N3（读 patch 只读）**：`apply_context_read_patch` 在 deep `__init__` 的**企业版分支**安装，个人版 no-op；`create_instance` 不安装。patch 仅在人设/ context section 读路径设 `only_read=True`，**写路径不改**；重复 apply 无效果。
 - **N4（Flash 裁剪）**：flash `_FLASH_RAIL_KEEP` **保留** `_context_overflow_recovery_rail` 与 `_llm_retry_rail`；`_update_rails_for_mode` 卸载白名单外的动态 rail——整体容错仍弱于 agent（interface_flash 头部说明）。
 - **N5（Code 复用 deep 构建）**：`interface_code._build_context_processor_rail` 委托 `deep/context_assembly._build_context_processor_rail(self._config_cache)`；改 processor 构建只改一处实现。
@@ -81,13 +81,13 @@ create_instance
 ```
 _apply_reload_config_snapshot / _update_agent_rails
   → 重新读 enabled → 注册或卸载 ContextProcessorRail
-  → 重建 Assemble（disabled_tools + eager allowlist）
+  → 重建 Assemble（disabled_tools + prompt_tool_allowlist allowlist）
 ```
 
 ### P3：Progressive 工具变更
 
 ```
-ProgressiveToolRail eager_tools 更新
+ProgressiveToolRail eager_tools / protected_eager_tools（floor）更新
   → _sync_context_assemble_tool_allowlist(assemble, progressive)
 ```
 

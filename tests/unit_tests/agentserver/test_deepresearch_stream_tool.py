@@ -4594,6 +4594,50 @@ def test_stage_for_resume_node_maps_stop_node_to_stage():
 
 
 @pytest.mark.asyncio
+async def test_stopped_main_agent_resume_publishes_parent_title_before_node_frames(tmp_path):
+    from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+    from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+    from openjiuwen.harness.tools.todo import TodoListTool
+
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import ResearchTodoTarget
+
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    todo_tool = TodoListTool(SimpleNamespace(fs=lambda: fs), str(tmp_path))
+    path = Path(todo_tool.get_file_path("S"))
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"plan_id": "P", "revision": 1, "todos": [
+        {"id": "research", "content": "研究相关资料", "status": "in_progress"},
+    ]}), encoding="utf-8")
+    target = ResearchTodoTarget(todo_tool, "S", "P", asyncio.current_task())
+    proc = _Proc([
+        json.dumps({"__deepsearch_status__": "resuming", "conversation_id": "C1"}),
+        json.dumps({"agent": "outline", "content": "# 1. Scope"}),
+        json.dumps({"__deepsearch_status__": "error", "error": "stop"}),
+    ])
+    push = AsyncMock()
+    scope = dt._deepresearch_process_scope_ctx.set(("todo:research", "call-1"))
+    mode = dt._deepresearch_main_agent_plan_ctx.set(True)
+    try:
+        with patch.object(dt, "WebSocketGatewayPushTransport", return_value=push):
+            await dt._consume_stream(
+                proc=proc, route={"request_id": "R", "channel_id": "CH", "session_id": "S"},
+                action="resume", node="stopped", query="q", conversation_id="C1",
+                file_name="", secrets=(), todo_context=(path, target),
+            )
+    finally:
+        dt._deepresearch_main_agent_plan_ctx.reset(mode)
+        dt._deepresearch_process_scope_ctx.reset(scope)
+
+    payloads = [call.args[0]["payload"] for call in push.send_push.await_args_list]
+    starts = [item for item in payloads if item.get("event_type") == "task.start"]
+    assert starts[0]["task_content"] == "研究相关资料"
+    assert starts[0]["task_id"] == "todo:research"
+    assert "stream_source_id" not in starts[0]
+    assert starts[1]["stream_source_id"].startswith("deepresearch:call-1:")
+    assert not any(item.get("event_type") == "task.update" for item in payloads)
+
+
+@pytest.mark.asyncio
 async def test_stopped_resume_with_stage_hint_skips_early_stages():
     """停止续跑:阶段提示(brief_source_tracer→3)使进度列表直接从第三阶段
     进行中开始,不回退到第一步"研究主题澄清"转圈。"""

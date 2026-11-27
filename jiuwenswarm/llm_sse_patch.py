@@ -64,6 +64,22 @@ def _is_huawei_maas_api_base(api_base: str) -> bool:
         return True
     return "modelarts" in base and "maas" in base
 
+
+def should_merge_tip_default_headers(mcc: dict[str, Any]) -> bool:
+    """Return whether tip ``default_headers`` may be merged into this model.
+
+    A third-party model with its own API key and a non-MaaS base must not
+    receive official-channel tip headers. An empty ``api_base`` still merges:
+    the team path does not backfill a MaaS address.
+    """
+    api_key = str(mcc.get("api_key") or "").strip()
+    api_base = str(mcc.get("api_base") or "").strip()
+    owns_real_key = bool(api_key) and api_key != _HUAWEI_MAAS_PLACEHOLDER_API_KEY
+    return not (
+        owns_real_key and api_base and not _is_huawei_maas_api_base(api_base)
+    )
+
+
 _GLM_TOOL_XML_CLOSED_RE = re.compile(
     r"<(arg_value|arg_key|tool_call)[^>]*?>.*?</\1>",
     re.IGNORECASE | re.DOTALL,
@@ -331,18 +347,19 @@ def apply_openai_auth_header_patch() -> None:
                 auth = _resolve_model_client_authorization(self.model_client_config)
                 if auth is None:
                     return client
-                _key, value = auth
+                value = auth[1]
                 try:
-                    # OpenAI default_headers merges _custom_headers over api_key Bearer.
-                    existing = dict(getattr(client, "_custom_headers", {}) or {})
-                    existing["Authorization"] = value
-                    setattr(client, "_custom_headers", existing)
+                    # A copy keeps this request's Authorization off the cached client.
+                    # OpenAI default_headers still override the api_key Bearer.
+                    return client.with_options(
+                        default_headers={"Authorization": value},
+                    )
                 except Exception:
                     logger.warning(
                         "[llm_sse_patch] failed to inject Authorization into AsyncOpenAI",
                         exc_info=True,
                     )
-                return client
+                    return client
 
             setattr(OpenAIModelClient, create_attr, _create_async_openai_client_with_auth)
             setattr(OpenAIModelClient, applied_attr, True)
@@ -746,6 +763,20 @@ def apply_huawei_maas_span_id_patch() -> None:
             urlsplit(str(getattr(_mcc, "api_base", "") or "")).netloc or "-",
             getattr(_mcc, "stream_idle_timeout", None),
         )
+        # [PERF] 阶段打点（#6745）：首个 LLM 调用的发起时刻 = pre_llm。
+        # 模型客户端流可能跑在不继承请求 ContextVar 的 runtime 任务上，
+        # 复用 resolve_stream_request_id 的多级回退解析 rid。
+        try:
+            from jiuwenswarm.perf.interface_hooks import (
+                mark_request_stage,
+                resolve_stream_request_id,
+            )
+
+            _pre_llm_rid = resolve_stream_request_id()
+            if _pre_llm_rid:
+                mark_request_stage(_pre_llm_rid, "pre_llm")
+        except Exception as exc:
+            logger.debug("[MODEL_HTTP] pre_llm stage mark skipped: %s", exc)
         # [PERF] 打点:LLM 流调用 TTFT 与总时长
         import time as _perf_time
         _t0 = _perf_time.perf_counter()
@@ -774,6 +805,7 @@ def apply_huawei_maas_span_id_patch() -> None:
             raise
         finally:
             # 正常结束、超时、取消都打：失败时也要留下本次尝试的汇总
+            _total_ms = (_perf_time.perf_counter() - _t0) * 1000
             logger.info(
                 "[MODEL_HTTP] end span=%s status=%s chunks=%d ttft_ms=%s producer_ms=%.1f "
                 "total_ms=%.1f exc=%s",
@@ -782,9 +814,21 @@ def apply_huawei_maas_span_id_patch() -> None:
                 _n_chunks,
                 f"{_ttft_ms:.1f}" if _ttft_ms is not None else "-",
                 _producer_s * 1000,
-                (_perf_time.perf_counter() - _t0) * 1000,
+                _total_ms,
                 _exc_name,
             )
+            # [PERF] 落进请求级监控汇总（#6745）：末次调用口径，TPOT 按 chunk 近似
+            try:
+                from jiuwenswarm.perf.interface_hooks import record_llm_stream_timing
+
+                record_llm_stream_timing(
+                    ttft_ms=_ttft_ms,
+                    total_ms=_total_ms,
+                    chunk_count=_n_chunks,
+                    status=_status,
+                )
+            except Exception as exc:
+                logger.debug("[MODEL_HTTP] llm stream timing record skipped: %s", exc)
 
     client_cls.invoke = _invoke_with_maas_span
     client_cls.stream = _stream_with_maas_span

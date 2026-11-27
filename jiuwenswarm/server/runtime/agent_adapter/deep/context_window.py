@@ -59,6 +59,48 @@ def catalog_window_from_entry(entry: Any) -> int | None:
     return parse_positive_window_tokens(entry.get(CATALOG_CONTEXT_WINDOW_KEY))
 
 
+def catalog_window_from_model_entries(
+    entries: list[Any] | None,
+    *,
+    model_name: str = "",
+    model_alias: str = "",
+) -> int | None:
+    """Resolve sibling catalog max from ``models.defaults``-shaped entries.
+
+    Matches ``model_client_config.model_name`` or top-level ``alias``. Used by
+    Team assembly when Deep's ``_model_entry_by_ref`` map is unavailable.
+    Does not read ``model_config_obj``.
+    """
+    if not isinstance(entries, list) or not entries:
+        return None
+    wanted_name = str(model_name or "").strip()
+    wanted_alias = str(model_alias or "").strip()
+    if not wanted_name and not wanted_alias:
+        defaults = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("is_default") is True
+        ]
+        if len(defaults) == 1:
+            return catalog_window_from_entry(defaults[0])
+        return None
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        client = entry.get("model_client_config")
+        entry_name = ""
+        if isinstance(client, dict):
+            entry_name = str(client.get("model_name") or "").strip()
+        entry_alias = str(entry.get("alias") or "").strip()
+        names = {n for n in (entry_name, entry_alias) if n}
+        if wanted_name and wanted_name in names:
+            return catalog_window_from_entry(entry)
+        if wanted_alias and wanted_alias in names:
+            return catalog_window_from_entry(entry)
+    return None
+
+
 def _cache_key_matches_model_name(cache_key: Any, model_name: str) -> bool:
     """Match bare model_name against cache keys (``name`` or ``name#idx``)."""
     key = str(cache_key or "")

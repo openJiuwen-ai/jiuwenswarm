@@ -170,6 +170,7 @@ async def test_legacy_connect_cannot_swallow_timeout_cancellation(monkeypatch):
             return False
 
     monkeypatch.setattr(StreamableHttpClient, "connect", legacy_connect)
+    monkeypatch.setattr(patch, "_mcp_ssl_contexts", {patch._mcp_ssl_context_key(): object()})
     # 方法被替换而注册集合未变，必须以实际函数为准重新包装。
     patch._patch_sdk_read_timeouts()
     client = StreamableHttpClient(McpServerConfig(
@@ -179,3 +180,149 @@ async def test_legacy_connect_cannot_swallow_timeout_cancellation(monkeypatch):
     with pytest.raises(TimeoutError):
         async with asyncio.timeout(0.01):
             await client.connect()
+
+
+def _make_streamable_client():
+    from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
+        StreamableHttpClient,
+    )
+
+    return StreamableHttpClient(McpServerConfig(
+        server_id="ssl-test", server_name="ssl-test",
+        server_path="http://127.0.0.1:9/mcp", client_type="streamable-http",
+    ))
+
+
+def _ssl_context_of(client: Any) -> Any:
+    return client._transport._pool._ssl_context
+
+
+@pytest.fixture
+def _record_transport(monkeypatch):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from mcp.client import streamable_http
+    from openjiuwen.core.runner import Runner
+
+    seen: list[Any] = []
+
+    @asynccontextmanager
+    async def recording_transport(url, **kwargs):
+        factory = kwargs.get("httpx_client_factory")
+        client = factory() if factory is not None else None
+        seen.append((factory, client))
+        if client is not None:
+            await client.aclose()
+        raise RuntimeError("stop after factory")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(streamable_http, "streamablehttp_client", recording_transport)
+    monkeypatch.setattr(Runner.callback_framework, "trigger", AsyncMock(return_value=[]))
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_shared_ssl_context_built_once_off_loop_and_reused(monkeypatch, _record_transport):
+    import threading
+
+    import httpx
+
+    from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+    monkeypatch.setattr(patch, "_mcp_ssl_contexts", {})
+    builds: list[int] = []
+    real_build = httpx.create_ssl_context
+
+    def recording_build(*args, **kwargs):
+        builds.append(threading.get_ident())
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "create_ssl_context", recording_build)
+    apply_mcp_call_timeout_patch()
+
+    for _ in range(3):
+        assert await _make_streamable_client().connect() is False
+
+    assert len(builds) == 1, "SSL 上下文只应构建一次"
+    assert builds[0] != threading.get_ident(), "SSL 上下文必须在工作线程里构建"
+    shared = patch._cached_mcp_ssl_context()
+    assert shared is not None and len(_record_transport) == 3
+    for factory, client in _record_transport:
+        assert getattr(factory, "_jws_mcp_shared_ssl", False)
+        assert _ssl_context_of(client) is shared
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers,timeout,with_auth",
+    [(None, None, False), ({"x-officeclaw-pptx-capability": "cap"}, 12.5, True)],
+)
+async def test_shared_ssl_factory_matches_sdk_default(headers, timeout, with_auth):
+    import httpx
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+    ssl_context = httpx.create_ssl_context()
+    httpx_timeout = httpx.Timeout(timeout) if timeout is not None else None
+    auth = httpx.BasicAuth("u", "p") if with_auth else None
+    ours = patch._mcp_http_client_factory(ssl_context)(headers=headers, timeout=httpx_timeout, auth=auth)
+    sdk = create_mcp_http_client(headers=headers, timeout=httpx_timeout, auth=auth)
+    try:
+        assert ours.timeout == sdk.timeout
+        assert dict(ours.headers) == dict(sdk.headers)
+        assert ours.follow_redirects == sdk.follow_redirects
+        assert ours.trust_env == sdk.trust_env
+        assert type(ours.auth) is type(sdk.auth)
+        assert _ssl_context_of(ours) is ssl_context
+    finally:
+        await ours.aclose()
+        await sdk.aclose()
+
+
+@pytest.mark.asyncio
+async def test_shared_ssl_falls_back_to_sdk_default(monkeypatch, _record_transport):
+    import httpx
+    from mcp.client import streamable_http
+
+    from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+    monkeypatch.setattr(patch, "_mcp_ssl_contexts", {})
+
+    def broken_build(*args, **kwargs):
+        raise OSError("bad SSL_CERT_FILE")
+
+    monkeypatch.setattr(httpx, "create_ssl_context", broken_build)
+    apply_mcp_call_timeout_patch()
+
+    assert await _make_streamable_client().connect() is False
+    assert patch._mcp_ssl_contexts == {}
+    assert _record_transport[-1] == (None, None), "构建失败时不得注入工厂"
+
+    sentinel = object()
+    monkeypatch.setattr(patch, "_mcp_ssl_contexts", {patch._mcp_ssl_context_key(): sentinel})
+    mine = object()
+    captured: dict[str, Any] = {}
+
+    def fake_orig(url, **kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(streamable_http, "streamablehttp_client", fake_orig)
+    patch._patch_sdk_read_timeouts()
+    assert streamable_http.streamablehttp_client("http://x", httpx_client_factory=mine) == "ok"
+    assert captured["httpx_client_factory"] is mine
+
+
+def test_shared_ssl_cache_key_follows_cert_env(monkeypatch):
+    import certifi
+
+    from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    monkeypatch.setattr(patch, "_mcp_ssl_contexts", {("", ""): "default"})
+    assert patch._cached_mcp_ssl_context() == "default"
+    monkeypatch.setenv("SSL_CERT_FILE", certifi.where())
+    assert patch._cached_mcp_ssl_context() is None, "证书源变了不得复用旧上下文"

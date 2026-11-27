@@ -14,6 +14,7 @@ from jiuwenswarm.server.runtime import team_binding_store as team_binding_store_
 from jiuwenswarm.server.runtime.team_binding_store import (
     TeamBindingStore,
     TeamBindingStoreError,
+    TeamSessionBindingError,
     ensure_binding_for_entity,
 )
 
@@ -177,6 +178,124 @@ def test_team_binding_store_finds_binding_by_session(tmp_path) -> None:
     assert store.find_by_session("sess-b").team_name == "review_team"
     assert store.find_by_session("sess-missing") is None
     assert store.find_by_session("") is None
+
+
+def test_strict_session_lookup_rejects_multiple_owners_without_writing(tmp_path):
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.create(team_name="original", template_id="default")
+    store.create(team_name="other", template_id="default")
+    data = json.loads(store.path.read_text(encoding="utf-8"))
+    for entry in data["teams"].values():
+        entry["session_ids"] = ["sess-a"]
+    store.path.write_text(json.dumps(data), encoding="utf-8")
+    before = store.path.read_bytes()
+
+    with pytest.raises(TeamSessionBindingError) as error:
+        store.find_by_session("sess-a", require_unique=True)
+
+    assert error.value.code == "CONFLICT"
+    assert error.value.reason == "TEAM_SESSION_BINDING_AMBIGUOUS"
+    assert store.path.read_bytes() == before
+    assert store.find_by_session("sess-a") is not None
+
+
+@pytest.mark.parametrize("payload", [
+    [], {"teams": []}, {"teams": {"broken": 3}},
+    {"teams": {"broken": {"template_id": "default", "created_at": "invalid"}}},
+    {"teams": {"broken": {"template_id": "default", "session_ids": "sess-a"}}},
+    {"teams": {"broken": {"template_id": "default", "session_ids": [None]}}},
+    {"teams": {"broken": {"template_id": "default", "session_ids": [0]}}},
+    {"teams": {"broken": {"template_id": "default", "session_ids": [""]}}},
+    {"teams": {"broken": {"template_id": "default", "session_ids": ["  "]}}},
+    {"teams": {"broken": {"template_id": ""}}},
+    {"teams": {"broken": {"template_id": "default", "team_name": "other"}}},
+])
+@pytest.mark.parametrize("operation", ["lookup", "protected_bind"])
+def test_strict_session_lookup_rejects_invalid_store_structure(tmp_path, payload, operation):
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.path.write_text(json.dumps(payload), encoding="utf-8")
+    before = store.path.read_bytes()
+    with pytest.raises(TeamSessionBindingError) as error:
+        if operation == "lookup":
+            store.find_by_session("sess-a", require_unique=True)
+        else:
+            store.bind_session(team_name="original", session_id="sess-a", allow_rebind=False)
+    assert error.value.code == "INTERNAL_ERROR"
+    assert error.value.reason == "TEAM_SESSION_BINDING_READ_FAILED"
+    assert store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("team_name", [None, ""])
+def test_strict_binding_reads_keep_legacy_record_defaults(tmp_path, team_name):
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    record = {"template_id": "default", "session_ids": ["sess-a"]}
+    if team_name is not None:
+        record["team_name"] = team_name
+    store.path.write_text(json.dumps({"teams": {"original": record}}), encoding="utf-8")
+    before = store.path.read_bytes()
+
+    assert store.find_by_session("sess-a", require_unique=True).team_name == "original"
+    assert store.path.read_bytes() == before
+    assert store.bind_session(team_name="original", session_id="sess-a", allow_rebind=False).team_name == "original"
+    # Updating last_session_id keeps the legacy record readable by both paths.
+    assert store.find_by_session("sess-a").team_name == "original"
+
+
+@pytest.mark.parametrize("operation", ["lookup", "protected_bind"])
+@pytest.mark.parametrize("failure", ["json", "read"])
+def test_strict_binding_reads_classify_parse_and_io_failures(tmp_path, monkeypatch, operation, failure):
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.path.write_text("broken-json" if failure == "json" else "{}", encoding="utf-8")
+    before = store.path.read_bytes()
+    if failure == "read":
+        from pathlib import Path
+
+        read_text = Path.read_text
+        def unreadable(path, *args, **kwargs):
+            if path == store.path:
+                raise PermissionError("injected read failure")
+            return read_text(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", unreadable)
+
+    with pytest.raises(TeamSessionBindingError) as error:
+        if operation == "lookup":
+            store.find_by_session("sess-a", require_unique=True)
+        else:
+            store.bind_session(team_name="original", session_id="sess-a", allow_rebind=False)
+    assert error.value.payload == {
+        "error": str(error.value), "code": "INTERNAL_ERROR", "reason": "TEAM_SESSION_BINDING_READ_FAILED",
+    }
+    assert isinstance(error.value.__cause__, TeamBindingStoreError)
+    assert str(error.value) == str(error.value.__cause__)
+    assert store.path.read_bytes() == before
+
+    # Existing non-strict consumers keep the original exception and message.
+    with pytest.raises(TeamBindingStoreError) as native_error:
+        if operation == "lookup":
+            store.find_by_session("sess-a")
+        else:
+            store.bind_session(team_name="original", session_id="sess-a")
+    assert type(native_error.value) is TeamBindingStoreError
+    assert native_error.value.code == error.value.code
+    assert str(native_error.value) == str(error.value)
+
+
+def test_protected_bind_rejects_rebinding_and_preserves_both_teams(tmp_path):
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.create(team_name="original", template_id="default")
+    store.create(team_name="other", template_id="default")
+    store.bind_session(team_name="original", session_id="sess-a")
+    before = store.path.read_bytes()
+
+    with pytest.raises(TeamBindingStoreError) as error:
+        store.bind_session(team_name="other", session_id="sess-a", allow_rebind=False)
+
+    assert error.value.code == "CONFLICT"
+    assert store.path.read_bytes() == before
+    assert store.bind_session(team_name="original", session_id="sess-a", allow_rebind=False).team_name == "original"
+    assert store.path.read_bytes() == before
+    # Existing native/dynamic consumers keep their explicit rebind capability.
+    assert store.bind_session(team_name="other", session_id="sess-a").team_name == "other"
 
 
 def test_team_binding_store_find_by_session_reflects_rebind(tmp_path) -> None:

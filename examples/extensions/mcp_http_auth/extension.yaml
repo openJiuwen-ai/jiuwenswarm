@@ -1,0 +1,20 @@
+id: mcp_http_auth
+name: MCP Per-Request HTTP Auth
+version: 0.1.0
+description: 在每次 MCP HTTP 请求前注入逐请求鉴权头（短时令牌 / 每请求签名）
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.3"
+dependencies: {}
+config_schema:
+  type: object
+  properties:
+    enabled:
+      type: boolean
+    servers:
+      type: object
+    token_env:
+      type: string
+    header_name:
+      type: string
+    token_prefix:
+      type: string

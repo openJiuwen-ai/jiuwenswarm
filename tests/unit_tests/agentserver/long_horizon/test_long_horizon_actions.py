@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -12,7 +11,7 @@ from jiuwenswarm.agents.harness.common.long_horizon.core import (
 from jiuwenswarm.agents.harness.common.long_horizon.runtime import stage_job_id
 from jiuwenswarm.agents.harness.common.long_horizon.tools import LongHorizonActions
 
-NOW = datetime(2026, 9, 16, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+pytestmark = pytest.mark.usefixtures("long_horizon_now")
 BRIEF = "目标、约束、交付物和关键背景。"
 
 
@@ -75,7 +74,6 @@ def valid_draft_params() -> dict:
                 "plan": "逐项核对清单并输出检查结论。",
             },
         ],
-        "now": NOW.isoformat(),
     }
 
 
@@ -344,7 +342,6 @@ async def test_update_rewrites_stages_keeps_session_and_allows_mid_insert(
         {
             "action": "update",
             "task_id": task_id,
-            "now": NOW.isoformat(),
             "stages": [
                 {
                     "title": "中间插：灰度验证",

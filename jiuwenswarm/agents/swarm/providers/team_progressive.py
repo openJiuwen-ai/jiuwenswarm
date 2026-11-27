@@ -25,6 +25,7 @@ from openjiuwen.harness.prompts import resolve_language
 
 from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
     ProgressiveToolRail,
+    resolve_protected_eager_tools,
 )
 from jiuwenswarm.agents.harness.common.rails.skill_active_state import (
     get_session_active_skill,
@@ -44,12 +45,15 @@ TEAM_PROGRESSIVE_TOOL = "swarm.team_progressive_tool"
 
 # Shared eager names for every team role. Order is schema order; do not reorder
 # from ability_manager.list(). Meta tools stay first so mid-task swaps cannot
-# break LLM prefix cache. verify_task / shutdown_member / todo_* stay deferred.
+# break LLM prefix cache. powershell / memory_get / shutdown_member / todo_*
+# stay deferred (bash covers shell; memory_search stays for recall; writes via
+# tools_search). verify_task is eager so board completion stays on the hot path.
 TEAM_SHARED_EAGER_TOOLS: tuple[str, ...] = (
     "tools_search",
     "invoke_tool",
     "send_message",
     "view_task",
+    "verify_task",
     "read_file",
     "write_file",
     "edit_file",
@@ -60,8 +64,6 @@ TEAM_SHARED_EAGER_TOOLS: tuple[str, ...] = (
     "workspace_meta",
     "skill_tool",
     "memory_search",
-    "memory_get",
-    "powershell",
     "send_file_to_user",
     "web_search",
     "fetch_webpage",
@@ -198,8 +200,9 @@ def _build_team_progressive_tool_rail(
 ) -> ProgressiveToolRail:
     """Build ProgressiveToolRail for one team member from SwarmBuildContext.
 
-    Reads ``react.tool_lazy_load.enabled`` / ``enable_for_models`` and TTSE /
-    general-purpose gates. Does **not** read yaml ``eager_tools``.
+    Reads ``react.tool_lazy_load.enabled`` / ``enable_for_models`` /
+    ``protected_eager_tools`` and TTSE / general-purpose gates. Does **not**
+    read yaml ``eager_tools``.
     """
     del params
     full_config = getattr(context, "config", None)
@@ -210,6 +213,11 @@ def _build_team_progressive_tool_rail(
         lazy_cfg = {}
     lazy_load_enabled = bool(lazy_cfg.get("enabled", False))
     enable_for_models = _normalize_model_patterns(lazy_cfg.get("enable_for_models", []))
+    # BUG20261117410859 注册即可见 floor：request-scoped MCP（pptx-mcp 等）同样
+    # 会挂到成员 ability_manager（RequestScopedMcpToolsRail），白名单模型下
+    # 不能被角色 eager 名单裁掉。与主 / subagent profile 共用同一份默认名单
+    # 与解析语义；未注册的名字在过滤循环里天然是 no-op。
+    protected_eager_tools = resolve_protected_eager_tools(lazy_cfg)
 
     include_ttse = _team_ttse_consult_should_be_eager(full_config)
     include_task_tool = _general_purpose_agent_enabled(react)
@@ -247,13 +255,15 @@ def _build_team_progressive_tool_rail(
 
     logger.info(
         "[TeamProgressiveTool] mounted lazy_load_enabled=%s role=%s "
-        "member=%s eager_tools=%s agent_card_id=%s enable_for_models=%s",
+        "member=%s eager_tools=%s agent_card_id=%s enable_for_models=%s "
+        "protected_eager_tools_count=%s",
         lazy_load_enabled,
         getattr(context, "role", None) or "?",
         getattr(context, "member_name", None) or "?",
         eager_tools,
         card_id,
         enable_for_models,
+        len(protected_eager_tools),
     )
     return ProgressiveToolRail(
         enabled=lazy_load_enabled,
@@ -262,6 +272,7 @@ def _build_team_progressive_tool_rail(
         agent_id=card_id,
         agent_card_id=card_id,
         enable_for_models=enable_for_models,
+        protected_eager_tools=protected_eager_tools,
         active_skill_provider=_active_skill_provider,
         disabled_tools=disabled_tools,
     )

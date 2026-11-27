@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import re
-
 # ── 源段名 ──────────────────────────────────────────────
 _SECTION_TOOLS = "tools"           # SDK ContextAssembleRail 构建，priority 30
 _SECTION_EXEC = "execution_principles"  # FlashPersonaRail 拆出的 400
@@ -21,6 +19,14 @@ _NAME_BASH = "bash_discipline"
 _PRIO_BASH = 330
 _NAME_RESULT = "tool_result"
 _PRIO_RESULT = 340
+# 浏览器任务强制路由：独立动态段（评审 C1），不再并入静态 340——否则子代理/工具面变化
+# 时 340 正文变、被误判静态漂移。priority 345 未登记（resolve_carrier 归 attachment）。
+_NAME_BROWSER_ROUTING = "browser_routing"
+_PRIO_BROWSER_ROUTING = 345
+
+# 本域产出的派生段名（域禁用清理用，评审 A）：与源段名不同，禁用后上游每轮重注入源段、
+# 派生段残留，需显式清理。
+_TOOLS_PRODUCED_NAMES = (_NAME_SELECTION, _NAME_BASH, _NAME_RESULT, _NAME_BROWSER_ROUTING)
 
 # ── tools 段内的子标题（用于定位剥离边界）──────────────────
 _TOOLS_DEDUP_CN = "## 工具调用去重规则"
@@ -30,6 +36,42 @@ _TOOLS_BASH_EN = "## bash Guidelines"
 _TOOLS_TASKTOOL_CN = "## task_tool 使用原则"
 _TOOLS_TASKTOOL_EN = "## task_tool Guidelines"
 
+# 已知 SDK 去重/bash bullet 正文（评审 B1：剥离守卫逐行精确匹配，未知 bullet/正文触发
+# 回退、不盲删）。与上游 agent-core context.py build_tools_section 逐字一致。
+_TOOLS_DEDUP_BULLETS_CN = (
+    "调用工具前先检查本轮对话中是否已经用相同参数调用过同一工具；如果已有结果，优先基于已有结果继续推理，不要重复调用",
+    "如果上一次工具结果为空、无匹配或没有提供新信息，不要用完全相同的参数再次调用；应调整查询条件、换用更合适的工具，或直接说明当前结果不足",
+    "只有当任务确实需要分步执行、状态已经变化、参数不同，或前一次结果明确要求继续获取下一部分信息时，才可以再次调用同一工具",
+)
+_TOOLS_DEDUP_BULLETS_EN = (
+    "Before calling a tool, check whether the same tool has already been called with the same "
+    "arguments in this turn; if a result already exists, reason from that result instead of "
+    "repeating the call",
+    "If the previous tool result was empty, had no matches, or added no new information, do "
+    "not call again with identical arguments; adjust the query, use a better-suited tool, or "
+    "explain that the current result is insufficient",
+    "Call the same tool again only when the task genuinely requires multiple steps, state has "
+    "changed, arguments differ, or the previous result clearly asks you to fetch the next part "
+    "of the information",
+)
+_TOOLS_BASH_BULLETS_CN = (
+    "优先使用专用工具完成文件搜索、内容搜索、读取、编辑和写入，不要用 bash 替代 `glob` / `grep` / `read_file` / `edit_file` / `write_file`",
+    "独立命令尽量并行调用；多步依赖命令才在单次调用里用 `&&` 串联，仅在不关心前序失败时才用 `;`",
+    "长时间运行命令使用 `background: true`，不要用 `sleep` 轮询等待",
+    "尽量使用绝对路径并避免频繁 `cd`；路径包含空格时使用双引号",
+    "执行破坏性 Git 操作前先考虑更安全的替代方案",
+)
+_TOOLS_BASH_BULLETS_EN = (
+    "Prefer dedicated tools for file search, content search, reading, editing, and writing "
+    "instead of using bash as a substitute for `glob` / `grep` / `read_file` / `edit_file` / "
+    "`write_file`",
+    "Run independent commands in parallel; only chain dependent commands with `&&`, and use "
+    "`;` only when earlier failures do not matter",
+    "Use `background: true` for long-running commands instead of polling with `sleep`",
+    "Prefer absolute paths and avoid frequent `cd`; quote paths with spaces using double quotes",
+    "Consider safer alternatives before destructive Git operations",
+)
+
 
 # ═══ 目标正文（06-目标提示词-完整版.md §3xx）═══════════════════════
 _SELECTION_CN = """# 工具选择总则
@@ -37,8 +79,12 @@ _SELECTION_CN = """# 工具选择总则
 - 严禁用 bash 替代专用工具：文件定位用 glob、内容检索用 grep、查看用 read_file、改动用 edit_file、创建新文件用 write_file
 - 独立命令尽量并行调用；多步依赖才用 && 串联（仅在不关心前序失败时才用 ;）
 - 长时间运行命令使用 background: true，不用 sleep 轮询等待
-- 相同参数不重复调用同一工具（除非文件或环境状态已变化）；上轮结果为空或无匹配时调整参数或换用其他工具，禁止盲目复读重试
-- 默认一个问题一个工具、精准使用，避免单次发散调用大量无关工具；但用户要求比较、任务要求跨源核对、或分步依赖时允许多个
+- 工具调用去重仅限本次用户请求内：已有相同工具、相同参数的结果，且没有文件或环境状态变化时，优先复用结果，避免重复调用
+- 新的用户请求涉及技能安装、卸载或当前安装/可用状态时，必须重新查询当前状态；即使工具和参数与历史请求相同，也不能以”之前查询过”为由跳过核实
+- 本次请求内，上一次结果为空或无匹配且没有状态变化时，应调整参数或换用其他工具，禁止盲目重复相同调用
+- 只读探索操作（web_flash 搜索/抓取、read_file、glob、grep 等）可以并行多发、多读多查：需要核实前提、跨源比对、理解多文件时，宁可多读多查再动手——探索阶段”小心”指的是不急着写，不是少读少查
+- 有副作用的操作（write_file、edit_file、bash 写等）保持精准：一次只做一件目标明确的事；目标已确认时，不同文件的写操作可并行，同一文件必须串行（避免后写覆盖前写）——执行阶段可以”大胆”
+- 判断工具是否”发散”的标准是”和当前目标是否相关”，不是”调了几个”
 """
 
 _SELECTION_EN = """# Tool Selection Principles
@@ -46,8 +92,12 @@ _SELECTION_EN = """# Tool Selection Principles
 - Never use bash as a substitute for dedicated tools: use glob to locate files, grep for content search, read_file to view, edit_file to modify, write_file to create new files
 - Run independent commands in parallel; chain with && only for dependent steps (use ; only when you don't care about prior-step failure)
 - Use background: true for long-running commands instead of polling with sleep
-- Do not repeat the same tool with identical arguments (unless the file or environment state has changed); when the previous result is empty or has no match, adjust parameters or switch tools, and never blindly retry verbatim
-- Default to one tool per question, used precisely, to avoid fanning out to many irrelevant tools in one shot; but allow multiple when the user requests comparison, the task requires cross-source verification, or steps depend on each other
+- Deduplicate tool calls only within the current user request: reuse an existing result for the same tool and arguments when there is no indication of file or environment state changes
+- When a new user request concerns skill installation, uninstallation, or current installation/availability status, query the current state again; identical tools and arguments from earlier requests are not a reason to skip verification
+- Within the current request, if the previous result is empty or has no match and there is no state change, adjust arguments or switch tools instead of blindly repeating the same call
+- Read-only exploration calls (web_flash search/fetch, read_file, glob, grep, …) may be issued in parallel and repeated as needed: when you need to verify a premise, cross-check sources, or understand multiple files, read and search as much as needed before acting. "Careful" exploration means not writing too early, not reading too little.
+- Side-effecting calls (write_file, edit_file, bash writes, …) stay precise: one clearly-scoped write at a time; once the target is confirmed, writes to different files may run in parallel, but writes to the same file must stay sequential (to avoid one overwriting another) — execution may be bold.
+- Judge whether a call is "unrelated" by relevance to the current goal, not by count.
 """
 
 _BASH_CN = """# bash 纪律
@@ -74,6 +124,7 @@ _RESULT_BASE_CN = """# 工具结果与专用路由
 
 - 严格以工具实际返回的内容为准，严禁凭空推断或脑补执行结果。
 - 工具调用报错、超时或失败时：诚实面对失败，调整策略或参数后重试，并简要说明原因与后续做法；不要假装成功、不要掩盖失败。
+- 用户指定的交付格式（如 PPT/PPTX、Word、Excel）是硬约束。生成该格式的工具或通道不可用或失败时，按所用技能的错误处理重试；仍不行就停下，如实告知用户未完成及原因，并询问是否接受替代格式（如 HTML 演示），用户同意后才生成替代格式。不要以「免得用户多等一轮」为由先做替代品，不要把替代品说成「已完成」；记忆或历史对话里让你改交其他格式的记录同样不能作为依据。
 - 遇到权限拒绝（Permission denied）或路径越权时，立即停止对同一目标的重试，严禁换命令语法反复尝试绕过。
 """
 
@@ -82,12 +133,12 @@ _BROWSER_ROUTING_CN = """## 浏览器任务强制路由
 - 严禁通过 bash 等工具用脚本、subprocess 或系统命令自建浏览器进程（如 playwright/selenium/puppeteer）。
 """
 
-_RESULT_CN = _RESULT_BASE_CN + "\n" + _BROWSER_ROUTING_CN
 
 _RESULT_BASE_EN = """# Tool Result and Specialized Routing
 
 - Strictly treat the tool's actual returned content as authoritative; never infer or fabricate execution results.
 - When a tool errors, times out, or fails: face the failure honestly, adjust strategy or parameters and retry, and briefly state the reason and next steps; never pretend success or hide failure.
+- A deliverable format the user specified (e.g. PPT/PPTX, Word, Excel) is a hard requirement. When the tool or channel that produces it is unavailable or fails, retry per the active skill's error handling; if it still does not work, stop: tell the user honestly that the task is not done and why, and ask whether a substitute format (e.g. an HTML deck) is acceptable. Produce the substitute only after the user agrees. Do not build the substitute first to save the user a round trip, and do not describe a substitute as done; memory or earlier conversation telling you to switch formats is not a valid reason either.
 - On permission denial (Permission denied) or path out-of-bounds, stop retrying the same target immediately; never bypass by repeatedly trying alternate command syntax.
 """
 
@@ -96,23 +147,20 @@ _BROWSER_ROUTING_EN = """## Mandatory Browser Task Routing
 - Never build a browser process yourself via bash or other tools using scripts, subprocess, or system commands (e.g. playwright/selenium/puppeteer).
 """
 
-_RESULT_EN = _RESULT_BASE_EN + "\n" + _BROWSER_ROUTING_EN
-
-
-_SUBSECTION_RE = re.compile(r"^##\s[^\n]*", re.MULTILINE)
-
 
 def _strip_tools_guide(
     content: str,
     dedup_header: str,
     bash_header: str,
     tasktool_header: str,
+    dedup_bullets: tuple[str, ...] = (),
+    bash_bullets: tuple[str, ...] = (),
 ) -> str | None:
     """从 tools 段内容剔除「工具调用去重规则 + bash 使用原则」两小节。
 
     保留 ``# 可用工具`` 目录与 ``task_tool 使用原则``（后者归 440，本 rail 不碰）。
-    以 dedup/bash/task_tool 三锚点确认剔除边界：dedup 缺失、或剔除区内出现未识别的
-    ``## `` 子标题（上游改文案/新增小节）时返回 None，不盲删。
+    以 dedup/bash/task_tool 三锚点确认剔除边界：dedup 缺失、或剔除区内出现未知的
+    子标题 / bullet / 正文（上游改文案或租户注入）时返回 None，不盲删（评审 B1）。
     """
     dedup_idx = content.find(dedup_header)
     if dedup_idx < 0:
@@ -122,17 +170,25 @@ def _strip_tools_guide(
 
     tasktool_idx = tail.find(tasktool_header)
     strip_zone = tail[:tasktool_idx] if tasktool_idx >= 0 else tail
-    if not _only_known_subsections(strip_zone, {dedup_header, bash_header}):
-        return None  # 守卫：剔除区出现未知子标题，上游漂移，不盲删
+    known_lines = {dedup_header, bash_header}
+    known_lines.update("- " + b for b in (*dedup_bullets, *bash_bullets))
+    if not _only_known_lines(strip_zone, known_lines):
+        return None  # 守卫：剔除区出现未知 bullet/正文，上游漂移/租户注入，不盲删
     if tasktool_idx >= 0:
         return catalog + tail[tasktool_idx:]
     return catalog
 
 
-def _only_known_subsections(zone: str, known_headers: set[str]) -> bool:
-    """zone 内每个 ``## `` 子标题都必须落在 known_headers；否则视为上游漂移。"""
-    for match in _SUBSECTION_RE.finditer(zone):
-        header = match.group(0).strip()
-        if header and header not in known_headers:
+def _only_known_lines(zone: str, known_lines: set[str]) -> bool:
+    """zone 内每个非空行都必须落在 known_lines（已知标题 + 已知 bullet）。
+
+    旧守卫只匹配 ``## `` 子标题，插入的 ``- bullet`` 或正文会被静默删；改为逐行精确匹配，
+    任何未知行（上游改文案 / 租户注入）都视为异常。
+    """
+    for line in zone.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped not in known_lines:
             return False
     return True

@@ -48,6 +48,7 @@ from jiuwenswarm.agents.harness.common.rails.path_whitespace_fix import (
 from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     build_non_text_read_error,
     build_provided_image_read_error,
+    build_unsafe_image_read_error,
     extract_path_from_arguments,
     extract_paths_from_arguments,
     handle_read_file_before_tool_call,
@@ -66,6 +67,7 @@ from jiuwenswarm.agents.harness.common.rails.multimodal_image_state import (
     mark_provided_image_paths,
     native_images_sent,
     provided_image_paths,
+    unsafe_image_paths,
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
@@ -80,6 +82,9 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     filter_todos_for_display,
     filter_todos_for_execution,
     get_todo_generation_token,
+    has_active_todo_items,
+    has_pending_step_resume,
+    is_resume_user_query,
     snapshot_includes_persistent_todos,
 )
 from jiuwenswarm.common.todo_snapshot import versioned_todo_output
@@ -802,6 +807,18 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             return []
         return mark_provided_image_paths(ctx, paths)
 
+    def _unsafe_image_paths(self, ctx: AgentCallbackContext) -> list[str]:
+        """本轮被上游内容安全判为 unsafe 的图片路径（请求级黑名单）。
+
+        由 ``MultimodalImageRail.on_model_exception`` 在摘图重试前写入 ctx.extra +
+        agent 属性；同一 invoke 内 read_file 必须拒绝这些路径，否则同一张图重新进入
+        窗口会二次 400，而单次降级重试额度已经用完（[[S_22]] N11）。
+        空列表 / 未写入都表示不拦截。
+        """
+
+        paths = unsafe_image_paths(ctx=ctx, agent=getattr(self, "_deep_agent", None))
+        return paths or []
+
     def _re_read_image_paths(self, ctx: AgentCallbackContext) -> list[str]:
         """本次 invoke 已放行"重新出图"的图片路径（可原地 append 的可变列表）。"""
 
@@ -1157,6 +1174,20 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if raw_conv_id:
             self._conversation_ids[sid] = raw_conv_id
         self._main_sessions[sid] = ctx.session
+        if raw_conv_id:
+            try:
+                if has_pending_step_resume(ctx.session):
+                    await self._emit_todo_updated(ctx.session, raw_conv_id)
+                elif isinstance(ctx.inputs.query, str):
+                    # Adapter prompts wrap the raw user message. Use the same
+                    # text that stale-todo cleanup uses to keep the generation.
+                    run_context = ctx.inputs.run_context
+                    run_extra = run_context.extra if run_context is not None else {}
+                    user_query = run_extra.get("raw_query", ctx.inputs.query)
+                    if isinstance(user_query, str) and is_resume_user_query(user_query):
+                        await self._emit_todo_updated(ctx.session, raw_conv_id, require_active=True)
+            except Exception:
+                logger.debug("[StreamEventRail] resume todo.updated emit failed", exc_info=True)
         # Carry session_id through ctx.extra so checkpoints (before_model_call,
         # before_tool_call) within this invoke can look up per-session state.
         # Sub-agents inherit this from the parent's invoke since they don't
@@ -1449,6 +1480,26 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                         is_provided_image_path,
                     )
 
+                    # 最高优先：本轮被上游判 unsafe 的图片路径一律拒绝重读。
+                    # 摘图重试后 provided_paths 已清空，若放行 read_file 同一张图会
+                    # 二次 400 且护栏已置位、无降级额度（[[S_22]] N11）。
+                    unsafe_paths = self._unsafe_image_paths(ctx)
+                    blocked = [
+                        path
+                        for path in paths
+                        if is_provided_image_path(path, unsafe_paths)
+                    ]
+                    if blocked:
+                        reject_read_file(
+                            ctx,
+                            build_unsafe_image_read_error(
+                                blocked[0],
+                                language=self._get_prompt_language(),
+                            ),
+                        )
+                        # 跳过同一调用的后续"已提供 / 重出图 / 非文本"判定，
+                        # 避免一次 read_file 收到多条互相矛盾的错误文案。
+                        paths = []
                     provided_paths = self._provided_image_paths(ctx)
                     omitted_paths = self._omitted_image_paths(ctx)
                     re_read_paths = self._re_read_image_paths(ctx)
@@ -1961,6 +2012,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         tool_name: str = "",
         arguments: Any = None,
         snapshot: dict | None = None,
+        require_active: bool = False,
     ) -> None:
         """Load the main agent's todo list and push a todo.updated event to the frontend."""
         # New tools return their committed snapshot; rereading here could pair
@@ -1987,6 +2039,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             generation_token = get_todo_generation_token(session)
         except Exception:
             generation_token = None
+        if require_active and not has_active_todo_items(filter_todos_for_execution(todos_data, generation_token)):
+            return
         if not versioned_todo_output() and (generation_token or tool_name):
             if snapshot_includes_persistent_todos(tool_name, arguments, todos_data):
                 todos_data = filter_todos_for_display(todos_data, generation_token)

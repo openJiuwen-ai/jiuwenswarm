@@ -38,7 +38,10 @@ setup_guide:
 auto_recap:
   enabled: true
 
-# 沙箱
+# 沙箱（默认关闭）
+# startup_mode: internal / external → JiuwenBox 服务；dll → Windows x64 个人版本机
+# DLL Guard（agent-shield RuntimeGuard）。dll 模式失败即拒绝，不降级为无防护本地执行。
+# dll 仅个人版 Windows 可用，企业链路忽略；模板保持 internal，个人测试请显式改为 dll。
 sandbox:
   enabled: false
   startup_mode: internal
@@ -175,6 +178,14 @@ logging:
   tags:
     user_visible: true
     user_progress_visible: true
+  # 请求级监控汇总日志（issue #6745）
+  # 每个请求结束时输出一行 JSON 汇总（request_id 维度：结局/阶段耗时/LLM/工具/
+  # token 统计），写入 agent_server.log 与 full.log，供线上运维 grep 排障。
+  # 环境变量 JIUWENSWARM_LOG_REQ_SUMMARY 优先于本配置；级别可用
+  # JIUWENSWARM_LOG_REQ_SUMMARY_LEVEL 或 request_summary.level（默认 INFO）。
+  request_summary:
+    enabled: true
+    level: INFO
 
 memory:
   # ============================================================
@@ -722,13 +733,77 @@ react:
       - enter_plan_mode             # plan 模式两件套必须常驻（BUG20261105402443）：plan 态下
       - exit_plan_mode              # reminder 指示模型调 enter_plan_mode，但懒加载把它滤进
                                     # deferred，模型反复探测无进展触发 agent_ras 熔断 OA.05000060
+    # 注册即可见保护名单（BUG20261117410859）：request-scoped MCP（pptx-mcp 等）
+    # 与交付/委派/计划模式工具由通道按会话状态注册，注册即代表该会话需要；
+    # 懒加载白名单模型（enable_for_models）下被裁剪后，模型意图与 schema 脱节，
+    # 退化为无进展空转直到 agent_ras 熔断（OA.05000060）。名单中未注册的名字
+    # 天然是 no-op，对非 PPT 会话零影响。缺省此键时代码内置同一份默认名单；
+    # 显式置空 [] 表示整体关闭保护。
+    # 过滤优先级、declared（required_skill）互斥语义、主 / subagent / team
+    # 共用等完整表述以 ProgressiveToolRail 类 docstring 为权威
+    # （progressive_tool_rail.py），此处不重复，避免两处漂移。
+    # 升级兼容：引入保护前，白名单模型下这些工具须经 tools_search→
+    # invoke_tool 代理调用；升级/热更后注册即在 schema 直接可见，反查会
+    # 收到"请直接调用"指引（预期行为变更）。如需保持旧分类行为，置空 []。
+    protected_eager_tools:
+      # —— pptx-mcp 套件 ——
+      - open_pptx
+      - switch_file
+      - ping
+      - get_deck_outline
+      - read_slide
+      - suggest_font_size
+      - render_slide
+      - snapshot_slide
+      - check_layout
+      - execute_slide_script
+      - get_native_capabilities
+      - check_native_contract
+      - read_template_structure
+      - create_template_family
+      - install_template
+      - register_media
+      - register_asset
+      - describe_ops
+      - apply_ops
+      - prepare_slide_shell
+      - compose_deck
+      - batch_add_label
+      - replace_text
+      - batch_replace_text
+      - replace_text_with_reflow
+      - find_replace_display_text
+      - organize_deck_sections
+      - apply_semantic_theme
+      - normalize_title_style
+      - light_cleanup_slides
+      - reflow_cards
+      - refresh_executive_style
+      - append_slide
+      - compose_slide
+      - duplicate_slide
+      - move_slide
+      - delete_slide
+      - add_chart_to_slide
+      - add_table_to_slide
+      - begin_ai_run
+      - commit_ai_run
+      - list_ai_snapshots
+      - restore_ai_snapshot
+      - cancel_ai_run
+      - undo
+      - redo
+      - save_pptx
+      - insert_web_image
+      - replace_image
+      # —— 交付 / 委派 / 计划模式 ——
+      - send_file_to_user
+      - task_tool
+      - enter_plan_mode
+      - exit_plan_mode
     # 模型白名单（空=全部启用），对模型名做子串匹配，大小写不敏感；未命中的模型全部工具直接可见。
-    # 懒加载依赖模型读懂 tools_search → invoke_tool，加入新模型前需先验证。
-    enable_for_models:
-      - glm
-      - deepseek
-      - kimi
-      - openpangu
+    # 懒加载依赖模型读懂 tools_search → invoke_tool；收窄为白名单时需逐个模型验证该链路。
+    enable_for_models: []
     subagents:                      # 子 agent 延迟加载配置
       enabled: false                # 子 agent 总开关，默认关闭
       inherit_parent_eager_tools: true  # 继承父 agent 的 eager 列表
@@ -781,13 +856,14 @@ react:
     enable_openrouter_model_context_window_tokens: false # 从 OpenRouter 拉取模型的上下文窗口大小；false 时按内置模型表解析
     # 显式覆盖上下文窗口 token 上限（正整数）；注释掉或留空则按模型自动解析
     # context_window_tokens: 131072
-    enable_reload: true    # 卸载重载：开启后模型可通过 [[HANDLE:xxx]] 标记把已卸载的大消息原文拉回上下文
+    enable_reload: true    # 卸载重载：开启后注入重载提示，模型可按 [[OFFLOAD: handle=…, type=…, path=…]] 标记的 path 用 read_file 读回已卸载的大消息原文
 
     enable_context_debug: false     # 上下文压缩 debug 模式：开启后各处理器在阈值判断、片段切分、压缩重试、 前后对比等每个阶段落盘 JSONL 记录，便于排查压缩问题。关闭时零开销。默认关闭
-    # 精确 token 计数（tiktoken BPE）：false 时用字符估算，但图片块已按像素视觉 token
-    # 计价（不会把 base64 当文本算）。true 时文本走 BPE、图片仍按像素；首次加载可能
-    # 需要下载词表（agent-core 有后台预热）。默认关闭。
-    # enable_tiktoken_counter: false
+    # 精确 token 计数（tiktoken BPE）：文本走 BPE、图片仍按像素计价；false 则用字符估算，
+    # 对中文/JSON 低估约 25%~44%，会让压缩阈值失效。
+    # 启动阶段后台预热词表（缓存落到 {root}/cache/tiktoken），避免落到首个会话；
+    # 词表不可用（离线且无缓存）时 agent-core 自动回退字符估算，不阻断会话创建。
+    enable_tiktoken_counter: true
     # debug 记录目录；留空则按环境变量 OPENJIUWEN_CONTEXT_DEBUG_DIR，
     # 再缺省落到 {workspace}/context/{session_id}_context/context_debug/
     # context_debug_dir:
@@ -803,6 +879,8 @@ react:
     message_summary_offloader_config:
       protected_tool_names: ["read_file", "read_pdf", "skill_tool"]  # 这些工具的输出保持原文，不卸载
       add_message_threshold_ratio: 0.1      # 新增工具消息超过上下文窗口容量的该比例时，立即卸载
+      # 绝对 token 上限；入栈立刻卸的最终阈值 = min(窗口×ratio, 本值)。1M×0.1=100K，与 8K 取小 → 8K tok
+      add_message_abs_token_threshold: 8000
       ttl_seconds: 300                      # 距上次模型请求空闲超过该秒数后，才允许做 TTL（闲时）卸载
       ttl_context_occupancy_ratio: 0.5      # 上下文占用超过该比例时，才允许做 TTL 卸载
       ttl_message_threshold_ratio: 0.05     # TTL 卸载时，单条工具消息超过窗口容量的该比例才被处理
@@ -991,7 +1069,7 @@ gateway:
   # remote 时前端 SessionsPanel 不再浏览网关本地会话文件，仅支持恢复会话历史。
   web_session_storage: ${GATEWAY_WEB_SESSION_STORAGE:-local}
 
-  # 企业版 Gateway 多副本：从共享库轮询 Gateway 自身配置（channel/logging/log_masking）
+  # 企业版 Gateway 多副本：从共享库轮询 Gateway 自身配置（channel/logging/log_masking/content_masking）
   config_poll:
     enabled: ${GATEWAY_CONFIG_POLL_ENABLED:-false}
     interval_seconds: ${GATEWAY_CONFIG_POLL_INTERVAL_SECONDS:-10}
@@ -1083,6 +1161,14 @@ execution_guard:
     auth_threshold: 5
     probe_threshold: 3
     window_seconds: 1800
+  # 同一工具 + 同一参数连续返回相同错误达到阈值时终止本轮（force-finish）。
+  # 用于工具进入不可恢复状态后，模型仍反复重试的场景（issue #6368）。
+  # 只在错误文本完全相同时累计；换工具、换参数或错误变化都会重新计数。
+  # 注意：这不是下面的 circuit_breaker；它只对失败计数（成功重复不算），
+  # 在 ProgressiveToolRail 内先于 agent_ras 的通用循环检测触发，默认开。
+  tool_failure_loop:
+    enabled: true
+    threshold: 3
   # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
   # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
   # 不是 issue 级 OPEN/HALF_OPEN 恢复型熔断；
@@ -1940,6 +2026,49 @@ flash:
     k1: 0.9
     b: 0.4
     name_weight: 0.5
+
+  # ── flash 静态提示词改造开关（FlashPromptComposerRail / FlashPromptAuditRail）────────
+  # 必须在模板声明：启动清理与配置合并（merge_template_with_override）会删除模板中
+  # 不存在的字段（评审 #1）。双读 flash.<key> 优先、react.<key> 兜底。
+  # 各域 enabled 控制 FlashPromptComposerRail 是否对对应域做静态文本重组；
+  # 缺省全开、不启用功能、也不影响其他 Agent mode。
+  audit:
+    # 严格审计：true 时审计失败（未渲染变量/静态漂移）直接中断模型调用；默认只告警。
+    fail_closed: false
+  persona:
+    enabled: true                 # identity 巨石拆分 + 2xx/400 改写
+  safety:
+    enabled: true                 # safety 巨石拆 030/100/110/120
+  tool_guide:
+    enabled: true                 # tools 拆 300/330 + 340 工具结果
+  response:
+    enabled: true                 # 410/500/510/520/540 迁号改写
+  composer:
+    # 声明式接管域；缺省接管 safety/response（与 rail 路径字节等价），空列表 = 全部关闭。
+    takeover_domains: [safety, response]
+    verify_only: false            # 仅漂移校验、不裁决
+  section_order:
+    enabled: true                 # 段序收口：旧段迁号/剥除 + 动态段 1000 带
+  # ── 线 B 接线 rail 开关（评审：需在模板声明，否则 merge_template_with_override 静默删除）──
+  repeat_call_guard:
+    enabled: true                 # 重复调用守卫（同参数重复调用阶梯提醒，attachment 只提醒不否决）
+    thresholds: [3, 5, 8]
+    include: []                   # 只统计这些工具（空=全部）
+    exclude: []                   # 排除这些工具
+    arguments_preview_chars: 500  # 参数预览截断长度
+  skill_catalog:
+    enabled: true                 # 7xx 技能域常驻重组（manifest 启用集精简清单）
+    manifest_path: ""             # 空=自动解析各 skills 根目录 manifest.yaml
+    catalog_description_max_length: 800
+    catalog_max_entries: 50
+  state:
+    enabled: true                 # 820 时间事实迁 attachment
+  pressure:
+    enabled: true                 # 水位压力注入 70/85 阶梯提醒
+    warning_ratio: 0.70
+    critical_ratio: 0.85
+  relay_merge:
+    enabled: true                 # relay 注入内容去重归并
 
 # ── 模型路由（model_routing rail）──────────────────────────────
 model_routing:

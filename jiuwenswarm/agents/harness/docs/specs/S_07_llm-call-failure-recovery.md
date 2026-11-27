@@ -8,7 +8,7 @@
 | 编号 / slug | S_07 / llm-call-failure-recovery |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/rails/llm_retry_notify_rail.py`、`context_overflow_recovery_rail.py`；装配点 `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`_build_llm_retry_rail` / `_build_context_overflow_recovery_rail`）、`interface_code.py`（`_FIXED_RAIL_NAMES`）、`jiuwenswarm/server/runtime/skill_turbo/executor.py`（`_build_llm_retry_rail`）、`jiuwenswarm/agents/swarm/config_specs.py` + `providers/builtin_rails.py`（成员 rail 投影） |
 | 关联模块（agent-core 仓，跨仓契约） | `openjiuwen/harness/rails/llm_retry_rail.py`（`LLMRetryRail` 父类：repeat 检测参数、`backoff_delay`、`_is_repeat_exception` / `_is_stream_timeout_exception` / `_is_transient_invoke_exception`）、`openjiuwen.harness.rails.base.DeepAgentRail`、`openjiuwen/core/session/stream.OutputSchema` |
-| 最近一次修订日期 | 2026-11-02 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -17,7 +17,7 @@
 
 - **瞬时失败重试链**（`NotifyingLLMRetryRail` / `TeamMemberNotifyingLLMRetryRail`）：三类原因（repeat / stream_timeout / transient_invoke）的判定分流、per-call 预算、指数退避 + jitter、用户可见通知（重试中 / 耗尽）
 - **上下文溢出恢复链**（`ContextOverflowRecoveryRail`）：溢出异常检测（三家厂商格式）、FullCompact 强制压缩 + `threshold_override`、立即重试、连续溢出熔断
-- 配置消费契约：`execution_guard.llm_retry_rail` 节（deep / skill_turbo / swarm 成员三处装配共用）
+- 配置消费契约：`execution_guard.llm_retry_rail` 节（deep / flash / code 单代理 / skill_turbo / swarm 成员共用）
 - 通知 schema：`retry_notification` 与 `error` 两类 `OutputSchema` 事件的 payload 契约
 
 不管：
@@ -46,12 +46,13 @@
 - **N8（TeamMember 404 全标记命中）**：`TeamMemberNotifyingLLMRetryRail` 额外认定的 async-stream 404 传输错误要求 `_MEMBER_NETWORK_404_MARKERS`（`async stream error` / `notfounderror` / `error code: 404`）**全部**命中。agent-core wrapper 措辞漂移即静默禁用该规则（有意设计：宁漏勿滥），通用六标记重试不受影响。
 - **N9（溢出检测三级判定）**：`_is_context_overflow_error` 判定序——① `status_code == 413` 直接判；② `status_code == 400` 且命中七关键词之一；③ 无 `status_code` 且命中关键词；另：`"error code: 400"` + `"modelarts.81001"` + 关键词三条件组合。400 单独不判（参数错 / 权限错同码，必须靠词消歧）。
 - **N10（溢出处理优先权）**：`priority = 100`，高于 StreamEventRail（80）与 ContextAssembleRail / ContextProcessorRail（均 85，context_engineer 域）——溢出恢复必须**先于**流处理与上下文工程 rails 处理 `on_model_exception`，否则压缩动作会晚于其它 rail 的错误消费。
-- **N11（恢复动作与阈值）**：恢复 = `set_force_compact(True)` + `set_overflow_threshold_override(limit × RECOVERY_THRESHOLD_RATIO)`，比例恒 0.85（压缩后上下文至多占窗口 85%，留 15% 给输出）。`limit` 三级解析：异常文本解析值 → `deep_config.context_window_limit_tokens` → `None`（FullCompactProcessor 用默认 `trigger_total_tokens`）。**无论 force_compact 设置成败一律 `ctx.request_retry(delay_seconds=0)`**——压缩失败也要重试一次让失败可见。processor 识别用**同名键**（`processor_type() == "FullCompactProcessor"`）而非 isinstance：`forked.activate()` 会把注册键覆盖为 forked 类，其实例不继承原始类，isinstance 漏判。
+- **N11（恢复动作与阈值）**：恢复 = `set_force_compact(True)` + `set_overflow_threshold_override(limit × RECOVERY_THRESHOLD_RATIO)`，比例恒 0.85（压缩后上下文至多占窗口 85%，留 15% 给输出）。`limit` 三级解析：异常文本解析值 → `deep_config.context_window_limit_tokens` → `None`（FullCompactProcessor 用默认 `trigger_total_tokens`）。**首次盲重试保留**：无论 force_compact 设置成败一律 `ctx.request_retry(delay_seconds=0)`；此后 `payload_fingerprint`（消息数 + 各条角色/长度 + 图片块数，存 `ctx.extra["_overflow_payload_fp"]`）**必须严格变小或变化**——连续两次相同说明压缩没有产生替换，原样重发只会得到同样的溢出，直接熔断，不再耗完剩余次数。processor 识别用**同名键**（`processor_type() == "FullCompactProcessor"`）而非 isinstance：`forked.activate()` 会把注册键覆盖为 forked 类，其实例不继承原始类，isinstance 漏判。
 - **N12（连续溢出计数三态）**：`_consecutive_overflow_count` 是 **rail 实例级**（跨 ctx / 跨 session 共享，装配层每 agent 一实例）。归零时机恰两处：`after_model_call` 且 `ctx.exception is None`（成功即清）；`_circuit_break` 的 error 事件**写出成功后**（写出失败只 warning、计数保留，下轮再熔断报）。超过 `max_recovery_attempts`（构造默认 2，装配层传 3）→ 熔断：发 `context_overflow_circuit_break` error 事件（建议 `/compact` 或新会话）、不再 retry。
+- **N13（冷启动水位播种）**：从磁盘回灌历史（`warmup_session_context`）的消息没有 `usage_metadata`，占用计数为 0，主动预压缩会整段跳过。恢复时一次性称重并写入 `context._jiuwenswarm_warmup_prompt_tokens`：取 `request_summaries.jsonl` 最近一条有值 `bottleneck.llm[].input_tokens`（单次调用值，**不得**取累加的 `summary.tokens.input`）与本次回灌消息计数（`count_context_tokens`，restore 只算一次）的 `max`。`_last_prompt_tokens` 先读 usage，取不到才回落播种值；热路径不发生全量 tokenize。成功调用后删除该属性，回到 usage 主路径。
 
 ## 接口契约
 
-### NotifyingLLMRetryRail（deep / skill_turbo / swarm 成员通用）
+### NotifyingLLMRetryRail（deep / flash / code 单代理 / skill_turbo / swarm 成员通用）
 
 构造参数（`**kwargs` 全透传父类 `LLMRetryRail`）：
 
@@ -61,7 +62,7 @@
 | `notify_user_on_exhausted` | bool / True | 耗尽后是否推 `error` 事件 |
 | `retry_transient_invoke_errors` | bool / True | transient_invoke 类是否参与重试（经 `_parent_accepts_retry_transient_invoke_errors` 签名探测决定是否也传给父类——父类签名演进时的兼容垫片） |
 | `backoff_seconds`（kwargs） | list[float] / None | 显式序列精确执行；缺省 / None 生成（N6/N7） |
-| `max_retries` + repeat 检测六参数（kwargs） | —— | 透传父类；deep / skill_turbo / swarm 三处装配的取值表见"配置消费" |
+| `max_retries` + repeat 检测六参数（kwargs） | —— | 透传父类；装配取值见“配置消费” |
 
 挂点方法：
 
@@ -80,10 +81,12 @@
 | 成员 | 契约 |
 |---|---|
 | `__init__(max_recovery_attempts=2)` | 装配层（deep `interface_deep.py:9651` / code callable）均传 3 |
-| `on_model_exception(ctx)` | N9 检测 → N12 计数 → 熔断判断 → N11 恢复 + `request_retry(0)` |
-| `after_model_call(ctx)` | `ctx.exception is None` 时清零（N12） |
+| `on_model_exception(ctx)` | N9 检测 → N12 计数 → N11 恢复 + `request_retry(0)`；payload 指纹未变时熔断 |
+| `after_model_call(ctx)` | `ctx.exception is None` 时清零（N12），并删除播种值（N13）与 `ctx.extra["_overflow_payload_fp"]` |
 | `_parse_token_limits(exc)` | 三家格式：Anthropic `N tokens > M`、华为 `prompt length N ... maximum input length M`、OpenAI `maximum context length is M`（actual 为 None）→ `(actual, limit)` |
 | `_resolve_threshold_override(ctx, parsed)` | N11 三级解析 |
+| `_last_prompt_tokens(ctx)` | 最近占用：消息 `usage_metadata` → 无 usage 时回落播种值（N13） |
+| `_payload_fingerprint(ctx)` | N11：消息数 + 各条角色/长度 + 图片块数（`None` = 无消息，不做熔断判断） |
 | `_find_full_compact_processor(context)` | N11 同名键识别 + `set_force_compact` 能力探测 |
 
 ### 模块级常量（改动即受本 spec 约束）
@@ -94,7 +97,7 @@
 
 - 重试中：`OutputSchema(type="retry_notification", index=999, payload={output: {output: 消息, result_type: "text"}, reason, attempt, max_attempts, delay_seconds})`——前端映射为 `chat.delta`
 - 耗尽：`type="error"` + `payload.error_type="llm_retry_exhausted"` + `reason`
-- 溢出熔断：`type="error"` + `payload.error_type="context_overflow_circuit_break"` + `message`（建议文案）+ `consecutive_errors`
+- 溢出熔断：`OutputSchema(type="error", index=999)` + `payload.error_type="context_overflow_circuit_break"` + `message`（建议文案）+ `consecutive_errors`
 
 ### 配置消费（`execution_guard.llm_retry_rail`，config.yaml）
 
@@ -117,6 +120,7 @@
 |---|---|---|
 | deep 主链 retry | `interface_deep.py` `_build_llm_retry_rail`（:10113） | enabled 非 True → None；失败 → warning + None（不炸装配） |
 | flash 主链 retry | `interface_flash.py` `_FLASH_RAIL_KEEP` 保留 `_llm_retry_rail` | 复用 deep 构建；移出白名单会让工厂回退 SDK 原版 rail，重试耗尽无用户可见错误 |
+| code 单代理主链 retry | `interface_code.py` `_build_agent_rails` | normal 和 plan 复用 `deep/rail_factory.py` 的 `_build_llm_retry_rail`。SDK 工厂识别其为 `LLMRetryRail` 子类并跳过默认 Rail。通知 Rail 关闭时沿用 code 的 SDK 默认重试 |
 | deep 溢出 | `interface_deep.py` `_build_context_overflow_recovery_rail`（:9648） | `max_recovery_attempts=3` |
 | code 侧溢出 | `interface_code.py` `_FIXED_RAIL_NAMES`（:459）+ build callable | 固定名单去重挂载；断言传 3 |
 | skill_turbo | `executor.py` `_build_llm_retry_rail`（:946） | 同一配置节、同一参数集（与 DeepAgent 一致） |
@@ -132,12 +136,12 @@
 
 ## 执行路径全景
 
-- **P1 装配**：config 加载 → deep / skill_turbo 各自 `_build_llm_retry_rail`（同一节取参）→ swarm 侧 `_llm_retry_params` 投影进成员 rail spec → 成员实例化时 builder 造 `TeamMemberNotifyingLLMRetryRail`；溢出 rail 经 deep `_build_context_overflow_recovery_rail(3)` 或 code `_FIXED_RAIL_NAMES` 挂载。
+- **P1 装配**：deep / flash / code 单代理共用 `deep/rail_factory.py` 的 `_build_llm_retry_rail`。SkillTurbo 从同一配置节取参，swarm 经 `_llm_retry_params` 向成员工厂投影并构建 `TeamMemberNotifyingLLMRetryRail`。溢出 rail 经 deep `_build_context_overflow_recovery_rail(3)` 或 code `_FIXED_RAIL_NAMES` 挂载。
 - **P2 retry 判定**：模型调用抛异常 → 父类框架触发 `on_model_exception` → N2 分流 → `_peek_retry`（N3）→ 通知（N5）→ `_request_retry_or_reset`：未耗尽则 `counts+1` + mirror + `ctx.request_retry(delay)`（delay 走 `backoff_delay(count)` + jitter，N6/N7）；耗尽走 N4。
 - **P3 通知双形态**：will_retry → `retry_notification`（P2 内）；耗尽 → `error` + `llm_retry_exhausted`。
-- **P4 溢出检测与恢复**：`on_model_exception`（priority 100 先跑，N10）→ N9 检测 → 计数 +1 → 未超限 → N11 恢复（force_compact + override）→ `request_retry(0)`。
-- **P5 溢出熔断**：计数超 `max_recovery_attempts` → `_circuit_break`：error 事件 + 计数归零（N12）。
-- **P6 成功归零**：`after_model_call` 且无异常 → `_consecutive_overflow_count = 0`；重试 rail 同一时机清零本 ctx 预算（N1）。
+- **P4 溢出检测与恢复**：`on_model_exception`（priority 100 先跑，N10）→ N9 检测 → 计数 +1 → payload 指纹未变则熔断（N11）→ 未超限 → N11 恢复（force_compact + override）→ `request_retry(0)`。
+- **P5 溢出熔断**：payload 指纹重复或计数超 `max_recovery_attempts` → `_circuit_break`：error 事件 + 计数归零（N12）。
+- **P6 成功归零**：`after_model_call` 且无异常 → `_consecutive_overflow_count = 0`、清 payload 指纹与 warmup 播种值（N13）；重试 rail 同一时机清零本 ctx 预算（N1）。
 
 ## 异常分支与退出路径
 
@@ -151,6 +155,8 @@
 | compact 失败 | 找不到 processor / 无 `set_force_compact` | 返回 False 但**仍** `request_retry(0)`（N11），日志 warning |
 | limit 解析全失败 | 三家正则不中且无 config | `threshold_override=None`，FullCompact 用默认阈值，仍走恢复 |
 | 连续溢出超限 | 计数 > `max_recovery_attempts` | 熔断：error 事件 + 不 retry（N12） |
+| 重试 payload 未变小 | 与上次溢出的 payload 指纹相同 | 熔断：error 事件 + 不 retry（N11），总尝试次数 ≤ 2 | `test_repeated_payload_overflow_circuit_breaks_after_first_retry`、`test_changed_payload_after_compact_retries_again` |
+| 回灌历史无 usage | 水位取 warmup 播种值（N13） | seed 取错会提前压缩（每 invoke 至多一次，不循环） | `test_proactive_compact_uses_warmup_seed_without_usage`、`test_warmup_seeds_prompt_tokens_once` |
 | 熔断事件写出失败 | `write_stream` 抛错 | 只 warning，**计数保留**（下轮再报熔断） |
 | 装配失败 | 任一 `_build_*` 抛异常 | warning + 返回 None，不炸 agent 启动 |
 
@@ -166,6 +172,7 @@
 | TeamMember async-stream 404（三标记全中） | 按瞬时错误重试 | wrapper 措辞漂移即静默失效（有意，N8） | 无专属用例（依赖 agent-core 措辞，改动需人工核对 wrapper 异常文本） |
 | ModelArts.81001 溢出 | 400 + 错误码 + 关键词三条件组合判定 | 词表 / 正则漂移漏检 | jiuwenswarm 仓无 `_parse_token_limits` / `_is_context_overflow_error` 专属单测——改词表须人工过三家错误样例 |
 | code 侧挂载 | `_FIXED_RAIL_NAMES` 固定名单（不走动态 build）+ `max_recovery_attempts=3` | 动态注册路径漏挂 | `test_code_adapter_context_overflow_recovery_rail.py` 四用例（固定名单含 / 动态名单不含 / build 含 entry / callable 返回 rail 或 None） |
+| code 单代理重试通知 | 工厂装配一个 `NotifyingLLMRetryRail`，发出重试中和耗尽事件 | 漏挂时回退基础 Rail，用户看不到重试提示 | `test_code_adapter_llm_retry_rail.py` |
 | forked FullCompactProcessor | 同名键 + 能力探测命中（N11） | isinstance 改回会漏判 forked 实例 | 无专属用例（改识别方式须过 forked 场景） |
 
 ## 修改检查单
@@ -179,7 +186,7 @@
 - 改 `max_recovery_attempts` 默认值 → deep（:9651）与 code callable 两处装配传值是否跟随
 - 改 `priority` → 与 StreamEventRail（80）/ ContextAssembleRail / ContextProcessorRail（均 85）的相对顺序重估（N10）
 - 改 `_parent_accepts_retry_transient_invoke_errors` 探测逻辑 → agent-core `LLMRetryRail.__init__` 签名同步核对
-- 改装配取参（`_build_llm_retry_rail` / `_llm_retry_params`）→ 三处装配点参数集保持一致（deep / skill_turbo / swarm 投影同源同默认）
+- 改装配取参（`_build_llm_retry_rail` / `_llm_retry_params`）→ 核对单代理共用工厂、SkillTurbo 和 swarm 成员的参数默认值
 
 ## 与其它 spec 的关系
 

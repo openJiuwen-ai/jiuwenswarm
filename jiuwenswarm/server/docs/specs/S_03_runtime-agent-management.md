@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / runtime-agent-management |
 | 关联模块 | jiuwenswarm/server/runtime/{agent_manager.py, tenant_agent_pool.py, agent_warm_pool.py, agent_adapter/, a2ui/, debug_trace/, session/, skill/, workspace/, agent_config_service.py, prewarm.py, proactive_adapter.py, team_binding_store.py, team_entity_store.py, team_snapshot_refresh.py} |
-| 最近一次修订日期 | 2026-11-12 |
+| 最近一次修订日期 | 2026-11-17 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -16,7 +16,7 @@
 
 - AgentManager（单租户）与 TenantAgentPool（企业多租户）两种形态的边界：默认 AgentServer 进程内只构造裸 AgentManager（workspace_key="default"）；企业版 `TenantAgentPool.get_instance()` 按 TenantContext → per-tenant AgentManager 池。
 - AgentWarmPool：按 `WarmKey(channel, project, work_mode)` 维度缓存已创建的 agent 实例；`sync()` 按期望 key 集合重建；排除 `acp` / `a2a` 通道。
-- prewarm.py 三阶段：`warmup_import_and_checkpointer()`（阶段 1+2）与 `warmup_deep_agent_query()`（阶段 3，独立 fire-and-forget，mock_model 默认 True）。
+- prewarm.py 启动预热：`warmup_import_and_checkpointer()`（阶段 0/0.5/1/2，阶段 0.5 在后台预热 tiktoken 词表）与 `warmup_deep_agent_query()`（阶段 3，独立 fire-and-forget，mock_model 默认 True）。
 - agent_adapter 三路：`interface_deep`（默认原生 DeepAgent）/ `interface_code` / `interface_flash`；`AgentWebSocketServer._resolve_adapter` 按 req_method / channel 选。
 - A2UI 协议（Agentic UI）：runtime/a2ui/protocol.py 定义 + runtime/stream.py + runtime/formatter.py + runtime/response_finalization.py + runtime/finalizer.py。
 - debug_trace：/debug 模式调试追踪（stream_logger + directives + subagent_capture + task_tool_patch）。

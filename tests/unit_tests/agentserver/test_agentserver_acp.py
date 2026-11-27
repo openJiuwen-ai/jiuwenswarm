@@ -1743,7 +1743,8 @@ async def test_handle_team_binding_generate_uses_default_template_and_resolves_c
 
     async def fake_generate_team_name(description, *, config_base, template_id):
         assert description == "调研多语言模型"
-        assert config_base is config
+        assert config_base == config
+        assert config_base is not config
         assert template_id == "research"
         return "research_team"
 
@@ -1806,7 +1807,8 @@ async def test_handle_team_binding_generate_uses_tiny_agent_result_for_name(monk
 
     async def fake_generate_team_name(description, *, config_base, template_id):
         generation_prompts.append(description)
-        assert config_base is config
+        assert config_base == config
+        assert config_base is not config
         assert template_id == "research"
         return "team-setup-task"
 
@@ -1877,7 +1879,8 @@ async def test_first_team_chat_auto_binds_and_preserves_original_query(monkeypat
 
     async def fake_generate_team_name(description, *, config_base, template_id):
         generation_prompts.append(description)
-        assert config_base is config
+        assert config_base == config
+        assert config_base is not config
         assert template_id == "research"
         return "landlord_game_team"
 
