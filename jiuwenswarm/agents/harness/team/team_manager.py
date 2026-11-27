@@ -484,6 +484,7 @@ class TeamManager:
         self._team_agents: dict[str, TeamAgent] = {}
         self._runner_team_agents: dict[str, TeamAgent] = {}
         self._team_monitors: dict[str, TeamMonitorHandler] = {}
+        self._team_pulses: dict[str, Any] = {}
         self._stream_tasks: dict[str, asyncio.Task] = {}
         self._stream_task_generations: dict[str, int] = {}
         self._session_generations: dict[str, int] = {}
@@ -3362,6 +3363,15 @@ class TeamManager:
     def register_monitor(self, session_id: str, handler: TeamMonitorHandler) -> None:
         self._team_monitors[session_id] = handler
 
+    def get_team_pulse(self, session_id: str) -> Any | None:
+        return self._team_pulses.get(session_id)
+
+    def register_team_pulse(self, session_id: str, service: Any) -> None:
+        self._team_pulses[session_id] = service
+
+    def pop_team_pulse(self, session_id: str) -> Any | None:
+        return self._team_pulses.pop(session_id, None)
+
     def register_workflow_handler(self, session_id: str, handler: Any) -> None:
         self._workflow_handlers[session_id] = handler
 
@@ -3664,6 +3674,17 @@ class TeamManager:
                     exc,
                 )
 
+        pulse = self._team_pulses.pop(session_id, None)
+        if pulse is not None:
+            try:
+                await pulse.stop()
+            except Exception as exc:
+                logger.warning(
+                    "[TeamManager] TeamPulse stop failed: session_id=%s error=%s",
+                    session_id,
+                    exc,
+                )
+
         # The swarmflow controller is NOT driven here. Each lifecycle method
         # (pause / cancel / stop_paused) dispatches it before Runner.pause/stop —
         # Runner tears the leader harness down and would otherwise cancel the
@@ -3843,6 +3864,7 @@ class TeamManager:
             has_team_runtime = (
                 has_local_team_runtime
                 or session_id in self._team_monitors
+                or session_id in self._team_pulses
                 or self.is_runtime_active(session_id)
                 or self.is_runtime_pending(session_id)
             )
@@ -3940,6 +3962,7 @@ class TeamManager:
             has_team_runtime = (
                 has_local_team_runtime
                 or session_id in self._team_monitors
+                or session_id in self._team_pulses
                 or self.is_runtime_active(session_id)
                 or self.is_runtime_pending(session_id)
             )
@@ -4036,6 +4059,7 @@ class TeamManager:
                     has_local_team_runtime
                     or session_id in self._runner_team_agents
                     or session_id in self._team_monitors
+                    or session_id in self._team_pulses
                     or self.is_runtime_active(session_id)
                     or self.is_runtime_pending(session_id)
                 )
@@ -4442,6 +4466,7 @@ class TeamManager:
             has_team_runtime = (
                 has_local_team_runtime
                 or session_id in self._team_monitors
+                or session_id in self._team_pulses
                 or self.is_runtime_active(session_id)
                 or self.is_runtime_pending(session_id)
             )
