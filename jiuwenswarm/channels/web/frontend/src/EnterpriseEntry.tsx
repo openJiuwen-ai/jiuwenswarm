@@ -14,6 +14,7 @@ import {
   type EnterpriseContextValue,
 } from './services/enterpriseContext';
 import { parseRuntimeScope, setRuntimeScope } from './services/runtimeScope';
+import { chatRoutePath } from './multi-session/routing/route';
 
 const CLUSTER_KEY = 'jiuwenclaw_active_cluster';
 
@@ -53,7 +54,7 @@ function chooseAgentContext(
   return contexts.find((item) => item.bot_id === preferred.botId) ?? contexts[0] ?? null;
 }
 
-function contextUrl(selected: EnterpriseAgentContext, debugContext: boolean): string {
+function contextUrl(selected: EnterpriseAgentContext, debugContext: boolean, pathname = window.location.pathname): string {
   const query = new URLSearchParams({
     user_id: selected.user_id,
     group_id: selected.group_id,
@@ -61,7 +62,7 @@ function contextUrl(selected: EnterpriseAgentContext, debugContext: boolean): st
   });
   if (selected.jiuwenclaw_id) query.set('jiuwenclaw_id', selected.jiuwenclaw_id);
   if (debugContext) query.set('debug_context', '1');
-  return `${window.location.pathname}?${query.toString()}${window.location.hash}`;
+  return `${pathname}?${query.toString()}${window.location.hash}`;
 }
 
 function applyScope(selected: EnterpriseAgentContext): void {
@@ -209,7 +210,7 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
         setContextError('');
         void ensureActiveCluster(provider, selected.jiuwenclaw_id)
           .then(() => {
-            window.location.replace(contextUrl(selected, false));
+            window.location.replace(contextUrl(selected, false, chatRoutePath({ kind: 'chat-new' })));
           })
           .catch((switchError) => {
             setContextSwitching(false);
