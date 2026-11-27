@@ -104,8 +104,13 @@ async def install_sources(
     preempt: bool = False,
     require_all_members: bool = False,
     discard_on_failure: bool = True,
+    reject_installed: bool = False,
 ) -> list[ContainerOutcome]:
-    """Materialize every source, then load this host's members."""
+    """Materialize every source, then load this host's members.
+
+    ``reject_installed`` refuses a container whose id and version are already
+    installed; uploaded archives set it so the same package is not accepted twice.
+    """
 
     await asyncio.to_thread(reject_batch_cycles, Path(manager.install_dir), store, sources)
     outcomes: list[ContainerOutcome] = []
@@ -116,6 +121,7 @@ async def install_sources(
                 version=version, timeout=timeout, preempt=preempt,
                 require_all_members=require_all_members,
                 discard_on_failure=discard_on_failure,
+                reject_installed=reject_installed,
             )
         )
     return outcomes
@@ -133,6 +139,7 @@ async def _install_one(
     preempt: bool = False,
     require_all_members: bool = False,
     discard_on_failure: bool = True,
+    reject_installed: bool = False,
 ) -> ContainerOutcome:
     opened = await asyncio.to_thread(_open_source, source)
     try:
@@ -155,6 +162,7 @@ async def _install_one(
                 manager, store, root, origin=origin, asset_id=asset_id, timeout=timeout,
                 preempt=preempt, require_all_members=require_all_members,
                 discard_on_failure=discard_on_failure,
+                reject_installed=reject_installed,
             )
         return await _install_single(
             manager, store, root, document, origin=origin, asset_id=asset_id, timeout=timeout,
@@ -201,6 +209,7 @@ async def _install_bundle(
     preempt: bool = False,
     require_all_members: bool = False,
     discard_on_failure: bool = False,
+    reject_installed: bool = False,
 ) -> ContainerOutcome:
     spec = await asyncio.to_thread(read_bundle_spec, root)
     unknown = sorted({member.domain for member in spec.members} - _KNOWN_DOMAINS)
@@ -209,6 +218,26 @@ async def _install_bundle(
             StatusCode.EXTENSION_DOMAIN_MISMATCH,
             reason=f"bundle member domain is not supported: {', '.join(unknown)}",
         )
+    if reject_installed:
+        existing = store.get_bundle(spec.bundle_id, spec.version)
+        if existing is not None and existing.status not in {"failed", "uninstalling"}:
+            error = operation_error(
+                StatusCode.EXTENSION_PACKAGE_EXISTS,
+                msg=f"system plugin bundle {spec.bundle_id} {spec.version} is already installed",
+                package_id=spec.bundle_id,
+                display_name=spec.bundle_id,
+            )
+            return ContainerOutcome(
+                container_id=spec.bundle_id,
+                version=spec.version,
+                kind="bundle",
+                reports=[
+                    ActivationReport("", spec.bundle_id, "install", "FAILED", None, None, error)
+                ],
+                members=[_member_state_from(record) for record in existing.member_records],
+                overall_status="failed",
+                error=error.message,
+            )
     _cancel_retry(f"{spec.bundle_id}@{spec.version}")
     levels = dependency_levels(spec)
     install_dir = Path(manager.install_dir)

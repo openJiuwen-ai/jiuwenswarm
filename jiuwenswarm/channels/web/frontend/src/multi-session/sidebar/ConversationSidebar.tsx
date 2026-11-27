@@ -19,6 +19,7 @@ import {
   formatSessionTime,
   getProjectNewLabel,
   getSessionActivityAt,
+  getSessionErrorMessage,
   getSessionIndicator,
   getTaskStatusLabel,
   getViewedSessionId,
@@ -229,8 +230,9 @@ function ConversationListItem({
       truncationTooltipHandlers.onBlur();
     },
   };
-  const errorMessage = runtime?.error || runtime?.executionError || null;
-  const indicator = getSessionIndicator(runtime, unread, session.is_processing === true, Boolean(errorMessage));
+  const sessionProcessing = session.is_processing === true;
+  const errorMessage = getSessionErrorMessage(runtime, sessionProcessing);
+  const indicator = getSessionIndicator(runtime, unread, sessionProcessing, Boolean(errorMessage));
 
   let status: React.ReactNode;
   if (indicator === 'waiting') {

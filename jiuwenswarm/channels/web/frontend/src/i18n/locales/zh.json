@@ -1112,9 +1112,9 @@
       "contextWindowPresets": "常用上下文窗口",
       "outputTokens": "模型单次最大输出",
       "outputTokensPlaceholder": "例如 32K 或 32768",
-      "outputTokensHint": "限制模型单次请求可生成的最大 Token 数，包含推理 Token。OpenAI 协议可选择不限，由服务商或模型自身限制。",
+      "outputTokensHint": "限制模型单次请求可生成的最大 Token 数，包含推理 Token。OpenAI 协议可选择“模型默认值”，由服务商或模型自身限制。",
       "outputTokensPresets": "常用最大输出",
-      "outputTokensUnlimited": "不限",
+      "outputTokensUnlimited": "模型默认值",
       "vendorPlaceholder": "请选择",
       "selectVendor": "选择模型提供商",
       "searchVendor": "搜索模型提供商",
@@ -3867,6 +3867,8 @@
       "noNewContent": "无新增内容",
       "capacityRemoved": "容量维护已回收 {{count}} 个正文文件",
       "capacityIncomplete": "容量维护未完成，知识库可能仍超出上限",
+      "tokenUsage": "消耗约 {{amount}} token",
+      "tokenUsageUnavailable": "本次 token 消耗未正常统计",
       "collectionDisabledHint": "请先在上下文设置中开启总开关和内容采集，再立即采集。",
       "collectionStoppingHint": "正在停止采集，请等待停止完成后重试。",
       "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
@@ -6105,6 +6107,17 @@
     "detail": {
       "breadcrumbMy": "我的扩展",
       "breadcrumbPlugin": "插件详情",
+      "memoryConnection": {
+        "edit": "编辑连接配置",
+        "hint": "填写完整的 MCP 服务 URL 和 API Key，保存后重新连接记忆服务。",
+        "url": "MCP 服务 URL",
+        "key": "API Key"
+      },
+      "memoryAccess": {
+        "managedHttp": "内置 HTTP 服务",
+        "serviceRunning": "服务运行中",
+        "serviceStopped": "服务未启动"
+      },
       "breadcrumbMcp": "连接器详情",
       "mcpDisconnectedBanner": "当前插件依赖的连接器未连接，无法正常使用",
       "mcpDisconnectedBannerSelf": "尚未连接，连接后即可使用",
@@ -6221,7 +6234,8 @@
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
       "missingReadme": "插件包缺少 README.md 文件",
-      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径"
+      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径",
+      "alreadyInstalled": "该插件包（相同 ID 和版本）已安装，请勿重复上传"
     },
     "systemPlugin": {
       "badge": "系统插件",
@@ -6275,6 +6289,7 @@
       "switchVersionConfirm": "将「{{name}}」从 v{{installed}} 切换到 v{{target}}？切换后当前版本将停止生效，但文件会保留在工作区（不会删除），之后可随时切回。",
       "publish": "发布",
       "uninstallConfirm": "请选择卸载方式：「仅卸载 v{{version}}」只删除该版本，其他已安装版本会保留但不再生效；「全部卸载」会删除「{{name}}」留在工作区的所有版本文件，不可恢复。",
+      "uninstallSingleConfirm": "确认卸载「{{name}}」？工作区只保留 v{{version}} 一个版本，卸载会删除其全部文件，不可恢复。",
       "uninstallVersion": "仅卸载 v{{version}}",
       "uninstallAll": "全部卸载"
     },
@@ -6804,6 +6819,7 @@
     "enhancedProgressHint": "增强能力配置预计需要 {{range}}，完成后可随时查看详情。",
     "enhancedEstimateFallback": "30–40 分钟",
     "cancelInstall": "取消安装",
+    "cancelling": "正在取消…",
     "installingComponents": "正在安装工具链组件",
     "componentCountHint": "共 {{count}} 个组件，可执行组件会按依赖关系并行安装。",
     "completedCount": "已完成 {{completed}} / {{total}} 项",
@@ -8141,7 +8157,8 @@
       "STALE_REQUEST": "请求已过期，操作未重复执行",
       "MODEL_UNAVAILABLE": "这个模型已不可用，请重新选择",
       "REPLY_CHANGED": "回复已更新，请重新展开查看",
-      "REQUEST_BUSY": "操作尚在执行，请稍后再试"
+      "REQUEST_BUSY": "操作尚在执行，请稍后再试",
+      "WINDOWS_UNSUPPORTED": "请更新桌面客户端后使用多个悬浮窗"
     },
     "choose": "切换应用形态"
   },

@@ -209,6 +209,7 @@ export function MarketplacePage({
   const systemCatalog = useSystemPluginStore((s) => s.catalog);
   const systemMine = useSystemPluginStore((s) => s.mine);
   const systemBusyIds = useSystemPluginStore((s) => s.busyIds);
+  const systemInstallingIds = useSystemPluginStore((s) => s.installingIds);
   const systemLoading = useSystemPluginStore((s) => s.loading);
   const installSystemPlugin = useSystemPluginStore((s) => s.install);
   const setSystemPluginEnabled = useSystemPluginStore((s) => s.setEnabled);
@@ -913,7 +914,7 @@ export function MarketplacePage({
                       tags={systemPluginTags(pkg)}
                       description={localizedText(pkg.displayDescription, i18n.language)}
                       iconUrl={pkg.avatar || undefined}
-                      state={pkg.installed ? 'connected' : 'idle'}
+                      state={systemInstallingIds[pkg.id] ? 'connecting' : pkg.installed ? 'connected' : 'idle'}
                       busyKind="install"
                       actionDisabled={!!systemBusyIds[pkg.id]}
                       onOpenDetail={() => onOpenSystemPluginDetail(pkg.id)}
@@ -992,7 +993,12 @@ export function MarketplacePage({
                   tags={systemPluginTags(pkg)}
                   description={localizedText(pkg.displayDescription, i18n.language)}
                   iconUrl={pkg.avatar || undefined}
-                  state={pkg.installed ? 'connected' : 'idle'}
+                  // 与 agent 插件卡片一致：安装中显示“安装中…”加载态，而不是仅禁用按钮。
+                  state={
+                    systemInstallingIds[pkg.id] || checkingSystemInstallId === pkg.id
+                      ? 'connecting'
+                      : pkg.installed ? 'connected' : 'idle'
+                  }
                   busyKind="install"
                   actionDisabled={
                     !!systemBusyIds[pkg.id]

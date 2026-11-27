@@ -12,7 +12,7 @@ files: [jiuwenswarm/common/builtin_skills.py, jiuwenswarm/common/utils.py, jiuwe
 
 ## 入口与资源
 
-包内默认内置技能统一注册为 `workswarm-builtin`，36 个能力位于其 `references/capabilities/<name>/`，由 `references/catalog.md` 导航。模型以文件读取方式按需加载，子技能的脚本和相对资源按子目录解析。用户、项目、在线市场与 MCP 技能保持各自发现语义。
+包内默认内置技能统一注册为 `workswarm-builtin`，37 个能力位于其 `references/capabilities/<name>/`，由 `references/catalog.md` 导航。总入口 `description` 按目录顺序列出全部能力的名称与一句话简介（简介取 `references/catalog.md` 的适用任务短句，不超过 24 字），使模型在只看到总入口时也能按名称与用途判断相关性；具体读取方式仍由 `SKILL.md` 正文与 `references/catalog.md` 承担，不额外为点名写专用说明。发布测试校验能力集合、简介长度与描述上限（1800 字符），保持单条注入。模型以文件读取方式按需加载，子技能的脚本和相对资源按子目录解析。用户、项目、在线市场与 MCP 技能保持各自发现语义。
 
 Swarm UI 与默认安装只发布总目录；现有 Symphony 直接子目录扫描和 core SkillUseRail 的首个 SKILL.md 边界保证子技能不成为初始独立候选。读取总入口不会读取子技能正文。
 

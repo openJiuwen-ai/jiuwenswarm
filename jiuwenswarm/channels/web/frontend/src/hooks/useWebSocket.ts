@@ -2985,8 +2985,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               plan_language: pendingQuestion.planLanguage ?? 'cn',
             }
           : {};
-        // 「执行」分两步：这次 resume 只让后端跑完 exit_plan_mode 退出计划模式，
-        // 本轮到此为止；真正的执行由紧接着补发的普通消息开启新一轮。
         const isPlanExecute =
           isPlanApproval && answers.some((a) => a.selected_options?.includes('plan_execute'));
         const approvalTransport =
@@ -3026,6 +3024,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // 当成普通模式请求，进而把会话踢出 Plan。
           const resumeMode = resolveInterruptResumeMode(sessionId);
           const resolvedResumeMode = resolveOutgoingMode(sessionId, resumeMode);
+          // Let Team continue within its approved resume. A session-wide idle
+          // event can belong to the planning round on the persistent stream.
+          const executeInTeamResume = isPlanExecute && isTeamAgentMode(resolvedResumeMode);
+          const resumeAnswers = executeInTeamResume
+            ? permissionAnswers.map((answer) => ({
+                ...answer,
+                selected_options: answer.selected_options?.map((option) =>
+                  option === 'plan_execute' ? 'approve' : option
+                ),
+              }))
+            : permissionAnswers;
           const agentSelectionIntent =
             useSessionStore.getState().getRuntime(sessionId)?.agentSelectionIntent ?? { kind: 'keep' as const };
           const agentSelectionPayload = buildDefinitionSelectionPayloadForMode(
@@ -3044,15 +3053,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           if (agentGroupSelectionPayload.agent_group_name) {
             markPendingAgentGroupBinding(sessionId, agentGroupSelectionPayload.agent_group_name);
           }
-          // 必须在请求发出**之前**登记：本次请求的 mode 已经定格在
-          // resolvedResumeMode 里，不再看 Plan 开关；而后端很可能在 await 挂起期间
-          // 就推完 processing_status=false，那一刻若 pendingPlanExecuteRef 里还没有
-          // 这个 session，补发执行消息的逻辑会被跳过——用户点了「执行」，计划批准了
-          // 却永远不会真正开始跑。
+          // Register the single-agent continuation before sending: it can
+          // finish the approval while the client is still awaiting the ACK.
           if (isPlanExecute) {
             planExecuteOptimistic = true;
             usePlanStore.getState().setActive(sessionId, false);
-            pendingPlanExecuteRef.current.add(sessionId);
+            if (!executeInTeamResume) pendingPlanExecuteRef.current.add(sessionId);
           }
           await request(
             'chat.send',
@@ -3063,7 +3069,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               ...useSessionStore.getState().getModelSelectionPayload(sessionId),
               ...getSessionWorkContext(sessionId),
               request_id: requestId,
-              answers: permissionAnswers,
+              answers: resumeAnswers,
               ...agentSelectionPayload,
               ...agentGroupSelectionPayload,
               ...sourcePayload,
@@ -5407,6 +5413,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
+          turnError: errorMsg,
         });
       }),
       webClient.on('chat.message_updated', ({ payload }) => {

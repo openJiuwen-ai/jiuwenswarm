@@ -79,6 +79,47 @@ async def test_probe_empty_name_returns_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_probe_times_out_a_stalled_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stalled connect fails at the stall bound and is discarded."""
+    import asyncio
+
+    from openjiuwen.core.runner import Runner
+
+    discarded: list[str] = []
+
+    class _Mgr:
+        async def add_mcp_server(self, cfg, *, tag=None):
+            await asyncio.sleep(30)
+
+        async def remove_mcp_server(self, *, server_name, ignore_exception=False):
+            discarded.append(server_name)
+
+    monkeypatch.setattr("jiuwenswarm.common.mcp_config._PROBE_STALL_TIMEOUT_S", 0.05)
+    # Hand-swap the descriptor: monkeypatch would restore the resolved manager.
+    original = Runner.__dict__["resource_mgr"]
+    Runner.resource_mgr = _Mgr()
+    try:
+        entry = {
+            "name": "slow",
+            "transport": "streamable-http",
+            "url": "https://example.com/mcp",
+        }
+        with patch(
+            "jiuwenswarm.common.mcp_config.get_mcp_server_config",
+            return_value=entry,
+        ), patch(
+            "jiuwenswarm.common.mcp_config.preflight_mcp_server_reachable",
+            return_value=(True, ""),
+        ):
+            ok, reason = await probe_mcp_live_connection("slow")
+    finally:
+        Runner.resource_mgr = original
+    assert ok is False
+    assert "stalled" in reason
+    assert discarded == ["slow"]
+
+
+@pytest.mark.asyncio
 async def test_agent_manager_probe_delegates_to_shared_function() -> None:
     """``AgentManager.probe_mcp_live_connection`` is a thin delegate to the
     shared ``mcp_config.probe_mcp_live_connection``. That function talks to

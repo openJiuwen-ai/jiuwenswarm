@@ -4,9 +4,9 @@ export const webUISlots: readonly WebUISlotRule[] = [
   { id: 'conversation.input.above', display: 'list', maxVisible: 3 },
   { id: 'conversation.input.below', display: 'list', maxVisible: 2 },
   { id: 'conversation.panel.right', display: 'list', rootComponents: ['Panel', 'Iframe'], strictRoot: true, rerender: 'keep-mounted' },
-  // Menu hosts require a real session_id; task navigation belongs to the application.
-  { id: 'application.menu', display: 'list' },
-  { id: 'application.menu.main', display: 'single', rootComponents: ['Iframe'], rerender: 'keep-mounted' },
+  // Menu and task navigation hosts belong to the application so switching sessions keeps them mounted.
+  { id: 'application.menu', display: 'list', scope: 'application' },
+  { id: 'application.menu.main', display: 'single', scope: 'application', rootComponents: ['Iframe'], rerender: 'keep-mounted' },
   { id: 'task.function', display: 'list', scope: 'application' },
   { id: 'task.function.main', display: 'single', scope: 'application', rootComponents: ['Iframe'], rerender: 'keep-mounted' },
   { id: 'application.settings', display: 'list', additionalScopes: ['application'] },

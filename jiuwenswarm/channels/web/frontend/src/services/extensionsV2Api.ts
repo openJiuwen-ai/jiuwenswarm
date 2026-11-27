@@ -146,20 +146,20 @@ export const systemPluginApi = {
     if (failure) throw new Error(failure);
   },
 
-  async reload(packageId: string): Promise<void> {
+  async reload(packageId: string, version?: string): Promise<void> {
     const result = (await webRequest(
       'extensions.v2.reload',
-      { package_id: packageId },
+      { package_id: packageId, ...(version ? { version } : {}) },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
     const failure = result ? reportFailure(result) : 'RELOAD_FAILED';
     if (failure) throw new Error(failure);
   },
 
-  async setEnabled(packageId: string, enable: boolean): Promise<void> {
+  async setEnabled(packageId: string, enable: boolean, version?: string): Promise<void> {
     const result = (await webRequest(
       'extensions.v2.set_enabled',
-      { package_id: packageId, enable },
+      { package_id: packageId, enable, ...(version ? { version } : {}) },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
     const failure = result ? reportFailure(result) : 'SET_ENABLED_FAILED';

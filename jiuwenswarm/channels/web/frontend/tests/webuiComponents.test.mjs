@@ -100,7 +100,7 @@ test('Dropdown requires exactly one trigger source, including inside Tabs', () =
 });
 
 test('menu main accepts native component trees while keeping root-only restrictions', () => {
-  const target = { session_id: 'sess-1', slot_id: 'application.menu.main', package_id: 'pkg.demo', instance_key: 'main' };
+  const target = { slot_id: 'application.menu.main', package_id: 'pkg.demo', instance_key: 'main' };
   assert.equal(pipeline.processRenderFrame(renderFrame({ component: 'Box', children: [
     { component: 'Text', props: { value: 'Native page' } },
   ] }, { target })).ok, true);

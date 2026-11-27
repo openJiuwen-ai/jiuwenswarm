@@ -16,6 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event as ThreadEvent
 from typing import Any, ClassVar, NamedTuple, Optional
 from weakref import WeakValueDictionary
 
@@ -128,6 +129,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.runtime import AgentRuntime
+from jiuwenswarm.runtime.service import is_stateless_method_request
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES, RuntimeEvent
 from jiuwenswarm.runtime.host_services import (
     install_runtime_push_handler,
@@ -556,6 +558,7 @@ def _renew_server_plan_controller() -> PlanModeController:
 # 避免 ping_timeout 导致连接关闭。默认 10 秒，小于服务端 ping_timeout=20s。
 _STREAM_KEEPALIVE_INTERVAL_SECONDS = 10.0
 _STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS = 1.0
+_MEMORY_HTTP_START_TIMEOUT = 5.0
 # send_push 无活跃 Gateway 连接告警的汇总窗口（秒）
 _PUSH_NO_GATEWAY_WARN_INTERVAL_S = 30.0
 
@@ -1441,6 +1444,7 @@ class AgentWebSocketServer:
         self._sandbox_start_task: asyncio.Task[None] | None = None
         # checkpointer 后台预热任务 (start() 里 fire-and-forget, stop() 时 cancel)
         self._checkpointer_warmup_task: Optional[asyncio.Task] = None
+        self._memory_start_cancelled = ThreadEvent()
         self._team_session_reconcile_task: Optional[asyncio.Task] = None
         # MCP 连接缓存预热任务 (同上, 建 Runner.resource_mgr 供首轮对话命中)
         self._mcp_prewarm_task: Optional[asyncio.Task] = None
@@ -1826,7 +1830,24 @@ class AgentWebSocketServer:
 
         # 端口已 listen, 后台预热 checkpointer, 不阻塞启动与握手.
         # _checkpointer_warmup_task 供 shutdown 时 cancel, 避免任务悬挂.
+        memory_start_cancelled = ThreadEvent()
+        self._memory_start_cancelled = memory_start_cancelled
+
         async def _start_runtime() -> None:
+            from jiuwenswarm.server.runtime.managed_memory_http import start_bundled_memory_http
+
+            async def start_memory() -> None:
+                try:
+                    await asyncio.to_thread(start_bundled_memory_http, cancelled=memory_start_cancelled)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[AgentWebSocketServer] built-in memory HTTP startup failed (%s)",
+                                   type(exc).__name__)
+
+            memory_start = asyncio.create_task(start_memory(), name="memory-http-start")
+            try:
+                await asyncio.wait_for(asyncio.shield(memory_start), timeout=_MEMORY_HTTP_START_TIMEOUT)
+            except TimeoutError:
+                logger.warning("[AgentWebSocketServer] memory HTTP is still starting; continuing Runtime startup")
             retry_delay = 1.0
             while True:
                 try:
@@ -2281,6 +2302,7 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        self._memory_start_cancelled.set()
         # Runtime startup owns the preparation registry and heartbeat services.
         # Join it before releasing those resources, including a completed task
         # whose exception still needs to be retrieved.
@@ -2434,6 +2456,12 @@ class AgentWebSocketServer:
             # unfinished two-phase provision still needs its original owner to
             # commit or abort it before shutdown can be retried.
             if runtime_close_completed or closing_runtime.closed:
+                from jiuwenswarm.server.runtime.managed_memory_http import managed_memory_http
+
+                try:
+                    await asyncio.to_thread(managed_memory_http.stop)
+                except Exception:  # noqa: BLE001
+                    logger.warning("[AgentWebSocketServer] managed memory HTTP shutdown failed")
                 # AgentRuntime is intentionally one-shot for process-style CLI
                 # commands. AgentServer historically supports start after stop,
                 # so prepare a fresh Runtime, manager and plan-state owner for
@@ -3394,6 +3422,15 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        if request.req_method == ReqMethod.TTS_SYNTHESIZE:
+            # The Gateway's voice extension owns synthesis. A missing handler
+            # can forward this call, but it must never start a chat turn.
+            wire = self._send_error_response(
+                ws, request, send_lock, "Text-to-speech is unavailable.", "METHOD_NOT_FOUND",
+            )
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+            return
         if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
             params = request.params if isinstance(request.params, dict) else {}
             channels = params.get("channels")
@@ -4405,14 +4442,8 @@ class AgentWebSocketServer:
 
     @staticmethod
     def _is_stateless_method_request(request: AgentRequest) -> bool:
-        """Return True for prefix-matched read-only RPCs that skip adapter setup."""
-        return (
-            request.req_method is not None
-            and request.req_method.value.startswith(
-                ("skills.", "skilldev.", "plugins.", "symphony.",
-                 "agent_groups.", "agent_templates.", "plugin_packages.")
-            )
-        )
+        """Return True for RPCs that skip session adapter setup."""
+        return is_stateless_method_request(request)
 
     # Skill plaza / catalog reads that must work even when the chat session
     # attached by the UI has been permanently deleted (#5886). Write RPCs such
@@ -14436,6 +14467,8 @@ class AgentWebSocketServer:
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
+            if result.session_equipment is not None:
+                payload["session_equipment"] = result.session_equipment
             if result.execution_profile != "default":
                 payload["execution_profile"] = result.execution_profile
                 payload["mode"] = result.canonical_mode

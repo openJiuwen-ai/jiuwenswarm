@@ -128,6 +128,7 @@ generated: true
 |---|---|---|---|---|
 | [F-20261107-1700-coding-document-memory](F_20261107_1700_coding-document-memory.md) | F | Coding 接入 agent-memory 文档记忆 | Wang Tao | 无独立 D：依据已确认的跨仓 Coding 文档记忆方案；无独立仓内 D 文档。 |
 | [F-20261118-1150-team-document-memory](F_20261118_1150_team-document-memory.md) | F | Team 接入 Jiuwen 文档记忆 | Wang Tao | 无独立 D：依据 D-20261113-2017-jiuwen-memory-team-upgrade 及已确认的跨仓 Team 方案。 |
+| [F_20261123_1526_bundled-agent-memory](F_20261123_1526_bundled-agent-memory.md) | F | Work 与 Code 主 Agent 迁移到内置 Agent Memory 插件 | y00841611 | 无独立 D：本文记录插件迁移的实现与决策；运行契约见仓内 S_04。 |
 | [F_20261125_1245_memory-portal-team-migration](F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-rails"></a>
@@ -204,6 +205,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261103_1106_app-market-containers-and-editing](app-market-implementation.md) | F | 应用市场浏览器容器与编辑会话 | default | 无独立 D：用户明确授权初步本地实现，无独立设计文档。 |
+| [F_20261126_1110_presentation-team-companion](F_20261126_1110_presentation-team-companion.md) | F | 应用形态支持 Team 会话与成员窗口 | zhanglongmin | 无独立 D：为应用形态增加 Team 会话创建、成员子窗口与队长公开回复；在既有 in-app overlay 双源架构上设计 Host/Frame 管线与成员子窗口协议，无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-tui-frontend"></a>
 
@@ -238,6 +240,7 @@ generated: true
 | [F_20261121_0906_swarmchat-auto-reply](F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](../designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [F_20261124_1556_app-market-ai-roles](F_20261124_1556_app-market-ai-roles.md) | F | 应用市场 AI 角色清单与接入指引 | kdgmpw | 无独立 D：依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。 |
 | [F_20261125_1245_memory-portal-team-migration](F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
+| [F_20261126_1110_presentation-team-companion](F_20261126_1110_presentation-team-companion.md) | F | 应用形态支持 Team 会话与成员窗口 | zhanglongmin | 无独立 D：为应用形态增加 Team 会话创建、成员子窗口与队长公开回复；在既有 in-app overlay 双源架构上设计 Host/Frame 管线与成员子窗口协议，无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
 
@@ -392,6 +395,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261103_1501_app-role-session](app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](../designs/active/D-20261103-1444-app-role-session/design.md) |
 | [F_20261104_1225_npc-team-member-sessions](F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](../designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
+| [F_20261123_1526_bundled-agent-memory](F_20261123_1526_bundled-agent-memory.md) | F | Work 与 Code 主 Agent 迁移到内置 Agent Memory 插件 | y00841611 | 无独立 D：本文记录插件迁移的实现与决策；运行契约见仓内 S_04。 |
 
 <a id="module-jiuwenswarm-server"></a>
 
@@ -449,6 +453,7 @@ generated: true
 | [F_20261104_1225_npc-team-member-sessions](F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](../designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261111_1755_team-leader-goal](F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](../designs/active/D-20261111-1722-team-goal-config/design.md) |
+| [F_20261123_1526_bundled-agent-memory](F_20261123_1526_bundled-agent-memory.md) | F | Work 与 Code 主 Agent 迁移到内置 Agent Memory 插件 | y00841611 | 无独立 D：本文记录插件迁移的实现与决策；运行契约见仓内 S_04。 |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 

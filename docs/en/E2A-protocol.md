@@ -151,6 +151,9 @@ For ACP bridging and doc cross-check only; **at runtime** use tuples in `e2a.con
 
 **Gateway RPC** names (`chat.send`, etc.) are project-defined and **not** in those tuples.
 
+- When another request owns the session output at ordinary chat dispatch, AgentServer returns `SESSION_BUSY`. Streaming requests receive the error as `chat.error`.
+- The Gateway voice handler serves `tts.synthesize`. AgentServer returns `METHOD_NOT_FOUND` for this method.
+
 ---
 
 ## 7. `merge_params_to_acp_prompt`

@@ -137,6 +137,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
         readme: 'connectorMarket.upload.missingReadme',
         manifest: 'connectorMarket.upload.missingManifest',
         skillPathNotRelative: 'connectorMarket.upload.skillPathNotRelative',
+        alreadyInstalled: 'connectorMarket.upload.alreadyInstalled',
       })
     : null;
 
