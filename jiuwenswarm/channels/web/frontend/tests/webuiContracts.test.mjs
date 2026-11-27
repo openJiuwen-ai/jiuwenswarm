@@ -37,6 +37,7 @@ test('catalog contains the supported components', () => {
     id: 'application.sidebar.footer',
     display: 'list',
     scope: 'application',
+    maxVisible: 3,
   });
   assert.deepEqual(componentCatalog.getSlot('application.background'), {
     id: 'application.background',
@@ -52,6 +53,8 @@ test('catalog contains the supported components', () => {
     assert.equal(componentCatalog.getSlot(slotId).rerender, 'keep-mounted', slotId);
   }
   assert.equal(componentCatalog.getSlot('conversation.input.above').rerender, undefined);
+  assert.equal(componentCatalog.getSlot('conversation.header.title.after').maxVisible, 2);
+  assert.equal(componentCatalog.getSlot('conversation.header.actions').maxVisible, 3);
   assert.deepEqual(componentCatalog.getSlot('application.splash'), {
     id: 'application.splash',
     display: 'single',

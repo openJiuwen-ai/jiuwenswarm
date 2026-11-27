@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-08 前端槽位渲染与复杂面板 |
 | 所属模块 | `jiuwenswarm/channels/web/frontend/src/features/webui/` |
 | 设计依据 | [F_06 渲染服务](F_06_render-service.md)、[F_07 界面项与上行交互](F_07_ui-contributions.md) |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-27 |
 | 方案状态 | 新链路已接入生产页面并承接全部 15 个已登记槽位，同时支持会话与全局槽位范围；旧链路与旧 action 组件已删除；真实插件联调与浏览器验收待整批验证 |
 
 ## 1. 问题与目标
@@ -97,11 +97,14 @@ flowchart LR
 | `conversation.input.above` | `list` | `ChatPanel` 消息列表下方、输入区上方 |
 | `conversation.input.below` | `single` | 输入区下方 |
 | `conversation.panel.right` | `list` | `App` 主区域右侧工作区，插件经加号空白页签选择后成为页签 |
+| `conversation.header.title.after` | `list` | 会话标题之后，最多显示 2 个实例 |
+| `conversation.header.actions` | `list` | 会话头部操作区，最多显示 3 个实例 |
 | `message.assistant.meta` | `list` | `MessageItem` 的助手消息 meta 行，消息级宿主按实例键过滤 |
 
-- `list` 槽位展示范围内全部实例，每个实例对应一个独立的 `WebUIInstanceView`。
-- `single` 槽位按 `localFrameId` 选择最新实例，不跨实例比较 `revision`。
+- `list` 槽位展示范围内全部实例，每个实例对应一个独立的 `WebUIInstanceView`；声明 `maxVisible` 时只保留先挂载的 N 个。
+- `single` 槽位按 `localFrameId` 选择最新实例，不跨实例比较 `revision`；`maxVisible` 与后端 `SlotSpec.max_instances` 同源维护。
 - 不传 `instanceKey` 的消费者覆盖整个槽位，传入时只覆盖该实例；可用 `packageId` 进一步限定所属包。
+- 头部两个槽位由宿主限制最大宽度，超出区域的内容可横向滚动。键盘焦点进入溢出的控件时，槽位随焦点滚动，原生操作按钮保留各自的宽度。
 
 ### 3.4 公开接口与生命周期
 
@@ -208,7 +211,7 @@ ToolPanel（右侧页签，经空白页签选择）、SettingsPageLayout（设�
 
 当前应用范围有 `application.entry`、`application.sidebar.footer`、`application.menu`、`application.menu.main`、`task.function` 与 `task.function.main`。首次访问入口由 `WebUIEntryHost` 在首次访问时挂载并发送
 `{"reason": "first_visit"}`，ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。
-侧栏底部由 `WebUIHost` 作为 list 槽位挂载，多个实例纵向排列；ready 使用空 payload。`readyOnce` 避免同一挂载消费者重复就绪。
+侧栏底部由 `WebUIHost` 作为 list 槽位挂载，按 `maxVisible` 最多显示 3 个实例，优先显示有效帧；每个实例最大宽度与侧栏一致、最大高度为 48px，超出内容由实例自身裁剪。footer 位于导航滚动区之外，导航区高度不足时独立滚动，footer 始终完整显示。ready 使用空 payload。`readyOnce` 避免同一挂载消费者重复就绪。
 菜单与任务入口由 `WebUINavigationHost` 挂载，对应页面由 `WebUIPageHost` 挂载，均不要求 session；
 切换会话时保持已有实例和页面，避免侧栏入口闪烁。示例任务入口只处理导航，不读写会话工作台状态。
 `App` 在查看聊天期间保留当前应用范围页面的挂载，仅隐藏容器；返回同一入口继续使用原实例或 iframe。

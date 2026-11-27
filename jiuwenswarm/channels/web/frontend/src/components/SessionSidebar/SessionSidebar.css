@@ -7,7 +7,8 @@
 .sidebar {
   grid-area: nav;
   width: 100%;
-  height: 100vh;
+  /* Follow the grid cell so the shell's 100dvh fallback also bounds the rail. */
+  height: 100%;
   border-right: 1px solid var(--color-border-default);
   background: var(--color-sidebar-surface);
   display: flex;
@@ -37,6 +38,24 @@
   width: var(--mode-rail-width);
   max-width: var(--mode-rail-width);
   min-width: var(--mode-rail-width);
+}
+
+/* Keep the logo and footer fixed while the main navigation scrolls. */
+.icon-rail-scroll {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.icon-rail-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 /* Logo in icon rail — SVG handles gradient + mark */
@@ -271,21 +290,28 @@
    WebUI user entry (application.sidebar.footer)
    ============================================ */
 
-/* Slot container: keep the entry centered and clear of the window edge.
+/* Slot container: keep the entries centered and clear of the window edge.
    The host renders a column flex box; horizontal centering needs align-items. */
 .icon-rail-user-slot {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   width: 100%;
   padding-bottom: 12px;
 }
 
-/* The per-instance wrapper stretches by default; center the adapter inside it. */
+/* Every contribution keeps the rail item width and clips only its own content;
+   the host must not clip the slot as a whole. */
 .icon-rail-user-slot > .webui-host-instance {
   display: flex;
   justify-content: center;
+  width: 100%;
+  min-width: 0;
+  max-width: var(--mode-rail-width);
+  max-height: 48px;
+  overflow: hidden;
 }
 
 /* Dropdown trigger: same footprint as the rail nav items. */

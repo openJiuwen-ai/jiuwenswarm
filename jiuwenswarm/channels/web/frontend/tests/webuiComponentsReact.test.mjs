@@ -441,6 +441,28 @@ const frame = (root, revision = 1, scope = target) => ({
   target: scope, schema_version: 1, revision, mode: 'replace', root,
 });
 const events = { 'ui.click': { id: 'confirm', args: { source: 'toolbar' } } };
+
+for (const [slotId, limit] of [
+  ['conversation.header.title.after', 2],
+  ['conversation.header.actions', 3],
+]) {
+  test(`${slotId} renders at most ${limit} list instances`, async () => {
+    const base = { session_id: 'sess-1', slot_id: slotId, package_id: 'pkg.0', instance_key: 'main' };
+    const app = await setup({ component: 'Text', props: { value: '0' } }, base);
+    try {
+      for (let index = 1; index <= limit; index += 1) {
+        await act(async () => app.transport.injectRenderFrame(frame(
+          { component: 'Text', props: { value: String(index) } },
+          1,
+          { ...base, package_id: `pkg.${index}` },
+        )));
+      }
+      assert.equal(app.container.querySelectorAll('[data-testid="webui-host-instance"]').length, limit);
+    } finally {
+      await app.close();
+    }
+  });
+}
 async function click(element) {
   assert.ok(element, 'click target must exist');
   await act(async () => element.dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
@@ -2912,16 +2934,55 @@ test('Dropdown renders plugin-composed labels and native popup width without ini
   } finally { await app.close(); }
 });
 
-test('application footer mounts multiple contributions without a session', async () => {
+test('application footer keeps three contributions without a session', async () => {
   const scope = { scope: 'application', slot_id: 'application.sidebar.footer', package_id: 'pkg.one', instance_key: 'main' };
   const app = await setup({ component: 'Text', props: { value: 'First' } }, scope);
   try {
-    await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Second' } }, 1,
-      { ...scope, package_id: 'pkg.two' })));
+    for (const [packageId, value] of [['pkg.two', 'Second'], ['pkg.three', 'Third']]) {
+      await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value } }, 1,
+        { ...scope, package_id: packageId })));
+    }
     assert.match(app.container.textContent, /First/);
     assert.match(app.container.textContent, /Second/);
+    assert.match(app.container.textContent, /Third/);
+    assert.equal(app.container.querySelectorAll('[data-testid="webui-host-instance"]').length, 3);
+    await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Fourth' } }, 1,
+      { ...scope, package_id: 'pkg.four' })));
+    assert.doesNotMatch(app.container.textContent, /Fourth/);
+    assert.equal(app.container.querySelectorAll('[data-testid="webui-host-instance"]').length, 3);
     assert.equal(app.transport.dispatches[0].target.scope, 'application');
     assert.equal(app.transport.dispatches[0].target.sessionId, '');
+    await act(async () => app.transport.injectClearFrame({ target: scope, revision: 2 }));
+    assert.doesNotMatch(app.container.textContent, /First/);
+    assert.match(app.container.textContent, /Second/);
+    assert.match(app.container.textContent, /Third/);
+    assert.match(app.container.textContent, /Fourth/, 'the next mounted contribution takes the freed slot');
+    assert.equal(app.container.querySelectorAll('[data-testid="webui-host-instance"]').length, 3);
+  } finally { await app.close(); }
+});
+
+test('footer errors do not hide delivered contributions and recovered errors update the slot', async () => {
+  const scope = { scope: 'application', slot_id: 'application.sidebar.footer', package_id: 'pkg.initial', instance_key: 'main' };
+  const failed = { ...scope, package_id: 'pkg.failed' };
+  const app = await setup({ component: 'Text', props: { value: 'Initial' } }, scope);
+  try {
+    await act(async () => app.transport.injectClearFrame({ target: scope, revision: 2 }));
+    await act(async () => app.transport.injectErrorFrame({
+      target: failed, revision: 0, code: 'SCHEMA_ERROR', message: 'bad tree',
+    }));
+    for (const [packageId, value] of [['pkg.one', 'One'], ['pkg.two', 'Two'], ['pkg.three', 'Three']]) {
+      await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value } }, 1,
+        { ...scope, package_id: packageId })));
+    }
+    assert.match(app.container.textContent, /One/);
+    assert.match(app.container.textContent, /Two/);
+    assert.match(app.container.textContent, /Three/);
+    assert.equal(app.container.querySelectorAll('[data-testid="webui-host-instance"]').length, 3);
+
+    await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Recovered' } }, 1,
+      failed)));
+    assert.match(app.container.textContent, /Recovered/);
+    assert.doesNotMatch(app.container.textContent, /Three/);
   } finally { await app.close(); }
 });
 
