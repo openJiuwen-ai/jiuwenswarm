@@ -1,4 +1,5 @@
 import base64
+from email.message import EmailMessage
 from pathlib import Path
 
 import httpx
@@ -16,11 +17,17 @@ from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 @pytest.fixture
 def app(monkeypatch, tmp_path):
-    from jiuwenswarm.common import paths, utils
+    from jiuwenswarm.common import paths
+    from jiuwenswarm.enterprise import plane
+    from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
+    # File requests can initialize the process-wide enterprise plane and its manager pool.
+    monkeypatch.setattr(plane, "_PLANE", None)
+    monkeypatch.setattr(plane, "_BUILD_ATTEMPTED", False)
+    monkeypatch.setattr(TenantAgentPool, "_instance", None)
     services = AppServices()
     services.adapter_registry = AdapterRegistry()
     services.adapter_registry.register(WorkspaceFileAdapter())
@@ -29,7 +36,6 @@ def app(monkeypatch, tmp_path):
 
     assert session_history.flush_pending_writes()
     assert session_metadata.flush_pending_writes()
-    TenantContext.clear()
 
 
 def headers(user="u"):
@@ -39,6 +45,85 @@ def headers(user="u"):
         "X-Bot-Id": "b",
         "X-Session-Id": "session-one",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via_obs", [False, True])
+async def test_uploaded_eml_is_readable_only_in_its_tenant_and_session(app, monkeypatch, via_obs):
+    from types import SimpleNamespace
+
+    from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+
+    from jiuwenswarm.agents.harness.common.tools import email_tools
+    from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
+        SessionMessagingRoute,
+        SessionMessagingRouteRail,
+        with_session_messaging_route,
+    )
+    from jiuwenswarm.common.obs_files import AttachmentStore
+
+    email = EmailMessage()
+    email["Subject"] = "发票明细"
+    email["From"] = "sender@example.com"
+    email["To"] = "recipient@example.com"
+    email.set_content(
+        "<head><title>Hidden</title></head><p>金额 123.45</p><script>ignore()</script>",
+        subtype="html",
+        charset="gb18030",
+        cte="base64",
+    )
+    email.add_attachment(b"private PDF bytes", maintype="application", subtype="pdf", filename="发票.pdf")
+    data = email.as_bytes()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://agent") as client:
+        document = {"filename": "invoice.EML", "mime_type": "message/rfc822"}
+        if via_obs:
+            monkeypatch.setattr(AttachmentStore, "from_env", lambda: SimpleNamespace(read=lambda *_args: data))
+            imported = await client.post(
+                "/api/v1/sessions/session-one/files/import",
+                headers=headers(),
+                json={"files": [{"name": "invoice.EML", "url": "http://obs/signed", "type": "document"}]},
+            )
+            assert imported.json()["ok"], imported.text
+            payload = imported.json().get("data", imported.json().get("payload"))
+            document.update(payload["files"][0], type="document", _persisted=True)
+        else:
+            document["base64_data"] = base64.b64encode(data).decode("ascii")
+        response = await client.post(
+            "/api/v1/sessions/session-one/documents",
+            headers=headers(),
+            json={"documents": [document]},
+        )
+    assert response.json()["ok"], response.text
+    payload = response.json().get("data", response.json().get("payload"))
+    path = payload["files"]["uploaded_documents"][0]["path"]
+    rail = SessionMessagingRouteRail()
+    for user, session_id in (("u", "session-one"), ("u", "session-two"), ("v", "session-one")):
+        route = SessionMessagingRoute(session_id=session_id, request_id="r", user_id=user)
+        ctx = SimpleNamespace(
+            inputs=ToolCallInputs(tool_call={"id": "call", "name": "read_email"}, tool_name="read_email"),
+            extra={"run_context": with_session_messaging_route({}, route)["run"]["context"]},
+        )
+        with TenantContext.scoped(build_tenant_key("g", "b", user)):
+            await rail.before_tool_call(ctx)
+            try:
+                result = await email_tools.read_email.invoke({"file_path": path})
+                if (user, session_id) == ("u", "session-one"):
+                    with monkeypatch.context() as limits:
+                        limits.setattr(email_tools, "_MAX_EMAIL_BYTES", len(data) - 1)
+                        large = await email_tools.read_email.invoke({"file_path": path})
+                    assert "reading limit" in large["error"]
+            finally:
+                await rail.after_tool_call(ctx)
+        if (user, session_id) == ("u", "session-one"):
+            assert result["headers"]["Subject"] == "发票明细"
+            assert result["headers"]["From"] == "sender@example.com"
+            assert result["body"] == "金额 123.45"
+            assert result["attachment_names"] == ["发票.pdf"]
+            assert "private PDF bytes" not in str(result)
+        else:
+            assert "error" in result
+            assert "发票" not in str(result)
+    assert "error" in await email_tools.read_email.invoke({"file_path": path})
 
 
 @pytest.mark.asyncio

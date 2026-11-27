@@ -179,6 +179,20 @@ observability:
 
 Spans are printed as JSON to the console — handy for a quick local wiring check.
 
+#### 4.4.5 Native telemetry for HTTP health checks
+
+AgentServer excludes `GET /api/v1/health` from FastAPI's native telemetry, including
+requests with query parameters and failed probes. The health handler and ordinary
+application logs still run; the exclusion skips this request's native traces,
+metrics, and OpenTelemetry logs. Use probe status and application logs to diagnose failures.
+Other methods, paths, and Agent/LLM/tool tracing are not disabled.
+
+This policy is built into `build_http_app()` and needs no YAML setting. FastAPI
+versions without native telemetry (such as 0.136.1) accept and ignore the extra
+constructor option. Independent OTel contrib instrumentation requires its own
+URL exclusion; the native option does not configure that middleware. This change
+does not remove existing traces or filter other management requests in Insight.
+
 ---
 
 ## 5. Local file mode: offline upload to Langfuse

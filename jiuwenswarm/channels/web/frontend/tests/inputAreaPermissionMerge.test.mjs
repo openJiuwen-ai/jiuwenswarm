@@ -333,6 +333,42 @@ test('web plus opens browser picker directly without a server file dialog', asyn
   });
 });
 
+for (const edition of ['personal', 'enterprise']) {
+  test(`${edition} picker accepts EML and sends it through document persistence`, async () => {
+    window.__JIUWENSWARM_EDITION__ = edition;
+    try {
+      await mount({}, async ({ props, render }) => {
+        const received = [];
+        props.onPersistDocuments = async (_text, items) => {
+          received.push(...items);
+          return { media_items: items.map((item) => ({ ...item, path: `/uploads/${item.filename}` })) };
+        };
+        await render();
+        const input = byId('chat-panel-input-file-input');
+        const accept = input.accept.split(',');
+        assert.ok(accept.includes('.eml'));
+        assert.ok(accept.includes('message/rfc822'));
+        assert.ok(accept.includes('.pdf'));
+        assert.ok(!accept.includes('.msg'));
+        const email = new dom.window.File(['Subject: Example\r\n\r\nBody'], 'invoice.eml');
+        Object.defineProperty(input, 'files', { value: [email] });
+        await act(async () => {
+          input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+          for (let attempts = 0; received.length === 0 && attempts < 100; attempts += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        });
+        assert.equal(received.length, 1);
+        assert.equal(received[0].type, 'document');
+        assert.equal(received[0].filename, 'invoice.eml');
+        assert.ok(received[0].base64Data);
+      });
+    } finally {
+      delete window.__JIUWENSWARM_EDITION__;
+    }
+  });
+}
+
 test('browser picker shows a preparing card until the picker returns or is cancelled', async () => {
   await mount({}, async () => {
     const input = byId('chat-panel-input-file-input');

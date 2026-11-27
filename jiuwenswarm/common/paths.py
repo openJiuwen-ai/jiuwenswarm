@@ -160,6 +160,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -752,17 +753,22 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     一次性会话目录。
     """
 
+    from jiuwenswarm.common.sandbox_fs import ensure_sandbox_writable
+
     base = get_default_project_workspace_dir()
     raw_session = str(session_id or "").strip()
     if not raw_session:
         base.mkdir(parents=True, exist_ok=True)
+        ensure_sandbox_writable(base)
         return base
     safe_session = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_session).strip("._-")
     if not safe_session:
         base.mkdir(parents=True, exist_ok=True)
+        ensure_sandbox_writable(base)
         return base
     workspace = base / safe_session
     workspace.mkdir(parents=True, exist_ok=True)
+    ensure_sandbox_writable(workspace)
     return workspace
 
 
@@ -1027,10 +1033,29 @@ _legacy_migration_done: bool = False
 _partition_migration_done: bool = False
 
 
+def _is_migration_link(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or (
+        os.name == "nt" and getattr(info, "st_reparse_tag", None) == stat.IO_REPARSE_TAG_MOUNT_POINT
+    )
+
+
+def _same_migration_path(old: Path, new: Path) -> bool:
+    try:
+        return old.samefile(new)
+    except FileNotFoundError:
+        return False
+
+
 def _migrate_absorb_file(old: Path, new: Path) -> None:
     """迁移归并的文件级处理：目标不存在剪切；同名同内容剪源；同名异内容源
     改名 ``.migrated`` 备份（正本不覆盖，不静默丢数据）。
     """
+    if _is_migration_link(old) or _is_migration_link(new) or _same_migration_path(old, new):
+        return
     if not new.exists():
         new.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1065,13 +1090,11 @@ def _migrate_absorb(old: Path, new: Path) -> None:
     迁移中断）时，``_move_if_absent`` 不能整体剪切——递归归并保证老数据
     合入新位置，避免幂等跳过导致数据永久滞留老布局。
     """
-    both_dirs = (
-        old.is_dir()
-        and new.is_dir()
-        and not old.is_symlink()
-        and not new.is_symlink()
-    )
-    if both_dirs:
+    if _is_migration_link(old) or _is_migration_link(new):
+        return
+    if old.is_dir() and new.is_dir():
+        if _same_migration_path(old, new):
+            return
         for entry in sorted(old.iterdir()):
             _migrate_absorb(entry, new / entry.name)
         try:
@@ -1087,13 +1110,13 @@ def _move_if_absent(old: Path, new: Path) -> None:
     """
     源路径存在时将其搬迁到目标位置（幂等 + 归并）。
 
-    - 老位置已是兼容软链（前次迁移产物）→ 静默跳过；
+    - 源或目标是软链或 Windows 目录联接 → 静默跳过；
     - 目标不存在 → 整体剪切（rename）；
     - 目标已存在（骨架先行 / 并发部分迁移 / 上次迁移中断）→ 递归归并：
       正本不覆盖，同名异内容源改名 ``.migrated`` 备份，源侧空树剪除——
       骨架先建时老数据不滞留老布局。并发进程抢先搬迁视为对方获胜。
     """
-    if old.is_symlink():
+    if _is_migration_link(old) or _is_migration_link(new):
         return
     if not old.exists():
         return
@@ -1159,63 +1182,26 @@ def _do_migrate_profile_data_root_layout() -> None:
 
     # 迁移辅助：目录递归归并与空树剪除（symlink 视为兼容链接，跳过）。
 
-    def _absorb_file(old: Path, new: Path) -> None:
-        if not new.exists():
-            new.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.move(str(old), str(new))
-            except FileNotFoundError:
-                pass
-            return
-        try:
-            is_duplicate = (
-                old.stat().st_size == new.stat().st_size
-                and old.stat().st_size <= 32 * 1024 * 1024
-                and old.read_bytes() == new.read_bytes()
-            )
-        except OSError:
-            is_duplicate = False
-        if is_duplicate:
-            old.unlink()
-            return
-        migrated = new.with_name(f"{new.name}.migrated")
-        index = 1
-        while migrated.exists():
-            index += 1
-            migrated = new.with_name(f"{new.name}.migrated.{index}")
-        new.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old), str(migrated))
-
     def _prune_empty_tree(top: Path) -> None:
-        if not top.is_dir():
+        if _is_migration_link(top) or not top.is_dir():
             return
         # 尽力而为：任一目录剪除失败（如并发写入）即放弃本轮，
         # 迁移幂等，下次启动重试
         try:
-            for child in sorted(top.rglob("*"), reverse=True):
-                if child.is_dir() and not child.is_symlink() and not any(child.iterdir()):
-                    child.rmdir()
+            for child in top.iterdir():
+                _prune_empty_tree(child)
             if not any(top.iterdir()):
                 top.rmdir()
         except OSError:
             pass
 
     def _absorb_tree(old: Path, new: Path) -> None:
-        if not old.is_dir():
+        if _is_migration_link(old) or _is_migration_link(new):
+            return
+        if not old.is_dir() or _same_migration_path(old, new):
             return
         for entry in sorted(old.iterdir()):
-            target = new / entry.name
-            if entry.is_dir() and not entry.is_symlink():
-                if not target.exists():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.move(str(entry), str(target))
-                    except FileNotFoundError:
-                        pass
-                else:
-                    _absorb_tree(entry, target)
-            else:
-                _absorb_file(entry, target)
+            _move_if_absent(entry, new / entry.name)
         _prune_empty_tree(old)
 
     # 1) 会话运行态：历史位置（electron 散落态与 config/runtime_state）
@@ -1272,7 +1258,7 @@ def _do_migrate_profile_data_root_layout() -> None:
     # 3) 更早期商用布局：workspace/ 内 agent、sessions 等平铺项
     #    吸收进 profile/（同名目录递归归并；agent/ 即新方案的 agent 根）。
     stray_workspace = root / "workspace"
-    if stray_workspace.is_dir() and not stray_workspace.is_symlink():
+    if stray_workspace.is_dir() and not _is_migration_link(stray_workspace):
         for entry in sorted(stray_workspace.iterdir()):
             _absorb_tree(entry, profile / entry.name)
         _prune_empty_tree(stray_workspace)
@@ -1284,7 +1270,7 @@ def _do_migrate_profile_data_root_layout() -> None:
         _absorb_tree(legacy_agent_logs, get_agent_logs_dir())
         _prune_empty_tree(legacy_agent_logs)
     stray_logs = root / "logs"
-    if stray_logs.is_dir() and not stray_logs.is_symlink():
+    if stray_logs.is_dir() and not _is_migration_link(stray_logs):
         for entry in sorted(stray_logs.iterdir()):
             if entry.name == "logs":
                 # openjiwen core 家族日志（run/、interface/、performance/）
@@ -1299,7 +1285,7 @@ def _do_migrate_profile_data_root_layout() -> None:
                     continue
                 _absorb_tree(entry, bucket)
             else:
-                _absorb_file(entry, get_logs_dir() / entry.name)
+                _migrate_absorb_file(entry, get_logs_dir() / entry.name)
         _prune_empty_tree(stray_logs)
 
     # 5) 老路径兼容软链（降级兼容，见 _ensure_legacy_compat_symlinks）

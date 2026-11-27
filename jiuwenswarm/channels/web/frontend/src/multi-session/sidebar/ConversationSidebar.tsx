@@ -104,6 +104,8 @@ function isDefaultProject(project: ProjectInfo): boolean {
 
 interface ConversationSidebarProps {
   activeSessionId: string | null;
+  revealSessionId?: string | null;
+  onSessionRevealed?: (sessionId: string) => void;
   onNew: (options?: NewConversationOptions) => void;
   onSelect: (session: Session) => void;
   onSelectDesignSession?: (project: ProjectInfo, sessionId: string) => void;
@@ -133,6 +135,7 @@ interface ConversationSidebarProps {
 
 interface ConversationListItemProps {
   session: Session;
+  onReveal?: (sessionId: string) => void;
   runtime?: ChatRuntime;
   active: boolean;
   nested: boolean;
@@ -180,6 +183,7 @@ function loadUnreadSessions(): Set<string> {
 
 function ConversationListItem({
   session,
+  onReveal,
   runtime,
   active,
   nested,
@@ -192,6 +196,11 @@ function ConversationListItem({
 }: ConversationListItemProps) {
   const { t, i18n } = useTranslation();
   const itemRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!onReveal) return;
+    itemRef.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    onReveal(session.session_id);
+  }, [onReveal, session.session_id]);
   const [menuOpen, setMenuOpen] = useState(false);
   const { tooltip: itemTooltip, handlers: itemTooltipHandlers } = useAdaptiveTooltip();
   const { tooltip: truncationTooltip, handlers: truncationTooltipHandlers } = useAdaptiveTooltip({
@@ -736,6 +745,8 @@ function CronJobRow({
 
 export function ConversationSidebar({
   activeSessionId,
+  revealSessionId,
+  onSessionRevealed,
   onNew,
   onSelect,
   onOpenCron,
@@ -1049,14 +1060,17 @@ export function ConversationSidebar({
     onSelectDesignSession(project, session.session_id);
   }
 
-  function renderSession(session: Session, options: { nested?: boolean; projectMenu?: boolean } = {}) {
+  function renderSession(session: Session, options: { nested?: boolean; projectMenu?: boolean; projectId?: string } = {}) {
     const nested = options.nested === true;
     const projectMenu = options.projectMenu === true;
     const designActive = workMode === 'design' && activeDesignSessionId === session.session_id;
+    const shouldReveal = !collapsed && options.projectId === session.project_id
+      && activeSessionId === session.session_id && revealSessionId === session.session_id;
     return (
       <ConversationListItem
         key={session.session_id}
         session={session}
+        onReveal={shouldReveal ? onSessionRevealed : undefined}
         runtime={runtimes[session.session_id]}
         active={workMode === 'design' ? designActive : activeSessionId === session.session_id}
         nested={nested}
@@ -1235,7 +1249,9 @@ export function ConversationSidebar({
               ? (jobsByProject.get(project.project_id) || []).map((job) => renderCronJob(job, project.project_id, true))
               : null}
             {sessionsForProject.length > 0 ? (
-              sessionsForProject.map((session) => renderSession(session, { nested: true, projectMenu: true }))
+              sessionsForProject.map((session) => renderSession(session, {
+                nested: true, projectMenu: true, projectId: project.project_id,
+              }))
             ) : sessionsLoaded &&
               (workMode === 'design' || (jobsByProject.get(project.project_id) || []).length === 0) ? (
               <div className="conversation-sidebar__empty" data-testid="multi-session-project-group-empty">
@@ -1505,7 +1521,7 @@ export function ConversationSidebar({
                     )
                   : null}
                 {conversationSessions.length > 0 ? (
-                  conversationSessions.map((session) => renderSession(session))
+                  conversationSessions.map((session) => renderSession(session, { projectId: defaultProject?.project_id }))
                 ) : workMode === 'design' ||
                   !defaultProject ||
                   (jobsByProject.get(defaultProject.project_id) || []).length === 0 ? (

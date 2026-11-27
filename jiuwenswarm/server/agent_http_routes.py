@@ -102,9 +102,24 @@ class SessionLogMiddleware:
             unbind_log_session(token, previous_trace)
 
 
+def _exclude_health_telemetry(scope: Scope) -> bool:
+    """Keep health probes out of native FastAPI telemetry, including failures."""
+    return (
+        scope.get("type") == "http"
+        and scope.get("method") == "GET"
+        and scope.get("path") == f"{API_PREFIX}/health"
+    )
+
+
 def build_http_app(app_services: AppServices) -> FastAPI:
     """造出 HTTP 应用。业务函数通过工具箱拿服务，不接触 WebSocket 服务器。"""
-    app = FastAPI(title="JiuwenSwarm HTTP", docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="JiuwenSwarm HTTP",
+        docs_url=None,
+        redoc_url=None,
+        # Older FastAPI versions accept this extra argument without native telemetry.
+        telemetry={"exclude": _exclude_health_telemetry},
+    )
     app.add_middleware(SessionLogMiddleware)
     # 后加的包在最外层，先拦超大请求体，再记日志。
     app.add_middleware(RequestBodyLimitMiddleware)

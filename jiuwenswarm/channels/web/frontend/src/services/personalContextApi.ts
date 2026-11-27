@@ -72,6 +72,11 @@ export type FetchRunProgress = {
     oversized_count?: number;
     reason?: string;
   };
+  token_usage?: {
+    total_tokens: number | null;
+    has_estimate: boolean;
+    incomplete: boolean;
+  };
 };
 
 /** get_fetch_run_status 返回的单次运行记录；终端记录会保留 run_id 和起止时间。 */

@@ -358,6 +358,13 @@ def _awaits_answers(execution: SessionExecutionSnapshot) -> bool:
     return bool(execution.waiting_control_ids) and not execution.state.terminal
 
 
+def is_stateless_method_request(request: AgentRequest) -> bool:
+    """Return whether the RPC skips session adapter setup."""
+    return request.req_method is not None and request.req_method.value.startswith(
+        ("skills.", "skilldev.", "plugins.", "symphony.", "agent_groups.", "agent_templates.", "plugin_packages.")
+    )
+
+
 class AgentRuntime:
     """Own the existing ``AgentManager`` and its in-memory resources.
 
@@ -4815,17 +4822,7 @@ class AgentRuntime:
 
     @staticmethod
     def _is_stateless_method_request(request: AgentRequest) -> bool:
-        return request.req_method is not None and request.req_method.value.startswith(
-            (
-                "skills.",
-                "skilldev.",
-                "plugins.",
-                "symphony.",
-                "agent_groups.",
-                "agent_templates.",
-                "plugin_packages.",
-            )
-        )
+        return is_stateless_method_request(request)
 
     @staticmethod
     def _is_readonly_goal_get_request(request: AgentRequest) -> bool:
@@ -4876,6 +4873,12 @@ class AgentRuntime:
             ensure_builtin_agent_groups_installed()
         except Exception as exc:  # noqa: BLE001
             logger.warning("builtin agent_group install skipped: %s", exc)
+        try:
+            from jiuwenswarm.agents.harness.common.memory.plugin import ensure_memory_plugin_installed
+
+            await asyncio.to_thread(ensure_memory_plugin_installed)
+        except (OSError, ValueError) as exc:
+            logger.warning("builtin Agent Memory plugin install skipped: %s", exc)
 
     async def _rollback_start(self) -> None:
         """Undo partially initialized owned dependencies after start failure."""
