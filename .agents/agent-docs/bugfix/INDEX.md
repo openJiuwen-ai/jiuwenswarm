@@ -154,6 +154,7 @@ generated: true
 |---|---|---|---|---|
 | [B_20261117_2001_deferred-memory-failure](jiuwenswarm/agents/harness/common/rails/B_20261117_2001_deferred-memory-failure.md) | B | 延迟调用记忆工具时传播失败状态 | ToNy_St4rk | 无独立 D：修复 Issue 6151 中已有工具结果契约的状态传播，无独立设计。 |
 | [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-recommendation"></a>
 
@@ -389,6 +390,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261126_2208_application-menu-slot-flicker](jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-instance_manager"></a>
 
@@ -520,6 +522,7 @@ generated: true
 | [B_20261126_1045_ui-lang-over-yaml-zh](jiuwenswarm/enterprise/config/B_20261126_1045_ui-lang-over-yaml-zh.md) | B | 企业版 UI 语言被 AgentServer yaml preferred_language zh 盖过 | whds5279 | 无独立 D：无独立 D；依据 issue |
 | [B_20261126_1052_team-memory-rail-race](jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
 | [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 
@@ -539,6 +542,7 @@ generated: true
 | [B_20261126_0954_native-npc-team-first-turn](jiuwenswarm/server/runtime/session/B_20261126_0954_native-npc-team-first-turn.md) | B | 原生 NPC 队伍首轮发言失败 | kdgmpw | 无独立 D：修复现有原生 NPC Team 装配契约。 |
 | [B_20261126_1308_session-metadata-corrupted-marker](jiuwenswarm/server/runtime/session/B_20261126_1308_session-metadata-corrupted-marker.md) | B | 损坏 metadata.json 的会话在列表中伪装成合法旧会话，团队身份字段静默丢失 | zhangpu | 无独立 D：防御性呈现契约修复，复用 _read_metadata 既有读路径补显式失败状态并在合成层打标、投影层透传，无独立设计文档。 |
 | [B_20261126_1628_upload-doc-block-auto-title](jiuwenswarm/B_20261126_1628_upload-doc-block-auto-title.md) | B | 会话自动标题被【上传文档】协议块污染 | whds5279 | 无独立 D：修复既有标题生成与上传协议块注入的跨层契约冲突，不引入新方案。 |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 
