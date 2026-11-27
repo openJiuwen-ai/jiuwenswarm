@@ -8,7 +8,7 @@
 | 编号 / slug | S_20 / stream-event-emission-channel |
 | 关联模块（agent-core 仓） | `openjiuwen/core/session/stream/`（`base.py` 三 schema 与模式枚举 / `emitter.py` StreamEmitter + AsyncStreamQueue / `writer.py` StreamWriter 三型 / `manager.py` StreamWriterManager / `chunk_logging.py` 分块日志开关） |
 | 关联模块（jiuwenswarm 仓） | `agents/harness/common/rails/stream_event_rail.py`（发射面：六个 `_emit_*` + sid 解析 + cwd rebind + symphony 桥接）；`agents/harness/common/rails/symphony/tool_stream_events.py`（SymphonyToolStreamHandler）；装配层：`server/runtime/agent_adapter/interface_deep.py`（`_build_stream_event_rail` @9620 / `_RailBuildInfo` 注册 @10618）、`server/runtime/agent_adapter/interface_code.py`（@730）、`server/runtime/agent_adapter/interface_flash.py`（`_FLASH_RAIL_KEEP` @238 继承）、`server/runtime/skill_turbo/executor.py`（@471）、`agents/harness/team/team_runtime_inheritance.py`（@202）、`agents/harness/common/auto_harness/service.py`（@276）、`agents/swarm/providers/builtin_rails.py`（`swarm.stream_event` 命名空间）；消费侧：`jiuwenswarm/cli/events.py`（终态/交互判定）、`jiuwenswarm/perf/todo_tracker.py`（todo 快照旁路） |
-| 最近一次修订日期 | 2026-11-25 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -91,6 +91,7 @@ stream_output(first_frame_timeout=-1, timeout=-1, need_close=True)
 - `display_name` 优先级：模型 `call_goal` 文案 → `build_tool_display_name(name, arguments)` 规则兜底
 - `source_skill`：`_resolve_source_skill(session)`（经 `get_current_skill_name`）
 - `success` / `status` / `is_error` 仅在 `_infer_tool_result_error` 判定非 None 时写入（success 取反、error 时三键齐发）
+- `_infer_tool_result_error` 判定顺序：`success=false` → `is_error`/`isError`/`ok=false` → `status`/`result_type`/`kind` → exit code → `business_failure_signal`（业务拒绝态，见 [[S_08]]）→ **嵌套** `data`/`raw_output`/`result` 递归（嵌套失败优先于外层 `success=true`）→ 最后才用 `success=true` 收尾。嵌套字符串只在 JSON 文本、失败独有前缀（`MCP error`/`[ERROR]`/`[TOOL_NOT_AVAILABLE]`）或 ≤500 字符时做全文判定——`invoke_tool` 的 `result` 常是目标工具完整正文，长正文里的 `exit code` 字样不能算失败
 - `raw_output`：`_structured_tool_result_payload(result)` 非 dict-like 时为 None；symphony 富化只发生在 raw_output 非 None 分支
 
 ### 装配 API

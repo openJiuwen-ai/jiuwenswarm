@@ -30,7 +30,8 @@ class PreinstalledPatch:
         self.bindings = [(cls, name, cls.__dict__[name])
             for cls in (SseClient, StreamableHttpClient, ToolMgr, Tool)
             for name in ('connect', '_do_connect', 'disconnect', 'call_tool',
-                         'list_tools', '_create_client', 'invoke', '__init_subclass__')
+                         'call_tool_with_meta', 'list_tools', '_create_client',
+                         'invoke', '__init_subclass__')
             if name in cls.__dict__]
         self.guards = {name: set(getattr(patch, name)) for name in
             ('_wrapped_methods', '_wrapped_connects', '_wrapped_factories')}

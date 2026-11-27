@@ -266,7 +266,8 @@ def _autouse_restore_mcp_timeout_patch(monkeypatch):
     # 本文件有真实 SSE 和假 transport 两种装配。绑定与 guard 必须成对还原，
     # 否则后续生命周期测试会在已有 wrapper 上再包一次，甚至叠加 HTTP owner。
     for cls in (SseClient, StreamableHttpClient, ToolMgr):
-        for name in ("connect", "_do_connect", "disconnect", "call_tool", "list_tools", "_create_client"):
+        for name in ("connect", "_do_connect", "disconnect", "call_tool",
+                     "call_tool_with_meta", "list_tools", "_create_client"):
             if name in cls.__dict__:
                 monkeypatch.setattr(cls, name, cls.__dict__[name])
     monkeypatch.setattr(timeout_patch, "_PATCHED", timeout_patch._PATCHED)

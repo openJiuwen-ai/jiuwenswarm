@@ -23,11 +23,16 @@
   结构化 ``data.multimodal`` 保持完整——像素由 image 块通道送达，文本副本是
   纯冗余（否则同一张图按文字计价会成倍膨胀 prompt）。
 
-注意：``has_failure_signal`` / ``error_text_from_payload`` 是全仓失败信号判定
-的**唯一实现**——消费方（``server/runtime/skill_turbo/runtime/tool_utils.py``
+注意：``has_failure_signal`` / ``error_text_from_payload`` / ``business_failure_signal``
+是全仓失败信号判定的**唯一实现**——消费方（``server/runtime/skill_turbo/runtime/tool_utils.py``
 经委托、circuit_breaker / stream_event rail 经同语义增量识别）一律不得私有
 复制判定逻辑；语义演进只改本模块，契约由 test_tool_utils_bash_parsing 与
 test_tool_result_normalize_rail 共同钉住。
+
+``business_failure_signal`` 与 ``has_failure_signal`` 职责不重叠：后者判通用错误标记
+（与熔断器 ``_dict_has_error`` 逐字同源，不可扩展），前者判"成功的 RPC + 失败的业务态"
+（``applied:false`` / ``status=rejected`` / ``failures`` 非空）。业务态不写进工具级
+``status``（S1），只供 ``invoke_tool`` 结论与 ``tool_result`` 帧的 ``is_error`` 使用。
 """
 
 from __future__ import annotations
@@ -164,6 +169,125 @@ def _is_failure_payload(payload: dict) -> bool:
     ``success=false`` 只在归一判定里按失败处理。
     """
     return has_failure_signal(payload) or boolish_false(payload.get("success"))
+
+
+# 业务态失败：部分 MCP 服务把"操作被拒绝"表达为一次**成功**的 RPC——
+# ``{"applied": false, "status": "rejected", "failures": [...]}``。这种载荷没有
+# 通用错误键（error / success / is_error），而 ``has_failure_signal`` 的
+# status 白名单刻意只收 error/failed/failure（合法业务态不进），因此归一判定
+# 会把它当成功。但"成功的 RPC + 失败的业务态"绝不能上报为 tool success：
+# 模型据此误以为改动已生效，前端也不会提示。
+# 这里只认三种高置信信号，且 dry-run 显式排除（dryRun 下 applied=false 是正常的）：
+#   1. status ∈ {rejected, denied, blocked}
+#   2. failures / errors 列表非空
+#   3. applied=false（非 dry-run）
+_BUSINESS_FAILURE_STATUSES = frozenset({"rejected", "denied", "blocked"})
+_DRY_RUN_KEYS = ("dry_run", "dryRun")
+_FAILURE_LIST_KEYS = ("failures", "errors")
+_BUSINESS_FAILURE_TEXT_KEYS = ("error", "error_message", "message", "reason", "detail", "content")
+
+
+def _business_error_text(payload: dict) -> str:
+    """从业务态失败载荷里抽取人读原因（优先 failures[0].error 一族）。"""
+    text = error_text_from_payload(payload)
+    if text:
+        return text
+    for key in _FAILURE_LIST_KEYS:
+        items = payload.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for text_key in _BUSINESS_FAILURE_TEXT_KEYS:
+                value = item.get(text_key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        for item in items:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    for key in ("message", "content"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def business_failure_signal(value: Any, *, _depth: int = 0) -> tuple[bool, str]:
+    """识别"成功的 RPC + 失败的业务态"载荷，返回 ``(failed, error_text)``。
+
+    与 ``has_failure_signal`` 互补、不重叠：后者判通用错误标记（且与熔断器逐字
+    同源，不可扩展），本函数只判业务拒绝态。判定口径（三选一即失败）：
+    ``status ∈ {rejected, denied, blocked}`` / ``failures`` 非空 /
+    ``applied=false 且非 dry-run``。同一层显式 ``success=true`` 优先（与
+    ``has_failure_signal`` 的 success 优先序一致）；包装器的 success 不掩盖内层失败，
+    由调用方逐层下探。
+
+    ``value`` 可以是 dict / list / str；str 会先尝试 JSON 解析，解析不成再走
+    ``normalize_tool_result``（覆盖 ``[ERROR]`` / ``MCP error`` / Exit code 等
+    失败独有文本前缀）。深度上限 4 层，防递归载荷打爆栈。
+
+    **list 分支与 ``normalize_tool_result`` 同口径**：只有全部单项失败才算失败。
+    部分成功是真实业务语义（见 ``normalize_tool_result`` 的 list 分支）；混合
+    批量结果（如 3 项成功 1 项被拒）若在此判失败，会经 ``_unwrap_tool_failure``
+    把 ``invoke_tool`` 标成失败并计入 ``tool_failure_loop``，与既有契约相反。
+    """
+    if _depth > 4:
+        return False, ""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return False, ""
+        if stripped[0] in "{[":
+            try:
+                parsed = json.loads(stripped)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, (dict, list)):
+                return business_failure_signal(parsed, _depth=_depth + 1)
+        normalized = normalize_tool_result(stripped)
+        if normalized.get("status") != STATUS_SUCCESS:
+            return True, str(normalized.get("error_message") or stripped)
+        return False, ""
+    if isinstance(value, (list, tuple)):
+        # 全部单项失败才算失败；部分成功是真实业务语义。与
+        # ``normalize_tool_result`` 的 list 分支同口径，避免混合批量结果被
+        # ``_unwrap_tool_failure`` 判成整体失败（进而触发连续失败熔断）。
+        if not value:
+            return False, ""
+        first_text = ""
+        for item in value:
+            failed, text = business_failure_signal(item, _depth=_depth + 1)
+            if not failed:
+                return False, ""
+            if not first_text:
+                first_text = text
+        return True, first_text
+    if not isinstance(value, dict):
+        return False, ""
+
+    # 显式 success=true 在本层优先：与 has_failure_signal / _dict_has_error 的
+    # success 优先序一致（S3 别名压过其它字段）。包装器自己的 success 不掩盖
+    # 内层失败——调用方会逐层下探 result / data。
+    if boolish_true(value.get("success")):
+        return False, ""
+
+    status = value.get("status")
+    if isinstance(status, str) and status.strip().lower() in _BUSINESS_FAILURE_STATUSES:
+        stripped_status = status.strip()
+        return True, _business_error_text(value) or f"tool reported status={stripped_status}"
+
+    for key in _FAILURE_LIST_KEYS:
+        items = value.get(key)
+        if isinstance(items, list) and items:
+            return True, _business_error_text(value) or f"tool reported {len(items)} failed operation(s)"
+
+    if boolish_false(value.get("applied")) and not any(
+        boolish_true(value.get(key)) for key in _DRY_RUN_KEYS
+    ):
+        return True, _business_error_text(value) or "tool reported applied=false"
+
+    return False, ""
 
 
 def _failure_detail_text(payload: dict, *, allow_text_fallback: bool = False) -> str:
@@ -352,6 +476,15 @@ def _normalize_text(text: str) -> dict[str, Any]:
             error_code="tool_not_available",
             error_message=stripped,
         )
+    if stripped.startswith("MCP error"):
+        # MCP 传输/参数层错误文本（``MCP error -32602: ...``）没有结构化包装。
+        # 成功载荷不会以该前缀开头，属"失败独有"前缀，统一按工具失败处理。
+        return _finalize(
+            {"display": stripped, "data": {"content": text}},
+            status=STATUS_ERROR,
+            error_code="mcp_tool_error",
+            error_message=stripped,
+        )
     # 裸 "Error:" 只认「首行短文本」：成功工具正文（文件内容/日志/README）可能
     # 恰好以 Error: 开头，全量前缀会把成功判成失败（与熔断器只登记 [ERROR]: 对齐）。
     error_prefix = stripped.startswith("[ERROR]") or (
@@ -405,7 +538,9 @@ def normalize_tool_result(result: Any) -> dict[str, Any]:
     if isinstance(result, list):
         items = result
         item_failures = [item for item in items if _list_item_failed(item)]
-        # 全部单项失败才算失败；部分成功是真实业务语义
+        # 全部单项失败才算失败；部分成功是真实业务语义。
+        # 与 ``business_failure_signal`` 的 list 分支同口径（那边同样要求全部
+        # 单项失败），避免 invoke_tool 结论与工具级 status 对混合批量结果分叉。
         all_failed = bool(items) and len(item_failures) == len(items)
         normalized: dict[str, Any] = {"results": items, "data": {"results": items}}
         if all_failed:
@@ -505,6 +640,7 @@ __all__ = [
     "VALID_STATUSES",
     "boolish_false",
     "boolish_true",
+    "business_failure_signal",
     "error_text_from_payload",
     "has_failure_signal",
     "normalize_tool_result",

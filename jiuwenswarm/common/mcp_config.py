@@ -1318,6 +1318,32 @@ async def _enter_remote_mcp_session(
     return _RemoteMcpCallAdapter(client)
 
 
+#: 每个 client 类型只告警一次：旧版 openjiuwen 没有 ``call_tool_with_meta``，
+#: 回退 ``call_tool`` 会静默丢弃 ``isError``。回退是刻意的兼容（不误报），但现场
+#: 需要能区分"工具真的成功"与"依赖没升级导致失败检测静默失效"。
+_META_FALLBACK_WARNED_CLIENTS: set[str] = set()
+
+
+def _meta_pairs_with_call_tool(client: Any) -> bool:
+    """``call_tool_with_meta`` 是否与生效的 ``call_tool`` 同源。
+
+    只看类 MRO，不看 ``__getattr__`` 动态生成的属性：MagicMock / 代理客户端会
+    凭空响应 ``call_tool_with_meta``，把它当真实实现会绕过真正的 ``call_tool``
+    （超时、取消、断连路径全部失效）。判据与 agent-core
+    ``openjiuwen.core.foundation.tool.mcp.base._meta_pairs_with_call_tool`` 一致：
+    子类只覆写 ``call_tool`` 时必须继续走子类实现，不能被继承的 meta 版本绕过。
+    """
+    mro = type(client).__mro__
+    meta_owner = next(
+        (klass for klass in mro if "call_tool_with_meta" in vars(klass)), None
+    )
+    if meta_owner is None:
+        return False
+    call_owner = next((klass for klass in mro if "call_tool" in vars(klass)), None)
+    # 只实现 meta 的客户端没有可绕过的 call_tool。
+    return call_owner is None or meta_owner is call_owner
+
+
 class _RemoteMcpCallAdapter:
     """让 remote MCP client 的 call_tool 返回形状对齐 stdio ClientSession。
 
@@ -1327,6 +1353,10 @@ class _RemoteMcpCallAdapter:
     按 stdio ``ClientSession.call_tool`` 的契约读 ``result.content[-1].text``。
     本适配器把 remote 的裸返回值重新包成 ``CallToolResult(content=[TextContent])``，
     使两条路径在 invoke 处统一，避免 ``'str' object has no attribute 'content'``。
+
+    ``isError`` 必须一并保留：上游客户端用 ``call_tool_with_meta`` 暴露该标志，
+    这里丢了就会让 ``RequestScopedOfficeClawMcpTool.invoke`` 的失败补偿层
+    （``getattr(result, "isError", False)``）永远不触发，MCP 工具失败被上报为成功。
     """
 
     def __init__(self, client: Any) -> None:
@@ -1353,14 +1383,48 @@ class _RemoteMcpCallAdapter:
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         from mcp.types import CallToolResult, TextContent
 
-        raw = await self._client.call_tool(name, arguments)
+        raw, is_error = await self._call_with_meta(name, arguments)
+        # 失败标志必须保留：消费端按 ``getattr(result, "isError", False)`` 补
+        # 失败信封，丢在这里等于把工具失败伪装成成功。
+        is_error = bool(is_error)
         # extract_mcp_tool_result_content 对空结果返回 None。
         if raw is None:
-            return CallToolResult(content=[])
+            return CallToolResult(content=[], isError=is_error)
         # 按 extract_mcp_tool_result_content 的实际返回形状分类型装箱，
         # 避免 str(dict) 产出 Python repr 让 LLM 难解析。
         text = _remote_mcp_result_to_text(raw)
-        return CallToolResult(content=[TextContent(type="text", text=text)])
+        return CallToolResult(content=[TextContent(type="text", text=text)], isError=is_error)
+
+    async def _call_with_meta(
+        self, name: str, arguments: dict[str, Any]
+    ) -> tuple[Any, bool]:
+        """Prefer the client's ``call_tool_with_meta``; fall back to plain text."""
+        call_with_meta = getattr(self._client, "call_tool_with_meta", None)
+        if callable(call_with_meta) and _meta_pairs_with_call_tool(self._client):
+            raw, is_error = await call_with_meta(name, arguments)
+            return raw, bool(is_error)
+        self._warn_meta_fallback()
+        return await self._client.call_tool(name, arguments), False
+
+    def _warn_meta_fallback(self) -> None:
+        """旧 client 无 meta API 时按 client 类型告警一次。
+
+        回退是刻意的兼容（旧版 openjiuwen 不误报），但这条路径上 ``isError``
+        恒丢失；没有可观测信号，现场无法发现"依赖没升级导致失败检测静默失效"。
+        每次回退留 debug，warning 只发一次，避免逐请求刷日志。
+        """
+        client_cls = type(self._client)
+        key = f"{client_cls.__module__}.{client_cls.__qualname__}"
+        logger.debug("remote MCP client %s has no usable call_tool_with_meta; using call_tool", key)
+        if key in _META_FALLBACK_WARNED_CLIENTS:
+            return
+        _META_FALLBACK_WARNED_CLIENTS.add(key)
+        logger.warning(
+            "remote MCP client %s does not provide a paired call_tool_with_meta; isError is "
+            "dropped and MCP tool failures may be reported as success. Upgrade the "
+            "openjiuwen/agent-core dependency to restore failure detection.",
+            key,
+        )
 
 
 def _remote_mcp_result_to_text(raw: Any) -> str:

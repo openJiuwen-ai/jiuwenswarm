@@ -33,6 +33,12 @@ _wrapped_connects: set[tuple[type, str]] = set()
 _pending_sdk_read_timeout: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "_jws_pending_sdk_read_timeout", default=None
 )
+#: 当前任务已进入哪些 client 的 IO 临界区（按 ``id(client)``）。agent-core 的
+#: ``call_tool`` 委托给 ``call_tool_with_meta``，两者都会被 timeout 包装；内层
+#: 必须跳过串行锁 / 重连 / 超时，否则同一个 ``asyncio.Lock`` 重入会死锁。
+_in_client_io_section: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
+    "_jws_in_client_io_section", default=frozenset()
+)
 #: MCP HTTP 传输共享的 SSL 上下文，key 为 httpx 选证书源用到的环境变量
 #: (SSL_CERT_FILE, SSL_CERT_DIR)。见 ``_ensure_mcp_ssl_context``。
 _mcp_ssl_contexts: dict[tuple[str, str], Any] = {}
@@ -299,6 +305,12 @@ class _StreamableHttpOwner:
     async def submit(self, method: Any, name: str, args: tuple, kwargs: dict) -> Any:
         if asyncio.current_task() is self.task:
             return await method(*args, **kwargs)
+        # 内层委托（call_tool → call_tool_with_meta）运行在 ``_invoke_once`` 的
+        # ``wait_for`` 子任务里：owner 正阻塞在外层 await 上，入队必然饿死到
+        # 超时再断连。该子任务会继承 ``wrapped`` 设置的 ContextVar，据此直接
+        # 内联执行；串行 / 超时 / 重连仍由外层 ``wrapped`` 持有的 IO 临界区负责。
+        if id(self.client) in _in_client_io_section.get():
+            return await method(*args, **kwargs)
         if self.task is not None and self.task.done() and (
             getattr(self.client, "_session", None) is not None
             or getattr(self.client, "_client", None) is not None
@@ -408,8 +420,8 @@ class _StreamableHttpOwner:
 def _install_streamable_http_owner(client: Any) -> None:
     owner = _StreamableHttpOwner(client)
     # 包括资源 API：它们也必须和重连/断开串行，不能观察半关闭 session。
-    for name in ("connect", "disconnect", "call_tool", "list_tools", "get_tool_info",
-                 "list_resources", "read_resource"):
+    for name in ("connect", "disconnect", "call_tool", "call_tool_with_meta",
+                 "list_tools", "get_tool_info", "list_resources", "read_resource"):
         method = getattr(client, name, None)
         if not callable(method):
             continue
@@ -912,12 +924,28 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
         )
 
     def _wrap_with_timeout(cls: type, name: str) -> None:
+        orig = getattr(cls, name, None)
+        if not callable(orig):
+            # 旧版 openjiuwen 没有 call_tool_with_meta：不包装，适配器自动回退。
+            return
         _wrapped_methods.add((cls, name))
-        orig = getattr(cls, name)
         if getattr(orig, "_jws_mcp_wrapper", None) == "call-timeout":
             return
 
         async def wrapped(self, *args, **kwargs):
+            in_section = _in_client_io_section.get()
+            marker = id(self)
+            if marker in in_section:
+                # 内层调用（call_tool → call_tool_with_meta）：串行、重连与超时
+                # 由外层包装负责，这里只执行单次 I/O，避免 asyncio.Lock 重入。
+                return await orig(self, *args, **kwargs)
+            token = _in_client_io_section.set(in_section | {marker})
+            try:
+                return await _invoke(self, args, kwargs)
+            finally:
+                _in_client_io_section.reset(token)
+
+        async def _invoke(self, args, kwargs):
             timeout = _resolve_timeout(self, kwargs.get("timeout"))
             # 内层（如 SseClient 自带 wait_for）用 timeout+5 作天花板，避免仍按
             # 默认 60s 提前掐断；外层 wait_for 用精确 timeout，与 pooled worker
@@ -1003,6 +1031,9 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
     # (A) HTTP long-poll transports — same failure mode when the server dies.
     for cls in (StreamableHttpClient, SseClient):
         _wrap_with_timeout(cls, "call_tool")
+        # agent-core 的 call_tool 委托给 call_tool_with_meta；remote 适配器与
+        # MCPTool.invoke 优先走 meta 版本，不包装就等于绕开超时/重连/串行。
+        _wrap_with_timeout(cls, "call_tool_with_meta")
         _wrap_with_timeout(cls, "list_tools")
         # 只有成功关闭才能重置状态，失败保留不可复用标记。
         _wrap_disconnect_always_invalidate(cls, "disconnect")

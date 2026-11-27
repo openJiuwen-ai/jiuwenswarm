@@ -162,10 +162,10 @@ def patched(monkeypatch):
 
     # 成对恢复类方法与 guard；已有包装由函数标记识别，不依赖 _PATCHED 跳过。
     for cls, names in (
-        (StreamableHttpClient, ("connect", "disconnect", "call_tool", "list_tools")),
+        (StreamableHttpClient, ("connect", "disconnect", "call_tool", "call_tool_with_meta", "list_tools")),
         (
             SseClient,
-            ("connect", "_do_connect", "disconnect", "call_tool", "list_tools"),
+            ("connect", "_do_connect", "disconnect", "call_tool", "call_tool_with_meta", "list_tools"),
         ),
         (ToolMgr, ("_create_client",)),
     ):
