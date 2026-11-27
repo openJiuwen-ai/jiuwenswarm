@@ -985,6 +985,7 @@ def test_enhanced_install_persists_env_before_later_cancellation(
     written = json.loads(state_path.read_text(encoding="utf-8"))
     assert written["mcp"]["rea"]["env"]["JAVA_HOME"] == "D:/tools/java"
     assert written["mcp"]["rea"]["env"]["PATH"] == "C:/Windows"
+    assert written["mcp"]["rea"]["state"] == "connected"
 
 
 def test_enhanced_plan_is_os_aware_and_lists_manual_and_unsupported(monkeypatch) -> None:
@@ -1249,6 +1250,7 @@ def test_configure_component_writes_validated_json_and_env(tmp_path: Path, monke
     assert result["ready"] is True
     assert json.loads(config_path.read_text(encoding="utf-8"))["command"] == "python"
     assert state["mcp"]["rea"]["env"]["REA_IDA_MCP_CONFIG"] == str(config_path.resolve())
+    assert state["mcp"]["rea"]["state"] == "connected"
 
 
 def test_configure_component_rejects_invalid_json(tmp_path: Path, monkeypatch) -> None:

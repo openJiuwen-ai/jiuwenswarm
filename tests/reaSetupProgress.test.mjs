@@ -4,11 +4,14 @@ import test from 'node:test';
 import {
   ACTIVE_INSTALL_JOB_STORAGE_KEY,
   aggregateCapabilityVisualState,
+  cancelReaSetupJob,
+  classifyReaSetupRequestError,
   estimatePaceRemainingSeconds,
   estimateRemainingSeconds,
   formatProgressDuration,
   messageWithoutEta,
   persistActiveJob,
+  pollReaSetupJob,
   readPersistedActiveJob,
   selectDisplayedRemainingSeconds,
   shouldDeferEnhancedDetection,
@@ -153,4 +156,108 @@ test('persists only an active install job for navigation recovery', () => {
 
   persistActiveJob(storage, { ...job, status: 'succeeded' });
   assert.equal(storage.getItem(ACTIVE_INSTALL_JOB_STORAGE_KEY), null);
+});
+
+test('classifies stale, transient, and fatal REA setup failures', () => {
+  assert.equal(
+    classifyReaSetupRequestError({ code: 'REA_SETUP_JOB_NOT_FOUND' }),
+    'stale-job',
+  );
+  assert.equal(
+    classifyReaSetupRequestError({ message: 'REA install job not found' }),
+    'stale-job',
+  );
+  assert.equal(
+    classifyReaSetupRequestError({ code: 'WS_DISCONNECTED' }),
+    'retryable',
+  );
+  assert.equal(
+    classifyReaSetupRequestError({ code: 'REQUEST_TIMEOUT' }),
+    'retryable',
+  );
+  assert.equal(classifyReaSetupRequestError({ retriable: true }), 'retryable');
+  assert.equal(classifyReaSetupRequestError({ code: 'BAD_REQUEST' }), 'fatal');
+});
+
+test('keeps polling through transient disconnects until the job settles', async () => {
+  const updates = [];
+  const job = createJob();
+  const completed = createJob({ status: 'cancelled', percent: 100 });
+  let loads = 0;
+  const result = await pollReaSetupJob({
+    initial: job,
+    load: async () => {
+      loads += 1;
+      if (loads === 1) throw Object.assign(new Error('offline'), { code: 'WS_DISCONNECTED' });
+      return completed;
+    },
+    onUpdate: (value) => updates.push(value.status),
+    onStale: () => {
+      throw new Error('stale handler must not run for a transient failure');
+    },
+    sleep: async () => {},
+  });
+
+  assert.equal(result?.status, 'cancelled');
+  assert.equal(loads, 2);
+  assert.deepEqual(updates, ['running', 'cancelled']);
+});
+
+test('clears a persisted job when the server no longer knows it', async () => {
+  let staleCalls = 0;
+  const result = await pollReaSetupJob({
+    initial: createJob(),
+    load: async () => {
+      throw Object.assign(new Error('REA install job not found'), {
+        code: 'REA_SETUP_JOB_NOT_FOUND',
+      });
+    },
+    onUpdate: () => {},
+    onStale: () => {
+      staleCalls += 1;
+    },
+    sleep: async () => {},
+  });
+
+  assert.equal(result, null);
+  assert.equal(staleCalls, 1);
+});
+
+test('retries cancellation after reconnect instead of leaving the UI cancelling', async () => {
+  const cancelled = createJob({ status: 'cancelled', message: '增强能力安装已取消' });
+  let attempts = 0;
+  const result = await cancelReaSetupJob({
+    jobId: cancelled.job_id,
+    cancel: async () => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error('offline'), { code: 'WS_NOT_READY' });
+      return cancelled;
+    },
+    onStale: () => {
+      throw new Error('cancellation should recover when the same job reappears');
+    },
+    sleep: async () => {},
+  });
+
+  assert.equal(result?.status, 'cancelled');
+  assert.equal(attempts, 2);
+});
+
+test('clears cancellation state when the server no longer knows the job', async () => {
+  let staleCalls = 0;
+  const result = await cancelReaSetupJob({
+    jobId: 'missing-job',
+    cancel: async () => {
+      throw Object.assign(new Error('REA install job not found'), {
+        code: 'REA_SETUP_JOB_NOT_FOUND',
+      });
+    },
+    onStale: () => {
+      staleCalls += 1;
+    },
+    sleep: async () => {},
+  });
+
+  assert.equal(result, null);
+  assert.equal(staleCalls, 1);
 });

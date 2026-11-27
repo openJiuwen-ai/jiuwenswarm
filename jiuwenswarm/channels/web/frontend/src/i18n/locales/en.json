@@ -6807,6 +6807,7 @@
     "enhancedProgressHint": "Enhanced capability setup is expected to take {{range}}. Details remain available afterwards.",
     "enhancedEstimateFallback": "30–40 minutes",
     "cancelInstall": "Cancel installation",
+    "cancelling": "Cancelling…",
     "installingComponents": "Installing toolchain components",
     "componentCountHint": "{{count}} components in total. Independent components install in parallel.",
     "completedCount": "Completed {{completed}} / {{total}}",
