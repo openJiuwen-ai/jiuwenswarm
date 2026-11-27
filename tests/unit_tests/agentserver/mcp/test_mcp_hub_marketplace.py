@@ -397,9 +397,16 @@ async def test_show_prefers_builtin_when_hub_package_conflicts(
 
 
 @pytest.mark.anyio
-async def test_list_falls_back_to_local_when_hub_is_unavailable(
+async def test_list_raises_when_hub_is_unavailable(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """Hub catalogue failures must not be masked as an empty success.
+
+    Personal edition used to swallow any ``_all_remote`` error and return the
+    local-only cards as a full result (search pages then showed an unexplained
+    empty list). Aligned with ``list_mcps_from_enterprise``: the error
+    propagates so ``mcp.list`` handlers answer ok=False.
+    """
     monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(
         marketplace.registry,
@@ -407,17 +414,89 @@ async def test_list_falls_back_to_local_when_hub_is_unavailable(
         lambda mcp_filter: [{"name": "builtin-mcp", "source": "builtin"}],
     )
 
-    cards = await marketplace.list_mcps_with_hub(hub_port=FailingSearchHub())
+    with pytest.raises(ConnectionError, match="Hub unavailable"):
+        await marketplace.list_mcps_with_hub(hub_port=FailingSearchHub())
 
-    assert cards == [
-        {
-            "id": "builtin-mcp",
-            "name": "builtin-mcp",
-            "package_name": "builtin-mcp",
-            "source": "builtin",
-            "installed": True,
-        }
-    ]
+
+@pytest.mark.anyio
+async def test_list_raises_when_hub_is_unavailable_with_query(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The search path (query set, cache bypassed) must surface Hub failures too.
+
+    This is the user-visible path of JW-83: frontend searches with a keyword
+    (``preferCache: !query``) so the request never enters ``cached_asset_catalog``;
+    a Hub outage must answer ok=False instead of an unexplained empty list.
+    """
+    monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        marketplace.registry,
+        "list_marketplace_mcps",
+        lambda mcp_filter: [{"name": "builtin-mcp", "source": "builtin"}],
+    )
+
+    with pytest.raises(ConnectionError, match="Hub unavailable"):
+        await marketplace.list_mcps_with_hub(
+            "builtin", hub_port=FailingSearchHub(), query="weather"
+        )
+
+
+@pytest.mark.anyio
+async def test_list_raises_when_hub_pagination_makes_no_progress(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The pagination-defence ValueError is a data-source signal, not noise.
+
+    It must reach mcp.list as a distinguishable error instead of being
+    swallowed together with transport failures.
+    """
+    monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        marketplace.registry,
+        "list_marketplace_mcps",
+        lambda mcp_filter: [],
+    )
+
+    class _NoProgressHub(FakeHub):
+        async def search_assets(self, request):
+            return HubSearchPage(
+                items=(
+                    HubAssetSummary(
+                        kind="mcp",
+                        asset_id="asset-a",
+                        package_name="asset-a",
+                        display_name="Asset A",
+                        short_description="",
+                        public_latest_version="1.0.0",
+                        icon_uri="",
+                        tags=(),
+                    ),
+                ),
+                total=2,
+                page=request.page,
+                page_size=request.page_size,
+            )
+
+    with pytest.raises(ValueError, match="made no progress"):
+        await marketplace.list_mcps_with_hub(hub_port=_NoProgressHub())
+
+
+@pytest.mark.anyio
+async def test_list_succeeds_when_hub_is_healthy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression guard: a healthy Hub still merges remote cards as before."""
+    monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        marketplace.registry,
+        "list_marketplace_mcps",
+        lambda mcp_filter: [{"name": "builtin-mcp", "source": "built_in"}],
+    )
+
+    cards = await marketplace.list_mcps_with_hub(hub_port=FakeHub())
+
+    names = [card["name"] for card in cards]
+    assert names == ["builtin-mcp", "hub-mcp"]
 
 
 @pytest.mark.anyio
@@ -907,8 +986,8 @@ async def test_personal_list_cards_omit_forced_dual_version_fields(
     )
 
     class _EmptyHub:
-        async def search_mcp(self, **kwargs):
-            del kwargs
+        async def search_assets(self, request):
+            del request
             return HubSearchPage(items=(), total=0, page=1, page_size=100)
 
     cards = await marketplace.list_mcps_with_hub("builtin", hub_port=_EmptyHub())
