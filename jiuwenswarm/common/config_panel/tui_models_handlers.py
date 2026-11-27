@@ -493,11 +493,6 @@ async def config_get_handler(
     payload["app_version"] = get_runtime_version()
     try:
         raw = get_config_raw()
-        crypto_provider = _get_crypto_provider()
-        if crypto_provider is not None:
-            for key, val in list(payload.items()):
-                if "api_key" in key.lower() or "token" in key.lower():
-                    payload[key] = crypto_provider.decrypt(val)
         ctx_cfg = (raw.get("react") or {}).get("context_engine_config") or {}
         payload["context_engine_enabled"] = (
             "true" if ctx_cfg.get("enabled", False) else "false"
@@ -542,11 +537,24 @@ async def config_get_handler(
             if _default_models:
                 _current = _default_models[0]
                 _mcc = _current.get("model_client_config") or {}
+                # get_default_models already decrypted the api_key (and
+                # keeps the raw ciphertext when decryption fails), so its
+                # value cannot go through the tail decrypt loop as-is: a
+                # decrypted plaintext would be decrypted again (providers
+                # are not idempotent) and a stale ciphertext would be
+                # blanked there. Read the raw stored value from
+                # get_config_raw instead — the tail loop stays the single
+                # decryption point for it.
+                _raw_models = raw.get("models") or {}
+                _raw_defaults = _raw_models.get("defaults")
+                if not (isinstance(_raw_defaults, list) and _raw_defaults):
+                    _raw_defaults = [_raw_models.get("default") or {}]
+                _raw_mcc = ((_raw_defaults[0] or {}).get("model_client_config")) or {}
                 _model_overrides = {
                     "model": _mcc.get("model_name"),
                     "model_provider": _mcc.get("client_provider"),
                     "api_base": _mcc.get("api_base"),
-                    "api_key": _mcc.get("api_key"),
+                    "api_key": str(_raw_mcc.get("api_key") or ""),
                 }
                 for _k, _v in _model_overrides.items():
                     if _v:
@@ -587,6 +595,28 @@ async def config_get_handler(
                                 payload[_pk] = _resolved
             except Exception as e:
                 logger.warning("[config.get] Failed to resolve %s model config: %s", _section_name, e)
+
+        # Decrypt credential-like values last, after every override source
+        # (env vars, models.defaults, multimodal sections) has been merged,
+        # so no later write can resurrect a ciphertext the guard already
+        # blanked. This is the single decryption point: a value it decrypts
+        # is never decrypted again. Per-key failure blanks only that key —
+        # the same contract as server.control.config_service.
+        crypto_provider = _get_crypto_provider()
+        if crypto_provider is not None:
+            from jiuwenswarm.common.credentials.resolver import is_reference
+
+            for key, val in list(payload.items()):
+                if "api_key" in key.lower() or "token" in key.lower():
+                    if is_reference(str(val or "")):
+                        # exec: references are declarations, not secrets.
+                        continue
+                    try:
+                        payload[key] = crypto_provider.decrypt(val)
+                    except Exception as e:  # noqa: BLE001
+                        # A single unreadable value must not blank the panel.
+                        logger.warning("[config.get] Failed to decrypt %s: %s", key, e)
+                        payload[key] = ""
     except Exception:
         payload.setdefault("auto_recap_enabled", "true")
         payload.setdefault("context_engine_enabled", "false")

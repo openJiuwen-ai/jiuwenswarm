@@ -329,3 +329,143 @@ async def test_a2ui_panel_without_registered_provider(panel_config, monkeypatch)
     await handlers.config_get_handler(channel, None, "get", {}, None)
     assert channel.send_response.call_args.kwargs["ok"] is True
     assert channel.send_response.call_args.kwargs["payload"]["a2ui_enabled"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_config_get_survives_single_key_decryption_failure(panel_config, monkeypatch):
+    """One undecryptable credential blanks only that key, not the panel."""
+    # Non-default YAML values so the assertions below discriminate a real
+    # panel read from the fallback-to-defaults branch (which would also
+    # pass if the handler degraded to defaults).
+    raw = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+    raw["experimental"] = {"multi_model_collaboration": {"verifier_interval": 7}}
+    panel_config.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    class ExplodingCrypto:
+        def decrypt(self, value):
+            if value == "corrupt":
+                raise ValueError("ciphertext not registered")
+            return value
+
+    monkeypatch.setattr(handlers, "_get_crypto_provider", ExplodingCrypto)
+    monkeypatch.setenv("API_KEY", "corrupt")
+    monkeypatch.setenv("ASR_API_KEY", "plain-value")
+
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await handlers.config_get_handler(channel, None, "get", {}, None)
+
+    payload = channel.send_response.call_args.kwargs["payload"]
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    assert payload["api_key"] == ""
+    assert payload["asr_api_key"] == "plain-value"
+    # YAML-derived fields must survive the failed decryption above.
+    assert payload["moa_verifier_interval"] == "7"
+    assert payload["team_scheduled_dispatch_enabled"] is not None
+
+
+@pytest.mark.asyncio
+async def test_config_get_keeps_exec_reference_verbatim(panel_config, monkeypatch):
+    """exec: references must survive the decrypt loop verbatim on the Web panel."""
+
+    class ExplodingCrypto:
+        def decrypt(self, value):
+            raise ValueError(f"not ciphertext: {value!r}")
+
+    monkeypatch.setattr(handlers, "_get_crypto_provider", ExplodingCrypto)
+    reference = "exec:/path/to/script --get-token"
+    monkeypatch.setenv("API_KEY", reference)
+
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await handlers.config_get_handler(channel, None, "get", {}, None)
+
+    payload = channel.send_response.call_args.kwargs["payload"]
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    assert payload["api_key"] == reference
+
+
+@pytest.mark.asyncio
+async def test_tui_config_get_blank_ciphertext_not_resurrected_by_model_override(
+    panel_config, monkeypatch
+):
+    """models.defaults must not write an undecryptable ciphertext back over
+    the blanked api_key (which the save path would then re-encrypt)."""
+    from jiuwenswarm.common.config_panel import tui_models_handlers as tui_handlers
+
+    raw = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+    raw["models"]["defaults"] = [{
+        "model_id": "mdl_a",
+        "model_client_config": {"model_name": "model-a", "api_key": "corrupt"},
+    }]
+    panel_config.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    # A real provider is not idempotent: only the genuine ciphertext form
+    # decrypts, any other input (including plaintext) raises — same failure
+    # mode the AES-GCM provider shows on non-ciphertext input.
+    class NonIdempotentCrypto:
+        def decrypt(self, value):
+            if value == "gcm:real-ciphertext":
+                return "sk-real-credential-12345"
+            raise ValueError(f"not ciphertext: {value!r}")
+
+    monkeypatch.setattr(tui_handlers, "_get_crypto_provider", NonIdempotentCrypto)
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", NonIdempotentCrypto)
+    # get_default_models resolves through get_config(), which reads
+    # get_config_file() — point it at the fixture YAML like CONFIG_YAML_PATH.
+    from jiuwenswarm.common import config as config_module
+
+    monkeypatch.setattr(config_module, "get_config_file", lambda: panel_config)
+
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await tui_handlers.config_get_handler(channel, None, "get", {}, None)
+
+    payload = channel.send_response.call_args.kwargs["payload"]
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    # The override from models.defaults must not resurrect the ciphertext.
+    assert payload["api_key"] == ""
+    # Non-credential overrides still come through from config.yaml.
+    assert payload["model"] == "model-a"
+
+
+@pytest.mark.asyncio
+async def test_tui_config_get_decryptable_ciphertext_shows_plaintext(
+    panel_config, monkeypatch
+):
+    """A valid decryptable credential must display as plaintext, not be
+    double-decrypted into a blank field (the save path would then encrypt
+    the blank and overwrite the real credential)."""
+    from jiuwenswarm.common.config_panel import tui_models_handlers as tui_handlers
+
+    raw = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+    raw["models"]["defaults"] = [{
+        "model_id": "mdl_a",
+        "model_client_config": {
+            "model_name": "model-a",
+            "api_key": "gcm:real-ciphertext",
+        },
+    }]
+    panel_config.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    # Non-idempotent, like a real provider: only the genuine ciphertext
+    # decrypts; a second decrypt() on the produced plaintext raises.
+    class NonIdempotentCrypto:
+        def decrypt(self, value):
+            if value == "gcm:real-ciphertext":
+                return "sk-real-credential-12345"
+            raise ValueError(f"not ciphertext: {value!r}")
+
+    monkeypatch.setattr(tui_handlers, "_get_crypto_provider", NonIdempotentCrypto)
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", NonIdempotentCrypto)
+    from jiuwenswarm.common import config as config_module
+
+    monkeypatch.setattr(config_module, "get_config_file", lambda: panel_config)
+
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await tui_handlers.config_get_handler(channel, None, "get", {}, None)
+
+    payload = channel.send_response.call_args.kwargs["payload"]
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    # The decryptable credential displays as its plaintext — the tail
+    # decrypt loop is the single decryption point, so the plaintext is
+    # never fed to decrypt() a second time.
+    assert payload["api_key"] == "sk-real-credential-12345"
+    assert payload["model"] == "model-a"

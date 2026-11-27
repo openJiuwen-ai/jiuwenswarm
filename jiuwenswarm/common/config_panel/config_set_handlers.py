@@ -1915,9 +1915,23 @@ async def config_get_handler(
         )
         crypto_provider = _get_crypto_provider()
         if crypto_provider is not None:
+            from jiuwenswarm.common.credentials.resolver import is_reference
+
             for key, val in list(payload.items()):
                 if "api_key" in key.lower() or "token" in key.lower():
-                    payload[key] = crypto_provider.decrypt(val)
+                    if is_reference(str(val or "")):
+                        # exec: references are declarations, not secrets —
+                        # mirror the TUI loop and the save path, which keeps
+                        # them verbatim instead of blanking on decrypt.
+                        continue
+                    try:
+                        payload[key] = crypto_provider.decrypt(val)
+                    except Exception as e:  # noqa: BLE001
+                        # Same contract as server.control.config_service: one
+                        # failed decryption blanks only that key, never the
+                        # whole panel payload derived below from config.yaml.
+                        logger.warning("[config.get] Failed to decrypt %s: %s", key, e)
+                        payload[key] = ""
         payload.update(flatten_moa_for_config_panel(raw, resolve_value=resolve_env_vars))
         react_cfg = raw.get("react") or {}
         payload["cua_agent_enabled"] = (
