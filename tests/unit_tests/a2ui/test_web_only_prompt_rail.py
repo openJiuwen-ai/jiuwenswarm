@@ -31,6 +31,35 @@ class _FakePromptBuilder:
 
 
 @pytest.mark.asyncio
+async def test_downstream_agents_honor_request_scoped_a2ui_gate(monkeypatch):
+    import copy
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.set_channel("officeclaw")
+    rail.system_prompt_builder = _FakePromptBuilder()
+    team_agent = SimpleNamespace(build_context=SimpleNamespace(request_metadata={"skip_a2ui": True}))
+    await rail.before_model_call(SimpleNamespace(agent=team_agent, inputs=ModelCallInputs(), extra={}))
+    assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI_BOOST not in rail.system_prompt_builder.sections
+
+    rail.set_skip_a2ui(True)
+    subagent_rail = copy.copy(rail)
+    subagent_rail.system_prompt_builder = _FakePromptBuilder()
+    await subagent_rail.before_model_call(SimpleNamespace(agent=None, inputs=ModelCallInputs(), extra={}))
+    assert LocalSectionName.A2UI not in subagent_rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI_BOOST not in subagent_rail.system_prompt_builder.sections
+
+    rail.set_skip_a2ui(False)
+    await rail.before_model_call(SimpleNamespace(agent=None, inputs=ModelCallInputs(), extra={}))
+    assert LocalSectionName.A2UI in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI_BOOST in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
 async def test_response_prompt_rail_does_not_inject_a2ui_for_non_web_channel(monkeypatch):
     """Non-Web model calls should not receive A2UI prompt instructions."""
     monkeypatch.setattr(

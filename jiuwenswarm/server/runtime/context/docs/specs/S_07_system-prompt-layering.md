@@ -68,6 +68,8 @@
 `run.context.extra`。DeepAgent 在调用阶段从 `InvokeInputs.run_context` 传递该值，ReAct 模型回调从
 `ctx.extra["run_context"]` 获取同一上下文。门控命中时，ResponsePromptRail 移除 A2UI 主提示段和强化段。
 门控按请求生效，同一会话后续未携带标记的 Web 请求按正常配置判断。
+team 成员从自身的 `build_context.request_metadata` 读取标记。TaskTool 子代理继承的
+ResponsePromptRail 使用适配器每轮绑定的标记，同一会话下一轮按请求重新设置。
 
 ## 数据结构
 

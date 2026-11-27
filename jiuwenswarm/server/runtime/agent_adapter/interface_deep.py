@@ -11588,6 +11588,10 @@ class JiuWenSwarmDeepAdapter:
             )
         if self._response_prompt_rail:
             self._response_prompt_rail.set_channel(resolved_channel)
+            metadata = runtime_config.request_metadata if bind_request else None
+            self._response_prompt_rail.set_skip_a2ui(
+                isinstance(metadata, dict) and metadata.get("skip_a2ui") is True
+            )
         # PermissionInterruptRail: per-request trusted_dirs 注入，使 external_directory
         # 检查将这些子树视为 internal 而跳过 ask/deny（与 RuntimePromptRail 对齐）。
         # 用 getattr 兼容绕过 __init__ 的测试构造（_permission_rail 仅在 rail 构建流程赋值）。
