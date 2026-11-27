@@ -27,8 +27,6 @@ async def test_real_host_core_and_rail_connection(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr(host_module, "get_default_models", lambda: [])
 
     home = tmp_path / ".jiuwenswarm" / ".personal_context"
-    source_root = tmp_path / "source"
-    source_root.mkdir()
     context_root = home / "workspace" / "context"
     context_root.mkdir(parents=True)
     (context_root / "description.md").write_text("smoke context", encoding="utf-8")
@@ -40,11 +38,11 @@ async def test_real_host_core_and_rail_connection(tmp_path: Path, monkeypatch) -
         "strategy_profile": "rules",
         "fetch_services": [
             {
-                "service_id": "smoke-local",
-                "provider": "local_files",
+                "service_id": "smoke-feed",
+                "provider": "rss_feed",
                 "enabled": False,
                 "time_range": {"mode": "all"},
-                "source": {"root_dir": str(source_root)},
+                "source": {"feed_url": "https://example.invalid/feed.xml"},
                 "credentials": {},
             }
         ],

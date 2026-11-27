@@ -149,6 +149,9 @@ AgentServer 的 Gateway WebSocket 入口将显式传入的方法名转换为本�
 
 **网关 RPC**（`chat.send` 等）由项目自行约定，**不**放在上述元组中。
 
+- 普通对话派发时若会话输出已被其他请求占用，AgentServer 返回 `SESSION_BUSY`。流式请求通过 `chat.error` 返回该错误。
+- `tts.synthesize` 由网关语音处理器提供。请求落到 AgentServer 时返回 `METHOD_NOT_FOUND`。
+
 ---
 
 ## 7. `merge_params_to_acp_prompt`

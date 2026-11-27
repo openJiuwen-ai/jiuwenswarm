@@ -343,6 +343,13 @@ class ExecutionRequests:
                     ws, self.services.encode_response(response, response_id=request.request_id)
                 )
             return
+        if request.req_method == ReqMethod.TTS_SYNTHESIZE:
+            # The Gateway's voice extension owns synthesis. A missing handler
+            # can forward this call, but it must never start a chat turn.
+            wire = self.services.error_payload(request, "Text-to-speech is unavailable.", "METHOD_NOT_FOUND")
+            async with send_lock:
+                await self.services.send(ws, wire)
+            return
         if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
             params = request.params if isinstance(request.params, dict) else {}
             channels = params.get("channels")

@@ -468,6 +468,7 @@ generated: true
 | [B_20261127_1515_restore-chat-error-indicator](bugfix/jiuwenswarm/channels/web/frontend/B_20261127_1515_restore-chat-error-indicator.md) | B | 恢复失败轮次的会话侧栏错误标记 | lizhiyuan | 无独立 D：复用现有 chat.error 事件和侧栏失败状态，修复历史恢复遗漏。 |
 | [B_20261127_1547_webui-slot-capacity](bugfix/extensions/B_20261127_1547_webui-slot-capacity.md) | B | WebUI 槽位容量与投递回滚修复 | kusanagima | 无独立 D：基于现有 WebUI 槽位和投递契约的缺陷修复，无独立设计文档。 |
 | [B_20261128_0922_external-cli-switch-save-loading](bugfix/jiuwenswarm/channels/web/frontend/B_20261128_0922_external-cli-switch-save-loading.md) | B | 三方 CLI agent 开关保存往返期间仅置灰无处理中反馈，被读成状态延迟 | yuhaiquan | 无独立 D：由 GitCode issue |
+| [B_20261127_1143_chat-reply-loss](bugfix/jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
@@ -938,6 +939,7 @@ generated: true
 | [B_20261126_1052_team-memory-rail-race](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
 | [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
 | [B_20261127_1615_team-leader-context-usage](bugfix/jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
+| [B_20261127_1143_chat-reply-loss](bugfix/jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
@@ -979,6 +981,7 @@ generated: true
 | [B_20261126_1308_session-metadata-corrupted-marker](bugfix/jiuwenswarm/server/runtime/session/B_20261126_1308_session-metadata-corrupted-marker.md) | B | 损坏 metadata.json 的会话在列表中伪装成合法旧会话，团队身份字段静默丢失 | zhangpu | 无独立 D：防御性呈现契约修复，复用 _read_metadata 既有读路径补显式失败状态并在合成层打标、投影层透传，无独立设计文档。 |
 | [B_20261126_1628_upload-doc-block-auto-title](bugfix/jiuwenswarm/B_20261126_1628_upload-doc-block-auto-title.md) | B | 会话自动标题被【上传文档】协议块污染 | whds5279 | 无独立 D：修复既有标题生成与上传协议块注入的跨层契约冲突，不引入新方案。 |
 | [B_20261127_1615_team-leader-context-usage](bugfix/jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
+| [B_20261127_1143_chat-reply-loss](bugfix/jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>

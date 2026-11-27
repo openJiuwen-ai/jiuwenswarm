@@ -138,6 +138,8 @@ Workspace 是执行层的落盘边界。默认 schema 包括 `AGENT.md`、`SOUL.
 
 JiuwenSwarm 的单 Agent 和集群均支持 Work、Code 两种配置下的计划审批。计划生成结束后仍保留待审批状态；点击“执行”后退出计划模式并开始实施，点击“跳过”仅结束本轮并保留计划模式，提交修改意见后继续规划。素材列表、授权状态等后台查询不会切换计划模式，也不会产生计划退出通知。
 
+Web 集群在审批恢复的同一轮里退出计划模式并开始实施，成功退出后会保存会话的普通模式。
+
 ### 3.5 Context & Memory：上下文工程与记忆系统
 
 Context & Memory 负责让模型在合适的时间看到合适的信息。Harness 使用扩展版 `SystemPromptBuilder` 管理静态 prompt section，例如 `identity`、`safety`、`skills`、`tools`、`todo`、`task_tool`、`memory`、`workspace`、`context`、`completion_signal` 和 `verification_contract`。
