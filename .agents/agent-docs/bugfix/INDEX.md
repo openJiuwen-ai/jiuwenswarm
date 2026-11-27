@@ -236,6 +236,7 @@ generated: true
 | [B_20261103_1451_hub-default-url-consistency](jiuwenswarm/channels/web/B_20261103_1451_hub-default-url-consistency.md) | B | Swarm Skills Hub 默认地址前后端/文档不一致导致回退域名不可达 | openjiuwen_ai | 无独立 D：纯默认值与文档文案对齐修复，无独立设计；后端默认值（hub_client.DEFAULT_HUB_BASE_URL）与 README 已是正确口径。 |
 | [B_20261117_1019_skill-upload-temp-leak](jiuwenswarm/server/runtime/skill/B_20261117_1019_skill-upload-temp-leak.md) | B | 技能导入的两阶段上传临时目录永久残留 | mengliang0116 | 无独立 D：两阶段上传缺少文件生命周期归属，属实现缺陷的小范围修复，不引入新的架构设计；接口与生命周期契约记录在本文。 |
 | [B_20261124_1943_personal-context-failure-detail](jiuwenswarm/server/B_20261124_1943_personal-context-failure-detail.md) | B | 个人知识空间采集失败只显示「采集失败」，无法定位失败阶段与失败文件 | openjiuwen_ai | 无独立 D：只修采集失败诊断信息的透出与展示，不改变采集调度、存储契约和授权流程；无独立设计。 |
+| [B_20261127_1408_channel-web-log-dir-layout](jiuwenswarm/channels/web/B_20261127_1408_channel-web-log-dir-layout.md) | B | channel-web 日志目录仍指向废弃的 profile/agent/.logs，导致 ws-dev.log 无法写入 | liujiayu75 | 无独立 D：纯 bugfix，不涉及新设计；仅把 web 进程的日志落点对齐既有 paths 契约（<数据根>/logs/agent），并为并发归位窗口补一次重试。无独立设计文档。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend"></a>
 

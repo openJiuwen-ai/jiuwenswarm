@@ -51,6 +51,7 @@ from jiuwenswarm.common.client.agent_http_bridge import (
 _resolve_agent_http_base = resolve_agent_http_base
 _resolve_agent_upload_base = resolve_agent_upload_base
 
+from jiuwenswarm.common.paths import get_agent_logs_dir
 from jiuwenswarm.common.projectless_workspace import get_projectless_tasks_dir
 
 if TYPE_CHECKING:
@@ -149,7 +150,15 @@ def _get_agent_sessions_dir() -> Path:
 
 
 def _get_logs_dir() -> Path:
-    return _get_agent_root_dir() / ".logs"
+    """Web 进程的文件日志目录：统一走 paths 契约（``<数据根>/logs/agent``）。
+
+    旧实现返回 ``<数据根>/profile/agent/.logs``。该目录在 profile 布局收敛后由
+    ``migrate_profile_data_root_layout``（``common/paths.py`` 第 4 步）并入
+    ``logs/agent`` 并剪除，于是 ``_setup_logger`` 打开 ``ws-dev.log`` 时会因目录
+    已消失而失败，web 文件日志静默缺失。复用契约函数后，写入目标与布局归位的
+    目标桶一致，二者不再互相踩踏。
+    """
+    return get_agent_logs_dir()
 
 
 def _get_ssl_verify() -> bool:
@@ -3594,7 +3603,16 @@ def _setup_logger(logs_root: Path, log_level: str) -> logging.Logger:
 
     privacy_filter = SensitiveDataFilter()
 
-    file_handler = logging.FileHandler(logs_root / "ws-dev.log", mode="w", encoding="utf-8")
+    def _open_ws_dev_handler() -> logging.FileHandler:
+        logs_root.mkdir(parents=True, exist_ok=True)
+        return logging.FileHandler(logs_root / "ws-dev.log", mode="w", encoding="utf-8")
+
+    try:
+        file_handler = _open_ws_dev_handler()
+    except FileNotFoundError:
+        # 目录可能在本进程 mkdir 与 open 之间被并发布局归位搬走/剪除
+        # （app 与 web 是两个进程，启动时都会执行归位）：重建后重试一次。
+        file_handler = _open_ws_dev_handler()
     file_handler.setFormatter(formatter)
     file_handler.addFilter(privacy_filter)
     lg.addHandler(file_handler)
@@ -3817,7 +3835,12 @@ def main() -> None:
             logger = _setup_logger(logs_root, args.log_level)
             _ConfiguredHandler.logger = logger
         except Exception as exc:  # noqa: BLE001 - preserve serving on logging failure
-            logger.warning("Failed to configure web file logging: %s", exc)
+            logger.warning(
+                "Failed to configure web file logging: %s (logs_root=%s, agent_log_bucket=%s)",
+                exc,
+                logs_root,
+                get_agent_logs_dir(),
+            )
 
         logger.info("[jiuwenswarm-web] serving %s", dist_dir)
         logger.info("[jiuwenswarm-web] http://%s:%s", args.host, args.port)
