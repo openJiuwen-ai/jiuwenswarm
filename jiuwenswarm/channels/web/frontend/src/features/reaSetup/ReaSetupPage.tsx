@@ -36,8 +36,6 @@ import type {
 } from './types';
 import './reaSetup.css';
 
-const SCAN_CACHE_KEY = 'reaSetup.scan.v4';
-
 type GroupKind = 'base' | 'enhanced';
 
 interface ReaSetupPageProps {
@@ -73,44 +71,6 @@ interface CapabilityMemberView {
 }
 
 type PlanWithEnhanced = ReaSetupPlanItem & { enhanced?: ReaSetupEnhancedItem };
-
-function readCachedScan(): ReaSetupScan | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(SCAN_CACHE_KEY);
-    if (!raw) return null;
-    const value = JSON.parse(raw) as Partial<ReaSetupScan>;
-    if (
-      !Array.isArray(value.base)
-      || !Array.isArray(value.enhanced)
-      || !Array.isArray(value.enhanced_plan)
-      || !value.platform_id
-    ) {
-      return null;
-    }
-    return value as ReaSetupScan;
-  } catch {
-    return null;
-  }
-}
-
-function writeCachedScan(scan: ReaSetupScan): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(SCAN_CACHE_KEY, JSON.stringify(scan));
-  } catch {
-    // Storage can be unavailable in private or restricted browser contexts.
-  }
-}
-
-function clearCachedScan(): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.removeItem(SCAN_CACHE_KEY);
-  } catch {
-    // Storage can be unavailable in private or restricted browser contexts.
-  }
-}
 
 const CAPABILITY_SPECS = [
   { id: 'ghidra', labelKey: 'reaSetup.capability.ghidra', descriptionKey: 'reaSetup.capability.ghidraDesc', hoverKey: 'reaSetup.capabilityHover.ghidra', memberIds: ['java', 'ghidra'] },
@@ -210,13 +170,10 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   if (initialActiveJobRef.current === undefined) {
     initialActiveJobRef.current = readPersistedActiveJob(activeJobStorage);
   }
-  const cachedScanRef = useRef<ReaSetupScan | null>(readCachedScan());
-  const [scan, setScan] = useState<ReaSetupScan | null>(cachedScanRef.current);
+  const [scan, setScan] = useState<ReaSetupScan | null>(null);
   const [job, setJobState] = useState<ReaSetupJob | null>(initialActiveJobRef.current);
   const [enhancedResult, setEnhancedResult] = useState<ReaSetupInstallResult | null>(null);
-  const [loading, setLoading] = useState(
-    cachedScanRef.current === null && initialActiveJobRef.current === null,
-  );
+  const [loading, setLoading] = useState(initialActiveJobRef.current === null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [cancelPending, setCancelPending] = useState(false);
@@ -271,7 +228,6 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   const applyScan = useCallback((next: ReaSetupScan) => {
     scanRef.current = next;
     setScan(next);
-    writeCachedScan(next);
   }, []);
 
   const refresh = useCallback(async (scope: 'all' | GroupKind = 'all') => {
@@ -322,26 +278,32 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     setError('');
     stableRemainingRef.current = null;
     displayedRemainingRef.current = null;
-    clearCachedScan();
     await refresh('all');
   }, [refresh, setJob]);
 
-  const pollJob = useCallback((initial: ReaSetupJob): Promise<ReaSetupJob | null> => {
+  const pollJob = useCallback(async (initial: ReaSetupJob): Promise<ReaSetupJob | null> => {
     const generation = pollGenerationRef.current + 1;
     pollGenerationRef.current = generation;
-    return pollReaSetupJob({
+    const isCurrent = () => mountedRef.current && pollGenerationRef.current === generation;
+    const current = await pollReaSetupJob({
       initial,
       load: reaSetupApi.progress,
       onUpdate: setJob,
       onStale: recoverStaleJob,
-      isCurrent: () => mountedRef.current && pollGenerationRef.current === generation,
+      isCurrent,
     });
+    return isCurrent() ? current : null;
   }, [recoverStaleJob, setJob]);
 
-  const applyCompletedJob = useCallback((current: ReaSetupJob) => {
+  const applyCompletedJob = useCallback(async (current: ReaSetupJob) => {
     if (current.status === 'queued' || current.status === 'running') return;
     cancelActiveRef.current = false;
     setCancelPending(false);
+    if (scanRef.current === null && (current.status === 'cancelled' || !current.result?.scan)) {
+      initialActiveJobRef.current = null;
+      await refresh();
+      if (!mountedRef.current) return;
+    }
     if (current.status === 'cancelled') {
       setError(t('reaSetup.installCancelled'));
     } else if (current.result?.scan) {
@@ -356,7 +318,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     } else if (current.error) {
       setError(current.error);
     }
-  }, [applyScan, t]);
+  }, [applyScan, refresh, t]);
 
   const installEnhanced = useCallback(async (components?: string[]) => {
     if (enhancedStartingRef.current || installing) return;
@@ -369,7 +331,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     try {
       const initial = await reaSetupApi.installEnhanced(components);
       const current = await pollJob(initial);
-      if (current && mountedRef.current) applyCompletedJob(current);
+      if (current && mountedRef.current) await applyCompletedJob(current);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -389,7 +351,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     try {
       const initial = await reaSetupApi.installBase();
       const current = await pollJob(initial);
-      if (current && mountedRef.current) applyCompletedJob(current);
+      if (current && mountedRef.current) await applyCompletedJob(current);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -406,7 +368,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   }, []);
 
   useEffect(() => {
-    if (cachedScanRef.current === null && initialActiveJobRef.current === null) {
+    if (initialActiveJobRef.current === null) {
       void refresh();
     }
   }, [refresh]);
@@ -417,7 +379,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     resumedJobRef.current = true;
     void pollJob(persisted)
       .then((current) => {
-        if (current && mountedRef.current) applyCompletedJob(current);
+        if (current && mountedRef.current) return applyCompletedJob(current);
       })
       .catch((cause) => {
         if (mountedRef.current) {
@@ -458,7 +420,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
       if (!current || !mountedRef.current) return;
       setJob(current);
       const settled = await pollJob(current);
-      if (settled && mountedRef.current) applyCompletedJob(settled);
+      if (settled && mountedRef.current) await applyCompletedJob(settled);
     } catch (cause) {
       cancelActiveRef.current = false;
       if (mountedRef.current) {
