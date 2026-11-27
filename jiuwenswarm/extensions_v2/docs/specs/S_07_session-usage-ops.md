@@ -1,6 +1,6 @@
 # session.turns / session.usage 与统计查询 Ops 规约
 
-最近修订 2026-11-02；本次仅归整编号和引用，统计契约保持。七项查询公共机制见 [S_08](S_08_session-query-events.md)，usage 使用说明见 [F_17](../features/F_17_session-usage.md)，turns 使用说明见 [F_20](../features/F_20_session-turns.md)。本规约维护字段和默认语义，特性文档解释填写方式。
+最近修订 2026-11-27。七项查询公共机制见 [S_08](S_08_session-query-events.md)，usage 使用说明见 [F_17](../features/F_17_session-usage.md)，turns 使用说明见 [F_20](../features/F_20_session-turns.md)。本规约维护字段和默认语义，特性文档解释填写方式。
 
 ## 1. 能力与默认来源
 
@@ -8,6 +8,10 @@
 | --- | --- | --- |
 | session.turns | read_session_turns(session_id)：优先 request_id 去重，再用记录 id 和旧记录位置；排除扩展留档/自动化等。 | int 或 None |
 | session.usage | 优先绑定 session_usage_info；键存在但为 None 时保持未知，不用旧历史兜底；无该绑定键时才读取已提交用量。 | dict |
+
+集群会话的 `context` 使用宿主标记为 Leader 的最近一次顶层上下文窗口。历史回读按已保存的会话模式选择该规则，并排除其他成员、子调用和委派调用。窗口数值沿用下表的观测口径，集群累计消耗有独立统计来源。
+
+集群轮次结束时，宿主按模型调用 ID 配对该轮主 Agent 的有效窗口和模型响应计数。有新观测时，`context.usage.updated` 绑定该轮最新的配对窗口。通知的输入、输出、总计和缓存计数分别为该轮所有配对调用的累计值。模型响应缺失任一计数，或计数不是非负整数时，该次调用不参与配对及累计。
 
 ## 2. 输入输出字段
 

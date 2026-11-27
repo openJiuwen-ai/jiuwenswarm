@@ -38,6 +38,7 @@ generated: true
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
+| [jiuwenswarm/extensions_v2](#module-jiuwenswarm-extensions_v2) |
 | [jiuwenswarm/instance_manager](#module-jiuwenswarm-instance_manager) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin) |
@@ -113,6 +114,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261117_2001_deferred-memory-failure](jiuwenswarm/agents/harness/common/rails/B_20261117_2001_deferred-memory-failure.md) | B | 延迟调用记忆工具时传播失败状态 | ToNy_St4rk | 无独立 D：修复 Issue 6151 中已有工具结果契约的状态传播，无独立设计。 |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-rsi"></a>
 
@@ -295,6 +297,14 @@ generated: true
 | [B_20261124_1429_local-app-removal-and-conversion](jiuwenswarm/extensions/app_market/B_20261124_1429_local-app-removal-and-conversion.md) | B | 应用市场本地清理和 Hub 转换的一致性 | kdgmpw | 无独立 D：本次修正应用市场登记、目录归属与转换行为，沿用 S_03 契约和现有项目接口，无独立设计。 |
 | [B_20261126_2025_installed-app-icon-expiry](jiuwenswarm/extensions/app_market/B_20261126_2025_installed-app-icon-expiry.md) | B | Hub 应用安装后的图标链接过期 | kdgmpw | 无独立 D：修复本地展示依赖临时链接的问题，沿用 S_03 的 Hub 应用包装和登记契约。 |
 
+<a id="module-jiuwenswarm-extensions_v2"></a>
+
+## jiuwenswarm/extensions_v2
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
+
 <a id="module-jiuwenswarm-instance_manager"></a>
 
 ## jiuwenswarm/instance_manager
@@ -395,6 +405,7 @@ generated: true
 | [B_20261119_2249_deep-adapter-sync-build](jiuwenswarm/server/runtime/agent_adapter/B_20261119_2249_deep-adapter-sync-build.md) | B | DeepAdapter 冷启动同步构建阻塞事件循环 | yangzequ | 无独立 D：本次是对现有 DeepAdapter 创建链路的局部阻塞修复，无独立设计文档。 |
 | [B_20261121_1545_team-pause-teardown-admission-race](jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
 | [B_20261126_1052_team-memory-rail-race](jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 
@@ -412,6 +423,7 @@ generated: true
 |---|---|---|---|---|
 | [B_20261123_1757_harmony-process-identity](jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
 | [B_20261126_0954_native-npc-team-first-turn](jiuwenswarm/server/runtime/session/B_20261126_0954_native-npc-team-first-turn.md) | B | 原生 NPC 队伍首轮发言失败 | kdgmpw | 无独立 D：修复现有原生 NPC Team 装配契约。 |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 
