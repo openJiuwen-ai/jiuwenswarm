@@ -61,6 +61,12 @@ test('independent child windows preserve movement, isolate replies and close wit
     assert.equal(f.invoke('bootstrap', one).config.status, 'busy');
     f.invoke('update', f.owner, f.config.key, { state: { connected: false } });
     assert.equal(two.messages.at(-1).value.state.connected, false);
+    f.invoke('update', f.owner, f.config.key, { config: { endpoint: 'local-capability-2', shared: true } });
+    assert.equal(one.messages.at(-1).value.config.endpoint, 'local-capability-2');
+    const refreshed = f.invoke('bootstrap', one);
+    assert.equal(refreshed.config.endpoint, 'local-capability-2');
+    assert.equal(refreshed.config.shared, true);
+    assert.equal(refreshed.config.member, 'one');
     assert.throws(() => f.invoke('children', one, f.config.key, generation, []), /Untrusted/);
     assert.throws(() => f.invoke('children', f.owner, f.config.key, 'old', []), /STALE/);
     f.invoke('children', f.owner, f.config.key, generation, [descriptors[1]]);

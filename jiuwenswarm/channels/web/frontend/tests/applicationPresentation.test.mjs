@@ -124,6 +124,22 @@ test('Team leader public process segments remain visible before a final and late
   assert.throws(() => reader.read(runtime, firstId, 0), /REPLY_CHANGED/);
 });
 
+test('owner-mirrored Team events do not shadow the assistant final of an agent conversation', () => {
+  const store = useChatStore.getState(); store.ensureRuntime('agent-mirror');
+  store.addMessage('agent-mirror', { id: 'question', role: 'user', inputRequestId: 'turn', content: '帮我处理', timestamp: '1' });
+  store.addMessage('agent-mirror', { id: 'assistant-final', role: 'assistant', inputRequestId: 'turn',
+    content: '助手完整答复', timestamp: '2' });
+  store.setLastFinalReply('agent-mirror', '助手完整答复', 'turn');
+  // Owner mirroring keeps the role and the team.event prefix but clears teamId.
+  store.addMessage('agent-mirror', { id: 'owner-team-message-t1-m1', role: 'system', timestamp: '3',
+    content: 'team.event:{"event":{"type":"team.message","from_member":"team_leader","content":"队长公开答复"}}' });
+  const runtime = useChatStore.getState().runtimes['agent-mirror'], reader = createPresentationReplyReader();
+  const reply = lastPresentationReply(runtime);
+  const id = reader.identify(reply);
+  assert.equal(reader.read(runtime, id, 0).content, '助手完整答复');
+  assert.ok(runtime.messages.some((message) => message.role === 'system' && message.id === 'owner-team-message-t1-m1'));
+});
+
 test('workbench and forms share model validation and stable selection persistence', async () => {
   const original = webClient.request;
   const calls = [];

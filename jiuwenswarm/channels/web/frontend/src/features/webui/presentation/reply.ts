@@ -36,7 +36,12 @@ export function lastPresentationReply(runtime: ChatRuntime | undefined): Present
   }
   const saved = runtime.lastFinalReply;
   if (candidate?.role === 'system' && (!saved || replyInputIndex(runtime, saved) <= replyInputIndex(runtime, candidate))) {
-    return projectTeamReply(runtime, candidate);
+    // A final reply recorded for the same turn belongs to an assistant answer:
+    // owner-mirrored Team events share that turn and must not shadow it.
+    if (saved && saved.content && replyInputIndex(runtime, saved) === replyInputIndex(runtime, candidate)) return saved;
+    const projected = projectTeamReply(runtime, candidate);
+    if (projected.content) return projected;
+    return saved && replyInputIndex(runtime, saved) >= replyInputIndex(runtime, candidate) ? saved : candidate;
   }
   return saved && replyInputIndex(runtime, saved) >= replyInputIndex(runtime, candidate) ? saved : candidate;
 }

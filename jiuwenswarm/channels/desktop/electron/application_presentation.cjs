@@ -181,6 +181,7 @@ function createApplicationPresentation({ BrowserWindow, ipcMain, screen, getMain
     current.config = { ...current.config, ...payload };
     send(current.window, 'update', payload);
     if (payload.state) children.updateState(payload.state);
+    if (payload.config) children.updateConfig(current.config.config);
     return true;
   });
   register('request', 'floating', request => {

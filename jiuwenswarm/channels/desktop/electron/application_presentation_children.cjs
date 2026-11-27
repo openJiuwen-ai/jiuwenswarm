@@ -55,6 +55,7 @@ function createChildPresentations({ BrowserWindow, screen, parent, owner, preloa
       if (entry) {
         if (JSON.stringify(entry.config.config) !== JSON.stringify(childConfig) || entry.config.title !== item.title) {
           entry.config = { ...entry.config, config: childConfig, title: item.title };
+          entry.itemConfig = item.config;
           entry.window.setTitle?.(item.title);
           send(entry.window, 'update', { config: childConfig });
         }
@@ -69,7 +70,7 @@ function createChildPresentations({ BrowserWindow, screen, parent, owner, preloa
           webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
         });
         entry = { window, config: { ...root.config, key: childKey, title: item.title, width: item.width, height: item.height,
-          config: childConfig }, generation: randomUUID(), parentKey: key, parentGeneration: generation,
+          config: childConfig }, itemConfig: item.config, generation: randomUUID(), parentKey: key, parentGeneration: generation,
           initialWorkArea: area, interactive: false, ready: false };
         entries.set(childKey, entry);
         const created = entry;
@@ -141,6 +142,18 @@ function createChildPresentations({ BrowserWindow, screen, parent, owner, preloa
     },
     updateState(state) {
       for (const entry of entries.values()) { entry.config = { ...entry.config, state }; send(entry.window, 'update', { state }); }
+    },
+    updateConfig(baseConfig) {
+      // Keep the per-child declaration overrides while refreshing the shared base,
+      // so an update({config}) reaches open children just like the parent window.
+      for (const entry of entries.values()) {
+        let merged;
+        try { merged = { ...baseConfig, ...entry.itemConfig }; } catch { continue; }
+        if (JSON.stringify(entry.config.config) === JSON.stringify(merged)) continue;
+        try { if (Buffer.byteLength(JSON.stringify(merged)) > 16 * 1024) continue; } catch { continue; }
+        entry.config = { ...entry.config, config: merged };
+        send(entry.window, 'update', { config: merged });
+      }
     },
     clear() { for (const entry of [...entries.values()]) close(entry, 'parent_closed'); },
   };
