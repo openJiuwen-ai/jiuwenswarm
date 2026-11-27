@@ -4031,6 +4031,15 @@ wheels = [
 ]
 
 [[package]]
+name = "olefile"
+version = "0.47"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/1b/077b508e3e500e1629d366249c3ccb32f95e50258b231705c09e3c7a4366/olefile-0.47.zip", hash = "sha256:599383381a0bf3dfbd932ca0ca6515acd174ed48870cbf7fee123d698c192c1c", size = 112240, upload-time = "2023-12-01T16:22:53.025Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/17/d3/b64c356a907242d719fc668b71befd73324e47ab46c8ebbbede252c154b2/olefile-0.47-py2.py3-none-any.whl", hash = "sha256:543c7da2a7adadf21214938bb79c83ea12b473a4b6ee4ad4bf854e7715e13d1f", size = 114565, upload-time = "2023-12-01T16:22:51.518Z" },
+]
+
+[[package]]
 name = "onnxruntime"
 version = "1.32.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5878,6 +5887,20 @@ wheels = [
 ]
 
 [[package]]
+name = "python-oxmsg"
+version = "0.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "olefile" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a2/4e/869f34faedbc968796d2c7e9837dede079c9cb9750917356b1f1eda926e9/python_oxmsg-0.0.2.tar.gz", hash = "sha256:a6aff4deb1b5975d44d49dab1d9384089ffeec819e19c6940bc7ffbc84775fad", size = 34713, upload-time = "2025-02-03T17:13:47.415Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/67/f56c69a98c7eb244025845506387d0f961681657c9fcd8b2d2edd148f9d2/python_oxmsg-0.0.2-py3-none-any.whl", hash = "sha256:22be29b14c46016bcd05e34abddfd8e05ee82082f53b82753d115da3fc7d0355", size = 31455, upload-time = "2025-02-03T17:13:46.061Z" },
+]
+
+[[package]]
 name = "python-pptx"
 version = "1.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -7457,6 +7480,7 @@ dependencies = [
     { name = "mutagen" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "olefile" },
     { name = "openjiuwen" },
     { name = "openjiuwen-computeruse" },
     { name = "openjiuwen-e2a" },
@@ -7475,6 +7499,7 @@ dependencies = [
     { name = "psutil" },
     { name = "pydantic" },
     { name = "python-multipart" },
+    { name = "python-oxmsg" },
     { name = "python-socks" },
     { name = "python-telegram-bot" },
     { name = "pyyaml" },
@@ -7537,6 +7562,7 @@ harmony = [
     { name = "loguru" },
     { name = "lxml" },
     { name = "mutagen" },
+    { name = "olefile" },
     { name = "openjiuwen" },
     { name = "openjiuwen-e2a" },
     { name = "opentelemetry-api" },
@@ -7548,6 +7574,7 @@ harmony = [
     { name = "portalocker" },
     { name = "pydantic" },
     { name = "python-multipart" },
+    { name = "python-oxmsg" },
     { name = "python-socks" },
     { name = "python-telegram-bot" },
     { name = "pyyaml" },
@@ -7694,6 +7721,8 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
+    { name = "olefile", specifier = "==0.47" },
+    { name = "olefile", marker = "extra == 'harmony'", specifier = "==0.47" },
     { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=61421984467d4b8f3ccdf82043fe356218754eb1" },
     { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=61421984467d4b8f3ccdf82043fe356218754eb1" },
     { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=61421984467d4b8f3ccdf82043fe356218754eb1" },
@@ -7737,6 +7766,8 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'test'", specifier = ">=3.6" },
     { name = "python-multipart", specifier = ">=0.0.31,<0.1" },
     { name = "python-multipart", marker = "extra == 'harmony'", specifier = ">=0.0.31" },
+    { name = "python-oxmsg", specifier = "==0.0.2" },
+    { name = "python-oxmsg", marker = "extra == 'harmony'", specifier = "==0.0.2" },
     { name = "python-socks", specifier = ">=2.8.1,<3" },
     { name = "python-socks", marker = "extra == 'harmony'", specifier = ">=2.8.1" },
     { name = "python-telegram-bot", specifier = ">=20.0,<23" },

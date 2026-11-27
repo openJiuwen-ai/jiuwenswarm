@@ -47,6 +47,8 @@ dependencies = [
     "greenlet>=3.3.2,<4",
     "skillnet-ai==0.0.16",
     "mutagen>=1.47.0,<2",
+    "olefile==0.47",
+    "python-oxmsg==0.0.2",
     "google-genai>=2.30,<3",
     # Surface transitive compatibility caps early to avoid resolver backtracking.
     "google-api-core>=1.26,<2.36",
@@ -119,6 +121,8 @@ harmony = [
     "greenlet>=3.3.2",
     "skillnet-ai==0.0.16",
     "mutagen>=1.47.0",
+    "olefile==0.47",
+    "python-oxmsg==0.0.2",
     "google-genai>=2.30",
     "opentelemetry-api>=1.28.0",
     "opentelemetry-sdk>=1.28.0",

@@ -134,7 +134,9 @@ The input area at the bottom of the chat page provides several controls:
 
 ![Input area with controls](../assets/images/current-ui-en/14-Input-Area-Controls.png)
 
-In a web Agent conversation, use **Add file** to upload an `.eml` file. With a Linux or macOS server, you can ask the agent to summarize the message, identify its sender and date, or list attachment names. The reader accepts `.eml` files up to 20 MiB, including any attachments encoded in the file. On a Windows server, email file reading is unavailable. You can paste the message body into the chat. To analyze an attachment's contents, save and upload it separately.
+In a web Agent conversation, use **Add file** to upload an `.eml` email or an Outlook `.msg` email. With a Linux or macOS server, you can ask the agent to summarize the message, identify its sender and date, or list attachment names. The 20 MiB limit applies to the whole file, including attachments. To analyze an attachment, save and upload it separately. If your server runs Windows, paste the message text into the chat.
+
+The MSG reader supports plain-text and HTML email bodies. For RTF-only or encrypted messages, open the message in Outlook and copy the readable text. Outlook contacts, calendar items and tasks saved as `.msg` are outside the scope of the email reader.
 
 ---
 
