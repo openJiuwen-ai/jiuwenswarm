@@ -2129,6 +2129,21 @@ class JiuWenSwarm:
         elif not run and _is_scheduler_trigger(request.metadata):
             inputs["run"] = {"kind": "cron"}
 
+        if inputs.get("skip_a2ui") is True:
+            # Harness 归一化只保留 RunContext 中的扩展字段。
+            run_payload = inputs.get("run")
+            run_payload = dict(run_payload) if isinstance(run_payload, dict) else {}
+            context = run_payload.get("context")
+            context = dict(context) if isinstance(context, dict) else {}
+            extra = context.get("extra")
+            extra = dict(extra) if isinstance(extra, dict) else {}
+            # Harness 会将 context 的同名顶层字段折入 extra，须以请求 metadata 为准。
+            context.pop("skip_a2ui", None)
+            extra["skip_a2ui"] = True
+            context["extra"] = extra
+            run_payload["context"] = context
+            inputs["run"] = run_payload
+
         # 将 extension_config 放入 run_context.extra 中，供 Rails 消费
         # 注意：openjiuwen 框架从 inputs["run"]["context"] 解析 RunContext
         # _normalize_inputs 会用 RunContext(**context_data) 构造，因此传 dict

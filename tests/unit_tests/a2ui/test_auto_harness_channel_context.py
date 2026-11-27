@@ -117,6 +117,10 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
         def set_channel(channel):
             captured["channel"] = channel
 
+        @staticmethod
+        def set_skip_a2ui(skip):
+            captured["skip_a2ui"] = skip
+
     async def async_noop(*args, **kwargs):
         return None
 
@@ -152,6 +156,7 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
             session_id="sess_123",
             mode="agent.fast",
             channel_id="web",
+            request_metadata={"skip_a2ui": True},
             cwd="/task/project/backend",
             workspace="/task/project",
             project_dir="/different/project",
@@ -161,6 +166,7 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
     first_project_dir = os.path.abspath("/different/project")
     assert captured == {
         "channel": "web",
+        "skip_a2ui": True,
         "cwd": first_project_dir,
         "workspace": first_project_dir,
     }
@@ -177,6 +183,7 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
     second_project_dir = os.path.abspath("/task/second-project")
     assert captured == {
         "channel": "web",
+        "skip_a2ui": False,
         "cwd": second_project_dir,
         "workspace": second_project_dir,
     }

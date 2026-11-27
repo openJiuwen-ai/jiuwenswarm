@@ -89,6 +89,7 @@ class ResponsePromptRail(DeepAgentRail):
         super().__init__()
         self.system_prompt_builder = None
         self._runtime_channel: str | None = None
+        self._runtime_skip_a2ui = False
 
     def init(self, agent) -> None:
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -101,10 +102,14 @@ class ResponsePromptRail(DeepAgentRail):
             self.system_prompt_builder.remove_section(LocalSectionName.A2UI_BOOST)
         self.system_prompt_builder = None
         self._runtime_channel = None
+        self._runtime_skip_a2ui = False
 
     def set_channel(self, channel: str | None) -> None:
         value = str(channel or "").strip()
         self._runtime_channel = value or None
+
+    def set_skip_a2ui(self, skip: bool) -> None:
+        self._runtime_skip_a2ui = skip
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         channel = self._resolve_channel(ctx)
@@ -146,6 +151,12 @@ class ResponsePromptRail(DeepAgentRail):
         )
 
     def _should_skip_a2ui(self, ctx: AgentCallbackContext) -> bool:
+        if self._runtime_skip_a2ui:
+            return True
+        build_context = getattr(getattr(ctx, "agent", None), "build_context", None)
+        metadata = getattr(build_context, "request_metadata", None)
+        if isinstance(metadata, dict) and metadata.get(SKIP_A2UI_PROMPT_CONTEXT_KEY) is True:
+            return True
         inputs = getattr(ctx, "inputs", None)
         if isinstance(inputs, dict) and inputs.get(SKIP_A2UI_PROMPT_CONTEXT_KEY) is True:
             return True
@@ -153,7 +164,20 @@ class ResponsePromptRail(DeepAgentRail):
             return True
 
         extra = getattr(ctx, "extra", None)
-        return isinstance(extra, dict) and extra.get(SKIP_A2UI_PROMPT_CONTEXT_KEY) is True
+        if not isinstance(extra, dict):
+            extra = {}
+        if extra.get(SKIP_A2UI_PROMPT_CONTEXT_KEY) is True:
+            return True
+
+        # DeepAgent 从 InvokeInputs 传入 RunContext，ReAct 模型回调从 extra 读取它。
+        input_run_context = (
+            inputs.get("run_context") if isinstance(inputs, dict) else getattr(inputs, "run_context", None)
+        )
+        for run_context in (input_run_context, extra.get("run_context")):
+            run_extra = getattr(run_context, "extra", None)
+            if isinstance(run_extra, dict) and run_extra.get(SKIP_A2UI_PROMPT_CONTEXT_KEY) is True:
+                return True
+        return False
 
     def _resolve_channel(self, ctx: AgentCallbackContext) -> str | None:
         """Read the request channel from callback inputs when available."""
