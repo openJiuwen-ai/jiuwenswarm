@@ -17,7 +17,9 @@ from urllib.parse import quote
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.types import ASGIApp, Receive, Scope, Send
 
+from jiuwenswarm.gateway.trace_context import trace_context_from_headers
 from jiuwenswarm.gateway.telemetry import (
     bind_request_trace,
     current_request_trace,
@@ -293,18 +295,9 @@ def _file_api_ids(request: Request) -> tuple[str, str]:
     return uid, sid
 
 
-_TRACE_CONTEXT_HEADERS = frozenset({"traceparent", "tracestate", "x-trace-id", "trace_id"})
-
-
 def _incoming_trace_context(request: Request) -> dict[str, str]:
     """Collect caller trace headers; traceparent wins in telemetry extraction."""
-    context: dict[str, str] = {}
-    for key, value in request.headers.items():
-        name = str(key).strip().lower()
-        text = str(value or "").strip()
-        if name in _TRACE_CONTEXT_HEADERS and text:
-            context[name] = text
-    return context
+    return trace_context_from_headers(request.headers)
 
 
 @asynccontextmanager
@@ -346,6 +339,29 @@ async def _bind_file_api_request_trace(request: Request):
             raise
         finally:
             operation.complete()
+
+
+class _FileApiTraceMiddleware:
+    """Bind the caller trace outside ``BaseHTTPMiddleware``.
+
+    ``BaseHTTPMiddleware`` runs the endpoint in a child task.  Without an
+    outer pure-ASGI bind, ``current_request_trace()`` can be empty in the
+    route task even though the access-log middleware saw the header.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope.get("type") != "http"
+            or not str(scope.get("path") or "").startswith(FILE_API_PREFIX)
+        ):
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        async with _bind_file_api_request_trace(request):
+            await self.app(scope, receive, send)
 
 
 _FILE_API_DONE_KEYS = (
@@ -1214,6 +1230,10 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 "created": bool(created),
             }
         )
+
+    # Keep the caller trace visible to the endpoint task, not only to the
+    # BaseHTTPMiddleware access-log task.
+    app.add_middleware(_FileApiTraceMiddleware)
 
     logger.info(
         "WebChannel /file-api enabled: upload, raw-file, file-content, list-files, list-markdown, mkdir",

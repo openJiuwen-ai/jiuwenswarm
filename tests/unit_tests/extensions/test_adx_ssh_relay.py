@@ -43,8 +43,8 @@ class Writer:
 @pytest.mark.asyncio
 async def test_ssh_connect_rejection_never_opens_ssh_or_exposes_credentials(monkeypatch,tmp_path):
     import jiuwenswarm.extensions.agentos.agentos_router.adx.ssh_relay as module
-    from jiuwenswarm.extensions.agentos.agentos_router.adx import control_client
-    monkeypatch.setattr(control_client, 'inject_request_headers', lambda headers: {
+    from jiuwenswarm.gateway import trace_context
+    monkeypatch.setattr(trace_context, 'inject_request_headers', lambda headers: {
         **headers, 'X-Trace-Id': '12345678-1234-1234-1234-123456789abc',
         'traceparent': '00-12345678123412341234123456789abc-1234567812345678-01',
     })

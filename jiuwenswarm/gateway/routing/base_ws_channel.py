@@ -19,6 +19,7 @@ from typing import Any
 from jiuwenswarm.gateway.channel_manager.base import BaseWebChannel
 from jiuwenswarm.gateway.routing.keys import DeliveryTarget, RoutingKey
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.gateway.trace_context import trace_context_from_headers
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,11 @@ class BaseWsChannel(BaseWebChannel):
         if self._channel_event_reporter is None:
             return
         user_id = self._extract_ws_user_id(ws)
-        self._channel_event_reporter("connected", self.channel_id, user_id)
+        headers = getattr(ws, "headers", None) or getattr(ws, "request_headers", None)
+        self._channel_event_reporter(
+            "connected", self.channel_id, user_id,
+            trace_context=trace_context_from_headers(headers),
+        )
 
     def report_disconnect(self, ws: Any) -> None:
         """上报连接断开事件。"""

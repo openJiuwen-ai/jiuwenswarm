@@ -346,3 +346,37 @@ async def test_stream_delivery_coalesces_without_logging_every_chunk(monkeypatch
     assert len(ws.sent) == 4
     assert len(summaries) == 1 and summaries[0][1] == 'client.written'
     assert len([name for name, _ in op.events if name == 'client.first_content']) == 1
+
+
+def test_ws_adapter_trace_context_reads_request_headers():
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import (
+        _trace_context_from_ws,
+    )
+
+    traceparent = "00-" + "a" * 32 + "-" + "b" * 16 + "-01"
+    ws = SimpleNamespace(request_headers={"Traceparent": traceparent})
+    assert _trace_context_from_ws(ws) == {"traceparent": traceparent}
+
+
+def test_report_connect_reads_adapter_request_headers():
+    from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
+
+    class _Channel(BaseWsChannel):
+        async def start(self, *args, **kwargs):
+            return None
+
+        async def stop(self, *args, **kwargs):
+            return None
+
+        def _serialize_frame(self, message):
+            return message
+
+    traceparent = "00-" + "a" * 32 + "-" + "b" * 16 + "-01"
+    channel = object.__new__(_Channel)
+    channel.channel_id = "web"
+    captured = {}
+    channel._channel_event_reporter = lambda *args, **kwargs: captured.update(kwargs)
+    channel.report_connect(
+        SimpleNamespace(request_headers={"traceparent": traceparent}),
+    )
+    assert captured["trace_context"] == {"traceparent": traceparent}

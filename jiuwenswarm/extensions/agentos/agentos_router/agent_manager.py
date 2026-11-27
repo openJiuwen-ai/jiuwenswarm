@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 from jiuwenswarm.gateway.telemetry import current_request_trace, trace_operation
+from jiuwenswarm.gateway.trace_context import current_trace_id
 AgentCreator = Callable[[AgentInfo], Awaitable[AgentInfo | None]]
 AgentKey = tuple[str, ...]
 BUILTIN_AGENT_TYPE = "jiuwenswarm"
@@ -344,6 +345,7 @@ class AgentManager:
         creator: AgentCreator | None = None,
         timeout_seconds: float | None = None,
         metadata: dict[str, Any] | None = None,
+        trace_id: str | None = None,
         acquire: bool = False,
         wait: bool = True,
     ) -> AgentRuntime:
@@ -356,7 +358,16 @@ class AgentManager:
 
         ``wait=False`` still single-flights create (only one owner), but
         non-owners raise :class:`AgentCreating` instead of blocking.
+
+        ``trace_id`` carries the caller's northbound trace across the create
+        boundary. When omitted, the currently bound Gateway operation is used.
+        The resolved id is stored on the runtime metadata so the creator can
+        pass it to the platform even when the create runs in another task.
         """
+
+        resolved_trace_id = str(trace_id or "").strip()
+        if not resolved_trace_id:
+            resolved_trace_id = current_trace_id()
 
         key = self._make_key(user_id, agent_type, key_values=key_values)
         key_user_id, key_agent_type = self._identity_from_key(key)
@@ -385,11 +396,14 @@ class AgentManager:
                     return existing.snapshot()
 
                 if existing is None:
+                    create_metadata = dict(metadata or {})
+                    if resolved_trace_id:
+                        create_metadata["trace_id"] = resolved_trace_id
                     runtime = AgentRuntime.for_key(
                         key,
                         user_id=key_user_id,
                         agent_type=key_agent_type,
-                        metadata=metadata,
+                        metadata=create_metadata,
                     )
                     self._runtimes[key] = runtime
                     operation = current_request_trace()
@@ -398,6 +412,11 @@ class AgentManager:
                     owner = True
                 else:
                     runtime = existing
+                    if resolved_trace_id:
+                        # A waiter may arrive before the owner's creator reads
+                        # metadata; keep the caller trace available if it is
+                        # still absent.
+                        runtime.info.metadata.setdefault("trace_id", resolved_trace_id)
                     if runtime.is_failed():
                         # Do not reset_for_retry: a cancelled/failed create may
                         # still have provisioned a Environment sandbox; retrying
