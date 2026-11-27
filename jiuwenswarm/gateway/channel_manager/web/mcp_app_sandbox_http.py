@@ -51,7 +51,13 @@ def _matches_own_origin(source: str, own_origin: str) -> bool:
     own = urlsplit(own_origin)
     if src.scheme.lower() != own.scheme.lower():
         return False
-    src_port = src.port if src.port is not None else (443 if src.scheme.lower() == "https" else 80)
+    try:
+        # App 可控的畸形端口（>65535）urlsplit 会抛 ValueError——视为
+        # 解析失败、不匹配自身 origin，source 原样保留（R4 行为，
+        # CR-10997-05）。
+        src_port = src.port if src.port is not None else (443 if src.scheme.lower() == "https" else 80)
+    except ValueError:
+        return False
     own_port = own.port if own.port is not None else (443 if own.scheme.lower() == "https" else 80)
     if src_port != own_port:
         return False

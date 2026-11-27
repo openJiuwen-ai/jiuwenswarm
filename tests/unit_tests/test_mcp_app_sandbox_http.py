@@ -85,6 +85,20 @@ def test_sandbox_page_tolerates_bad_csp_query():
     assert "connect-src 'none'" in response.headers["content-security-policy"]
 
 
+def test_sandbox_page_tolerates_out_of_range_port_in_csp():
+    # CR-10997-05：畸形端口（>65535）source 不匹配自身 origin 且不得使
+    # 沙箱页 500（R4 行为：原样保留，浏览器按无效 source 忽略）。
+    response = _client().get(
+        SANDBOX_PATH, params={"csp": json.dumps({"connectDomains": ["http://ok.test:999999"]})}
+    )
+    assert response.status_code == 200
+    assert "connect-src http://ok.test:999999" in response.headers["content-security-policy"]
+    header = build_mcp_app_csp(
+        {"connectDomains": ["http://ok.test:999999"]}, own_origin="http://127.0.0.1:19002"
+    )
+    assert "connect-src http://ok.test:999999" in header
+
+
 def test_sandbox_info_reports_bound_origin_not_host_header():
     response = _client().get(SANDBOX_INFO_PATH, headers={"Host": "127.0.0.1:5173"})
     url = response.json()["url"]
