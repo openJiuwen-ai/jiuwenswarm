@@ -6804,6 +6804,7 @@
     "enhancedProgressHint": "增强能力配置预计需要 {{range}}，完成后可随时查看详情。",
     "enhancedEstimateFallback": "30–40 分钟",
     "cancelInstall": "取消安装",
+    "cancelling": "正在取消…",
     "installingComponents": "正在安装工具链组件",
     "componentCountHint": "共 {{count}} 个组件，可执行组件会按依赖关系并行安装。",
     "completedCount": "已完成 {{completed}} / {{total}} 项",
