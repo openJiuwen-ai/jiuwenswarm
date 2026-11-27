@@ -26,6 +26,19 @@ _ANCHOR_MEMORY_CORRECTION = "[记忆纠正规则]"
 _RELAY_SECTION_HEADER = re.compile(r"(?m)^[ \t]*(?:#{1,6}[ \t]+)?(\[[^\]\n]+\])[ \t]*$")
 
 
+def _find_section_header(text: str, title: str, start: int = 0) -> int | None:
+    """返回独占一行的分区标题 ``title`` 的起始偏移；找不到返回 None。
+
+    ``request_system_prompt`` 除 relay 分区外还携带调用方人格、交互提示与 Add-in 上下文，
+    正文里可能出现同名标签提及（如人格段写「如需解释 [记忆纠正规则]」）。裸子串 ``find``
+    会命中这些提及、抢走块边界，故分区定位一律只认独占一行的标题（可带 ``#`` 前缀）。
+    """
+    for match in _RELAY_SECTION_HEADER.finditer(text, start):
+        if match.group(1) == title:
+            return match.start()
+    return None
+
+
 def _strip_relay_duplicates(content: str) -> str | None:
     """剥除 relay 的 [文件输出约束] 块（220 已覆盖），保留 [记忆纠正规则] 及其后内容。
 
@@ -37,12 +50,14 @@ def _strip_relay_duplicates(content: str) -> str | None:
     if not content:
         return None
 
-    ws_idx = content.find(_ANCHOR_WORKSPACE_CONSTRAINT)
-    if ws_idx < 0:
-        return None  # 缺失 [文件输出约束] → 无重复块，回退
+    ws_idx = _find_section_header(content, _ANCHOR_WORKSPACE_CONSTRAINT)
+    if ws_idx is None:
+        return None  # 缺失 [文件输出约束] 分区标题 → 无重复块，回退
 
-    mc_idx = content.find(_ANCHOR_MEMORY_CORRECTION, ws_idx + len(_ANCHOR_WORKSPACE_CONSTRAINT))
-    if mc_idx < 0:
+    mc_idx = _find_section_header(
+        content, _ANCHOR_MEMORY_CORRECTION, ws_idx + len(_ANCHOR_WORKSPACE_CONSTRAINT)
+    )
+    if mc_idx is None:
         # 无 [记忆纠正规则] 收尾 → 无法确定 [文件输出约束] 块的结束边界，回退（不盲删到段尾）。
         logger.warning(
             "[FlashRelayMerge] %s 后无 %s 收尾，无法确定块边界，回退保留原段",
@@ -78,10 +93,11 @@ _MEMORY_RULE6_LINE = re.compile(r"^[ \t]*\d+[.、][ \t]*")
 def _memory_block_span(text: str) -> tuple[int, int] | None:
     """返回 ``[记忆纠正规则]`` 块的 ``(start, end)``；锚点缺失返回 None。
 
+    ``start`` 只认 ``[记忆纠正规则]`` 独占一行的标题，正文里的同名提及不抢边界；
     ``end`` 取块后第一个 relay 分区标题（``[xxx]`` 独占一行）或段尾。
     """
-    start = text.find(_ANCHOR_MEMORY_CORRECTION)
-    if start < 0:
+    start = _find_section_header(text, _ANCHOR_MEMORY_CORRECTION)
+    if start is None:
         return None
     end = len(text)
     for match in _RELAY_SECTION_HEADER.finditer(

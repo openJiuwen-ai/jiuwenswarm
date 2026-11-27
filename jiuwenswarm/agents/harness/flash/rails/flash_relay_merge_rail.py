@@ -19,7 +19,8 @@ relay TS 层（RelayClawAgentService.ts buildRequest）把产品内容包经 ``s
   或拆分回退时 120 不存在，relay 第 6 条是唯一来源，保留；
 - ``[记忆纠正规则]`` 里的旧记忆工具名（read_memory / edit_memory / write_memory）——按
   ``prompt.content.memory_names.MEMORY_NAME_REPLACEMENTS``（与 FlashMemoryRail 共用）改写为
-  统一入口 ``memory(mode=…)``；改写只在该块内进行，不碰人格段等同段内其它文本。
+  统一入口 ``memory(mode=…)``；改写只在该块内进行，不碰人格段等同段内其它文本。块边界与
+  剥除锚点一样按「独占一行的分区标题」定位，人格正文提前提及同名标签不会抢走边界。
 
 剥除机制：``[文件输出约束]`` 按锚点定位，锚点缺失即**整体回退**（用原内容重加，后续记忆块
 改写一并跳过），不盲切；记忆块两项均为独立锚点的 best-effort（带守卫原则）。
