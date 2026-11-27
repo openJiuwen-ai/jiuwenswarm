@@ -10,7 +10,6 @@ without spawning bwrap per call.
 from __future__ import annotations
 
 import asyncio
-import base64
 import ctypes
 import dataclasses
 import errno
@@ -85,6 +84,8 @@ from jiuwenbox.supervisor.daemon_ipc import (
 )
 from jiuwenbox.supervisor.landlock import encode_landlock_payload
 from jiuwenbox.supervisor.seccomp import build_seccomp_filter
+from jiuwenbox.supervisor.environment import build_process_env
+from jiuwenbox.supervisor.filesystem import materialize_directories, materialize_files
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -109,7 +110,6 @@ SERVER_PROTECT_PORTS_ENV = "JIUWENBOX_SERVER_PROTECT_PORTS"
 # explicitly accepted that the box-server has no host-level protection.
 LISTEN_URI_ENV = "JIUWENBOX_LISTEN"
 DEFAULT_SERVER_PROTECT_PORTS: tuple[int, ...] = (8321,)
-_API_TOKEN_ENV = "JIUWENBOX_API_TOKEN"
 
 
 def _sandbox_process_env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -119,9 +119,7 @@ def _sandbox_process_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     then strips ``JIUWENBOX_API_TOKEN`` so the management Bearer credential
     never becomes visible inside the sandbox.
     """
-    process_env = {**os.environ, **(extra or {})}
-    process_env.pop(_API_TOKEN_ENV, None)
-    return process_env
+    return build_process_env(extra)
 
 
 def _derive_protect_ports_from_listen() -> tuple[int, ...]:
@@ -1510,48 +1508,6 @@ class ProcessRuntime(RuntimeAdapter):
         return self._firewall_errors.pop(sandbox_id, None)
 
     @staticmethod
-    def _directory_spec(directory: object) -> tuple[str, str | None]:
-        if isinstance(directory, str):
-            return directory, None
-        return getattr(directory, "path"), getattr(directory, "permissions", None)
-
-    @staticmethod
-    def _file_spec(file: object) -> tuple[str, str | None]:
-        if isinstance(file, str):
-            return file, None
-        return getattr(file, "path"), getattr(file, "permissions", None)
-
-    @staticmethod
-    def _host_entry_name(sandbox_path: str) -> str:
-        encoded = base64.urlsafe_b64encode(sandbox_path.encode()).decode()
-        return encoded.rstrip("=")
-
-    @staticmethod
-    def _sandbox_root() -> Path:
-        return SANDBOX_WORKSPACE
-
-    @staticmethod
-    def _resolve_backing_identity(policy: SecurityPolicy) -> tuple[int, int]:
-        if policy.namespace.user:
-            # For unprivileged user namespaces, the server uid is mapped to the
-            # sandbox uid, so keeping the backing directory owned by the current
-            # process is the writable choice. When the server runs as root, bwrap
-            # can drop to the requested sandbox uid; root-owned 0755 directories
-            # would then reject writes such as uploads under /home.
-            if os.geteuid() != 0:
-                return os.getuid(), os.getgid()
-
-        try:
-            uid = resolve_posix_id(policy.process.run_as_user, kind="user")
-        except ValueError:
-            uid = 65534
-        try:
-            gid = resolve_posix_id(policy.process.run_as_group, kind="group")
-        except ValueError:
-            gid = 65534
-        return uid, gid
-
-    @staticmethod
     def _resolve_process_uid(policy: SecurityPolicy) -> int:
         try:
             return resolve_posix_id(policy.process.run_as_user, kind="user")
@@ -1730,101 +1686,6 @@ class ProcessRuntime(RuntimeAdapter):
             self._remove_host_firewall_rule(uid, port)
 
     @staticmethod
-    def _apply_path_ownership(path: Path, uid: int, gid: int) -> bool:
-        try:
-            os.chown(path, uid, gid)
-            return True
-        except PermissionError:
-            logger.warning(
-                "Failed to chown policy path %s to %d:%d; keeping current owner",
-                path,
-                uid,
-                gid,
-            )
-            return False
-
-    @staticmethod
-    def _apply_path_permissions(path: Path, permissions: str | None) -> None:
-        if permissions is None:
-            return
-        os.chmod(path, int(permissions, 8))
-
-    @staticmethod
-    def _needs_userns_write_fallback(
-        policy: SecurityPolicy,
-        uid: int,
-        permissions: str | None,
-    ) -> bool:
-        if os.geteuid() != 0 or not policy.namespace.user or uid == 0:
-            return False
-        if permissions is None:
-            return True
-        mode = int(permissions, 8)
-        return (
-            bool(mode & 0o200)
-            and (mode & 0o005) == 0o005
-            and not bool(mode & 0o002)
-        )
-
-    @staticmethod
-    def _needs_userns_owner_access_fallback(
-        policy: SecurityPolicy,
-        uid: int,
-    ) -> bool:
-        return os.geteuid() == 0 and policy.namespace.user and uid != 0
-
-    @staticmethod
-    def _apply_userns_write_fallback(path: Path) -> None:
-        mode = path.stat().st_mode & 0o777
-        fallback_mode = mode | 0o003
-        if fallback_mode == mode:
-            return
-        logger.warning(
-            "Relaxing policy path %s permissions from %s to %s because "
-            "root-run user namespaces cannot map the sandbox uid onto the "
-            "bind-mounted backing path owner",
-            path,
-            oct(mode),
-            oct(fallback_mode),
-        )
-        os.chmod(path, fallback_mode)
-
-    @staticmethod
-    def _apply_userns_file_access_fallback(path: Path) -> None:
-        mode = path.stat().st_mode & 0o777
-        owner_bits = (mode & 0o700) >> 6
-        fallback_mode = mode | owner_bits
-        if fallback_mode == mode:
-            return
-        logger.warning(
-            "Relaxing policy file %s permissions from %s to %s because "
-            "root-run user namespaces cannot preserve owner-only file access",
-            path,
-            oct(mode),
-            oct(fallback_mode),
-        )
-        os.chmod(path, fallback_mode)
-
-    @staticmethod
-    def _ensure_writable_when_chown_unavailable(path: Path, owner_applied: bool) -> None:
-        if owner_applied:
-            return
-
-        if path.stat().st_uid == os.getuid():
-            return
-
-        mode = path.stat().st_mode & 0o777
-        if mode & 0o005 and not mode & 0o002:
-            fallback_mode = mode | 0o002
-            logger.warning(
-                "Relaxing policy path %s permissions from %s to %s because chown failed",
-                path,
-                oct(mode),
-                oct(fallback_mode),
-            )
-            os.chmod(path, fallback_mode)
-
-    @staticmethod
     def _needs_privdrop_for_process_identity(
         uid: int | None,
         *,
@@ -1841,6 +1702,31 @@ class ProcessRuntime(RuntimeAdapter):
         if use_user_namespace:
             return False
         return os.geteuid() == 0 and uid is not None and uid != 0
+
+    @staticmethod
+    def _sandbox_root() -> Path:
+        return SANDBOX_WORKSPACE
+
+    @staticmethod
+    def _resolve_backing_identity(policy: SecurityPolicy) -> tuple[int, int]:
+        if policy.namespace.user:
+            # For unprivileged user namespaces, the server uid is mapped to the
+            # sandbox uid, so keeping the backing directory owned by the current
+            # process is the writable choice. When the server runs as root, bwrap
+            # can drop to the requested sandbox uid; root-owned 0755 directories
+            # would then reject writes such as uploads under /home.
+            if os.geteuid() != 0:
+                return os.getuid(), os.getgid()
+
+        try:
+            uid = resolve_posix_id(policy.process.run_as_user, kind="user")
+        except ValueError:
+            uid = 65534
+        try:
+            gid = resolve_posix_id(policy.process.run_as_group, kind="group")
+        except ValueError:
+            gid = 65534
+        return uid, gid
 
     def _ensure_policy_directories(
         self,
@@ -1864,21 +1750,7 @@ class ProcessRuntime(RuntimeAdapter):
             directory_root.mkdir(parents=True, exist_ok=True)
 
         uid, gid = self._resolve_backing_identity(policy)
-        binds: list[dict[str, str]] = []
-        for directory in directories:
-            sandbox_path, permissions = self._directory_spec(directory)
-            host_path = directory_root / self._host_entry_name(sandbox_path)
-            host_path.mkdir(parents=True, exist_ok=True)
-            owner_applied = self._apply_path_ownership(host_path, uid, gid)
-            self._apply_path_permissions(host_path, permissions)
-            if self._needs_userns_write_fallback(policy, uid, permissions):
-                self._apply_userns_write_fallback(host_path)
-            self._ensure_writable_when_chown_unavailable(host_path, owner_applied)
-            binds.append({
-                "host_path": str(host_path),
-                "sandbox_path": sandbox_path,
-            })
-        return binds
+        return materialize_directories(directories, directory_root, policy, uid, gid)
 
     def _ensure_policy_files(
         self,
@@ -1902,24 +1774,7 @@ class ProcessRuntime(RuntimeAdapter):
             file_root.mkdir(parents=True, exist_ok=True)
 
         uid, gid = self._resolve_backing_identity(policy)
-        binds: list[dict[str, str]] = []
-        for file in files:
-            sandbox_path, permissions = self._file_spec(file)
-            host_path = file_root / self._host_entry_name(sandbox_path)
-            host_path.parent.mkdir(parents=True, exist_ok=True)
-            host_path.touch(exist_ok=True)
-            owner_applied = self._apply_path_ownership(host_path, uid, gid)
-            self._apply_path_permissions(host_path, permissions)
-            if self._needs_userns_owner_access_fallback(policy, uid):
-                self._apply_userns_file_access_fallback(host_path)
-            if self._needs_userns_write_fallback(policy, uid, permissions):
-                self._apply_userns_write_fallback(host_path)
-            self._ensure_writable_when_chown_unavailable(host_path, owner_applied)
-            binds.append({
-                "host_path": str(host_path),
-                "sandbox_path": sandbox_path,
-            })
-        return binds
+        return materialize_files(files, file_root, policy, uid, gid)
 
     def _policy_for_sandbox(self, sandbox_id: str, policy_path: Path) -> SecurityPolicy:
         policy = self._runtime_policies.get(sandbox_id)

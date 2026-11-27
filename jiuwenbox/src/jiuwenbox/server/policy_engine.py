@@ -12,7 +12,7 @@ from jiuwenbox.server.runtime.errors import PolicyValidationError
 from jiuwenbox.server.conch_policy import ConchRunAsError, resolve_conch_run_as
 
 from jiuwenbox.logging_config import configure_logging
-from jiuwenbox.models.policy import NetworkRulePolicy, SecurityPolicy
+from jiuwenbox.models.policy import FilesystemPolicy, NetworkRulePolicy, SecurityPolicy
 from jiuwenbox.server.workspace import SANDBOX_WORKSPACE, JIUWENBOX_HOME
 
 configure_logging()
@@ -127,91 +127,7 @@ class PolicyEngine:
         if not policy.name:
             raise PolicyValidationError("Policy name is required")
 
-        workspace_root = str(SANDBOX_WORKSPACE)
-        directory_paths = [
-            self._directory_path(directory)
-            for directory in policy.filesystem_policy.directories
-        ]
-        file_paths = [
-            self._file_path(file)
-            for file in policy.filesystem_policy.files
-        ]
-        for path in [
-            *directory_paths,
-            *file_paths,
-            *policy.filesystem_policy.read_only,
-            *policy.filesystem_policy.read_write,
-        ]:
-            if not self._is_absolute_sandbox_path(path):
-                raise PolicyValidationError(
-                    "Filesystem policy paths must be absolute sandbox paths"
-                )
-            if self._is_reserved_workspace_path(path, workspace_root):
-                raise self._reserved_workspace_error(path)
-            if self._is_reserved_sandbox_path(path):
-                raise self._reserved_sandbox_error(path)
-
-        for path in file_paths:
-            if path in directory_paths:
-                raise PolicyValidationError(
-                    f"Filesystem file path '{path}' conflicts with a declared directory path"
-                )
-
-        for mount in policy.filesystem_policy.bind_mounts:
-            if (
-                not self._is_absolute_sandbox_path(mount.host_path)
-                or not self._is_absolute_sandbox_path(mount.sandbox_path)
-            ):
-                raise PolicyValidationError(
-                    "Filesystem bind mount paths must be absolute paths"
-                )
-            if (
-                self._is_reserved_workspace_path(mount.host_path, workspace_root)
-                or self._is_reserved_workspace_path(
-                    mount.sandbox_path,
-                    workspace_root,
-                )
-            ):
-                reserved_path = (
-                    mount.host_path
-                    if self._is_reserved_workspace_path(mount.host_path, workspace_root)
-                    else mount.sandbox_path
-                )
-                raise self._reserved_workspace_error(reserved_path)
-            if self._is_reserved_sandbox_path(mount.sandbox_path):
-                raise self._reserved_sandbox_error(mount.sandbox_path)
-            if mount.sandbox_path in file_paths:
-                raise PolicyValidationError(
-                    f"Filesystem file path '{mount.sandbox_path}' conflicts with a bind mount"
-                )
-
-        for device in policy.filesystem_policy.device:
-            if (
-                not self._is_absolute_sandbox_path(device.host_path)
-                or not self._is_absolute_sandbox_path(device.sandbox_path)
-            ):
-                raise PolicyValidationError(
-                    "Filesystem device mount paths must be absolute paths"
-                )
-            if (
-                self._is_reserved_workspace_path(device.host_path, workspace_root)
-                or self._is_reserved_workspace_path(
-                    device.sandbox_path,
-                    workspace_root,
-                )
-            ):
-                reserved_path = (
-                    device.host_path
-                    if self._is_reserved_workspace_path(device.host_path, workspace_root)
-                    else device.sandbox_path
-                )
-                raise self._reserved_workspace_error(reserved_path)
-            if self._is_reserved_sandbox_path(device.sandbox_path):
-                raise self._reserved_sandbox_error(device.sandbox_path)
-            if device.sandbox_path in file_paths:
-                raise PolicyValidationError(
-                    f"Filesystem file path '{device.sandbox_path}' conflicts with a device mount"
-                )
+        self.validate_filesystem_policy(policy.filesystem_policy)
 
         if policy.network.mode.value == "isolated":
             if self._denies_without_allow_rules(policy.network.egress):
@@ -227,6 +143,95 @@ class PolicyEngine:
                 )
 
         return warnings
+
+    @classmethod
+    def validate_filesystem_policy(cls, filesystem: FilesystemPolicy) -> None:
+        """Validate the shared filesystem contract without allocating runtime state."""
+        workspace_root = str(SANDBOX_WORKSPACE)
+        directory_paths = [
+            cls._directory_path(directory)
+            for directory in filesystem.directories
+        ]
+        file_paths = [
+            cls._file_path(file)
+            for file in filesystem.files
+        ]
+        for path in [
+            *directory_paths,
+            *file_paths,
+            *filesystem.read_only,
+            *filesystem.read_write,
+        ]:
+            if not cls._is_absolute_sandbox_path(path):
+                raise PolicyValidationError(
+                    "Filesystem policy paths must be absolute sandbox paths"
+                )
+            if cls._is_reserved_workspace_path(path, workspace_root):
+                raise cls._reserved_workspace_error(path)
+            if cls._is_reserved_sandbox_path(path):
+                raise cls._reserved_sandbox_error(path)
+
+        for path in file_paths:
+            if path in directory_paths:
+                raise PolicyValidationError(
+                    f"Filesystem file path '{path}' conflicts with a declared directory path"
+                )
+
+        for mount in filesystem.bind_mounts:
+            if (
+                not cls._is_absolute_sandbox_path(mount.host_path)
+                or not cls._is_absolute_sandbox_path(mount.sandbox_path)
+            ):
+                raise PolicyValidationError(
+                    "Filesystem bind mount paths must be absolute paths"
+                )
+            if (
+                cls._is_reserved_workspace_path(mount.host_path, workspace_root)
+                or cls._is_reserved_workspace_path(
+                    mount.sandbox_path,
+                    workspace_root,
+                )
+            ):
+                reserved_path = (
+                    mount.host_path
+                    if cls._is_reserved_workspace_path(mount.host_path, workspace_root)
+                    else mount.sandbox_path
+                )
+                raise cls._reserved_workspace_error(reserved_path)
+            if cls._is_reserved_sandbox_path(mount.sandbox_path):
+                raise cls._reserved_sandbox_error(mount.sandbox_path)
+            if mount.sandbox_path in file_paths:
+                raise PolicyValidationError(
+                    f"Filesystem file path '{mount.sandbox_path}' conflicts with a bind mount"
+                )
+
+        for device in filesystem.device:
+            if (
+                not cls._is_absolute_sandbox_path(device.host_path)
+                or not cls._is_absolute_sandbox_path(device.sandbox_path)
+            ):
+                raise PolicyValidationError(
+                    "Filesystem device mount paths must be absolute paths"
+                )
+            if (
+                cls._is_reserved_workspace_path(device.host_path, workspace_root)
+                or cls._is_reserved_workspace_path(
+                    device.sandbox_path,
+                    workspace_root,
+                )
+            ):
+                reserved_path = (
+                    device.host_path
+                    if cls._is_reserved_workspace_path(device.host_path, workspace_root)
+                    else device.sandbox_path
+                )
+                raise cls._reserved_workspace_error(reserved_path)
+            if cls._is_reserved_sandbox_path(device.sandbox_path):
+                raise cls._reserved_sandbox_error(device.sandbox_path)
+            if device.sandbox_path in file_paths:
+                raise PolicyValidationError(
+                    f"Filesystem file path '{device.sandbox_path}' conflicts with a device mount"
+                )
 
     @staticmethod
     def resolve_policy(policy: SecurityPolicy) -> dict:

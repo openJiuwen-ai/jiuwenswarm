@@ -154,6 +154,10 @@ class BwrapConfig:
     # extra raw arguments
     extra_args: list[str] = field(default_factory=list)
 
+    # Optional mount and namespace controls for a one-shot sandbox.
+    as_pid_1: bool = False
+    symlinks: list[tuple[str, str]] = field(default_factory=list)
+
     @classmethod
     def from_policy(cls, policy: SecurityPolicy, command: list[str]) -> BwrapConfig:
         """Build a BwrapConfig from a SecurityPolicy."""
@@ -418,6 +422,9 @@ class BwrapConfig:
             # the flag at any position before the command.
             args.append("--die-with-parent")
 
+        if self.as_pid_1:
+            args.append("--as-pid-1")
+
         for cap in self.cap_add:
             args.extend(["--cap-add", cap])
         for cap in self.cap_drop:
@@ -538,6 +545,9 @@ class BwrapConfig:
                 args.extend(["--ro-bind", src, dst])
             else:
                 args.extend(["--bind", src, dst])
+
+        for src, dst in self.symlinks:
+            args.extend(["--symlink", src, dst])
 
         for src, dst in self.device_binds:
             args.extend(["--dev-bind", src, dst])

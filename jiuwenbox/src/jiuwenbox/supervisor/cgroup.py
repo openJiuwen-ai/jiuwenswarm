@@ -139,6 +139,20 @@ def detect_backend() -> CgroupBackend | None:
 # ---------------------------------------------------------------------------
 
 
+def possible_group_paths(run_id: str, limits: CgroupPolicy) -> list[Path]:
+    """Return task paths without creating or adopting resource groups."""
+    backend = detect_backend()
+    if backend is CgroupBackend.V2:
+        return [_CGROUP_ROOT / _JIUWENBOX_ROOT_NAME / run_id]
+    if backend is CgroupBackend.V1:
+        return [
+            _CGROUP_ROOT / name / _JIUWENBOX_ROOT_NAME / run_id
+            for name, value in (("memory", limits.memory_max), ("cpu", limits.cpu_max), ("pids", limits.pids_max))
+            if value is not None
+        ]
+    return []
+
+
 def _write_file(path: Path, content: str) -> None:
     """Write ``content`` to ``path`` using ``open(..., "w")`` semantics.
 
