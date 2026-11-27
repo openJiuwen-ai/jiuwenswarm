@@ -401,7 +401,7 @@ async def test_create_instance_continues_when_a2x_client_init_fails(monkeypatch:
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "load_user_rails", AsyncMock()),
         patch.object(interface_module, "create_deep_agent", return_value=created_instance) as create_agent_mock,
     ):
-        await adapter.create_instance()
+        await adapter.create_instance(config_base=config_base)
 
     create_agent_mock.assert_called_once()
     kwargs = create_agent_mock.call_args.kwargs
