@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / config-and-environment |
 | 关联模块 | jiuwenswarm/common/{config, config_provider, path_provider, local_env_config, hooks_config, http_proxy_config, kv_cache_affinity_config, mode_matrix, work_mode, context_keys}.py |
-| 最近一次修订日期 | 2026-11-05 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -110,6 +110,12 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   配置文件、实例创建/热更新快照及预热均通过 `resolve_config_env_vars` 统一解析。
   原始 YAML、合并缓存及 provider 输入保持不变；重启或清理配置缓存后重新解析。
   N15 的 OfficeClaw 显式模式与既有会话绑定不受默认开关替代。
+
+- **N17 主智能体单轮时限**：Code 和 Deep 装配主智能体时读取 `react.completion_timeout`。
+  缺省为 21600 秒（6 小时）。显式设为 `null` 或空字符串时不限时。
+  配置秒数须为有限正数，支持数字字符串；
+  非法值在创建或热重载时引发 `ValueError`。适配器先校验再发布配置快照，
+  重载遇到非法时限时保留原时限。该值约束整轮经过的时间，轮内活动不会重置计时。
 
 ## 接口契约
 

@@ -830,6 +830,7 @@ from jiuwenswarm.server.runtime.agent_adapter.deepagent_task_plan_binding_patch 
     apply_deepagent_task_plan_binding_patch,
 )
 from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
+from jiuwenswarm.common.task_loop_config import resolve_task_loop_completion_timeout
 from jiuwenswarm.server.runtime.mcp.apps import apply_mcp_apps_patch
 from jiuwenswarm.common.mcp_http_hook import apply_mcp_http_auth_patch
 from jiuwenswarm.common.mcp_tool_list_refresh_patch import (
@@ -9174,7 +9175,7 @@ class JiuWenSwarmDeepAdapter:
             vision_model_config=self._vision_model_config,
             audio_model_config=self._audio_model_config,
             enable_read_image_multimodal=_resolve_enable_read_image_multimodal(config, model),
-            completion_timeout=config.get("completion_timeout", 21600.0),
+            completion_timeout=resolve_task_loop_completion_timeout(config),
             **_optional_enable_subagent_runtime(
                 self._resolve_enable_subagent_runtime(config_base),
             ),
@@ -10126,9 +10127,10 @@ class JiuWenSwarmDeepAdapter:
             # 与模型槽位一致：Agent 级 permissions 模板在构建 rail 前绑定到 Task
             token_perm_agent = self._bind_agent_permissions_base()
             try:
+                config = config_base.get("react", {}).copy()
+                completion_timeout = resolve_task_loop_completion_timeout(config)
                 self._config_base_cache = config_base.copy()
                 self._startup_config_base = config_base.copy()
-                config = config_base.get("react", {}).copy()
                 self._config_cache = config.copy()
                 self._agent_name = self._instance_overrides.get(
                     "agent_name", config.get("agent_name", "main_agent")
@@ -10262,7 +10264,7 @@ class JiuWenSwarmDeepAdapter:
                     enable_llm_retry_rail=((config_base.get("execution_guard") or {}).get("llm_retry_rail") or {}).get(
                         "enabled", False
                     ),
-                    completion_timeout=config.get("completion_timeout", 21600.0),
+                    completion_timeout=completion_timeout,
                 )
                 self._bind_subagent_model_resolver()
                 self._bind_subagent_authorization_wiring()
@@ -10497,6 +10499,9 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("config reload failed; retaining cached policy", exc_info=True)
             result = await self._load_enterprise_config(None, base=config_base)
         config_base = result.config
+        # A lazy root also publishes this snapshot to future session adapters.
+        # Reject invalid deadlines before replacing their last valid config.
+        resolve_task_loop_completion_timeout(config_base.get("react", {}))
         self._config_base_cache = config_base.copy()
         self._startup_config_base = config_base.copy()
         self._refresh_multimodal_configs(config_base)
