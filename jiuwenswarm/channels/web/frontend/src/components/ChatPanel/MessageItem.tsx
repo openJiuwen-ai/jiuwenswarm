@@ -890,11 +890,9 @@ export const MessageItem = memo(function MessageItem({
     }
  	     // 检查是否为 chat.session_result 事件
  	     if (content && content.startsWith('chat.session_result:')) {
- 	       console.log('chat.session_result event:', content);
  	       const [, jsonStr] = content.split('chat.session_result:');
  	       try {
  	         const sessionData = JSON.parse(jsonStr);
- 	         console.log('Parsed session data:', sessionData);
  	         const { description, result } = sessionData;
  	         
  	         return (

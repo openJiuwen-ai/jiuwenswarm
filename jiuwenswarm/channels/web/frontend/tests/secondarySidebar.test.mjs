@@ -118,6 +118,40 @@ test('portaled interactions keep a flyout alive; outside clicks and Escape dismi
   }
 });
 
+test('blocked localStorage degrades to in-memory defaults instead of crashing first render', () => {
+  const env = setup();
+  const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  // Reproduce issue #7090: Chrome with all cookies blocked / Safari private mode (zero quota)
+  // makes getItem and setItem throw SecurityError/QuotaExceededError.
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: () => { throw new Error('SecurityError: cookies blocked'); },
+      setItem: () => { throw new Error('QuotaExceededError: private mode zero quota'); },
+      removeItem: () => {},
+      clear: () => {},
+    },
+  });
+  let state;
+  function Harness() {
+    const [collapsed, setCollapsed] = useSecondarySidebarPreference();
+    state = { collapsed, setCollapsed };
+    return null;
+  }
+  try {
+    env.render(Harness);
+    assert.equal(state.collapsed, false);
+    act(() => state.setCollapsed(true));
+    assert.equal(state.collapsed, true);
+    env.remount(Harness);
+    // Write was best-effort only, so the next mount falls back to the default.
+    assert.equal(state.collapsed, false);
+  } finally {
+    Object.defineProperty(globalThis, 'localStorage', originalStorage);
+    env.cleanup();
+  }
+});
+
 test('responsive panel suppression never rewrites the saved sidebar preference', () => {
   const env = setup();
   let state;

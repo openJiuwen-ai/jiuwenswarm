@@ -900,7 +900,13 @@ export function ConversationSidebar({
   }, [viewedSessionId]);
 
   useEffect(() => {
-    localStorage.setItem(UNREAD_KEY, JSON.stringify([...unreadSessions]));
+    // Mirror the guarded read in loadUnreadSessions: when storage is blocked
+    // the in-memory unread state still works, persistence is best-effort.
+    try {
+      localStorage.setItem(UNREAD_KEY, JSON.stringify([...unreadSessions]));
+    } catch {
+      // ignore quota/private-mode failures
+    }
   }, [unreadSessions]);
 
   useEffect(() => {

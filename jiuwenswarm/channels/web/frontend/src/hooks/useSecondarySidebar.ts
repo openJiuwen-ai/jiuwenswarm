@@ -4,10 +4,22 @@ export type SecondarySidebar = 'chat' | 'experiments' | 'settings';
 const COLLAPSED_KEY = 'jiuwenswarm.secondarySidebarCollapsed';
 
 export function useSecondarySidebarPreference() {
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === 'true');
+  // localStorage can throw (blocked cookies, Safari private mode with zero quota);
+  // guard both directions so the App shell never crashes on first render.
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(COLLAPSED_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
-    localStorage.setItem(COLLAPSED_KEY, String(collapsed));
+    try {
+      localStorage.setItem(COLLAPSED_KEY, String(collapsed));
+    } catch {
+      // Preference stays in memory only.
+    }
   }, [collapsed]);
 
   return [collapsed, setCollapsed] as const;

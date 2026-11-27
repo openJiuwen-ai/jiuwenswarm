@@ -195,6 +195,8 @@ generated: true
 | [B_20261119_1150_chat-terminal-reasoning-close](jiuwenswarm/channels/web/frontend/B_20261119_1150_chat-terminal-reasoning-close.md) | B | 消息出错后思考段不收口，「思考中…」永久转圈直到下次发消息 | gunner_beat | 无独立 D：交互层缺陷修复，复用同文件 chat.processing_status(false) 分支已有的「终态兜底收口」口径（幂等空操作），无独立设计文档。 |
 | [B_20261121_1529_skill-install-toast-display-name-width](jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
 
+| [B_20261126_1844_web-storage-guard-crash](jiuwenswarm/channels/web/frontend/B_20261126_1844_web-storage-guard-crash.md) | B | 浏览器存储被禁时 App 首渲染白屏与会话未读写入崩溃修复 | linghb | 无独立 D：由 issue openJiuwen/jiuwenswarm#7090 直接驱动的前端局部修复，沿用既有 guarded-storage 防护模式，无独立设计。 |
+
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 
 ## jiuwenswarm/channels/web/frontend/src/components/SkillPanel
