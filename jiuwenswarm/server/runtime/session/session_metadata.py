@@ -225,6 +225,17 @@ _INJECTED_TAG_RE = re.compile(
 _INJECTED_TAG_START_RE = re.compile(
     r"<[a-z][\w-]*(?:\s[^>]*)?>?"
 )
+# 用户面注入的【上传文档】提示块（独占一行，或 _auto_title 收成单行后的形态）
+_UPLOAD_DOC_BLOCK_RE = re.compile(
+    r"(?:^|\n)【上传文档】(?:\n|$)[\s\S]*$"
+)
+_UPLOAD_DOC_NAMED_BLOCK_RE = re.compile(
+    r"(?:^|\n)【上传文档[:：][^\n]*(?:\n|$)[\s\S]*$"
+)
+_UPLOAD_DOC_COLLAPSED_RE = re.compile(
+    r"(?:^|\s)【上传文档】\s+@[\s\S]*$"
+)
+_AT_PATH_RE = re.compile(r'@(?:"([^"]+)"|(\S+))')
 
 
 def _has_valid_work_mode(value: Any) -> bool:
@@ -586,6 +597,28 @@ def _read_metadata(
         session_id: 会话 ID
         cache_bust: 强制跳过缓存，直接从磁盘读取（用于跨进程同步场景，如 session.list）
     """
+    return _read_metadata_with_status(
+        session_id, cache_bust, lifecycle_state=lifecycle_state, archived=archived
+    )[0]
+
+
+def _read_metadata_with_status(
+    session_id: str, cache_bust: bool = False, *,
+    lifecycle_state: dict | None = None, archived: bool | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """``_read_metadata`` 的显式状态版：额外区分「读取失败」与「合法缺失/空」。
+
+    返回 ``(metadata, read_failed)``。``read_failed=True`` 仅表示文件存在但
+    不可读（半写窗口、磁盘满、JSON 解析失败、内容非 dict、空文件）；文件
+    不存在与合法空对象 ``{}`` 都不算失败。供列表等呈现路径区分「损坏会话」
+    与「旧会话无 metadata」，避免靠文件存在性反推把健康会话误标为损坏。
+    其余语义与 ``_read_metadata`` 完全一致，``_read_metadata`` 的 ``{}``
+    返回契约（read-modify-write 调用方依赖）保持不变。
+
+    Args:
+        session_id: 会话 ID
+        cache_bust: 强制跳过缓存，直接从磁盘读取（用于跨进程同步场景，如 session.list）
+    """
     from jiuwenswarm.server.runtime.session import lifecycle as lc
     if lifecycle_state is None:
         lifecycle_state = lc.state("session", session_id)
@@ -593,7 +626,8 @@ def _read_metadata(
     if lifecycle_state.get("write_blocked") or (
         lc.session_paths(session_id)[1].exists() if archived is None else archived
     ):
-        return lc.raw_metadata(session_id)
+        # lifecycle 保护路径有独立的 raw_metadata 语义，此处不判定损坏。
+        return lc.raw_metadata(session_id), False
     if not cache_bust:
         stamp = _disk_stamp(session_id)
         with _CACHE_LOCK:
@@ -606,11 +640,12 @@ def _read_metadata(
                 _METADATA_CACHE.pop(key, None)
                 cached = None
             if cached is not None and _CACHE_DISK_STAMPS.get(key, stamp) == stamp:
-                return cached.copy()
+                # 缓存只在成功读取后写入，命中即健康。
+                return cached.copy(), False
     # cache_bust=True 或缓存没有数据时，强制读磁盘
     fpath = get_agent_sessions_dir() / session_id / "metadata.json"
     if not fpath.exists():
-        return {}
+        return {}, False
     # Reading must be mutually exclusive with _write_metadata_sync: the writer
     # replaces the whole file, so an unlocked read can land inside the
     # replacement window and observe empty content.
@@ -621,7 +656,7 @@ def _read_metadata(
         logger.warning(
             "failed to read metadata.json: %s (session_id=%s)", exc, session_id,
         )
-        return {}
+        return {}, True
     if not raw.strip():
         # An empty file is a FAILURE, not "empty metadata". It must never be
         # returned as a valid {}: callers do read-modify-write and would write
@@ -631,7 +666,7 @@ def _read_metadata(
             "metadata.json is empty, treating as read failure (session_id=%s)",
             session_id,
         )
-        return {}
+        return {}, True
     try:
         data = json.loads(raw)
     except Exception as exc:  # noqa: BLE001
@@ -639,13 +674,13 @@ def _read_metadata(
             "failed to parse metadata.json: %s (session_id=%s, size=%d)",
             exc, session_id, len(raw),
         )
-        return {}
+        return {}, True
     if not isinstance(data, dict):
         logger.warning(
             "metadata.json content is not a dict: %s (session_id=%s)",
             type(data).__name__, session_id,
         )
-        return {}
+        return {}, True
     if not cache_bust:
         with _CACHE_LOCK:
             cache_key = _metadata_cache_key(session_id)
@@ -654,7 +689,7 @@ def _read_metadata(
             _METADATA_CACHE[cache_key] = data.copy()
             _METADATA_CACHE_GENERATIONS[cache_key] = generation
             _CACHE_DISK_STAMPS[cache_key] = _disk_stamp(session_id)
-    return data
+    return data, False
 
 
 def _read_metadata_file_in(session_dir: Path) -> dict[str, Any]:
@@ -1149,6 +1184,28 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
             _refresh_written_cache(session_id, written, options)
 
 
+def _strip_upload_document_blocks_for_title(content: str) -> str:
+    """从标题候选中去掉【上传文档】提示块（含收成单行后的形态）。"""
+    if "【上传文档" not in content:
+        return content
+    cleaned = _UPLOAD_DOC_BLOCK_RE.sub("", content)
+    cleaned = _UPLOAD_DOC_NAMED_BLOCK_RE.sub("", cleaned)
+    cleaned = _UPLOAD_DOC_COLLAPSED_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _title_from_upload_at_path(content: str) -> str:
+    """纯上传消息：取首个 @path / @\"path\" 的 basename 作标题。"""
+    match = _AT_PATH_RE.search(content)
+    if not match:
+        return ""
+    path = (match.group(1) or match.group(2) or "").strip()
+    if not path:
+        return ""
+    name = Path(path).name
+    return name if name and name not in (".", "..") else ""
+
+
 def _auto_title(content: str) -> str:
     """从首条用户消息自动生成会话标题"""
     # 先剥离所有小写 XML 注入标签，
@@ -1157,10 +1214,14 @@ def _auto_title(content: str) -> str:
     cleaned, _ = strip_debug_directive(cleaned)
     if not cleaned:
         return ""
-    title = cleaned.replace("\n", " ")
-    if len(title) > _TITLE_MAX_LEN:
-        title = title[:_TITLE_MAX_LEN] + "..."
-    return title
+    without_upload = _strip_upload_document_blocks_for_title(cleaned)
+    if without_upload:
+        title = without_upload.replace("\n", " ")
+        if len(title) > _TITLE_MAX_LEN:
+            title = title[:_TITLE_MAX_LEN] + "..."
+        return title
+    # 纯上传：不把协议标记当标题，改用文件名；无可用路径则空串交给侧栏 fallback
+    return _title_from_upload_at_path(cleaned)
 
 
 def init_session_metadata(
@@ -2508,7 +2569,9 @@ def get_all_sessions_metadata(
         archived = lc.session_paths(session_id)[1].exists()
         if archived:
             continue
-        metadata = _read_metadata(session_id, lifecycle_state=state, archived=False)
+        metadata, metadata_read_failed = _read_metadata_with_status(
+            session_id, lifecycle_state=state, archived=False
+        )
 
         if not metadata:
             # 没有 metadata.json 的旧会话: 只构造最小信息,不读取 history.json
@@ -2537,6 +2600,17 @@ def get_all_sessions_metadata(
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
             )
+            # 文件存在但读取失败/损坏（半写窗口、磁盘满等）不能静默伪装成合法
+            # 空会话：team_name/work_mode 等身份字段已丢失，打上标记让消费方
+            # 可以诚实呈现，而不是当作正常旧会话误导用户。判定依据读取侧的
+            # 显式失败状态而非文件存在性反推：合法空对象 `{}` 与一次性 OSError
+            # 语义不同，前者不标损坏（详见 _read_metadata_with_status）。
+            if metadata_read_failed:
+                metadata["metadata_corrupted"] = True
+                logger.warning(
+                    "metadata.json exists but unreadable, listing with corrupted marker (session_id=%s)",
+                    session_id,
+                )
         else:
             # 低优先级迁移去重入队；队列满时留待下次扫描，不同步写盘。
             metadata = _apply_metadata_defaults_with_inference(

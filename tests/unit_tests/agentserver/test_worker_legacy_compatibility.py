@@ -33,7 +33,7 @@ if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []):
             message = dict(message)
             if message.get('kind') == 'hello':
                 message['protocol'] = 1
-                for key in ['data_scope', 'deployment_scope', 'process_created', 'code_identity', 'shutdown_ack']:
+                for key in ['data_scope', 'deployment_scope', 'process_created', 'process_started', 'code_identity', 'shutdown_ack']:
                     message.pop(key, None)
             if message.get('kind') != 'shutdown.done':
                 await self.connection.send(message)

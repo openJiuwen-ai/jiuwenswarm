@@ -3,7 +3,7 @@
 Generate **clip** video via **R2V** (on-screen **character_specs** + **scene_specs**). Keep duration short. Honor silent policy (no implied dialogue) or leave room for later speech mix.
 
 ## Consistency
-- **character_consistency**: bind `character1`… in attach order; clothing/face from specs only.
+- **character_consistency**: name the cast in the story text; the call appends which attached image is each character and the scene. Clothing/face from specs only.
 - **scene_consistency**: Scene N **scene_specs** last; empty of cast.
 - **shot_consistency**: when continuing a setting, respect prior-clip speech anti-repeat and storyboard end states.
 - **content_safety**: the video model's moderation rejects graphic violence and gore; show such events indirectly (aftermath, reactions, silhouettes, symbolic props), never explicitly.

@@ -99,6 +99,7 @@ test('group routes support refresh, IDs and existing chat routes', () => {
   assert.deepEqual(parseChatRoute(chatRoutePath(route)), route);
   assert.deepEqual(parseChatRoute('/chat/new'), { kind: 'chat-new' });
   assert.deepEqual(parseChatRoute('/chat/session'), { kind: 'chat-session', sessionId: 'session' });
+  assert.deepEqual(parseChatRoute('/system-plugin-recovery'), { kind: 'chat-new' });
 });
 
 test('attachment links reject executable and protocol-relative URLs', () => {
@@ -208,6 +209,9 @@ test('management uses group APIs and keeps pagination and member request IDs', a
   const member = { kind: 'agent_group', id: 'review-team', member_name: 'review' };
   const added = await groupChatClient.addMember('group-one', member, 'stable-add');
   assert.deepEqual(added.params, { group_id: 'group-one', member, client_request_id: 'stable-add' });
+  const memberRemoved = await groupChatClient.removeMember('group-one', 'review', 'stable-remove');
+  assert.equal(memberRemoved.method, 'group.member.remove');
+  assert.deepEqual(memberRemoved.params, { group_id: 'group-one', member_name: 'review', client_request_id: 'stable-remove' });
 });
 
 test('task results match exact execution or message IDs and the actual member', () => {
@@ -778,4 +782,26 @@ test('a joint auto-reply decision shows only its owner before and after the cand
   assert.deepEqual(autoReplyNotice({ status: 'notified', notified: ['finance', 'expert'] }, members, ', '),
     { key: 'groupChat.autoReply.notified', values: { names: 'Finance, expert' } });
   assert.deepEqual(autoReplyNotice({ status: 'none', notified: [] }, members, ', '), { key: 'groupChat.autoReply.none' });
+});
+
+test('removed member stops pending mention placeholders and detects active work accurately', async () => {
+  const { pendingMentionReplies, memberHasActiveWork, autoReplyNotice } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const activeMembers = [{ member_name: 'writer', kind: 'agent_template', display_name: 'Writer' }];
+  const formerMembers = [{ member_name: 'xiaojiu', kind: 'colleague', display_name: '小九' }];
+  const ask = { message_id: 'm1', client_message_id: 'ask-1', sender: 'user', timestamp: 1000, content: '@小九 帮我看看', mentions: ['xiaojiu'] };
+
+  // Departed member with no running execution no longer stays pending.
+  assert.equal(pendingMentionReplies([ask], [], activeMembers, new Set(['ask-1'])).get('m1'), undefined);
+
+  // History auto-reply notice preserves departed member display_name when former_members is included.
+  assert.deepEqual(
+    autoReplyNotice({ status: 'notified', notified: ['xiaojiu'] }, [...activeMembers, ...formerMembers], '、'),
+    { key: 'groupChat.autoReply.notified', values: { names: '小九' } },
+  );
+
+  // Active work detection covers running executions and non-terminal organization routes.
+  assert.equal(memberHasActiveWork('writer', [{ execution_id: 'e1', member_name: 'writer', status: 'running' }], []), true);
+  assert.equal(memberHasActiveWork('writer', [{ execution_id: 'e1', member_name: 'writer', status: 'completed' }], []), false);
+  assert.equal(memberHasActiveWork('lab', [], [{ plan_id: 'p1', owner_member: 'studio', members: ['studio', 'lab'], status: 'pending' }]), true);
+  assert.equal(memberHasActiveWork('lab', [], [{ plan_id: 'p1', owner_member: 'studio', members: ['studio', 'lab'], status: 'completed' }]), false);
 });

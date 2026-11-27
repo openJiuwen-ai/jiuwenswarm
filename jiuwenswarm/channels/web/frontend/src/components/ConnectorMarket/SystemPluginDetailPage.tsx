@@ -275,15 +275,22 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
 
   async function handleUninstall(version?: string) {
     setConfirmUninstall(false);
-    const ok = await runAction(() => uninstall(packageId, version));
-    if (!ok) return;
-    if (!version) {
-      onDeleted?.();
+    setActionError(null);
+    const result = await uninstall(packageId, version, id);
+    if (!result.ok) {
+      setActionError(result.error);
       return;
+    }
+    if (result.detail === 'removed') {
+      (onDeleted ?? onBack)();
+      return;
+    }
+    if (result.detail === 'unavailable') {
+      setFailed(true);
+      setTab('content');
     }
     setSelectedVersion(null);
     resetPanes();
-    if (!(await loadDetail(id))) onDeleted?.();
   }
 
   async function handleVersionChange(version: string) {
@@ -406,6 +413,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
                   className="detail-action"
                   disabled={busyBlocked}
                   onClick={() => setConfirmUninstall(true)}
+                  data-testid="connector-market-system-plugin-detail-uninstall"
                 >
                   <UninstallIcon aria-hidden="true" />
                   {t('connectorMarket.systemPlugin.uninstall')}

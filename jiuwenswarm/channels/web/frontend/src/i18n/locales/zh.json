@@ -25,6 +25,8 @@
     "backToLogin": "返回登录页",
     "language": "界面语言",
     "noContext": "当前账号没有可用的Agent，请先在管理面完成授权。",
+    "emptyTitleNoTemplate": "暂无可用 Agent",
+    "noContextNoTemplate": "当前账号没有可用的 Agent，请联系管理员在管理面新增 Agent 模板。",
     "loadFailed": "加载 Agent 上下文失败。",
     "switchFailed": "切换身份失败。",
     "errorTitle": "无法进入工作空间",
@@ -119,6 +121,9 @@
     "retry": "重试",
     "selectedCount": "已选 {{count}} 个",
     "noMatches": "没有匹配项",
+    "all": "全部",
+    "yes": "是",
+    "no": "否",
     "editMenu": {
       "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
@@ -173,7 +178,8 @@
     "personalContext": "知识",
     "appMarket": "应用",
     "workspace": "空间",
-    "approvals": "申请"
+    "approvals": "申请",
+    "memory": "记忆"
   },
   "appMarket": {
     "resourceMemory": "内存",
@@ -190,6 +196,7 @@
     "market": "应用广场",
     "marketLoadFailed": "加载应用广场失败",
     "noMarketApps": "应用广场暂无应用",
+    "searchPlaceholder": "搜索应用",
     "moreActions": "更多操作：{{name}}",
     "pin": "置顶",
     "unpin": "取消置顶",
@@ -524,6 +531,7 @@
       "removeMaterial": "移除素材",
       "promptPlaceholder": "本片段画面描述，将与上方参考图一起发给模型",
       "promptHint": "发给该节点子代理的提示词。生成前可选编辑；子代理仍可能根据项目情况微调细节。",
+      "sceneReferenceMissing": "原场景卡片已丢失，本次生成将不使用场景参考，环境可能与其他镜头不一致。",
       "editPlaceholder": "编辑文本内容…",
       "aspectRatio": "长宽比",
       "resolution": "分辨率",
@@ -632,6 +640,8 @@
       "deleteConfirmMessage": "该节点包含已生成的内容，删除后不可恢复。是否确定删除？",
       "deleteConfirmCancel": "取消",
       "deleteConfirmOk": "确定",
+      "deleteSceneWarning": "以下 {{count}} 个视频节点引用的场景卡片将被删除：",
+      "deleteSceneMissing": "「{{clip}}」将失去场景参考，生成时环境可能与其他镜头不一致",
       "resize": "调整大小",
       "resizeHint": "拖动右下角调整节点大小",
       "playAudio": "播放音频",
@@ -788,6 +798,16 @@
     "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。"
   },
   "settingsPanel": {
+    "memory": {
+      "reconnect": "重新连接",
+      "errors": {
+        "not_enabled": "请在设置中开启记忆管理页面。",
+        "disconnected": "Swarm 未连接，请连接后重试。",
+        "dependency_unavailable": "当前依赖不支持记忆 Portal，请使用包含 Portal 的 agent-memory 版本。",
+        "timeout": "获取记忆页面超时，请重试。",
+        "portal_unavailable": "记忆页面暂不可达。请检查服务、身份和允许嵌入的来源，然后重新连接。"
+      }
+    },
     "multimodal": {
       "tab": "多模态模型",
       "tabHelp": "统一管理图片、音频、视频理解及图像、视频生成模型。模型的使用开关和绑定关系可在「设置 → 智能体 → 工具」中调整。",
@@ -876,6 +896,7 @@
       "configDescription": "为限时免费模型单独设置上下文窗口等参数"
     },
     "categories": {
+      "memory": "记忆",
       "voice": "语音",
       "general": "常规",
       "models": "模型",
@@ -1715,6 +1736,11 @@
         "title": "API Key",
         "description": "JEV 服务的密钥。",
         "placeholder": "输入 API Key"
+      },
+      "memory_portal_enabled": {
+        "description": "是否启用记忆管理页面。",
+        "title": "记忆管理",
+        "placeholder": ""
       }
     },
     "validation": {
@@ -2666,7 +2692,11 @@
     "expertBatchError": "拉起失败：{{error}}。可重试，已创建的团队会复用。",
     "expertBatchRequestFailed": "专家团拉起失败，点击查看",
     "expertBatchSummary": "专家团：成功 {{success}}，失败 {{failed}}",
-    "expertBatchStatus": {"created": "已拉起", "existing": "已加入，复用现有团队", "failed": "拉起失败"},
+    "expertBatchStatus": {
+      "created": "已拉起",
+      "existing": "已加入，复用现有团队",
+      "failed": "拉起失败"
+    },
     "agentGroup": "专家团",
     "agentToggle": "选择已安装专家",
     "agentSearchPlaceholder": "请输入关键词搜索",
@@ -3019,6 +3049,8 @@
     "enterpriseContext": {
       "user": "用户",
       "userContext": "用户上下文",
+      "agentNameLabel": "Agent 名称",
+      "agentNameHint": "Agent名称",
       "modeAria": "上下文设定方式",
       "selectAgent": "选择 Agent",
       "custom": "自定义",
@@ -4734,6 +4766,28 @@
       "uploadFailed": "文件上传失败，请重试",
       "uploadUnsafePath": "文件名包含不允许的字符或使用了系统保留名称，请重命名后上传",
       "uploadInvalidRequest": "上传请求无效或缺少文件，请重新选择文件后上传",
+      "uploadMissingPath": "缺少上传文件路径",
+      "uploadFileMissing": "上传文件不存在: {{path}}",
+      "uploadMustBeFile": "上传内容必须是普通文件",
+      "uploadZipOnly": "仅支持上传 .zip 技能包",
+      "uploadSkillZipRejected": "不支持 .skill.zip 技能包，请使用普通 .zip 技能包",
+      "uploadUnpackFailed": "无法解包 Skill 文件: {{error}}",
+      "uploadZipDepthExceeded": "技能包目录深度超过上限（{{limit}}）",
+      "uploadZipFileCountExceeded": "技能包文件数量超过上限（{{limit}}）",
+      "uploadMissingSkillMd": "包内未找到 SKILL.md，不是有效 Skill 包",
+      "uploadMissingFileField": "缺少 file 字段，请重新选择文件后上传",
+      "importOverwriteRequired": "技能「{{name}}」已存在，需确认覆盖",
+      "builtinReadOnly": "内置技能「{{name}}」不可覆盖",
+      "prebuiltReadOnly": "预置技能「{{name}}」不可覆盖",
+      "invalidMetadataName": "SKILL.md YAML 须明确包含非空字符串 name",
+      "invalidMetadataDescription": "SKILL.md YAML 须明确包含非空字符串 description",
+      "invalidMetadata": "技能元数据无效: {{error}}",
+      "invalidMetadataUnparsable": "无法解析 SKILL.md",
+      "reservedArchivePath": "Skill 包不得包含根级 .archive/",
+      "skillPackageTooLarge": "技能包为 {{sizeMB}}MB，超过 {{limitMB}}MB 上限。请压缩文件体积后重新上传。",
+      "skillPackageSingleFileTooLarge": "技能包内单个文件「{{fileName}}」解压后为 {{sizeMB}}MB，超过 {{limitMB}}MB 上限。请从技能包中移除或拆分该文件后重新上传。",
+      "skillPackageSingleFileTooLargeStreaming": "技能包内单个文件「{{fileName}}」解压后超过 {{limitMB}}MB 上限。请从技能包中移除或拆分该文件后重新上传。",
+      "skillPackageUncompressedTooLarge": "技能包解压后总大小超过 {{limitMB}}MB 上限。请减少文件数量或压缩文件体积后重新上传。",
       "uninstallFailed": "卸载失败",
       "uninstallFailedHint": "卸载失败，请稍后重试"
     }
@@ -4895,7 +4949,9 @@
       "updating": "保存中…"
     },
     "confirm": {
+      "deleteTitle": "删除专家「{{name}}」？",
       "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。",
+      "uninstallGroupTitle": "卸载专家团「{{name}}」？",
       "uninstallGroupMessage": "确定要卸载专家团「{{name}}」吗？"
     },
     "card": {
@@ -5211,6 +5267,7 @@
     "paused": "已暂停",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
+    "queuedUploadDocument": "上传文档",
     "crossSessionMessageQueue": "跨会话消息",
     "localMessageQueue": "本地消息",
     "turnStarting": "正在启动…",
@@ -7541,7 +7598,9 @@
         "failures": {
           "org_access_denied": "钉钉账号已确认，但所选组织未授权此账号通过 CLI 访问数据。请联系组织主管理员开通权限后重新授权，或选择已有权限的组织。",
           "authorization_expired": "本次设备授权已过期，请重新点击“授权钉钉账号”获取新链接和设备码。",
-          "authorization_failed": "本次授权未完成或授权进程已结束，请重新授权，勿重复使用旧设备码。"
+          "authorization_failed": "本次授权未完成或授权进程已结束，请重新授权，勿重复使用旧设备码。",
+          "authorization_process_unverified": "暂时无法确认钉钉授权状态，已保留授权记录。请稍后重试。",
+          "authorization_cleanup_failed": "授权已超时，但清理尚未完成，已保留授权记录。请稍后重试。"
         },
         "status": {
           "loading": "正在检查授权状态…",
@@ -8029,6 +8088,11 @@
     "name": "群名称",
     "description": "群介绍",
     "addMembers": "添加成员",
+    "removeMember": "移除成员",
+    "removeMemberConfirm": "移除",
+    "removingMember": "正在移除…",
+    "removeMemberWarning": "移除后该成员将无法再接收本群消息，历史消息记录仍会保留。后续可随时重新添加。",
+    "removeMemberActiveWarning": "该成员当前有正在进行的任务或协作，移除将立即中止其运行中的任务并取消待处理提问。历史消息记录仍会保留。",
     "experts": "专家",
     "teams": "专家团",
     "team": "专家团",

@@ -913,6 +913,7 @@ async def test_clip_passes_user_video_as_file_not_first_frame(
         "metadata": {},
     }
     graph = attach_user_references_to_graph(graph, refs)
+    graph["nodes"][-1]["config"]["prompt"] = "Continue the motion from the reference video."
     prompt = build_clip_prompt(graph, graph["nodes"][-1])
     assert prompt  # R2V story-form; user video is a reference_file, not prompt text
     seen: dict[str, object] = {}

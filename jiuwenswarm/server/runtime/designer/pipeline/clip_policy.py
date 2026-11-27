@@ -329,7 +329,7 @@ def apply_compose_character_specs_setting_policy(analysis: dict[str, Any]) -> di
     for sid, sc in scene_by_id.items():
         # The scene name is a short place label; the description is prose. The
         # video prompt quotes the name, so prefer it over the description.
-        place = str(sc.get("name") or sc.get("description") or sid).strip()
+        place = str(sc.get("name") or sc.get("description") or "").strip()
         if place:
             setting_place[sid] = place[:280]
 
@@ -397,10 +397,10 @@ def apply_compose_character_specs_setting_policy(analysis: dict[str, Any]) -> di
             if str(x)
         }
         absent = [c for c in all_human_ids if c not in ensemble]
+        # The place comes only from a named scene (or an authored shot setting
+        # description). Inventing one from the action prose put a beat summary
+        # where the video prompt quotes a place.
         place = setting_place.get(sid) or str(shot.get("setting_description") or "").strip()
-        if is_first_of_set and shared and not place:
-            place = shared[:200]
-            setting_place[sid] = place
         if place:
             shot["setting_description"] = place
 

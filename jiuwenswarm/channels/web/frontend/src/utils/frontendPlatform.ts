@@ -13,6 +13,7 @@ export type SidebarNavKey =
   | 'appMarket'
   | 'sessions'
   | 'cron'
+  | 'memory'
   | 'personalContext'
   | 'personalContextSettings'
   | 'settings'

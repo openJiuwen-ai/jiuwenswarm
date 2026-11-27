@@ -2,10 +2,12 @@
 
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +17,22 @@ from jiuwenswarm.common import windows_cli_paths as paths
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "preserve-windows-cli.ps1"
+
+
+def _append_probed_executable(path: Path, content: bytes) -> None:
+    """Wait for a temporary Windows image lock before mutating a test fixture."""
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            stream = path.open("ab")
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+        else:
+            with stream:
+                stream.write(content)
+            return
 
 
 def _inno_setup_compiler() -> Path | None:
@@ -312,6 +330,40 @@ def test_upgrade_snapshot_rejects_invalid_ciphertext():
     assert error.value.winerror != 0
 
 
+def _run_frozen_restore(data):
+    entry = ROOT / "scripts" / "jiuwenswarm_exe_entry.py"
+    # Run in a fresh interpreter so the config import cannot reuse an initialized logger.
+    probe = """
+import runpy, sys
+import pywintypes  # The source interpreter uses the venv layout before emulating frozen mode.
+from pathlib import Path
+entry = sys.argv[1]
+sys.argv = [entry, "--desktop-restore-upgrade-config"]
+sys.frozen = True
+def guard(event, args):
+    if event == "import" and args[0] == "jiuwenswarm.common.windows_cli_paths":
+        raise AssertionError("restore initialized the npm runtime")
+    if event == "os.mkdir" and Path(args[0]).name in {".logs", "logs"}:
+        raise OSError(448, "restore touched an application log directory", args[0])
+sys.addaudithook(guard)
+runpy.run_path(entry, run_name="__main__")
+"""
+    env = {**os.environ, "JIUWENSWARM_DATA_DIR": str(data), "PYTHONPATH": str(ROOT)}
+    result = subprocess.run([sys.executable, "-c", probe, str(entry)], cwd=ROOT, env=env,
+                            capture_output=True, text=True, errors="replace", timeout=60)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Setup child process")
+def test_frozen_restore_skips_app_bootstrap_and_log_directories(tmp_path):
+    marker = tmp_path / "agent" / "existing-session"
+    marker.parent.mkdir()
+    marker.write_bytes(b"legacy")
+    _run_frozen_restore(tmp_path)
+    assert marker.read_bytes() == b"legacy"
+    assert not (tmp_path / "profile" / "agent" / marker.name).exists()
+
+
 @pytest.mark.parametrize("concurrent_change", [False, True])
 def test_legacy_uninstaller_config_reset_is_recovered_without_overwriting_changes(tmp_path, preservation_runner, monkeypatch, concurrent_change):
     from jiuwenswarm.common import config, utils, windows_upgrade_config
@@ -344,7 +396,7 @@ def test_legacy_uninstaller_config_reset_is_recovered_without_overwriting_change
         assert config_file.read_bytes() == before
         assert pending.is_file()
     else:
-        windows_upgrade_config.restore_legacy_upgrade_config()
+        _run_frozen_restore(data)
         assert config.load_yaml_round_trip(config_file) == original
         assert "# preserve user comments" in config_file.read_text(encoding="utf-8")
         assert not pending.exists()
@@ -959,12 +1011,17 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
         "/DBuildVersion=0.0.0", "/DBuildExecutableNameWindows=workswarm.exe",
         "/DBuildDistDirName=workswarm", "/DBuildSetupBaseName=issue5338-test"]
     if name == "installer-electron.iss":
-        missing = subprocess.run(
-            [*command, str(scripts / name)], cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
-        )
-        assert missing.returncode != 0
-        assert "MaxPayloadRelativePath is required" in missing.stdout + missing.stderr
-        command.append(f"/DMaxPayloadRelativePath={len('fixture.txt')}")
+        version = subprocess.run([str(compiler), "--version"], capture_output=True, text=True, errors="replace", timeout=15)
+        banner = version.stdout + "\n" + version.stderr
+        major = re.search(r"^\s*(\d+)\.|Inno Setup\s+(\d+)\b", banner, re.MULTILINE)
+        assert major, banner
+        if int(major.group(1) or major.group(2)) < 7:
+            missing = subprocess.run(
+                [*command, str(scripts / name)], cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
+            )
+            assert missing.returncode != 0
+            assert "MaxPayloadRelativePath is required for Inno Setup 6" in missing.stdout + missing.stderr
+            command.append(f"/DMaxPayloadRelativePath={len('fixture.txt')}")
     result = subprocess.run(
         [*command, str(scripts / name)],
         cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
@@ -1168,8 +1225,7 @@ def test_runtime_bundle_build_emits_identity_for_only_distributed_files(tmp_path
     if mutate_payload:
         # Signing changes PE bytes after copying; no certificate is needed to
         # exercise the identity boundary with an equivalent byte mutation.
-        with (bundled / "node.exe").open("ab") as payload:
-            payload.write(b"post-copy-signature-fixture")
+        _append_probed_executable(bundled / "node.exe", b"post-copy-signature-fixture")
     command = "Import-Module '" + str(module) + "'; Write-NodeRuntimeManifest -DistDir '" + str(dist) + "'"
     result = subprocess.run([str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], capture_output=True, timeout=60)
     assert result.returncode == 0, result.stderr

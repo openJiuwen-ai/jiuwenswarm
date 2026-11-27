@@ -14,6 +14,7 @@ generated: true
 
 | 模块 |
 |---|
+| [agent-gateway/agent_gateway/channel_manager/web](#module-agent-gateway-agent_gateway-channel_manager-web) |
 | [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
 | [jiuwenswarm/agents/harness/common](#module-jiuwenswarm-agents-harness-common) |
 | [jiuwenswarm/agents/harness/common/memory](#module-jiuwenswarm-agents-harness-common-memory) |
@@ -35,6 +36,7 @@ generated: true
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
+| [jiuwenswarm/instance_manager](#module-jiuwenswarm-instance_manager) |
 | [jiuwenswarm/observability](#module-jiuwenswarm-observability) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin) |
@@ -47,8 +49,18 @@ generated: true
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
+| [jiuwenswarm/server/supervisor](#module-jiuwenswarm-server-supervisor) |
+| [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
 | [scripts](#module-scripts) |
 | [未分类](#module-unclassified) |
+
+<a id="module-agent-gateway-agent_gateway-channel_manager-web"></a>
+
+## agent-gateway/agent_gateway/channel_manager/web
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_03_memory-portal](jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 
 <a id="module-gateway-channel_manager-web"></a>
 
@@ -72,6 +84,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [S_03_memory-portal](jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 | [S_04_coding-document-memory](jiuwenswarm/server/runtime/agent_adapter/S_04_coding-document-memory.md) | S | Coding 文档记忆接入契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-agents-harness-common-prompt"></a>
@@ -131,6 +144,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 
@@ -154,6 +168,7 @@ generated: true
 | [S_02_colleague-swarmchat](jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 | [S_03_app-hub-distribution](jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
+| [S_03_memory-portal](jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-AppMarketPanel"></a>
 
@@ -196,6 +211,7 @@ generated: true
 |---|---|---|---|---|
 | [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 
@@ -205,6 +221,7 @@ generated: true
 |---|---|---|---|---|
 | [S_01_team-goal-config](jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
+| [S_03_memory-portal](jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-debug_launcher-py"></a>
 
@@ -231,6 +248,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
+
+<a id="module-jiuwenswarm-instance_manager"></a>
+
+## jiuwenswarm/instance_manager
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 
 <a id="module-jiuwenswarm-observability"></a>
 
@@ -287,6 +312,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 | [S_02_colleague-swarmchat](jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 
 <a id="module-jiuwenswarm-server-runtime"></a>
@@ -298,6 +324,7 @@ generated: true
 | [S_01_plugin-marketplace](jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
+| [S_03_memory-portal](jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 
@@ -336,6 +363,22 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_01_builtin-catalog](jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
+
+<a id="module-jiuwenswarm-server-supervisor"></a>
+
+## jiuwenswarm/server/supervisor
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
+
+<a id="module-jiuwenswarm-server-worker"></a>
+
+## jiuwenswarm/server/worker
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_process-identity](jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 
 <a id="module-scripts"></a>
 

@@ -21,7 +21,10 @@ Character (character1 / character2 …)
 
 - Label subjects **`character1`…** in the **same order** as attached **character_specs** reference images.
 - Environment = last attached reference (**Scene N** **scene_specs**) — architecture/light/props only, **no cast**.
-- Prefer English `Image 1` / `character1` style identifiers matching attach order.
+- Image numbers are not written by the agent. The clip call appends one localized
+  binding sentence per attached image ("Image 1 is the identity reference for Ada.",
+  "Image 3 is the scene: the library.") rendered from the files actually attached.
+  Describe people by name in the story text.
 - Each **character** reference should contain **one** subject (single-subject **character_specs** plate).
 - Total refs are limited (typically ≤5) — prefer: optional continuity last-frames + on-screen **character_specs** + one **scene_specs**.
 - Keep the full motion prompt **≤4000 characters** (self-limit; pipeline sends full text).
@@ -58,7 +61,7 @@ Infer posture from action language (sit, lean, kneel, walk, hold, …) — gener
 ## Authoring checklist for leaf clip agents
 
 1. STYLE LOCK copied from the brief/storyboard
-2. Wan REFERENCE MODE binding (labels match attach order)
+2. Cast named in the story text (the system appends the image binding)
 3. CONTACT / ANTI-PENETRATION lock
 4. THIS **clip** only: action, camera, speech (no prior-line restart)
 5. One primary motion; explicit camera or `static`

@@ -9,6 +9,7 @@ from e2a.agent_models import AgentResponse, AgentResponseChunk
 from agent_gateway.cron.scheduler import CronSchedulerService
 from agent_gateway.cron.store import CronJobStore
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 import asyncio
 import time
 from types import SimpleNamespace
@@ -470,7 +471,7 @@ class _TestMessageHandler(MessageHandler):
     def create(cls) -> "_TestMessageHandler":
         setattr(MessageHandler, "_instance", None)
         setattr(cls, "_instance", None)
-        return cls(_FakeAgentClient())
+        return cls(_FakeAgentClient(), session_login_bindings=NullSessionLoginBindings())
 
     async def cancel_stream_tasks_for_channel(self, msg: Message) -> int:
         return await getattr(self, "_cancel_stream_tasks_for_channel")(msg)

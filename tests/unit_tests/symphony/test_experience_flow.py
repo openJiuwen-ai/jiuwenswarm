@@ -1445,8 +1445,8 @@ async def test_core_graph_plan_uses_runtime_graph_snapshot(
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.get_config",
-        lambda: {"preferred_language": "zh"},
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
     )
 
     result = await service.plan("query")

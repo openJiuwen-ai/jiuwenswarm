@@ -83,6 +83,7 @@ def test_collection_scope_covers_security_and_excludes_optional_model_backends()
     packages = memory_bundle.MEMORY_RUNTIME_PACKAGES
     modules = memory_bundle.MEMORY_RUNTIME_MODULES
     assert "jiuwen_memory.common.security" in packages
+    assert "jiuwen_memory.common.trace.trace_impl" in packages
     assert "jiuwen_memory.common.normalizer.normalizer_impl" in packages
     assert "jiuwen_memory.storage.shadow_impl.sqlite_shadow_index" in modules
     assert "jiuwen_memory.storage.watchdog_impl.local_watchdog" in modules

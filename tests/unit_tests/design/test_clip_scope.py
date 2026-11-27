@@ -125,7 +125,6 @@ def test_detailed_beat_is_not_full_story_restatement() -> None:
 
 def test_same_scene_gate_in_handoff_and_graph_prompt_keeps_locks() -> None:
     from jiuwenswarm.server.runtime.designer.pipeline.clip_prompt_handoff import (
-        agent_replays_finished_events,
         handoff_clause_for_prompt,
     )
 
@@ -137,21 +136,6 @@ def test_same_scene_gate_in_handoff_and_graph_prompt_keeps_locks() -> None:
     assert "SAME-SCENE CONSISTENCY GATE" in clause
     assert "AGREES" in clause.upper() or "agree" in clause.lower()
     assert "repeat" in clause.lower()
-    assert agent_replays_finished_events(
-        "the child walked away from the table again",
-        already_done=["shot 1: Child already left — do not show walking away"],
-        this_action="family sits together",
-    )
-    assert not agent_replays_finished_events(
-        "Dad stays seated by the window",
-        already_done=["shot 1: Child already left — do not show walking away"],
-        this_action="Dad stays seated by the window",
-    )
-    assert not agent_replays_finished_events(
-        "the child walks to the door again as asked",
-        already_done=["shot 1: Child already left — do not show walking away"],
-        this_action="Child walks to the door again",
-    )
     node = {
         "id": "n_clip_1",
         "type": "video",

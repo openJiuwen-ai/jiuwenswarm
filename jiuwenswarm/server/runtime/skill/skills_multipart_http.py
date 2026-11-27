@@ -29,12 +29,14 @@ from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC
 from jiuwenswarm.server.runtime.skill.skill_manager import (
+    ERROR_SKILL_FILE_TOO_LARGE,
     ERROR_SKILL_INVALID_PACKAGE,
     ERROR_SKILL_KNOWLEDGE_INPUT_CONFLICT,
     ERROR_SKILL_UNSAFE_PATH,
     SKILL_ZIP_MAX_UPLOAD_BYTES,
     SkillManager,
     SkillRpcError,
+    format_size_mb,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,8 +72,28 @@ def skill_http_error_status(code: str) -> int:
     return _SKILL_HTTP_ERROR_STATUS.get(code, 400)
 
 
-def skill_http_error_body(code: str, message: str) -> dict[str, str]:
-    return {"code": code, "message": message, "error": message}
+def skill_http_error_body(
+    code: str,
+    message: str,
+    *,
+    detail_key: str = "",
+    detail_params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"code": code, "message": message, "error": message}
+    if isinstance(detail_key, str) and detail_key.strip():
+        body["detail_key"] = detail_key.strip()
+        if isinstance(detail_params, dict) and detail_params:
+            body["detail_params"] = detail_params
+    return body
+
+
+def skill_http_error_from_rpc(exc: SkillRpcError) -> tuple[int, dict[str, Any]]:
+    return skill_http_error_status(exc.code), skill_http_error_body(
+        exc.code,
+        exc.message,
+        detail_key=getattr(exc, "detail_key", "") or "",
+        detail_params=getattr(exc, "detail_params", None),
+    )
 
 
 def parse_multipart_form(content_type: str, body: bytes) -> dict[str, Any]:
@@ -151,21 +173,41 @@ def handle_skills_upload_temp_http(
 ) -> tuple[int, dict[str, Any]]:
     """保存上传文件，返回后续 skills.* WebSocket RPC 使用的本地路径."""
     if len(body) > SKILL_UPLOAD_MAX_REQUEST_BYTES:
-        return 413, skill_http_error_body("SKILL_FILE_TOO_LARGE", "上传包超过限制")
+        return 413, skill_http_error_body(
+            ERROR_SKILL_FILE_TOO_LARGE,
+            "上传包超过限制",
+            detail_key="skills.errors.skillPackageTooLarge",
+            detail_params={
+                "sizeMB": format_size_mb(len(body)),
+                "limitMB": format_size_mb(SKILL_ZIP_MAX_UPLOAD_BYTES),
+            },
+        )
     try:
         fields = parse_multipart_form(content_type, body)
         file_field = fields.get("file")
         if not isinstance(file_field, dict) or not isinstance(file_field.get("content"), (bytes, bytearray)):
-            raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少 file 字段")
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                "缺少 file 字段",
+                detail_key="skills.errors.uploadMissingFileField",
+            )
         filename = file_field.get("filename")
         if not isinstance(filename, str):
-            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "文件路径非法或指向保留目录")
+            raise SkillRpcError(
+                ERROR_SKILL_UNSAFE_PATH,
+                "文件路径非法或指向保留目录",
+                detail_key="skills.errors.uploadUnsafePath",
+            )
         if (
             filename in {"", ".", ".."}
             or any(char in filename for char in '/\\:\x00')
             or PureWindowsPath(filename).is_reserved()
         ):
-            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "文件路径非法或指向保留目录")
+            raise SkillRpcError(
+                ERROR_SKILL_UNSAFE_PATH,
+                "文件路径非法或指向保留目录",
+                detail_key="skills.errors.uploadUnsafePath",
+            )
 
         cleanup_stale_skill_uploads()
         upload_dir = Path(tempfile.mkdtemp(prefix=SKILL_UPLOAD_PREFIX))
@@ -179,7 +221,7 @@ def handle_skills_upload_temp_http(
         # 由导入完成后的服务端清理、前端 discard 或 TTL 回收负责删除。
         return 200, {"path": str(dest)}
     except SkillRpcError as exc:
-        return skill_http_error_status(exc.code), skill_http_error_body(exc.code, exc.message)
+        return skill_http_error_from_rpc(exc)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         logger.exception("[skills_multipart_http] temporary upload failed: %s", exc)
         return 500, skill_http_error_body(ERROR_SKILL_INVALID_PACKAGE, str(exc))
@@ -321,7 +363,14 @@ async def _call_agent_skill_rpc(
     if not getattr(resp, "ok", False):
         code = str(payload.get("code") or "").strip() or ERROR_SKILL_INVALID_PACKAGE
         message = str(payload.get("message") or payload.get("error") or "请求失败").strip()
-        raise SkillRpcError(code, message)
+        detail_key = str(payload.get("detail_key") or "").strip()
+        detail_params = payload.get("detail_params")
+        raise SkillRpcError(
+            code,
+            message,
+            detail_key=detail_key,
+            detail_params=detail_params if isinstance(detail_params, dict) else None,
+        )
     return payload
 
 
@@ -361,14 +410,28 @@ def handle_skills_import_http(
         fields = parse_multipart_form(content_type, body)
         file_field = fields.get("file")
         if not isinstance(file_field, dict) or not isinstance(file_field.get("content"), (bytes, bytearray)):
-            raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少 file 字段")
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                "缺少 file 字段",
+                detail_key="skills.errors.uploadMissingFileField",
+            )
         filename = str(file_field.get("filename") or "upload.zip")
         content = bytes(file_field["content"])
         overwrite = _parse_overwrite(fields.get("overwrite", "false"))
 
         name_lower = filename.lower()
-        if name_lower.endswith(".skill") or name_lower.endswith(".skill.zip") or not name_lower.endswith(".zip"):
-            raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "仅接受 .zip 文件")
+        if name_lower.endswith(".skill") or name_lower.endswith(".skill.zip"):
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                "仅接受 .zip 文件",
+                detail_key="skills.errors.uploadSkillZipRejected",
+            )
+        if not name_lower.endswith(".zip"):
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                "仅接受 .zip 文件",
+                detail_key="skills.errors.uploadZipOnly",
+            )
 
         with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_http_") as tmpdir:
             zip_path = Path(tmpdir) / "upload.zip"
@@ -385,7 +448,7 @@ def handle_skills_import_http(
                 )
         return 200, payload
     except SkillRpcError as exc:
-        return skill_http_error_status(exc.code), skill_http_error_body(exc.code, exc.message)
+        return skill_http_error_from_rpc(exc)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         logger.exception("[skills_multipart_http] import failed: %s", exc)
         return 500, skill_http_error_body("SKILL_INVALID_PACKAGE", str(exc))
@@ -456,7 +519,7 @@ def handle_skills_create_from_knowledge_http(
         )
         return 200, payload
     except SkillRpcError as exc:
-        return skill_http_error_status(exc.code), skill_http_error_body(exc.code, exc.message)
+        return skill_http_error_from_rpc(exc)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         logger.exception("[skills_multipart_http] create-from-knowledge failed: %s", exc)
         return 500, skill_http_error_body("SKILL_INVALID_PACKAGE", str(exc))

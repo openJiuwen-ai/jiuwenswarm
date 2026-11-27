@@ -60,6 +60,7 @@ from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
     ExtensionInstallRecord,
     ExtensionInstallState,
 )
+from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
 from jiuwenswarm.server.runtime.marketplace.hub_extensions import download_system_plugin_archive
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
 
@@ -125,7 +126,9 @@ class PackageManagementAdapter(GatewayAdapter):
             return _error_response(request, str(exc), code="INVALID_PARAMS")
         except ExtensionFailure as exc:
             return await _failed_request(request, manager, parsed.package_id, exc.message, code=exc.status.name)
-        except Exception:  # noqa: BLE001 - keep management failures at the request boundary
+        except Exception as exc:  # noqa: BLE001 - keep management failures at the request boundary
+            if method == ReqMethod.EXTENSIONS_V2_SHOW.value and isinstance(exc, HubNotFoundError):
+                return _error_response(request, str(exc), code=_PACKAGE_NOT_FOUND)
             logger.exception("[ExtensionsV2] management request failed: %s", method)
             return await _failed_request(request, manager, parsed.package_id, "V2 package management failed")
         if method in (ReqMethod.EXTENSIONS_V2_INSTALL.value, ReqMethod.EXTENSIONS_V2_IMPORT.value) or (

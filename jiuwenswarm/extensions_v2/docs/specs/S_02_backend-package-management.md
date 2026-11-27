@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | spec / S_02 |
-| 最近修订 | 2026-11-10 |
+| 最近修订 | 2026-11-26 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
 | 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md)、[F_35](../features/F_35_system-plugin-recovery.md) |
 
@@ -97,6 +97,7 @@ Core 解析并校验 `package.domain`；`expose`、`display`、`ui`、`client` �
 | 文件内容 | true | `{path, content, download_url?}` |
 | 取得写操作结果 | true | `reports`：Core ActivationReport 数组 |
 | 方法或参数错误 | false | `code=INVALID_PARAMS`、`error` |
+| 详情查询在本地及 SkillHub 查无该包或版本 | false | `code=PACKAGE_NOT_FOUND`、`error` |
 | 门面尚不可用 | false | `code=EXTENSION_MANAGER_NOT_INITIALIZED`、`error` |
 | 调用抛错 | false | `code`、`error`，不得伪造成功 Report |
 
@@ -139,9 +140,20 @@ generation 保留为内部校验字段，不出现在命令结果中。目录和
 快照中不存在但当前仍安装的包展示为禁用。每条记录左侧是单选还原目标；页面右上角的还原入口在未选择时禁用，选择后启用。
 预览状态与实际还原结果一致。
 
-还原页不使用扩展管理 RPC。主应用通过受保护的本机静态服务取得带随机令牌的回环地址，并在
-`/system-plugin-recovery` 路由嵌入独立页面；令牌不出现在主应用地址。独立页读取记录并执行还原。还原只更新当前
-仍在受管安装目录内、且 `package_type: extension` 的 manifest：记录中存在的包版本按记录写入 `enable`，记录中
+设置内的恢复页保留当前聊天 URL。直接访问 `/system-plugin-recovery` 时，Web 服务通过同源反向代理返回独立恢复页。
+恢复页、存档列表、预览和执行还原均可独立于聊天前端、扩展管理 RPC、AgentServer 和 Gateway 工作。
+代理只能连接启动器登记的 `127.0.0.1` 随机端口，并由 Web 服务控制上游路径和回环 Host。子进程令牌只用于内部转发，
+不出现在远程浏览器的 URL 和 HTML 中。
+
+个人版 Web 未设置 `JIUWENSWARM_REMOTE_RECOVERY_PASSWORD` 时，远程同源 `GET` 和 `HEAD` 可读取恢复页、恢复入口、存档列表和预览。
+通过 IP 地址或域名访问时，远程同源 `POST /system-plugin-recovery/api/restore` 均可执行还原。能访问恢复入口的客户端可发起还原并请求重启，
+部署应限制入口的网络可达范围，或设置恢复密码。设置密码后，远程读写均须由同机 HTTPS 代理接入，并通过独立的 HTTP Basic 校验。
+代理保留公网 `Host`，覆盖 `X-Forwarded-Proto` 为 `https`。用户名为 `recovery`，密码来自 Web 服务的该环境变量。
+通过该 HTTPS 入口但凭证缺失或无效的请求返回 `401`，独立页在此响应中发出 HTTP Basic 认证挑战。
+本机直连校验回环连接及实际服务端口。写操作还须与恢复入口同源，并使用 `application/json`。
+Web 服务故障时，持有启动器登记的本机恢复地址的管理员可直连仍在运行的子进程。
+
+还原只更新当前仍在受管安装目录内、且 `package_type: extension` 的 manifest：记录中存在的包版本按记录写入 `enable`，记录中
 不存在但当前仍安装的包写入 `false`。已经删除的安装目录不会重新下载或恢复。还原本身会追加一条 `restore` 记录。
 
 还原不回滚插件已经执行过的外部副作用。恢复进程不导入插件模块，只读写受管 `manifest.json`，并且只监听

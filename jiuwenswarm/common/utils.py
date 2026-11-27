@@ -44,7 +44,7 @@ import zipfile
 from pathlib import Path
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 import logging
 from logging.handlers import BaseRotatingHandler, RotatingFileHandler
 import portalocker
@@ -59,6 +59,7 @@ from e2a.logging_config import (
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_exception import format_log_exception
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
+from jiuwenswarm.common.windows_upgrade_config import is_windows_installer_restore
 from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.common.paths import (
     logger,
@@ -104,6 +105,8 @@ _JSONL_LOG_LOCK = threading.Lock()
 # 默认不启用（gateway.log 与其它日志同目录），由环境变量 AGENTOS_GATEWAY_LOG_DIR 指定，
 # Linux 部署脚本（deploy/yuanrong/gateway_handler.sh）注入 /var/log/agentos。
 _GATEWAY_LOG_DIR_ENV = "AGENTOS_GATEWAY_LOG_DIR"
+_GATEWAY_CONFIG_DIR_ENV = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
+_STOCK_GATEWAY_EXTENSION_DIRS = "${EXTENSION_DIRS:-agent_gateway/extensions}"
 
 
 @dataclass
@@ -1103,6 +1106,14 @@ def _merge_existing_gateway_config(gateway_dest: Path, template_path: Path) -> N
     migrate_config_from_template(template_path, gateway_dest, prune=False)
 
 
+def _include_swarm_gateway_extensions(config: Any) -> bool:
+    extensions = config.get("extensions") if isinstance(config, dict) else None
+    if not isinstance(extensions, dict) or extensions.get("extension_dirs") != _STOCK_GATEWAY_EXTENSION_DIRS:
+        return False
+    extensions["extension_dirs"] = f"{_STOCK_GATEWAY_EXTENSION_DIRS};jiuwenswarm/extensions"
+    return True
+
+
 def _install_gateway_config(
     workspace_dir: Path,
     legacy_config: Path | None,
@@ -1125,6 +1136,8 @@ def _install_gateway_config(
     generated = _project_gateway_config(template, legacy)
     _merge_gateway_hooks(generated, legacy)
     _copy_gateway_owned_config(generated, legacy)
+    if not (os.getenv(_GATEWAY_CONFIG_DIR_ENV) or "").strip():
+        _include_swarm_gateway_extensions(generated)
 
     # 共享 config/ 目录可能尚未落位（prepare_workspace 先行创建是常规路径，
     # 但部署工具/迁移链路可能直呼本函数）
@@ -1164,6 +1177,102 @@ def ensure_gateway_config(workspace_dir: Path | None = None) -> bool:
     except Exception:  # noqa: BLE001
         logger.warning("Gateway config ensure failed", exc_info=True)
         return False
+
+
+def _merge_tree_keep_dir_metadata(
+    src_dir: Path,
+    dst_dir: Path,
+    ignore: Optional[Callable[[str, list[str]], set[str]]] = None,
+) -> None:
+    """Merge ``src_dir`` into ``dst_dir``, adding only missing files and dirs.
+
+    Drop-in replacement for ``shutil.copytree(..., dirs_exist_ok=True)`` on
+    the workspace template path. ``copytree`` ends every visited directory
+    with ``copystat``, which chmod/utime the destination directory even when
+    it already existed and no new file was added. On a shared volume (an NFS
+    PVC reused across deployments) those directories are often owned by
+    another uid, so ``copystat`` fails with EPERM and aborts the whole
+    workspace preparation although the content is already in place.
+
+    Semantics:
+    - pre-existing destination directories keep their own metadata;
+    - newly created directories get template metadata on a best-effort basis;
+    - missing files are copied with ``shutil.copyfile``; file metadata is
+      best-effort and never fails the merge;
+    - genuine copy failures — including unreadable source directories hit
+      during traversal — are aggregated into ``shutil.Error`` the same way
+      ``copytree`` does.
+
+    Args:
+        src_dir: Template directory to merge from.
+        dst_dir: Destination directory, may already exist.
+        ignore: ``shutil.ignore_patterns``-style callable receiving the
+            current source directory and its entry names, returning the
+            names to skip.
+    """
+    errors: list[tuple[str, str, str]] = []
+    src_root = str(src_dir)
+
+    def _record_walk_error(err: OSError) -> None:
+        # os.walk silently skips directories it cannot list (onerror=None).
+        # A template directory that fails to enumerate would otherwise yield
+        # an incomplete workspace reported as ready, so aggregate the failure
+        # into the same shutil.Error as genuine copy failures.
+        failed = err.filename or src_root
+        try:
+            counterpart = dst_dir / os.path.relpath(failed, src_root)
+        except ValueError:
+            counterpart = dst_dir
+        errors.append((failed, str(counterpart), str(err)))
+
+    # followlinks mirrors copytree(symlinks=False), which descends into
+    # symlinked directories and copies their content as real entries.
+    for current_dir, dir_names, file_names in os.walk(
+        src_root, followlinks=True, onerror=_record_walk_error,
+    ):
+        ignored = ignore(current_dir, dir_names + file_names) if ignore else set()
+        dir_names[:] = [name for name in dir_names if name not in ignored]
+        relative = os.path.relpath(current_dir, src_root)
+        dst_current = dst_dir if relative == os.curdir else dst_dir / relative
+        fresh_dir = not dst_current.exists()
+        try:
+            dst_current.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            errors.append((current_dir, str(dst_current), str(exc)))
+            dir_names[:] = []
+            continue
+        if fresh_dir:
+            # Only ever chmod/utime directories we just created ourselves.
+            try:
+                shutil.copystat(current_dir, dst_current)
+            except OSError as exc:
+                logger.warning(
+                    "workspace template dir metadata not applied: %s -> %s: %s",
+                    current_dir, dst_current, exc,
+                )
+        for name in file_names:
+            if name in ignored:
+                continue
+            src_file = os.path.join(current_dir, name)
+            dst_file = dst_current / name
+            if dst_file.exists():
+                continue
+            try:
+                shutil.copyfile(src_file, dst_file)
+            except OSError as exc:
+                errors.append((src_file, str(dst_file), str(exc)))
+                continue
+            try:
+                shutil.copystat(src_file, dst_file)
+            except OSError as exc:
+                # Content is complete; a volume refusing chmod/utime on the
+                # freshly written file must not fail workspace preparation.
+                logger.warning(
+                    "workspace template file metadata not applied: %s -> %s: %s",
+                    src_file, dst_file, exc,
+                )
+    if errors:
+        raise shutil.Error(errors)
 
 
 def prepare_workspace(
@@ -1286,20 +1395,6 @@ def prepare_workspace(
     template_agent_workspace = template_agent_dir / "workspace"
     template_agent_memory = template_agent_dir / "workspace" / "memory"
 
-    def copy_if_missing(src: str | Path, dst: str | Path) -> str | Path:
-        """增量复制：目标已存在则跳过。
-
-        Args:
-            src: 源文件路径
-            dst: 目标文件路径
-
-        Returns:
-            目标文件路径（已存在则直接返回，否则返回复制后的路径）
-        """
-        if os.path.exists(dst):
-            return dst
-        return shutil.copy2(src, dst)
-
     def _copy_dir(
         src_dir: Path,
         dst_dir: Path,
@@ -1316,13 +1411,11 @@ def prepare_workspace(
         else:
             ignore = None
 
-        if not dst_dir.exists():
-            shutil.copytree(src_dir, dst_dir, ignore=ignore)
-        else:
-            shutil.copytree(
-                src_dir, dst_dir, dirs_exist_ok=True, ignore=ignore,
-                copy_function=copy_if_missing,
-            )
+        # Never copy directory metadata onto a pre-existing destination: a
+        # workspace on a shared volume (PVC) can be owned by another uid,
+        # where chmod/utime raise EPERM and would abort startup over content
+        # that is already in place.
+        _merge_tree_keep_dir_metadata(src_dir, dst_dir, ignore=ignore)
 
     # Copy DeepAgent workspace template (includes agent-data.json, memory, skills)
     # Ignore _ZH.md and _EN.md files - they are handled separately
@@ -1651,13 +1744,10 @@ def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
     """Add Swarm's built-ins to the old stock Gateway search path."""
     from agent_gateway.common.config import config_write_lock, dump_yaml_round_trip, load_yaml_round_trip
 
-    legacy_dirs = "${EXTENSION_DIRS:-agent_gateway/extensions}"
     try:
         with config_write_lock(config_path=config_path):
             config = load_yaml_round_trip(config_path)
-            extensions = config.get("extensions") if isinstance(config, dict) else None
-            if isinstance(extensions, dict) and extensions.get("extension_dirs") == legacy_dirs:
-                extensions["extension_dirs"] = f"{legacy_dirs};jiuwenswarm/extensions"
+            if _include_swarm_gateway_extensions(config):
                 dump_yaml_round_trip(config_path, config)
     except (OSError, YAMLError, portalocker.exceptions.LockException) as exc:
         logger.warning("Could not migrate local Gateway extension directories in %s: %s", config_path, exc)
@@ -1665,15 +1755,17 @@ def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
 
 def prepare_local_gateway_config(env: dict[str, str]) -> None:
     """Prepare the effective Gateway config for a local Swarm launcher."""
-    key = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
-    if env.get(key, "").strip() or is_agentos_runtime():
+    key = _GATEWAY_CONFIG_DIR_ENV
+    gateway_config = get_gateway_config_file(env=env)
+    if env.get(key, "").strip():
+        env[key] = str(gateway_config.parent)
+        return
+    if is_agentos_runtime():
         return
 
-    from agent_gateway.common.paths import get_config_file as get_agent_gateway_config_file
-
-    gateway_config = get_agent_gateway_config_file()
     if gateway_config.is_file():
         _migrate_local_gateway_extension_dirs(gateway_config)
+        env[key] = str(gateway_config.parent)
         return
     env[key] = str(get_config_dir())
 
@@ -3331,7 +3423,9 @@ from jiuwenswarm.enterprise.tenant.tenant_paths import (  # noqa: E402
     seed_tenant_agent_workspace,
 )
 
-# 分区迁移先于 setup_logger 等目录创建行为执行：
-# 旧平铺数据优先整体搬迁，而非退化为逐文件吸收
-migrate_profile_data_root_layout()
-setup_logger()
+# Setup reports restore failures itself. Application logs may live behind
+# a Windows junction that the installer process is not permitted to traverse.
+if not is_windows_installer_restore():
+    # Migrate the legacy layout before logging creates any new directories.
+    migrate_profile_data_root_layout()
+    setup_logger()

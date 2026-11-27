@@ -170,11 +170,14 @@ def tool_language() -> str:
     if selected in {"en", "zh-CN"}:
         return selected
     try:
-        from jiuwenswarm.common.config import get_config
-        raw = str(get_config().get("preferred_language") or "zh").strip().lower()
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
+
+        raw = resolve_preferred_language()
     except Exception:
         raw = "zh"
-    return "en" if raw == "en" or raw.startswith("en-") else "zh-CN"
+    return "en" if raw == "en" else "zh-CN"
 
 
 def set_enabled(enabled: bool) -> None:

@@ -1,0 +1,206 @@
+{
+  "baseline": [
+    "tests/unit_tests/agentserver/test_session_input_adapter.py",
+    "tests/unit_tests/agentserver/test_worker_entrypoint.py",
+    "tests/unit_tests/agentserver/test_worker_runtime_ownership.py",
+    "tests/unit_tests/common/test_config_parse_cache.py",
+    "tests/unit_tests/common/test_model_config_validation.py",
+    "tests/unit_tests/common/test_protocol_ids.py",
+    "tests/unit_tests/gateway/test_session_login_owner.py",
+    "tests/unit_tests/runtime/test_model_catalog.py",
+    "tests/unit_tests/runtime/test_request.py",
+    "tests/unit_tests/runtime/test_session_input.py",
+    "tests/unit_tests/runtime/test_session_lifecycle_participants.py",
+    "tests/unit_tests/runtime/test_session_provision_contract.py",
+    "tests/unit_tests/runtime/test_workspace_sqlite.py",
+    "tests/unit_tests/server/test_gateway_adapter.py",
+    "tests/unit_tests/server/test_session_repository.py",
+    "tests/unit_tests/test_mode_matrix.py"
+  ],
+  "worker_groups": {},
+  "full_run": [
+    "jiuwenswarm/__init__.py",
+    "jiuwenswarm/app.py",
+    "jiuwenswarm/common/__init__.py",
+    "jiuwenswarm/common/config.py",
+    "jiuwenswarm/common/schema/",
+    "jiuwenswarm/common/utils.py",
+    "jiuwenswarm/resources/config.yaml",
+    "jiuwenswarm/runtime/service.py",
+    "jiuwenswarm/server/agent_ws_server.py",
+    "jiuwenswarm/server/runtime/agent_adapter/interface.py",
+    "jiuwenswarm/server/runtime/agent_adapter/interface_code.py",
+    "jiuwenswarm/server/runtime/agent_adapter/interface_deep.py"
+  ],
+  "features": {
+    "design": {
+      "sources": [
+        "jiuwenswarm/server/runtime/design/",
+        "jiuwenswarm/server/runtime/designer/",
+        "jiuwenswarm/agents/harness/design/",
+        "jiuwenswarm/channels/web/frontend/src/features/designer/",
+        "jiuwenswarm/resources/agent/workspace/plugins/agent_groups/designer/tools/"
+      ],
+      "tests": [
+        "tests/unit_tests/design/",
+        "tests/unit_tests/channels/web/test_web_designer_upload.py",
+        "tests/unit_tests/agents/swarm/test_design_profile_specs.py",
+        "tests/unit_tests/test_root_regressions_2.py"
+      ]
+    },
+    "session-input-and-messaging": {
+      "sources": [
+        "jiuwenswarm/runtime/session_input.py",
+        "jiuwenswarm/server/runtime/agent_adapter/session_input.py",
+        "jiuwenswarm/agents/harness/common/tools/session_messaging_toolkit.py",
+        "jiuwenswarm/server/runtime/session/session_message_service.py",
+        "jiuwenswarm/server/runtime/session/session_message_store.py",
+        "jiuwenswarm/server/runtime/session/session_message_events.py"
+      ],
+      "tests": [
+        "tests/unit_tests/runtime/test_session_input.py",
+        "tests/unit_tests/runtime/test_session_message_queue_status.py",
+        "tests/unit_tests/runtime/test_workspace_sqlite.py",
+        "tests/unit_tests/agentserver/test_session_input_adapter.py",
+        "tests/unit_tests/agentserver/test_session_messaging.py",
+        "tests/unit_tests/agentserver/test_session_messaging_expected_deny.py",
+        "tests/unit_tests/agentserver/test_session_message_pause.py",
+        "tests/unit_tests/agentserver/test_session_client_app.py",
+        "tests/unit_tests/extensions_v2/test_session_delivery_events.py",
+        "tests/unit_tests/server/test_archive_lifecycle.py",
+        "tests/unit_tests/server/test_gateway_adapter.py"
+      ]
+    },
+    "session-metadata": {
+      "sources": [
+        "jiuwenswarm/server/runtime/session/session_metadata.py",
+        "jiuwenswarm/server/runtime/session/work_mode.py"
+      ],
+      "tests": [
+        "tests/unit_tests/server/test_session_metadata.py",
+        "tests/unit_tests/server/test_session_metadata_write_options.py",
+        "tests/unit_tests/server/test_session_project_binding.py",
+        "tests/unit_tests/server/test_session_scan_contention.py",
+        "tests/unit_tests/test_work_mode.py"
+      ]
+    },
+    "ipc": {
+      "sources": ["jiuwenswarm/server/ipc/"],
+      "tests": [
+        "tests/unit_tests/agentserver/test_ipc_backpressure.py",
+        "tests/unit_tests/agentserver/test_ipc_receive_recovery.py",
+        "tests/unit_tests/agentserver/test_front_loopback_ipc.py",
+        "tests/unit_tests/agentserver/test_supervisor_forwarding.py",
+        "tests/unit_tests/agentserver/test_worker_automatic_recovery.py",
+        "tests/unit_tests/agentserver/test_worker_shutdown_deadline.py",
+        "tests/unit_tests/channels/web/test_app_web_ws_tunnel_backpressure.py"
+      ]
+    },
+    "mcp": {
+      "sources": [
+        "jiuwenswarm/common/mcp_config.py",
+        "jiuwenswarm/common/mcp_package_manifest.py",
+        "jiuwenswarm/server/runtime/mcp/",
+        "jiuwenswarm/channels/web/frontend/src/features/mcpApps/"
+      ],
+      "tests": [
+        "tests/unit_tests/agentserver/mcp/",
+        "tests/unit_tests/agentserver/test_mcp_startup_prewarm.py",
+        "tests/unit_tests/agentserver/test_deep_adapter_mcp_probe.py",
+        "tests/unit_tests/gateway/test_mcp_remote.py",
+        "tests/unit_tests/gateway/test_mcp_oauth_http.py",
+        "tests/unit_tests/common/test_mcp_ssl_verify.py",
+        "tests/unit_tests/runtime/test_mcp_references.py",
+        "tests/unit_tests/symphony/test_skill_retrieval_runtime.py",
+        "tests/unit_tests/test_mcp_apps.py"
+      ]
+    },
+    "cron": {
+      "sources": [
+        "jiuwenswarm/runtime/cron/",
+        "jiuwenswarm/agents/harness/common/tools/cron/",
+        "jiuwenswarm/channels/web/frontend/src/components/CronPanel/",
+        "jiuwenswarm/channels/web/frontend/src/features/cron/"
+      ],
+      "tests": [
+        "tests/unit_tests/runtime/test_cron_expr.py",
+        "tests/unit_tests/runtime/test_cron_store.py",
+        "tests/unit_tests/agentserver/test_cron_runtime.py",
+        "tests/unit_tests/common/test_cron_model_lookup_sources.py",
+        "tests/unit_tests/test_protocol_cron_contract.py"
+      ]
+    },
+    "symphony": {
+      "sources": [
+        "jiuwenswarm/common/symphony_config.py",
+        "jiuwenswarm/runtime/symphony/",
+        "jiuwenswarm/agents/harness/common/rails/symphony/",
+        "jiuwenswarm/channels/web/frontend/src/components/SkillGraphPanel/"
+      ],
+      "tests": [
+        "tests/unit_tests/symphony/",
+        "tests/unit_tests/agentserver/test_symphony_expert_task_dispatch.py",
+        "tests/unit_tests/agentserver/test_symphony_orchestration_interactions.py",
+        "tests/unit_tests/agentserver/test_symphony_web_panel.py",
+        "tests/unit_tests/gateway/test_app_web_handlers.py"
+      ]
+    },
+    "web-frontend-contract": {
+      "sources": [
+        "jiuwenswarm/channels/web/frontend/src/",
+        "jiuwenswarm/channels/web/frontend/tests/"
+      ],
+      "tests": ["tests/unit_tests/gateway/test_app_web_handlers.py"]
+    },
+    "web-package-contract": {
+      "sources": [
+        "jiuwenswarm/channels/web/frontend/package.json",
+        "jiuwenswarm/channels/web/frontend/package-lock.json"
+      ],
+      "tests": [
+        "tests/unit_tests/a2ui/test_module_boundaries.py",
+        "tests/unit_tests/gateway/test_app_web_handlers.py"
+      ]
+    },
+    "asset-transfer": {
+      "sources": [
+        "jiuwenswarm/server/runtime/assets/",
+        "jiuwenswarm/channels/web/frontend/src/components/AssetPublishDrawer/",
+        "jiuwenswarm/channels/web/frontend/src/features/assetTransfer.ts"
+      ],
+      "tests": [
+        "tests/unit_tests/server/assets/",
+        "tests/unit_tests/server/test_gateway_adapter.py",
+        "tests/unit_tests/channels/web/test_app_web_extension_assets.py",
+        "tests/unit_tests/channels/web/test_app_web_extension_transfers.py"
+      ]
+    },
+    "coding-memory-paths": {
+      "sources": ["jiuwenswarm/common/coding_memory_paths.py"],
+      "tests": [
+        "tests/unit_tests/common/test_coding_memory_paths.py",
+        "tests/unit_tests/agentserver/memory/test_memory_rpc.py",
+        "tests/unit_tests/agentserver/memory/test_jiuwen_coding_integration.py",
+        "tests/unit_tests/agentserver/test_code_adapter_acp_chat_tool.py"
+      ]
+    },
+    "enterprise-routing": {
+      "sources": ["jiuwenswarm/extensions/runtime_management_extension/pod_rest_map.py"],
+      "tests": [
+        "tests/unit_tests/gateway/test_pod_rest_map.py",
+        "tests/unit_tests/gateway/test_runtime_extension_register.py",
+        "tests/unit_tests/gateway/test_expert_packages_forward.py",
+        "tests/unit_tests/gateway/test_skills_detail_http_parity.py",
+        "tests/unit_tests/gateway/test_expert_http_edition.py",
+        "tests/unit_tests/server/test_http_server.py",
+        "tests/unit_tests/agentserver/test_team_list_catalog_http.py"
+      ]
+    },
+    "daily-report": {
+      "sources": [
+        "jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/"
+      ],
+      "tests": ["tests/unit_tests/resources/test_advanced_daily_report_skill.py"]
+    }
+  }
+}

@@ -89,7 +89,7 @@ PVC/NFS，跨 Pod 存活），系统数据留在数据根原位（企业版不�
     │   │                                                           runner / memory / context_engine / sys_operation +
     │   │                                                           interface/ + performance/
     │   ├── process_cli/                        CLI 按次诊断转储
-    │   ├── worker-logs/                        worker 进程 stderr/stdout 转储（runtime-worker-*.log）
+    │   ├── worker-logs/                        历史 Worker 输出日志集中目录（兼容路径）
     │   └── video/                              视频扩展事件流 jsonl
     ├── runtime/                        【通用】 本机安装的运行时资产（含安装锁）
     │   ├── custom-agents/                      自定义 agent runtime（wheel + site-packages/）
@@ -160,6 +160,7 @@ import logging
 import os
 import re
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -411,7 +412,9 @@ def get_env_file() -> Path:
     return get_config_dir() / ".env"
 
 
-def get_gateway_config_dir(workspace_dir: Path | None = None) -> Path:
+def get_gateway_config_dir(
+    workspace_dir: Path | None = None, *, env: Mapping[str, str] | None = None,
+) -> Path:
     """
     获取 Gateway 专属配置目录（与 AgentServer 同目录：``config/``）。
 
@@ -420,7 +423,8 @@ def get_gateway_config_dir(workspace_dir: Path | None = None) -> Path:
     - 由 prepare_workspace 安装 gateway 模板、app.py 注入 env 供 gateway 子进程读取。
     """
     base = Path(workspace_dir) if workspace_dir is not None else get_user_workspace_dir()
-    override = (os.getenv("JIUWENSWARM_GATEWAY_CONFIG_DIR") or "").strip()
+    source = os.environ if env is None else env
+    override = source.get("JIUWENSWARM_GATEWAY_CONFIG_DIR", "").strip()
     if override:
         path = Path(override).expanduser()
         if not path.is_absolute():
@@ -429,11 +433,13 @@ def get_gateway_config_dir(workspace_dir: Path | None = None) -> Path:
     return base / "config"
 
 
-def get_gateway_config_file(workspace_dir: Path | None = None) -> Path:
+def get_gateway_config_file(
+    workspace_dir: Path | None = None, *, env: Mapping[str, str] | None = None,
+) -> Path:
     """
     获取 Gateway 专属配置文件（``config/config-gateway.yaml``，系统态）。
     """
-    return get_gateway_config_dir(workspace_dir) / "config-gateway.yaml"
+    return get_gateway_config_dir(workspace_dir, env=env) / "config-gateway.yaml"
 
 
 def get_gateway_config_template() -> Path:
@@ -942,7 +948,10 @@ def get_runtime_logs_dir() -> Path:
 
 def get_worker_logs_dir() -> Path:
     """
-    Worker 进程 stderr/stdout 转储桶（数据根 ``logs/worker-logs/``，系统态，Pod 本地）。
+    历史 Worker 输出日志集中目录（数据根 ``logs/worker-logs/``，系统态，Pod 本地）。
+
+    保留供显式使用集中路径的调用方兼容；Worker 启动默认使用 socket 父目录下的
+    ``worker-logs``，也可通过 ``JIUWEN_WORKER_LOG_DIR`` 指定。
     """
     return get_logs_dir() / "worker-logs"
 
