@@ -12719,6 +12719,14 @@ class JiuWenSwarmDeepAdapter:
         provider = getattr(rail, "_provider", None)
         if provider is None:
             return
+        drain = getattr(rail, "drain_pending_syncs", None)
+        if callable(drain):
+            try:
+                await drain()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] pending memory sync drain failed: %s", exc
+                )
         sync_task = getattr(rail, "_sync_task", None)
         if sync_task is not None and not sync_task.done():
             try:

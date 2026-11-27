@@ -130,7 +130,11 @@ async def test_a_request_accepted_into_another_readers_round_does_not_commit_it(
     # The dispatch-time turn checkpoint is a separate write, not under test.
     monkeypatch.setattr(h.adapter._turn_tracker, "sync", AsyncMock())
 
-    await _send_request(h, streaming=streaming, query="next")
+    if streaming:
+        await _send_request(h, streaming=True, query="next")
+    else:
+        with pytest.raises(RuntimeError, match="本条消息未执行"):
+            await _send_request(h, streaming=False, query="next")
 
     assert list(await _persisted_interrupt(h, checkpointer)) == ["call_0"]
 

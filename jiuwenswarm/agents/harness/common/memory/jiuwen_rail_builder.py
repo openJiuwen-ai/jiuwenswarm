@@ -420,7 +420,7 @@ class MemoryRailSpec:
 
 def _work_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSpec:
     from openjiuwen.harness.rails import JiuwenMemoryRail
-    from openjiuwen.harness.rails.memory.jiuwen_memory_rail import _SYNC_BREAKER_THRESHOLD, _SYNC_TURN_TIMEOUT
+    from openjiuwen.harness.rails.memory import jiuwen_memory_rail as memory_module
 
     class SwarmJiuwenMemoryRail(JiuwenMemoryRail):
         """Route turn callbacks and tool defaults using the bound project path."""
@@ -452,7 +452,7 @@ def _work_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSp
 
         async def _sync_completed_turn(self, query: str, output: str, project: str | None) -> None:
             async with self._sync_lock:
-                if self._sync_consecutive_failures >= _SYNC_BREAKER_THRESHOLD:
+                if self._sync_consecutive_failures >= getattr(memory_module, "_SYNC_BREAKER_THRESHOLD", 5):
                     if time.monotonic() < self._sync_breaker_until:
                         return
                     self._sync_consecutive_failures = 0
@@ -466,16 +466,40 @@ def _work_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSp
                             session_id=self._session_id,
                             project=project,
                         ),
-                        timeout=_SYNC_TURN_TIMEOUT,
+                        timeout=getattr(memory_module, "_SYNC_TURN_TIMEOUT", 130.0),
                     )
                 except asyncio.TimeoutError:
-                    self._record_sync_failure(f"sync_turn timed out after {_SYNC_TURN_TIMEOUT}s")
+                    self._record_sync_failure("sync_turn timed out")
                 except Exception as exc:
                     self._record_sync_failure(str(exc))
                 else:
                     self._sync_consecutive_failures = 0
 
+        async def drain_pending_syncs(self) -> None:
+            tasks = tuple(self._pending_syncs)
+            if not tasks:
+                return
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(asyncio.gather(*tasks, return_exceptions=True)), timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[JiuwenRailBuilder] memory drain timed out; cancelling %s unfinished syncs",
+                    sum(not task.done() for task in tasks),
+                )
+            finally:
+                # Settle cancellation before the host shuts down the provider.
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
         def uninit(self, agent: Any) -> None:
+            if self._pending_syncs:
+                logger.warning(
+                    "[JiuwenRailBuilder] cancelling %s pending memory syncs on unload",
+                    len(self._pending_syncs),
+                )
             for task in self._pending_syncs:
                 task.cancel()
             super().uninit(agent)
