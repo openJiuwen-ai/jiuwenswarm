@@ -36,6 +36,7 @@ generated: true
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
+| [jiuwenswarm/extensions_v2](#module-jiuwenswarm-extensions_v2) |
 | [jiuwenswarm/instance_manager](#module-jiuwenswarm-instance_manager) |
 | [jiuwenswarm/observability](#module-jiuwenswarm-observability) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
@@ -46,6 +47,7 @@ generated: true
 | [jiuwenswarm/server/jiuwenmate](#module-jiuwenswarm-server-jiuwenmate) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
+| [jiuwenswarm/server/runtime/gateway_adapter](#module-jiuwenswarm-server-runtime-gateway_adapter) |
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
@@ -249,6 +251,14 @@ generated: true
 |---|---|---|---|---|
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
 
+<a id="module-jiuwenswarm-extensions_v2"></a>
+
+## jiuwenswarm/extensions_v2
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_21_config-extensions](jiuwenswarm/extensions_v2/S_21_config-extensions.md) | S | 配置扩展事件与读取方法规约 | 刘瑜 | — |
+
 <a id="module-jiuwenswarm-instance_manager"></a>
 
 ## jiuwenswarm/instance_manager
@@ -339,6 +349,14 @@ generated: true
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
 | [S_04_coding-document-memory](jiuwenswarm/server/runtime/agent_adapter/S_04_coding-document-memory.md) | S | Coding 文档记忆接入契约 | Wang Tao | — |
+
+<a id="module-jiuwenswarm-server-runtime-gateway_adapter"></a>
+
+## jiuwenswarm/server/runtime/gateway_adapter
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_21_config-extensions](jiuwenswarm/extensions_v2/S_21_config-extensions.md) | S | 配置扩展事件与读取方法规约 | 刘瑜 | — |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 

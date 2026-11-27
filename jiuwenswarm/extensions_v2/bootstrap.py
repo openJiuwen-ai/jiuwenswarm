@@ -8,6 +8,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from jiuwenswarm.extensions_v2.event_types.context_usage import register_context_usage_events
+from jiuwenswarm.extensions_v2.event_types.config import register_config_events
 from jiuwenswarm.extensions_v2.event_types.package_events import register_package_lifecycle_events
 from jiuwenswarm.extensions_v2.event_types.prompt_context import register_prompt_context_events
 from jiuwenswarm.extensions_v2.event_types.session_attach import register_session_attach_event
@@ -24,6 +25,7 @@ from jiuwenswarm.extensions_v2.event_types.session_send import register_session_
 from jiuwenswarm.extensions_v2.event_handlers.session_queries import register_session_query_handlers
 from jiuwenswarm.extensions_v2.event_handlers.session_authorize import register_authorization_lifecycle_handlers
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import SessionFileService, register_session_ops
+from jiuwenswarm.extensions_v2.handler_ops.config import register_config_ops
 
 if TYPE_CHECKING:
     from openjiuwen.core.events import ExtensionEventBus
@@ -38,6 +40,7 @@ def register_event_types(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
 
     webui.register_event_types(bus)
     register_context_usage_events(bus)
+    register_config_events(bus)
     register_package_lifecycle_events(bus)
     register_prompt_context_events(bus)
     register_session_history_events(bus)
@@ -66,6 +69,7 @@ def register_handlers(
 
     webui.register_handlers(bus)
     register_session_query_handlers(bus)
+    register_config_ops(bus)
     register_session_ops(bus, file_service=file_service, compact_service=compact_service,
                          authorization_service=authorization_service)
     register_authorization_lifecycle_handlers(bus, authorization_service)

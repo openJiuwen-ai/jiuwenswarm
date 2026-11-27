@@ -56,6 +56,7 @@ generated: true
 | [jiuwenswarm/server/jiuwenmate](#module-jiuwenswarm-server-jiuwenmate) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
+| [jiuwenswarm/server/runtime/gateway_adapter](#module-jiuwenswarm-server-runtime-gateway_adapter) |
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
@@ -349,6 +350,11 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261119_1624_beta3-extensions-develop-port](F_20261119_1624_beta3-extensions-develop-port.md) | F | beta3 扩展能力线性迁入 develop | lizhiyuan | 无独立 D：按用户明确确认的逐笔迁移、保留 develop 行为和 Gateway 跨仓边界执行；本次没有另立设计，原扩展契约沿用模块内规约。 |
+| [F_20261127_1041_config-describe](F_20261127_1041_config-describe.md) | F | config.describe 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_config-set](F_20261127_1041_config-set.md) | F | config.set 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-items](F_20261127_1041_ops-config-items.md) | F | ops.config.items 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-snapshot](F_20261127_1041_ops-config-snapshot.md) | F | ops.config.snapshot 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-value](F_20261127_1041_ops-config-value.md) | F | ops.config.value 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
 
 <a id="module-jiuwenswarm-observability"></a>
 
@@ -458,6 +464,18 @@ generated: true
 | [F_20261104_1225_npc-team-member-sessions](F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](../designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261111_1755_team-leader-goal](F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](../designs/active/D-20261111-1722-team-goal-config/design.md) |
+
+<a id="module-jiuwenswarm-server-runtime-gateway_adapter"></a>
+
+## jiuwenswarm/server/runtime/gateway_adapter
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261127_1041_config-describe](F_20261127_1041_config-describe.md) | F | config.describe 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_config-set](F_20261127_1041_config-set.md) | F | config.set 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-items](F_20261127_1041_ops-config-items.md) | F | ops.config.items 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-snapshot](F_20261127_1041_ops-config-snapshot.md) | F | ops.config.snapshot 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-value](F_20261127_1041_ops-config-value.md) | F | ops.config.value 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 

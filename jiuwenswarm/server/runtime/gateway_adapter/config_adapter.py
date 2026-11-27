@@ -186,6 +186,13 @@ class ConfigAdapter(GatewayAdapter):
     })
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        if request.req_method in {ReqMethod.CONFIG_SET, ReqMethod.CONFIG_SAVE_ALL, ReqMethod.LOCALE_SET_CONF}:
+            from jiuwenswarm.extensions_v2.config_extension.native import route_config_request
+
+            return await route_config_request(request, self._handle_native)
+        return await self._handle_native(request)
+
+    async def _handle_native(self, request: AgentRequest) -> AgentResponse:
         if request.req_method == ReqMethod.MEMORY_PORTAL_OPEN:
             from jiuwenswarm.common.config import get_config
             from jiuwenswarm.server.runtime.memory_portal import get_memory_portal_service

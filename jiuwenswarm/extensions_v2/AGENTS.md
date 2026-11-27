@@ -68,6 +68,8 @@
 ### 代码入口
 
 - [assembly.py](assembly.py)：AgentServer 进程内唯一装配入口，负责 EventBus、管理门面、WebUI 运行时、启动加载与退出顺序。
+- [config_extension/](config_extension/)：公开配置投影、描述调用帧与原生保存桥；公共契约见
+  [S_21 配置扩展规约](../../.agents/agent-docs/specs/jiuwenswarm/extensions_v2/S_21_config-extensions.md)。
 - [management/](management/)：包管理门面与本地后端；调用方只依赖 `ExtensionManager`。
 - [webui/](webui/)：WebUI 事件、渲染校验、实例登记、下行传输与上行适配。
 - [examples/auth_login_demo/](examples/auth_login_demo/)：登录与注册示例包，声明 `package.domain: gateway`，由 Gateway 加载；

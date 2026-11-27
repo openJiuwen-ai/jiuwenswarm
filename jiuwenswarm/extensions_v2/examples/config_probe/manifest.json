@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "id": "example.config-probe",
+    "version": "1.0.0",
+    "domain": "agentserver"
+  },
+  "display": {
+    "name": {"zh": "配置扩展验证", "en": "Configuration extension probe"},
+    "description": {"zh": "验证配置读取、目录说明与保存前策略", "en": "Verify config reads, descriptions and pre-save policy"},
+    "events": [
+      {"name": "config.describe", "description": {"zh": "改写 RSI 展示说明", "en": "Customize the RSI description"}},
+      {"name": "config.set", "description": {"zh": "演示拒绝开启 RSI", "en": "Demonstrate refusal to enable RSI"}},
+      {"name": "server.run_command", "description": {"zh": "提供 /config_probe 查询命令", "en": "Provide the /config_probe query command"}}
+    ]
+  },
+  "extensions": [{"id": "probe", "runtime": "backend", "module": "extension.py"}]
+}

@@ -645,3 +645,15 @@ EXTV2-09 追加命令的进度如下，原后端验证记录继续保留。
 负责人：李志远。状态：完成。内容包括跨启动保留最多 50 条系统插件状态记录、设置页内嵌的独立回环恢复页、
 还原后自动重启 AgentServer 和 Gateway 的边界，以及源码、Wheel、EXE、DMG 和 Electron 启动入口。接口、状态规则和验证见
 [F_35](../features/F_35_system-plugin-recovery.md)。
+
+## 配置扩展（0.2.11）
+
+本批交付两事件 `config.describe`、`config.set` 与三个只读方法 `ops.config.value/items/snapshot`。开发与定向验证完成，PR 待检视；不将 PR 创建等同合入或产品验收。
+
+- [config-describe](../../../../.agents/agent-docs/features/F_20261127_1041_config-describe.md)
+- [config-set](../../../../.agents/agent-docs/features/F_20261127_1041_config-set.md)
+- [ops-config-value](../../../../.agents/agent-docs/features/F_20261127_1041_ops-config-value.md)
+- [ops-config-items](../../../../.agents/agent-docs/features/F_20261127_1041_ops-config-items.md)
+- [ops-config-snapshot](../../../../.agents/agent-docs/features/F_20261127_1041_ops-config-snapshot.md)
+
+主责规约：[S_21](../../../../.agents/agent-docs/specs/jiuwenswarm/extensions_v2/S_21_config-extensions.md)。首批公开四个已有宿主字段，读取支持 effective/user；项目/会话层与通用插件配置登记后续接入。新增配置 38 项及既有相关回归 111 项，共 149 项通过。

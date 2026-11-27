@@ -83,6 +83,7 @@ generated: true
 | [jiuwenswarm/server/personal_context](#module-jiuwenswarm-server-personal_context) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
+| [jiuwenswarm/server/runtime/gateway_adapter](#module-jiuwenswarm-server-runtime-gateway_adapter) |
 | [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
@@ -115,6 +116,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261125_1245_memory-portal-team-migration](features/F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
 | [S_03_memory-portal](specs/jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
+
 <a id="module-agent-gateway-channel_manager-web"></a>
 
 ## agent-gateway/channel_manager/web
@@ -303,8 +305,8 @@ generated: true
 | [F_20261116_0500_office-document-reader-tools](features/F_20261116_0500_office-document-reader-tools.md) | F | 补齐结构化办公文档只读工具 (read_docx 与 read_spreadsheet) | zhuxiangju | 无独立 D：补齐办公文档 Word 与 Excel/CSV 结构化只读能力的工程落地。 |
 | [F_20261116_2130_safe-archive-tools](features/F_20261116_2130_safe-archive-tools.md) | F | 补齐安全归档与压缩包工具集 (inspect_archive 与 extract_archive) | zhuxiangju | 无独立 D：安全高效的压缩包预览与解压工具落地，严密防范路径穿越。 |
 | [F_20261116_2200_pptx-reading-tool](features/F_20261116_2200_pptx-reading-tool.md) | F | read_pptx PowerPoint Presentation Reading Tool | zhuxiangju | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
-| [B_20261126_0956_spreadsheet-out-of-range-paging](bugfix/jiuwenswarm/agents/harness/common/tools/B_20261126_0956_spreadsheet-out-of-range-paging.md) | B | read_spreadsheet 越界分页与仅表头文件的矛盾提示 | openjiuwen_ai | 无独立 D：内置工具只读分页提示的缺陷修复，无独立设计方案，按 Issue |
 | [B_20261126_0210_enterprise-team-file-live-delivery](bugfix/jiuwenswarm/agents/harness/common/tools/B_20261126_0210_enterprise-team-file-live-delivery.md) | B | 企业版团队会话文件卡片丢失：投递优先级反转与网关补发 | hanxinyang | 无独立 D：针对 Issue |
+| [B_20261126_0956_spreadsheet-out-of-range-paging](bugfix/jiuwenswarm/agents/harness/common/tools/B_20261126_0956_spreadsheet-out-of-range-paging.md) | B | read_spreadsheet 越界分页与仅表头文件的矛盾提示 | openjiuwen_ai | 无独立 D：内置工具只读分页提示的缺陷修复，无独立设计方案，按 Issue |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
@@ -353,8 +355,8 @@ generated: true
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
-| [S_01_process-identity](specs/jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 | [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
+| [S_01_process-identity](specs/jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 
@@ -444,8 +446,9 @@ generated: true
 | [B_20261125_0115_cron-pin-sidebar-blackhole](bugfix/jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
 | [B_20261125_1146_design-shared-path-regressions](bugfix/jiuwenswarm/channels/web/B_20261125_1146_design-shared-path-regressions.md) | B | Design 公共路径历史回归防护 | Huang, Zeyu | 无独立 D：依据历史 issue 和当前公共路径契约补回归测试，无独立设计方案；不重构产品代码。 |
 | [B_20261126_1420_channel-settings-failure-feedback](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_1420_channel-settings-failure-feedback.md) | B | 渠道设置页保存/加载失败反馈缺失——保存失败零提示、单渠道加载失败整列表永久骨架 | gunner_beat | 无独立 D：交互反馈层缺陷修复，复用 FormDialog 既有 status 插槽与骨架/横幅/toast 三层反馈位，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
-| [B_20261126_2000_agent-mgmt-confirm-dialog-i18n](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_2000_agent-mgmt-confirm-dialog-i18n.md) | B | 专家团卸载与专家删除确认框原生 window.confirm 按钮文案无法随应用 i18n 切换 | whds5279 | 无独立 D：交互层缺陷修复，复用既有 ConfirmDialog 组件与 agentManagement.confirm / common.cancel\|confirm\|loading 文案契约，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [B_20261126_1628_upload-doc-block-auto-title](bugfix/jiuwenswarm/B_20261126_1628_upload-doc-block-auto-title.md) | B | 会话自动标题被【上传文档】协议块污染 | whds5279 | 无独立 D：修复既有标题生成与上传协议块注入的跨层契约冲突，不引入新方案。 |
+| [B_20261126_1750_source-skill-display-name-ledger](bugfix/jiuwenswarm/server/runtime/skill/B_20261126_1750_source-skill-display-name-ledger.md) | B | 企业源技能广场改名后账本 display_name 冻结及前后端展示优先级不一致 | meizi6 | 无独立 D：线上缺陷（Issue |
+| [B_20261126_2000_agent-mgmt-confirm-dialog-i18n](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_2000_agent-mgmt-confirm-dialog-i18n.md) | B | 专家团卸载与专家删除确认框原生 window.confirm 按钮文案无法随应用 i18n 切换 | whds5279 | 无独立 D：交互层缺陷修复，复用既有 ConfirmDialog 组件与 agentManagement.confirm / common.cancel\|confirm\|loading 文案契约，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
@@ -541,8 +544,8 @@ generated: true
 | [B_20261121_0108_pypi-update-version-baseline](bugfix/jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
 | [B_20261124_1602_issue-4327-observability](bugfix/observability/B_20261124_1602_issue-4327-observability.md) | B | issue 4327：统一可观测性配置并分离轨迹存储与导出 | hh0205 | 无独立 D：依据 GitCode jiuwenswarm issue 4327，统一 observability 开关并分离轨迹存储、演进采集和可观测性导出的职责，无独立 D 文档。 |
 | [B_20261124_2201_rea-npx-readiness](bugfix/jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
-| [B_20261125_2150_windows-installer-restore-bootstrap](bugfix/scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
 | [B_20261125_1146_design-shared-path-regressions](bugfix/jiuwenswarm/channels/web/B_20261125_1146_design-shared-path-regressions.md) | B | Design 公共路径历史回归防护 | Huang, Zeyu | 无独立 D：依据历史 issue 和当前公共路径契约补回归测试，无独立设计方案；不重构产品代码。 |
+| [B_20261125_2150_windows-installer-restore-bootstrap](bugfix/scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
 | [B_20261126_1631_shared-workspace-dir-metadata](bugfix/jiuwenswarm/common/B_20261126_1631_shared-workspace-dir-metadata.md) | B | 共享卷上工作区准备因已存在目录元数据 EPERM 导致 AgentServer 启动失败 | wangmingqi | 无独立 D：对既有工作区模板播种行为的局部缺陷修复与语义收紧，不新增架构方案。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
@@ -669,6 +672,12 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261119_1624_beta3-extensions-develop-port](features/F_20261119_1624_beta3-extensions-develop-port.md) | F | beta3 扩展能力线性迁入 develop | lizhiyuan | 无独立 D：按用户明确确认的逐笔迁移、保留 develop 行为和 Gateway 跨仓边界执行；本次没有另立设计，原扩展契约沿用模块内规约。 |
+| [F_20261127_1041_config-describe](features/F_20261127_1041_config-describe.md) | F | config.describe 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_config-set](features/F_20261127_1041_config-set.md) | F | config.set 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-items](features/F_20261127_1041_ops-config-items.md) | F | ops.config.items 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-snapshot](features/F_20261127_1041_ops-config-snapshot.md) | F | ops.config.snapshot 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-value](features/F_20261127_1041_ops-config-value.md) | F | ops.config.value 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [S_21_config-extensions](specs/jiuwenswarm/extensions_v2/S_21_config-extensions.md) | S | 配置扩展事件与读取方法规约 | 刘瑜 | — |
 
 <a id="module-jiuwenswarm-gateway-channel_manager-web"></a>
 
@@ -895,6 +904,19 @@ generated: true
 | [S_03_native-plugin-runtime](specs/jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
 | [S_04_coding-document-memory](specs/jiuwenswarm/server/runtime/agent_adapter/S_04_coding-document-memory.md) | S | Coding 文档记忆接入契约 | Wang Tao | — |
 
+<a id="module-jiuwenswarm-server-runtime-gateway_adapter"></a>
+
+## jiuwenswarm/server/runtime/gateway_adapter
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261127_1041_config-describe](features/F_20261127_1041_config-describe.md) | F | config.describe 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_config-set](features/F_20261127_1041_config-set.md) | F | config.set 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-items](features/F_20261127_1041_ops-config-items.md) | F | ops.config.items 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-snapshot](features/F_20261127_1041_ops-config-snapshot.md) | F | ops.config.snapshot 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [F_20261127_1041_ops-config-value](features/F_20261127_1041_ops-config-value.md) | F | ops.config.value 特性设计 | 刘瑜 | 无独立 D：用户明确要求实现此前讨论的两事件与三只读方法；此前方案未分配仓库 D 标识，本次不虚构审批记录。 |
+| [S_21_config-extensions](specs/jiuwenswarm/extensions_v2/S_21_config-extensions.md) | S | 配置扩展事件与读取方法规约 | 刘瑜 | — |
+
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 
 ## jiuwenswarm/server/runtime/marketplace
@@ -933,6 +955,7 @@ generated: true
 | [B_20261103_1636_builtin-catalog-upgrade](bugfix/jiuwenswarm/server/runtime/skill/builtin-catalog-upgrade.md) | B | 旧内置技能未归一与应用市场入口不明显 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [B_20261116_1412_skill-import-validation-and-list](bugfix/jiuwenswarm/server/runtime/skill/B_20261116_1412_skill-import-validation-and-list.md) | B | 技能导入元数据与 ZIP 路径安全校验修复 | zhangzhongteng | 无独立 D：用户确认统一个人版技能导入和市场安装的元数据校验，并修复 ZIP 原始文件名及路径检查；无独立设计。 |
 | [B_20261117_1019_skill-upload-temp-leak](bugfix/jiuwenswarm/server/runtime/skill/B_20261117_1019_skill-upload-temp-leak.md) | B | 技能导入的两阶段上传临时目录永久残留 | mengliang0116 | 无独立 D：两阶段上传缺少文件生命周期归属，属实现缺陷的小范围修复，不引入新的架构设计；接口与生命周期契约记录在本文。 |
+| [B_20261126_1750_source-skill-display-name-ledger](bugfix/jiuwenswarm/server/runtime/skill/B_20261126_1750_source-skill-display-name-ledger.md) | B | 企业源技能广场改名后账本 display_name 冻结及前后端展示优先级不一致 | meizi6 | 无独立 D：线上缺陷（Issue |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-server-supervisor"></a>
