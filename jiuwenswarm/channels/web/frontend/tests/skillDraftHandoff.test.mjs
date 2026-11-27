@@ -100,6 +100,7 @@ function createHarness(text = '请保留这段话', skill = 'agent-creator') {
   return {
     editor, chat, session,
     skills: () => Array.from(editor.querySelectorAll('[data-skill]'), (chip) => chip.dataset.skill),
+    insertSkillChip,
     trySkill: (name, type) => {
       goTry(name, type);
       while (scheduled.length) scheduled.shift()();
@@ -157,29 +158,24 @@ test('trying a skill preserves a text-only draft and its position after another 
 
 test('seeding a preselected skill at offset 0 restores its chip before the prompt text', () => {
   // 行为级守护 #7158：App 的 enterNewConversation 为预选技能记录 offset=0，
-  // InputArea 依 inputSkillPositions 用 createComposerSkillRange 重建 chip。
-  // 这里复刻该重建路径，断言 chip 落在文案前、纯文本不被污染、位置记录仍为 offset=0。
-  const dom = new JSDOM('<div contenteditable="true"></div>');
-  const { document } = dom.window;
-  const editor = document.querySelector('div');
-  const prompt = '帮我创建一个xxx专家，擅长xxx';
-  editor.textContent = prompt;
-  const positions = [{ name: 'workswarm-builtin', offset: 0 }];
-  const existing = new Set();
-  for (const { name, offset } of positions) {
-    if (existing.has(name)) continue;
-    const chip = document.createElement('span');
-    chip.dataset.skill = name;
-    chip.setAttribute('contenteditable', 'false');
-    chip.textContent = name;
-    createComposerSkillRange(editor, offset).insertNode(chip);
-    existing.add(name);
+  // InputArea 的恢复 effect 用真实 insertSkillChip(name, offset) 重建 chip。
+  // 先按 enterNewConversation 的方式写入文案 + 位置，再走产品代码 insertSkillChip，
+  // 断言 chip 落在文案前、纯文本不被污染，且 store 的 offset 记录在插入后仍被保留。
+  const harness = createHarness('', null);
+  try {
+    const prompt = '帮我创建一个xxx专家，擅长xxx';
+    const positions = [{ name: 'workswarm-builtin', offset: 0 }];
+    harness.editor.textContent = prompt;
+    harness.chat.setInputValue('new', prompt, positions);
+    harness.insertSkillChip('workswarm-builtin', 0);
+    assert.equal(harness.editor.firstElementChild?.dataset.skill, 'workswarm-builtin');
+    assert.equal(readComposerText(harness.editor), prompt);
+    assert.deepEqual(readComposerSkillPositions(harness.editor), positions);
+    assert.deepEqual(harness.chat.getRuntime('new').inputSkillPositions, positions);
+    assert.equal(harness.chat.getRuntime('new').inputValue, prompt);
+  } finally {
+    harness.cleanup();
   }
-  assert.equal(editor.firstElementChild?.dataset.skill, 'workswarm-builtin');
-  assert.equal(readComposerText(editor), prompt);
-  // offset=0 说明 chip 之前没有任何文本，即 chip 排在文案前。
-  assert.deepEqual(readComposerSkillPositions(editor), [{ name: 'workswarm-builtin', offset: 0 }]);
-  dom.window.close();
 });
 
 test('trying a skill with an empty draft still inserts a chip and sets its requested mode', () => {
