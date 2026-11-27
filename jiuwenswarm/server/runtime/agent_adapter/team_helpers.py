@@ -31,7 +31,11 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
 from openjiuwen.harness import DeepAgent
-from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
+from agent_gateway.common.mode_matrix import (
+    NEW_TEAM_DESIGN,
+    base_mode_without_plan,
+    is_team_plan_mode,
+)
 from agent_gateway.common.session_message import with_cross_session_history_metadata
 from agent_gateway.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
@@ -52,6 +56,8 @@ from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     session_messaging_route_context,
     with_session_messaging_route,
 )
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import PLAN_MODE_EXITED_EVENT_TYPE
+from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import exit_plan_result_succeeded
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
 from jiuwenswarm.common.utils import get_agent_skills_dir, mask_sensitive
 from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled
@@ -3065,6 +3071,22 @@ def _is_duplicate_ask_user_question(
     return False
 
 
+def _sync_team_plan_exit(session_id: str) -> str | None:
+    """Persist the leader's plan exit without recording another user turn."""
+    metadata = get_session_metadata(session_id, enable_writeback=False)
+    mode = metadata.get("mode")
+    if not is_team_plan_mode(mode):
+        return None
+    normal_mode = base_mode_without_plan(mode)
+    update_session_metadata(
+        session_id=session_id,
+        mode=normal_mode,
+        touch_last_message_at=False,
+        sync_write=True,
+    )
+    return normal_mode
+
+
 def _quiet_round_status_payload(
     session_id: str,
     round_id: str,
@@ -5990,6 +6012,23 @@ async def _consume_stream_with_query(
                     parsed["role"] = TeamRole.LEADER.value
                 parsed = _truncate_team_tool_result_event(parsed)
                 parsed = _attach_team_leader_identity(parsed, team_leader_identity)
+                if (
+                    is_leader
+                    and parsed.get("event_type") == "chat.tool_result"
+                    and parsed.get("tool_name") == "exit_plan_mode"
+                    and exit_plan_result_succeeded(parsed.get("result"))
+                ):
+                    try:
+                        normal_mode = await asyncio.to_thread(_sync_team_plan_exit, session_id)
+                    except Exception:
+                        logger.warning("[TeamHelpers] Team plan exit sync failed: %s", session_id, exc_info=True)
+                    else:
+                        if normal_mode is not None:
+                            await _deliver({
+                                "event_type": PLAN_MODE_EXITED_EVENT_TYPE,
+                                "session_id": session_id,
+                                "mode": normal_mode,
+                            })
                 if parsed.get("event_type") == "team.runtime_ready":
                     ready_team_name = str(parsed.get("team_name") or team_spec.team_name)
                     activation_kind = str(parsed.get("activation_kind") or "").strip()
