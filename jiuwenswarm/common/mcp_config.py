@@ -31,6 +31,10 @@ _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_
 _PREWARM_MAX_CONCURRENCY = 6
 _PREWARM_STALL_TIMEOUT_S = 120.0
 
+# Probe bound: spawn (npx first install) and teardown sit outside the
+# client's own 60s handshake timeout.
+_PROBE_STALL_TIMEOUT_S = 120.0
+
 _PLACEHOLDER_RE = re.compile(r"\$\{(\w+)\}")
 
 
@@ -800,7 +804,19 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
     except Exception as exc:  # noqa: BLE001
         return False, f"Runner unavailable: {exc}"
     try:
-        result = await Runner.resource_mgr.add_mcp_server(cfg, tag="mcp.probe")
+        result = await asyncio.wait_for(
+            Runner.resource_mgr.add_mcp_server(cfg, tag="mcp.probe"),
+            timeout=_PROBE_STALL_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        reason = (
+            f"MCP connect probe stalled >{_PROBE_STALL_TIMEOUT_S:.0f}s "
+            f"(server spawn or handshake never completed)"
+        )
+        logger.warning("[mcp-config] probe for '%s' timed out: %s", n, reason)
+        # The cancelled add may have cached a half-open instance / child.
+        await discard_probed_mcp(n)
+        return False, reason
     except Exception as exc:  # noqa: BLE001
         return False, str(exc) or repr(exc)
     ok = True
