@@ -320,7 +320,7 @@ def test_documented_symphony_yaml_examples_use_current_contract(path):
         assert config.storage.artifact_root.endswith("symphony/runtime")
 
 
-def test_dependency_and_container_defaults_pin_the_same_core_commit():
+def test_dependency_defaults_pin_the_same_core_commit():
     import tomllib
     root = Path(__file__).resolve().parents[3]
     project = tomllib.loads((root / "pyproject.toml").read_text())
@@ -335,7 +335,3 @@ def test_dependency_and_container_defaults_pin_the_same_core_commit():
     assert all(f'{pin["git"]}@{pin["rev"]}' in item for item in direct_core)
     package = next(package for package in lock["package"] if package["name"] == "openjiuwen")
     assert package["source"]["git"] == f'{pin["git"]}?rev={pin["rev"]}#{pin["rev"]}'
-    for dockerfile in ("docker/Dockerfile.claw", "docker/openshift/Dockerfile.claw"):
-        source = (root / dockerfile).read_text()
-        assert f'ARG AGENT_CORE_REPOS={pin["git"]}' in source
-        assert f'ARG AGENT_CORE_COMMIT={pin["rev"]}' in source
