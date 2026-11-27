@@ -190,8 +190,9 @@ def _resume_state(resume, signature):
     return state
 
 
-async def run_batch_stream(turbo, *, skill, accelerators, inputs, session, params=None, task='',
-                           request_id='', channel_id='', task_id='', resume_ctx=None, user_input=None):
+async def run_batch_stream(turbo, *, skill, accelerators=None, inputs, session, params=None, task='',
+                           request_id='', channel_id='', task_id='', resume_ctx=None, user_input=None,
+                           auto_batch=False, accelerator=''):
     from jiuwenswarm.server.runtime.skill_turbo import agent as agent_module
 
     start = time.monotonic()
@@ -206,6 +207,49 @@ async def run_batch_stream(turbo, *, skill, accelerators, inputs, session, param
                  'shared_params': copy.deepcopy(params), 'task_id': task_id,
                  'workspace_base': ''}
     try:
+        if type(auto_batch) is not bool or (accelerator and not auto_batch):
+            raise SegmentInputError('invalid_args', 'invalid_auto_batch_mode')
+        if not isinstance(workspace, str) or not workspace.strip() or not Path(workspace).is_absolute():
+            raise SegmentInputError('blocked', 'workspace_missing')
+        if auto_batch:
+            if not skill or not accelerator or accelerator == '__full__' or accelerators is not None:
+                raise SegmentInputError('invalid_args', 'invalid_auto_batch_mode')
+            if params is not None and not isinstance(params, dict):
+                raise SegmentInputError('invalid_args', 'params_must_be_object')
+            signature['auto_request'] = {'accelerator': accelerator, 'params': copy.deepcopy(params)}
+            if resume_ctx is not None:
+                control = resume_ctx.get('segment')
+                batch_control = control.get('batch') if isinstance(control, dict) else None
+                saved = batch_control.get('signature') if isinstance(batch_control, dict) else None
+                if not isinstance(saved, dict) or not isinstance(saved.get('steps'), list):
+                    raise SegmentInputError('failed', 'batch_control_corrupt')
+                accelerators = copy.deepcopy(saved['steps'])
+            else:
+                config = turbo._env.config.get('skill_turbo', {'enabled': turbo._env.config.get('enabled', True)})
+                if config.get('enabled', False) is not True or config.get('batch_enabled', True) is not True:
+                    raise SegmentInputError('blocked', 'batch_disabled')
+                maximum = config.get('max_batch_steps', 8)
+                if type(maximum) is not int or maximum < 1:
+                    raise SegmentInputError('invalid_args', 'invalid_batch_limit')
+                record, _ = await asyncio.to_thread(resolve_execution_skill, turbo._env, skill)
+                if not record.manifest_valid:
+                    raise SegmentInputError('invalid_args', 'invalid_manifest')
+                registry = AcceleratorRegistry(turbo._env)
+                spec = registry.get(skill, accelerator)
+                if spec is None:
+                    raise SegmentInputError('invalid_args', 'unknown_or_invalid_accelerator')
+                accelerators = []
+                while spec is not None and len(accelerators) < min(maximum, 8):
+                    accelerators.append({'id': spec.id, **({'params': copy.deepcopy(params or {})} if not accelerators else {})})
+                    if (spec.batch.auto_next is None or not spec.batch.standalone
+                            or (spec.hitl.kind == 'review' and not (
+                                spec.hitl.continue_after_resume and spec.batch.stop_after == 'never'))):
+                        break
+                    spec = registry.get(skill, spec.batch.auto_next)
+            # 起始参数放在步骤内，不能变成每段共享参数；恢复使用首次实际组批列表。
+            params = None
+            signature['steps'] = copy.deepcopy(accelerators)
+            signature['shared_params'] = None
         if workspace:
             signature['workspace_base'] = str(await asyncio.to_thread(Path(workspace).resolve))
         if resume_ctx is not None:
@@ -331,6 +375,16 @@ async def run_batch_stream(turbo, *, skill, accelerators, inputs, session, param
             for result in state['results']:
                 turbo._segment_result['warnings'].extend(result.get('warnings', []))
     finally:
+        if auto_batch:
+            planned = signature['steps'] if isinstance(signature['steps'], list) else []
+            turbo._segment_result['planned_steps'] = [step.get('id') for step in planned if isinstance(step, dict)]
+            turbo._segment_result['next_accelerator'] = None
+            if plan is not None and turbo._segment_result.get('stop_reason') in {
+                'completed', 'review_checkpoint', 'clarify_checkpoint',
+            }:
+                completed = len(plan.steps) - len(turbo._segment_result['remaining_steps'])
+                if completed:
+                    turbo._segment_result['next_accelerator'] = plan.steps[completed - 1].spec.batch.auto_next
         if resume_ctx is not None and not paused and resume_ctx.get('resume_in_flight') is not True:
             try:
                 async with skill_execution_lease(session, resume_ctx=resume_ctx):

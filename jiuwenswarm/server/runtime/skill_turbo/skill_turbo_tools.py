@@ -23,11 +23,6 @@ from openjiuwen.core.foundation.tool import tool
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import get_current_task_id
 from jiuwenswarm.server.runtime.skill_turbo.accelerator_manifest import AcceleratorSpec
-from jiuwenswarm.server.runtime.skill_turbo.task_slot_guard import (
-    claim_task_slot,
-    peek_leaked_task_slot,
-    release_task_slot,
-)
 
 if TYPE_CHECKING:
     from openjiuwen.core.session.agent import Session
@@ -432,20 +427,12 @@ _SKILL_TURBO_SKIP_EVENT_TYPES: frozenset[str] = frozenset({
     "node.finished",
 })
 
-# ── SkillTurbo 内部任务事件类型 ──
-# task.update 会覆盖前端唯一的 taskProgress 槽位，导致外层 DeepAgent 的 todo 列表
-# 被替换为 PPT 内部步骤；task.start/task.complete 驱动前端的 taskStack 决定
-# chat.* 事件的 segment 归属。当外层有活跃 todo 时需要特殊处理这三类事件。
+# 内部阶段仅供执行与恢复使用，不作为外层助手的独立任务行展示。
 _SKILL_TURBO_TASK_EVENT_TYPES: frozenset[str] = frozenset({
     "task.start",
     "task.complete",
     "task.update",
 })
-
-# 仅 task.update 可带外推送：它是全量 taskProgress 快照，后到 FIFO 覆盖先到，幂等。
-# task.start/task.complete 驱动前端 taskStack，必须与 chat.* 保持 FIFO 顺序；
-# 带外抢先 complete 会导致迟到的思考/工具调用丢 segment（见外层 todo 注释）。
-_SKILL_TURBO_OOB_TASK_EVENT_TYPES: frozenset[str] = frozenset({"task.update"})
 
 
 def _without_inner_task_routing(payload: dict[str, Any]) -> dict[str, Any]:
@@ -458,61 +445,6 @@ def _without_inner_task_routing(payload: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def _task_ids_from_snapshot(payload: Any) -> set[str]:
-    """从 task.update 快照提取任务集 task_id 集（槽位登记簿的观测值）。"""
-    if not isinstance(payload, dict):
-        return set()
-    tasks = payload.get("tasks")
-    if not isinstance(tasks, list):
-        return set()
-    return {
-        str(t.get("task_id")).strip()
-        for t in tasks
-        if isinstance(t, dict) and str(t.get("task_id") or "").strip()
-    }
-
-
-def _is_terminal_task_snapshot(payload: Any) -> bool:
-    """终态快照判定：tasks 非空且全部状态落在 {completed, failed}。
-
-    依据 tasks 列表逐项 status，不依赖计数字段（in_progress_tasks 等）——
-    事件构造方（executor）虽有计数，但以逐项判定为唯一口径可容忍缺计数的
-    快照来源。空列表不算终态：无内容可关账。
-    """
-    if not isinstance(payload, dict):
-        return False
-    tasks = payload.get("tasks")
-    if not isinstance(tasks, list) or not tasks:
-        return False
-    statuses: set[str] = set()
-    for t in tasks:
-        if not isinstance(t, dict):
-            return False
-        statuses.add(str(t.get("status") or "").strip())
-    return bool(statuses) and statuses.issubset({"completed", "failed"})
-
-
-def _parent_session_slot_key(parent_session: Any) -> str:
-    """槽位登记簿键：外层父会话 session_id。
-
-    与外层 rail 侧（task_execution_rail._emit_task_update_event 的
-    session.get_session_id()）同一 session 对象、同一 id 口径——两侧键不对齐
-    则外层夺回时的注销永远打不中。
-    """
-    if parent_session is None:
-        return ""
-    getter = getattr(parent_session, "get_session_id", None)
-    sid = ""
-    if callable(getter):
-        try:
-            sid = str(getter() or "").strip()
-        except Exception:
-            sid = ""
-    if not sid:
-        sid = str(getattr(parent_session, "session_id", "") or "").strip()
-    return sid
-
-
 def _prepare_parent_stream_output(
     event_type: str, payload: dict[str, Any]
 ) -> tuple[str, dict[str, Any]]:
@@ -523,142 +455,6 @@ def _prepare_parent_stream_output(
         cleaned.pop("task_id", None)
         return "content_chunk", cleaned
     return _SKILL_TURBO_EVENT_TYPE_TO_OUTPUT_TYPE.get(event_type, event_type), payload
-
-
-async def _push_task_event_out_of_band(
-    event_type: str,
-    payload: dict[str, Any],
-    *,
-    request_id: str,
-    channel_id: str,
-    session_id: str,
-) -> None:
-    """Bypass the parent stream FIFO for task.update snapshots only.
-
-    ``chat.file`` already uses PushRegistry, so PPT can appear while
-    ``write_stream`` is still draining thousands of page-gen deltas. The
-    right-hand task list is driven by ``task.update`` snapshots that used
-    only that FIFO, leaving Stage 11 in_progress after delivery. Later FIFO
-    ``task.update`` snapshots remain idempotent. ``task.start`` /
-    ``task.complete`` stay on the FIFO so they keep pace with ``chat.*``.
-    """
-    if event_type not in _SKILL_TURBO_OOB_TASK_EVENT_TYPES:
-        return
-    if not request_id or not channel_id or not session_id:
-        logger.debug(
-            "[SkillTurboTool] skip send_push %s: missing ids request_id=%s "
-            "channel_id=%s session_id=%s",
-            event_type,
-            bool(request_id),
-            bool(channel_id),
-            bool(session_id),
-        )
-        return
-    try:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        server = AgentWebSocketServer.get_instance()
-    except Exception:
-        logger.debug(
-            "[SkillTurboTool] skip send_push %s: AgentWebSocketServer unavailable",
-            event_type,
-            exc_info=True,
-        )
-        return
-
-    push_payload = dict(payload)
-    push_payload.setdefault("event_type", event_type)
-    msg = {
-        "request_id": request_id,
-        "channel_id": channel_id,
-        "session_id": session_id,
-        "payload": push_payload,
-        "is_complete": False,
-    }
-    try:
-        delivered = await server.send_push(msg)
-        logger.info(
-            "[SkillTurboTool] send_push %s delivered=%s request_id=%s session_id=%s",
-            event_type,
-            delivered,
-            request_id,
-            session_id,
-        )
-    except Exception:
-        logger.warning(
-            "[SkillTurboTool] send_push %s failed request_id=%s",
-            event_type,
-            request_id,
-            exc_info=True,
-        )
-
-
-async def _settle_leaked_task_slot(
-    parent_session: Any,
-    request_id: Any,
-    channel_id: Any,
-    external_session_id: Any,
-    last_task_update: Any,
-) -> None:
-    """B_03：skip 入口终止性出口的槽位清算。
-
-    入口 gate 误判 forwarded 的竞态会让 turbo 任务集顶掉前端唯一的
-    taskProgress 槽位；若该轮终态前被打断（HITL），续跑入口判 skip，
-    终态快照被抑制——槽位永驻 in_progress。本函数在**终止性出口**
-    （成功 / 未处理 / 普通异常；AbortError 暂停除外，暂停后任务集还要续跑）
-    检查登记簿（task_slot_guard）：有未闭合占用且本入口缓存到终态快照时
-    补发关账。
-
-    只放行 task.update 全量快照（幂等、后到覆盖先到、可 OOB）；task.start /
-    task.complete 仍禁——skip 语义下放行它们会破坏 chat.* 归段（taskStack
-    嵌套 / segment 分裂，正是 skip 机制要防的）。FIFO 写失败保留登记，
-    下次终止性出口重试；写成功后 OOB 尽力直推（右侧任务列表由 OOB 驱动）。
-    """
-    if parent_session is None or not isinstance(last_task_update, dict):
-        return
-    if not _is_terminal_task_snapshot(last_task_update):
-        # 非终态快照关不了账（流中途异常等）；登记保留，待后续运行治愈。
-        return
-    slot_key = _parent_session_slot_key(parent_session)
-    if not slot_key:
-        return
-    leaked_ids = peek_leaked_task_slot(slot_key)
-    if leaked_ids is None:
-        return
-    from openjiuwen.core.session.stream.base import OutputSchema
-
-    payload = dict(last_task_update)
-    output_type, mapped = _prepare_parent_stream_output("task.update", payload)
-    try:
-        await parent_session.write_stream(
-            OutputSchema(type=output_type, index=0, payload=mapped)
-        )
-    except Exception:
-        logger.warning(
-            "[SkillTurboTool] leaked slot settle write_stream failed "
-            "session=%s leaked_ids=%s",
-            slot_key,
-            sorted(leaked_ids),
-            exc_info=True,
-        )
-        return
-    release_task_slot(slot_key)
-    logger.info(
-        "[SkillTurboTool] settled leaked task slot: session=%s "
-        "leaked_ids=%s settled_tasks=%d",
-        slot_key,
-        sorted(leaked_ids),
-        len(payload.get("tasks") or []),
-    )
-    await _push_task_event_out_of_band(
-        "task.update",
-        mapped,
-        request_id=str(request_id or ""),
-        channel_id=str(channel_id or ""),
-        session_id=_resolve_skill_turbo_resume_session_id(
-            external_session_id, parent_session
-        ),
-    )
 
 
 # ── ContextVar：在 before_tool_call 中注入，供工具函数读取 ──
@@ -1356,7 +1152,8 @@ def _wrap_segment_result(result, holder):
 
 
 async def _invoke_segment_tool(*, adapter, skill, accelerator, params, inputs, parent_session,
-                               request_id, channel_id, external_session_id, outer_task_id, has_outer_todo, accelerators=None):
+                               request_id, channel_id, external_session_id, outer_task_id,
+                               accelerators=None, auto_batch=None):
     from openjiuwen.core.session.agent import create_agent_session
     from openjiuwen.core.session.stream.base import OutputSchema
     from jiuwenswarm.server.runtime.skill_turbo.agent import SkillTurbo
@@ -1366,8 +1163,9 @@ async def _invoke_segment_tool(*, adapter, skill, accelerator, params, inputs, p
     from jiuwenswarm.server.runtime.skill_turbo.segment_execution import _result
 
     from functools import partial
+    use_auto_batch = auto_batch is not False and bool(accelerator)
     mode_result = partial(_result, skill, accelerator)
-    if accelerators is not None:
+    if accelerators is not None or use_auto_batch:
         from jiuwenswarm.server.runtime.skill_turbo.batch import _result as batch_result
         mode_result = partial(batch_result, skill)
 
@@ -1381,7 +1179,6 @@ async def _invoke_segment_tool(*, adapter, skill, accelerator, params, inputs, p
     answers = get_skill_turbo_resume_answers()
     resume_ctx = None
     instance = None
-    suppressed = None
     try:
         if answers is not None:
             resume_ctx = await manager.load()
@@ -1399,9 +1196,13 @@ async def _invoke_segment_tool(*, adapter, skill, accelerator, params, inputs, p
                 await manager.clear_matching(resume_ctx)
                 return mode_result('failed', error=f'resume_model_unavailable: {exc}')
         config = adapter.build_skill_turbo_config()
+        if auto_batch is None:
+            use_auto_batch = use_auto_batch and config.get('skill_turbo', config).get('batch_enabled', True) is True
         instance = SkillTurbo(config)
-        method = instance.run_batch_stream if accelerators is not None else instance.run_accelerator_stream
+        method = instance.run_batch_stream if accelerators is not None or use_auto_batch else instance.run_accelerator_stream
         selection = {'accelerators': accelerators} if accelerators is not None else {'accelerator': accelerator}
+        if use_auto_batch:
+            selection = {'accelerator': accelerator, 'auto_batch': True}
         stream = method(
             skill=skill, **selection, params=params, inputs=inputs, session=session,
             request_id=request_id, channel_id=channel_id, task_id=outer_task_id,
@@ -1415,12 +1216,9 @@ async def _invoke_segment_tool(*, adapter, skill, accelerator, params, inputs, p
             event_type = payload.get('event_type', 'unknown')
             if event_type in _SKILL_TURBO_SKIP_EVENT_TYPES or event_type == 'chat.error':
                 continue
-            if has_outer_todo and event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
-                if event_type == 'task.update':
-                    suppressed = dict(payload)
+            if event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
                 continue
-            if has_outer_todo:
-                payload = _without_inner_task_routing(payload)
+            payload = _without_inner_task_routing(payload)
             if parent_session is None:
                 continue
             payload = {**payload, 'turbo_context': {
@@ -1430,16 +1228,6 @@ async def _invoke_segment_tool(*, adapter, skill, accelerator, params, inputs, p
             }}
             output_type, forwarded = _prepare_parent_stream_output(event_type, payload)
             await parent_session.write_stream(OutputSchema(type=output_type, index=0, payload=forwarded))
-            if event_type == 'task.update':
-                slot_key = _parent_session_slot_key(parent_session)
-                if _is_terminal_task_snapshot(payload):
-                    release_task_slot(slot_key)
-                else:
-                    claim_task_slot(slot_key, _task_ids_from_snapshot(payload))
-            if event_type in _SKILL_TURBO_OOB_TASK_EVENT_TYPES:
-                await _push_task_event_out_of_band(event_type, forwarded, request_id=str(request_id or ''),
-                                                  channel_id=str(channel_id or ''), session_id=sid)
-        await _settle_leaked_task_slot(parent_session, request_id, channel_id, external_session_id, suppressed)
         result = instance.segment_result()
         return _wrap_segment_result(result, instance._executor.node_artifacts)
     except AbortError as exc:
@@ -1462,6 +1250,7 @@ async def _invoke_segment_tool(*, adapter, skill, accelerator, params, inputs, p
 async def skill_turbo(
     query: str, fresh_start: bool = False, skill: str = '', accelerator: str = '',
     params: dict[str, Any] | None = None, accelerators: list[dict[str, Any]] | None = None,
+    auto_batch: bool | None = None,
 ) -> dict[str, Any] | str:
     """执行 SkillAccelerationExec 任务。
 
@@ -1470,14 +1259,20 @@ async def skill_turbo(
         fresh_start: 仅legacy整流程的全新任务确认。段/批次忽略此参数，不换任务、目录或清状态。仅legacy中用户明确要求与已有产物无关的新任务时才设为
             true（将丢弃旧产物记录并从头执行）；默认 false。若调用被拒绝并提示"存在已完成节点产物"，
             继续旧任务应改用 skill_tool，不要靠本参数重试。
-        skill: 精确技能名；与 accelerator 执行单段，或与 accelerators 执行批次。
-        accelerator: 精确阶段 id；__full__ 执行指定技能整流程。
-        params: 单段参数；批次中为各段均须合法的共享参数。
+        skill: 精确技能名；与 accelerator 指定起始段，或与 accelerators 执行显式批次。
+        accelerator: 精确起始阶段 id；省略执行模式时默认沿声明组批。__full__ 保持指定技能整流程。
+        params: 单段或自动组批的起始段参数；显式 accelerators 批次中为各段均须合法的共享参数。
         accelerators: 同技能1至8段串行列表，元素仅含id、params、严格布尔force；与accelerator互斥。
+        auto_batch: 省略或null按调用形式选择，普通起始段默认沿batch.auto_next组批；true明确组批，与accelerators及__full__冲突；false只执行指定单段。后续步骤及输入获取方式已经明确时，优先一次调用多个阶段。用户限定执行范围、要求中间检查或需要根据结果决定后续步骤时，在对应边界停止；「先做某一步」也可能限定范围。自动组批params只给起始段，链尾返回外层检查。
     """
     from jiuwenswarm.server.runtime.skill_turbo.segment_execution import _result
 
     clear_pending_ppt_delivery_summary()
+    if (auto_batch is not None and type(auto_batch) is not bool) or (auto_batch is True and (
+        not skill or not accelerator or accelerator == '__full__' or accelerators is not None
+    )):
+        from jiuwenswarm.server.runtime.skill_turbo.batch import _result as batch_result
+        return batch_result(skill, 'invalid_args', error='invalid_auto_batch_mode')
     if accelerators is not None and (not skill or accelerator or not isinstance(accelerators, list) or not accelerators):
         from jiuwenswarm.server.runtime.skill_turbo.batch import _result as batch_result
         return batch_result(skill, 'invalid_args', error='invalid_batch_execution_mode')
@@ -1486,6 +1281,7 @@ async def skill_turbo(
     )):
         return _result(skill, accelerator, 'invalid_args', error='invalid_execution_mode')
     ordinary_segment = bool(skill and accelerator != '__full__')
+    auto_start = auto_batch is not False and bool(accelerator)
     # ── [TEMP-TEMPLATE-BYPASS] 模板请求拦截（临时措施，待 skill 加速器适配模板功能后删除整块）──
     # 拦截任何携带自定义模板路径的请求：前端选择自定义模板时会注入"模板目录路径/模板主文件路径"
     # 字段；LLM 引用历史中生成/上传的模板时会以自然语言包装路径（如"模板目录：D:\..."）。
@@ -1503,7 +1299,7 @@ async def skill_turbo(
         r"(?:[A-Za-z]:[\\/]|/|~/|\.{0,2}/)"
     )
     template_keywords = ("模板目录路径", "模板主文件路径", "pack_dir")
-    if not ordinary_segment and is_ppt_query and (template_path_pattern.search(query) or any(
+    if (not ordinary_segment or auto_start) and is_ppt_query and (template_path_pattern.search(query) or any(
         kw in query for kw in template_keywords
     )):
         logger.info(
@@ -1532,7 +1328,7 @@ async def skill_turbo(
     # user message）。两层引用同一份关键词（region_edit.py），叠加降低误进概率。
     # 删除方式：待 pptx-craft 流水线支持"编辑已有 PPT"短路分支后，搜索 [REGION-EDIT-BYPASS] 删除本块。
     from jiuwenswarm.server.runtime.skill_turbo.region_edit import REGION_EDIT_KEYWORDS
-    if not ordinary_segment and is_ppt_query and any(kw in query for kw in REGION_EDIT_KEYWORDS):
+    if (not ordinary_segment or auto_start) and is_ppt_query and any(kw in query for kw in REGION_EDIT_KEYWORDS):
         logger.info(
             "[SkillTurboTool] 检测到 PPT 选区/编辑已有 PPT 请求，跳过 skill 加速器，"
             "建议改用 skill_tool 走 pptx-craft 标准流程或直接编辑已有 PPT 文件"
@@ -1567,36 +1363,13 @@ async def skill_turbo(
 
     parent_session: Session | None = get_subagent_parent_session()
 
-    # 检查外层 DeepAgent 是否有活跃的 todo 步骤（task_execution_rail 在 task.start 时
-    # 设置 _ACTIVE_TASK_ID，task.complete 时清除）。用运行时 ContextVar 而非读取
-    # todo.json，避免上一轮异常中止残留旧 todo 导致误判。
-    # 有活跃 todo 时：跳过 PPT 内部的 task.* 事件（task.update 覆盖外层 todo 槽位，
-    # task.start/task.complete 导致前端 taskStack 嵌套、segment 分裂），让 PPT 的
-    # chat.* 事件自然归到外层 todo 步骤的 segment 下渲染。
-    # 无活跃 todo 时：PPT 的 task 事件正常转发，独立展示步骤列表。
+    # 所有技能统一隐藏内部阶段；工作内容仍归入外层 todo 或未分组区域。
     outer_task_id = get_current_task_id()
-    rebound_outer_todo = get_skill_turbo_outer_todo_active()
-    has_outer_todo = (
-        rebound_outer_todo
-        if rebound_outer_todo is not None
-        else outer_task_id is not None
-    )
     logger.info(
-        "[SkillTurboTool] outer todo active=%s rebound=%s outer_task_id=%s "
-        "parent_session=%s, "
-        "task events will be %s",
-        has_outer_todo,
-        rebound_outer_todo,
+        "[SkillTurboTool] 内部阶段事件不向外转发 outer_task_id=%s parent_session=%s",
         outer_task_id,
         type(parent_session).__name__ if parent_session is not None else None,
-        "skipped" if has_outer_todo else "forwarded as-is",
     )
-
-    # B_03 槽位登记簿键 + skip 抑制快照缓存：转发分支放行 task.update 时按此键
-    # 登记"槽位被本任务集占用"；skip 分支被抑制的 task.update 缓存最后一条，
-    # 终止性出口（_settle_leaked_task_slot）用它关账。
-    slot_key = _parent_session_slot_key(parent_session)
-    last_suppressed_task_update: dict[str, Any] | None = None
 
     # metadata：通过 ContextVar 读取（_update_runtime_config 中设置，无并发覆盖风险）
     request_metadata = get_current_request_metadata()
@@ -1662,7 +1435,7 @@ async def skill_turbo(
             adapter=adapter, skill=skill, accelerator=accelerator, params=params, inputs=inputs,
             parent_session=parent_session, request_id=request_id, channel_id=channel_id,
             external_session_id=external_session_id, outer_task_id=outer_task_id,
-            has_outer_todo=has_outer_todo, accelerators=accelerators,
+            accelerators=accelerators, auto_batch=auto_batch,
         )
 
     turbo_session = None
@@ -1836,27 +1609,10 @@ async def skill_turbo(
             if event_type in _SKILL_TURBO_SKIP_EVENT_TYPES:
                 continue
 
-            # 外层有活跃 todo 时，跳过 PPT 内部的全部 task 事件：
-            # - task.update：会整体替换前端唯一的 taskProgress 槽位，覆盖外层 todo
-            # - task.start/task.complete：外层 task_execution_rail 已为当前 todo 步骤
-            #   发了 task.start（task_id="todo:uuid"），PPT 再发 task.start（task_id="task_xxx"）
-            #   会导致前端 taskStack 嵌套，chat.* 事件被盖戳 PPT 的 task_xxx，归到独立 segment。
-            #   而该 segment 的 taskId 与外层 todo 不匹配，被 resolveSegmentForRow 丢弃，
-            #   PPT 的思考/工具调用全部不显示。跳过后 chat.* 归到外层 todo 的 segment，正常渲染。
-            if has_outer_todo and event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
-                # B_03：被抑制的 task.update 仍需缓存最后一条——本入口跑到
-                # 终止性出口时若登记簿显示槽位被本引擎任务集占用未闭合，
-                # 由 _settle_leaked_task_slot 用它补发关账。
-                if event_type == "task.update" and isinstance(chunk.payload, dict):
-                    last_suppressed_task_update = dict(chunk.payload)
+            if event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
                 continue
 
-            payload = chunk.payload
-            if has_outer_todo and isinstance(payload, dict):
-                # Internal task ids are meaningful to SkillTurbo itself, but
-                # become untitled task rows in the parent UI.  The original
-                # chunk remains untouched for execution/resume diagnostics.
-                payload = _without_inner_task_routing(payload)
+            payload = _without_inner_task_routing(chunk.payload)
 
             # 转发 chunk 到父会话 stream（前端实时可见）
             if parent_session is not None:
@@ -1873,28 +1629,6 @@ async def skill_turbo(
                 )
                 try:
                     await parent_session.write_stream(output)
-                    if event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
-                        tasks = chunk.payload.get("tasks") if isinstance(chunk.payload, dict) else None
-                        n_tasks = len(tasks) if isinstance(tasks, list) else 0
-                        logger.info(
-                            "[SkillTurboTool] forwarded %s via write_stream "
-                            "output_type=%s tasks=%s parent_session=%s",
-                            event_type,
-                            output_type,
-                            n_tasks,
-                            type(parent_session).__name__,
-                        )
-                        if event_type == "task.update" and slot_key:
-                            # B_03 槽位登记：转发分支放行快照 = 槽位被本任务集
-                            # 占用；终态快照（全 completed/failed）= 任务集自然
-                            # 闭合，即行注销（后续 skip 入口不误清算）。
-                            if _is_terminal_task_snapshot(chunk.payload):
-                                release_task_slot(slot_key)
-                            else:
-                                claim_task_slot(
-                                    slot_key,
-                                    _task_ids_from_snapshot(chunk.payload),
-                                )
                 except Exception:
                     logger.warning(
                         "[SkillTurboTool] write_stream failed for event_type=%s",
@@ -1902,33 +1636,6 @@ async def skill_turbo(
                         exc_info=True,
                     )
                     continue
-                if event_type in _SKILL_TURBO_OOB_TASK_EVENT_TYPES:
-                    await _push_task_event_out_of_band(
-                        event_type,
-                        payload,
-                        request_id=str(request_id or ""),
-                        channel_id=str(channel_id or ""),
-                        session_id=_resolve_skill_turbo_resume_session_id(
-                            external_session_id, parent_session
-                        ),
-                    )
-            elif event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
-                logger.warning(
-                    "[SkillTurboTool] drop %s: parent_session is None "
-                    "(task list will not reach frontend)",
-                    event_type,
-                )
-
-        # B_03：终止性出口清算——skip 抑制掉的终态快照若对应未闭合的槽位
-        # 占用（首入口误判 forwarded 的竞态遗留），在此补发关账。AbortError
-        # 暂停不清算（见 except 分支）：任务集还要续跑，关账等于谎报终态。
-        await _settle_leaked_task_slot(
-            parent_session,
-            request_id,
-            channel_id,
-            external_session_id,
-            last_suppressed_task_update,
-        )
 
         # 过程输出已通过 write_stream 实时推给前端。交付失败时不得返回 success，
         # 否则外层 LLM / 前端会把「任务已完成」当成 PPT 已生成。
@@ -1970,29 +1677,12 @@ async def skill_turbo(
     except SkillTurboNotHandled as exc:
         logger.info("[SkillTurboTool] SkillTurbo 未处理: %s", exc)
         release_checkpoint = True
-        # 终止性出口（B_03）：清算逻辑自守——无登记 / 无终态快照均静默
-        await _settle_leaked_task_slot(
-            parent_session,
-            request_id,
-            channel_id,
-            external_session_id,
-            last_suppressed_task_update,
-        )
         return _wrap_skill_turbo_result(
             {"success": False, "error": f"SkillAccelerationExec 未处理: {exc}"},
             artifact_holder=skill_turbo_inst.artifact_holder,
         )
     except Exception as exc:
         logger.warning("[SkillTurboTool] 执行失败: %s", exc, exc_info=True)
-        # 终止性出口（B_03）：executor 异常分支已 flush task 事件（S_08 约束 6），
-        # 缓存快照可能已带 failed 终态——仍尝试关账；非终态则登记保留
-        await _settle_leaked_task_slot(
-            parent_session,
-            request_id,
-            channel_id,
-            external_session_id,
-            last_suppressed_task_update,
-        )
         return _wrap_skill_turbo_result(
             {"success": False, "error": f"执行失败: {exc}"},
             artifact_holder=skill_turbo_inst.artifact_holder,

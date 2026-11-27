@@ -104,6 +104,7 @@ class SkillAcceleratorRail(SkillTurboPromptRail):
                     schema = getattr(local, 'input_params', None)
                 if isinstance(schema, dict) and not self.config.get('batch_enabled', True):
                     schema.get('properties', {}).pop('accelerators', None)
+                    schema.get('properties', {}).pop('auto_batch', None)
                 local.description = (('当前内部支持：' if language == 'cn' else 'Currently supported: ') + '、'.join(sorted(snapshot.entries)) + '\n' + guide + '\n' + index) if guide else 'No visible accelerators.'
                 tools[i] = local
         if guide:

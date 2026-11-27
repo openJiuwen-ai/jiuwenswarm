@@ -128,6 +128,7 @@ class Hitl(DeclarationModel):
 class Batch(DeclarationModel):
     standalone: bool = True
     stop_after: Literal["review_checkpoint", "never"] = "review_checkpoint"
+    auto_next: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,31}$")
 
 
 class Cost(DeclarationModel):
@@ -249,6 +250,11 @@ def _parse_manifest(raw: Any, *, skill: str, skill_name: str, code_dir: Path | N
     coverage: dict[tuple[str, str], str] = {}
     fatal: list[str] = []
     for spec in enabled.values():
+        if spec.batch.auto_next is not None:
+            successor = enabled.get(spec.batch.auto_next)
+            if (successor is None or successor.order <= spec.order
+                    or not spec.batch.standalone or not successor.batch.standalone):
+                fatal.append(f"{spec.id}: auto_next须指向同技能启用、顺序更大且非独占的段")
         for kind, values in (("stage", spec.covers.stages + spec.covers.optional_stages), ("step", spec.covers.steps)):
             for value in set(values):
                 owner = coverage.setdefault((kind, value), spec.id)
