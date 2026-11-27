@@ -12,12 +12,23 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from openjiuwen.core.sys_operation.cwd import _cwd_state, init_cwd
 
 from jiuwenswarm.agents.harness.common.tools.archive_tools import (
     _format_size,
     extract_archive,
     inspect_archive,
 )
+
+
+@pytest.fixture(autouse=True)
+def archive_workspace(tmp_path: Path):
+    token = _cwd_state.set(None)
+    try:
+        init_cwd(str(tmp_path), workspace=str(tmp_path))
+        yield
+    finally:
+        _cwd_state.reset(token)
 
 
 def _create_sample_zip(tmp_path: Path) -> Path:

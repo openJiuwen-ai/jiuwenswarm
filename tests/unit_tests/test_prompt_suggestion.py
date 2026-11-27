@@ -1148,18 +1148,20 @@ async def test_suggestion_reaches_the_pages_open_on_its_session_only(product) ->
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.on_message(lambda _msg: None)
     on_session, elsewhere = _Browser(), _Browser()
-    for browser, session_id in ((on_session, SESSION), (elsewhere, "web_other_session")):
-        await getattr(channel, "_handle_raw_message")(browser, json.dumps({
-            "type": "req", "id": f"open-{session_id}", "method": "chat.send",
-            "params": {"session_id": session_id, "content": "你好"},
-        }), {})
-    _completed("req-1")
-
-    await prompt_suggestion.deliver(channel, product.store, SESSION, "req-1",
-                                         {"suggestion_id": "s-1", "text": "导出成双语对照"})
-    for _ in range(20):
-        await asyncio.sleep(0)
-
+    async with contextlib.AsyncExitStack() as connections:
+        for browser, session_id in ((on_session, SESSION), (elsewhere, "web_other_session")):
+            await channel.register_ws(browser, None)
+            connections.push_async_callback(channel.unregister_ws, browser)
+            await getattr(channel, "_handle_raw_message")(browser, json.dumps({
+                "type": "req", "id": f"open-{session_id}", "method": "chat.send",
+                "params": {"session_id": session_id, "content": "你好"},
+            }), {})
+        _completed("req-1")
+        await prompt_suggestion.deliver(
+            channel, product.store, SESSION, "req-1",
+            {"suggestion_id": "s-1", "text": "导出成双语对照"},
+        )
+    # Unregistering flushes both writers before checking what reached each page.
     shown = [frame["payload"] for frame in on_session.frames if frame.get("event") == "prompt_suggestion.ready"]
     assert [{key: payload[key] for key in ("session_id", "request_id", "suggestion_id", "text")} for payload in shown] == [
         {"session_id": SESSION, "request_id": "req-1", "suggestion_id": "s-1", "text": "导出成双语对照"},

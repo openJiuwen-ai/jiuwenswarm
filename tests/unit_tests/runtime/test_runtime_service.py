@@ -4775,6 +4775,14 @@ async def test_agent_server_stop_replaces_runtime_after_closed_cleanup_error(
     assert server.get_runtime().agent_manager is server.get_agent_manager()
 
 
+@pytest.fixture
+def stub_bundled_memory_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.server.runtime import managed_memory_http
+
+    monkeypatch.setattr(managed_memory_http, "start_bundled_memory_http", lambda: None)
+
+
+@pytest.mark.usefixtures("stub_bundled_memory_http")
 @pytest.mark.asyncio
 async def test_agent_server_stop_joins_startup_before_closing_preparation(
     monkeypatch,
@@ -4800,7 +4808,6 @@ async def test_agent_server_stop_joins_startup_before_closing_preparation(
     server._bootstrap_internal_jiuwenbox = AsyncMock()
     await server.start()
     warmup = server._checkpointer_warmup_task
-    await asyncio.wait_for(entered.wait(), 1)
     preparation = server._preparation_registry
     close_preparation = preparation.close
 
@@ -4810,8 +4817,11 @@ async def test_agent_server_stop_joins_startup_before_closing_preparation(
         release.set()
         await asyncio.sleep(0)
 
-    monkeypatch.setattr(preparation, "close", close_and_release)
-    await server.stop()
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        monkeypatch.setattr(preparation, "close", close_and_release)
+    finally:
+        await server.stop()
 
     assert order == ["startup_finished", "preparation_closed"]
     assert warmup.cancelled()
@@ -4838,6 +4848,7 @@ async def test_agent_server_stop_retrieves_completed_startup_failure(caplog) -> 
     assert server._checkpointer_warmup_task is None
 
 
+@pytest.mark.usefixtures("stub_bundled_memory_http")
 @pytest.mark.asyncio
 async def test_agent_server_start_restores_remote_service_after_stop(
     monkeypatch,
