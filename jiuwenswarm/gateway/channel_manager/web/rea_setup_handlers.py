@@ -415,6 +415,7 @@ async def _verify_rea_mcp(workspace: str | None = None) -> dict[str, Any]:
         )
         tools = inventory["tools"]
         if not tools:
+            mark_rea_mcp_state("registered", workspace)
             return {"ok": False, "tool_count": 0, "error": "REA MCP returned no tools"}
         mark_rea_mcp_state("connected", workspace, tool_count=len(tools))
         return {
@@ -426,6 +427,7 @@ async def _verify_rea_mcp(workspace: str | None = None) -> dict[str, Any]:
             "error": None,
         }
     except Exception as exc:  # noqa: BLE001
+        mark_rea_mcp_state("registered", workspace)
         return {"ok": False, "tool_count": 0, "error": str(exc)}
 
 
@@ -679,6 +681,11 @@ def register_rea_setup_handlers(channel: Any) -> None:
             )
             if payload.get("ready"):
                 verification = await _verify_rea_mcp()
+                if not verification["ok"]:
+                    payload = await asyncio.to_thread(
+                        scan_rea_setup,
+                        include_enhanced=include_enhanced,
+                    )
                 if include_enhanced:
                     payload = await _attach_capability_cards(payload, verification)
                 else:
