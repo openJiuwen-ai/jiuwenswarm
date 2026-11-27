@@ -116,6 +116,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261117_2001_deferred-memory-failure](jiuwenswarm/agents/harness/common/rails/B_20261117_2001_deferred-memory-failure.md) | B | 延迟调用记忆工具时传播失败状态 | ToNy_St4rk | 无独立 D：修复 Issue 6151 中已有工具结果契约的状态传播，无独立设计。 |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-rsi"></a>
 
@@ -317,6 +318,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261126_2208_application-menu-slot-flicker](jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-instance_manager"></a>
 
@@ -428,6 +430,7 @@ generated: true
 | [B_20261121_1545_team-pause-teardown-admission-race](jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
 | [B_20261126_1052_team-memory-rail-race](jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
 | [B_20261127_1143_chat-reply-loss](jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 
@@ -446,6 +449,7 @@ generated: true
 | [B_20261123_1757_harmony-process-identity](jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
 | [B_20261126_0954_native-npc-team-first-turn](jiuwenswarm/server/runtime/session/B_20261126_0954_native-npc-team-first-turn.md) | B | 原生 NPC 队伍首轮发言失败 | kdgmpw | 无独立 D：修复现有原生 NPC Team 装配契约。 |
 | [B_20261127_1143_chat-reply-loss](jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 

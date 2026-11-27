@@ -25,13 +25,15 @@ from jiuwenswarm.server.runtime.session.session_statistics import SESSION_USAGE_
 logger = logging.getLogger(__name__)
 
 CONTEXT_USAGE_EVENT = "context.usage.updated"
+TEAM_LEADER_MODEL_USAGE_FIELD = "_team_leader_model_usage"
+MODEL_USAGE_COUNTERS = ("input_tokens", "output_tokens", "total_tokens", "cache_tokens")
 
 _PENDING: set[asyncio.Task] = set()
 
 
 @dataclass(frozen=True, slots=True)
 class ContextUsageUpdate:
-    """One finished chat round; values come from ``chat.usage_summary``."""
+    """Provider counters for one finished chat round."""
 
     session_id: str
     request_id: str
@@ -80,6 +82,7 @@ def notify_context_usage(
     project_root: str | None = None,
     model_info: Mapping[str, object] | None = None,
     context_usage: dict | None = None,
+    team_leader: bool = False,
 ) -> asyncio.Task | None:
     """Schedule usage with workspace facts captured at the host call boundary."""
 
@@ -106,17 +109,23 @@ def notify_context_usage(
     if isinstance(update.input_tokens, (int, float)) and update.input_tokens > 0:
         turn_usage["cache_tokens"] = update.cache_tokens
     try:
-        metadata[SESSION_USAGE_INFO_KEY] = build_usage_snapshot(
+        snapshot = build_usage_snapshot(
             update.session_id,
             context_usage=context_usage,
             turn_usage={
                 "request_id": update.request_id, "timestamp": time.time(),
                 "usage": turn_usage,
             },
+            team_leader=team_leader,
         )
+        if team_leader and (snapshot is None or snapshot["context"] is None):
+            return None
+        metadata[SESSION_USAGE_INFO_KEY] = snapshot
     except (TypeError, ValueError):
         # A malformed telemetry observation must not fail a completed chat.
         logger.debug("[ExtensionsV2] invalid usage observation", exc_info=True)
+        if team_leader:
+            return None
     context = SessionContext(
         session_id=update.session_id,
         cwd=cwd,
