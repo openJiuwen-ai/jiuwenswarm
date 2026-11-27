@@ -378,9 +378,7 @@ async def test_bundled_plugin_writes_and_recalls_across_active_sessions(tmp_path
                 writer = await open_session(session_id)
                 await writer._instance.invoke({"query": query, "conversation_id": session_id})
                 binding = writer.get_plugin_runtime_manager().bindings[plugin.MEMORY_PLUGIN_ID]
-                write_task = binding.runtime.resources[0]._sync_task
-                assert write_task is not None
-                await write_task
+                await binding.runtime.resources[0].drain_pending_syncs()
 
             if not model_url:
                 assert calls == [profile_marker, daily_marker]
