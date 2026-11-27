@@ -20,7 +20,27 @@
   border-radius: var(--radius-full);
   background: var(--color-text-inverse);
   box-shadow: var(--effect-shadow-sm);
-  transition: transform var(--duration-fast) var(--ease-out);
+  transition:
+    transform var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+.ui-switch--loading > span {
+  opacity: 0;
+}
+.ui-switch__spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 13px;
+  height: 13px;
+  margin: -6.5px 0 0 -6.5px;
+  color: var(--color-text-inverse);
+  animation: ui-switch-spin 1s linear infinite;
+}
+@keyframes ui-switch-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .ui-switch--checked {
   border-color: var(--color-action-primary);

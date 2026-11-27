@@ -666,7 +666,9 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   // already-installed agent toggles the switch, not a re-install (#6620).
   assert.match(section, /!onCommitAgent \|\| committing\[cliAgent\] \|\| installInFlight\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
   assert.match(section, /loading=\{installInFlight\[cliAgent\]\}/);
-  assert.doesNotMatch(section, /loading=\{committing\[cliAgent\]\}/);
+  // 卡片开关的 spinner 是保存在途反馈本身（#6823）：有意跟随卡片级 commit，
+  // 与一键安装按钮"只认 installInFlight"（上一行正向断言钉死）相区分。
+  assert.match(section, /loading=\{committing\[cliAgent\]\}/);
   // 未安装（探测缺失/无结果）时开关只能是禁用：显示 OFF 并锁死，启用必须先
   // 经一键安装就绪 SDK（!10678 检视）。已启用但 SDK 消失的 agent 同样锁定
   // 显示为禁用；持久化仍由手动检测的自动落闸或显式保存负责，自动探测不改写配置。
@@ -952,6 +954,48 @@ test('history fallback never promotes the builtin managed path into cli_path', a
     assert.equal(last[1].enabled, true, '重开应恢复启用');
     assert.equal(last[1].useBuiltin, false, '历史里仍有可用本地路径，不应回退内置 CLI');
     assert.equal(last[1].cliPath, '/local/claude', '托管路径必须被跳过，恢复真正的本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('the enable switch shows a loading spinner while the save is in flight (#6823)', async () => {
+  // #6823：保存往返（含启用前的探测校验）期间开关进入 loading 态，把"短暂
+  // 置灰"变成明确的"处理中"反馈；保存落定后 spinner 退场、开关恢复可点。
+  const saved = {
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+  };
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: 'ok',
+    path: path || '/local/claude',
+    reference_version: '0.171.0',
+  });
+  let releaseCommit;
+  const env = await mountCliSection(saved, onDetect, {
+    persistedValues: saved,
+    onCommitAgent: (agent, choice) => new Promise((resolve, reject) => {
+      releaseCommit = { resolve, reject };
+    }),
+  });
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    await env.click(toggle);
+    // 保存挂起期间：loading 类与 spinner 在位，开关锁定交互
+    const busy = document.querySelector(toggle);
+    assert.ok(busy, '开关应存在');
+    assert.ok(busy.className.includes('ui-switch--loading'), '保存期间应带 loading 类');
+    assert.ok(busy.querySelector('.ui-switch__spinner'), 'loading 期间应渲染 spinner');
+    assert.equal(busy.getAttribute('aria-busy'), 'true');
+    assert.equal(busy.disabled, true, '保存期间开关应锁定');
+    // 保存成功：loading 退场
+    await act(async () => { releaseCommit.resolve(); });
+    const settled = document.querySelector(toggle);
+    assert.ok(!settled.className.includes('ui-switch--loading'), '保存落定后 loading 类应移除');
+    assert.equal(settled.querySelector('.ui-switch__spinner'), null, '保存落定后 spinner 应卸载');
+    assert.equal(settled.getAttribute('aria-busy'), null);
   } finally {
     env.cleanup();
   }
