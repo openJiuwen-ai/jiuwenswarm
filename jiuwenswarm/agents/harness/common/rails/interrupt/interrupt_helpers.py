@@ -137,6 +137,35 @@ _SUBAGENT_PERMISSION_APPROVAL_TIMEOUT = 120.0
 # ACP keeps native session/request_permission JSON-RPC — do not hijack it.
 _HOSTED_PERMISSION_CHANNELS = frozenset({"web", "officeclaw", "tui"})
 
+# agent_shield 引擎侧 always_on_components 的封闭组件名集（engine.py
+# _COMPONENT_BY_NAME）；宿主侧只用于误配告警，真源在引擎。
+_ALWAYS_ON_COMPONENT_NAMES = frozenset({
+    "host_guard",
+    "file_guard",
+    "deletion_guard",
+    "high_risk_command",
+})
+
+_DISABLED_FLOOR_DEFAULT = ["host_guard"]
+
+
+def _normalize_disabled_always_on_floor(permission_config: dict[str, Any]) -> None:
+    """disabled 时把 always_on_components 归一到底线白名单（S_17 N1）。
+
+    构建期播种只存在于内存副本；_get_permissions_snapshot 的 effective 分支
+    在 persist 合并等刷新点被重新消费（agent-core _persist_allow_always 以快
+    照为 base_cfg 整体 update_config）——配置源缺键 / null / 非 list（误配
+    标量）时若不在此归一，构建期播种的底线会被无键快照冲掉，host_guard 静默
+    失效（检视意见 1）。显式 [] 是 list，不受影响，仍表示主动关闭底线。
+    归一静默执行（误配告警在构建期已出，此处不重复）；入参须为 deepcopy
+    副本，不得传入缓存共享引用。
+    """
+    if permission_config.get("enabled", False):
+        return
+    if isinstance(permission_config.get("always_on_components"), list):
+        return
+    permission_config["always_on_components"] = list(_DISABLED_FLOOR_DEFAULT)
+
 # web / tui 直接展示后端 options；其余 hosted 通道使用自定义权限卡按钮文案。
 _CUSTOM_OPTION_HINT_CHANNELS = _HOSTED_PERMISSION_CHANNELS - {"web", "tui"}
 
@@ -574,15 +603,19 @@ def build_permission_rail(
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
     Single factory for Deep/Code/Flash adapters and Team swarm members.
-    Returns ``None`` when permissions are disabled, or when construction fails
-    (warning + None — same fail-open assembly as pre-security-migration).
+    Built regardless of ``enabled``: the total switch is decided by the
+    agent_shield engine — when ``enabled`` is false only the components
+    listed in ``always_on_components`` (yaml template default
+    ``["host_guard"]``) still judge, everything else is allowed. Returns
+    ``None`` only when construction fails (warning + None — same fail-open
+    assembly as pre-security-migration).
 
     Args:
         config: Agent config dict containing permissions section
         options: Optional LLM / permission-body / workspace persist inputs.
 
     Returns:
-        PermissionInterruptRail instance, or None if disabled / create failed.
+        PermissionInterruptRail instance, or None if create failed.
     """
     opts = options or PermissionRailBuildOptions()
     llm = opts.llm
@@ -626,10 +659,56 @@ def build_permission_rail(
     )
 
     if not permission_config.get("enabled", False):
-        logger.info("[InterruptHelpers] Permission system is disabled, returning None")
-        return None
+        # 【设计契约，勿改回短路】总开关裁决下沉 agent_shield 引擎（S_17 N1）：
+        # enabled=false 时必须照常构建 rail 并发布 enabled:false +
+        # always_on_components，由引擎对白名单内组件（模板默认 host_guard）
+        # 继续判定、其余放行。禁止在此恢复"disabled 直接 return None"的旧短路——
+        # 那会让 security 完全不参与判定，hostguard（拦杀宿主进程等）随总开关
+        # 一起失效（历史缺陷，见 F_02）。宿主只负责透传配置，不做安全裁决。
+        always_on = permission_config.get("always_on_components")
+        if isinstance(always_on, list):
+            # 引擎对未知组件名静默跳过（_resolve_always_on_components）——拼写
+            # 错误会让底线悄悄收窄且无任何日志，宿主侧按封闭集告警（与引擎一致
+            # 先 strip 归一，避免 " host_guard " 被误报而引擎实际接受）。
+            unknown = [
+                str(name)
+                for name in always_on
+                if str(name).strip() not in _ALWAYS_ON_COMPONENT_NAMES
+            ]
+            if unknown:
+                logger.warning(
+                    "[InterruptHelpers] always_on_components contains unknown names %s "
+                    "(engine accepts: %s); unknown names are ignored by the engine",
+                    unknown,
+                    sorted(_ALWAYS_ON_COMPONENT_NAMES),
+                )
+        else:
+            # 【误配兜底（检视意见2）】缺键 / null / 非 list（YAML 误写成标量，
+            # 如少一个 "-"）统一回落模板默认 ["host_guard"]：引擎对非 list 会
+            # 静默置空，一个字符级误配就会重新打开"关审批即失守卫"缺口，且与
+            # 缺键分支的失效方向相反（缺键=兜底开启）。显式 [] 是 list，不走此
+            # 分支，仍表示主动关闭底线。
+            if always_on is not None:
+                logger.warning(
+                    "[InterruptHelpers] always_on_components must be a list, got %s; "
+                    "falling back to template default ['host_guard'] "
+                    "(engine would silently treat a scalar as empty)",
+                    type(always_on).__name__,
+                )
+            else:
+                logger.info(
+                    "[InterruptHelpers] always_on_components missing in disabled "
+                    "permissions config; seeded template default ['host_guard']"
+                )
+            permission_config["always_on_components"] = ["host_guard"]
+        logger.info(
+            "[InterruptHelpers] Permission system disabled; rail still built "
+            "(engine decides; always_on_components=%s)",
+            permission_config.get("always_on_components"),
+        )
 
-    # 权限系统启用即注册转发类 meta-tool 展开契约（幂等）：invoke_tool 等转发
+    # 权限 rail 一律注册转发类 meta-tool 展开契约（幂等，disabled 也注册——
+    # always_on 白名单组件的判定同样需要展开到内层真实调用）：invoke_tool 等转发
     # 器的外层判定展开到内层真实调用，堵住外层 defaults 放行携带内层命令穿透
     # 的绕过路径（issue #6499）。S_17 装配点契约的一部分。
     # 注册（含 agent_shield 依赖漂移导致的 ImportError）不冒泡——按 fail-open
@@ -994,7 +1073,13 @@ def build_permission_rail(
             # _update_permission_rail 与 persist 的 update_config 会刷新它）。
             if config_source == "agent_template":
                 return None
-            return get_effective_permissions_config()
+            # 检视意见 1：快照在 persist 合并（_persist_allow_always 以快照为
+            # base 整体 update_config）等刷新点被重新消费，effective 源缺键 /
+            # 误配时不归一，构建期播种的底线会被无键快照冲掉（引擎置空 → 全放
+            # 行）。与构建期同源兜底，保证两处看到的白名单一致。
+            snapshot = get_effective_permissions_config()
+            _normalize_disabled_always_on_floor(snapshot)
+            return snapshot
 
         host = ToolPermissionHost(
             get_permissions_snapshot=_get_permissions_snapshot,

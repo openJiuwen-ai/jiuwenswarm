@@ -1435,6 +1435,12 @@ permissions:
   enabled: false
   schema: tiered_policy
   permission_mode: normal
+  # 总开关关闭时仍参与判定的组件白名单（引擎顶层键，仅 host_guard / file_guard /
+  # deletion_guard / high_risk_command 四个名字有效）。enabled=false 时权限 rail
+  # 照常构建并发布本键，由 agent_shield 引擎裁决：白名单内组件继续拦截，其余放行。
+  # 必须出现在模板里，否则用户 override 的列表会在 merge 后被丢掉。
+  always_on_components:
+    - host_guard
   # 包内命令 builtin 规则开关；缺键时引擎默认开启。必须出现在模板里，
   # 用户 override 的 false 才会在 merge 后保留（模板无键会丢掉用户独有键）。
   package_builtin_rules: true

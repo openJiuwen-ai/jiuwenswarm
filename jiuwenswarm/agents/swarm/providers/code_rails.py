@@ -250,12 +250,12 @@ class _TeamPlanPermissionInterruptRail:
 @harness_element(
     kind=ElementKind.RAIL,
     name=PERMISSION_INTERRUPT,
-    description="Permission-interrupt rail; mounted only when permissions are enabled "
-    "in config.",
+    description="Permission-interrupt rail; always mounted — enabled 裁决下沉 "
+    "agent_shield 引擎（disabled 时仅 always_on_components 白名单判定）。",
     input_model=PermissionInterruptInput,
 )
 def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
-    """Build PermissionInterruptRail (None unless ``permissions.enabled`` in config).
+    """Build PermissionInterruptRail (built regardless of ``permissions.enabled``).
 
     Same ``build_permission_rail`` as Deep/Flash adapters; identity dims come
     from request metadata (personal → default; enterprise → triad / default).

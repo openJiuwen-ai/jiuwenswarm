@@ -60,3 +60,20 @@ def test_default_ttse_config_is_enabled():
     assert "trajectory_export_enabled" not in react["ttse"]
     assert "trajectory_export_path" not in react["ttse"]
     assert "ttse_consult" not in react["tool_lazy_load"]["eager_tools"]
+
+
+def test_default_permissions_always_on_components_in_all_templates():
+    """disabled 底线白名单必须写入全部模板：用户 override 的独有键会在
+    deep-merge 后被丢弃（_load_permissions_from_yaml），漏一份即静默失效。"""
+    repo_root = Path(__file__).resolve().parents[2]
+    config_files = [
+        repo_root / "jiuwenswarm" / "resources" / "config.yaml",
+        repo_root / "jiuwenswarm" / "resources" / "config.team.distributed.leader.yaml",
+        repo_root / "jiuwenswarm" / "resources" / "config.team.distributed.teammate.yaml",
+    ]
+
+    for config_file in config_files:
+        data = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        permissions = data["permissions"]
+
+        assert permissions["always_on_components"] == ["host_guard"]

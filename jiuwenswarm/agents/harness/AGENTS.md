@@ -373,9 +373,11 @@ builder 拒挂返回 None）、`WORKSPACE_QUOTA_ENABLED`（env，默认关）、
 无配置节（装配硬编码阈值），加配置 = 改契约 [[S_07]]。subagent 域的开关按优先级互斥取一：
 `enable_subagent_runtime`（runtime 模式）> `enable_async_subagent`（async session 模式）>
 同步 task_tool [[S_14]]；compat patch 装配失败时 `enable_subagent_runtime` 强制 False
-（降级链）[[S_12]]。中断交互域无独立实例级开关——权限 rail 由 permissions 配置的
-`enabled` 门控（agent 模板 body 与 `get_effective_permissions_config()` 双源二分，假即
-不装，见 [[S_17]] N1）；ask_user / confirm rail 装配即启用。事件流域的开关：
+（降级链）[[S_12]]。中断交互域无独立实例级开关——权限 rail 一律装配，
+`enabled` 不门控装配：总开关裁决下沉 agent_shield 引擎，disabled 时仅
+`always_on_components`（yaml 模板默认 `["host_guard"]`）白名单组件继续判定
+（agent 模板 body 与 `get_effective_permissions_config()` 双源二分不变，见
+[[S_17]] N1 / N23）；ask_user / confirm rail 装配即启用。事件流域的开关：
 `JIUWENCLAW_EARLY_CHECKPOINT`（env，默认开，0/false/no/off 关早 checkpoint）与
 `TOOL_RESULT_DISPLAY_MAX_CHARS`（env，默认 60000、上限 100000、0 不截断）归 [[S_21]]/
 [[S_20]]；发射本体装配即启用、无独立开关。

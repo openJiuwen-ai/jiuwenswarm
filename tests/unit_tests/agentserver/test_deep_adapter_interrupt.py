@@ -1397,3 +1397,71 @@ async def test_stream_consumer_cancellation_survives_permission_cleanup_error_an
 
     route_reset.assert_called_once()
     full_reset.assert_not_called()
+
+
+def test_update_permission_rail_builds_rail_when_disabled(monkeypatch) -> None:
+    """enabled=false 不再跳过建轨（S_17 N1）：disabled 配置照常建轨并发布，
+    always_on_components 底线随配置进入 agent_shield 引擎裁决。"""
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+        SkillAuthorizationPermissionRail,
+    )
+
+    disabled_config = {
+        "enabled": False,
+        "always_on_components": ["host_guard"],
+        "defaults": {"*": "allow"},
+    }
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = object()
+    adapter._permission_rail = None
+    adapter._skill_authorization_rail = None
+    adapter._agent_permissions_body = disabled_config
+    adapter._model = None
+    adapter._permission_workspace_dir = None
+    adapter._permission_routing = {}
+    adapter._resolve_permission_config_for_agent = lambda **_kwargs: disabled_config
+
+    built = SkillAuthorizationPermissionRail(config=dict(disabled_config))
+    monkeypatch.setattr(interface_deep, "build_permission_rail", lambda **_kwargs: built)
+
+    adapter._update_permission_rail({})
+
+    assert adapter._permission_rail is built
+    static_cfg = built._static_config
+    assert static_cfg.get("enabled") is False
+    assert static_cfg.get("always_on_components") == ["host_guard"]
+
+
+def test_update_permission_rail_disabled_rebuild_releases_stale_key(monkeypatch) -> None:
+    """disabled + key 变更场景：新轨（enabled=false）接管服务并注销旧 key，
+    建轨失败时回退旧轨（在途请求不撞已注销 key）。"""
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+        SkillAuthorizationPermissionRail,
+    )
+
+    disabled_config = {"enabled": False, "always_on_components": ["host_guard"]}
+    # 旧轨持不同 routing key（模拟池化 adapter 服务身份变更）→ 触发重建分支。
+    stale_rail = SkillAuthorizationPermissionRail(
+        config={"enabled": True}, permission_key="team:prev:bot:prev-user"
+    )
+    release = MagicMock()
+    monkeypatch.setattr(stale_rail, "_release_registration", release, raising=False)
+
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = object()
+    adapter._permission_rail = stale_rail
+    adapter._skill_authorization_rail = None
+    adapter._agent_permissions_body = disabled_config
+    adapter._model = None
+    adapter._permission_workspace_dir = None
+    adapter._permission_routing = {}
+    adapter._resolve_permission_config_for_agent = lambda **_kwargs: disabled_config
+
+    rebuilt = SkillAuthorizationPermissionRail(config=dict(disabled_config))
+    monkeypatch.setattr(interface_deep, "build_permission_rail", lambda **_kwargs: rebuilt)
+
+    adapter._update_permission_rail({})
+
+    assert adapter._permission_rail is rebuilt
+    release.assert_called_once()
+    assert rebuilt._static_config.get("always_on_components") == ["host_guard"]

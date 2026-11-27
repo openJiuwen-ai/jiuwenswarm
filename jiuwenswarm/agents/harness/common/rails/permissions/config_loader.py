@@ -821,8 +821,14 @@ def _persist_global_permissions_to_yaml(permissions: dict[str, Any]) -> None:
     section.pop(PERMISSIONS_AGENTS_KEY, None)
     # Preserve keys that deep-merge / sparse mutate often drop.
     # shell_allowlist: null/[] = disabled; missing key re-enables default-30.
+    # always_on_components: disabled 底线白名单，persist 抹掉 = 关闭权限后守卫静默失效。
     if isinstance(existing, dict):
-        for keep_key in ("shell_allowlist", "host_guard", "package_builtin_rules"):
+        for keep_key in (
+            "shell_allowlist",
+            "host_guard",
+            "package_builtin_rules",
+            "always_on_components",
+        ):
             if keep_key in existing and keep_key not in section:
                 section[keep_key] = copy.deepcopy(existing.get(keep_key))
     if agents_table is not None:
