@@ -4419,7 +4419,13 @@ function AppContent({
         forcedHistoryRefreshRef.current.add(targetSessionId);
       }
 
-      if (options?.canActivate && !options.canActivate()) return;
+      // 与上方元数据加载失败/会话缺失/team switch 失败路径保持同一释放纪律:
+      // 闸门在二次 canActivate 检查前已挂起,直接 return 会让该会话的实时事件
+      // 永久积压在闸门内(无上限、无淘汰),直到用户下次打开会话才一次性 flush。
+      if (options?.canActivate && !options.canActivate()) {
+        releasePendingSessionEvents(targetSessionId);
+        return;
+      }
       setHistoryLoadingMore(false);
       const existingRuntime = useChatStore.getState().getRuntime(targetSessionId);
       if (!existingRuntime) {

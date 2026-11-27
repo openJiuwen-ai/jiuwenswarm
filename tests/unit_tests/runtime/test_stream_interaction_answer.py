@@ -298,6 +298,7 @@ async def test_overlapping_moa_resume_matches_web_progress_contract(
 ) -> None:
     from agent_gateway.channel_manager.web.web_connect import WebChannel
     from agent_gateway.message_handler.message_handler import MessageHandler
+    from tests._support.null_session_login_bindings import NullSessionLoginBindings
     from jiuwenswarm.server.runtime.moa_progress import MoaProgress
     from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
 
@@ -347,7 +348,10 @@ async def test_overlapping_moa_resume_matches_web_progress_contract(
     harness.agent.process_message_stream = original
     harness.agent.deliver_control_input = delivered
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace(send_request_stream=send_request_stream))
+    handler = MessageHandler(
+        SimpleNamespace(send_request_stream=send_request_stream),
+        session_login_bindings=NullSessionLoginBindings(),
+    )
 
     def seed(request: AgentRequest) -> SimpleNamespace:
         rid = request.request_id

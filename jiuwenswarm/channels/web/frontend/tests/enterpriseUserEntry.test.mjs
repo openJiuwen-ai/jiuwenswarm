@@ -7,7 +7,23 @@ import { createRoot } from 'react-dom/client';
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
-await i18n.use(initReactI18next).init({ lng: 'en', resources: {}, interpolation: { escapeValue: false } });
+await i18n.use(initReactI18next).init({
+  lng: 'en',
+  resources: {
+    en: {
+      translation: {
+        enterpriseEntry: {
+          emptyTitle: 'No Agent Available',
+          emptyTitleNoTemplate: 'No Agent',
+          noContext: 'No Agent is available for this account. Please grant access in the Manager console first.',
+          noContextNoTemplate:
+            'No Agent is available for this account. Please ask your administrator to add Agent Templates in the Manager console.',
+        },
+      },
+    },
+  },
+  interpolation: { escapeValue: false },
+});
 await build({
   stdin: {
     contents:
@@ -96,12 +112,38 @@ test('Identity outage does not turn URL identity into a logged-in user', async (
   );
 });
 
-test('no authorized context shows an error rather than a never-ending chat spinner', async () => {
+test('no authorized context shows the original grant hint', async () => {
   await render(
     (url) => (url.endsWith('/agent-contexts') ? [200, { code: 200, data: { contexts: [] } }] : success(url)),
     () => {
       assert.equal(document.querySelector('[data-testid="probe"]'), null);
-      assert.match(document.querySelector('[data-testid="enterprise-entry-status"]').textContent, /noContext/);
+      assert.match(
+        document.querySelector('[data-testid="enterprise-entry-status"]').textContent,
+        /grant access in the Manager console/i,
+      );
+      assert.match(
+        document.querySelector('[data-testid="enterprise-entry-title"]').textContent,
+        /No Agent Available/i,
+      );
+    },
+  );
+});
+
+test('missing agent templates shows the add-template hint', async () => {
+  await render(
+    (url) => (url.endsWith('/agent-contexts')
+      ? [200, { code: 200, data: { contexts: [], empty_reason: 'no_agent_template' } }]
+      : success(url)),
+    () => {
+      assert.equal(document.querySelector('[data-testid="probe"]'), null);
+      assert.match(
+        document.querySelector('[data-testid="enterprise-entry-status"]').textContent,
+        /add Agent Templates/i,
+      );
+      assert.match(
+        document.querySelector('[data-testid="enterprise-entry-title"]').textContent,
+        /^No Agent$/i,
+      );
     },
   );
 });

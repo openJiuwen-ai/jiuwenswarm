@@ -77,7 +77,7 @@ def _login(monkeypatch, tokens: dict | None = None) -> list:
     tokens = {SESSION: "id-local"} if tokens is None else tokens
     seen: list = []
 
-    def fake_resolve(session_id=None, allow_refresh=True):
+    def fake_resolve(session_id=None, allow_refresh=True, *, service=None):
         seen.append((session_id, allow_refresh))
         if session_id not in tokens:
             raise ModelAuthRequired("请先登录后再使用该模型", "not_logged_in")

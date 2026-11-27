@@ -2054,6 +2054,55 @@ def _assert_agent_group_name_available(name: str) -> None:
             )
 
 
+def _assert_agent_template_name_available(
+    name: str, *, exclude_package_id: str = ""
+) -> None:
+    """Reject create/import/update when an installed expert shows the same display name.
+
+    Mirrors the agent_group rule above. Creation packages live under a
+    uuid-suffixed directory id that differs from the manifest name, so without
+    this check an exported package slips past the id-based conflict check on
+    reimport and installs a second expert under the same display name. The
+    message keeps the "already exists in ..." shape consumed by the frontend
+    duplicate-name mapping and by import error classification.
+
+    ``exclude_package_id`` skips the package being updated so keeping or
+    re-casing its own name never conflicts with itself.
+    """
+    normalized_name = name.strip().casefold()
+    if not normalized_name:
+        return
+    roots = (
+        ("resources", _iter_resource_package_dirs(_AGENT_TEMPLATE_KIND)),
+        ("built_in", _iter_local_package_dirs(_built_in_root(_AGENT_TEMPLATE_KIND))),
+        ("local", _iter_local_package_dirs(get_local_root(_AGENT_TEMPLATE_KIND))),
+    )
+    for label, package_dirs in roots:
+        for package_dir in package_dirs:
+            if exclude_package_id and package_dir.name == exclude_package_id:
+                continue
+            manifest = read_package_manifest(package_dir)
+            if manifest is None:
+                continue
+            # Expert directory ids may carry a uuid suffix, so a missing
+            # display_name falls back to the manifest name, not the directory.
+            raw_name = manifest.get("name")
+            fallback = (
+                raw_name
+                if isinstance(raw_name, str) and raw_name.strip()
+                else package_dir.name
+            )
+            display_names = _i18n(manifest.get("display_name"), fallback)
+            if any(
+                value.strip().casefold() == normalized_name
+                for value in display_names.values()
+            ):
+                raise ValueError(
+                    f"agent_template package already exists in {label}: "
+                    f"{name.strip()} (display name conflict with {package_dir.name})"
+                )
+
+
 def _package_id_claimed(kind: str, package_id: str) -> bool:
     """Report whether a local, built-in or shelf package owns this directory name.
 
@@ -4033,6 +4082,7 @@ def create_agent_template(params: dict) -> None:
         kind="agent_template",
         resources_root=_resources_root(_AGENT_TEMPLATE_KIND),
     )
+    _assert_agent_template_name_available(name)
 
     local_root = Path(extended_path(local_root))
     pkg_dir = local_root / package_id
@@ -4098,6 +4148,21 @@ def update_agent_template(params: dict) -> None:
         raise ValueError(
             f"only local packages can be edited: {package_id} (source={existing.get('source')!r})"
         )
+    # 判重只拦截改名：显示名与自身 manifest 现值一致（含仅大小写变化）时跳过
+    # 校验。存量同名数据（本判重不追溯）不应导致「仅改描述/技能」无法保存。
+    own_manifest = read_package_manifest(pkg_dir)
+    own_names: set[str] = set()
+    if own_manifest is not None:
+        raw_name = own_manifest.get("name")
+        fallback = (
+            raw_name if isinstance(raw_name, str) and raw_name.strip() else package_id
+        )
+        own_names = {
+            value.strip().casefold()
+            for value in _i18n(own_manifest.get("display_name"), fallback).values()
+        }
+    if name.strip().casefold() not in own_names:
+        _assert_agent_template_name_available(name, exclude_package_id=package_id)
 
     # Failures in the in-place rewrite propagate to the caller unchanged; there
     # is no partial state to clean up here (unlike create, which removes a
@@ -4586,6 +4651,13 @@ def _commit_imported_package(
         kind=kind_label,
         resources_root=_resources_root(kind),
     )
+    if kind == _AGENT_TEMPLATE_KIND:
+        # 显示名判重放在 id 判重之后：同 id 重导入应报 id 冲突，而不是
+        # 「显示名与自己冲突」；同名不同 id 的导出副本仍在此拦截。
+        for display_name in dict.fromkeys(
+            _i18n(manifest.get("display_name"), package_id).values()
+        ):
+            _assert_agent_template_name_available(display_name.strip())
     dest = local_root / package_id
     local_root.mkdir(parents=True, exist_ok=True)
     staging_parent = Path(

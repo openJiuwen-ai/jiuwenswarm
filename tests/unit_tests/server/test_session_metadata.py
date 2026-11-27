@@ -110,6 +110,43 @@ class TestAutoTitle:
         assert _auto_title("") == ""
         assert _auto_title("   ") == ""
 
+    @staticmethod
+    def test_strips_upload_block_keeps_user_query():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        assert _auto_title("总结\n【上传文档】\n@/x/a.pdf") == "总结"
+
+    @staticmethod
+    def test_pure_upload_uses_basename():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        assert _auto_title("【上传文档】\n@/.../todo.json") == "todo.json"
+
+    @staticmethod
+    def test_collapsed_upload_title_uses_basename():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        assert _auto_title("【上传文档】 @/.../todo.json") == "todo.json"
+
+    @staticmethod
+    def test_collapsed_upload_after_query_keeps_query():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        assert _auto_title("总结 【上传文档】 @/x/a.pdf") == "总结"
+
+    @staticmethod
+    def test_quoted_upload_path_basename():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        assert _auto_title('【上传文档】\n@"/u/my brief.pdf"') == "my brief.pdf"
+
+    @staticmethod
+    def test_preserves_inline_upload_marker_in_query():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        text = "请解释“【上传文档】”这个词在普通文本中的含义"
+        assert _auto_title(text) == text
+
 
 @pytest.mark.parametrize("initialized", [True, False], ids=["existing-session", "implicit-create"])
 @pytest.mark.parametrize(
@@ -128,10 +165,14 @@ class TestAutoTitle:
         ("/debug", "/debug"),
         ("/debug   ", "/debug"),
         ("ordinary message", "ordinary message"),
+        ("总结\n【上传文档】\n@/x/a.pdf", "总结"),
+        ("【上传文档】\n@/.../todo.json", "todo.json"),
+        ("【上传文档】 @/.../todo.json", "todo.json"),
     ],
     ids=[
         "debug", "whitespace", "injected-tags", "truncate", "literal",
         "lookalike", "bare", "bare-spaces", "ordinary",
+        "upload-with-query", "pure-upload", "collapsed-upload",
     ],
 )
 def test_auto_title_strips_only_debug_directive(sessions_dir, initialized, user_content, expected_title):
