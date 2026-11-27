@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / prewarm-and-warm-pool |
 | 关联模块 | `jiuwenswarm/server/runtime/agent_warm_pool.py`、`prewarm.py`、`mem_reclaimer.py`、`agent_manager.py`（facade 段）、`tenant_agent_pool.py`（session prewarm 段） |
-| 最近一次修订日期 | 2026-11-17 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联 feature | F_02_session-prepare.md |
 
 ## 范围 / 边界
@@ -72,7 +72,10 @@
 - **N8 阶段承载分离**：阶段1（interface_deep import）+ 阶段2（checkpointer）由
   `_startup_warmup_task` 承载、可被兜底 await；阶段3（临时 DeepAgent query，真实
   LLM 最长 120s）独立 task——**不得**让兜底 await 被阶段3 拖住。三阶段全部
-  try/except 失败仅告警。
+  try/except 失败仅告警。启用启动预热且部署配置 `flash.enabled=true` 时，进程级
+  checkpointer 初始化与配置、模块预热并行。请求仍通过已有入口等待就绪或重试。
+  创建 Flash 适配器时，实例 checkpointer 的异步 I/O 可与 Flash 基础配置补缺和覆盖重叠。
+  两项完成后才继续装配或复用该实例。会话状态恢复仍使用真实会话身份。
 - **N9 mem_reclaimer 默认关**：env `JIUWENSWARM_GC_RECLAIM_INTERVAL`（秒，<=0
   或非数字即不启用）；后台 daemon 线程 `gc.collect()` + `malloc_trim(0)`，回收
   失败不终止线程。背景：会话 adapter 循环引用图需攒 ~70k 净存活才触发 gen2，

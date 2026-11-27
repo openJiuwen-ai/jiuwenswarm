@@ -197,7 +197,7 @@ def _patch_phase12(monkeypatch: pytest.MonkeyPatch, *, import_exc=None, cp_exc=N
     if cp_exc:
         cp.side_effect = cp_exc
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.ensure_persistent_checkpointer",
+        "jiuwenswarm.server.runtime.agent_adapter.deep.checkpoint_db.ensure_persistent_checkpointer",
         cp,
         raising=False,
     )
@@ -219,6 +219,46 @@ async def test_phase12_checkpointer_failure_does_not_raise(monkeypatch: pytest.M
 async def test_phase12_ok_completes(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_phase12(monkeypatch)
     await warmup_import_and_checkpointer()  # 全程不抛即通过
+
+
+@pytest.mark.asyncio
+async def test_flash_startup_overlaps_checkpoint_and_import_and_joins_both(monkeypatch):
+    from jiuwenswarm.server import agent_ws_server
+    from jiuwenswarm.server.runtime import prewarm
+    from jiuwenswarm.server.runtime.agent_adapter.deep import checkpoint_db
+
+    import_started = asyncio.Event()
+    checkpoint_started = asyncio.Event()
+    release_checkpoint = asyncio.Event()
+
+    async def warm_import():
+        import_started.set()
+        await checkpoint_started.wait()
+
+    async def warm_checkpoint():
+        checkpoint_started.set()
+        await release_checkpoint.wait()
+
+    monkeypatch.setattr(prewarm, "get_merged_config_dict", lambda: {})
+    monkeypatch.setattr(prewarm, "warmup_tiktoken_counter", lambda: None)
+    monkeypatch.setattr(agent_ws_server, "_warm_interface_deep_module", warm_import)
+    monkeypatch.setattr(checkpoint_db, "ensure_persistent_checkpointer", warm_checkpoint)
+    startup = asyncio.create_task(warmup_import_and_checkpointer(parallel_checkpoint=True))
+    monkeypatch.setattr(agent_ws_server, "_startup_warmup_task", startup)
+    try:
+        await asyncio.wait_for(asyncio.gather(import_started.wait(), checkpoint_started.wait()), 5)
+        waiter = asyncio.create_task(agent_ws_server.ensure_interface_deep_and_checkpointer())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert not startup.done()
+    finally:
+        release_checkpoint.set()
+        if not checkpoint_started.is_set():
+            startup.cancel()
+        await asyncio.gather(startup, return_exceptions=True)
+    startup.result()
 
 
 # ---------------------------------------------------------------------------

@@ -10060,6 +10060,12 @@ class JiuWenSwarmDeepAdapter:
             )
             return self._instance
 
+    async def _prepare_instance_config_and_checkpoint(
+        self, config_base: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        await self.set_checkpoint()
+        return config_base
+
     async def create_instance(
         self,
         config: dict[str, Any] | None = None,
@@ -10089,7 +10095,7 @@ class JiuWenSwarmDeepAdapter:
             bootstrap_request = config.get("request")
         _rid = getattr(bootstrap_request, "request_id", None) or _LLM_TRACE_REQUEST_ID.get() or "?"
 
-        await self.set_checkpoint()
+        config_base = await self._prepare_instance_config_and_checkpoint(config_base)
         await asyncio.sleep(0)
 
         self._dreaming_mode = mode if mode and mode.startswith("agent") else "agent"
