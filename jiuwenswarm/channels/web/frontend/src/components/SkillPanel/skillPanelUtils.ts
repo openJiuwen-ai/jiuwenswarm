@@ -256,7 +256,8 @@ export function formatSkillVersionLabel(
 /** 广场搜索结果列表 key：ClawHub 带 owner，避免同 slug 重复 key。 */
 export function hubMarketplaceItemKey(skill: MarketplacePluginItem): string {
   const source = skill.source || 'teamskillshub';
-  const identifier = skill.identifier || skill.asset_id;
+  // identifier 是安装句柄；缺失时回退名称避免与其它空 id 条目共用同一 key。
+  const identifier = skill.identifier || skill.asset_id || skill.name || '';
   if (source === 'clawhub' && skill.owner_handle) {
     return `${source}:${skill.owner_handle}/${identifier}`;
   }
