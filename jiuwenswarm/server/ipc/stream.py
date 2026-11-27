@@ -13,6 +13,8 @@ import asyncio
 import hashlib
 import logging
 import os
+import socket
+import sys
 import threading
 import time
 import uuid
@@ -350,6 +352,20 @@ class StreamConnection(IpcConnection):
         self._reader_task: asyncio.Task | None = None
         self._reader_error: Exception | None = None
         self._last_frame_bytes = 0
+
+    async def macos_unix_peer_pid(self) -> int | None:
+        """Read the kernel-supplied PID of the connected macOS Unix peer."""
+        return await on_loop(self._loop, self._macos_unix_peer_pid())
+
+    async def _macos_unix_peer_pid(self) -> int | None:
+        peer = self._writer.get_extra_info("socket")
+        if sys.platform != "darwin" or peer is None or peer.family != socket.AF_UNIX:
+            return None
+        try:
+            # Older bundled Python versions omit these Darwin socket constants.
+            return peer.getsockopt(getattr(socket, "SOL_LOCAL", 0), getattr(socket, "LOCAL_PEERPID", 2))
+        except OSError:
+            return None
 
     async def send(self, message: dict[str, Any]) -> None:
         issued_at = time.monotonic() if message.get("kind") == KIND_REQUEST else None
