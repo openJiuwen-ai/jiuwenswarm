@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jiuwenclaw-gateway
+  labels:
+    app: jiuwenclaw-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jiuwenclaw-gateway
+  template:
+    metadata:
+      labels:
+        app: jiuwenclaw-gateway
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: gateway
+          image: swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-gateway:0.0.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 19000
+              protocol: TCP
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /home/app/.jiuwenclaw/config/config.yaml
+              subPath: config.yaml
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+      volumes:
+        - name: gateway-config
+          configMap:
+            name: jiuwenclaw-gateway-config
+            items:
+              - key: config.yaml
+                path: config.yaml

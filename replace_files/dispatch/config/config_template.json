@@ -1,0 +1,89 @@
+{
+    "query": "extract tables from websites",
+
+    "top_k": 2,
+    "method": "PROGRESSIVE",
+    "llm_top_k": 2,
+
+    "bm25_k1": 1.5,
+    "bm25_b": 0.75,
+    "bm25_delta": 0.5,
+    "bm25_min_score": null,
+    "bm25_relative_min_score": 0.15,
+    "bm25_autocut_jumps": 1,
+    "bm25_autocut_min_relative_drop": 0.15,
+    "bm25_min_query_term_matches": 0,
+    "bm25_min_query_term_match_ratio": 0.0,
+
+    "embedding_batch_size": 16,
+    "embedding_min_score": null,
+    "embedding_relative_min_score": null,
+    "embedding_autocut_jumps": 0,
+    "embedding_autocut_min_relative_drop": 0.0,
+
+    "hybrid_fusion_method": "RELATIVE_SCORE",
+    "hybrid_rrf_k": 60,
+    "hybrid_embedding_weight": 1.2,
+    "hybrid_bm25_weight": 1.0,
+
+    "progressive_batch_size": 5,
+    "progressive_max_tokens": 96,
+    "progressive_request_timeout": null,
+
+    "trie_constrained_decoding_enabled": true,
+    "trie_constraint_allow_user_nodes": false,
+    "trie_constraint_max_candidates": 512,
+    "trie_constraint_fallback_payload": "User.Chat",
+
+    "progressive_max_branch_choices": 6,
+    "progressive_auto_expand_child_threshold": 3,
+    "progressive_collapse_single_chain": true,
+    "progressive_max_collapse_steps": 8,
+    "progressive_max_parallel_branches": 3,
+    "progressive_enable_parallel_branches": true,
+    "progressive_auto_terminal_item_threshold": 12,
+    "progressive_branch_choice_slack": 2,
+    "progressive_branch_candidate_slack": 1,
+    "progressive_round_robin_branch_reduce": true,
+    "progressive_branch_max_tokens": 96,
+    "progressive_item_max_tokens": 128,
+
+    "progressive_compact_boundary_codes_enabled": true,
+    "progressive_flatten_full_tree_in_prompt": true,
+    "progressive_max_exposure_depth_per_call": 99,
+    "progressive_exposure_threshold": 1000000000,
+    "progressive_force_expand_single_child": true,
+    "progressive_single_forward_logit_selection_enabled": false,
+    "progressive_selection_mode": "generate",
+
+    "progressive_scoring_backend": "vllm",
+    "progressive_scoring_backend_model_path": "/data/xt/codes/FineTune/models/qwen3_30b_a3b_instruct",
+    "progressive_scoring_backend_tokenizer_path": "/data/xt/codes/FineTune/models/qwen3_30b_a3b_instruct",
+    "progressive_scoring_backend_device": "auto",
+    "progressive_scoring_backend_dtype": "auto",
+    "progressive_scoring_backend_enable_prefix_caching": true,
+    "progressive_scoring_backend_vllm_kwargs": {
+        "tensor_parallel_size": 2,
+        "gpu_memory_utilization": 0.8,
+        "base_url": "http://10.50.91.126:37000/v1",
+        "api_key": "haha",
+        "request_model": "qwen3.5_35b_a3b_instruct"
+    },
+    "progressive_scoring_backend_batching_enabled": true,
+    "progressive_scoring_require_single_token_codes": true,
+    "progressive_scoring_return_probabilities": true,
+    "progressive_scoring_fallback_mode": "abstain",
+    "progressive_scoring_max_candidates": 512,
+    "progressive_scoring_min_probability": null,
+    "progressive_scoring_trace_top_n": 10,
+
+    "_method_options": ["AUTO", "BM25", "EMBEDDING", "PROGRESSIVE"],
+    "_hybrid_fusion_method_options": ["RRF", "RELATIVE_SCORE"],
+    "_description": {
+        "query": "搜索查询文本",
+        "top_k": "返回结果数量",
+        "llm_top_k": "LLM 重排序的 top_k 数量",
+        "method": "检索方法，可选值见 _method_options",
+        "hybrid_fusion_method": "混合检索融合方法，可选值见 _hybrid_fusion_method_options"
+    }
+}

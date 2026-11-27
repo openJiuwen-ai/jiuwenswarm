@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <<NFS_NAME>>
+  namespace: <<NAMESPACE>>
+  labels:
+    app: <<NFS_NAME>>
+spec:
+  replicas: 1  # 单节点 NFS，不要多副本
+  selector:
+    matchLabels:
+      app: <<NFS_NAME>>
+  strategy:
+    type: Recreate  # 确保 NFS 服务不中断
+  template:
+    metadata:
+      labels:
+        app: <<NFS_NAME>>
+    spec:
+      hostNetwork: true
+      # 固定调度到 storage=nfs 标签的节点
+      nodeSelector:
+        storage: nfs
+      containers:
+      - name: <<NFS_NAME>>
+        image: itsthenetwork/nfs-server-alpine:12  # 轻量稳定镜像
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: SHARED_DIRECTORY
+            value: "/exports"  # 容器内共享目录
+          - name: PERMITTED
+            value: "*"          # 允许所有客户端（可限制网段）
+          - name: SYNC
+            value: "true"       # 同步写入
+        ports:
+          - containerPort: 2049
+            name: nfs
+          - containerPort: 20048
+            name: mountd
+          - containerPort: 111
+            name: rpcbind
+        securityContext:
+          privileged: true      # NFS 必须特权模式
+          capabilities:
+            add:
+              - SYS_ADMIN
+        volumeMounts:
+          - name: nfs-data
+            mountPath: /exports  # 数据持久化挂载
+      volumes:
+        - name: nfs-data
+          hostPath:
+            path: <<NFS_HOST_PATH>>      # 宿主机路径（数据存在节点上）
+            type: DirectoryOrCreate

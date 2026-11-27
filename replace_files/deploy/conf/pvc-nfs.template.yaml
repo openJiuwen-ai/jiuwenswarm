@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: <<PVC_NAME>>
+  namespace: <<NAMESPACE>>
+  labels:
+    app: openjiuwen
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi           # 从 PV 中请求 1Gi
+  storageClassName: ""       # 不使用 StorageClass
+  selector:
+    matchLabels:
+      type: nfs-storage      # 匹配带有此标签的 PV
+      app: openjiuwen

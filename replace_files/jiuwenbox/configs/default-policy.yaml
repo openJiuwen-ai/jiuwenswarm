@@ -1,0 +1,243 @@
+# Policy schema version. Currently only version 1 is supported.
+version: 1
+
+# Human-readable policy name shown by the server policy API.
+name: "server-default"
+
+# Host directory used for server-managed sandbox backing storage.
+sandbox_workspace: "/sandbox"
+
+# Filesystem access rules. Paths are sandbox-visible absolute paths.
+filesystem_policy:
+  # Lifecycle directories to create for the sandbox and bind into the sandbox path.
+  # Items may be either:
+  #   - "/path": create a server-managed directory with default permissions
+  #   - path: "/path"
+  #     permissions: "0755"  # optional octal permissions applied on the backing directory
+  # The permissions value may be quoted or numeric, but quoted octal strings are recommended.
+  # Paths must be absolute sandbox-visible paths. Directories persist for the sandbox
+  # lifecycle and are removed when the sandbox is deleted. Access is still controlled
+  # by the directory permissions and Landlock.
+  directories:
+    - path: "/home"
+      permissions: "0755"
+    - path: "/tmp"
+      permissions: "1777"
+
+  # Read-only paths inside the sandbox. These entries grant read permission only;
+  # they do not mount host paths by themselves.
+  read_only:
+    - "/"
+    - "/bin"
+    - "/sbin"
+    - "/usr"
+    - "/lib"
+    - "/lib64"
+    - "/etc"
+    - "/opt"
+
+  # Read-write paths inside the sandbox. Use directories or bind_mounts to make
+  # these paths exist in the sandbox.
+  read_write:
+    - "/home"
+    - "/tmp"
+
+  # Extra bind mounts from host into sandbox.
+  # Each item uses:
+  #   host_path: absolute path on the host
+  #   sandbox_path: absolute path visible inside the sandbox
+  #   mode: "ro" for read-only or "rw" for read-write
+  bind_mounts:
+    - host_path: "/bin"
+      sandbox_path: "/bin"
+      mode: "ro"
+    - host_path: "/sbin"
+      sandbox_path: "/sbin"
+      mode: "ro"
+    - host_path: "/usr"
+      sandbox_path: "/usr"
+      mode: "ro"
+    - host_path: "/lib"
+      sandbox_path: "/lib"
+      mode: "ro"
+    - host_path: "/lib64"
+      sandbox_path: "/lib64"
+      mode: "ro"
+    - host_path: "/etc/resolv.conf"
+      sandbox_path: "/etc/resolv.conf"
+      mode: "ro"
+    - host_path: "/etc/hosts"
+      sandbox_path: "/etc/hosts"
+      mode: "ro"
+    - host_path: "/etc/nsswitch.conf"
+      sandbox_path: "/etc/nsswitch.conf"
+      mode: "ro"
+    - host_path: "/etc/host.conf"
+      sandbox_path: "/etc/host.conf"
+      mode: "ro"
+    - host_path: "/etc/ssl/certs"
+      sandbox_path: "/etc/ssl/certs"
+      mode: "ro"
+    - host_path: "/etc/ssl/openssl.cnf"
+      sandbox_path: "/etc/ssl/openssl.cnf"
+      mode: "ro"
+    - host_path: "/opt"
+      sandbox_path: "/opt"
+      mode: "ro"
+
+# Process identity inside the sandbox.
+process:
+  # User name to run as. If the user cannot be resolved, runtime falls back to nobody-style IDs.
+  run_as_user: sandbox
+
+  # Group name to run as. If the group cannot be resolved, runtime falls back to nobody-style IDs.
+  run_as_group: sandbox
+
+# Linux namespace isolation controlled by bubblewrap.
+namespace:
+  # user:
+  #   true: create a new user namespace
+  #   false: reuse the current user namespace
+  user: true
+
+  # pid:
+  #   true: create a new PID namespace
+  #   false: reuse the current PID namespace
+  pid: true
+
+  # ipc:
+  #   true: create a new IPC namespace
+  #   false: reuse the current IPC namespace
+  ipc: true
+
+  # cgroup:
+  #   true: create a new cgroup namespace
+  #   false: reuse the current cgroup namespace
+  cgroup: true
+
+  # uts:
+  #   true: create a new UTS namespace
+  #   false: reuse the current UTS namespace
+  uts: true
+
+# Linux capability rules applied by bubblewrap.
+capabilities:
+  # Capabilities to add, for example ["CAP_NET_RAW"] or ["NET_RAW"].
+  add: []
+
+  # Capabilities to drop. "ALL" drops all capabilities when supported by bubblewrap.
+  drop: []
+
+# Landlock filesystem access enforcement.
+landlock:
+  # compatibility:
+  #   disabled: do not apply Landlock
+  #   best_effort: apply Landlock when supported, otherwise continue
+  #   hard_requirement: fail sandbox startup if Landlock is unavailable
+  compatibility: best_effort
+
+# Seccomp syscall filtering.
+syscall:
+  # Syscall names to block. Leave empty to disable explicit syscall blocking.
+  blocked:
+    - "kexec_load"
+    - "kexec_file_load"
+    - "reboot"
+    - "pivot_root"
+    - "swapon"
+    - "swapoff"
+    - "nfsservctl"
+    - "lookup_dcookie"
+    - "ptrace"
+    - "mount"
+    - "umount2"
+    - "unshare"
+    - "setns"
+    - "userfaultfd"
+    - "perf_event_open"
+    - "bpf"
+    - "add_key"
+    - "request_key"
+    - "keyctl"
+    - "io_uring_setup"
+    - "io_uring_enter"
+    - "io_uring_register"
+    - "open_by_handle_at"
+    - "name_to_handle_at"
+    - "init_module"
+    - "finit_module"
+    - "delete_module"
+    - "acct"
+
+# Network policy. Egress controls outbound traffic; ingress controls inbound traffic.
+network:
+  # mode:
+  #   isolated: create a dedicated network namespace and apply these rules
+  #   host: use host networking and skip namespace firewall setup
+  mode: host
+
+  # Outbound traffic from sandbox to outside destinations.
+  egress:
+    # default:
+    #   deny: block traffic unless it matches allowed_domains/allowed_ips and allowed_ports
+    #   allow: allow traffic unless it matches blocked_domains/blocked_ips/blocked_ports
+    default: allow
+
+    # Domain names allowed as outbound destinations. Wildcards like "*.example.com" are accepted
+    # by resolving the base domain; rules are applied to resolved IPs.
+    allowed_domains:
+      - "baidu.com"
+
+    # Domain names blocked as outbound destinations. Block rules take precedence over allow rules.
+    blocked_domains:
+      - "ip.me"
+
+    # IP/CIDR ranges allowed as outbound destinations, for example "203.0.113.10/32" or
+    # "10.0.0.0/8". With default: deny, destinations not listed here are blocked.
+    allowed_ips:
+      - "127.0.0.1/32"
+      - "::1/128"
+
+    # IP/CIDR ranges blocked as outbound destinations. Block rules take precedence.
+    blocked_ips:
+      - "169.254.169.254/32"
+
+    # TCP destination ports allowed for outbound traffic when default is deny.
+    allowed_ports:
+      - 443
+      - 80
+
+    # TCP destination ports blocked for outbound traffic. Block rules take precedence.
+    blocked_ports:
+      - 22
+
+  # Inbound traffic from outside sources into the sandbox.
+  ingress:
+    # default:
+    #   deny: block traffic unless it matches allowed_domains/allowed_ips and allowed_ports
+    #   allow: allow traffic unless it matches blocked_domains/blocked_ips/blocked_ports
+    default: deny
+
+    # Domain names allowed as inbound sources. These are resolved to source IP rules.
+    allowed_domains:
+      - "localhost"
+
+    # Domain names blocked as inbound sources. Block rules take precedence over allow rules.
+    blocked_domains: []
+
+    # IP/CIDR ranges allowed as inbound sources. With default: deny, sources not listed here
+    # are blocked unless allowed by allowed_ports-only rules.
+    allowed_ips:
+      - "127.0.0.1/32"
+      - "::1/128"
+
+    # IP/CIDR ranges blocked as inbound sources. Block rules take precedence.
+    blocked_ips: []
+
+    # TCP destination ports allowed for inbound traffic when default is deny.
+    allowed_ports:
+      - 8080
+
+    # TCP destination ports blocked for inbound traffic. Block rules take precedence.
+    blocked_ports:
+      - 22

@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <<GATEWAY_DEPLOYMENT_NAME>>
+  namespace: <<NAMESPACE>>
+  labels:
+    app: <<GATEWAY_DEPLOYMENT_NAME>>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: <<GATEWAY_DEPLOYMENT_NAME>>
+  template:
+    metadata:
+      labels:
+        app: <<GATEWAY_DEPLOYMENT_NAME>>
+    spec:
+      # SIGTERM 后需完成 batch_upload + DCS 写入，再 disconnect 沙箱
+      terminationGracePeriodSeconds: 90
+      # Match Dockerfile USER app (Debian first UID is typically 1000)
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: gateway
+          image: <<CLAW_GATEWAY_PRODUCT_IMAGE>>
+          imagePullPolicy: IfNotPresent
+          # 用于调试模式：启用后容器将保持运行，可进入 Pod 手动调试程序
+          # command: ["/bin/sh"]
+          # args: ["-c", "sleep infinity"]
+          ports:
+            - name: http
+              containerPort: 19000
+              protocol: TCP
+          envFrom: []
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /home/app/.jiuwenclaw/config/config.yaml
+              subPath: config.yaml
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+          resources:
+            requests:
+              cpu: 2
+              memory: 8Gi
+            limits:
+              cpu: 2
+              memory: 8Gi
+      # Uncomment if SWR registry needs pull secret:
+      # imagePullSecrets:
+      #   - name: swr-registry-secret
+      volumes:
+        - name: gateway-config
+          configMap:
+            name: <<GATEWAY_CONFIG_MAP_NAME>>
+            items:
+              - key: config.yaml
+                path: config.yaml

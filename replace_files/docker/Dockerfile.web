@@ -1,0 +1,25 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Create app user and set up working directory
+RUN useradd --create-home --shell /bin/bash app
+RUN mkdir -p /app
+
+# Copy project files
+COPY --chown=app:app . /app/jiuwenclaw/
+
+USER app
+
+# Build enterprise web
+WORKDIR /app/jiuwenclaw/jiuwenclaw/web_enterprise
+RUN npm install
+RUN npm run build
+
+# Install server dependencies
+WORKDIR /app/jiuwenclaw
+ENV PATH=$PATH:/home/app/.local/bin
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -e ".[all]" --no-cache-dir
+
+# Start enterprise web (served by app_web from web_enterprise/dist)
+EXPOSE 5173
+CMD ["jiuwenclaw-start", "web-enterprise"]

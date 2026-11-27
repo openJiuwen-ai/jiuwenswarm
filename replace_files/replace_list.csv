@@ -1,0 +1,4 @@
+file,/opt/huawei/app/replace_files/test_replace.sh,/opt/huawei/app/jiuwenclaw/channel/test_replace.sh
+dir,/opt/huawei/app/replace_files/jiuwenclaw,/opt/huawei/app/jiuwenclaw
+file,/opt/huawei/app/replace_files/STS_config.ini,/opt/huawei/app/config/STS_config.ini
+file,/opt/huawei/app/replace_files/data-gym-cache/9b5ad71b2ce5302211f9c61530b329a4922fc6a4,/tmp/data-gym-cache/9b5ad71b2ce5302211f9c61530b329a4922fc6a4

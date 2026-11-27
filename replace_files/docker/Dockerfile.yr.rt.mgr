@@ -1,0 +1,30 @@
+# Stage 1: Builder environment
+ARG JIUWEN_BASE_IMAGE
+ARG BASE_IMAGE
+FROM ${JIUWEN_BASE_IMAGE} AS builder
+
+WORKDIR /app
+COPY . .
+
+RUN pip install uv -i https://pypi.tuna.tsinghua.edu.cn/simple
+# RUN uv sync
+RUN uv build --out-dir /app/dist
+
+RUN echo "BASE_IMAGE: ${BASE_IMAGE}"
+FROM ${BASE_IMAGE}
+
+RUN whoami
+
+USER snuser
+ARG OLD_PYTHONPATH=${PYTHONPATH}
+ENV PYTHONPATH=
+
+# Stage 2: Final image - Only copy necessary files from builder stage
+COPY --from=builder /app/dist/jiuwenclaw-*-py3-none-any.whl /tmp/.
+RUN pip3.11 install -i https://pypi.tuna.tsinghua.edu.cn/simple /tmp/jiuwenclaw-*-py3-none-any.whl \
+    --user
+
+RUN echo "revert python path: ${OLD_PYTHONPATH}"
+
+USER sn
+ENV PYTHONPATH=${OLD_PYTHONPATH}

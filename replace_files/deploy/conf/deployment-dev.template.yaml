@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <<GATEWAY_DEPLOYMENT_NAME>>
+  namespace: <<NAMESPACE>>
+  labels:
+    app: <<GATEWAY_DEPLOYMENT_NAME>>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: <<GATEWAY_DEPLOYMENT_NAME>>
+  template:
+    metadata:
+      labels:
+        app: <<GATEWAY_DEPLOYMENT_NAME>>
+    spec:
+      # SIGTERM 后需完成 batch_upload + DCS 写入，再 disconnect 沙箱
+      terminationGracePeriodSeconds: 90
+      # 强制调度到 master节点
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        fsGroup: 0 # 修改为 root 组，解决挂载目录权限
+      containers:
+        - name: gateway
+          image: <<CLAW_GATEWAY_DEV_IMAGE>>
+          imagePullPolicy: IfNotPresent
+          # 用于调试模式：启用后容器将保持运行，可进入 Pod 手动调试程序
+          # command: ["/bin/sh"]
+          # args: ["-c", "sleep infinity"]
+          ports:
+            - name: http
+              containerPort: 19000
+              protocol: TCP
+          envFrom: []
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /root/.jiuwenclaw/config/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: host-code
+              mountPath: /app/jiuwenclaw # 覆盖容器内代码目录
+            # 这里是新增的 NFS 挂载
+            #- name: nfs-storage
+            #  mountPath: /app/nfs-share-dir
+            #  readOnly: false
+          securityContext:
+            allowPrivilegeEscalation: true
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+          resources:
+            requests:
+              cpu: 2
+              memory: 8Gi
+            limits:
+              cpu: 2
+              memory: 8Gi
+      volumes:
+        - name: gateway-config
+          configMap:
+            name: <<GATEWAY_CONFIG_MAP_NAME>>
+            items:
+              - key: config.yaml
+                path: config.yaml
+
+        - name: host-code
+          hostPath:
+            path: <<HOST_CODE_PATH>> # 宿主机目录
+            type: Directory
+        # 这里是关联你的 NFS server
+        #- name: nfs-storage
+          #nfs:
+            #server: <<NFS_SERVER_ADDR>>
+            #path: <<NFS_SHARE_PATH>>

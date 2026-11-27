@@ -1,0 +1,35 @@
+{
+  "name": "<<FUNC_SVC_NAME>>",
+  "runtime": "python3.11",
+  "description": "jiuwen claw",
+  "handler": "clawee.handler",
+  "kind": "faas",
+  "cpu": <<CLAW_MGR_CPU>>,
+  "memory": <<CLAW_MGR_MEMORY>>,
+  "timeout": 600,
+  "customResources": {},
+  "environment": {
+    "MODEL_PROVIDER": "<<MODEL_PROVIDER>>",
+    "MODEL_NAME": "<<MODEL_NAME>>",
+    "API_BASE": "<<API_BASE>>",
+    "API_KEY": "<<API_KEY>>",
+    "EMBED_API_KEY": "<<EMBED_API_KEY>>",
+    "EMBED_API_BASE": "<<EMBED_API_BASE>>",
+    "EMBED_MODEL": "<<EMBED_MODEL>>"
+  },
+  "extendedHandler": {
+    "initializer": "clawee.init",
+    "pre_stop": "clawee.pre_stop"
+  },
+  "extendedTimeout": {
+    "initializer": 600,
+    "pre_stop": 10
+  },
+  "minInstance": "<<CLAW_MGR_MIN_INSTANCE>>",
+  "maxInstance": "<<CLAW_MGR_MAX_INSTANCE>>",
+  "concurrentNum": "<<CLAW_MGR_CONCURRENT_NUM>>",
+  "storageType": "local",
+  "codePath": "/home/sn/jiuwenclaw",
+  "s3CodePath": {},
+  "poolId": "claw"
+}

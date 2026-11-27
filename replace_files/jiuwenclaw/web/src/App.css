@@ -1,0 +1,147 @@
+.app-section {
+  display: flex;
+  flex: 1 1 0%;
+  gap: 1rem;
+  overflow: hidden;
+}
+
+.app-section.is-hidden {
+  display: none;
+}
+
+.app-toast-wrapper {
+  position: fixed;
+  left: 50%;
+  z-index: 50;
+  transform: translateX(-50%);
+}
+
+.app-toast-wrapper--bottom {
+  bottom: 5rem;
+}
+
+.app-toast-wrapper--top {
+  top: 4rem;
+}
+
+.app-toast-wrapper--top-center {
+  top: 4rem;
+  left: 0;
+  right: 0;
+  transform: none;
+  display: flex;
+  justify-content: center;
+}
+
+.app-connection-toast {
+  border-radius: 0.5rem;
+  background: var(--danger);
+  padding: 0.5rem 1rem;
+  color: #fff;
+  box-shadow: var(--shadow-lg);
+}
+
+.app-session-toast {
+  border-radius: 0.5rem;
+  background: var(--info);
+  padding: 0.5rem 1rem;
+  color: #fff;
+  box-shadow: var(--shadow-lg);
+}
+
+.app-heartbeat-toast {
+  width: min(88vw, 420px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--card);
+  box-shadow: var(--shadow-xl);
+  backdrop-filter: blur(4px);
+}
+
+.app-heartbeat-toast__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0.875rem;
+}
+
+.app-heartbeat-toast__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.app-heartbeat-toast__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: var(--ok);
+}
+
+.app-heartbeat-toast__close {
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.125rem;
+  transition: background var(--duration-fast) ease, color var(--duration-fast) ease;
+}
+
+.app-heartbeat-toast__close:hover {
+  background: var(--secondary);
+  color: var(--text);
+}
+
+.app-heartbeat-toast__content {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.625rem 0.875rem;
+  text-align: left;
+  transition: background var(--duration-fast) ease, color var(--duration-fast) ease;
+}
+
+.app-heartbeat-toast__content:hover {
+  background: color-mix(in oklab, var(--secondary) 60%, transparent);
+}
+
+.app-heartbeat-toast__preview {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-restart-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.app-restart-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+}
+
+.app-restart-modal__panel {
+  position: relative;
+  width: 100%;
+  max-width: 24rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--card);
+  box-shadow: var(--shadow-xl);
+  padding: 1.5rem;
+}

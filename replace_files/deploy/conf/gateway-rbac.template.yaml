@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jiuwenclaw-gateway-sa
+  namespace: <<NAMESPACE>>
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jiuwenclaw-agentserver-creator
+  namespace: <<NAMESPACE>>
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jiuwenclaw-gateway-agentserver-binding
+  namespace: <<NAMESPACE>>
+subjects:
+  - kind: ServiceAccount
+    name: <<GATEWAY_SERVICE_ACCOUNT>>
+    namespace: <<NAMESPACE>>
+roleRef:
+  kind: Role
+  name: jiuwenclaw-agentserver-creator
+  apiGroup: rbac.authorization.k8s.io

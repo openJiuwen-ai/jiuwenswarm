@@ -1,0 +1,58 @@
+# jiuwenclaw built-in shell deny rules.
+#
+# Runtime may place a replacement file next to config.yaml:
+# ~/.jiuwenclaw/config/builtin_rules.yaml
+#
+# Schema:
+# - id: str
+# - description: str
+# - pattern: str or re:...
+# - action: deny
+#
+# severity, permission_mode, tools and match_type are not supported.
+
+rules:
+  - id: shell_disk_partition_or_raw_device_write
+    description: "格式化、分区或直接写入块设备，可能破坏磁盘和文件系统"
+    pattern: 're:(?i)(^|[\s;&|()])((mkfs(\.[A-Za-z0-9_]+)?|mke2fs|fdisk|parted|diskpart|format)\b|(dd\b[^;&|]*(\bof=/dev/|\\\\\.\\PhysicalDrive))|(>\s*/dev/(sd[a-z][0-9]*|vd[a-z][0-9]*|xvd[a-z][0-9]*|nvme[0-9]+n[0-9]+(p[0-9]+)?|disk[0-9]+)))'
+    action: deny
+
+  - id: shell_download_and_execute
+    description: "从网络下载内容后直接交给 shell、PowerShell 或动态执行器执行"
+    pattern: 're:(?i)(^|[\s;&|()])(((curl|wget|fetch|ftp)\b[^;&]*\|\s*(bash|sh|zsh|dash|ash|source)\b)|(iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^;&|]*\|\s*(iex|Invoke-Expression)\b|((bash|sh|zsh|pwsh|powershell)\b[^;&|]*<\s*<\s*\(?\s*(curl|wget)\b))'
+    action: deny
+
+  - id: shell_obfuscated_or_dynamic_execution
+    description: "编码载荷、解码后执行、eval/iex 或内联解释器执行，命令难以审计"
+    pattern: 're:(?i)(^|[\s;&|()])((base64\s+(-d|--decode)\b[^;&|]*\|\s*(bash|sh|zsh|dash|ash)\b)|(certutil\s+-decode\b)|(-EncodedCommand\b|-[Ee]nc\b)|(\[Convert\]::FromBase64String\()|(eval\s+[`$])|(\b(iex|Invoke-Expression)\b)|((python3?|perl|ruby|node)\s+(-c|-e)\b[^;&|]*(socket|subprocess|exec|eval|child_process)))'
+    action: deny
+
+  - id: shell_reverse_shell_or_bind_shell
+    description: "反向 shell、绑定 shell 或可疑网络执行通道"
+    pattern: 're:(?i)(/dev/(tcp|udp)/|(^|[\s;&|()])(nc|ncat)\b[^;&|]*\s(-e|--exec)\s|\bsocat\b[^;&|]*(EXEC:|SYSTEM:|PTY)|\bbash\s+-i\b[^;&|]*/dev/tcp/|\bpython3?\b[^;&|]*(socket|pty\.spawn|subprocess)|\bperl\b[^;&|]*Socket)'
+    action: deny
+
+  - id: shell_fork_bomb_or_resource_abuse
+    description: "fork bomb、解除进程限制或批量终止关键进程"
+    pattern: 're:(?i)(:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:|(^|[\s;&|()])kill\s+-9\s+(-1|1)\b|(^|[\s;&|()])ulimit\s+-u\s+unlimited\b)'
+    action: deny
+
+  - id: shell_system_shutdown_or_reboot
+    description: "关机、重启或切换到关机/重启运行级别，属于明显破坏系统可用性的行为"
+    pattern: 're:(?i)(^|[\s;&|()])((shutdown|reboot|halt|poweroff)\b|(init|telinit)\s+(0|6)\b)'
+    action: deny
+
+  - id: shell_credential_access
+    description: "访问或读取系统存储的凭据：Windows凭据管理器、API、注册表等"
+    pattern: 're:(?i)(Get-StoredCredential|cmdkey\s+/|rundll32\.exe\s+keymgr\.dll|CredRead|CredEnumerate|Advapi32.*Cred|Winlogon|AutoAdminLogon|DefaultPassword)'
+    action: deny
+
+  - id: shell_credential_decrypt
+    description: "解密或转换凭据：SecureString转换、DPAPI解密、提取明文密码等"
+    pattern: 're:(?i)(SecureStringToBSTR|PtrToStringBSTR|ConvertFrom-SecureString|GetNetworkCredential\(\)\.Password|ProtectedData\]::Unprotect|CryptUnprotectData|\[PSCredential\]::new)'
+    action: deny
+
+  - id: shell_certificate_key_access
+    description: "访问或导出证书存储中的证书和私钥"
+    pattern: 're:(?i)(Export-PfxCertificate|\.PrivateKey|Get-ChildItem\s+Cert:|\[System\.Security\.Cryptography\.X509Certificates\])'
+    action: deny

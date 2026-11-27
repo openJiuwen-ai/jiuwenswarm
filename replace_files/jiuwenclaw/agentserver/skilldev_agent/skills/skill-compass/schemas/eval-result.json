@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "skill-compass/eval-result",
+  "title": "Skill Compass Evaluation Result",
+  "description": "Complete evaluation result for a SKILL.md file across six dimensions",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "skill_name",
+    "skill_path",
+    "skill_type",
+    "scores",
+    "overall_score",
+    "verdict",
+    "weakest_dimension",
+    "metadata"
+  ],
+  "properties": {
+    "skill_name": { "type": "string" },
+    "skill_path": { "type": "string" },
+    "skill_type": { "type": "string", "enum": ["atom", "composite", "meta"] },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "structure",
+        "trigger",
+        "security",
+        "functional",
+        "comparative",
+        "compliance"
+      ],
+      "properties": {
+        "structure": { "$ref": "#/$defs/dimensionScore" },
+        "trigger": { "$ref": "#/$defs/dimensionScore" },
+        "functional": { "$ref": "#/$defs/dimensionScore" },
+        "comparative": { "$ref": "#/$defs/dimensionScore" },
+        "security": { "$ref": "#/$defs/dimensionScore" },
+        "compliance": { "$ref": "#/$defs/dimensionScore" }
+      }
+    },
+    "overall_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "verdict": { "type": "string", "enum": ["PASS", "CAUTION", "FAIL"] },
+    "weakest_dimension": {
+      "type": "string",
+      "enum": ["structure", "trigger", "security", "functional", "comparative", "compliance"]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluated_at", "evaluator"],
+      "properties": {
+        "evaluated_at": { "type": "string", "format": "date-time" },
+        "evaluator": { "type": "string", "const": "skill-compass" },
+        "packaged_path": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "dimensionScore": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10
+    }
+  }
+}

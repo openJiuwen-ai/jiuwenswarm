@@ -1,0 +1,114 @@
+.statusbar-root {
+  position: relative;
+  min-height: 52px;
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.statusbar-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100% - 32px);
+}
+
+.statusbar-exec {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: inset 0 1px 0 var(--card-highlight);
+}
+
+.statusbar-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.statusbar-pill--processing {
+  color: var(--warn);
+  background: var(--warn-subtle);
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.statusbar-pill--paused {
+  color: var(--warn);
+  background: var(--warn-subtle);
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.statusbar-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
+}
+
+.statusbar-dot--pulse {
+  animation: pulse-subtle 1.4s ease-in-out infinite;
+}
+
+.statusbar-action-btn {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  line-height: 1;
+  background: var(--secondary);
+  color: var(--text);
+  transition:
+    transform var(--duration-fast) ease,
+    background var(--duration-fast) ease,
+    border-color var(--duration-fast) ease,
+    color var(--duration-fast) ease;
+}
+
+.statusbar-action-btn:hover {
+  transform: translateY(-1px);
+}
+
+.statusbar-action-btn--pause {
+  color: var(--warn);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.statusbar-action-btn--pause:hover {
+  background: var(--warn-subtle);
+}
+
+.statusbar-action-btn--cancel {
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.statusbar-action-btn--cancel:hover {
+  background: var(--danger-subtle);
+}
+
+.statusbar-action-btn--resume {
+  color: var(--primary-foreground);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.statusbar-action-btn--resume:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}

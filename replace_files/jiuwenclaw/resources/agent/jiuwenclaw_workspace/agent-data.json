@@ -1,0 +1,368 @@
+{
+  "jiuwenclaw_workspace": [
+    {
+      "name": "agent-data.json",
+      "path": "agent/jiuwenclaw_workspace/agent-data.json",
+      "isMarkdown": false
+    },
+    {
+      "name": "AGENT.md",
+      "path": "agent/jiuwenclaw_workspace/AGENT.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "HEARTBEAT.md",
+      "path": "agent/jiuwenclaw_workspace/HEARTBEAT.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "IDENTITY.md",
+      "path": "agent/jiuwenclaw_workspace/IDENTITY.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "SOUL.md",
+      "path": "agent/jiuwenclaw_workspace/SOUL.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "USER.md",
+      "path": "agent/jiuwenclaw_workspace/USER.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/memory": [
+    {
+      "name": "MEMORY.md",
+      "path": "agent/jiuwenclaw_workspace/memory/MEMORY.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/advanced-daily-report": [
+    {
+      "name": "AI_ANALYSIS_TASKS.md",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/AI_ANALYSIS_TASKS.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "report_helper.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/report_helper.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "run_report.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/run_report.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/advanced-daily-report/analyzers": [
+    {
+      "name": "__init__.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/analyzers/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "ai_analyzer.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/analyzers/ai_analyzer.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "work_analyzer.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/analyzers/work_analyzer.py",
+      "isMarkdown": false
+    }
+  ],
+  "jiuwenclaw_workspace/skills/advanced-daily-report/collectors": [
+    {
+      "name": "__init__.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/collectors/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "aggregator.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/collectors/aggregator.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "email_collector.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/collectors/email_collector.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "git_collector.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/collectors/git_collector.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "memory_collector.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/collectors/memory_collector.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "todo_collector.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/collectors/todo_collector.py",
+      "isMarkdown": false
+    }
+  ],
+  "jiuwenclaw_workspace/skills/advanced-daily-report/generators": [
+    {
+      "name": "__init__.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/generators/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "report_generator.py",
+      "path": "agent/jiuwenclaw_workspace/skills/advanced-daily-report/generators/report_generator.py",
+      "isMarkdown": false
+    }
+  ],
+  "jiuwenclaw_workspace/skills/akg-agents": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/jiuwenclaw_workspace/skills/akg-agents/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/cross-channel-history-retrieval": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/jiuwenclaw_workspace/skills/cross-channel-history-retrieval/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/cross-channel-history-retrieval/scripts": [
+    {
+      "name": "search_history.py",
+      "path": "agent/jiuwenclaw_workspace/skills/cross-channel-history-retrieval/scripts/search_history.py",
+      "isMarkdown": false
+    }
+  ],
+  "jiuwenclaw_workspace/skills/delayed-restart-app": [
+    {
+      "name": "launch_delayed_restart.py",
+      "path": "agent/jiuwenclaw_workspace/skills/delayed-restart-app/launch_delayed_restart.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/jiuwenclaw_workspace/skills/delayed-restart-app/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/financial-document-parser": [
+    {
+      "name": "financial_parser.py",
+      "path": "agent/jiuwenclaw_workspace/skills/financial-document-parser/financial_parser.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/jiuwenclaw_workspace/skills/financial-document-parser/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-creator": [
+    {
+      "name": "LICENSE.txt",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/LICENSE.txt",
+      "isMarkdown": false
+    },
+    {
+      "name": "SKILL.md",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-creator/agents": [
+    {
+      "name": "analyzer.md",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/agents/analyzer.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "comparator.md",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/agents/comparator.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "grader.md",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/agents/grader.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-creator/assets": [
+    {
+      "name": "eval_review.html",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/assets/eval_review.html",
+      "isMarkdown": false
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-creator/eval-viewer": [
+    {
+      "name": "generate_review.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/eval-viewer/generate_review.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "viewer.html",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/eval-viewer/viewer.html",
+      "isMarkdown": false
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-creator/references": [
+    {
+      "name": "schemas.md",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/references/schemas.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-creator/scripts": [
+    {
+      "name": "__init__.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/scripts/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "aggregate_benchmark.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/scripts/aggregate_benchmark.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "generate_report.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/scripts/generate_report.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "improve_description.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/scripts/improve_description.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "package_skill.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/scripts/package_skill.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "quick_validate.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/scripts/quick_validate.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "run_eval.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/scripts/run_eval.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "run_loop.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/scripts/run_loop.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "utils.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-creator/scripts/utils.py",
+      "isMarkdown": false
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/reference": [
+    {
+      "name": "generator-worker-spec.md",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/reference/generator-worker-spec.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "operator-playbook.md",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/reference/operator-playbook.md",
+      "isMarkdown": true
+    },
+    {
+      "name": "sop-structure-pipeline.md",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/reference/sop-structure-pipeline.md",
+      "isMarkdown": true
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts": [
+    {
+      "name": "skill_generator_cli.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_generator_cli.py",
+      "isMarkdown": false
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen": [
+    {
+      "name": "__init__.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "models.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/models.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "sop_chunk_merge.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/sop_chunk_merge.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "sop_parser.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/sop_parser.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "validator.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/validator.py",
+      "isMarkdown": false
+    }
+  ],
+  "jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest": [
+    {
+      "name": "__init__.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/__init__.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "models.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/models.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "router.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/router.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "url_safety.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/url_safety.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "web_page.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/web_page.py",
+      "isMarkdown": false
+    },
+    {
+      "name": "wechat_article.py",
+      "path": "agent/jiuwenclaw_workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest/wechat_article.py",
+      "isMarkdown": false
+    }
+  ],
+  "workspace": [
+    {
+      "name": "agent-data.json",
+      "path": "agent/workspace/agent-data.json",
+      "isMarkdown": false
+    }
+  ]
+}

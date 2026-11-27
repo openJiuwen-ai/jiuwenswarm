@@ -1,0 +1,522 @@
+# 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
+preferred_language: zh
+
+# 日志目录：~/.jiuwenclaw/.logs/
+# gateway.log / channel.log / agent_server.log 按源码路径分流。
+# level：未单独指定时的默认级别。console_level：控制台；可省略则用 level。
+# 环境变量 LOG_LEVEL 覆盖控制台与各日志文件级别。
+logging:
+  level: INFO
+  console_level: INFO
+  gateway: INFO
+  channel: INFO
+  agent_server: INFO
+
+memory:
+  mode: ${MEMORY_MODE:-local}
+  forbidden_memory_definition:
+    enabled: false
+    patterns: []
+    description:
+      zh: "以下内容禁止记忆：密码、API密钥、Secret、Token、信用卡号、身份证号、手机号等敏感信息"
+      en: "The following content is forbidden to remember: passwords, API keys, secrets, tokens, credit card numbers, ID numbers, phone numbers and other sensitive information"
+
+models:
+  default:
+      model_client_config:
+        api_base: ${API_BASE}
+        api_key: ${API_KEY}
+        model_name: ${MODEL_NAME:-xiaomi/mimo-v2-omni}
+        client_provider: ${MODEL_PROVIDER}
+        timeout: 1800
+        verify_ssl: false
+      model_config_obj:
+        temperature: 0.6
+  video:
+      model_client_config:
+        api_base: ${VIDEO_API_BASE}
+        api_key: ${VIDEO_API_KEY}
+        model_name: ${VIDEO_MODEL_NAME:-xiaomi/mimo-v2-omni}
+        client_provider: ${VIDEO_PROVIDER}
+        timeout: 1800
+        verify_ssl: false
+      model_config_obj:
+        temperature: 0.6
+  audio:
+      model_client_config:
+        api_base: ${AUDIO_API_BASE}
+        api_key: ${AUDIO_API_KEY}
+        model_name: ${AUDIO_MODEL_NAME:-openai/gpt-4o-audio-preview}
+        client_provider: ${AUDIO_PROVIDER}
+        verify_ssl: false
+        timeout: 1800
+      model_config_obj:
+        temperature: 0.6
+  vision:
+      model_client_config:
+        api_base: ${VISION_API_BASE}
+        api_key: ${VISION_API_KEY}
+        model_name: ${VISION_MODEL_NAME:-bytedance-seed/seed-2.0-mini}
+        client_provider: ${VISION_PROVIDER}
+        verify_ssl: false
+        timeout: 1800
+      model_config_obj:
+        temperature: 0.6
+
+telemetry:
+  enabled: false                    # 总开关（环境变量 OTEL_ENABLED 优先）
+  exporter: otlp                    # otlp / console / none
+  endpoint: http://localhost:4317   # OTLP endpoint
+  protocol: grpc                    # grpc / http
+  headers: {}                       # 公共 OTLP headers，可被 traces/metrics 覆盖
+  log_messages: true                # 是否在 span event 中记录完整消息内容
+  service_name: jiuwenclaw
+  provider_factory:                 # 自定义 provider factory，格式：module:function
+  traces:
+    exporter:                       # trace exporter，默认回退到 telemetry.exporter
+    endpoint:                       # trace endpoint，默认回退到 telemetry.endpoint
+    protocol:                       # trace protocol，默认回退到 telemetry.protocol
+    headers: {}                     # trace headers，默认回退到 telemetry.headers
+  metrics:
+    exporter:                       # metrics exporter，默认回退到 telemetry.exporter
+    endpoint:                       # metrics endpoint，默认回退到 telemetry.endpoint
+    protocol:                       # metrics protocol，默认回退到 telemetry.protocol
+    headers: {}                     # metrics headers，默认回退到 telemetry.headers
+
+react:
+  agent_name: main_agent
+  max_iterations: 100
+  model_name: ${MODEL_NAME:-deepseek-chat}
+  skill_mode: all
+  # code_agent / research_agent 默认不启用；只有显式配置 enabled: true 才会显示并可被 task_tool 调用
+  # browser_agent 保持原行为，仍由浏览器 runtime 开关决定是否默认注册；这里只支持覆盖其参数
+  subagents:
+    code_agent:
+      enabled: false
+      # max_iterations: 15
+    research_agent:
+      enabled: false
+      # max_iterations: 15
+  answer_chunk_size: 500
+  stream_chunk_threshold: 50
+  stream_character_threshold: 2000
+  context_engine_config:
+    enable_kv_cache_release: false
+    enable_reload: true
+    enabled: true
+    message_summary_offloader_config:
+      messages_threshold: null
+      tokens_threshold: 60000
+      large_message_threshold: 20000
+      offload_message_type: [ "tool" ]
+      protected_tool_names: [ "view_file", "reload_original_context_messages" ]
+      messages_to_keep: null
+      keep_last_round: false
+      customized_summary_prompt: null
+      enable_adaptive_compression: true
+      summary_max_tokens: 900
+      enable_precise_step: false
+      step_summary_max_context_messages: 8
+      content_max_chars_for_compression: 200000
+    dialogue_compressor_config:
+      messages_threshold: null
+      tokens_threshold: 100000
+      messages_to_keep: 10
+      keep_last_round: false
+      compression_target_tokens: 1800
+      offload_writeback_enabled: false
+    current_round_compressor_config:
+      tokens_threshold: 100000
+      messages_to_keep: 6
+      min_selected_tokens_for_compression: 20000
+      compression_target_tokens: 4000
+      summary_merge_target_tokens: 4000
+      accumulated_summary_token_limit: 20000
+      summary_merge_min_blocks: 3
+      prior_context_window_size: 10
+      offload_writeback_enabled: false
+    round_level_compressor_config:
+      rounds_threshold: 2
+      tokens_threshold: 230000
+      trigger_total_tokens: 230000
+      target_total_tokens: 160000
+      compression_call_max_tokens: 250000
+      keep_last_round: true
+      keep_recent_messages: 6
+      messages_to_keep: 6
+      first_pass_target_tokens: 30000
+      second_pass_target_tokens: 20000
+      third_pass_target_tokens: 10000
+      truncate_head_ratio: 0.2
+      offload_writeback_enabled: false
+  # Skills 在线自演进配置
+  evolution:
+    enabled: true             # true = 启用在线 Skills 自演进
+    auto_scan: false           # true = 每轮对话后自动扫描（建议先用手动 /evolve）
+    skill_base_dir: "agent/skills"  # Skill 根目录
+
+tools:
+  - todo
+  - skill
+
+email_settings:
+  email_address: ${EMAIL_ADDRESS}
+  token: ${EMAIL_TOKEN}
+  smtp_server: ${SMTP_SERVER:-smtp.gmail.com}
+  port: ${EMAIL_PORT:-587}
+
+embed:
+  embed_api_key: ${EMBED_API_KEY}
+  embed_base_url: ${EMBED_API_BASE}
+  embed_model: ${EMBED_MODEL}
+
+task_memory:
+  # Set enabled: true to activate TaskMemoryService skill tools
+  # (experience_retrieve, experience_learn, experience_clear)
+  enabled: true
+  # Override defaults below if task memory uses a different model/key than the main agent
+  llm_model: ${TASK_MEMORY_LLM_MODEL}
+  embedding_model: ${TASK_MEMORY_EMBED_MODEL}
+  api_key: ${TASK_MEMORY_API_KEY}
+  api_base: ${TASK_MEMORY_API_BASE}
+  # Retrieval and summary algorithms: ACE | ReasoningBank | ReMe
+  retrieval_algo: ACE
+  summary_algo: ACE
+
+gateway:
+  # AgentServer client mode.
+  # websocket: default ws client
+  # yuanrong: provided by AgentServerClientExtension
+  agent_client:
+    type: yuanrong
+    frontend_endpoint: http://<<MASTER_NODE_IP>>:<<FRONTEND_PORT>>
+    function_version_urn: <<FUNCTION_ID>>
+    concurrency: <<CLAW_GATEWAY_CONCURRENCY>>
+    invoke_timeout_s: <<CLAW_GATEWAY_INVOKE_TIMEOUT>>
+
+  # SessionMap 仅用于企业claw场景，如 feishu_enterprise 等通道：将平台身份映射为 Agent 的 session_id。
+  # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
+  session_map_scope: <<CLAW_GATEWAY_SESSION_MAP_SCOPE>>
+
+heartbeat:
+  # 心跳间隔（秒），默认 60
+  every: 3600
+  # 心跳结果回传的 channel（如 "web"），
+  target: web
+  # 心跳生效时间段（本地时间），start <= now < end 时心跳生效
+  active_hours:
+    start: 08:00
+    end: 22:00
+
+channels:
+  feishu:
+    # 飞书应用配置
+    app_id:
+    app_secret:
+    encrypt_key:
+    verification_token:
+    allow_from:
+    enable_streaming: false
+    enabled: false
+    send_file_allowed: true
+    # 群聊数字分身（默认关闭）
+    group_digital_avatar: false
+    my_user_id: ""
+    bot_name: ""
+    enable_memory: false
+  feishu_enterprise: {}
+  xiaoyi:
+    # 华为小艺 A2A 配置
+    mode: xiaoyi_channel
+    ak:
+    sk:
+    api_id:
+    push_id:
+    agent_id:
+    ws_url1: wss://hag.cloud.huawei.com/openclaw/v1/ws/link
+    ws_url2: wss://116.63.174.231/openclaw/v1/ws/link
+    enable_streaming: true
+    enabled: false
+    # xiaoyi_claw配置
+    uid:
+    api_key:
+    push_url:
+    file_upload_url:
+    # 小艺手机端插件tools调用，会添加相关tools到系统提示词
+    phone_tools_enabled: false
+    send_file_allowed: true
+  dingtalk:
+    # 钉钉应用配置
+    client_id:
+    client_secret:
+    allow_from: []
+    enabled: false
+    send_file_allowed: true
+  telegram:
+    # Telegram Bot 配置
+    # 从 @BotFather 获取 bot_token
+    bot_token:
+    # 用户白名单（Telegram user_id），为空则允许所有用户
+    allow_from: []
+    # 消息解析模式: Markdown, HTML, None
+    parse_mode: Markdown
+    # 群聊模式: mention(仅响应@提及), reply(仅响应回复), all(响应所有), off(禁用群聊)
+    group_chat_mode: mention
+    enabled: false
+  discord:
+    # Discord Bot 配置（当前版本仅支持参数管理）
+    # 可与用户私聊（DM）：仍受 allow_from 约束
+    # Bot Token（Discord Developer Portal -> Bot）
+    bot_token:
+    # Application ID（Discord Developer Portal -> General Information）
+    application_id:
+    # 目标服务器 ID（Guild ID）
+    guild_id:
+    # 目标频道 ID（Channel ID）
+    channel_id:
+    # 用户白名单（Discord user_id），为空则允许所有用户
+    allow_from: []
+    # 是否关闭私信功能
+    block_dm: false
+    enabled: false
+  whatsapp:
+    # WhatsApp 配置（通过本地 Baileys bridge）
+    bridge_ws_url: ws://127.0.0.1:19600/ws
+    default_jid:
+    allow_from: []
+    enable_streaming: true
+    auto_start_bridge: false
+    bridge_command: node scripts/whatsapp-bridge.js
+    bridge_workdir:
+    enabled: false
+  wechat:
+    # 个人微信 iLink Bot API 配置
+    enable_streaming: false
+    base_url: https://ilinkai.weixin.qq.com
+    bot_token:
+    ilink_bot_id:
+    ilink_user_id:
+    allow_from: []
+    auto_login: true
+    qrcode_poll_interval_sec: 2.0
+    long_poll_timeout_sec: 45
+    backoff_base_sec: 1.0
+    backoff_max_sec: 30.0
+    credential_file: ~/.wx-ai-bridge/credentials.json
+    enabled: false
+  wecom:
+    # 企业微信 AI 机器人配置
+    bot_id:
+    secret:
+    ws_url: wss://openws.work.weixin.qq.com
+    allow_from: []
+    enable_streaming: true
+    send_thinking_message: false
+    enabled: false
+    send_file_allowed: true
+    # 群聊数字分身（默认关闭）
+    group_digital_avatar: false
+    my_user_id: ""
+    bot_name: ""
+    enable_memory: false
+
+# ========== 工具权限管控 ==========
+#
+# 三种整工具动作: allow / ask / deny。
+# tools.<name> 优先于参数级规则；allow/deny 会直接短路。
+# rules / approval_overrides 仅匹配 shell 命令文本，schema 为：
+#   - id: string
+#     description: string
+#     pattern: string or re:...
+#     action: allow | deny
+permissions:
+  enabled: false
+  # Default permission for tools not listed below.
+  defaults: ask
+
+  tools:
+    bash: ask
+    mcp_exec_command: ask
+    create_terminal: ask
+    write: ask
+    write_file: ask
+    edit_file: ask
+    search_replace: ask
+    write_memory: allow
+    edit_memory: allow
+    read_memory: allow
+    memory_search: allow
+    memory_get: allow
+    todo_create: allow
+    todo_insert: allow
+    todo_complete: allow
+    todo_remove: allow
+    todo_list: allow
+    # Coding Memory 工具权限
+    coding_memory_write: allow
+    coding_memory_edit: allow
+    coding_memory_read: allow
+    mcp_free_search: allow
+    mcp_paid_search: allow
+    mcp_petal_search: allow
+    mcp_fetch_webpage: allow
+    cron_list_jobs: allow
+    cron_get_job: allow
+    cron_create_job: allow
+    cron_update_job: allow
+    cron_delete_job: allow
+    cron_toggle_job: allow
+    cron_preview_job: allow
+
+  rules:
+    - id: shell_allow_dir
+      pattern: "dir *"
+      action: allow
+    - id: shell_allow_ls
+      pattern: "ls *"
+      action: allow
+    - id: shell_allow_pwd
+      pattern: "pwd *"
+      action: allow
+    - id: shell_allow_cd
+      pattern: "cd *"
+      action: allow
+    - id: shell_allow_echo
+      pattern: "echo *"
+      action: allow
+    - id: shell_allow_cat
+      pattern: "cat *"
+      action: allow
+    - id: shell_allow_type
+      pattern: "type *"
+      action: allow
+    - id: shell_allow_tree
+      pattern: "tree *"
+      action: allow
+    - id: shell_allow_get_childitem
+      pattern: "Get-ChildItem *"
+      action: allow
+    - id: shell_allow_get_content
+      pattern: "Get-Content *"
+      action: allow
+    - id: shell_allow_select_string
+      pattern: "Select-String *"
+      action: allow
+    - id: shell_allow_head
+      pattern: "head *"
+      action: allow
+    - id: shell_allow_tail
+      pattern: "tail *"
+      action: allow
+    - id: shell_allow_git_status
+      pattern: "git status *"
+      action: allow
+    - id: shell_allow_git_log
+      pattern: "git log *"
+      action: allow
+    - id: shell_allow_git_diff
+      pattern: "git diff *"
+      action: allow
+    - id: shell_allow_git_branch
+      pattern: "git branch *"
+      action: allow
+
+  approval_overrides: []
+
+  # 数字分身 owner-scoped 权限（默认空，不生效）
+  owner_scopes: {}
+  deny_guidance_message: ""
+
+  # Phase-1: 命令意图抽取（L1 shlex + L3-Cmd LLM）；关闭后只保留工具参数三轴判定。
+  command_intent:
+    enabled: true
+    timeout_seconds: 15
+    extra_body:
+      thinking:
+        type: disabled
+
+  # Phase-1: 文件路径三轴权限（read / write / exec）。
+  file_guard:
+    workspace:
+      rw_enabled: true
+      description: "Agent workspace 内默认放行 read / write"
+    global: {}
+    trusted_exec_directory: []
+    tool_bindings: {}
+
+  # 兼容键：旧 external_directory 在加载时会被自动迁移到 file_guard.global。
+  external_directory:
+    "*": "ask"
+
+browser:
+  # chrome_path can be a string or per-OS map.
+  # Example:
+  # chrome_path:
+  #   windows: "C:\\Users\\YOUR_USER\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe"
+  #   macos: "/Applications/Google Chrome.app"
+  #   linux: "/usr/bin/google-chrome"
+  remote_debugging_address: "127.0.0.1"
+  remote_debugging_port: 9222
+  # empty means use launcher default profile path by OS
+  user_data_dir: ""
+  profile_directory: "Default"
+
+updater:
+  enabled: true
+  repo_owner: CharlieZhao95
+  repo_name: jiuwenclaw
+  release_api_url: ""
+  asset_name_pattern: "jiuwenclaw-setup-{version}.exe"
+  sha256_name_pattern: "jiuwenclaw-setup-{version}.exe.sha256"
+  timeout_seconds: 20
+
+extensions:
+   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
+   # EXTENSION_DIRS="E:/a;D:/b"; 默认会加载仓库根目录 extensions
+   extension_dirs: "/app/jiuwenclaw/docker/yr_extensions"
+
+team:
+  team_name: jiuwen_team
+  lifecycle: persistent
+  teammate_mode: build_mode
+  spawn_mode: inprocess
+
+  leader:
+    member_name: team_leader
+    name: TeamLeader
+    persona: "天才项目管理专家，擅长任务分解和团队协调"
+    domain: project_management
+
+  transport:
+    type: inprocess
+
+  storage:
+    type: sqlite
+    params:
+      connection_string: "team.db"
+      pool_size: 20
+      max_overflow: 40
+      pool_timeout: 120
+      connect_timeout: 300
+
+modes:
+  # 一级模式 claw / code
+  claw:
+    # claw 模式支持 性能/规划/集群
+    fast:
+      memory:
+      rails:
+      tools:
+    plan:
+      memory:
+      rails:
+      tools:
+    team:
+  code:
+    # code 模式
+    memory:
+    rails:
+    tools:
+
+# Petal 搜索：默认关闭；为 true 时需同时配置环境变量 API_BASE（或 OPENAI_BASE_URL）与 default_headers（JSON）
+enable_petal_web_search: true
