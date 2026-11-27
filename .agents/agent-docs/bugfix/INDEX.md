@@ -249,6 +249,7 @@ generated: true
 | [B_20261120_1735_upsert-empty-temperature](jiuwenswarm/common/B_20261120_1735_upsert-empty-temperature.md) | B | models.upsert 将空串 temperature 原样落库，与文档约定的空串转 null 不符 | openjiuwen_ai | 无独立 D：仅统一 upsert 与 replace_all 对空串 temperature 的归一化口径，不改模型配置结构与合并语义；无独立设计。 |
 | [B_20261121_0108_pypi-update-version-baseline](jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
 | [B_20261124_2201_rea-npx-readiness](jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
+| [B_20261126_1310_updater-status-progress-fields](jiuwenswarm/common/B_20261126_1310_updater-status-progress-fields.md) | B | pip 升级进度字段未声明于 UpdateStatus，被 asdict 静默丢弃，前端进度活动行永远空白 | linghb | 无独立 D：修复 UpdateStatus dataclass 字段集与运行时 setattr 写入之间的静默不一致，不改变更新源配置、安装方式与前端消费契约；无独立设计。 |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 

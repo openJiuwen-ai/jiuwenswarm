@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import sys
 import threading
 import time
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,8 @@ from jiuwenswarm.common.version_source import (
     strip_build_suffix,
 )
 from jiuwenswarm.common.utils import get_user_workspace_dir
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_RELEASE_API_GITCODE = "https://api.gitcode.com/api/v5/repos/{owner}/{repo}/releases/latest"
 DEFAULT_RELEASE_API_GITHUB = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
@@ -117,6 +120,11 @@ class UpdateStatus:
     checked_at: float = 0.0
     installing: bool = False
     restart_command: str = ""
+    # Pip-install progress line and captured output pushed by the upgrade
+    # executor via _executor_callback. current_activity is read by the
+    # UpdatePanel frontend; pip_output is diagnostics, no UI consumer yet.
+    current_activity: str = ""
+    pip_output: str = ""
 
 
 class UpdaterService:
@@ -215,12 +223,16 @@ class UpdaterService:
         )
 
         pip_state = "upgrading" if install_mode == "pip" else "downloading"
+        # Reset the pip activity line so a leftover activity from a failed
+        # previous run cannot flash in the panel before the executor's first
+        # callback arrives. pip_output stays for diagnostics.
         self._update_status(
             state=pip_state,
             error="",
             downloaded_bytes=0,
             total_bytes=0,
             installing=False,
+            current_activity="",
         )
 
         thread = threading.Thread(
@@ -585,5 +597,14 @@ class UpdaterService:
 
     def _update_status(self, **updates: Any) -> None:
         with self._lock:
+            declared = {f.name for f in fields(UpdateStatus)}
             for key, value in updates.items():
+                if key not in declared:
+                    # asdict() silently drops attributes missing from the
+                    # dataclass, so an undeclared push would never reach
+                    # get_status(); surface it instead of losing it.
+                    logger.debug(
+                        "Dropping undeclared UpdateStatus field %r pushed by an executor callback", key
+                    )
+                    continue
                 setattr(self._status, key, value)
