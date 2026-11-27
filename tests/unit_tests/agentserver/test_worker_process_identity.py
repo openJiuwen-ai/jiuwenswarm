@@ -321,13 +321,17 @@ def test_resident_validation_and_reconnect_use_ticks(monkeypatch, restricted_pro
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("identity_case", ["timestamp_drift", "changed_ticks", "missing_identity"])
+@pytest.mark.parametrize(("identity_case", "platform"), [
+    ("timestamp_drift", "linux"), ("timestamp_drift", "darwin"),
+    ("changed_ticks", "linux"), ("missing_identity", "linux"),
+])
 async def test_replacement_reclaims_timestamp_drift_but_refuses_unverified_identity(
-    monkeypatch, tmp_path, restricted_process, identity_case,
+    monkeypatch, tmp_path, restricted_process, identity_case, platform,
 ):
     from jiuwenswarm.server.supervisor import identity as deployment_identity
     from jiuwenswarm.server.supervisor import runtime_supervisor
 
+    monkeypatch.setattr(runtime_supervisor, "sys", SimpleNamespace(platform=platform))
     socket_path = str(tmp_path / "worker")
     restricted_process.create_time.side_effect = None
     restricted_process.create_time.return_value = 2.0
@@ -355,10 +359,11 @@ async def test_replacement_reclaims_timestamp_drift_but_refuses_unverified_ident
     front = RuntimeSupervisor(Readiness(), stub=True, socket_path=socket_path)
     monkeypatch.setattr(front, "_migrate_legacy_workers", AsyncMock())
 
-    if identity_case != "timestamp_drift":
+    if identity_case != "timestamp_drift" or platform == "darwin":
         expected_error = {
             "missing_identity": "requires a process identity",
             "changed_ticks": "PID identity changed",
+            "timestamp_drift": "PID identity changed",
         }[identity_case]
         with pytest.raises(RuntimeError, match=expected_error):
             await front._connect_resident()
