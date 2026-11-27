@@ -3016,6 +3016,7 @@ class JiuWenSwarmDeepAdapter:
     def get_plugin_runtime_host(self) -> PluginRuntimeHost:
         """Expose a fresh dependency snapshot without exposing adapter internals."""
         from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import PluginRuntimeHost
+        from jiuwenswarm.agents.harness.common.memory.plugin import host_memory_context
 
         active_config = getattr(self, "_active_code_config", None)
         config = active_config() if callable(active_config) else self._config_base_cache or get_config()
@@ -3028,6 +3029,12 @@ class JiuWenSwarmDeepAdapter:
             config=config,
             has_conflicting_turn=self._has_conflicting_inflight_turn,
             wants_attach_goal=self._wants_attach_goal,
+            memory_context=host_memory_context(
+                config,
+                agent_name=getattr(self, "_agent_name", None),
+                project_dir=getattr(self, "_memory_project_dir", None) or getattr(self, "_project_dir", None),
+                sdk_media_globals=self._jiuwen_memory_media_globals,
+            ),
         )
 
     def get_plugin_runtime_manager(self) -> PluginRuntimeManager:
@@ -3574,11 +3581,13 @@ class JiuWenSwarmDeepAdapter:
         self, request: AgentRequest
     ) -> AgentResponse | None:
         """Apply agent_template / plugin equipment for the upcoming turn."""
+        from jiuwenswarm.agents.harness.common.memory.plugin import MEMORY_PLUGIN_ID, default_memory_plugins
+
         params = dict(request.params) if isinstance(request.params, dict) else {}
         external_binding = getattr(self, "_external_harness_binding", None)
         if external_binding is not None:
             plugin_names = params.get("plugin_names")
-            if plugin_names not in (None, []):
+            if plugin_names not in (None, [], [MEMORY_PLUGIN_ID]):
                 return self._equipment_error_response(
                     request,
                     "External Harness agent_template does not support plugins",
@@ -3647,8 +3656,12 @@ class JiuWenSwarmDeepAdapter:
                 if self._loaded_agent_template is not None
                 else ""
             )
-        if "plugin_names" not in params:
-            params["plugin_names"] = self._current_plugin_names()
+        explicit_plugin_selection = "plugin_names" in params
+        if not explicit_plugin_selection:
+            params["plugin_names"] = default_memory_plugins(
+                request.session_id, params, self._current_plugin_names(),
+            )
+        saved_plugins = None
         try:
             agent_template_name = params.get("agent_template_name")
             if isinstance(agent_template_name, str) and agent_template_name.strip():
@@ -3663,15 +3676,15 @@ class JiuWenSwarmDeepAdapter:
                     else item
                     for item in plugin_names
                 ]
-                if request.session_id and params["plugin_names"]:
+                if request.session_id:
                     from jiuwenswarm.server.runtime.session.session_metadata import get_session_equipment
 
-                    saved = get_session_equipment(request.session_id, cache_bust=True).get("plugin_names", [])
+                    saved_plugins = get_session_equipment(request.session_id, cache_bust=True).get("plugin_names")
                     # A refreshed client may echo equipment saved before uninstall.
                     # New invalid selections still reach the marketplace gate.
                     params["plugin_names"] = [
                         name for name in params["plugin_names"]
-                        if name not in saved or equipment.is_plugin_allowed(name)
+                        if not saved_plugins or name not in saved_plugins or equipment.is_plugin_allowed(name)
                     ]
         except (TypeError, ValueError) as exc:
             return self._equipment_error_response(request, str(exc))
@@ -3686,16 +3699,40 @@ class JiuWenSwarmDeepAdapter:
         if connector_error is not None:
             return self._equipment_error_response(request, connector_error)
 
+        selected_plugins = params["plugin_names"]
+        non_fresh_turn = self._wants_attach_goal(params) or self._has_conflicting_inflight_turn(request.session_id)
+        mounted_plugins = self._current_plugin_names()
+        memory_selected_before = MEMORY_PLUGIN_ID in (mounted_plugins if saved_plugins is None else saved_plugins)
+        check_memory_selection = non_fresh_turn and explicit_plugin_selection and isinstance(selected_plugins, list)
+        if (
+            check_memory_selection
+            and memory_selected_before != (MEMORY_PLUGIN_ID in selected_plugins)
+            and equipment.is_plugin_allowed(MEMORY_PLUGIN_ID)
+        ):
+            return self._equipment_error_response(
+                request, "equipment change rejected at non-fresh turn: plugin set changed",
+            )
+        keep_memory_binding = False
+        if isinstance(selected_plugins, list) and MEMORY_PLUGIN_ID in selected_plugins:
+            from jiuwenswarm.server.runtime.managed_memory_http import managed_memory_http
+
+            memory_running = managed_memory_http.status()["running"]
+            if non_fresh_turn:
+                keep_memory_binding = MEMORY_PLUGIN_ID in mounted_plugins
+                if not keep_memory_binding:
+                    params["plugin_names"] = [name for name in selected_plugins if name != MEMORY_PLUGIN_ID]
+            elif not memory_running:
+                params["plugin_names"] = [name for name in selected_plugins if name != MEMORY_PLUGIN_ID]
+                logger.warning("Agent Memory HTTP is unavailable; continuing the turn without memory")
+
         # Rule3: can only load package at fresh turn(no peer in-flight turn / goal attached).
         # The current chat.send may already be reserved as busy for permission reload;
         # that self-reservation is not a conflicting turn.
         would_change, reason = self._equipment_would_change(params)
-        if would_change:
-            attach_goal = self._wants_attach_goal(params)
-            if attach_goal or self._has_conflicting_inflight_turn(request.session_id):
-                return self._equipment_error_response(
-                    request, f"equipment change rejected at non-fresh turn: {reason}"
-                )
+        if would_change and non_fresh_turn:
+            return self._equipment_error_response(
+                request, f"equipment change rejected at non-fresh turn: {reason}"
+            )
 
         from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import (
             get_plugin_runtime_manager,
@@ -3704,6 +3741,7 @@ class JiuWenSwarmDeepAdapter:
         try:
             async with get_plugin_runtime_manager(self).transition(
                 params, request.session_id or self._parent_session_id or "default",
+                keep_memory_binding=keep_memory_binding,
             ):
                 await self._unload_plugins_for_request(params)
                 await self._unload_agent_template_for_request(params)
@@ -3720,7 +3758,7 @@ class JiuWenSwarmDeepAdapter:
         save_session_equipment(
             request.session_id or "",
             agent_template_name=params.get("agent_template_name"),
-            plugin_names=params.get("plugin_names"),
+            plugin_names=selected_plugins,
             mcp=params.get("mcp"),
         )
         if app_package is not None and "client_state" in params:
@@ -24779,9 +24817,17 @@ class JiuWenSwarmDeepAdapter:
 
     async def _apply_memory_rail_config(self, mode: str):
         """Reconcile memory while holding the adapter's lifecycle lock."""
-        config = get_config()
-        rail = self._memory_rail
+        from jiuwenswarm.agents.harness.common.memory.plugin import supported_memory_session
         from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+
+        rail = self._memory_rail
+        if supported_memory_session({"mode": mode}):
+            if rail is not None:
+                await self._drain_jiuwen_memory_rail(rail)
+                await self._instance.unregister_rail(rail)
+                self._memory_rail = None
+            return
+        config = get_config()
         if uses_jiuwen_team_memory(config, mode):
             if rail is not None:
                 await self._drain_jiuwen_memory_rail(rail)
@@ -24994,7 +25040,7 @@ class JiuWenSwarmDeepAdapter:
             else:
                 self._external_memory_session_finalized = True
 
-    async def _handle_external_memory_rail_by_config(self):
+    async def _handle_external_memory_rail_by_config(self, mode: str = "agent"):
         """Register / unregister ExternalMemoryRail based on config.
 
         External memory is mode-independent — configured once and active in
@@ -25006,9 +25052,10 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
             is_external_memory_enabled,
         )
+        from jiuwenswarm.agents.harness.common.memory.plugin import supported_memory_session
 
         config = get_config()
-        if is_external_memory_enabled(config) and not getattr(
+        if not supported_memory_session({"mode": mode}) and is_external_memory_enabled(config) and not getattr(
             self, "_eternal_conversation_enabled", False
         ):
             if self._external_memory_rail_registered:
@@ -26200,7 +26247,11 @@ class JiuWenSwarmDeepAdapter:
         return False
 
     async def try_start_dreaming(self, busy_checker: Callable[[], bool] | None = None) -> None:
-        if self._dreaming_started:
+        from jiuwenswarm.agents.harness.common.memory.plugin import supported_memory_session
+
+        if self._dreaming_started or supported_memory_session({
+            "mode": getattr(self, "_session_instance_mode", "agent"),
+        }):
             return
         try:
             from jiuwenswarm.agents.harness.common.memory.dreaming import start_dreaming

@@ -5027,7 +5027,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           )}
                         </div>
-                        {!isTeamMode && (
+                        {(!isTeamMode || (workMode !== 'design' && !enterprise)) && (
                           <div className="chat-attach-menu-item-anchor">
                             <button
                               type="button"
@@ -5058,6 +5058,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             </button>
                             {extensionPanelOpen && (
                               <ExtensionPickerPanel
+                                teamMemoryOnly={isTeamMode}
                                 panelRef={extensionPanelRef}
                                 direction={attachMenuDirection}
                                 onClose={() => setExtensionPanelOpen(false)}

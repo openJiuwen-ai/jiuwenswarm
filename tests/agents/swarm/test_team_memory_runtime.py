@@ -12,6 +12,19 @@ import pytest
 from jiuwenswarm.agents.harness.common.memory.document_runtime_holder import DocumentRuntimeHolder
 
 
+@pytest.fixture
+def legacy_team_membership(monkeypatch):
+    """Keep standalone transport tests on their explicit legacy store."""
+    from jiuwenswarm.agents.harness.common.memory import team_memory_members
+
+    membership_client = team_memory_members._membership_client
+
+    def legacy_lease(*args, **kwargs):
+        return membership_client(*args, **{**kwargs, "managed_only": False})
+
+    monkeypatch.setattr(team_memory_members, "_membership_client", legacy_lease)
+
+
 class Resource:
     def __init__(self):
         self.started = 0
@@ -300,6 +313,7 @@ async def test_explicit_expert_membership_changes_use_stable_scope(monkeypatch):
     from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
     client = AsyncMock()
+    revoke = AsyncMock()
 
     @asynccontextmanager
     async def lease(_config, *, create=False):
@@ -307,6 +321,7 @@ async def test_explicit_expert_membership_changes_use_stable_scope(monkeypatch):
         yield client, "service-admin", ("org", "", "user")
 
     monkeypatch.setattr(team_memory_members, "_membership_client", lease)
+    monkeypatch.setattr(team_memory_members, "_revoke_membership", revoke)
     context = SwarmBuildContext(
         config={}, memory_team="stable-team", memory_project="project-a", memory_group="design",
     )
@@ -319,24 +334,13 @@ async def test_explicit_expert_membership_changes_use_stable_scope(monkeypatch):
     assert all(call.args[1][0].scope.agent == "expert:poster"
                for call in client.attach_collective.await_args_list)
     await hook("instance-2", template, False)
-    assert {call.args[0].kind for call in client._remove_collective.await_args_list} == {
-        "team", "project",
-    }
-    assert all(call.args[1][0].agent == "expert:poster"
-               for call in client._remove_collective.await_args_list)
+    revoke.assert_awaited_once_with("member", "expert:poster", config={}, team="stable-team", project="project-a")
 
 
-def test_expert_team_leader_resolves_to_template_subject_without_group_binding(monkeypatch):
+def test_expert_team_leader_resolves_to_template_subject_without_group_binding():
     from jiuwenswarm.agents.swarm.context import SwarmBuildContext
     from jiuwenswarm.agents.swarm.providers import team_memory
 
-    calls = []
-
-    def fake_build(*args, **kwargs):
-        calls.append(kwargs)
-        return object()
-
-    monkeypatch.setattr(team_memory, "build_jiuwen_memory_rail", fake_build)
     config = {"memory": {"builtin": {"provider": "jiuwen", "jiuwen": {"mode": "sdk"}}}}
 
     expert_ctx = SwarmBuildContext(
@@ -352,42 +356,18 @@ def test_expert_team_leader_resolves_to_template_subject_without_group_binding(m
 
     assert team_memory.build_team_memory({}, expert_ctx) is not None
     assert team_memory.build_team_memory({}, cluster_ctx) is not None
-    assert calls[0]["collective_agent"] == "studio:leader"
-    assert "group" not in calls[0]["team_binding"]
-    assert calls[1]["collective_agent"] == "main_agent"
-    assert "group" not in calls[1]["team_binding"]
+    expert, expert_binding = team_memory._team_identity(expert_ctx)
+    cluster, cluster_binding = team_memory._team_identity(cluster_ctx)
+    assert expert == "studio:leader"
+    assert "group" not in expert_binding
+    assert cluster == "main_agent"
+    assert "group" not in cluster_binding
 
 
 @pytest.mark.asyncio
-async def test_revoke_expert_group_memory_only_revokes_team_dimension(monkeypatch):
-    from contextlib import asynccontextmanager
-    from unittest.mock import AsyncMock
-
-    from jiuwen_memory.api import Dimension, Scope
-    from jiuwenswarm.agents.harness.common.memory import team_memory_members
-    from jiuwenswarm.common.team_memory_binding import team_memory_key
-
-    client = AsyncMock()
-    expected_team = team_memory_key("org", "", "user", "studio")
-    expected_dimension = Dimension("org", "", "team", expected_team)
-    active_scopes = [Scope(org="org", space="", user="user", agent="studio:leader")]
-    client.active_collective_members.return_value = active_scopes
-
-    @asynccontextmanager
-    async def lease():
-        yield client, "service-admin", ("org", "", "user")
-
-    monkeypatch.setattr(team_memory_members, "_membership_client", lease)
-    await team_memory_members.revoke_expert_group_memory("studio")
-
-    client.active_collective_members.assert_awaited_once_with(expected_dimension, "service-admin")
-    client._remove_collective.assert_awaited_once_with(
-        expected_dimension, active_scopes, "service-admin",
-    )
-
-
-@pytest.mark.asyncio
-async def test_swarm_http_registers_and_revokes_through_separate_principal(tmp_path, collective_extraction):
+async def test_swarm_http_registers_and_revokes_through_separate_principal(
+    tmp_path, collective_extraction, legacy_team_membership,
+):
     from http.server import ThreadingHTTPServer
     from threading import Thread
 
@@ -398,7 +378,8 @@ async def test_swarm_http_registers_and_revokes_through_separate_principal(tmp_p
     from jiuwen_memory_entry.http_server.__main__ import HttpServer
 
     from jiuwenswarm.agents.swarm.context import SwarmBuildContext
-    from jiuwenswarm.agents.swarm.providers.team_memory import build_team_memory
+    from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import build_jiuwen_memory_rail
+    from jiuwenswarm.agents.swarm.providers.team_memory import _team_identity
 
     gateway_key = "test-swarm-gateway"
     cfg = _agent_default_config()
@@ -441,7 +422,9 @@ async def test_swarm_http_registers_and_revokes_through_separate_principal(tmp_p
         from jiuwenswarm.agents.harness.common.memory.team_memory_members import prepare_team_memory
 
         assert await prepare_team_memory(context)
-        rail = build_team_memory({}, context)[-1]
+        subject, binding = _team_identity(context)
+        rail = build_jiuwen_memory_rail(config, scene="team", project=context.memory_project,
+                                        collective_agent=subject, team_binding=binding)
         await rail._provider.initialize(**rail._identity)
         client = rail._provider._client
         dimension = Dimension("local", "", "team", "studio-team")
@@ -459,15 +442,16 @@ async def test_swarm_http_registers_and_revokes_through_separate_principal(tmp_p
         document = tmp_path / "memory" / "team_memory" / "teams" / "studio-team" / "MEMORY.md"
         assert "# Decision\nocean architecture" in document.read_text(encoding="utf-8")
         assert "ocean architecture" in await rail._provider.prefetch("ocean")
-        callback = context.extras["team.on_explicit_member_change"]
-        await callback("leader", {}, False)
+        project = Dimension("local", "", "project", "repo")
+        target = Scope(org="local", user="developer", agent="studio:leader")
+        for enrolled in (dimension, project):
+            await client._remove_collective(enrolled, [target], COLLECTIVE_MANAGER_ID)
         authors = await client.active_collective_members(dimension, COLLECTIVE_MANAGER_ID)
         assert [author.agent for author in authors] == ["main_agent"]
-        project = Dimension("local", "", "project", "repo")
         authors = await client.active_collective_members(project, COLLECTIVE_MANAGER_ID)
         assert [author.agent for author in authors] == ["main_agent"]
         assert "ocean architecture" not in await rail._provider.prefetch("ocean")
-        await callback("leader", {}, True)
+        await context.extras["team.on_explicit_member_change"]("leader", {}, True)
         assert "ocean architecture" in await rail._provider.prefetch("ocean")
     finally:
         if rail is not None:
@@ -536,7 +520,7 @@ async def test_real_sdk_portal_survives_one_provider_exit(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["team.work.normal", "team.code.normal"])
 async def test_public_swarm_rail_runs_core_agent_and_persists_team_memory(
-    tmp_path, monkeypatch, mode, collective_extraction,
+    tmp_path, monkeypatch, mode, collective_extraction, legacy_team_membership,
 ):
     adapter = pytest.importorskip("jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider")
     from openjiuwen.core.foundation.llm import (
@@ -545,7 +529,7 @@ async def test_public_swarm_rail_runs_core_agent_and_persists_team_memory(
     from openjiuwen.core.runner import Runner
     from openjiuwen.harness.factory import create_deep_agent
     from jiuwenswarm.agents.swarm.context import SwarmBuildContext
-    from jiuwenswarm.agents.swarm.providers.team_memory import build_team_memory
+    from jiuwenswarm.agents.swarm.providers.team_memory import _team_identity
     from jiuwenswarm.agents.harness.common.memory import jiuwen_rail_builder as builder
     from jiuwenswarm.agents.harness.common.memory import document_runtime_holder as pool
 
@@ -574,9 +558,11 @@ async def test_public_swarm_rail_runs_core_agent_and_persists_team_memory(
         memory_project="repo", memory_team=team, memory_group="studio",
         memory_experts=("leader", "reviewer"), member_name="team_leader")
     assert await prepare_team_memory(context)
-    rails = build_team_memory({}, context)
-    assert rails is not None
-    rail = rails[-1]
+    subject, binding = _team_identity(context)
+    rail = builder.build_jiuwen_memory_rail(config, scene="team", project=context.memory_project,
+                                            collective_agent=subject, team_binding=binding)
+    assert rail is not None
+    rails = [rail]
     assert "group" not in rail._provider._collective_coordinates
     history, tool_history = [], []
     async def invoke(_model, messages, **kwargs):
@@ -636,7 +622,7 @@ async def test_close_failure_quarantines_root_without_leaking_other_roots(tmp_pa
 
 @pytest.mark.asyncio
 async def test_configured_identity_shares_profiles_and_keeps_project_team_scope(
-    tmp_path, monkeypatch, collective_extraction,
+    tmp_path, monkeypatch, collective_extraction, legacy_team_membership,
 ):
     adapter = pytest.importorskip("jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider")
     from jiuwen_memory.construction.extractor_impl.agent_llm_extractor import AgentLlmExtractor

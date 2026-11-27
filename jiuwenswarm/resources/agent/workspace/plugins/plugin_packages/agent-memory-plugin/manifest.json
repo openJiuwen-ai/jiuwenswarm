@@ -1,0 +1,19 @@
+{
+  "package_type": "plugin",
+  "id": "agent-memory-plugin",
+  "name": "Agent Memory",
+  "version": "1.0.0",
+  "description": "Adds long-term memory to Work, Code, and Team. It recalls relevant memories before answering and saves useful information after a turn. Team also saves and retrieves conclusions within the same team.",
+  "display_name": {"zh": "记忆插件", "en": "Memory Plugin"},
+  "display_description": {"zh": "为 Work、Code 和 Team 提供长期记忆。回答前自动召回相关记忆，对话结束后保存用户偏好和项目经验，并提供记忆检索及文档读写工具。Team 还可保存和召回本团队的结论。", "en": "Adds long-term memory to Work, Code, and Team. It recalls memories before answering, saves preferences and project knowledge after a turn, and provides tools to search and edit memory documents. Team can also save and recall its own conclusions."},
+  "metadata": {
+    "plugin_runtime": {
+      "contract_version": 1,
+      "profiles": ["work", "code"],
+      "role_scope": "main",
+      "requires": ["memory_context"],
+      "capabilities": ["automatic_memory"]
+    }
+  },
+  "rails": [{"file": "rails/memory_rail.py", "class": "MemoryRailFactory"}]
+}

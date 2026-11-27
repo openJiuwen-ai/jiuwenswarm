@@ -14,12 +14,14 @@ await build({
     'src/components/ConnectorMarket/MarketplacePage.tsx',
     'src/components/ConnectorMarket/PluginDetailPage.tsx',
     'src/components/ConnectorMarket/SystemPluginDetailPage.tsx',
+    'src/multi-session/state/createConversationSession.ts',
   ],
   bundle: true,
   packages: 'external',
   platform: 'node',
   format: 'esm',
   outdir: 'node_modules/.cache/plugin-mine-actions',
+  entryNames: '[name]',
   outExtension: { '.js': '.mjs' },
   loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
   define: { 'import.meta.env': '{}' },
@@ -117,6 +119,7 @@ await i18next.use(initReactI18next).init({
 const { MarketplacePage } = await import('../node_modules/.cache/plugin-mine-actions/MarketplacePage.mjs');
 const { PluginDetailPage } = await import('../node_modules/.cache/plugin-mine-actions/PluginDetailPage.mjs');
 const { SystemPluginDetailPage } = await import('../node_modules/.cache/plugin-mine-actions/SystemPluginDetailPage.mjs');
+const { createConversationSession } = await import('../node_modules/.cache/plugin-mine-actions/createConversationSession.mjs');
 const plugin = {
   id: 'legacy-plugin', runtimePackageName: 'legacy-plugin', source: 'local',
   displayName: { zh: '本地插件', en: 'Local plugin' },
@@ -417,6 +420,40 @@ for (const fromMy of [true, false]) {
     });
   });
 }
+
+test('session creation preserves the selected memory plugin', async () => {
+  const equipment = { plugin_names: ['agent-memory-plugin'] };
+  const created = await createConversationSession(
+    async () => ({ sessionId: 'web_real', projectId: 'default', workMode: 'work', session_equipment: equipment }),
+    { create_token: 'stable-token', mode: 'agent', persist_session: true },
+  );
+  assert.deepEqual(created.session_equipment, equipment);
+});
+
+test('memory plugin detail shows the managed HTTP listener without transport controls', async () => {
+  resetState({ installed: true, connected: true });
+  globalThis.pluginActionState.detailCache[plugin.id].memoryAccess = {
+    mode: 'http', managed_http: { running: true, base_url: 'http://127.0.0.1:8137' },
+  };
+
+  await render(PluginDetailPage, { id: plugin.id, onBack() {} }, async host => {
+    assert.match(host.textContent, /内置 HTTP 服务/);
+    assert.match(host.textContent, /服务运行中/);
+    assert.match(host.textContent, /127\.0\.0\.1:8137/);
+    assert.equal(host.querySelector('input[type="url"], input[type="password"], [role="radiogroup"]'), null);
+  });
+});
+
+test('memory plugin detail remains usable without listener status', async () => {
+  resetState({ installed: true, connected: true });
+  globalThis.pluginActionState.detailCache[plugin.id].memoryAccess = { mode: 'http', managed_http: null };
+
+  await render(PluginDetailPage, { id: plugin.id, fromMy: true, onBack() {}, onUse() {} }, async host => {
+    const use = host.querySelector('[data-testid="connector-market-plugin-detail-use"]');
+    assert.ok(use);
+    assert.equal(use.disabled, false);
+  });
+});
 
 test('my ready plugin detail can use the installed package', async () => {
   const calls = resetState({ installed: true, connected: true });
