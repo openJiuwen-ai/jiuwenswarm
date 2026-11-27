@@ -210,52 +210,183 @@ async def test_refresh_skill_rails_removes_deleted_skill_from_real_skill_use_rai
 
 
 class _ToggleSkillManager:
+    def __init__(self, success=True, confirmation_required=False):
+        self._success = success
+        self._confirmation_required = confirmation_required
+
     async def handle_skills_toggle(self, params):
-        return {"success": True, "name": params["name"], "enabled": params["enabled"]}
+        payload = {"success": self._success, "name": params["name"], "enabled": params["enabled"]}
+        if self._confirmation_required:
+            payload["confirmation_required"] = True
+        return payload
 
 
-@pytest.mark.asyncio
-async def test_toggle_rebuilds_and_refreshes_live_session_rails(swarm_with_fake_adapter):
-    """A skill switch rebuilds the root instance and also refreshes the live sessions' skill rails."""
-    swarm = swarm_with_fake_adapter
-    adapter = swarm._adapter
+def _toggle_request(enabled, **extra):
+    return AgentRequest(
+        request_id="test-toggle",
+        req_method=ReqMethod.SKILLS_TOGGLE,
+        params={"name": "pptx-generator", "enabled": enabled, **extra},
+    )
+
+
+def _record_root_rebuild(swarm):
     created = []
 
     async def _create_instance(*args, **kwargs):
         created.append(True)
 
     swarm.create_instance = _create_instance
-    swarm._skill_manager = _ToggleSkillManager()
-    request = AgentRequest(
-        request_id="test-toggle",
-        req_method=ReqMethod.SKILLS_TOGGLE,
-        params={"name": "pptx-generator", "enabled": False},
-    )
-
-    response = await swarm._handle_skills_request(request)
-
-    assert response.ok is True
-    assert created == [True]
-    assert adapter.refresh_called is True
+    return created
 
 
 @pytest.mark.asyncio
-async def test_toggle_dry_run_does_not_refresh_session_rails(swarm_with_fake_adapter):
-    """A dry-run probe writes no state, so it refreshes no session skill rail."""
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_toggle_rebuilds_and_refreshes_live_session_rails(swarm_with_fake_adapter, enabled):
+    """A skill switch, off or on, rebuilds the root instance and also refreshes the live sessions' skill rails."""
     swarm = swarm_with_fake_adapter
-    adapter = swarm._adapter
+    created = _record_root_rebuild(swarm)
+    swarm._skill_manager = _ToggleSkillManager()
 
-    async def _create_instance(*args, **kwargs):
+    response = await swarm._handle_skills_request(_toggle_request(enabled))
+
+    assert response.ok is True
+    assert created == [True]
+    assert swarm._adapter.refresh_called is True
+
+
+@pytest.mark.asyncio
+async def test_toggle_dry_run_skips_the_live_session_refresh(swarm_with_fake_adapter):
+    """A dry-run toggle writes no state, so it skips the live-session refresh this handler adds.
+
+    The root rebuild that every toggle already runs is not changed here.
+    """
+    swarm = swarm_with_fake_adapter
+    _record_root_rebuild(swarm)
+    swarm._skill_manager = _ToggleSkillManager()
+
+    await swarm._handle_skills_request(_toggle_request(False, dry_run=True))
+
+    assert swarm._adapter.refresh_called is False
+
+
+@pytest.mark.asyncio
+async def test_failed_toggle_skips_the_live_session_refresh(swarm_with_fake_adapter):
+    """A toggle that did not succeed changed no skill, so it skips the live-session refresh."""
+    swarm = swarm_with_fake_adapter
+    _record_root_rebuild(swarm)
+    swarm._skill_manager = _ToggleSkillManager(success=False)
+
+    await swarm._handle_skills_request(_toggle_request(False))
+
+    assert swarm._adapter.refresh_called is False
+
+
+@pytest.mark.asyncio
+async def test_toggle_that_needs_confirmation_rebuilds_and_refreshes_nothing(swarm_with_fake_adapter):
+    """A toggle that waits for a confirmation changes nothing yet: no root rebuild and no refresh."""
+    swarm = swarm_with_fake_adapter
+    created = _record_root_rebuild(swarm)
+    swarm._skill_manager = _ToggleSkillManager(confirmation_required=True)
+
+    await swarm._handle_skills_request(_toggle_request(False))
+
+    assert created == []
+    assert swarm._adapter.refresh_called is False
+
+
+class _FakeLoopSession:
+    """The session state store a SkillUseRail keeps its skill baseline in."""
+
+    def __init__(self):
+        self._state = {}
+
+    def get_state(self, key):
+        return self._state.get(key)
+
+    def update_state(self, updates):
+        self._state.update(updates)
+
+
+class _SwitchableSkillManager:
+    """A skill manager whose toggle changes the disabled set that refresh_skill_rails reads."""
+
+    def __init__(self):
+        self.disabled = set()
+
+    async def handle_skills_toggle(self, params):
+        if params["enabled"]:
+            self.disabled.discard(params["name"])
+        else:
+            self.disabled.add(params["name"])
+        return {"success": True, "name": params["name"], "enabled": params["enabled"]}
+
+    def list_disabled_skills(self):
+        return sorted(self.disabled)
+
+
+@pytest.mark.asyncio
+async def test_toggle_reaches_the_skills_of_two_open_sessions(tmp_path, monkeypatch):
+    """Two open sessions, each with a stored skill baseline, see a switch off and back on at their next turn.
+
+    The sessions use real SkillUseRails. A rail merges the session's stored baseline back into the skills it
+    offers, so a switched-off skill stays available until that baseline is cleared.
+    """
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    _write_skill(skills_root, "alpha", "alpha skill")
+    _write_skill(skills_root, "beta", "beta skill")
+    monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_skill_scan_dirs", lambda self: [str(skills_root)])
+
+    manager = _SwitchableSkillManager()
+    sessions = []
+    children = {}
+    for session_id in ("session-a", "session-b"):
+        rail = SkillUseRail(str(skills_root), include_tools=False)
+        rail.set_sys_operation(_FakeSysOperation())
+        await rail.reload_skills()
+        loop_session = _FakeLoopSession()
+        rail._save_session_baseline(loop_session, rail.skills)
+        child = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+        child._skill_manager = manager
+        child._skill_rail = rail
+        child._skill_evolution_rail = None
+        child._instance_overrides = {}
+        child._instance = SimpleNamespace(_loop_session=loop_session, deep_config=None)
+        child._is_session_scoped_adapter = True
+        children[session_id] = child
+        sessions.append((rail, loop_session))
+
+    root = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    root._skill_manager = manager
+    root._skill_rail = None
+    root._skill_evolution_rail = None
+    root._instance_overrides = {}
+    root._instance = None
+    root._is_session_scoped_adapter = False
+    root._session_adapters = children
+
+    swarm = JiuWenSwarm.__new__(JiuWenSwarm)
+    swarm._adapter = root
+    swarm._sdk_name = "test"
+    swarm._skill_manager = manager
+    _record_root_rebuild(swarm)
+
+    async def _noop_reload(session_id=None):
         return None
 
-    swarm.create_instance = _create_instance
-    swarm._skill_manager = _ToggleSkillManager()
-    request = AgentRequest(
-        request_id="test-toggle-dry",
-        req_method=ReqMethod.SKILLS_TOGGLE,
-        params={"name": "pptx-generator", "enabled": False, "dry_run": True},
+    swarm._reload_team_skill_rails = _noop_reload
+
+    def offered():
+        return [[skill.name for skill in rail.get_skills_for_session(s)] for rail, s in sessions]
+
+    assert offered() == [["alpha", "beta"], ["alpha", "beta"]]
+
+    await swarm._handle_skills_request(
+        AgentRequest(request_id="off", req_method=ReqMethod.SKILLS_TOGGLE, params={"name": "beta", "enabled": False})
     )
+    assert offered() == [["alpha"], ["alpha"]]
 
-    await swarm._handle_skills_request(request)
-
-    assert adapter.refresh_called is False
+    await swarm._handle_skills_request(
+        AgentRequest(request_id="on", req_method=ReqMethod.SKILLS_TOGGLE, params={"name": "beta", "enabled": True})
+    )
+    assert offered() == [["alpha", "beta"], ["alpha", "beta"]]
