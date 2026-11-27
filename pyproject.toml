@@ -67,6 +67,8 @@ dependencies = [
     "pyyaml>=6.0",
     "httpx[socks]>=0.27",
     "json-repair>=0.58.0",
+    "jsonschema>=4.26.0,<5",
+    "referencing>=0.37.0,<1",
     "gitcode-api>=1.2.20",
     "faiss-cpu>=1.7.0",
     "numpy>=1.24.0",
@@ -120,6 +122,8 @@ harmony = [
     "pyyaml>=6.0",
     "httpx[socks]>=0.27",
     "json-repair>=0.58.0",
+    "jsonschema>=4.26.0,<5",
+    "referencing>=0.37.0,<1",
 ]
 a2a = ["a2a-sdk[http-server]==1.0.0"]
 ssh = ["asyncssh>=2.14.0,<2.24"]

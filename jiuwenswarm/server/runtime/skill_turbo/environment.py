@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+import copy
+import time
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -17,6 +19,7 @@ from openjiuwen.core.foundation.llm import Model
 from openjiuwen.core.runner import Runner
 
 from jiuwenswarm.server.runtime.skill_turbo.validator import PlanCodeValidator
+from jiuwenswarm.server.runtime.skill_turbo.accelerator_manifest import AcceleratorSpec
 from jiuwenswarm.server.runtime.skill_turbo.skill_meta import (
     find_skill_root_file,
     load_skill_meta,
@@ -57,6 +60,12 @@ class Skill:
     # 外部 turbo（技能目录）来源信息；内置 skill_codes 注册时为空。
     package_name: str = ""      # 动态包名（如 "skill_turbo_codes_ppt"）
     turbo_codes_dir: str = ""   # turbo_codes 目录绝对路径
+    accelerators: tuple[AcceleratorSpec, ...] = ()
+    manifest_fingerprint: str = ""
+    manifest_source: str = ""
+    manifest_valid: bool = True
+    manifest_errors: tuple[str, ...] = ()
+    full_plan_code: str | None = None
 
     # match() 方法已移除：实际路由走 planner 的 LLM 通道，
     # match_keywords 字段保留，仅作为 LLM 路由 payload 的描述输入。
@@ -77,10 +86,9 @@ class SkillTurboEnvironment:
     # 用于跨请求复用扫盘 + AST 校验结果，仅在文件 mtime 变化时重新扫描。
     _scan_cache: ClassVar[dict[str, tuple[float, list["Skill"]]]] = {}
 
-    # 外部 turbo 扫描缓存：key=技能根目录绝对路径 frozenset，
-    # value=(各 turbo_codes 目录 max .py mtime 快照 dict, Skill 列表)
+    # 有序来源 + 文件集合/stat；TTL保证同stat内容替换不会永久保留旧声明。
     _external_scan_cache: ClassVar[
-        dict[frozenset[str], tuple[dict[str, float], list["Skill"]]]
+        dict[tuple[str, ...], tuple[tuple, list["Skill"], float]]
     ] = {}
 
     _tool_info_last_export: ClassVar[dict[str, str]] = {}
@@ -411,6 +419,10 @@ class SkillTurboEnvironment:
                 "[SkillTurboEnvironment] register_skill overwrite skill=%s", skill.name
             )
         self._skills[skill.name] = skill
+        if skill.full_plan_code is None:
+            from jiuwenswarm.server.runtime.skill_turbo.planner import SkillTurboPlanner
+
+            skill.full_plan_code = SkillTurboPlanner(self).build_plan_code(skill)
 
     def has_skill(self, name: str) -> bool:
         return name in self._skills
@@ -776,19 +788,21 @@ class SkillTurboEnvironment:
         存在入口文件即视为加速面（无技能清单硬编码）。外部 skill 同名时
         覆盖内置注册（外部优先）。
 
-        缓存：roots 绝对路径 frozenset 为 key，各 turbo_codes 目录
-        max .py mtime 快照失效。
+        缓存按有序roots与元数据/源码stat快照失效，查询边界深拷贝声明。
         """
         from jiuwenswarm.server.runtime.skill_turbo.turbo_package_loader import (
             discover_external_turbo_skills,
             ensure_turbo_package,
+            external_metadata_snapshot,
         )
 
+        self.external_scan_ok = True
         try:
             from jiuwenswarm.common.utils import resolve_agent_registered_skill_dirs
 
             roots = [Path(p) for p in resolve_agent_registered_skill_dirs()]
         except Exception as exc:
+            self.external_scan_ok = False
             logger.debug(
                 "[SkillTurboEnvironment] external scan: resolve dirs failed: %s", exc
             )
@@ -796,29 +810,33 @@ class SkillTurboEnvironment:
         if not roots:
             return
 
-        cache_key = frozenset(str(p.resolve()) for p in roots if p.is_dir())
+        cache_key = tuple(str(p.resolve()) for p in roots)
         if not cache_key:
             return
 
         try:
-            discovered = discover_external_turbo_skills(skill_roots=roots)
-            mtime_snapshot = {
-                item.turbo_codes_dir: self._compute_skill_codes_mtime(
-                    Path(item.turbo_codes_dir)
-                )
-                for item in discovered
-            }
+            mtime_snapshot = external_metadata_snapshot(roots)
         except Exception as exc:
+            self.external_scan_ok = False
+            self._external_scan_cache.pop(cache_key, None)
             logger.warning(
                 "[SkillTurboEnvironment] external scan failed: %s", exc, exc_info=True
             )
             return
 
         cached = self._external_scan_cache.get(cache_key)
-        if cached is not None and cached[0] == mtime_snapshot:
-            for skill in cached[1]:
-                ensure_turbo_package(skill.name, skill.turbo_codes_dir)
-                self.register_skill(skill)
+        if cached is not None and cached[0] == mtime_snapshot and time.monotonic() - cached[2] < 60:
+            for skill in copy.deepcopy(cached[1]):
+                if ensure_turbo_package(skill.name, skill.turbo_codes_dir):
+                    self.register_skill(skill)
+            return
+
+        self._external_scan_cache.pop(cache_key, None)
+        try:
+            discovered = discover_external_turbo_skills(skill_roots=roots)
+        except OSError as exc:
+            self.external_scan_ok = False
+            logger.warning("外部技能读取失败，拒绝使用旧注册快照: %s", exc)
             return
 
         if not discovered:
@@ -837,6 +855,7 @@ class SkillTurboEnvironment:
                 skill_dir,
                 validator=self._validator_for_external_skill(item.skill_name),
             ):
+                self.external_scan_ok = False
                 continue
             package_name = ensure_turbo_package(item.skill_name, item.turbo_codes_dir)
             if not package_name:
@@ -859,6 +878,11 @@ class SkillTurboEnvironment:
                 external_name=item.external_name,
                 package_name=package_name,
                 turbo_codes_dir=item.turbo_codes_dir,
+                accelerators=copy.deepcopy(item.accelerators),
+                manifest_fingerprint=item.manifest_fingerprint,
+                manifest_source=item.manifest_source,
+                manifest_valid=item.manifest_valid,
+                manifest_errors=item.manifest_errors,
             )
             self.register_skill(skill)
             scanned.append(skill)
@@ -869,7 +893,8 @@ class SkillTurboEnvironment:
                 item.external_name,
                 package_name,
             )
-        self._external_scan_cache[cache_key] = (mtime_snapshot, scanned)
+        if self.external_scan_ok:
+            self._external_scan_cache[cache_key] = (mtime_snapshot, copy.deepcopy(scanned), time.monotonic())
 
     @staticmethod
     def _compute_skill_codes_mtime(base: Path) -> float:
