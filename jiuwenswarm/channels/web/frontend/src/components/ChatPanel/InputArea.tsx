@@ -465,6 +465,8 @@ const ATTACHMENT_ACCEPT = [
   '.svg',
   '.ico',
   '.pdf',
+  '.eml',
+  'message/rfc822',
   '.doc',
   '.docx',
   '.xls',
