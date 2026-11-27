@@ -1,5 +1,5 @@
 import { duplexErrorDetail } from '../duplexErrorMessage';
-import { RealtimeProtocol } from './realtimeProtocol.js';
+import { DEFAULT_RESULT_SPEECH, RealtimeProtocol } from './realtimeProtocol.js';
 import {
   APPROVAL_SOURCES,
   approvalCardHeader,
@@ -707,7 +707,7 @@ export class RealtimeDuplexSession {
     // A late response.done for the preceding response must not free this reservation.
     this.responseId = null;
     this.operationResponse = operation;
-    if (this.protocol.directSpeech) this.notificationSpeechText = speech || '请查看任务卡片中的最新结果。';
+    if (this.protocol.directSpeech) this.notificationSpeechText = speech || DEFAULT_RESULT_SPEECH;
     this.send(this.protocol.response(operation, speech));
   }
 
@@ -961,7 +961,7 @@ export class RealtimeDuplexSession {
       this.notificationConflicts = 0;
       this.sendContextNotice(notice.context);
       if (notice.context.startsWith('Background context only;')) this.dispatchQueuedToolResult();
-      else this.respondToNotice(notice.speech);
+      else this.requestResponse(false, notice.speech);
       return;
     }
     const question = this.pendingQuestions.shift();
@@ -971,7 +971,7 @@ export class RealtimeDuplexSession {
       const speech = (question.interaction.questions || []).map(q =>
         [q.question || q.header, ...(q.options || []).map(o => o.label)].filter(Boolean).join('，'),
       ).join('。') || '任务需要您的确认，请查看问题卡片。';
-      this.respondToNotice(question.interaction.source === 'permission_interrupt'
+      this.requestResponse(false, question.interaction.source === 'permission_interrupt'
         ? `${speech}。请在屏幕上的权限卡片中手动操作，语音不能授权。` : speech);
       return;
     }
@@ -993,7 +993,7 @@ export class RealtimeDuplexSession {
       } else {
         this.send(this.protocol.toolOutput(operation.callId, JSON.stringify(operation.output)));
       }
-      if (needsReceiptResponse(operation.output)) this.respondToNotice(this.receiptSpeech(operation.output), true);
+      if (needsReceiptResponse(operation.output)) this.requestResponse(true, this.receiptSpeech(operation.output));
       else this.dispatchQueuedToolResult();
       return;
     }
@@ -1368,10 +1368,6 @@ export class RealtimeDuplexSession {
     if (receipt?.operation === 'query') return readableError(receipt.summary || receipt.message || '查询结果已更新，请查看任务列表。');
     if (receipt?.state === 'accepted') return '回答已提交，尚未确认任务继续执行。';
     return '已收到操作回执，请查看卡片中的结果。';
-  }
-
-  private respondToNotice(speech?: string, operation = false): void {
-    this.requestResponse(operation, speech);
   }
 
   private emitAssistantText(text: string, final: boolean, jobId?: string, responseId?: string): void {

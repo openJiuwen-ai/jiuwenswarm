@@ -1763,16 +1763,23 @@ function contextSocket(config = {}, callbacks = {}) {
   });
   const opening = session.openSocket();
   socket.onopen();
-  return { session, socket, opening, texts, calls, states };
+  const event = value => socket.onmessage({data: JSON.stringify(value)});
+  return { session, socket, opening, event, texts, calls, states };
+}
+
+async function readyContextSocket(config = {}, callbacks = {}) {
+  const context = contextSocket(config, callbacks);
+  context.event({type: config.provider === 'doubao' ? 'session.created' : 'session.updated'});
+  await context.opening;
+  return context;
 }
 
 test('Doubao restores context on session.created and returns native tool output before response.done', async () => {
   const transcripts = [];
-  const { session, socket, opening, texts, calls, states } = contextSocket({
+  const { session, socket, opening, texts, calls, states, event } = contextSocket({
     provider: 'doubao', model: '1.3.0.0', voice: 'doubao-voice',
     tools: [{ type: 'function', name: 'jiuwen_delegate' }],
   }, { onUserText: (text, final) => final && transcripts.push(text) });
-  const event = value => socket.onmessage({ data: JSON.stringify(value) });
   const [init] = socket.sent;
   assert.equal(init.type, 'session.create');
   assert.equal(init.session.audio.output.format.type, 'pcm_s16le');
@@ -1810,10 +1817,9 @@ test('Doubao restores context on session.created and returns native tool output 
 });
 
 test('context restore initializes silently and waits for session.updated', async () => {
-  const { session, socket, opening, texts, calls } = contextSocket();
+  const { session, socket, opening, texts, calls, event } = contextSocket();
   let ready = false;
   opening.then(() => { ready = true; });
-  const event = value => socket.onmessage({ data: JSON.stringify(value) });
   assert.equal(socket.sent.length, 1);
   assert.equal(socket.sent[0].type, 'session.update');
   assert.match(socket.sent[0].session.instructions, /My name is Alice/);
@@ -1921,9 +1927,6 @@ test('a permission card replaces a stale execution confirmation without carrying
 });
 
 
-
-
-
 test('successful task completion requests one spoken result after silent acceptance', () => {
   const { session, sent } = createSession();
   session.enqueueOperationResult('quiet-create', { state: 'accepted', job_id: 'quiet' });
@@ -1961,13 +1964,10 @@ function failedBrief(summary) { return { ...realtimeBrief(summary), status: "fai
 
 test('Doubao preserves user-before-assistant display when final ASR arrives late', async () => {
   const order = [];
-  const {socket, opening} = contextSocket({provider: 'doubao'}, {
+  const {event} = await readyContextSocket({provider: 'doubao'}, {
     onUserText: (text, final) => final && order.push(`user:${text}`),
     onAssistantText: text => order.push(`assistant:${text}`),
   });
-  const event = e => socket.onmessage({data: JSON.stringify(e)});
-  event({type: 'session.created'});
-  await opening;
   event({type: 'conversation.item.input_audio_transcription.started', item_id: 'input'});
   event({type: 'response.created', question_id: 'input'});
   event({type: 'response.output_text.done', question_id: 'input', text: '能听见，你说吧。'});
@@ -1978,27 +1978,26 @@ test('Doubao preserves user-before-assistant display when final ASR arrives late
 });
 
 test('Doubao reconnect is ready with restored context and speaks one completed task brief', async () => {
-  const {session, socket, opening, states} = contextSocket({provider: 'doubao'});
-  socket.onmessage({data: JSON.stringify({type: 'session.created'})});
-  await opening;
+  const {session, socket, states, event} = await readyContextSocket({provider: 'doubao'});
   assert.equal(states.at(-1), 'listening');
   const result = {jobId:'done-1',question:'查询结果',brief:realtimeBrief('任务已完成')};
   assert.equal(session.enqueueToolResult(result), true);
   assert.equal(session.enqueueToolResult(result), false);
   assert.deepEqual(socket.sent.at(-1), {type:'speech_text_buffer.commit',text:'任务已完成'});
-  socket.onmessage({data:JSON.stringify({type:'response.created',question_id:'brief-1'})});
+  const context = socket.sent.find(e => e.items?.[0]?.role === 'user');
+  assert.match(JSON.stringify(context), /done-1/);
+  assert.ok(JSON.stringify(context).includes(result.brief.summary));
+  assert.equal(socket.sent.some(e => e.type === 'response.create' || e.item), false);
+  event({type:'response.created',question_id:'brief-1'});
   session.enqueueToolResult({jobId:'done-2',question:'另一结果',brief:realtimeBrief('第二个任务完成')});
-  socket.onmessage({data:JSON.stringify({type:'response.output_audio.started',question_id:'brief-1'})});
-  socket.onmessage({data:JSON.stringify({type:'response.output_audio.done',question_id:'brief-1'})});
+  event({type:'response.output_audio.started',question_id:'brief-1'});
+  event({type:'response.output_audio.done',question_id:'brief-1'});
   assert.deepEqual(socket.sent.at(-1), {type:'speech_text_buffer.commit',text:'第二个任务完成'});
   assert.equal(socket.sent.some(e => e.type === 'response.create'), false);
 });
 
 test('Doubao announces and submits a pending form through the shared card interface', async () => {
-  const {session, socket, opening, calls} = contextSocket({provider: 'doubao'});
-  const event = e => socket.onmessage({data:JSON.stringify(e)});
-  event({type:'session.created'});
-  await opening;
+  const {session, socket, calls, event} = await readyContextSocket({provider: 'doubao'});
   session.enqueueQuestion('job', {id:'form',request_id:'req',state:'pending',source:'ask_user_interrupt',
     questions:[{question:'选择颜色', options:[{label:'红色'},{label:'蓝色'}]}]});
   assert.equal(socket.sent.at(-1).type, 'speech_text_buffer.commit');
@@ -2014,19 +2013,15 @@ test('Doubao announces and submits a pending form through the shared card interf
 
 
 test('Doubao stops its model session before closing transport and can reopen the same conversation', async () => {
-  const first = contextSocket({provider:'doubao'});
-  first.socket.onmessage({data:JSON.stringify({type:'session.created'})});
-  await first.opening;
+  const first = await readyContextSocket({provider:'doubao'});
   let closed = false;
   first.socket.close = () => { closed = true; };
   first.session.stop();
   assert.equal(first.socket.sent.at(-1).type, 'session.close');
   assert.equal(closed, false);
-  first.socket.onmessage({data:JSON.stringify({type:'session.closed'})});
+  first.event({type:'session.closed'});
   assert.equal(closed, true);
-  const next = contextSocket({provider:'doubao'});
-  next.socket.onmessage({data:JSON.stringify({type:'session.created'})});
-  await next.opening;
+  const next = await readyContextSocket({provider:'doubao'});
   assert.equal(next.session.sessionReady, true);
   assert.match(next.socket.sent[0].session.instructions, /conversation-a/);
 });
@@ -2062,28 +2057,13 @@ for (const provider of ['qwen_omni', 'doubao']) {
   });
 }
 
-test('Doubao completed result is supplied as context before speech, without Qwen wire events', async () => {
-  const {session, socket, opening} = contextSocket({provider:'doubao'});
-  socket.onmessage({data:JSON.stringify({type:'session.created'})});
-  await opening;
-  session.enqueueToolResult({jobId:'context-result',question:'计算六乘七',brief:realtimeBrief('结果是42')});
-  const context = socket.sent.find(e => e.items?.[0]?.role === 'user');
-  assert.match(JSON.stringify(context), /结果是42/);
-  assert.match(JSON.stringify(context), /context-result/);
-  assert.equal(socket.sent.at(-1).type, 'speech_text_buffer.commit');
-  assert.equal(socket.sent.some(e => e.type === 'response.create' || e.item), false);
-});
-
 test('Doubao ASR failure releases pending text and service closing uses the existing reconnect hook', async () => {
   const errors = [], text = [];
   let renewals = 0;
-  const {session, socket, opening} = contextSocket({provider:'doubao'}, {
+  const {session, socket, event} = await readyContextSocket({provider:'doubao'}, {
     onAssistantText: value => text.push(value), onError: value => errors.push(value),
     onIdleTimeout: () => renewals++,
   });
-  const event = value => socket.onmessage({data:JSON.stringify(value)});
-  event({type:'session.created'});
-  await opening;
   assert.equal(session.supportsTextInput, false);
   const before = socket.sent.length;
   assert.equal(await session.sendTextTurn('文字请求'), false);

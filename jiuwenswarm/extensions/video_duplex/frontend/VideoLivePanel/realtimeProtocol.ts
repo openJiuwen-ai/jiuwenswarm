@@ -9,6 +9,8 @@ import { createDoubaoContext, createDoubaoSession, createDoubaoToolOutput,
 import { taskResultNotice } from './taskPrompts.js';
 import type { RealtimeBrief } from './types.js';
 
+export const DEFAULT_RESULT_SPEECH = '请查看任务卡片中的最新结果。';
+
 /** Wire format and transport capabilities only. Task/card state belongs to the shared session. */
 export class RealtimeProtocol {
   private readonly seed: boolean;
@@ -50,7 +52,7 @@ export class RealtimeProtocol {
   get name(): string { return this.seed ? '豆包' : '千问'; }
 
   session(options: QwenOmniSessionOptions, model: string | undefined, ready: boolean): Record<string, unknown> {
-    return this.seed ? { ...createDoubaoSession(options, model || '1.3.0.0'),
+    return this.seed ? { ...createDoubaoSession(options, model),
       type: ready ? 'session.update' : 'session.create' } : createQwenOmniSessionUpdate(options);
   }
 
@@ -100,7 +102,7 @@ export class RealtimeProtocol {
   }
 
   response(operation = false, speech?: string): Record<string, unknown> {
-    return this.seed ? {type: 'speech_text_buffer.commit', text: speech || '请查看任务卡片中的最新结果。'}
+    return this.seed ? {type: 'speech_text_buffer.commit', text: speech || DEFAULT_RESULT_SPEECH}
       : operation ? createQwenOmniOperationResponseEvent() : {type: 'response.create'};
   }
 

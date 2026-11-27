@@ -3,7 +3,7 @@ import { realtimeInstructions, type QwenOmniSessionOptions } from './qwenOmniPro
 export const DOUBAO_AUDIO_CHUNK_MS = 20;
 export const DOUBAO_FRAME_INTERVAL_MS = 500;
 
-export function createDoubaoSession(options: QwenOmniSessionOptions, model: string) {
+export function createDoubaoSession(options: QwenOmniSessionOptions, model: string | undefined) {
   return {
     type: 'session.create',
     session: {

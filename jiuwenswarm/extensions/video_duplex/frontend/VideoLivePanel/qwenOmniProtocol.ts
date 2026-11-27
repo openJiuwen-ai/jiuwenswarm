@@ -102,14 +102,6 @@ export function createQwenOmniToolResultEvents(
   ];
 }
 
-export function createQwenOmniCancelResponseEvent(): Record<string, unknown> {
-  return { type: 'response.cancel' };
-}
-
-export function createQwenOmniFinishSessionEvent(): Record<string, unknown> {
-  return { type: 'session.finish' };
-}
-
 export class QwenOmniMediaSequencer {
   private audioAppendSequence = 0;
   private imageAppendSequence = 0;

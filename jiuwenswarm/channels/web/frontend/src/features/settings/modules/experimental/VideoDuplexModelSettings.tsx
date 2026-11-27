@@ -9,41 +9,12 @@ import { FormDialog } from '../../../../components/form';
 import { SettingRow, SettingsConfirmDialog } from '../../components';
 import { webRequest } from '../../../../services/webClient';
 import {
-  isConfigured,
+  isConfigured, EMPTY_SETTINGS, REALTIME_SECRET_KEYS, secretPlaceholder,
+  type SettingsPayload as Payload,
   type SettingsValues,
   type ReplyLanguage,
 } from './videoDuplexSettingsValidation';
 import './VideoDuplexModelSettings.css';
-
-const DEFAULTS: SettingsValues = {
-  video_live_provider: 'qwen_omni',
-  joyai_api_base: '',
-  joyai_api_key: '',
-  joyai_model: '',
-  qwen_omni_realtime_url: '',
-  qwen_omni_api_key: '',
-  qwen_omni_model: '',
-  qwen_omni_voice: '',
-  doubao_realtime_url: '',
-  doubao_model: '',
-  doubao_voice: '',
-  doubao_api_key: '',
-  reply_language: 'match',
-  voice_protocol: 'openai_http',
-  voice_asr_endpoint: '',
-  voice_tts_endpoint: '',
-  voice_api_key: '',
-  voice_asr_model: '',
-  voice_tts_model: '',
-  voice_tts_voice: '',
-};
-
-const SECRET_KEYS = ['qwen_omni_api_key', 'doubao_api_key'] as const;
-type Payload = { values: SettingsValues; defaults: Partial<SettingsValues>; configured_secret_lengths: Record<string, number> };
-
-function secretPlaceholder(length?: number): string {
-  return Number.isSafeInteger(length) && Number(length) > 0 ? '*'.repeat(Number(length)) : '';
-}
 
 function ConfigField({
   field,
@@ -93,7 +64,7 @@ export function VideoDuplexModelSettings({
   onConfigured?: () => Promise<void>;
 }) {
   const { t } = useTranslation();
-  const [values, setValues] = useState<SettingsValues>(DEFAULTS);
+  const [values, setValues] = useState<SettingsValues>(EMPTY_SETTINGS);
   const [fieldDefaults, setFieldDefaults] = useState<Partial<SettingsValues>>({});
   const [secretLengths, setSecretLengths] = useState<Record<string, number>>({});
   const [draft, setDraft] = useState<SettingsValues | null>(null);
@@ -107,7 +78,7 @@ export function VideoDuplexModelSettings({
   const [connectionError, setConnectionError] = useState('');
 
   const applyPayload = (payload: Payload) => {
-    setValues({ ...DEFAULTS, ...payload.values });
+    setValues({ ...EMPTY_SETTINGS, ...payload.values });
     setFieldDefaults(payload.defaults || {});
     setSecretLengths(payload.configured_secret_lengths || {});
   };
@@ -171,7 +142,7 @@ export function VideoDuplexModelSettings({
       }),
       reply_language: draft.reply_language,
     };
-    SECRET_KEYS.forEach((key) => {
+    REALTIME_SECRET_KEYS.forEach((key) => {
       if (!draft[key].trim()) delete outgoing[key];
     });
     try {
@@ -196,13 +167,9 @@ export function VideoDuplexModelSettings({
     setDeleting(true);
     setDeleteError('');
     try {
-      const emptyValues = Object.fromEntries(Object.keys(DEFAULTS).map((key) => [key, ''])) as Record<string, string>;
-      emptyValues.video_live_provider = DEFAULTS.video_live_provider;
-      emptyValues.reply_language = DEFAULTS.reply_language;
-      emptyValues.voice_protocol = DEFAULTS.voice_protocol;
       const payload = await webRequest<Payload>(
         'video.duplex.settings.update',
-        { values: emptyValues, clear_secrets: true },
+        { values: { ...EMPTY_SETTINGS }, clear_secrets: true },
         { timeoutMs: 10_000 },
       );
       applyPayload(payload);
