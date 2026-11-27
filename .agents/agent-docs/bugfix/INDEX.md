@@ -266,6 +266,7 @@ generated: true
 | [B_20261126_1940_enterprise-agent-switch-route](jiuwenswarm/channels/web/B_20261126_1940_enterprise-agent-switch-route.md) | B | Open a new conversation after an enterprise Agent switch | linda | 无独立 D：Minimal fix explicitly approved in the task; no separate design document. |
 | [B_20261126_2208_application-menu-slot-flicker](jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
 | [B_20261126_1221_team-file-card-duplicate](jiuwenswarm/channels/web/frontend/B_20261126_1221_team-file-card-duplicate.md) | B | 团队模式 chat.file 二次投递使文件卡片重复渲染为两张 | chen hui | 无独立 D：事件时序契约缺陷修复，无独立 D；依据前端 team-leader 消息按 teamStream.requestId 关联的既有契约与各事件处理器的去重守卫约定。 |
+| [B_20261127_1515_restore-chat-error-indicator](jiuwenswarm/channels/web/frontend/B_20261127_1515_restore-chat-error-indicator.md) | B | 恢复失败轮次的会话侧栏错误标记 | lizhiyuan | 无独立 D：复用现有 chat.error 事件和侧栏失败状态，修复历史恢复遗漏。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 

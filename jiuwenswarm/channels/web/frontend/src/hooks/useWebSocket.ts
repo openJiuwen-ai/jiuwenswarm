@@ -5476,6 +5476,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
+          turnError: errorMsg,
         });
       }),
       webClient.on('chat.message_updated', ({ payload }) => {

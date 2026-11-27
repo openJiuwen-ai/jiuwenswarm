@@ -458,6 +458,7 @@ generated: true
 | [B_20261126_2208_application-menu-slot-flicker](bugfix/jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
 | [B_20261126_1750_source-skill-display-name-ledger](bugfix/jiuwenswarm/server/runtime/skill/B_20261126_1750_source-skill-display-name-ledger.md) | B | 企业源技能广场改名后账本 display_name 冻结及前后端展示优先级不一致 | meizi6 | 无独立 D：线上缺陷（Issue |
 | [B_20261126_1221_team-file-card-duplicate](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_1221_team-file-card-duplicate.md) | B | 团队模式 chat.file 二次投递使文件卡片重复渲染为两张 | chen hui | 无独立 D：事件时序契约缺陷修复，无独立 D；依据前端 team-leader 消息按 teamStream.requestId 关联的既有契约与各事件处理器的去重守卫约定。 |
+| [B_20261127_1515_restore-chat-error-indicator](bugfix/jiuwenswarm/channels/web/frontend/B_20261127_1515_restore-chat-error-indicator.md) | B | 恢复失败轮次的会话侧栏错误标记 | lizhiyuan | 无独立 D：复用现有 chat.error 事件和侧栏失败状态，修复历史恢复遗漏。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
