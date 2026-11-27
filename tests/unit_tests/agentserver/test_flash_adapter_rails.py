@@ -19,13 +19,18 @@ Covers the review findings on PR6431:
 
 import asyncio
 import sys
+from typing import Any
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
+from openjiuwen.harness.rails.evolution import EvolutionInterruptRail, SkillEvolutionRail
+from openjiuwen.harness.rails.evolution.configuration import configure_skill_evolution_runtime
 from opentelemetry import trace
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 import pytest
 
+from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _RailBuildInfo,
@@ -1206,3 +1211,278 @@ def test_flash_override_is_idempotent_across_reload():
         _resolve_enable_task_loop(twice["react"], twice)
         is False
     )
+
+
+# ---------------------------------------------------------------------------
+# Evolution rail trigger drift: unbound prewarm vs bound chat turn
+# ---------------------------------------------------------------------------
+# Contract source: openjiuwen/harness/rails/evolution/configuration.py
+# ``_validate_evolution_rail_config`` raises ``RuntimeError`` when an existing
+# SkillEvolutionRail's signal/review trigger differs from the requested one and
+# tells the caller to ``unconfigure_skill_evolution()`` first.
+#
+# OfficeClaw 1.9.0 prewarms a session unbound (``user_id=null``). Unbound,
+# ``get_local_config`` falls through to ``os.environ`` and a legacy
+# ``EVOLUTION_AUTO_SCAN=false`` from .env yields ``signal_trigger=False``. The
+# first bound chat turn seals the overlay (missing key == unset) and resolves
+# ``signal_trigger=True`` from config. The tests below run the *real* harness
+# configure/unconfigure helpers against a storage-only agent stub, so the
+# production error is reproduced rather than imitated.
+
+
+class _EvolutionAgentStub:
+    """DeepAgent stand-in exposing the rail storage harness evolution helpers use."""
+
+    def __init__(self) -> None:
+        self.rails: list[Any] = []
+        self._pending_rails: list[Any] = []
+        self.registered: list[Any] = []
+
+    def add_rail(self, rail: Any) -> None:
+        self._pending_rails.append(rail)
+
+    async def register_rail(self, rail: Any) -> None:
+        self._pending_rails.remove(rail)
+        self.rails.append(rail)
+        self.registered.append(rail)
+
+    async def unregister_rail(self, rail: Any) -> None:
+        if rail in self.rails:
+            self.rails.remove(rail)
+
+    def find_rails_by_type(self, types: tuple[type, ...]) -> list[Any]:
+        return [rail for rail in self.rails if isinstance(rail, types)]
+
+    def strip_rails_by_type(self, types: tuple[type, ...]) -> int:
+        removed = [rail for rail in self.rails if isinstance(rail, types)]
+        self.rails = [rail for rail in self.rails if not isinstance(rail, types)]
+        return len(removed)
+
+
+async def _configure_evolution_rail(
+    agent: _EvolutionAgentStub,
+    tmp_path,
+    *,
+    signal_trigger: bool,
+    review_trigger: bool = False,
+) -> SkillEvolutionRail:
+    """Mount rails through the real harness entry point the adapter calls."""
+    await configure_skill_evolution_runtime(
+        agent,
+        skills_dir=[str(tmp_path)],
+        llm=None,
+        model="test-model",
+        trajectory_span_processor=get_trajectory_span_processor(),
+        review_trigger=review_trigger,
+        signal_trigger=signal_trigger,
+        auto_save=True,
+        language="cn",
+    )
+    return next(rail for rail in agent.rails if isinstance(rail, SkillEvolutionRail))
+
+
+async def _deep_adapter_with_cached_evolution_rail(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    *,
+    signal_trigger: bool,
+    review_trigger: bool = False,
+) -> tuple[JiuWenSwarmDeepAdapter, SkillEvolutionRail]:
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._config_cache = {}
+    adapter._instance = _EvolutionAgentStub()
+    adapter._default_model_name = "test-model"
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
+    monkeypatch.setattr(adapter, "_resolve_skill_dirs", lambda extra_skill_dir=None: [str(tmp_path)])
+    rail = await _configure_evolution_rail(
+        adapter._instance,
+        tmp_path,
+        signal_trigger=signal_trigger,
+        review_trigger=review_trigger,
+    )
+    adapter._refresh_active_evolution_rail_refs()
+    assert adapter._skill_evolution_rail is rail
+    return adapter, rail
+
+
+@pytest.mark.parametrize(
+    ("cached", "desired"),
+    [
+        # 1.9.0 incident: unbound prewarm mounted False, bound turn wants True.
+        ({"signal_trigger": False, "review_trigger": False}, {"signal_trigger": True, "review_trigger": False}),
+        ({"signal_trigger": True, "review_trigger": False}, {"signal_trigger": False, "review_trigger": False}),
+        ({"signal_trigger": True, "review_trigger": False}, {"signal_trigger": True, "review_trigger": True}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_ensure_active_evolution_rails_rebuilds_on_trigger_drift(
+    monkeypatch,
+    tmp_path,
+    cached,
+    desired,
+):
+    """A cached rail with different triggers is rebuilt, not left to raise."""
+    adapter, stale_rail = await _deep_adapter_with_cached_evolution_rail(
+        monkeypatch,
+        tmp_path,
+        signal_trigger=cached["signal_trigger"],
+        review_trigger=cached["review_trigger"],
+    )
+    monkeypatch.setattr(
+        deep_module,
+        "get_passive_skill_evolution_triggers",
+        lambda _config: dict(desired),
+    )
+    stale_interrupt = adapter._evolution_interrupt_rail
+
+    await adapter._ensure_active_evolution_rails_registered()
+
+    current = adapter._skill_evolution_rail
+    assert current is not None
+    assert current is not stale_rail
+    assert current.signal_trigger is desired["signal_trigger"]
+    assert current.review_trigger is desired["review_trigger"]
+    assert adapter._instance.find_rails_by_type((SkillEvolutionRail,)) == [current]
+    assert stale_rail not in adapter._instance.rails
+    # The stale interrupt rail is torn down with its evolution rail: exactly one remains.
+    interrupt_rails = adapter._instance.find_rails_by_type((EvolutionInterruptRail,))
+    assert len(interrupt_rails) == 1
+    assert interrupt_rails[0] is not stale_interrupt
+    assert adapter._evolution_interrupt_rail is interrupt_rails[0]
+
+
+@pytest.mark.parametrize(
+    ("signal_trigger", "review_trigger"),
+    [(True, False), (False, False), (False, True)],
+)
+@pytest.mark.asyncio
+async def test_ensure_active_evolution_rails_keeps_rail_when_triggers_match(
+    monkeypatch,
+    tmp_path,
+    signal_trigger,
+    review_trigger,
+):
+    """Matching triggers keep the mounted rail object: no needless rebuild."""
+    adapter, rail = await _deep_adapter_with_cached_evolution_rail(
+        monkeypatch,
+        tmp_path,
+        signal_trigger=signal_trigger,
+        review_trigger=review_trigger,
+    )
+    monkeypatch.setattr(
+        deep_module,
+        "get_passive_skill_evolution_triggers",
+        lambda _config: {
+            "signal_trigger": signal_trigger,
+            "review_trigger": review_trigger,
+        },
+    )
+    unconfigure = AsyncMock(wraps=adapter._unconfigure_active_evolution_rails)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+
+    await adapter._ensure_active_evolution_rails_registered()
+
+    unconfigure.assert_not_awaited()
+    assert adapter._skill_evolution_rail is rail
+
+
+@pytest.mark.asyncio
+async def test_ensure_active_evolution_rails_retries_when_cached_rail_is_missing(
+    monkeypatch,
+    tmp_path,
+):
+    """A stale cache hides the mounted rail until the SDK detects the mismatch."""
+    adapter, stale_rail = await _deep_adapter_with_cached_evolution_rail(
+        monkeypatch,
+        tmp_path,
+        signal_trigger=False,
+    )
+
+    adapter._skill_evolution_rail = None
+    monkeypatch.setattr(
+        deep_module,
+        "get_passive_skill_evolution_triggers",
+        lambda _config: {"signal_trigger": True, "review_trigger": False},
+    )
+    configure = AsyncMock(wraps=configure_skill_evolution_runtime)
+    monkeypatch.setattr(deep_module, "configure_skill_evolution_runtime", configure)
+
+    await adapter._ensure_active_evolution_rails_registered()
+
+    assert configure.await_count == 2
+    assert adapter._skill_evolution_rail.signal_trigger is True
+    assert adapter._instance.find_rails_by_type((SkillEvolutionRail,)) == [adapter._skill_evolution_rail]
+    assert stale_rail not in adapter._instance.rails
+
+
+_RAIL_MISMATCH = (
+    "Evolution rail config mismatch. Existing configuration differs: "
+    "signal_trigger: False != True. Use unconfigure_skill_evolution() first to remove the existing rail."
+)
+
+
+@pytest.mark.asyncio
+async def test_flash_reconcile_survives_evolution_registration_failure(monkeypatch):
+    """An auxiliary evolution rail failure must not abort the chat turn."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_base_cache = {
+        "flash": {"evolution": {"enabled": True, "skill_sleep": {"enabled": True}}},
+    }
+    adapter._config_cache = {}
+    adapter._instance = SimpleNamespace(register_rail=AsyncMock())
+    configure = AsyncMock(side_effect=RuntimeError(_RAIL_MISMATCH))
+    unconfigure = AsyncMock()
+    reconcile_sleep = AsyncMock()
+    monkeypatch.setattr(deep_module, "configure_skill_evolution_runtime", configure)
+    monkeypatch.setattr(adapter, "_resolve_skill_dirs", lambda: [])
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
+
+    await adapter._reconcile_flash_evolution_rails()
+
+    assert configure.await_count == 2
+    # Clean up before the retry and again after the second failure.
+    assert unconfigure.await_count == 2
+    reconcile_sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_flash_reconcile_survives_skill_sleep_registration_failure(monkeypatch):
+    """SkillSleep is auxiliary too: its failure must not abort the chat turn."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_base_cache = {
+        "flash": {"evolution": {"enabled": True, "skill_sleep": {"enabled": True}}},
+    }
+    adapter._config_cache = {}
+    adapter._instance = SimpleNamespace(register_rail=AsyncMock())
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", AsyncMock())
+    reconcile_sleep = AsyncMock(side_effect=RuntimeError("SkillSleep rail registration failed"))
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
+
+    await adapter._reconcile_flash_evolution_rails()
+
+    reconcile_sleep.assert_awaited_once()
+
+
+@pytest.mark.parametrize("entrypoint", ["chat", "slash"])
+@pytest.mark.asyncio
+async def test_deep_evolution_retry_failure_by_entrypoint(monkeypatch, entrypoint):
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._config_cache = {}
+    adapter._instance = _EvolutionAgentStub()
+    configure = AsyncMock(side_effect=[RuntimeError(_RAIL_MISMATCH), RuntimeError("retry failed")])
+    reconcile_sleep = AsyncMock()
+    monkeypatch.setattr(deep_module, "get_evolution_enabled", lambda _config: True)
+    monkeypatch.setattr(deep_module, "get_ttse_enabled", lambda _config: False)
+    monkeypatch.setattr(deep_module, "configure_skill_evolution_runtime", configure)
+    monkeypatch.setattr(adapter, "_resolve_skill_dirs", lambda: [])
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
+
+    if entrypoint == "chat":
+        await adapter._reconcile_evolution_rails()
+        reconcile_sleep.assert_awaited_once()
+    else:
+        with pytest.raises(RuntimeError, match="retry failed"):
+            await adapter._ensure_evolution_rail_for_slash("agent")
+
+    assert configure.await_count == 2
