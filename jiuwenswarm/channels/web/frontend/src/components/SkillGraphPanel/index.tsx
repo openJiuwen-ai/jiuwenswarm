@@ -369,7 +369,11 @@ function normalizeEdge(raw: RawRecord): GraphEdge | null {
     source: rawSource.includes(':') ? rawSource : `skill:${rawSource}`,
     target: rawTarget.includes(':') ? rawTarget : `skill:${rawTarget}`,
     type: asString(raw.type ?? raw.relation_type, 'relates_to'),
-    confidence: Number(raw.confidence ?? 1),
+    // 置信度参与滑杆过滤与百分比展示：先经 ?? 把显式 null 与键缺失统一为
+    // 缺省 1（Number(null)=0，直接交给 confidenceValue 会把 null 当 0 分），
+    // 再经 confidenceValue 收敛非数值（"high"→NaN→回落 1）与越界值，
+    // 避免 NaN 让过滤恒不过与 "NaN%" 渲染。
+    confidence: confidenceValue(raw.confidence ?? 1, 1),
     runtimeWeight: Number.isFinite(runtimeWeight) ? runtimeWeight : undefined,
     method: asString(raw.method, 'deterministic'),
     evidence: asRecord(raw.evidence ?? raw.metadata),
