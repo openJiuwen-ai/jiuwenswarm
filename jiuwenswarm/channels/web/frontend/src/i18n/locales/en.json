@@ -25,6 +25,8 @@
     "backToLogin": "Back to Sign in",
     "language": "Interface language",
     "noContext": "No Agent is available for this account. Please grant access in the Manager console first.",
+    "emptyTitleNoTemplate": "No Agent",
+    "noContextNoTemplate": "No Agent is available for this account. Please ask your administrator to add Agent Templates in the Manager console.",
     "loadFailed": "Failed to load Agent contexts.",
     "switchFailed": "Failed to switch context.",
     "errorTitle": "Unable to enter workspace",
@@ -3048,6 +3050,8 @@
     "enterpriseContext": {
       "user": "User",
       "userContext": "User context",
+      "agentNameLabel": "Agent name",
+      "agentNameHint": "Agent Name",
       "modeAria": "Context mode",
       "selectAgent": "Select agent",
       "custom": "Custom",
@@ -4927,7 +4931,9 @@
       "updating": "Saving…"
     },
     "confirm": {
-      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone.",
+      "deleteTitle": "Delete Expert “{{name}}”?",
+      "deleteMessage": "Are you sure you want to delete Expert “{{name}}”? This cannot be undone.",
+      "uninstallGroupTitle": "Uninstall the Expert Team “{{name}}”?",
       "uninstallGroupMessage": "Uninstall the Expert Team “{{name}}”?"
     },
     "card": {
@@ -5243,6 +5249,7 @@
     "paused": "Paused",
     "waitingTasks": "Waiting Tasks",
     "messageQueue": "Message Queue",
+    "queuedUploadDocument": "Uploaded document",
     "crossSessionMessageQueue": "Cross-session messages",
     "localMessageQueue": "Local messages",
     "turnStarting": "Starting…",

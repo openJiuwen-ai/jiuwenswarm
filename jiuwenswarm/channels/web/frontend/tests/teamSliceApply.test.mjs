@@ -21,6 +21,7 @@ function seedOwnerTeam() {
   // known baseline.
   useSessionStore.getState().setTeamMembers(SESSION_ID, []);
   useSessionStore.getState().setTeamDepartedMembers(SESSION_ID, []);
+  useSessionStore.getState().setTeamTasks(SESSION_ID, []);
   useTeamSelectorStore.setState({
     runtimes: {
       [SESSION_ID]: {
@@ -258,6 +259,63 @@ test('applying an expert-team snapshot leaves the owner projection untouched', (
   assert.deepEqual(expertMembers.map((m) => m.member_id), ['expert-lead']);
 });
 
+
+test('an enterprise empty snapshot does not wipe the known roster or task board', () => {
+  seedOwnerTeam();
+  useSessionStore.getState().setTeamMembers(SESSION_ID, [
+    { id: 'm-real', member_id: 'researcher', status: 'ready', timestamp: 1 },
+  ]);
+  useSessionStore.getState().setTeamTasks(SESSION_ID, [
+    { task_id: 't1', title: 'keep', status: 'pending', team_id: 'owner-team', timestamp: 1 },
+  ]);
+
+  // Enterprise snapshots can read empty when the monitor is on another
+  // instance — that means "roster unknown", not "everyone left".
+  const previousWindow = globalThis.window;
+  globalThis.window = { __JIUWENSWARM_EDITION__: 'enterprise' };
+  try {
+    applyTeamSnapshotToSession(SESSION_ID, 'owner-team', { members: [], tasks: [] });
+  } finally {
+    globalThis.window = previousWindow;
+  }
+
+  assert.deepEqual(currentMembers().map((m) => m.member_id), ['researcher']);
+  assert.deepEqual(
+    useSessionStore.getState().runtimes[SESSION_ID].teamTasks.map((task) => task.task_id),
+    ['t1']
+  );
+});
+
+test('an enterprise snapshot that only proves everyone left clears the roster and task board', () => {
+  seedOwnerTeam();
+  useSessionStore.getState().setTeamMembers(SESSION_ID, [
+    { id: 'm-real', member_id: 'researcher', status: 'ready', timestamp: 1 },
+  ]);
+  useSessionStore.getState().setTeamTasks(SESSION_ID, [
+    { task_id: 't1', title: 'stale', status: 'in_progress', team_id: 'owner-team', timestamp: 1 },
+  ]);
+
+  const previousWindow = globalThis.window;
+  globalThis.window = { __JIUWENSWARM_EDITION__: 'enterprise' };
+  try {
+    applyTeamSnapshotToSession(SESSION_ID, 'owner-team', {
+      members: [],
+      departed_members: [{ member_id: 'researcher', status: 'shut_down' }],
+      tasks: [],
+    });
+  } finally {
+    globalThis.window = previousWindow;
+  }
+
+  // allMembers is non-empty, so this is not "roster unknown": the stale
+  // reachable member must be replaced and the departed catalog kept.
+  assert.deepEqual(currentMembers().map((m) => m.member_id), []);
+  assert.deepEqual(
+    useSessionStore.getState().runtimes[SESSION_ID].teamDepartedMembers.map((m) => m.member_id),
+    ['researcher']
+  );
+  assert.deepEqual(useSessionStore.getState().runtimes[SESSION_ID].teamTasks, []);
+});
 
 test('enterprise partial snapshots preserve live task fields and add missed tasks', () => {
   const current = [{ task_id: 'live', title: 'Keep this title', assignee: 'worker', status: 'in_progress' }];

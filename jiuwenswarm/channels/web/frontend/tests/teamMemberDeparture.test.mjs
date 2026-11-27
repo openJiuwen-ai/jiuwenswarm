@@ -81,3 +81,18 @@ test('mirrored workflow workers survive the reconcile (they never reach the DB r
 
   assert.deepEqual(ids(result.members), ['leader', workerId]);
 });
+
+test('a non-authoritative snapshot keeps members it does not list', () => {
+  const result = reconcileSnapshotRoster(
+    [member('worker', 'ready')],
+    new Set(),
+    [member('worker', 'busy'), member('front-only', 'ready')],
+    new Set(),
+    { authoritative: false },
+  );
+
+  assert.deepEqual(result.members.map((item) => [item.member_id, item.status]), [
+    ['worker', 'ready'],
+    ['front-only', 'ready'],
+  ]);
+});

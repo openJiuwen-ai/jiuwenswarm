@@ -40,6 +40,8 @@ export function isReachableTeamMemberStatus(status: unknown): boolean {
  * - 例外是镜像出来的 swarmflow worker（带 workflow_run_id）：它们只存在于前端、
  *   不会出现在 team.db 名册里，快照缺席不代表已被移除，原样保留（删掉会把 run
  *   的 worker 连同分组一起抹掉）。
+ * - 非实时快照（db / live+db）只补不删：它可能读到不完整的名册，
+ *   缺席不代表成员已离队，因此未出现在快照里的现有成员原样保留。
  *
  * 返回 null 表示快照里没有任何可对账的成员，调用方应保持现状。
  */
@@ -48,7 +50,9 @@ export function reconcileSnapshotRoster<T extends RosterMember>(
   departedIds: ReadonlySet<string>,
   currentMembers: T[],
   changedIds: ReadonlySet<string>,
+  options: { authoritative?: boolean } = {},
 ): { members: T[]; reconciledMemberIds: string[] } | null {
+  const authoritative = options.authoritative !== false;
   const reconciledMemberIds = [
     ...snapshotMembers.map((member) => member.member_id),
     ...departedIds,
@@ -65,7 +69,7 @@ export function reconcileSnapshotRoster<T extends RosterMember>(
   });
   for (const member of currentMembers) {
     if (snapshotMemberIds.has(member.member_id)) continue;
-    if (member.workflow_run_id || changedIds.has(member.member_id)) {
+    if (!authoritative || member.workflow_run_id || changedIds.has(member.member_id)) {
       members.push(member);
     }
   }

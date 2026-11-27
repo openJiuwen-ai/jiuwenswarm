@@ -149,6 +149,7 @@ import {
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
 import { useSubagentStore } from '../stores/subagentStore';
+import { useTeamSelectorStore } from '../stores/teamSelectorStore';
 import { expertTeamId, organizationOwnerStopTarget, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
 import { isTeamOrganizationUiEnabled } from '../features/teamOrganization/featureConfig';
 import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
@@ -713,6 +714,17 @@ const HEARTBEAT_MUTATION_TOOL_NAMES = new Set([
   'heartbeat_toggle_job',
   'heartbeat_run_now',
   'heartbeat_cancel_run',
+]);
+
+/** 这些 Tool 成功后名册会新增成员（成员此时还没被启动）。后端会补发
+ * `team.member.registered`，但那一帧一旦丢掉，右侧团队栏会一直空着，直到
+ * 有人 @ 起某个成员或整页刷新。所以成功后主动对齐一次名册。 */
+const TEAM_ROSTER_TOOL_NAMES = new Set([
+  'build_team',
+  'spawn_teammate',
+  'spawn_human_agent',
+  'spawn_bridge_agent',
+  'spawn_expert',
 ]);
 
 // The task card's title/content are now sourced solely from the backend
@@ -1410,17 +1422,39 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const requestState = { revision: 0, changedMemberIds: new Set<string>() };
     teamMemberSnapshotRequestRef.current.set(sessionId, requestState);
     try {
-      const response = await request<{ members?: unknown; departed_members?: unknown; members_source?: string }>(
+      const sessionStore = useSessionStore.getState();
+      const session =
+        sessionStore.currentSession?.session_id === sessionId
+          ? sessionStore.currentSession
+          : sessionStore.sessions.find((item) => item.session_id === sessionId);
+      // 这个对账写的是主团队投影（裸 sessionId），所以 team_name 也要取主团队：
+      // 多团队会话里 selectedTeamId 可能是专家团，用它会把别队的库名册并进来。
+      // team.list 的 owner 项比可能过期的会话元数据更可靠。
+      const selectorRuntime = useTeamSelectorStore.getState().getRuntime(sessionId);
+      const ownerTeamName = selectorRuntime?.teams.find((team) => team.is_owner)?.team_id ?? '';
+      const teamName = (ownerTeamName || session?.team_name || '').trim();
+      const response = await request<{
+        members?: unknown;
+        departed_members?: unknown;
+        members_source?: string;
+        members_live?: boolean;
+      }>(
         'team.snapshot',
-        { session_id: sessionId },
+        { session_id: sessionId, ...(teamName ? { team_name: teamName } : {}) },
         { timeoutMs: 5000 },
       );
       if (
         teamMemberSnapshotRequestRef.current.get(sessionId) !== requestState ||
         requestState.revision !== 0
       ) return;
-      if (response?.members_source !== 'live') return;
+      // live / live-scoped / db / live+db 都是同一份名册，db 只是 monitor 不在时的直查。
+      // 空结果没有可用信息，保留现有成员。
+      const membersSource = response?.members_source ?? '';
+      if (!membersSource || membersSource === 'empty') return;
       if (!Array.isArray(response?.members)) return;
+      // 后端标记名册是否来自实时运行态；老后端没有该字段时按 live 兼容。
+      const membersLive =
+        typeof response?.members_live === 'boolean' ? response.members_live : membersSource === 'live';
       // 旧后端不带 departed_members；新后端在队友全部离队时 members 为空，靠它收敛。
       const rawDepartedMembers = Array.isArray(response.departed_members) ? response.departed_members : [];
       if (response.members.length === 0 && rawDepartedMembers.length === 0) return;
@@ -1438,16 +1472,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const status = typeof snapshotMember.status === 'string' ? snapshotMember.status : '';
         if (!memberId || !status) return [];
         const existing = knownMembers.find((member) => member.member_id === memberId);
+        // 非实时来源（db / live+db）的 status 可能是库里陈旧的行，不能覆盖本地
+        // 已经由实时事件收敛的运行态：只补身份，状态沿用本地值等实时事件纠正。
+        const useLocalState =
+          !membersLive && existing != null && !isDepartedTeamMemberStatus(status);
         return [{
           id: existing?.id ?? `team-snapshot-${memberId}`,
           member_id: memberId,
-          status,
+          status: useLocalState && existing ? existing.status : status,
           timestamp,
           name: typeof snapshotMember.name === 'string' ? snapshotMember.name : existing?.name,
-          execution_status:
-            snapshotMember.execution_status === null || typeof snapshotMember.execution_status === 'string'
-              ? snapshotMember.execution_status
-              : existing?.execution_status,
+          execution_status: useLocalState && existing
+            ? existing.execution_status
+            : (snapshotMember.execution_status === null || typeof snapshotMember.execution_status === 'string'
+                ? snapshotMember.execution_status
+                : existing?.execution_status),
           mode: typeof snapshotMember.mode === 'string' ? snapshotMember.mode : existing?.mode,
           role: typeof snapshotMember.role === 'string' ? snapshotMember.role : existing?.role,
           cli_agent:
@@ -1482,6 +1521,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         new Set(departedMembers.map((member) => member.member_id)),
         runtime.teamMembers,
         changedMemberIds,
+        // members_live（live / live-scoped）是权威名册，可以据此剔除已离队成员；
+        // db / live+db 只补不删。
+        { authoritative: membersLive },
       );
       if (!reconciled) return;
       const { members, reconciledMemberIds } = reconciled;
@@ -4746,6 +4788,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (toolResult.success && HEARTBEAT_MUTATION_TOOL_NAMES.has(toolResult.toolName)) {
           window.dispatchEvent(new CustomEvent('heartbeat-list-refresh', { detail: { sessionId } }));
         }
+        // 名册类 Tool 成功后成员已落库但还没启动，后端补发的
+        // team.member.registered 一旦丢掉，右侧团队栏会一直是空的。
+        // 这里主动对齐一次名册；请求期间到达的成员事件优先。
+        if (toolResult.success && TEAM_ROSTER_TOOL_NAMES.has(toolResult.toolName)) {
+          void reconcileTeamMembersFromSnapshot(sessionId);
+        }
         if (isHiddenTeamTeammateMessagePayload(currentMode ?? 'agent', payload)) {
           const memberId =
             getTeamPayloadMemberName(payload) ||
@@ -6329,6 +6377,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     findActiveTeamLeaderMessage,
     closeActiveTeamLeaderMessages,
     reconcileAgentGroupBinding,
+    reconcileTeamMembersFromSnapshot,
     updateSession,
     resolveEventSessionId,
     restoreForegroundProcessing,

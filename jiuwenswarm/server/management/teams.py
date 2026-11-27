@@ -890,10 +890,7 @@ class TeamsManagement:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         host = self.host
-        from jiuwenswarm.agents.harness.team import get_team_manager
-        from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
-            TeamMonitorHandler,
-        )
+        from jiuwenswarm.server.handlers.team import _snapshot_tasks, resolve_team_snapshot
 
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()
@@ -902,89 +899,12 @@ class TeamsManagement:
 
         # ``team_name`` 显式指定了要看的 team（team 选择器切 team 时就是这么调的）。
         requested_team_name = str(params.get("team_name") or "").strip()
-        team_manager = get_team_manager(channel_id)
-        monitor_handler = (
-            team_manager.get_monitor_handler(session_id) if session_id else None
+        snapshot, source, runtime_available = await resolve_team_snapshot(
+            session_id=session_id,
+            requested_team_name=requested_team_name,
+            channel_id=channel_id,
+            get_session_metadata_fn=get_session_metadata,
         )
-        monitor_team = monitor_handler.team_id if monitor_handler is not None else None
-        live_matches_request = (
-            monitor_handler is not None
-            and monitor_handler.is_running
-            and (not requested_team_name or monitor_team == requested_team_name)
-        )
-        snapshot: dict[str, Any] | None = None
-        source = "empty"
-        runtime_available: bool | None = True if live_matches_request else None
-        if live_matches_request:
-            try:
-                snapshot = await monitor_handler.get_team_snapshot()
-                if snapshot is not None:
-                    source = "live"
-            except Exception as e:
-                logger.warning(
-                    "[AgentWebSocketServer] team.snapshot (live) failed: %s", e
-                )
-
-        def _snapshot_tasks(payload: dict[str, Any] | None) -> list[Any]:
-            if not isinstance(payload, dict):
-                return []
-            tasks = payload.get("tasks")
-            return tasks if isinstance(tasks, list) else []
-
-        # Resolve one exact identity for the runtime probe and DB fallback.
-        # A session monitor may belong to another Team; a replacement worker
-        # may have none. Probe only when the matching live board is missing.
-        snapshot_team_name = requested_team_name
-        if not snapshot_team_name and session_id:
-            snapshot_team_name = str(team_manager.get_active_team_name(session_id) or "").strip()
-            if not snapshot_team_name:
-                snapshot_team_name = str(
-                    (get_session_metadata(session_id) or {}).get("team_name") or ""
-                ).strip()
-        if snapshot is None and snapshot_team_name and session_id:
-            try:
-                from openjiuwen.core.runner.runner import GLOBAL_RUNNER
-
-                scoped_monitor = await GLOBAL_RUNNER.get_agent_team_monitor(
-                    team_name=snapshot_team_name,
-                    session_id=session_id,
-                )
-                runtime_available = live_matches_request or scoped_monitor is not None
-                if scoped_monitor is not None:
-                    scoped_snapshot = await TeamMonitorHandler(
-                        scoped_monitor, session_id
-                    ).get_team_snapshot()
-                    if scoped_snapshot is not None:
-                        snapshot = scoped_snapshot
-                        source = "live-scoped"
-            except Exception as e:
-                logger.warning(
-                    "[AgentWebSocketServer] team.snapshot (scoped live) failed: session_id=%s team_name=%s error=%s",
-                    session_id,
-                    snapshot_team_name,
-                    e,
-                )
-        needs_db = snapshot is None or not _snapshot_tasks(snapshot)
-        if needs_db and session_id:
-            team_name = snapshot_team_name
-            if team_name:
-                try:
-                    db_snapshot = await TeamMonitorHandler.get_team_snapshot_from_db(
-                        session_id, team_name
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[AgentWebSocketServer] team.snapshot (db) failed: session_id=%s team_name=%s error=%s",
-                        session_id,
-                        team_name,
-                        e,
-                    )
-                    db_snapshot = None
-                if db_snapshot is not None and (
-                    snapshot is None or _snapshot_tasks(db_snapshot)
-                ):
-                    snapshot = db_snapshot
-                    source = "db"
 
         # A replacement worker can read the old DB's busy/running rows without
         # having restored any TeamAgent. Do not mutate those historical rows or
