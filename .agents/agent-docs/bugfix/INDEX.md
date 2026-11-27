@@ -14,6 +14,8 @@ generated: true
 
 | 模块 |
 |---|
+| [agent-gateway/channel_manager/web](#module-agent-gateway-channel_manager-web) |
+| [agent-gateway/extensions/runtime_management_extension](#module-agent-gateway-extensions-runtime_management_extension) |
 | [agent_gateway/channel_manager/im_platforms/xiaoyi](#module-agent_gateway-channel_manager-im_platforms-xiaoyi) |
 | [agent_gateway/message_handler](#module-agent_gateway-message_handler) |
 | [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
@@ -37,6 +39,7 @@ generated: true
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
 | [jiuwenswarm/debug_launcher.py](#module-jiuwenswarm-debug_launcher-py) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
+| [jiuwenswarm/extensions/runtime_management_extension](#module-jiuwenswarm-extensions-runtime_management_extension) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-advanced-daily-report) |
@@ -62,6 +65,22 @@ generated: true
 | [tests/unit_tests/server](#module-tests-unit_tests-server) |
 | [tests/unit_tests/server/extensions](#module-tests-unit_tests-server-extensions) |
 | [未分类](#module-unclassified) |
+
+<a id="module-agent-gateway-channel_manager-web"></a>
+
+## agent-gateway/channel_manager/web
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
+
+<a id="module-agent-gateway-extensions-runtime_management_extension"></a>
+
+## agent-gateway/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-agent_gateway-channel_manager-im_platforms-xiaoyi"></a>
 
@@ -199,6 +218,7 @@ generated: true
 | [B_20261119_1150_chat-terminal-reasoning-close](jiuwenswarm/channels/web/frontend/B_20261119_1150_chat-terminal-reasoning-close.md) | B | 消息出错后思考段不收口，「思考中…」永久转圈直到下次发消息 | gunner_beat | 无独立 D：交互层缺陷修复，复用同文件 chat.processing_status(false) 分支已有的「终态兜底收口」口径（幂等空操作），无独立设计文档。 |
 | [B_20261121_1529_skill-install-toast-display-name-width](jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
 | [B_20261125_0115_cron-pin-sidebar-blackhole](jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
+| [B_20261126_1221_team-file-card-duplicate](jiuwenswarm/channels/web/frontend/B_20261126_1221_team-file-card-duplicate.md) | B | 团队模式 chat.file 二次投递使文件卡片重复渲染为两张 | chen hui | 无独立 D：事件时序契约缺陷修复，无独立 D；依据前端 team-leader 消息按 teamStream.requestId 关联的既有契约与各事件处理器的去重守卫约定。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 
@@ -285,6 +305,14 @@ generated: true
 | [B_20261105_1459_web-url-host-403](jiuwenswarm/extensions/app_market/web-url-host-403.md) | B | Web 应用入口 403：静态服务未放行应用专属 localhost 主机 | kdgmpw | 无独立 D：依据 S_02_app-market-stop-and-page-lifecycle 的 Web 入口与来源隔离契约；本次修复使实现重新满足既有契约，无独立 D。 |
 | [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 | [B_20261124_1429_local-app-removal-and-conversion](jiuwenswarm/extensions/app_market/B_20261124_1429_local-app-removal-and-conversion.md) | B | 应用市场本地清理和 Hub 转换的一致性 | kdgmpw | 无独立 D：本次修正应用市场登记、目录归属与转换行为，沿用 S_03 契约和现有项目接口，无独立设计。 |
+
+<a id="module-jiuwenswarm-extensions-runtime_management_extension"></a>
+
+## jiuwenswarm/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-jiuwenswarm-resources-agent-workspace-skills"></a>
 
