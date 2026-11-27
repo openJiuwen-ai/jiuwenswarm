@@ -8,11 +8,14 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
+from agent_gateway.common.request_identity import read_agent_identity
+
 from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.utils import logger
 
 from . import db_queries
+from .agent_credentials import MANAGED_CLIENTS, select_agent_credentials
 from .schemas import (
     DEFAULT_AGENT_LOAD_SLOTS,
     EXECUTION_GUARD_ENTITY_TABLE,
@@ -364,7 +367,7 @@ async def _fetch_instance_agent_resource(resource_id: str) -> dict[str, Any] | N
     return await _resource_row_cache.get_or_fetch(f"iar:{rid}", _load)
 
 
-async def _fetch_agent_template_row(template_id: str) -> dict[str, Any] | None:
+async def _fetch_agent_template_row(template_id: str, *, refresh: bool = False) -> dict[str, Any] | None:
     tid = str(template_id or "").strip()
     if not tid:
         return None
@@ -376,7 +379,9 @@ async def _fetch_agent_template_row(template_id: str) -> dict[str, Any] | None:
         )
         return rows[0] if rows else None
 
-    if not is_enterprise():
+    # Agent ID credentials may change while an off/routing process stays alive.
+    # A new request must not retain a removed secret for the template cache TTL.
+    if refresh or not is_enterprise():
         return await _load()
     return await _agent_template_cache.get_or_fetch(f"at:{tid}", _load)
 
@@ -446,7 +451,10 @@ async def load_effective_enterprise_config(
         )
         return None
 
-    agent_template_row = await _fetch_agent_template_row(ref_template_id)
+    identity = read_agent_identity(getattr(request, "metadata", None))
+    agent_template_row = await _fetch_agent_template_row(
+        ref_template_id, refresh=bool(identity.get("agent_id")),
+    )
     if agent_template_row is None:
         logger.warning(
             "[enterprise_config] agent_template not found or disabled: "
@@ -456,6 +464,12 @@ async def load_effective_enterprise_config(
         )
         return None
 
+    agent_client_credentials = select_agent_credentials(agent_template_row, identity)
+    data = agent_template_row.get("data")
+    if isinstance(data, dict) and MANAGED_CLIENTS in data:
+        public_data = data.copy()
+        del public_data[MANAGED_CLIENTS]
+        agent_template_row = {**agent_template_row, "data": public_data}
     merged_refs = normalize_template_ref(agent_template_row.get("template_ref"))
     filtered_refs = {
         slot: refs
@@ -487,6 +501,7 @@ async def load_effective_enterprise_config(
         instance_agent_resource=resource_row,
         ref_template_id=ref_template_id,
         agent_template=agent_template_row,
+        agent_client_credentials=agent_client_credentials,
         template_ref=slot_template_id_map,
         debug={
             "load_slots": sorted(load_slots),
