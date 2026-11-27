@@ -459,7 +459,8 @@ def _build_adx_extra_params() -> dict[str, Any]:
     if workspace is None:
         raise ValueError("ADX sandbox requires a workspace directory")
     setting_keys = (
-        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "user",
+        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout",
+        "idle_action", "pause_policy", "failover", "user",
         "group", "network", "connection", "env", "create_timeout", "schedule_timeout",
     )
     extra = {key: endpoint[key] for key in setting_keys if key in endpoint}
