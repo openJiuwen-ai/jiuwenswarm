@@ -25,6 +25,7 @@ const dependencyNames = [
   'setActiveNav', 'setModelSetupGuideStep', 'setAvailableModels', 'setAvailableModelGroups',
   'parseModelGroups', 't',
   'configRequestRevisionRef', 'setConfigReady', 'setModelSetupGuideAvailable',
+  'getMemoryRevision', 'applyMemorySnapshot',
 ];
 const updateAnchor = appSource.indexOf('startupUpdateCheckRef.current = true;');
 const updateStart = appSource.lastIndexOf('useEffect(', updateAnchor) + 'useEffect('.length;
@@ -75,7 +76,7 @@ function appFixture(reads, { enterprise = false, preview = false, guideEvaluated
     setServerConfig: (config) => serverConfigs.push(config),
     setTeamScheduledDispatchEnabled: (enabled) => dispatchSnapshots.push(enabled),
     isEnterprise: () => enterprise,
-    browserClientCapabilities: { getEpoch: () => 0, hasDeclarations: () => true },
+    browserClientCapabilities: { getEpoch: () => 0, hasDeclarations: () => true, hasUsableDeclarations: () => true },
     waitForFirstDeclarations: async () => false,
     configRequestRevisionRef: { current: 0 },
     setConfigReady: (value) => ready.push(value),
