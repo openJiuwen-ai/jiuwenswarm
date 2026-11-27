@@ -49,6 +49,23 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        # Lightweight single-host deployments point USER_BACKEND_DB_TYPE=sqlite at
+        # the manager's SQLite file (USER_BACKEND_SQLITE_PATH). The shared
+        # user_access_* views are provisioned by the deployment against that
+        # file; no dedicated reader account exists, so the credential checks
+        # below do not apply to this branch.
+        if (os.environ.get("USER_BACKEND_DB_TYPE") or "").strip().lower() == "sqlite":
+            sqlite_path = os.environ["USER_BACKEND_SQLITE_PATH"].strip()
+            if not sqlite_path:
+                raise ValueError("USER_BACKEND_SQLITE_PATH is required for sqlite")
+            return cls(
+                URL.create("sqlite+aiosqlite", database=sqlite_path),
+                None,
+                os.environ["USER_BACKEND_IDENTITY_URL"].rstrip("/"),
+                os.getenv("USER_BACKEND_MANAGER_URL", "").rstrip("/"),
+                os.getenv("USER_BACKEND_DEFAULT_GATEWAY_HTTP", ""),
+                os.getenv("USER_BACKEND_DEFAULT_GATEWAY_WS", ""),
+            )
         driver = {
             "postgresql": "postgresql+asyncpg", "mysql": "mysql+aiomysql",
             "mariadb": "mysql+aiomysql",
