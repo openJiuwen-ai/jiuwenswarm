@@ -49,7 +49,8 @@ flowchart LR
     R --> F["构造 RenderFrame"]
     F --> S["frame_payload_bytes"]
     S -->|"超限"| E
-    S -->|"通过"| C["commit：revision + 1"]
+    S -->|"等价帧已送达"| RR["复用现有 revision"]
+    S -->|"通过并需要新帧"| C["commit：revision + 1"]
     C --> T["RenderTransport.send_frame"]
     C --> TC["RenderTransport.send_clear"]
     T -->|"失败"| RB["restore 旧状态"]
@@ -145,8 +146,8 @@ Tabs 的全部内容节点共享深度与节点数预算，隐藏内容也参与
 2. `replace` 模式必须有根节点；`clear` 模式不要求。
 3. 深度、节点数、组件、props、动作逐项校验。
 4. 进入实例锁，复制旧状态，构造预览帧并检查整帧字节量。
-5. 通过后 `commit`：revision 加一，保存当前树。
-6. 下发帧；失败时恢复旧状态，新建实例则直接移除。
+5. 状态自动刷新或同一次交互中的同目标渲染若已送达等价帧，可复用其 revision。其他请求通过后 `commit`：revision 加一，保存当前树。
+6. 下发新帧；失败时恢复旧状态，新建实例则直接移除。
 7. 下发成功后处理容量淘汰，向被淘汰实例发送清除帧。
 
 ```mermaid
@@ -155,6 +156,7 @@ stateDiagram-v2
     Validating --> Rejected: 校验失败
     Validating --> Claimed: 通过
     Claimed --> Rejected: 帧超限
+    Claimed --> Delivered: 等价帧已送达
     Claimed --> Committed: revision + 1
     Committed --> Delivered: 发送成功
     Committed --> Restored: 发送失败
@@ -222,8 +224,9 @@ stateDiagram-v2
 
 `ops.state.set` 提交新版本后，Core `JsonState.changes` 回调查询受影响目标并把刷新调度回 WebUI 事件循环。
 每个目标最多保留一个刷新任务；连续更新会合并，但任务会在退出前再次读取待处理标记，保证最后一次状态可见。
-刷新复用上一次成功送达的不可变请求，以及宿主保存的会话和连接路由，再次触发完整 `ui.render` 事件链，
-不会伪造或重放 `ui.ready`。首次渲染期间发生并发写入时，送达后的 `changed_since` 检查会补调度一次刷新。
+刷新复用目标、显示条件和宿主保存的会话与连接路由，以 `root=None` 触发完整 `ui.render` 事件链，由插件读取最新状态构树。
+若等价帧已经送达，复用其 revision 并提交重建期间的状态读取。插件交互内透传相同画面且没有重新读取状态时，沿用该帧的依赖。
+`ui.ready` 触发的渲染仍可重新送达。首次渲染期间发生并发写入时，送达后的 `changed_since` 检查会补调度一次刷新。
 
 `clear`、容量淘汰、连接/会话清理、包卸载都会删除目标依赖并取消其刷新任务。宿主关闭时先停止状态订阅和刷新任务，
 再卸载扩展处理器，避免刷新与包关闭并发。该机制是 AgentServer 进程内通知；跨进程状态变更仍需宿主轮询或外部通知，

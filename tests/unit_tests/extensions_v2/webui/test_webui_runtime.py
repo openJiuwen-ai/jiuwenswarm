@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
+from openjiuwen.core.events import Event, ExtensionEventBus, HandlerLevel, SessionContext
 
 from jiuwenswarm.extensions_v2.event_types.context_usage import register_context_usage_events
 from jiuwenswarm.extensions_v2.management import ExtensionManager
@@ -15,6 +15,7 @@ from jiuwenswarm.extensions_v2.webui.models import (
     RenderNode,
     RenderStatus,
     RenderTarget,
+    UiActionInput,
     UiRenderInput,
 )
 from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry
@@ -45,10 +46,15 @@ class Extension:
         registrar.register_event_handler("test.event", self.update, {})
 
     async def render(self, event, ops, next_handler):
+        if event.event_input.root is not None:
+            return await next_handler(event)
         ref = StateRef(PACKAGE_ID, event.event_input.target.instance_key)
         snapshot = await ops.state.get(ref)
         value = snapshot.value if snapshot.exists else 0
-        request = replace(event.event_input, root=RenderNode("Text", {"value": str(value)}))
+        root = RenderNode(
+            "Button", {"value": str(value)}, events={"ui.click": {"id": "increment", "args": {}}},
+        )
+        request = replace(event.event_input, root=root)
         return await next_handler(Event(event.event_type, request))
 
     async def update(self, event, ops, next_handler):
@@ -413,7 +419,8 @@ async def test_header_cleanup_at_capacity_does_not_evict_other_instances(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_state_set_rebuilds_the_delivered_dependent_target(tmp_path: Path) -> None:
+@pytest.mark.parametrize("explicit_render", [False, True])
+async def test_state_set_rebuilds_the_delivered_dependent_target(tmp_path: Path, explicit_render: bool) -> None:
     transport = FakeTransport()
     runtime, manager = await _runtime(tmp_path, transport)
     package = write_package(
@@ -426,22 +433,97 @@ async def test_state_set_rebuilds_the_delivered_dependent_target(tmp_path: Path)
 
     try:
         delivered = await runtime.render(
-            UiRenderInput(target=target, root=RenderNode("Text", {"value": "placeholder"})),
+            UiRenderInput(target=target),
             SessionContext("session-1"),
         )
         assert delivered is not None and delivered.status is RenderStatus.DELIVERED
         assert transport.frames[-1].root.props["value"] == "0"
 
-        await runtime.bus.trigger(
-            Event("test.event", {"key": "panel", "value": 7}),
-            SessionContext("session-1"),
-        )
-        await _wait_for_frames(transport, 2)
+        context = SessionContext("session-1")
 
-        assert transport.frames[-1].target.key == target.key
-        assert transport.frames[-1].root.props["value"] == "7"
-        assert transport.frames[-1].revision == 2
+        async def increment(event, ops, next_handler):
+            del ops
+            revision = event.event_input.payload["revision"]
+            await runtime.bus.trigger(Event("test.event", {"key": "panel", "value": revision}), context)
+            await _wait_for_frames(transport, revision + 1)
+            if explicit_render:
+                repeated = await runtime.render(
+                    UiRenderInput(target=target, root=transport.frames[-1].root), context,
+                )
+                assert repeated is not None and repeated.status is RenderStatus.DELIVERED
+                assert repeated.revision == revision + 1
+            return await next_handler(event)
+
+        runtime.bus.register_event_handler("ui.click", increment, {}, HandlerLevel.USER)
+        for revision in (1, 2):
+            action = UiActionInput("ui.click", target, {
+                "revision": revision, "node_key": "0", "action_id": "increment", "args": {}, "data": {},
+            })
+            result = await runtime.dispatch(action)
+            assert result is not None and result.status == "handled"
+            assert [(frame.revision, frame.root.props["value"]) for frame in transport.frames] == [
+                (number + 1, str(number)) for number in range(revision + 1)
+            ]
+
+        # A plain render remains deliverable for a client mounting the view again.
+        rendered = await runtime.render(UiRenderInput(target=target), context)
+        assert rendered is not None and rendered.revision == 4
+        assert transport.frames[-1].root.props["value"] == "2"
     finally:
+        await runtime.shutdown()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_state_refresh_reuses_explicit_delivery_in_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = DelayedTransport("unused")
+    runtime, manager = await _runtime(tmp_path, transport)
+    package = write_package(
+        tmp_path / "source", package_id="webui.state-refresh", module_source=STATEFUL_EXTENSION,
+    )
+    assert (await manager.install([package]))[0].status == "SUCCESS"
+    target = RenderTarget("session-1", SLOT, "webui.state-refresh", "panel")
+    context = SessionContext("session-1")
+    explicit = None
+    try:
+        await runtime.render(UiRenderInput(target=target), context)
+        transport.blocked_instance = target.instance_key
+        started = asyncio.Event()
+        refresh = runtime._refresh_state_target
+        render = runtime._render_with_route
+
+        async def after_explicit_started(target_key):
+            await transport.entered.wait()
+            await refresh(target_key)
+
+        async def mark_refresh_started(request, session_context, **route):
+            if request.root is None:
+                started.set()
+            return await render(request, session_context, **route)
+
+        monkeypatch.setattr(runtime, "_refresh_state_target", after_explicit_started)
+        monkeypatch.setattr(runtime, "_render_with_route", mark_refresh_started)
+        await runtime.bus.trigger(Event("test.event", {"key": "panel", "value": 1}), context)
+        root = RenderNode("Button", {"value": "1"}, events=transport.frames[0].root.events)
+        explicit = asyncio.create_task(runtime.render(UiRenderInput(target=target, root=root), context))
+        await asyncio.wait_for(started.wait(), timeout=3)
+        refresh_task = runtime._state_refresh_tasks[target.key]
+        transport.release.set()
+
+        result = await explicit
+        await asyncio.wait_for(refresh_task, timeout=3)
+        assert result is not None and result.revision == 2
+        assert [(frame.revision, frame.root.props["value"]) for frame in transport.frames] == [(1, "0"), (2, "1")]
+
+        await runtime.bus.trigger(Event("test.event", {"key": "panel", "value": 2}), context)
+        await _wait_for_frames(transport, 3)
+        assert transport.frames[-1].root.props["value"] == "2"
+    finally:
+        transport.release.set()
+        if explicit is not None:
+            await asyncio.gather(explicit, return_exceptions=True)
         await runtime.shutdown()
         await manager.shutdown()
 
@@ -460,7 +542,7 @@ async def test_cleared_target_no_longer_refreshes_after_state_changes(tmp_path: 
 
     try:
         await runtime.render(
-            UiRenderInput(target=target, root=RenderNode("Text", {"value": "placeholder"})),
+            UiRenderInput(target=target),
             SessionContext("session-1"),
         )
         await runtime.render(UiRenderInput(target=target, mode=RenderMode.CLEAR), SessionContext("session-1"))
@@ -494,13 +576,13 @@ async def test_concurrent_render_delivery_keeps_state_dependencies_per_target(tm
     right = RenderTarget("session-1", SLOT, "webui.state-refresh", "right")
     context = SessionContext("session-1")
     left_render = asyncio.create_task(
-        runtime.render(UiRenderInput(left, root=RenderNode("Text", {"value": "left"})), context)
+        runtime.render(UiRenderInput(left), context)
     )
 
     try:
         await asyncio.wait_for(transport.entered.wait(), 2)
         right_output = await runtime.render(
-            UiRenderInput(right, root=RenderNode("Text", {"value": "right"})),
+            UiRenderInput(right),
             context,
         )
         transport.release.set()

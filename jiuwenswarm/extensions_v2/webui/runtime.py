@@ -8,6 +8,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from weakref import WeakValueDictionary
 
@@ -23,7 +24,7 @@ from openjiuwen.core.extension.data import JsonState, StateAddress, StateDepende
 
 from jiuwenswarm.extensions_v2.event_types.webui import register_webui_events
 from jiuwenswarm.extensions_v2.handler_ops.ui import build_webui_ops_build_handler
-from jiuwenswarm.extensions_v2.webui.action_validation import validate_upstream
+from jiuwenswarm.extensions_v2.webui.action_validation import _same_json, validate_upstream
 from jiuwenswarm.extensions_v2.webui.call_context import (
     WebUIConnectionContext,
     bind_connection,
@@ -34,13 +35,14 @@ from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.core_handlers.action_core import build_action_core_handler
 from jiuwenswarm.extensions_v2.webui.core_handlers.render_core import build_render_core_handler, clear_frame
 from jiuwenswarm.extensions_v2.webui.models import (
+    RenderFrame,
     RenderTarget,
     UiActionInput,
     UiActionOutput,
     UiRenderInput,
     UiRenderOutput,
 )
-from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry
+from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry, RenderInstance
 from jiuwenswarm.extensions_v2.webui.schema import apply_slot_scope
 from jiuwenswarm.extensions_v2.webui.transport import RenderTransport
 from jiuwenswarm.extensions_v2.webui.resources import WebUIResourceService
@@ -50,9 +52,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class _StateRenderSource:
-    """Trusted route and last delivered request used for an automatic rebuild."""
+    """Target and trusted route used for an automatic rebuild."""
 
-    request: UiRenderInput
+    target: RenderTarget
     session_context: SessionContext | None
     connection_id: str
     user_id: str
@@ -87,6 +89,9 @@ class WebUIRuntime:
         self._state_refresh_pending: set[str] = set()
         self._state_refresh_tasks: dict[str, asyncio.Task[None]] = {}
         self._state_stopped = False
+        self._render_action: ContextVar[tuple[asyncio.Task[object] | None, UiActionInput] | None] = ContextVar(
+            "webui_render_action", default=None,
+        )
 
     def bind_state(self, states: JsonState, dependencies: StateDependencies) -> None:
         """Bind Core's state collector to delivered WebUI targets once."""
@@ -110,6 +115,7 @@ class WebUIRuntime:
                 self.registry,
                 on_delivered=self._state_render_delivered,
                 on_dropped=self._drop_state_target,
+                reuse_frame=self._reuse_state_render,
             ),
             build_action_core_handler(self.registry),
         )
@@ -180,12 +186,40 @@ class WebUIRuntime:
             with dependencies.collect(target.key):
                 return await self.bus.trigger(Event(WebUIEvent.RENDER.value, request), context)
 
+    async def _reuse_state_render(
+        self,
+        frame: RenderFrame,
+        previous: RenderInstance,
+        ops: EventHandlerOps | None,
+    ) -> bool:
+        """Reuse an equivalent delivered frame for a state-dependent target."""
+
+        task = asyncio.current_task()
+        if self._state_refresh_tasks.get(frame.target.key) is not task:
+            active = self._render_action.get()
+            if frame.target.key not in self._state_sources or active is None or active[0] is not task:
+                return False
+            action = active[1]
+            revision = action.payload.get("revision")
+            if action.target.key != frame.target.key or revision is None or revision >= previous.revision:
+                return False
+        delivered = replace(frame, root=previous.root, mode=previous.mode, visible_when=previous.visible_when)
+        if not _same_json(frame.to_payload(), delivered.to_payload()):
+            return False
+        try:
+            await self._state_render_delivered(frame.target, ops, reuse=True)
+        except Exception:  # noqa: BLE001 - do not turn an already delivered frame into a failure
+            logger.exception("[WebUI] could not commit state dependencies: %s", frame.target.key)
+        return True
+
     async def _state_render_delivered(
         self,
-        request: UiRenderInput,
+        target: RenderTarget,
         ops: EventHandlerOps | None,
+        *,
+        reuse: bool = False,
     ) -> None:
-        """Commit reads only after the exact frame reached the transport."""
+        """Commit reads for a frame accepted by the transport."""
 
         states = self._states
         dependencies = self._state_dependencies
@@ -196,32 +230,29 @@ class WebUIRuntime:
         if states is None or dependencies is None or render_id is None:
             return
         reads = dict(dependencies.reads(render_id))
-        dependencies.commit(render_id, request.target.key)
-        instance = self.registry.get(request.target)
+        if reuse and not reads:
+            # A plugin passing through the same tree did not replace its dependencies.
+            return
+        dependencies.commit(render_id, target.key)
+        instance = self.registry.get(target)
         if instance is None:
-            dependencies.drop_target(request.target.key)
-            self._state_sources.pop(request.target.key, None)
+            dependencies.drop_target(target.key)
+            self._state_sources.pop(target.key, None)
             return
         if reads:
             connection = current_connection()
             context = ops.session_context if ops is not None else None
-            delivered = UiRenderInput(
+            self._state_sources[target.key] = _StateRenderSource(
                 target=instance.target,
-                root=instance.root,
-                mode=instance.mode,
-                visible_when=instance.visible_when,
-            )
-            self._state_sources[request.target.key] = _StateRenderSource(
-                request=delivered,
                 session_context=context,
                 connection_id=instance.target.connection_id,
                 user_id=connection.user_id if connection is not None else "",
                 channel_id=connection.channel_id if connection is not None else "web",
             )
         else:
-            self._state_sources.pop(request.target.key, None)
+            self._state_sources.pop(target.key, None)
         if reads and await states.changed_since(reads):
-            self._schedule_state_targets((request.target.key,))
+            self._schedule_state_targets((target.key,))
 
     def _on_state_changed(self, address: StateAddress, version: int) -> None:
         """Enqueue affected targets without running UI work in the state write path."""
@@ -260,13 +291,12 @@ class WebUIRuntime:
             source = self._state_sources.get(target_key)
             if source is None:
                 return
-            instance = self.registry.get(source.request.target)
+            instance = self.registry.get(source.target)
             if instance is None:
-                self._drop_state_target(source.request.target)
+                self._drop_state_target(source.target)
                 return
             request = UiRenderInput(
                 target=instance.target,
-                root=instance.root,
                 mode=instance.mode,
                 visible_when=instance.visible_when,
             )
@@ -333,8 +363,12 @@ class WebUIRuntime:
         if project_root:
             metadata["project_root"] = project_root
         context = SessionContext(session_id=session_id, cwd=cwd, metadata=metadata) if session_id else None
-        with self._connection_scope(connection_id, user_id=user_id, channel_id=channel_id):
-            output = await self.bus.trigger(Event(request.event_type, request), context)
+        token = self._render_action.set((asyncio.current_task(), request))
+        try:
+            with self._connection_scope(connection_id, user_id=user_id, channel_id=channel_id):
+                output = await self.bus.trigger(Event(request.event_type, request), context)
+        finally:
+            self._render_action.reset(token)
         return output if isinstance(output, UiActionOutput) else None
 
     async def _session_paths(self, session_id: str, channel_id: str) -> tuple[str | None, str | None]:

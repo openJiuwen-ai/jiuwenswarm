@@ -32,8 +32,9 @@ def build_render_core_handler(
     transport: RenderTransport,
     registry: ActiveRenderRegistry,
     *,
-    on_delivered: Callable[[UiRenderInput, EventHandlerOps | None], Awaitable[None]] | None = None,
+    on_delivered: Callable[[RenderTarget, EventHandlerOps | None], Awaitable[None]] | None = None,
     on_dropped: Callable[[RenderTarget], None] | None = None,
+    reuse_frame: Callable[[RenderFrame, RenderInstance, EventHandlerOps | None], Awaitable[bool]] | None = None,
 ) -> EventHandler:
     """Build the single CORE handler for ui.render."""
 
@@ -108,6 +109,14 @@ def build_render_core_handler(
                 )
                 return UiRenderOutput(status=RenderStatus.REJECTED)
 
+            if (
+                previous.root is not None
+                and request.mode is RenderMode.REPLACE
+                and reuse_frame is not None
+                and await reuse_frame(preview, previous, ops)
+            ):
+                return UiRenderOutput(status=RenderStatus.DELIVERED, revision=previous.revision)
+
             registered = registry.get(request.target) is claim.instance
             frame = registry.commit(claim.instance, request)
             delivered = False
@@ -136,7 +145,7 @@ def build_render_core_handler(
                 _notify_dropped(on_dropped, request.target)
             elif on_delivered is not None:
                 try:
-                    await on_delivered(request, ops)
+                    await on_delivered(request.target, ops)
                 except Exception:  # noqa: BLE001 - bookkeeping must not turn a delivered frame into failure
                     logger.exception("[WebUI] could not commit state dependencies: %s", request.target.key)
 
