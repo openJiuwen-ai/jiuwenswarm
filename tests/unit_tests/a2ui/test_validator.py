@@ -9,6 +9,8 @@ import json
 import pytest
 
 from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
+from jiuwenswarm.server.runtime.a2ui.types import A2UIResponsePart
+from jiuwenswarm.server.runtime.a2ui.validator import validate_a2ui_response
 
 
 def _surface_update(surface_id, *components):
@@ -65,6 +67,35 @@ def test_a2ui_validator_scopes_usage_hint_collisions_to_one_live_surface():
     ) + _tagged_block(_surface_update("first", _text("copy", "body")))
 
     assert get_protocol_spec().validate_response(response).valid
+
+
+def test_a2ui_validator_accepts_body_id_when_usage_hint_is_omitted():
+    text = _text("copy", "body")
+    del text["component"]["Text"]["usageHint"]
+    messages = (
+        {"beginRendering": {"surfaceId": "form", "root": "body"}},
+        _surface_update("form", _column("body", "copy"), text),
+    )
+
+    assert get_protocol_spec().validate_response(_tagged_block(*messages)).valid
+
+
+def test_a2ui_validator_rejects_usage_hint_matching_an_id_in_an_earlier_parsed_part():
+    spec = get_protocol_spec()
+    first = _surface_update("form", _column("body", "copy"), _text("copy", "h1"))
+    second = _surface_update("form", _text("copy", "body"))
+    parts = [
+        A2UIResponsePart(kind="a2ui", messages=[first]),
+        A2UIResponsePart(kind="text", text="Updated form"),
+        A2UIResponsePart(kind="a2ui", messages=[second]),
+    ]
+
+    result = validate_a2ui_response(
+        "parsed output", parse_response=lambda _: parts, validate_messages=spec.validate_messages,
+    )
+
+    assert not result.valid
+    assert "Text 'copy' usageHint 'body'" in result.error
 
 
 def test_a2ui_validator_checks_latest_component_definition_after_an_update():

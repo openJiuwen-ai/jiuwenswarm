@@ -111,9 +111,9 @@ async def test_finalize_a2ui_assistant_content_repairs_parseable_invalid_respons
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel", ("web", "officeclaw"))
 async def test_finalize_repairs_parent_id_conflicting_with_text_usage_hint(monkeypatch, channel):
-    from jiuwenswarm.server.runtime.a2ui.integration import finalize_assistant_response_if_a2ui
+    from jiuwenswarm.server.runtime.a2ui import integration
 
-    monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
+    monkeypatch.setattr(integration, "_get_runtime_a2ui_config", lambda: SimpleNamespace(enabled=True))
 
     def build_response(root_id):
         surface = {"surfaceId": "form"}
@@ -137,9 +137,9 @@ async def test_finalize_repairs_parent_id_conflicting_with_text_usage_hint(monke
         prompts.append(prompt)
         assert "Text 'copy' usageHint 'body'" in prompt
         assert "rename component id 'body'" in prompt
-        return next(repair_results)
+        return SimpleNamespace(content=next(repair_results))
 
-    result = await finalize_assistant_response_if_a2ui(
+    result = await integration.finalize_assistant_response_if_a2ui(
         original,
         channel=channel,
         user_query="generate a form",
