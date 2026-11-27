@@ -921,7 +921,7 @@ class RuntimeSupervisor:
                                 if (not isinstance(exc, RuntimeError)
                                         or "Worker PID identity changed" not in str(exc)
                                         or hello.get("process_start_ticks") is not None
-                                        or (sys.platform == "darwin" and getattr(sys, "frozen", False))):
+                                        or sys.platform == "darwin"):
                                     self._fatal = True
                                     self._fatal_reason = "resident Worker replacement failed"
                                     raise

@@ -150,8 +150,7 @@ async def retire_worker(connection, hello: dict, socket_path: str, *, deadline: 
     try:
         process, created = worker_process(hello, socket_path, allow_legacy=allow_legacy, expected_pid=expected_pid)
     except LegacyProcessCreationTimeMismatch:
-        if (sys.platform != "darwin" or not getattr(sys, "frozen", False)
-                or not isinstance(connection, StreamConnection)):
+        if sys.platform != "darwin" or not isinstance(connection, StreamConnection):
             raise
         connected_peer_pid = await asyncio.wait_for(
             connection.macos_unix_peer_pid(), max(.001, deadline - time.monotonic()),

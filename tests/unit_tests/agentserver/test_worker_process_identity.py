@@ -516,12 +516,16 @@ def test_dead_launcher_witness_can_use_tick_identity(monkeypatch, restricted_pro
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("peer_pid", [123, 456, None])
-async def test_frozen_macos_retires_drifted_legacy_worker_only_with_matching_unix_peer(
-    monkeypatch, restricted_process, tmp_path, peer_pid,
+@pytest.mark.parametrize(("frozen", "peer_pid", "has_deployment"), [
+    (True, 123, True), (True, 456, True), (True, None, True),
+    (False, 123, True), (False, 456, True), (False, None, True),
+    (False, 123, False),
+])
+async def test_macos_retires_drifted_worker_only_with_verified_unix_peer(
+    monkeypatch, restricted_process, tmp_path, frozen, peer_pid, has_deployment,
 ):
     monkeypatch.setattr(resident_lifecycle, "sys", SimpleNamespace(
-        platform="darwin", frozen=True, executable=sys.executable,
+        platform="darwin", frozen=frozen, executable=sys.executable,
     ))
     monkeypatch.setattr(resident_lifecycle, "deployment_scope", lambda: "deployment")
     monkeypatch.setattr(resident_lifecycle, "data_scope", lambda: "data")
@@ -533,7 +537,7 @@ async def test_frozen_macos_retires_drifted_legacy_worker_only_with_matching_uni
     restricted_process.create_time.return_value = 1700000001.0
     hello = {
         "kind": "hello", "protocol": 2, "pid": 123,
-        "deployment_scope": "deployment", "data_scope": "data",
+        "deployment_scope": "deployment" if has_deployment else None, "data_scope": "data",
         "process_created": 1700000000.0,
     }
     connection = Mock(spec=StreamConnection)
@@ -542,17 +546,18 @@ async def test_frozen_macos_retires_drifted_legacy_worker_only_with_matching_uni
     wait_exit = AsyncMock()
     monkeypatch.setattr(resident_lifecycle, "_wait_exit", wait_exit)
 
-    if peer_pid == hello["pid"]:
+    if peer_pid == hello["pid"] and has_deployment:
         outcome = await resident_lifecycle.retire_worker(
-            connection, hello, socket_path, deadline=time.monotonic() + 5,
+            connection, hello, socket_path, deadline=time.monotonic() + 5, allow_legacy=True,
         )
         assert outcome == {"kind": "shutdown.done", "ok": True}
         connection.send.assert_awaited_once_with({"kind": "shutdown"})
         assert wait_exit.await_args.args[:2] == (restricted_process, 1700000001.0)
     else:
-        with pytest.raises(RuntimeError, match="Worker PID identity changed"):
+        message = "Worker PID identity changed" if has_deployment else "has no deployment identity"
+        with pytest.raises(RuntimeError, match=message):
             await resident_lifecycle.retire_worker(
-                connection, hello, socket_path, deadline=time.monotonic() + 5,
+                connection, hello, socket_path, deadline=time.monotonic() + 5, allow_legacy=True,
             )
         connection.send.assert_not_awaited()
         wait_exit.assert_not_awaited()
