@@ -1,7 +1,6 @@
+import { MemberExecutionStatus } from './MemberExecutionStatus';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
-import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
-import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
-import { getMemberAvatarIdentity, getMemberAvatarKey, getMemberExpertHint, getMemberPlainName, getMemberStatusKey, type TeamMember } from './shared';
+import { getMemberAvatarIdentity, getMemberAvatarKey, getMemberExpertHint, getMemberPlainName, type TeamMember } from './shared';
 
 interface TaskProgress {
   completed: number;
@@ -24,7 +23,6 @@ export function MemberListItem({
   taskProgress?: TaskProgress;
 }) {
   const displayName = getMemberPlainName(member);
-  const statusKey = getMemberStatusKey(member);
 
   const progressPercent =
     taskProgress && taskProgress.total > 0 ? Math.round((taskProgress.completed / taskProgress.total) * 100) : 0;
@@ -32,8 +30,6 @@ export function MemberListItem({
   const strokeWidth = 2;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (progressPercent / 100) * circumference;
-
-  const isRunning = statusKey === 'running';
 
   return (
     <button
@@ -82,11 +78,7 @@ export function MemberListItem({
         )}
       </div>
       {compact ? (
-        isRunning && !showIdleStatus ? (
-          <LoadingSpinner />
-        ) : (
-          <FrameTimeIcon className="w-4 h-4 text-text-meta" />
-        )
+        <MemberExecutionStatus member={member} showIdleStatus={showIdleStatus} />
       ) : taskProgress && taskProgress.total > 0 ? (
         <div className="shrink-0 relative">
           <svg width="32" height="32" className="shrink-0">
@@ -118,10 +110,8 @@ export function MemberListItem({
             {taskProgress.completed}/{taskProgress.total}
           </span>
         </div>
-      ) : isRunning && !showIdleStatus ? (
-        <LoadingSpinner />
       ) : (
-        <FrameTimeIcon className="w-4 h-4 shrink-0 text-text-meta" />
+        <MemberExecutionStatus member={member} showIdleStatus={showIdleStatus} />
       )}
     </button>
   );

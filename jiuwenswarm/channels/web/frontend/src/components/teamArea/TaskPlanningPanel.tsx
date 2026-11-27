@@ -1,3 +1,4 @@
+import { sortTasksNewestFirst } from '../../features/teamTaskOrder';
 import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -419,7 +420,7 @@ export function ViewSwitcher({
 
 export function TaskPlanningPanel({
   variant,
-  tasks,
+  tasks: unorderedTasks,
   metricTasks: suppliedMetricTasks,
   members,
   totalTasks,
@@ -437,6 +438,7 @@ export function TaskPlanningPanel({
   emptyIllustration,
 }: TaskPlanningPanelProps) {
   const { t } = useTranslation();
+  const tasks = useMemo(() => sortTasksNewestFirst(unorderedTasks), [unorderedTasks]);
   const metricTasks = suppliedMetricTasks ?? tasks;
   const teamMetrics = suppliedMetricTasks !== undefined;
   const [selectedView, setView] = useState<'board' | 'list' | 'workflow'>('list');
