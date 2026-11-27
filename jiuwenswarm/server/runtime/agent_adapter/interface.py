@@ -5298,12 +5298,24 @@ class JiuWenSwarm:
                     await _persist_team_member_pending_final(member_key)
             return True
 
+        # The supplemental inputs this stream has written, by input_request_id.
+        written_input_ids: set[str] = set()
+
         async def _persist_input_boundary(payload: dict[str, Any]) -> None:
             # Flush BEFORE writing the user. This is the same ordered boundary
             # the browser receives, so reload cannot merge old/new answers.
             await _persist_pending_final_text(completed_at=payload["timestamp"] / 1000)
             await _persist_pending_reasoning()
             await _persist_team_member_pending_final(completed_at=payload["timestamp"] / 1000)
+            await _write_input_boundary_record(payload)
+
+        async def _write_input_boundary_record(payload: dict[str, Any]) -> None:
+            """Write one supplemental input to the history, once per input_request_id."""
+            input_id = str(payload.get("input_request_id") or "")
+            if input_id:
+                if input_id in written_input_ids:
+                    return
+                written_input_ids.add(input_id)
             await _run_history_io(
                 append_history_record,
                 session_id=session_id,
@@ -5324,6 +5336,36 @@ class JiuWenSwarm:
                 },
                 mode=request.params.get("mode", "unknown"),
             )
+
+        async def _persist_undelivered_input_boundaries() -> None:
+            """Write the supplemental inputs this stream accepted but did not deliver.
+
+            A disconnect or a Stop closes the stream with ``chat.input_received``
+            events still queued here, or steers still held by the adapter. They
+            are written as that event writes them, without the pending answer:
+            a cut-off answer stays out of the history.
+            """
+            undelivered: list[dict[str, Any]] = []
+            while not stream_queue.empty():
+                kind, item = stream_queue.get_nowait()
+                payload = getattr(item, "payload", None) if kind == "chunk" else None
+                if isinstance(payload, dict) and payload.get("event_type") == "chat.input_received":
+                    undelivered.append(payload)
+            from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
+                take_undelivered_input_boundaries,
+            )
+
+            undelivered.extend(take_undelivered_input_boundaries(adapter, rid))
+            for payload in undelivered:
+                try:
+                    await _write_input_boundary_record(payload)
+                except Exception:
+                    logger.warning(
+                        "[JiuWenSwarm] supplemental input not written to history: request_id=%s input=%s",
+                        rid,
+                        payload.get("input_request_id"),
+                        exc_info=True,
+                    )
 
         async def run_stream_task():
             nonlocal producer_cancellation
@@ -6281,6 +6323,7 @@ class JiuWenSwarm:
                         rid,
                         exc_info=True,
                     )
+                await _persist_undelivered_input_boundaries()
 
         # A producer may cancel itself without the outer WebSocket consumer
         # being cancelled.  Keep that terminal state out of the bounded queue

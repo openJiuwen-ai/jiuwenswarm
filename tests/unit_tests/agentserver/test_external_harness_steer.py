@@ -669,3 +669,138 @@ async def test_closing_the_stream_early_stops_reading_the_provider() -> None:
     await _spin()
     assert io.queue.qsize() == 1 and io.queue.get_nowait() is later
     assert adapter._external_harness_boundaries is None
+
+
+class _LiveAdapter:
+    """The session's adapter, streaming its External Harness turn to the facade."""
+
+    def __init__(self, io: Any) -> None:
+        self._external_harness = io
+        self._external_harness_binding = {
+            "kind": "external_harness",
+            "agent_template_name": "coding-expert",
+            "provider_name": "claudecode",
+        }
+        self._external_harness_boundaries = None
+
+    async def process_message_stream_impl(self, request: AgentRequest, inputs: dict[str, Any]):
+        async for chunk in external_harness_helpers.process_external_harness_stream(self, request, inputs):
+            yield chunk
+
+    async def reconcile_session_mcp(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+def _facade_over(monkeypatch, adapter: Any) -> tuple[Any, list[dict[str, Any]]]:
+    facade = JiuWenSwarm()
+    recorded: list[dict[str, Any]] = []
+    monkeypatch.setattr(facade, "_adapter", adapter)
+    monkeypatch.setattr(facade, "_sdk_name", "harness")
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **kwargs: recorded.append(kwargs))
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "en"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _cfg: "off")
+    monkeypatch.setattr(interface_module, "build_user_prompt", lambda q, **_kw: q)
+    return facade, recorded
+
+
+def _user_records(recorded: list[dict[str, Any]]) -> list[str]:
+    return [r["content"] for r in recorded if r["role"] == "user" and r["content"]]
+
+
+async def _facade_turn_with_a_slow_steer(monkeypatch):
+    """Start a facade stream over a live turn and a steer whose send waits for ``sent``."""
+    io = _RunningIO()
+    adapter = _LiveAdapter(io)
+    facade, recorded = _facade_over(monkeypatch, adapter)
+    sending, sent = asyncio.Event(), asyncio.Event()
+
+    async def slow_send(*_args: Any, **_kwargs: Any) -> SendReceipt:
+        sending.set()
+        await sent.wait()
+        return SendReceipt(message_id="message-2", turn_id="turn-1", accepted_mode=DeliveryMode.STEER)
+
+    io.harness.send.side_effect = slow_send
+    payloads: list[dict[str, Any]] = []
+
+    async def consume() -> None:
+        async for chunk in facade.process_message_stream(_request("request-1", "first", mode="agent")):
+            if isinstance(chunk.payload, dict):
+                payloads.append(chunk.payload)
+
+    consumer = asyncio.create_task(consume())
+    await _wait_streaming(adapter)
+    await io.queue.put(OutputSchema(type=TURN_LIFECYCLE, index=0, payload={"turn_id": "turn-1", "kind": "started"}))
+    await _spin()
+    steer = asyncio.create_task(external_harness_helpers.steer_external_harness(
+        adapter, _request("request-2", "one more thing"), {"query": "one more thing"},
+    ))
+    await asyncio.wait_for(sending.wait(), timeout=5)
+    return io, adapter, recorded, payloads, consumer, steer, sent
+
+
+@pytest.mark.asyncio
+async def test_a_steer_sending_when_the_client_disconnects_is_written_to_the_history(monkeypatch) -> None:
+    # The client leaves while the provider takes the steer: the consumer of the
+    # facade's stream is cancelled. The accepted steer is written once.
+    io, adapter, recorded, _payloads, consumer, steer, sent = await _facade_turn_with_a_slow_steer(monkeypatch)
+
+    consumer.cancel()
+    await _spin()
+    sent.set()
+    assert await asyncio.wait_for(steer, timeout=5) is True
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(consumer, timeout=5)
+
+    assert _user_records(recorded) == ["first", "one more thing"]
+    assert external_harness_helpers.take_undelivered_input_boundaries(adapter, "request-1") == []
+
+
+@pytest.mark.asyncio
+async def test_a_steer_sending_when_the_turn_is_stopped_is_written_once(monkeypatch) -> None:
+    # Stop ends the turn as aborted while the provider takes the steer. The
+    # stream shows the steer before its end, and the history has it once.
+    io, _adapter, recorded, payloads, consumer, steer, sent = await _facade_turn_with_a_slow_steer(monkeypatch)
+
+    await io.queue.put(OutputSchema(type=TURN_LIFECYCLE, index=1, payload={"turn_id": "turn-1", "kind": "aborted"}))
+    await _spin()
+    sent.set()
+    assert await asyncio.wait_for(steer, timeout=5) is True
+    await asyncio.wait_for(consumer, timeout=5)
+
+    assert "chat.input_received" in [payload.get("event_type") for payload in payloads]
+    assert _user_records(recorded) == ["first", "one more thing"]
+
+
+@pytest.mark.asyncio
+async def test_a_steer_already_written_is_not_written_again_when_the_client_disconnects(monkeypatch) -> None:
+    io = _RunningIO()
+    adapter = _LiveAdapter(io)
+    facade, recorded = _facade_over(monkeypatch, adapter)
+    payloads: list[dict[str, Any]] = []
+
+    async def consume() -> None:
+        async for chunk in facade.process_message_stream(_request("request-1", "first", mode="agent")):
+            if isinstance(chunk.payload, dict):
+                payloads.append(chunk.payload)
+
+    consumer = asyncio.create_task(consume())
+    await _wait_streaming(adapter)
+    await io.queue.put(OutputSchema(type=TURN_LIFECYCLE, index=0, payload={"turn_id": "turn-1", "kind": "started"}))
+    await _spin()
+    assert await external_harness_helpers.steer_external_harness(
+        adapter, _request("request-2", "one more thing"), {"query": "one more thing"},
+    )
+    for _ in range(100):
+        if "chat.input_received" in [payload.get("event_type") for payload in payloads]:
+            break
+        await asyncio.sleep(0.01)
+    assert _user_records(recorded) == ["first", "one more thing"]
+    # The same steer is handed back as undelivered too, as a racing close could.
+    shown = next(payload for payload in payloads if payload.get("event_type") == "chat.input_received")
+    adapter._external_harness_undelivered_inputs = {"request-1": [dict(shown)]}
+
+    consumer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(consumer, timeout=5)
+
+    assert _user_records(recorded) == ["first", "one more thing"]

@@ -944,6 +944,33 @@ async def _stop_steer_intake(adapter: Any, boundaries: asyncio.Queue[dict[str, A
             adapter._external_harness_boundaries = None  # pylint: disable=protected-access
 
 
+def _hold_undelivered_inputs(
+    adapter: Any, request_id: str, boundaries: asyncio.Queue[dict[str, Any]],
+) -> None:
+    """Keep the steers a closed stream accepted but did not show, for its facade to record."""
+    undelivered = [boundaries.get_nowait() for _ in range(boundaries.qsize())]
+    if not undelivered:
+        return
+    held = getattr(adapter, "_external_harness_undelivered_inputs", None)
+    if not isinstance(held, dict):
+        held = {}
+        adapter._external_harness_undelivered_inputs = held  # pylint: disable=protected-access
+    held.setdefault(request_id, []).extend(undelivered)
+
+
+def take_undelivered_input_boundaries(adapter: Any, request_id: str) -> list[dict[str, Any]]:
+    """Return and forget the steers that the closed stream of ``request_id`` accepted but did not show.
+
+    A consumer that closes the stream early, on a disconnect or a Stop, leaves
+    them without a ``chat.input_received``; the facade writes them to the
+    history as it writes that event.
+    """
+    held = getattr(adapter, "_external_harness_undelivered_inputs", None)
+    if not isinstance(held, dict):
+        return []
+    return list(held.pop(request_id, []))
+
+
 async def _close_steer_intake(
     adapter: Any,
     boundaries: asyncio.Queue[dict[str, Any]],
@@ -1468,6 +1495,9 @@ async def process_external_harness_stream(
             )
             if is_interaction:
                 return
+        # The output ended without the turn's end; show the steers the provider took.
+        for boundary in await _close_steer_intake(adapter, boundaries, merged):
+            yield input_received(boundary)
     except Exception as exc:
         logger.warning(
             "External Harness output stream failed for session %s: %s",
@@ -1491,9 +1521,8 @@ async def process_external_harness_stream(
         # sending, and stops the reader of the provider's output with the stream.
         await _stop_steer_intake(adapter, boundaries)
         await merged.aclose()
+        _hold_undelivered_inputs(adapter, request.request_id, boundaries)
 
-    for boundary in await _close_steer_intake(adapter, boundaries, merged):
-        yield input_received(boundary)
     yield _response_chunk(
         request,
         {
