@@ -206,6 +206,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     const visibilityChanged =
       existing?.snapshot.frame?.visibleWhen?.key !== frame.visibleWhen?.key ||
       existing?.snapshot.frame?.visibleWhen?.default !== frame.visibleWhen?.default;
+    const recoveredFromError = !!existing && !existing.snapshot.frame;
     invalidateBindings(key);
     const snapshot = buildSnapshot(
       frame.target,
@@ -226,7 +227,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       notifyScope(webUISlotKey(frame.target.sessionId, frame.target.slotId));
     }
     notifyInstance(key);
-    if (existing && (catalog.getSlot(frame.target.slotId)?.display === 'single' || visibilityChanged)) {
+    if (existing && (catalog.getSlot(frame.target.slotId)?.display === 'single' || visibilityChanged || recoveredFromError)) {
       notifyScope(webUISlotKey(frame.target.sessionId, frame.target.slotId));
     }
   }
