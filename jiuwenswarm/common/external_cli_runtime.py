@@ -700,6 +700,24 @@ def _verify_installed_runtime(cli_agent: str) -> None:
         )
 
 
+def missing_external_cli_sdk_modules(cli_agent: str) -> list[str]:
+    """Return the runtime manifest's required modules that are not importable.
+
+    Mirrors _verify_installed_runtime's post-install acceptance check so the
+    detection gate answers the same question the cluster member launch will:
+    every module in the runtime manifest's ``required_modules`` must resolve
+    in this process (claude: ``claude_agent_sdk``; codex: ``openai_codex`` and
+    ``codex_cli_bin``).
+    """
+    entry = _runtime_entry(cli_agent)
+    importlib.invalidate_caches()
+    return [
+        module
+        for module in entry.get("required_modules", ())
+        if importlib.util.find_spec(module) is None
+    ]
+
+
 def _runtime_package_versions(artifacts: list[dict[str, str]]) -> list[dict[str, str]]:
     return [
         {"name": artifact["name"], "version": artifact["version"]}
