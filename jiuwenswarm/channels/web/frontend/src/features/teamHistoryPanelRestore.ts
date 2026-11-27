@@ -93,6 +93,13 @@ const TEAM_TASK_STATUSES = new Set<TeamTaskStatus>([
   'cancelled',
 ]);
 
+// Issue #181 defense: a snapshot re-fetch that downgrades an actively
+// in_progress task to a terminal-ish status is only trustworthy when it is
+// newer than the history record. These sets drive that arbitration in
+// reconcileStateFromSnapshot.
+const ACTIVE_TASK_STATUSES = new Set<TeamTaskStatus>(['planning', 'in_progress', 'in_review']);
+const SNAPSHOT_DOWNGRADE_STATUSES = new Set<TeamTaskStatus>(['cancelled', 'pending']);
+
 const TEAM_STATE_EVENT_TYPES = new Set([
   'team.message',
   'team.event',
@@ -897,10 +904,68 @@ export function parseOrganizationHistoryPanelRecords(records: unknown[], session
 
 interface TeamSnapshotResponse {
   tasks?: unknown;
+  members?: unknown;
+  departed_members?: unknown;
 }
 
 function readSnapshotSize(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/** Collect ``member_id`` values from a snapshot ``members``/``departed_members`` array. */
+function collectSnapshotMemberIds(items: unknown): Set<string> {
+  const ids = new Set<string>();
+  if (!Array.isArray(items)) return ids;
+  for (const item of items) {
+    if (!isRecord(item)) continue;
+    const id = pickString(item, ['member_id']);
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * Drop members the live snapshot confirms as departed (issue #181).
+ *
+ * History replay can resurrect a shut_down member, so the snapshot's
+ * ``departed_members`` (DB source of truth, split out by ``_split_roster``)
+ * is used to prune the history-derived roster: a member that has left must
+ * never reappear in the active roster after a refresh. ``dormant`` members
+ * are not in ``departed_members`` (they stay on the roster), so they are
+ * preserved.
+ */
+export function pruneDepartedMembersFromSnapshot(
+  members: TeamMember[],
+  departedMemberIds: ReadonlySet<string>,
+): TeamMember[] {
+  if (departedMemberIds.size === 0) return members;
+  return members.filter((member) => !departedMemberIds.has(member.member_id));
+}
+
+/**
+ * Resolve the task status when merging a snapshot task with its history record.
+ *
+ * Issue #181 defense: the snapshot (DB) is authoritative, but a snapshot
+ * re-fetch that downgrades an actively in_progress task to ``cancelled`` /
+ * ``pending`` is only trustworthy when it is newer than the history record.
+ * When the history record is strictly newer and active, the snapshot is
+ * stale/partial — keep the history status so an in_progress task is not
+ * silently shown as cancelled after a refresh (a stale snapshot read or a
+ * lost TASK_CANCELLED publish must not downgrade a newer in_progress).
+ */
+export function resolveSnapshotTaskStatus(
+  fromSnap: TeamTask,
+  existing: TeamTask | undefined,
+): TeamTaskStatus {
+  if (
+    existing &&
+    ACTIVE_TASK_STATUSES.has(existing.status) &&
+    SNAPSHOT_DOWNGRADE_STATUSES.has(fromSnap.status) &&
+    (existing.timestamp || 0) > (fromSnap.timestamp || 0)
+  ) {
+    return existing.status;
+  }
+  return fromSnap.status;
 }
 
 function snapshotItemToTask(item: Record<string, unknown>, fallbackTimestamp: number): TeamTask | null {
@@ -938,6 +1003,7 @@ export function mergeTeamSnapshotTaskWithHistory(
 ): TeamTask {
   return {
     ...fromSnap,
+    status: resolveSnapshotTaskStatus(fromSnap, existing),
     skills: fromSnap.skills || existing?.skills,
     files: fromSnap.files || existing?.files,
     progress_frozen: existing?.progress_frozen,
@@ -947,7 +1013,7 @@ export function mergeTeamSnapshotTaskWithHistory(
 }
 
 /**
- * Reconcile the restored task board against the live DB snapshot.
+ * Reconcile the restored panel state against the live DB snapshot.
  *
  * History events alone can leave:
  * - placeholder-body cards (`任务 <task_id>`) in the waiting column, or
@@ -957,8 +1023,13 @@ export function mergeTeamSnapshotTaskWithHistory(
  * `task_id` + title/content + status): replace the list so wrong-id / stale
  * waiting cards are refreshed to the correct ones. When the monitor is
  * inactive (empty snapshot) or the RPC fails, keep the history-derived state.
+ *
+ * Issue #181 — members are also reconciled: history replay can resurrect a
+ * shut_down member, so any member the snapshot lists in `departed_members`
+ * (DB source of truth, split out by `_split_roster`) is pruned from the
+ * active roster. A member that has left must never reappear after a refresh.
  */
-async function reconcileTasksFromSnapshot(
+async function reconcileStateFromSnapshot(
   state: TeamHistoryPanelState,
   sessionId: string,
   signal?: AbortSignal
@@ -972,9 +1043,14 @@ async function reconcileTasksFromSnapshot(
       { session_id: sessionId, ...(ownerId ? { team_name: ownerId } : {}) },
       { signal, timeoutMs: 5000 }
     );
+
+    // Prune departed members the snapshot confirms (issue #181).
+    const departedIds = collectSnapshotMemberIds(response?.departed_members);
+    const members = pruneDepartedMembersFromSnapshot(state.members, departedIds);
+
     const snapshotTasks = Array.isArray(response?.tasks) ? response.tasks : [];
     if (snapshotTasks.length === 0) {
-      return state;
+      return members === state.members ? state : { ...state, members };
     }
 
     const existingById = new Map(state.tasks.map((task) => [task.task_id, task]));
@@ -991,7 +1067,7 @@ async function reconcileTasksFromSnapshot(
       const existing = existingById.get(fromSnap.task_id);
       tasks.push(mergeTeamSnapshotTaskWithHistory(fromSnap, existing));
     }
-    return { ...state, tasks };
+    return { ...state, members, tasks };
   } catch {
     return state;
   }
@@ -1032,8 +1108,9 @@ export async function loadTeamHistoryPanelState(
   const state = parseOrganizationHistoryPanelRecords(records, sessionId);
   // Prefer live DB snapshot as the authoritative board when the monitor is
   // still up — refreshes placeholder / wrong-id waiting cards to real
-  // task_id + body. When the monitor is down (empty snapshot), keep the
+  // task_id + body, and prunes departed members the snapshot confirms
+  // (issue #181). When the monitor is down (empty snapshot), keep the
   // history-event-derived board. Runs only on this async path so the sync
   // export path (shareImageExport) stays side-effect free.
-  return reconcileTasksFromSnapshot(state, sessionId, signal);
+  return reconcileStateFromSnapshot(state, sessionId, signal);
 }

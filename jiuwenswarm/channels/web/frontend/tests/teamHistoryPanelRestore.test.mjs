@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   mergeTeamSnapshotTaskWithHistory,
   parseTeamHistoryPanelRecords,
+  pruneDepartedMembersFromSnapshot,
+  resolveSnapshotTaskStatus,
 } from '../node_modules/.cache/team-history-panel/teamHistoryPanelRestore.mjs';
 
 function spawnRecord() {
@@ -307,4 +309,66 @@ test('snapshot merge keeps history progress_frozen when snapshot omits it', () =
   assert.equal(merged.progress_frozen, true);
   assert.equal(merged.progress_frozen_at, 1_500);
   assert.equal(merged.timestamp, 2_000);
+});
+
+function teamMember(memberId, status = 'ready') {
+  return { id: `hist-member-${memberId}`, member_id: memberId, status, timestamp: 0 };
+}
+
+test('pruneDepartedMembersFromSnapshot drops members the snapshot confirms as departed (issue #181)', () => {
+  const members = [teamMember('a'), teamMember('b'), teamMember('c')];
+
+  // Departed set drops only the confirmed-departed member ids.
+  assert.deepEqual(
+    pruneDepartedMembersFromSnapshot(members, new Set(['b'])).map((m) => m.member_id),
+    ['a', 'c'],
+  );
+
+  // Empty departed set is a no-op (returns the same array).
+  assert.equal(pruneDepartedMembersFromSnapshot(members, new Set()), members);
+
+  // dormant members are not in departed_members, so they are preserved.
+  const withDormant = [teamMember('dormant-1', 'dormant'), teamMember('live-1')];
+  assert.deepEqual(
+    pruneDepartedMembersFromSnapshot(withDormant, new Set(['gone-1'])).map((m) => m.member_id),
+    ['dormant-1', 'live-1'],
+  );
+});
+
+test('resolveSnapshotTaskStatus keeps a newer in_progress record over a stale cancelled snapshot (issue #181)', () => {
+  // History in_progress is newer than the snapshot's cancelled — the snapshot
+  // is stale/partial, so the in_progress status must survive the refresh.
+  assert.equal(
+    resolveSnapshotTaskStatus(
+      { status: 'cancelled', timestamp: 100 },
+      { status: 'in_progress', timestamp: 200 },
+    ),
+    'in_progress',
+  );
+});
+
+test('resolveSnapshotTaskStatus trusts a newer snapshot downgrade', () => {
+  // Snapshot cancelled is newer than history in_progress — the cancel is real.
+  assert.equal(
+    resolveSnapshotTaskStatus(
+      { status: 'cancelled', timestamp: 300 },
+      { status: 'in_progress', timestamp: 200 },
+    ),
+    'cancelled',
+  );
+});
+
+test('resolveSnapshotTaskStatus passes the snapshot status through when there is no history record', () => {
+  assert.equal(resolveSnapshotTaskStatus({ status: 'cancelled', timestamp: 100 }, undefined), 'cancelled');
+});
+
+test('resolveSnapshotTaskStatus does not arbitrate when the history status is not active', () => {
+  // completed is terminal, not active — the snapshot status wins regardless of age.
+  assert.equal(
+    resolveSnapshotTaskStatus(
+      { status: 'pending', timestamp: 100 },
+      { status: 'completed', timestamp: 200 },
+    ),
+    'pending',
+  );
 });

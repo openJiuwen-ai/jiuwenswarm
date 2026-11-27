@@ -568,11 +568,18 @@ class TeamMonitorHandler(BaseMonitorHandler):
         整个 snapshot 返回 None，连 members 一起丢失。/join 成员校验只需要
         members，不依赖 tasks，故提供此窄方法做降级：tasks 取不到不影响
         成员名校验。字段形状与 ``get_team_snapshot`` 的 members 项保持一致。
+
+        Departed (``shut_down``) members are dropped here, mirroring
+        ``_split_roster`` so every roster exit agrees: a member that has left
+        the team must never reappear in the active roster after a refresh
+        (issue #181). ``dormant`` / ``shutdown_requested`` members stay — a
+        dormant member is retired on purpose and wakes on mention.
         """
         if self._monitor is None:
             return None
         try:
             members = await self._monitor.get_members()
+            members = [m for m in members if not is_departed_member(m.status)]
             team_info = await self._monitor.get_team_info()
             leader_name = team_info.leader_member_name if team_info else None
             if leader_name:
@@ -610,11 +617,14 @@ class TeamMonitorHandler(BaseMonitorHandler):
         不依赖 monitor 存活。本方法在 monitor 不可达时供 server 层降级调用，
         使 /join 成员校验通过 runtime 间隙继续工作。
 
-        只查全局 ``team_member`` 表，默认返回该 team 的**全部**成员（不按 role 过滤、
-        不排除 leader）——业务过滤（``role == "human_agent"`` 等）由调用方做，
-        与 ``get_member_list`` 的职责边界一致。member dict 形状（member_id/name/
+        只查全局 ``team_member`` 表，默认返回该 team 的**全部**非离队成员（不按
+        role 过滤、不排除 leader）——业务过滤（``role == "human_agent"`` 等）由
+        调用方做，与 ``get_member_list`` 的职责边界一致。member dict 形状（member_id/name/
         status/execution_status/mode/role）与 ``get_member_list`` 保持一致，便于
-        调用方统一过滤。
+        调用方统一过滤。Departed (``shut_down``) members are dropped here so the
+        DB fallback agrees with ``get_team_snapshot`` / ``_split_roster``: a
+        member that has left must never reappear in the roster after a refresh
+        (issue #181); ``dormant`` / ``shutdown_requested`` stay.
 
         ``initialize()`` 幂等：runtime 已初始化过单例则 no-op；首次由本路径初始化
         时只建全局表（``create_cur_session_tables`` 无 session 上下文会跳过动态表，
@@ -640,6 +650,10 @@ class TeamMonitorHandler(BaseMonitorHandler):
         # initialize；幂等，runtime 已起过则 no-op。
         await db.initialize()
         members = await db.member.get_team_members(team_name, status=None) or []
+        # Drop departed (shut_down) members — same roster contract as
+        # _split_roster / get_member_list (issue #181). A dormant /
+        # shutdown_requested member stays on the roster.
+        members = [m for m in members if not is_departed_member(m.status)]
 
         if exclude_leader:
             team_info = await db.team.get_team(team_name)
