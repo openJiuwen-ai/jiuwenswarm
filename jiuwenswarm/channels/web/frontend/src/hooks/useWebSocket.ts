@@ -141,6 +141,7 @@ import {
 } from '../features/tool-events/toolEventNormalizer';
 import {
   findActiveTeamLeaderMessage as findActiveTeamLeaderMessageInTurn,
+  findTeamLeaderMessageWithFile,
 } from '../features/teamLeaderMessages';
 import { buildGoalCompletedContent } from '../components/GoalBar/goalCompletedMessage';
 import {
@@ -4522,6 +4523,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (handleTaskInputReceipt('chat.file', payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        if (shouldDropDuplicatedEvent('chat.file', payload)) return;
         const files = (payload.files ?? []) as FileDownloadItem[];
         if (!files.length) return;
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
@@ -4580,15 +4582,26 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               fileItems: mergeFileDownloadItems(target.fileItems, files),
             });
           } else {
-            useChatStore.getState().addMessage(sessionId, {
-              id: prefixedMessageId('team-leader-'),
-              role: 'system',
-              content: '',
-              timestamp: new Date().toISOString(),
-              isStreaming: !useChatStore.getState().getRuntime(sessionId)?.isPaused,
-              teamStream: { requestId: getPayloadRequestId(payload) },
-              fileItems: files,
-            });
+            // chat.final 会清掉 teamStream 使 findActiveTeamLeaderMessage 命中不到；
+            // 若同一 chat.file 二次到达（team relay / fanout 延迟投递），按文件身份
+            // 兜底合并到当前轮内已带该文件的 team-leader 消息，避免重复渲染文件卡片。
+            const messages = useChatStore.getState().getRuntime(sessionId)?.messages ?? [];
+            const overlap = findTeamLeaderMessageWithFile(messages, files);
+            if (overlap) {
+              useChatStore.getState().updateMessage(sessionId, overlap.id, {
+                fileItems: mergeFileDownloadItems(overlap.fileItems, files),
+              });
+            } else {
+              useChatStore.getState().addMessage(sessionId, {
+                id: prefixedMessageId('team-leader-'),
+                role: 'system',
+                content: '',
+                timestamp: new Date().toISOString(),
+                isStreaming: !useChatStore.getState().getRuntime(sessionId)?.isPaused,
+                teamStream: { requestId: getPayloadRequestId(payload) },
+                fileItems: files,
+              });
+            }
           }
           return;
         }
