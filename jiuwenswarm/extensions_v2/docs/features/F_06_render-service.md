@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-06 渲染服务与下行帧 |
 | 所属模块 | `jiuwenswarm/extensions_v2/{assembly,management/registry}.py`、`webui/{models,schema,constants,registry,transport,runtime}.py`、`webui/core_handlers/render_core.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-27 |
 | 方案状态 | 已实现；重连重发未实现 |
 
 ## 1. 问题与目标
@@ -73,7 +73,7 @@ flowchart LR
 
 #### 3.2.1 槽位范围与目标字段
 
-支持会话槽位和全局槽位。`SLOT_SPECS` 为每个槽位指定 `scope` 和展示模式：
+支持会话槽位和全局槽位。`SLOT_SPECS` 为每个槽位指定 `scope`、展示模式和可选的 `max_instances`：
 `session` 属于一个聊天会话；`application` 是全局槽位，不依赖当前聊天会话。
 全局槽位按 Web 连接隔离，每个连接分别维护自己的实例和 revision。
 
@@ -168,6 +168,13 @@ stateDiagram-v2
 会话目标按会话分组，全局目标按 Web 连接分组，每组最多保留 32 个实例，两类目标不共用同一份额度。
 新实例到来且该组已达上限时，按 `updated_at` 选出最久未更新的实例；新帧发送成功后才向被淘汰实例发送
 `webui.render.clear`，避免新帧失败时误删旧内容。此上限不限制所有连接的实例总数。
+
+`SlotSpec.max_instances` 是可选的单槽位实例上限，不占用或替代上述 32 个实例预算；计数范围与容量组一致，
+会话槽位按会话、应用槽位按连接。当前 `conversation.header.title.after` 为 2、
+`conversation.header.actions` 为 3、`application.sidebar.footer` 为 3。新实例超过槽位上限时
+`render_core` 返回 `REJECTED`，不发送错误帧；已有实例仍可更新。`clear` 可在槽位满额时处理，
+目标不存在时只发送清除帧，不登记实例，也不淘汰同会话的其他实例。前端
+`catalog/slots.ts` 用相同的 `maxVisible` 截断显示，优先保留有效帧，仅错误实例在有空位时显示。
 
 ### 4.3 下行消息
 
