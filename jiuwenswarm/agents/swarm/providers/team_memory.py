@@ -13,7 +13,6 @@ from agent_gateway.common.mode_matrix import is_code_profile_mode
 from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
 from openjiuwen.harness.rails.base import DeepAgentRail
 
-from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import _initial_sdk_media_globals
 from jiuwenswarm.agents.harness.common.memory.plugin import (
     MEMORY_PLUGIN_ID,
     host_memory_context,
@@ -21,6 +20,7 @@ from jiuwenswarm.agents.harness.common.memory.plugin import (
 )
 from jiuwenswarm.agents.harness.common.rails.memory_forbidden_rail import MemoryForbiddenRail
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.agents.swarm.providers.code_rails import CODING_MEMORY_EXTRAS_KEY
 from jiuwenswarm.common.team_memory_binding import (
     resolve_expert_memory_subject,
     uses_jiuwen_team_memory,
@@ -30,6 +30,7 @@ from jiuwenswarm.extensions.sdk.plugin_runtime import PluginRuntimeServices
 logger = logging.getLogger(__name__)
 
 TEAM_MEMORY = "swarm.team_memory"
+TEAM_MEMORY_MOUNT_EXTRAS_KEY = "_team_memory_mount"
 
 
 def _team_identity(ctx: SwarmBuildContext) -> tuple[str, dict[str, str]]:
@@ -58,8 +59,7 @@ def _build_plugin_rail(ctx: SwarmBuildContext, agent: Any, enabled: Callable[[],
     factory = _load_class_from_file(path, entry["class"], package_root=package)
     config = ctx.config or {}
     options = config.get("plugins", {}).get(MEMORY_PLUGIN_ID, {})
-    host = host_memory_context(config, agent_name=ctx.member_name, project_dir=ctx.project_dir,
-                               sdk_media_globals=_initial_sdk_media_globals)
+    host = host_memory_context(config, agent_name=ctx.member_name, project_dir=ctx.project_dir)
     subject, binding = _team_identity(ctx)
     host = replace(host, team_project=ctx.memory_project, team_agent=subject,
                    team_enabled=enabled, team_binding=binding)
@@ -92,6 +92,7 @@ class TeamMemoryPluginMount(DeepAgentRail):
                     self._rail = _build_plugin_rail(self._context, ctx.agent, self._enabled)
                 if ctx.agent not in self._rail.attached_agents:
                     await ctx.agent.register_rail(self._rail)
+                self._context.extras[CODING_MEMORY_EXTRAS_KEY] = self._rail
             except Exception as exc:
                 logger.warning("[TeamMemory] plugin attachment failed: %s", type(exc).__name__)
                 await self._close_rail()
@@ -102,6 +103,8 @@ class TeamMemoryPluginMount(DeepAgentRail):
     async def _close_rail(self) -> None:
         if self._rail is None:
             return
+        if self._context.extras.get(CODING_MEMORY_EXTRAS_KEY) is self._rail:
+            self._context.extras.pop(CODING_MEMORY_EXTRAS_KEY, None)
         try:
             await self._rail.aclose()
         except Exception as exc:
@@ -126,5 +129,5 @@ def build_team_memory(_params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
         return None
     rail = TeamMemoryPluginMount(ctx)
     # code_agent is part of this responder, not a separate Team member.
-    ctx.extras["_coding_memory_rail"] = rail
+    ctx.extras[TEAM_MEMORY_MOUNT_EXTRAS_KEY] = rail
     return [MemoryForbiddenRail(), rail]

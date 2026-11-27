@@ -1,5 +1,6 @@
 """Compose the host's existing memory Rails for this plugin mount."""
 
+import asyncio
 from importlib import import_module
 from logging import getLogger
 from typing import Any
@@ -19,19 +20,40 @@ def _work_lifecycle(base: type) -> type:
     from openjiuwen.harness.rails.memory.jiuwen_memory_rail import EXTERNAL_MEMORY_PREFETCH_SECTION, SectionName
 
     class WorkPluginMemoryRail(base):
+        _closed = False
+
         async def aclose(self, *, timeout: float = 10.0, grace_timeout: float = 5.0) -> None:
-            task = self._sync_task
-            if task is not None:
-                await task
-            if self.attachment_manager is not None:
-                await self.attachment_manager.clear_source(source="agent_core.jiuwen_memory_rail")
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                if self._sync_task is not None:
+                    await self._sync_task
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise
+            except Exception:
+                logger.exception("Agent Memory turn sync failed during shutdown")
+            finally:
+                await self._close_provider()
+
+        async def _close_provider(self) -> None:
+            try:
+                if self.attachment_manager is not None:
+                    await self.attachment_manager.clear_source(source="agent_core.jiuwen_memory_rail")
+            finally:
+                try:
+                    await self._extract_at_close()
+                finally:
+                    self._initialized = False
+                    await self._provider.shutdown()
+
+        async def _extract_at_close(self) -> None:
             if self._session_end_extract and self._initialized:
                 try:
                     await self._provider.on_session_end([])
                 except Exception:
                     logger.exception("Agent Memory session extraction failed")
-            await self._provider.shutdown()
-            self._initialized = False
 
         def uninit(self, agent: Any) -> None:
             self._turn_buffer.clear()

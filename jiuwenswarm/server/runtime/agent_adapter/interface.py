@@ -61,7 +61,7 @@ from jiuwenswarm.agents.harness.common.memory.config import (
     is_auto_memory_enabled,
     is_memory_enabled,
 )
-from jiuwenswarm.agents.harness.common.memory.plugin import supported_memory_session
+from jiuwenswarm.agents.harness.common.memory.plugin import memory_plugin_owns_session
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     EVOLUTION_INTERRUPT_METADATA_SOURCES,
     is_interrupt_resume_payload,
@@ -4174,7 +4174,7 @@ class JiuWenSwarm:
                 raise
 
             # cloud memory: before chat hook
-            plugin_owns_memory = supported_memory_session(request.params or {})
+            plugin_owns_memory = memory_plugin_owns_session(request.params or {})
             if memory_mode == "cloud" and not plugin_owns_memory:
                 mem_ctx = MemoryHookContext(
                     session_id=request.session_id or "default",
@@ -5016,7 +5016,7 @@ class JiuWenSwarm:
             )
 
         # cloud memory: before chat hook
-        plugin_owns_memory = supported_memory_session(request.params or {})
+        plugin_owns_memory = memory_plugin_owns_session(request.params or {})
         if memory_mode == "cloud" and not plugin_owns_memory:
             mem_ctx = MemoryHookContext(
                 session_id=request.session_id or "default",

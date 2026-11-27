@@ -16,6 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event as ThreadEvent
 from typing import Any, ClassVar, NamedTuple, Optional
 from weakref import WeakValueDictionary
 
@@ -557,6 +558,7 @@ def _renew_server_plan_controller() -> PlanModeController:
 # 避免 ping_timeout 导致连接关闭。默认 10 秒，小于服务端 ping_timeout=20s。
 _STREAM_KEEPALIVE_INTERVAL_SECONDS = 10.0
 _STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS = 1.0
+_MEMORY_HTTP_START_TIMEOUT = 5.0
 # send_push 无活跃 Gateway 连接告警的汇总窗口（秒）
 _PUSH_NO_GATEWAY_WARN_INTERVAL_S = 30.0
 
@@ -1442,6 +1444,7 @@ class AgentWebSocketServer:
         self._sandbox_start_task: asyncio.Task[None] | None = None
         # checkpointer 后台预热任务 (start() 里 fire-and-forget, stop() 时 cancel)
         self._checkpointer_warmup_task: Optional[asyncio.Task] = None
+        self._memory_start_cancelled = ThreadEvent()
         self._team_session_reconcile_task: Optional[asyncio.Task] = None
         # MCP 连接缓存预热任务 (同上, 建 Runner.resource_mgr 供首轮对话命中)
         self._mcp_prewarm_task: Optional[asyncio.Task] = None
@@ -1827,17 +1830,24 @@ class AgentWebSocketServer:
 
         # 端口已 listen, 后台预热 checkpointer, 不阻塞启动与握手.
         # _checkpointer_warmup_task 供 shutdown 时 cancel, 避免任务悬挂.
+        memory_start_cancelled = ThreadEvent()
+        self._memory_start_cancelled = memory_start_cancelled
+
         async def _start_runtime() -> None:
             from jiuwenswarm.server.runtime.managed_memory_http import start_bundled_memory_http
 
-            memory_start = asyncio.create_task(asyncio.to_thread(start_bundled_memory_http))
+            async def start_memory() -> None:
+                try:
+                    await asyncio.to_thread(start_bundled_memory_http, cancelled=memory_start_cancelled)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[AgentWebSocketServer] built-in memory HTTP startup failed (%s)",
+                                   type(exc).__name__)
+
+            memory_start = asyncio.create_task(start_memory(), name="memory-http-start")
             try:
-                await asyncio.shield(memory_start)
-            except asyncio.CancelledError:
-                await asyncio.gather(memory_start, return_exceptions=True)
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[AgentWebSocketServer] built-in memory HTTP startup failed (%s)", type(exc).__name__)
+                await asyncio.wait_for(asyncio.shield(memory_start), timeout=_MEMORY_HTTP_START_TIMEOUT)
+            except TimeoutError:
+                logger.warning("[AgentWebSocketServer] memory HTTP is still starting; continuing Runtime startup")
             retry_delay = 1.0
             while True:
                 try:
@@ -2292,6 +2302,7 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        self._memory_start_cancelled.set()
         # Runtime startup owns the preparation registry and heartbeat services.
         # Join it before releasing those resources, including a completed task
         # whose exception still needs to be retrieved.

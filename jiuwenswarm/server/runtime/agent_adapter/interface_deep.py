@@ -3045,7 +3045,6 @@ class JiuWenSwarmDeepAdapter:
                 config,
                 agent_name=getattr(self, "_agent_name", None),
                 project_dir=getattr(self, "_memory_project_dir", None) or getattr(self, "_project_dir", None),
-                sdk_media_globals=self._jiuwen_memory_media_globals,
             ),
         )
 

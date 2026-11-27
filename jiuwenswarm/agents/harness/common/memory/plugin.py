@@ -35,7 +35,6 @@ class HostMemoryContext:
     agent_name: str | None
     project_dir: str | None
     security_provider_factory: Callable[[], Any]
-    sdk_media_globals: Callable[[dict[str, Any]], dict[str, Any]]
     team_project: str = ""
     team_binding: Mapping[str, str] | None = None
     team_enabled: Callable[[], bool] | None = None
@@ -44,12 +43,10 @@ class HostMemoryContext:
 
 def host_memory_context(
     config: dict[str, Any], *, agent_name: str | None, project_dir: str | None,
-    sdk_media_globals: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> HostMemoryContext:
     scope = get_jiuwen_memory_scope(config)
     return HostMemoryContext(
         agent_name, project_dir, lambda: _build_security_provider(scope["org"], scope["user"]),
-        sdk_media_globals,
     )
 
 
@@ -67,6 +64,11 @@ def supported_memory_session(params: dict[str, Any]) -> bool:
 def supported_team_memory_session(params: dict[str, Any]) -> bool:
     mode = resolve_request_mode(params, resolve_agent_request_mode)
     return uses_jiuwen_team_memory(get_config(), mode.canonical_mode)
+
+
+def memory_plugin_owns_session(params: dict[str, Any]) -> bool:
+    """Keep legacy extraction out of sessions owned by the memory plugin."""
+    return supported_memory_session(params) or (not is_enterprise() and supported_team_memory_session(params))
 
 
 def team_memory_plugin_enabled(session_id: str, config: dict[str, Any]) -> bool:

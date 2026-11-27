@@ -7,9 +7,10 @@ from contextlib import closing
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.util import find_spec
+from runpy import run_path
 from threading import Event, Thread
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -22,6 +23,7 @@ from openjiuwen.harness import create_deep_agent
 from jiuwenswarm.agents.harness.common.memory import plugin
 from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import build_jiuwen_memory_rail
 from jiuwenswarm.agents.harness.common.memory.team_memory_members import (
+    apply_membership_revocation,
     prepare_team_memory,
     revoke_expert_group_memory,
     revoke_expert_template_memory,
@@ -46,6 +48,47 @@ def test_optional_plugin_package_config_requires_mapping(tmp_path):
     path.write_text("- invalid\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Plugin configuration must be a mapping"):
         packages.read_plugin_package_config(tmp_path)
+
+
+@pytest.mark.parametrize("mode,provider,enterprise,expected", [
+    ("agent", "jiuwen", False, True),
+    ("team.code.normal", "jiuwen", False, True),
+    ("team.code.normal", "native", False, False),
+    ("team.work.normal", "jiuwen", True, False),
+])
+def test_memory_plugin_ownership_prevents_legacy_hooks(monkeypatch, mode, provider, enterprise, expected):
+    monkeypatch.setattr(plugin, "get_config", lambda: {"memory": {"builtin": {"provider": provider}}})
+    monkeypatch.setattr(plugin, "is_enterprise", lambda: enterprise)
+    assert plugin.memory_plugin_owns_session({"mode": mode}) is expected
+
+
+@pytest.mark.asyncio
+async def test_work_close_drains_failed_sync_without_repeating_provider_cleanup(tmp_path, monkeypatch):
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    plugin.ensure_memory_plugin_installed()
+    package = packages.resolve_plugin_runtime_dir(plugin.MEMORY_PLUGIN_ID)
+
+    lifecycle = run_path(str(package / "rails" / "memory_rail.py"))["_work_lifecycle"]
+
+    async def fail_sync():
+        raise RuntimeError("sync failed")
+
+    class WorkRail:
+        def __init__(self):
+            self._provider = SimpleNamespace(shutdown=AsyncMock(), on_session_end=AsyncMock())
+            self._sync_task = asyncio.create_task(fail_sync())
+            self._initialized = True
+            self._session_end_extract = True
+            self.attachment_manager = SimpleNamespace(clear_source=AsyncMock())
+
+    rail = lifecycle(WorkRail)()
+
+    await rail.aclose()
+    await rail.aclose()
+
+    rail.attachment_manager.clear_source.assert_awaited_once()
+    rail._provider.on_session_end.assert_awaited_once_with([])
+    rail._provider.shutdown.assert_awaited_once()
 
 
 @pytest.fixture
@@ -434,7 +477,8 @@ async def test_team_memory_plugin_mounts_and_detaches_shared_rail(mode, tmp_path
     context = SwarmBuildContext(session_id=session, config=config, mode=mode, member_name="leader",
                                 memory_team="team-key", memory_project="project-key")
     _, mount = team_memory.build_team_memory({}, context)
-    assert context.extras["_coding_memory_rail"] is mount
+    assert context.extras[team_memory.TEAM_MEMORY_MOUNT_EXTRAS_KEY] is mount
+    assert "_coding_memory_rail" not in context.extras
     original_build = team_memory._build_plugin_rail
     created = []
 
@@ -478,6 +522,7 @@ async def test_team_memory_plugin_mounts_and_detaches_shared_rail(mode, tmp_path
         leader, code = agents
         rail, = created
         assert isinstance(rail, JiuwenTeamMemoryRail)
+        assert context.extras["_coding_memory_rail"] is rail
         assert set(rail.attached_agents) == {leader, code}
         assert leader.find_rail_by_name(type(rail).__name__) is rail
         await rail.drain()
@@ -488,6 +533,7 @@ async def test_team_memory_plugin_mounts_and_detaches_shared_rail(mode, tmp_path
         await leader.invoke({"query": "Memory is now disabled", "conversation_id": "off"})
         assert "the remembered team fact" not in prompts[-1]
         assert get_session_equipment(session)["plugin_names"] == []
+        assert "_coding_memory_rail" not in context.extras
         assert all(agent.ability_manager.get(search_tool) is None for agent in agents)
         assert all(agent.find_rail_by_name(type(rail).__name__) is None for agent in agents)
         assert rail._provider.sync_turn.await_count == 2
@@ -648,8 +694,8 @@ def test_stop_defers_runtime_close_until_active_handler_finishes(tmp_path, monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("startup_fails", [False, True])
-async def test_workswarm_starts_built_in_memory_http_automatically(tmp_path, monkeypatch, startup_fails):
+@pytest.mark.parametrize("startup_state", ["ready", "failed", "slow"])
+async def test_workswarm_starts_built_in_memory_http_automatically(tmp_path, monkeypatch, startup_state):
     monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
     host = {"plugins": {plugin.MEMORY_PLUGIN_ID: {
         "mode": "sdk", "base_url": "https://unused.example.test", "api_key": "old-key",
@@ -659,8 +705,19 @@ async def test_workswarm_starts_built_in_memory_http_automatically(tmp_path, mon
     monkeypatch.setattr(managed, "get_config", lambda: host)
     monkeypatch.setattr(agent_ws_server, "reset_harness_packages_state", lambda: None)
     monkeypatch.setattr("jiuwenswarm.common.auth.remote_config.warm_up_in_background", lambda: None)
-    if startup_fails:
+    build_entered = Event()
+    release_build = Event()
+    late_close = Event()
+    if startup_state == "failed":
         host["plugins"][plugin.MEMORY_PLUGIN_ID] = None
+    if startup_state == "slow":
+        def build(*args):
+            build_entered.set()
+            assert release_build.wait(timeout=10)
+            return SimpleNamespace(start=lambda: None, close=late_close.set)
+
+        monkeypatch.setattr(managed, "_build_server", build)
+        monkeypatch.setattr(agent_ws_server, "_MEMORY_HTTP_START_TIMEOUT", 0.1)
     server = agent_ws_server.AgentWebSocketServer()
     runtime_started = asyncio.Event()
 
@@ -675,7 +732,9 @@ async def test_workswarm_starts_built_in_memory_http_automatically(tmp_path, mon
     try:
         await server.start(bind_transport=False)
         await asyncio.wait_for(runtime_started.wait(), timeout=10)
-        if startup_fails:
+        if startup_state != "ready":
+            if startup_state == "slow":
+                assert await asyncio.to_thread(build_entered.wait, 3)
             assert managed.public_memory_plugin_settings() == {"mode": "http", "managed_http": {"running": False}}
             return
         options = plugin.resolve_memory_plugin_options(host, {"mode": "sdk"}, host["plugins"][plugin.MEMORY_PLUGIN_ID])
@@ -694,7 +753,13 @@ async def test_workswarm_starts_built_in_memory_http_automatically(tmp_path, mon
             )
         assert response.status_code == 200, response.text
     finally:
-        await server.stop()
+        try:
+            await server.stop()
+        finally:
+            release_build.set()
+        if startup_state == "slow" and build_entered.is_set():
+            assert await asyncio.to_thread(late_close.wait, 3)
+            assert managed.managed_memory_http.status() == {"running": False}
 
     assert managed.managed_memory_http.status() == {"running": False}
     with pytest.raises(ValueError, match="service is not running"):
@@ -749,6 +814,45 @@ async def test_team_offline_does_not_construct_a_legacy_client(monkeypatch, mode
 def require_collective_management():
     if not supports_team_memory_membership():
         pytest.skip("Installed JiuwenMemory does not support collective membership management")
+
+
+@pytest.mark.usefixtures("require_collective_management")
+def test_revocation_uses_owner_space():
+    from jiuwen_memory.api import Dimension, Scope
+
+    owner = ("org", "project-space", "user")
+    member = Scope(org="org", space="project-space", user="user", agent="expert:writer")
+    api = Mock()
+    api.list_collective_members.return_value = [SimpleNamespace(scope=member)]
+
+    apply_membership_revocation(api, owner, "group", "studio", "", "")
+    dimension = Dimension("org", "project-space", "team", team_memory_key(*owner, "studio"))
+    assert api.list_collective_members.call_args.args == (dimension,)
+    assert api.remove_collective_members.call_args.args == (dimension, [member])
+
+    apply_membership_revocation(api, owner, "template", "expert:writer", "", "")
+    assert api.remove_collective_members.call_args.args == (None, [member])
+
+
+def test_managed_http_restarts_after_completed_close_failure(tmp_path, monkeypatch):
+    def fail_close():
+        raise RuntimeError("close failed")
+
+    def build(*args):
+        return SimpleNamespace(
+            api=None, start=lambda: None, handler_cls=lambda: BaseHTTPRequestHandler,
+            authenticator=SimpleNamespace(mode=lambda: "test"), close=fail_close,
+        )
+
+    monkeypatch.setattr(managed, "get_agent_root_dir", lambda: tmp_path)
+    monkeypatch.setattr(managed, "_build_server", build)
+    manager = managed.ManagedMemoryHttp()
+    try:
+        assert manager.start({}, {})["running"]
+        assert manager.stop() == {"running": False}
+        assert manager.start({}, {})["running"]
+    finally:
+        manager.stop()
 
 
 @pytest.mark.asyncio
@@ -831,6 +935,7 @@ async def test_offline_revocations_are_replayed_before_listener_is_available(tmp
     try:
         assert await prepare_team_memory(group)
         assert await prepare_team_memory(team)
+        assert await prepare_team_memory(group)
         await change("poster-instance", {"name": "poster"}, True)
         await change("writer-instance", {"name": "writer"}, True)
         assert active(manager, "team", group_team) == {"main_agent", "studio:leader"}
@@ -851,6 +956,8 @@ async def test_offline_revocations_are_replayed_before_listener_is_available(tmp
         assert active(restarted, "team", "test-team") == {"main_agent"}
         assert "expert:poster" not in active(restarted, "project", "test-project")
         assert await prepare_team_memory(team)
+        assert await prepare_team_memory(group)
+        assert active(restarted, "team", group_team) == set()
         await change("poster-instance", {"name": "poster"}, True)
     finally:
         restarted.stop()

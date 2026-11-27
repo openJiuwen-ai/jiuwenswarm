@@ -9,7 +9,8 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from secrets import token_urlsafe
 from socket import SHUT_RDWR, socket
-from threading import Condition, Lock, Thread
+from threading import Condition, Event, Lock, Thread
+from traceback import extract_tb
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -35,10 +36,16 @@ def _memory_identity(options: dict[str, Any]) -> tuple[str, str]:
     return str(options.get("identity_org") or "local"), str(options.get("identity_user") or "developer")
 
 
+def _collective_owner(org: str, user: str) -> tuple[str, str, str]:
+    """Use the personal listener's unspaced scope for all collective operations."""
+    return org, "", user
+
+
 class _MemoryHTTPServer(ThreadingHTTPServer):
     """Bound connection handling and track workers independently of server_close."""
 
     daemon_threads = True
+    block_on_close = False
 
     def __init__(self, address: tuple[str, int], handler: Any) -> None:
         self._idle = Condition()
@@ -207,6 +214,7 @@ class ManagedMemoryHttp:
         self._lock = Lock()
         self._revocation_lock = Lock()
         self._listener: _Listener | None = None
+        self._starting: Future[None] | None = None
         self._closing: Future[None] | None = None
 
     def status(self) -> dict[str, Any]:
@@ -234,7 +242,7 @@ class ManagedMemoryHttp:
         listener = self._listener
         if listener is None or not listener.thread.is_alive():
             return None
-        return listener.identity_org, "", listener.identity_user
+        return _collective_owner(listener.identity_org, listener.identity_user)
 
     def call_collective_management(self, method: str, *args: Any, **kwargs: Any) -> Any:
         """Run host-only membership operations on the listener's own store."""
@@ -261,6 +269,7 @@ class ManagedMemoryHttp:
                 org, user = _memory_identity(options)
             else:
                 org, user = listener.identity_org, listener.identity_user
+            owner = _collective_owner(org, user)
             root = _memory_root()
             root.mkdir(parents=True, exist_ok=True)
             with closing(sqlite3.connect(root / _REVOCATION_DB, timeout=1, isolation_level=None)) as db:
@@ -276,11 +285,11 @@ class ManagedMemoryHttp:
                 listener.httpd.begin_management_call()
         if listener is not None:
             try:
-                self._replay_revocations(listener.server.api, root, org, user)
+                self._replay_revocations(listener.server.api, root, owner)
             finally:
                 listener.httpd.end_management_call()
 
-    def _replay_revocations(self, api: Any, root: Path, org: str, user: str) -> None:
+    def _replay_revocations(self, api: Any, root: Path, owner: tuple[str, str, str]) -> None:
         from jiuwenswarm.agents.harness.common.memory.team_memory_members import (
             apply_membership_revocation,
             supports_team_memory_membership,
@@ -292,48 +301,74 @@ class ManagedMemoryHttp:
         with self._revocation_lock, closing(sqlite3.connect(path, timeout=1, isolation_level=None)) as db:
             pending = db.execute(
                 "SELECT id, kind, subject, team, project FROM pending WHERE org = ? AND user = ? ORDER BY id",
-                (org, user),
+                (owner[0], owner[2]),
             ).fetchall()
             for event_id, kind, subject, team, project in pending:
-                apply_membership_revocation(api, org, user, kind, subject, team, project)
+                apply_membership_revocation(api, owner, kind, subject, team, project)
                 db.execute("DELETE FROM pending WHERE id = ?", (event_id,))
 
-    def start(self, host_config: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+    def start(self, host_config: dict[str, Any], options: dict[str, Any], *,
+              cancelled: Event | None = None) -> dict[str, Any]:
         with self._lock:
+            if cancelled is not None and cancelled.is_set():
+                return {"running": False}
             if self._closing is not None:
                 if not self._closing.done():
                     raise ValueError("Built-in memory HTTP service is still shutting down")
                 self._finish_close_locked()
             if self._listener is not None and not self._listener.thread.is_alive():
                 self._stop_locked()
-            if self._listener is None:
-                try:
-                    self._listener = self._start_listener(host_config, options)
-                except Exception as exc:
-                    # Some upstream startup errors include configuration values.
-                    logger.warning("Managed memory HTTP startup failed (%s)", type(exc).__name__)
-                    raise ValueError("Could not start the built-in memory HTTP service") from None
-            return {"running": True, "base_url": self._listener.url, "api_key": self._listener.api_key}
+            if self._listener is not None:
+                return self._startup_result(self._listener)
+            if self._starting is not None:
+                raise ValueError("Built-in memory HTTP service is still starting")
+            startup: Future[None] = Future()
+            self._starting = startup
+        try:
+            return self._complete_startup(host_config, options, startup, cancelled)
+        except Exception as exc:
+            frame = extract_tb(exc.__traceback__)[-1]
+            logger.warning("Managed memory HTTP startup failed (%s at %s:%d in %s)",
+                           type(exc).__name__, frame.filename, frame.lineno, frame.name)
+            raise ValueError("Could not start the built-in memory HTTP service") from None
+        finally:
+            with self._lock:
+                self._starting = None
 
-    def _start_listener(self, host_config: dict[str, Any], options: dict[str, Any]) -> _Listener:
+    @staticmethod
+    def _startup_result(listener: _Listener) -> dict[str, Any]:
+        return {"running": True, "base_url": listener.url, "api_key": listener.api_key}
+
+    def _complete_startup(self, host_config: dict[str, Any], options: dict[str, Any],
+                          startup: Future[None], cancelled: Event | None) -> dict[str, Any]:
         root = _memory_root()
         root.mkdir(parents=True, exist_ok=True)
         key = token_urlsafe(32)
         org, user = _memory_identity(options)
         server = _build_server(host_config, options, root, key)
         httpd = None
+        published = False
         try:
             server.start()
-            self._replay_revocations(server.api, root, org, user)
-            httpd = _MemoryHTTPServer((_HOST, 0), _listener_handler(server, org, user))
-            thread = Thread(target=httpd.serve_forever, name="managed-memory-http", daemon=True)
-            thread.start()
-            return _Listener(server, httpd, thread, key, org, user)
-        except BaseException:
-            if httpd is not None:
-                httpd.server_close()
-            server.close()
-            raise
+            with self._lock:
+                if startup.cancelled() or (cancelled is not None and cancelled.is_set()):
+                    return {"running": False}
+                self._replay_revocations(server.api, root, _collective_owner(org, user))
+                if cancelled is not None and cancelled.is_set():
+                    return {"running": False}
+                httpd = _MemoryHTTPServer((_HOST, 0), _listener_handler(server, org, user))
+                thread = Thread(target=httpd.serve_forever, name="managed-memory-http", daemon=True)
+                thread.start()
+                self._listener = _Listener(server, httpd, thread, key, org, user)
+                published = True
+                return self._startup_result(self._listener)
+        finally:
+            if not published:
+                try:
+                    if httpd is not None:
+                        httpd.server_close()
+                finally:
+                    server.close()
 
     def _stop_locked(self) -> None:
         listener = self._listener
@@ -354,11 +389,13 @@ class ManagedMemoryHttp:
                 listener.thread.join()
             finally:
                 try:
-                    listener.httpd.server_close()
-                finally:
                     listener.httpd.disconnect_clients()
-                    listener.httpd.wait_for_operations()
-                    listener.server.close()
+                finally:
+                    try:
+                        listener.httpd.server_close()
+                    finally:
+                        listener.httpd.wait_for_operations()
+                        listener.server.close()
         except BaseException as exc:
             shutdown_future.set_exception(exc)
         else:
@@ -369,12 +406,18 @@ class ManagedMemoryHttp:
         if shutdown_future is not None:
             try:
                 shutdown_future.result(timeout=_SHUTDOWN_TIMEOUT)
+            except Exception as exc:
+                if not shutdown_future.done():
+                    raise
+                logger.warning("Managed memory HTTP shutdown failed (%s)", type(exc).__name__)
             finally:
-                if shutdown_future.done() and shutdown_future.exception() is None:
+                if shutdown_future.done():
                     self._closing = None
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
+            if self._starting is not None:
+                self._starting.cancel()
             self._stop_locked()
             return {"running": False}
 
@@ -429,10 +472,10 @@ async def open_bundled_memory_portal(host: dict[str, Any]) -> tuple[str, str]:
     return agent, url
 
 
-def start_bundled_memory_http() -> None:
+def start_bundled_memory_http(*, cancelled: Event | None = None) -> None:
     """Start the personal edition listener with host-side model configuration."""
-    if not is_enterprise():
-        managed_memory_http.start(*bundled_memory_http_config())
+    if not is_enterprise() and (cancelled is None or not cancelled.is_set()):
+        managed_memory_http.start(*bundled_memory_http_config(), cancelled=cancelled)
 
 
 def public_memory_plugin_settings() -> dict[str, Any]:

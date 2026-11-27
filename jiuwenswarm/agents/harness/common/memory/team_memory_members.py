@@ -61,6 +61,7 @@ class _ManagedMembershipClient:
         return await asyncio.to_thread(self._manager.call_collective_management, method, *args, **kwargs)
 
     async def enroll_collective(self, dimension, members, admin):
+        """Enroll missing members without reactivating explicitly departed members."""
         return await self._call("init_collective_dimension", dimension, members, security=admin)
 
     async def attach_collective(self, dimension, members, admin):
@@ -164,21 +165,22 @@ async def prepare_team_memory(ctx, *, seed: dict | None = None) -> bool:
     return ready
 
 
-def apply_membership_revocation(api: Any, org: str, user: str, kind: str, subject: str,
+def apply_membership_revocation(api: Any, owner: tuple[str, str, str], kind: str, subject: str,
                                 team: str, project: str) -> None:
     """Apply a journaled revocation against the listener's own store."""
     from jiuwen_memory.api import Dimension, Scope, dimensions_of
     from jiuwenswarm.common.team_memory_binding import team_memory_key
 
+    org, space, user = owner
     admin = _admin_context(org)
     if kind == "group":
-        dimension = Dimension(org, "", "team", team_memory_key(org, "", user, subject))
+        dimension = Dimension(org, space, "team", team_memory_key(org, space, user, subject))
         targets = [member.scope for member in api.list_collective_members(dimension, status="active", security=admin)]
         if targets:
             api.remove_collective_members(dimension, targets, security=admin)
         return
 
-    target = Scope(org=org, user=user, agent=subject)
+    target = Scope(org=org, space=space, user=user, agent=subject)
     if kind == "template":
         api.remove_collective_members(None, [target], security=admin)
     elif kind == "member":
