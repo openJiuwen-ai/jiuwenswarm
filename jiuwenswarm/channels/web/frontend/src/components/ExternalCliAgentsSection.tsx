@@ -1374,16 +1374,16 @@ export function ExternalCliAgentsSection({
                     <button
                       type="button"
                       role="switch"
-                      aria-checked={enabled}
+                      aria-checked={enabled && installed}
                       aria-label={toggleLabel(cliAgent)}
-                      onClick={() => onChange(enabledKey, enabled ? 'false' : 'true')}
-                      disabled={disabled || (!installed && !enabled)}
+                      onClick={() => onChange(enabledKey, enabled && installed ? 'false' : 'true')}
+                      disabled={disabled || !installed}
                       data-testid="settings-panel-external-cli-agent-toggle"
                       data-variant={cliAgent}
-                      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent focus:outline-none ${enabled ? 'bg-[var(--color-toggle-enabled)]' : 'bg-[var(--color-toggle-disabled)]'} disabled:cursor-not-allowed disabled:opacity-60`}
+                      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent focus:outline-none ${enabled && installed ? 'bg-[var(--color-toggle-enabled)]' : 'bg-[var(--color-toggle-disabled)]'} disabled:cursor-not-allowed disabled:opacity-60`}
                     >
                       <span
-                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-[var(--color-control-thumb)] shadow ${enabled ? 'translate-x-4' : 'translate-x-0'}`}
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-[var(--color-control-thumb)] shadow ${enabled && installed ? 'translate-x-4' : 'translate-x-0'}`}
                       />
                     </button>
                   </div>
@@ -1506,9 +1506,12 @@ export function ExternalCliAgentsSection({
                     {statusLine}
                   </div>
                   <div className="flex flex-shrink-0 items-center gap-2">
+                    {/* 未安装（含探测确认 missing）时开关只能是禁用：显示 OFF 并锁死，
+                        启用必须先经一键安装就绪 SDK；已启用但 SDK 消失的 agent 同样
+                        锁定显示为禁用，待 SDK 恢复后自动回到原状态。 */}
                     <Switch
-                      checked={enabled}
-                      disabled={disabled || (!installed && !enabled) || committing[cliAgent] || agentInstalling || editing[cliAgent]}
+                      checked={enabled && installed}
+                      disabled={disabled || !installed || committing[cliAgent] || agentInstalling || editing[cliAgent]}
                       onChange={(next) => void toggleAgentEnabled(cliAgent, next, useBuiltin, cliPath)}
                       aria-label={t('config.externalCli.toggleEnable', { agent: label })}
                       data-testid="settings-panel-external-cli-agent-enable-switch"

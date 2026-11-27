@@ -667,10 +667,11 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(section, /!onCommitAgent \|\| committing\[cliAgent\] \|\| installInFlight\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
   assert.match(section, /loading=\{installInFlight\[cliAgent\]\}/);
   assert.doesNotMatch(section, /loading=\{committing\[cliAgent\]\}/);
-  // The enable switch stays operable so the user can always disable a broken
-  // agent — 检测确认地址缺失时由手动检测的自动落闸把开关置回禁用，而不是
-  // 冻结开关堵死关闭入口；刷新窗口（尚无探测结果）也不锁。
-  assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  // 未安装（探测缺失/无结果）时开关只能是禁用：显示 OFF 并锁死，启用必须先
+  // 经一键安装就绪 SDK（!10678 检视）。已启用但 SDK 消失的 agent 同样锁定
+  // 显示为禁用；持久化仍由手动检测的自动落闸或显式保存负责，自动探测不改写配置。
+  assert.match(section, /disabled=\{disabled \|\| !installed \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  assert.match(section, /checked=\{enabled && installed\}/);
   assert.match(section, /检测确认当前配置的可执行文件不存在/);
   // 自动落闸只认 missing/unsupported（地址不存在/不可执行）；unavailable
   // （可执行文件在、版本命令失败）不落闸，保留手动关闭的能力。
@@ -797,9 +798,11 @@ test('DIAG2: disable then re-enable keeps the local path', async () => {
   };
   const onDetect = async (agent, path) => ({
     cli_agent: agent,
-    status: path === '/local/claude' ? 'ok' : 'missing',
-    path: path === '/local/claude' ? '/local/claude' : '',
-    message: path === '/local/claude' ? '' : 'not found',
+    status: 'ok',
+    path: path || '/managed/claude',
+    message: '',
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: '0.171.0',
   });
   const env = await mountCliSection(initial, onDetect);
   try {
@@ -814,8 +817,9 @@ test('DIAG2: disable then re-enable keeps the local path', async () => {
       external_cli_agent_claude_use_builtin: 'false',
       external_cli_agent_claude_cli_path: '',
     });
-    // 关闭后探测结果被清空 → 开关按设计禁用，重开走安装横幅的一键安装
-    await env.click('[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]');
+    // 重新打开：SDK 已安装（探测 ok）→ 开关解锁，点击重开；历史回退恢复
+    // 本地路径而不是回退内置 CLI（#6753）
+    await env.click(toggle);
     const last = env.commits.at(-1);
     assert.equal(last[1].enabled, true, '重开应恢复启用');
     assert.equal(last[1].useBuiltin, false, '重开不应回退内置 CLI');
@@ -835,9 +839,11 @@ test('DIAG3: disable then re-enable keeps the local path (full cycle)', async ()
   };
   const onDetect = async (agent, path) => ({
     cli_agent: agent,
-    status: path === '/local/claude' ? 'ok' : 'missing',
-    path: path === '/local/claude' ? '/local/claude' : '',
-    message: path === '/local/claude' ? '' : 'not found',
+    status: 'ok',
+    path: path || '/managed/claude',
+    message: '',
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: '0.171.0',
   });
   const env = await mountCliSection(initial, onDetect);
   try {
@@ -853,9 +859,9 @@ test('DIAG3: disable then re-enable keeps the local path (full cycle)', async ()
       external_cli_agent_claude_cli_path: '',
       external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
     });
-    // 3) 重新打开：开关此时按设计禁用（未安装须先安装），重开走安装横幅的
-    // 一键安装 → resolveEnabledChoice 先探测 PATH、再探测路径历史 → 恢复本地路径
-    await env.click('[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]');
+    // 3) 重新打开：SDK 已安装（探测 ok）→ 开关解锁，点击重开；
+    // resolveEnabledChoice 探测路径历史 → 恢复本地路径
+    await env.click(toggle);
     const last = env.commits.at(-1);
     console.error('[DIAG3] re-enable commit:', JSON.stringify(last));
     assert.equal(last[1].enabled, true, '重开应恢复启用');
@@ -877,9 +883,11 @@ test('re-enable restores the local path from histories written in the same sessi
   };
   const onDetect = async (agent, path) => ({
     cli_agent: agent,
-    status: path === '/local/claude' ? 'ok' : 'missing',
-    path: path === '/local/claude' ? '/local/claude' : '',
-    message: path === '/local/claude' ? '' : 'not found',
+    status: 'ok',
+    path: path || '/managed/claude',
+    message: '',
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: '0.171.0',
   });
   const env = await mountCliSection(initial, onDetect);
   try {
@@ -895,7 +903,8 @@ test('re-enable restores the local path from histories written in the same sessi
       external_cli_agent_claude_cli_path: '',
       external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
     });
-    await env.click('[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]');
+    // 重开：SDK 已安装（探测 ok）→ 开关解锁，点击重开走历史回退
+    await env.click(toggle);
     const last = env.commits.at(-1);
     assert.equal(last[1].enabled, true, '重开应恢复启用');
     assert.equal(last[1].useBuiltin, false, '过期闭包会把重开回退成内置 CLI');
