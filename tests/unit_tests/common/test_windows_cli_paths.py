@@ -453,6 +453,9 @@ def test_settings_detect_and_enable_a_migrated_explicit_cli(windows_environment,
         probes.append(executable_path)
         return "2.1.999 (Claude Code)", ""
 
+    # SDK 门控桩：结果不依赖运行环境是否装了 claude_agent_sdk（!10678 检视）。
+    monkeypatch.setattr(handlers, "external_cli_reference_version", lambda _: "0.1.0")
+    monkeypatch.setattr(handlers, "missing_external_cli_sdk_modules", lambda _agent: [])
     monkeypatch.setattr(handlers, "run_external_cli_version_command", version)
     flat = handlers.flatten_external_cli_agents_for_config_panel(raw)
     assert flat["external_cli_agent_claude_cli_path"] == requested

@@ -470,6 +470,16 @@ function ExternalCliSettings({
       };
       const updates: Record<string, string> = {};
       applyExternalCliAgentAtomicUpdates(updates, cliAgent, effectiveDrafts, savedValues);
+      // 关闭开关时把保留的路径写入路径历史：重新启用时才能从历史恢复本地
+      // 路径，而不是回退内置 CLI（#6753 问题二）。
+      if (!choice.enabled) {
+        const historyKey = externalCliKey(cliAgent, 'path_histories');
+        const history = parseExternalCliPathHistories(savedValues[historyKey] ?? draftValues[historyKey]);
+        const preservedPath = effectiveDrafts[externalCliKey(cliAgent, 'cli_path')] ?? '';
+        if (preservedPath && !history.includes(preservedPath)) {
+          updates[historyKey] = JSON.stringify([...history, preservedPath].slice(-EXTERNAL_CLI_PATH_HISTORY_LIMIT));
+        }
+      }
       if (!Object.keys(updates).length) {
         if (!choice.force) return;
         // An install click must always produce a payload: the backend only
