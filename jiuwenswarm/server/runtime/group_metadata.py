@@ -20,6 +20,7 @@ GROUP_METHODS = frozenset(
         "group.get",
         "group.update",
         "group.member.add",
+        "group.member.remove",
         "group.history.get",
         "group.execution.list",
         "group.execution.get",
@@ -86,6 +87,8 @@ def read_group(group_id: str, *, path: Path | None = None) -> dict | None:
     state.setdefault("configs", {})
     state.setdefault("avatar", "")
     state.setdefault("auto_reply", {"enabled": True, "model_selection": None})
+    state.setdefault("remove_receipts", {})
+    state.setdefault("former_members", {})
     state["members"] = [normalize_group_member(member) for member in state["members"]]
     state["receipts"] = {
         key: normalize_group_member(member) for key, member in state["receipts"].items()

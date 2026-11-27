@@ -54,6 +54,7 @@ export interface GroupInfo {
   description: string;
   avatar: string;
   members: GroupMember[];
+  former_members?: GroupMember[];
   configs: Record<string, unknown>;
   created_at: number;
   updated_at: number;
@@ -102,6 +103,11 @@ export const groupChatClient = {
     webRequest<{ group_id: string; member: GroupMember; status: 'registered'; event_type: 'group.member.added' }>(
       'group.member.add',
       { group_id: groupId, member, client_request_id: clientRequestId },
+    ),
+  removeMember: (groupId: string, memberName: string, clientRequestId: string) =>
+    webRequest<{ group_id: string; member_name: string; member: GroupMember; status: 'removed'; event_type: 'group.member.removed' }>(
+      'group.member.remove',
+      { group_id: groupId, member_name: memberName, client_request_id: clientRequestId },
     ),
   history: (groupId: string, page: PageInput = {}) =>
     webRequest<{

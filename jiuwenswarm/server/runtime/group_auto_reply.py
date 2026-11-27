@@ -176,8 +176,17 @@ def _prompt(candidates: list[dict], history: list, message, *, coordinate: bool 
     )
     lines = []
     for item in history[-CONTEXT_MESSAGES:]:
-        speaker = "user" if item.sender == "user" else (names.get(item.sender) or item.sender_name or item.sender)
-        lines.append(json.dumps({"from": speaker, "content": item.content[:CONTEXT_CHARS]}, ensure_ascii=False))
+        if item.sender == "user":
+            entry = {"from": "user", "content": item.content[:CONTEXT_CHARS]}
+        elif item.sender in names:
+            entry = {"from": names[item.sender], "content": item.content[:CONTEXT_CHARS]}
+        else:
+            entry = {
+                "from": item.sender_name or item.sender,
+                "departed": True,
+                "content": item.content[:CONTEXT_CHARS],
+            }
+        lines.append(json.dumps(entry, ensure_ascii=False))
     coordination_rule = ""
     if coordinate:
         coordination_rule = (
@@ -194,7 +203,8 @@ def _prompt(candidates: list[dict], history: list, message, *, coordinate: bool 
         "You never answer the user yourself and you have no other action.\n"
         "Decide in this order:\n"
         "1. If the latest member message explicitly asked the user a question or to choose, and the new "
-        "message is clearly the answer, notify that member.\n"
+        "message is clearly the answer, notify that member — unless that speaker is marked departed=true "
+        "(they left the group and can no longer be notified; do not reassign their follow-up to an unrelated member).\n"
         "2. Otherwise make no call when the message only acknowledges, thanks, agrees or closes a topic "
         "(for example 好的, 谢谢, 嗯嗯, 收到, ok), or is too short or vague to show what the user wants. "
         "A lone number, letter, emoji or symbol is always too vague, and it is never a greeting.\n"

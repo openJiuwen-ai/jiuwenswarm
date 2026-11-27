@@ -362,6 +362,15 @@ def _public(state: dict) -> dict:
         external = definition.get("member", {}).get("external_cli") or {}
         if external.get("cli_agent") in {"claude", "codex"}:
             member["cli_agent"] = external["cli_agent"]
+    former_members = state.get("former_members")
+    if isinstance(former_members, dict) and former_members:
+        result["former_members"] = [
+            copy.deepcopy(item)
+            for item in former_members.values()
+            if isinstance(item, dict) and item.get("member_name")
+        ]
+    else:
+        result["former_members"] = []
     from jiuwenswarm.agents.swarm.group_route import public_routes
 
     result["organization_routes"] = public_routes(state["group_id"])
@@ -763,6 +772,233 @@ class GroupService:
                     status="registered",
                     event_type="group.member.added",
                 )
+
+    async def remove_member(
+        self,
+        group_id,
+        params,
+        *,
+        user_id,
+        channel_id,
+        request_id,
+        colleague_canceller=None,
+    ):
+        manager = self.manager_factory(channel_id)
+        member_name = _text(params.get("member_name"), "member_name", maximum=256)
+        receipt_id = _text(
+            params.get("client_request_id", request_id),
+            "client_request_id",
+            maximum=256,
+        )
+        async with manager.get_startup_lock(group_id):
+            affected_org_ids: list[str] = []
+            async with group_lock(group_id):
+                state = self.owned(group_id, user_id, channel_id)
+                previous = state.get("remove_receipts", {}).get(receipt_id)
+                if previous is not None:
+                    if previous.get("member_name") != member_name:
+                        raise GroupError(
+                            "CONFLICT", "client_request_id was used for a different member"
+                        )
+                    return dict(
+                        group_id=group_id,
+                        member_name=member_name,
+                        member=copy.deepcopy(previous),
+                        status="removed",
+                        event_type="group.member.removed",
+                    )
+                target = next(
+                    (item for item in state["members"] if item["member_name"] == member_name),
+                    None,
+                )
+                if target is None:
+                    raise GroupError("NOT_FOUND", "member not found in this group")
+                if target.get("kind") == "agent_group":
+                    affected_org_ids = list(
+                        dict.fromkeys(
+                            item["organization_id"]
+                            for item in group_organization_teams(group_id)
+                            if item.get("member_name") == member_name and item.get("organization_id")
+                        )
+                    )
+
+            # Dissolve active organizations involving this expert team before removing it from roster.
+            if affected_org_ids:
+                from jiuwenswarm.agents.swarm.group_org_bootstrap import _dissolve_group_organization
+
+                for org_id in affected_org_ids:
+                    try:
+                        await _dissolve_group_organization(group_id, org_id)
+                    except Exception:
+                        logger.warning(
+                            "Failed to dissolve organization %s while removing member %s from group %s",
+                            org_id,
+                            member_name,
+                            group_id,
+                            exc_info=True,
+                        )
+            if target.get("kind") == "agent_group":
+                from jiuwenswarm.agents.swarm import group_route
+
+                for plan_id, route in list(group_route.routes(group_id).items()):
+                    if (
+                        route.get("status") not in {"completed", "failed"}
+                        and (
+                            route.get("owner_member") == member_name
+                            or member_name in (route.get("members") or [])
+                        )
+                    ):
+                        try:
+                            await group_route.set_status(group_id, plan_id, "failed")
+                        except Exception:
+                            logger.warning(
+                                "Failed to mark organization route %s failed while removing %s",
+                                plan_id,
+                                member_name,
+                                exc_info=True,
+                            )
+
+            async with group_lock(group_id):
+                state = self.owned(group_id, user_id, channel_id)
+                previous = state.get("remove_receipts", {}).get(receipt_id)
+                if previous is not None:
+                    return dict(
+                        group_id=group_id,
+                        member_name=member_name,
+                        member=copy.deepcopy(previous),
+                        status="removed",
+                        event_type="group.member.removed",
+                    )
+                target = next(
+                    (item for item in state["members"] if item["member_name"] == member_name),
+                    None,
+                )
+                if target is None:
+                    raise GroupError("NOT_FOUND", "member not found in this group")
+                definition = state.get("compiled", {}).get(member_name, {})
+                removed = copy.deepcopy(target)
+                if removed.get("kind") == "colleague":
+                    removed["avatar_url"] = definition.get("avatar_url", "")
+                    removed["colleague_category"] = definition.get("colleague_category", "custom")
+                    removed["is_default"] = definition.get("is_default", False)
+                external = definition.get("member", {}).get("external_cli") or {}
+                if external.get("cli_agent") in {"claude", "codex"}:
+                    removed["cli_agent"] = external["cli_agent"]
+                state["members"] = [
+                    item for item in state["members"] if item["member_name"] != member_name
+                ]
+                state.get("compiled", {}).pop(member_name, None)
+                former = state.setdefault("former_members", {})
+                former[member_name] = copy.deepcopy(removed)
+                state.setdefault("remove_receipts", {})[receipt_id] = copy.deepcopy(removed)
+                state["updated_at"] = time.time()
+                _save(state)
+                update_session_metadata(
+                    session_id=group_id,
+                    group_members=state["members"],
+                    touch_last_message_at=False,
+                    sync_write=True,
+                )
+
+            # Clean up in-flight executions, private team sessions, and pending questions.
+            from jiuwenswarm.agents.swarm.group_chat import cancel_waiting_runs
+            from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+            from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+            cancelled_executions = await GroupExecutions(group_id).cancel_for_member(member_name)
+            if cancelled_executions:
+                await cancel_waiting_runs([item["execution_id"] for item in cancelled_executions])
+                for execution in cancelled_executions:
+                    child_session = execution.get("team_session_id")
+                    if child_session:
+                        try:
+                            await manager.stop_session_runtime(
+                                child_session, reason="group.member.remove.private",
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Failed to stop private session %s while removing member %s",
+                                child_session,
+                                member_name,
+                                exc_info=True,
+                            )
+            await GroupQuestions(group_id).cancel_for_member(member_name)
+
+            # Shut down live core member identity if the group runtime is currently active.
+            backend = await self.backend_resolver(state)
+            if backend is not None:
+                token = set_session_id(state["session_id"])
+                try:
+                    await backend.db.initialize()
+                    existing_member = await backend.db.member.get_member(member_name, backend.team_name)
+                    if existing_member is not None:
+                        result = await backend.shutdown_member(member_name, force=True)
+                        if not result.ok:
+                            logger.warning(
+                                "Core shutdown_member returned failure group=%s member=%s reason=%s",
+                                group_id,
+                                member_name,
+                                result.reason,
+                            )
+                        elif removed.get("kind") != "colleague":
+                            display_name = removed.get("display_name") or member_name
+                            await backend.message_manager.send_message(
+                                content=f"Group member left: {display_name} ({member_name}).",
+                                to_member_name=backend.leader_member_name,
+                                from_member_name="user",
+                            )
+                except Exception:
+                    logger.warning(
+                        "Failed to shut down live group member group=%s member=%s",
+                        group_id,
+                        member_name,
+                        exc_info=True,
+                    )
+                finally:
+                    reset_session_id(token)
+
+            if removed.get("kind") == "colleague" and callable(colleague_canceller):
+                try:
+                    await colleague_canceller(group_id, removed["id"], member_name)
+                except Exception:
+                    logger.warning(
+                        "Failed to cancel SwarmChat colleague requests group=%s member=%s",
+                        group_id,
+                        member_name,
+                        exc_info=True,
+                    )
+
+            try:
+                from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
+
+                await WebSocketGatewayPushTransport().send_push({
+                    "request_id": request_id,
+                    "session_id": group_id,
+                    "channel_id": channel_id,
+                    "is_complete": False,
+                    "payload": {
+                        "event_type": "group.member.removed",
+                        "group_id": group_id,
+                        "session_id": group_id,
+                        "member_name": member_name,
+                        "member": removed,
+                    },
+                })
+            except Exception:
+                logger.warning(
+                    "Group member removal push failed group=%s member=%s",
+                    group_id,
+                    member_name,
+                    exc_info=True,
+                )
+
+            return dict(
+                group_id=group_id,
+                member_name=member_name,
+                member=removed,
+                status="removed",
+                event_type="group.member.removed",
+            )
 
     async def history(self, group_id, params, *, user_id, channel_id):
         state = self.owned(group_id, user_id, channel_id)
