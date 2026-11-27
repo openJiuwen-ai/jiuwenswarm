@@ -481,6 +481,64 @@ async def _fork_codex_thread(
         ) from exc
 
 
+async def _discard_cli_fork(
+    provider_name: str,
+    forked: str,
+    harness_config: Any,
+    env: dict[str, str],
+    target_cwd: Path,
+) -> None:
+    """Remove a CLI fork that no copy is bound to; log what cannot be removed."""
+    try:
+        if provider_name == "claudecode":
+            from claude_agent_sdk import project_key_for_directory
+
+            transcript = _claude_projects_dir(env) / project_key_for_directory(target_cwd) / f"{forked}.jsonl"
+            await asyncio.to_thread(transcript.unlink, missing_ok=True)
+            return
+        from openai_codex import AsyncCodex, CodexConfig
+
+        config = CodexConfig(
+            codex_bin=harness_config.codex_bin,
+            config_overrides=tuple(harness_config.config_overrides),
+            cwd=str(target_cwd),
+            env=env,
+        )
+
+        async def archive() -> None:
+            async with AsyncCodex(config=config) as codex:
+                await codex.thread_archive(forked)
+
+        await asyncio.wait_for(archive(), timeout=_CODEX_FORK_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Removing the unused %s fork %s failed: %s",
+            provider_name,
+            forked,
+            _visible_error(exc, type(exc).__name__),
+        )
+
+
+def check_external_harness_fork(
+    source_session_id: str,
+    *,
+    at_message: bool = False,
+    session_equipment_override: Mapping[str, object] | None = None,
+) -> None:
+    """Refuse, before anything is copied, a copy that ``fork_external_harness_session`` refuses.
+
+    Raises:
+        ValueError: The source is an External Harness session and the copy
+            starts at a message or switches or clears the expert.
+    """
+    stored = get_session_metadata(source_session_id, cache_bust=True).get("session_runtime_binding")
+    if not isinstance(stored, dict) or stored.get("kind") != _EXTERNAL_HARNESS_KIND:
+        return
+    if at_message:
+        raise ValueError(_error_text("fork_at_message_unsupported"))
+    _check_fork_keeps_expert(str(stored.get("agent_template_name") or ""), session_equipment_override)
+
+
 def _check_fork_keeps_expert(
     bound_template_name: str,
     session_equipment_override: Mapping[str, object] | None,
@@ -558,6 +616,7 @@ async def fork_external_harness_session(
         provider_name=provider_name,
     )
     target_checkpoint: HarnessCheckpoint | None = None
+    discard: tuple[Any, dict[str, str], Path] | None = None
     if source_checkpoint is not None:
         data = dict(source_checkpoint.data)
         key = _FORK_SESSION_KEYS.get(provider_name)
@@ -579,6 +638,7 @@ async def fork_external_harness_session(
                 _error_text("fork_failed", detail=_visible_error(exc, type(exc).__name__))
             ) from exc
         data[key] = forked
+        discard = (harness_config, env, target_cwd)
         data["resumed"] = False
         target_checkpoint = HarnessCheckpoint(
             provider=source_checkpoint.provider,
@@ -590,25 +650,31 @@ async def fork_external_harness_session(
             data=data,
             provider_session_id=forked,
         )
-    with _BINDING_LOCK:
-        update_session_metadata(
-            session_id=target_session_id,
-            session_runtime_binding=binding,
-            **(
-                {
-                    "session_harness_checkpoint": _checkpoint_metadata(
-                        target_checkpoint,
-                        agent_template_name=agent_template_name,
-                        provider_name=provider_name,
-                    )
-                }
-                if target_checkpoint is not None
-                else {}
-            ),
-            touch_last_message_at=False,
-            cache_bust=True,
-            sync_write=True,
-        )
+    try:
+        with _BINDING_LOCK:
+            update_session_metadata(
+                session_id=target_session_id,
+                session_runtime_binding=binding,
+                **(
+                    {
+                        "session_harness_checkpoint": _checkpoint_metadata(
+                            target_checkpoint,
+                            agent_template_name=agent_template_name,
+                            provider_name=provider_name,
+                        )
+                    }
+                    if target_checkpoint is not None
+                    else {}
+                ),
+                touch_last_message_at=False,
+                cache_bust=True,
+                sync_write=True,
+            )
+    except BaseException:
+        if discard is not None and target_checkpoint is not None:
+            # The copy is not bound to the fork; remove it instead of leaving it behind.
+            await _discard_cli_fork(provider_name, target_checkpoint.provider_session_id or "", *discard)
+        raise
     return True
 
 

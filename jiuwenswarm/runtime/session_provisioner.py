@@ -1211,9 +1211,11 @@ class RuntimeSessionProvisioner:
             if not sid:
                 continue
             try:
-                shutil.rmtree(root / sid, ignore_errors=True)
-            except OSError:
-                logger.warning("Failed to remove half-created session dir: %s", sid)
+                shutil.rmtree(root / sid)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("Failed to remove half-created session dir %s: %s", sid, exc)
 
     @staticmethod
     def _log_create_kvc_failure(task: asyncio.Task[None]) -> None:
@@ -1509,6 +1511,16 @@ class RuntimeSessionProvisioner:
             )
 
         try:
+            from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
+                check_external_harness_fork,
+            )
+
+            # Refuse a copy of an External Harness session before anything is created or copied.
+            check_external_harness_fork(
+                source_session_id,
+                at_message=has_message_cutoff,
+                session_equipment_override=provision_input.session_equipment_override,
+            )
             if not target_session_id:
                 target_session_id = await self._agent_manager.create_session(
                     channel_id=channel_id,
@@ -1555,9 +1567,7 @@ class RuntimeSessionProvisioner:
                     session_equipment_override=provision_input.session_equipment_override,
                 )
             except BaseException:
-                from jiuwenswarm.common.utils import get_agent_sessions_dir
-
-                shutil.rmtree(get_agent_sessions_dir() / target_session_id, ignore_errors=True)
+                self._remove_created_session_dirs([target_session_id])
                 raise
 
             agent = self._agent_manager.get_agent_nowait(channel_id)

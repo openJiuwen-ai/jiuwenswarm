@@ -528,3 +528,116 @@ async def test_codex_fork_gives_up_after_the_timeout(
         await external_harness_helpers._fork_codex_thread("thread", harness_config, {}, tmp_path)
     # The short-lived App Server is shut down on timeout.
     assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_copy_at_a_message_is_refused_before_anything_is_copied(
+    metadata: dict[str, dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.agents.harness.common import session_ops_service
+    from jiuwenswarm.runtime.session_provisioner import (
+        RuntimeSessionProvisioner,
+        SessionProvisionError,
+    )
+
+    _bind(metadata, "claudecode", "coder")
+    copied: list[Any] = []
+    monkeypatch.setattr(session_ops_service, "fork_session", lambda **kwargs: copied.append(kwargs))
+    created = AsyncMock(return_value="t")
+    provisioner = RuntimeSessionProvisioner(
+        agent_manager=SimpleNamespace(get_agent_nowait=lambda _channel: None, create_session=created),
+        plan_controller=SimpleNamespace(),
+    )
+
+    with pytest.raises(SessionProvisionError) as raised:
+        await provisioner.prepare_session_fork(
+            SessionForkInput(channel_id="web", source_session_id="source", cutoff_message_id="m-3")
+        )
+
+    assert raised.value.code == "BAD_REQUEST"
+    assert copied == []
+    created.assert_not_awaited()
+
+
+def test_a_cleanup_that_fails_is_logged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import jiuwenswarm.common.utils as common_utils
+    from jiuwenswarm.runtime import session_provisioner
+
+    monkeypatch.setattr(common_utils, "get_agent_sessions_dir", lambda: tmp_path)
+    (tmp_path / "t").mkdir()
+
+    def refuse(path: Path) -> None:
+        if not path.exists():
+            raise FileNotFoundError(path)
+        raise PermissionError("busy")
+
+    monkeypatch.setattr(session_provisioner.shutil, "rmtree", refuse)
+    with caplog.at_level("WARNING"):
+        session_provisioner.RuntimeSessionProvisioner._remove_created_session_dirs(["t", "missing"])
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "Failed to remove half-created session dir t: busy",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_claude_fork_no_copy_is_bound_to_is_removed(
+    metadata: dict[str, dict[str, Any]], launch: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    pytest.importorskip("claude_agent_sdk")
+    from claude_agent_sdk import project_key_for_directory
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    projects = tmp_path / "claude" / "projects"
+    launch["env"] = {"CLAUDE_CONFIG_DIR": str(tmp_path / "claude")}
+    _bind(metadata, "claudecode", "coder")
+    source_cwd = tmp_path / "source"
+    metadata["source"]["project_dir"] = str(source_cwd)
+    source_id = _write_claude_transcript(projects, source_cwd)
+    metadata["source"]["session_harness_checkpoint"] = _checkpoint(
+        "claudecode", "coder", "source", {"session_id": source_id},
+    )
+
+    def broken_write(**_fields: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(external_harness_helpers, "update_session_metadata", broken_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        await external_harness_helpers.fork_external_harness_session("source", "target")
+
+    target_project = projects / project_key_for_directory((tmp_path / "target-work").resolve())
+    assert list(target_project.glob("*.jsonl")) == []
+    assert (projects / project_key_for_directory(source_cwd) / f"{source_id}.jsonl").is_file()
+
+
+@pytest.mark.asyncio
+async def test_a_codex_fork_no_copy_is_bound_to_is_archived(
+    metadata: dict[str, dict[str, Any]], launch: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex = _RecordingCodex()
+    archived: list[str] = []
+
+    async def thread_archive(_self: Any, thread_id: str) -> None:
+        archived.append(thread_id)
+
+    codex.module.AsyncCodex.thread_archive = thread_archive
+    monkeypatch.setitem(sys.modules, "openai_codex", codex.module)
+    _bind(metadata, "codex", "codex-coder")
+    metadata["source"]["session_harness_checkpoint"] = _checkpoint(
+        "codex", "codex-coder", "source", {"thread_id": "thread-source"},
+    )
+
+    def broken_write(**_fields: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(external_harness_helpers, "update_session_metadata", broken_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        await external_harness_helpers.fork_external_harness_session("source", "target")
+
+    assert archived == ["thread-forked"]
+    assert [config["env"]["PATH"] for config in codex.configs] == [os.environ["PATH"]] * 2
