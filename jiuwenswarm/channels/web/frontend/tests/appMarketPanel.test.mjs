@@ -1894,14 +1894,16 @@ for (const desktop of [false, true]) {
       };
       try {
         await render();
-        assert.match(find('app-market-editor-actions').textContent, /CPU 12.0% · RAM 34.0%/);
-        assert.match(find('app-market-resources').textContent, /This computer \(total\)/);
+        // The editor header is a crowded chat header, so it must not mount the
+        // server resource monitor that the market page uses.
+        assert.equal(find('app-market-resources'), null);
+        assert.match(find('app-market-editor-actions').textContent, /Open app preview/);
         await click(find('app-market-editor-open-preview'));
         assert.deepEqual(previews[0], { appId: app.app_id, name: app.name, instanceId: running.instance_id });
         await act(async () => root.unmount());
         await render();
-        assert.match(find('app-market-editor-actions').textContent, /CPU 12.0% · RAM 34.0%/);
-        assert.match(find('app-market-resources').textContent, /This computer \(total\)/);
+        assert.equal(find('app-market-resources'), null);
+        assert.match(find('app-market-editor-actions').textContent, /Open app preview/);
         await click(find('app-market-editor-open-preview'));
         assert.equal(previews.length, 2);
         assert.equal(starts, stopped ? 1 : 0);
