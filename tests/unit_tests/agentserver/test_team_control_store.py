@@ -143,10 +143,14 @@ def test_delete_entity_cascades_memberships(store):
     assert store.delete_entity(entity.team_id) is False
 
 
-def test_owner_identity_scope():
-    assert OWNER.same_scope(MEMBER)
-    assert not OWNER.same_scope(STRANGER)
-    assert OWNER.as_dict() == {"user_id": "u-owner", "group_id": "g1", "bot_id": "b1"}
+@pytest.mark.parametrize("agent_id", ["", "agent-1"])
+def test_owner_identity_scope(agent_id):
+    owner = OwnerIdentity(user_id="u-owner", group_id="g1", bot_id="b1", agent_id=agent_id)
+    assert owner.same_scope(MEMBER)
+    assert not owner.same_scope(STRANGER)
+    assert owner.as_dict() == {
+        "user_id": "u-owner", "group_id": "g1", "bot_id": "b1", "agent_id": agent_id,
+    }
 
 
 def _mysql_settings_env(monkeypatch) -> None:
