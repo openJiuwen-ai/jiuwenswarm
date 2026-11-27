@@ -1,6 +1,7 @@
 """Input steered into a running External Harness turn."""
 
 import asyncio
+import gc
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -44,7 +45,7 @@ class _RunningIO:
 
     def __init__(self, *, steers: bool = True) -> None:
         self.state = HarnessState.IDLE
-        self.queue: asyncio.Queue[OutputSchema | None] = asyncio.Queue()
+        self.queue: asyncio.Queue[OutputSchema | Exception | None] = asyncio.Queue()
         self.pending_interrupt = False
         self.steers = steers
         self.harness = SimpleNamespace(
@@ -74,6 +75,8 @@ class _RunningIO:
             chunk = await self.queue.get()
             if chunk is None:
                 return
+            if isinstance(chunk, Exception):
+                raise chunk
             yield chunk
 
 
@@ -448,6 +451,10 @@ async def test_session_input_delivery_steers_an_external_harness_session(monkeyp
     assert steered is True
     assert follow_up is False
     steer.assert_awaited_once()
+    forwarded_adapter, forwarded_request, forwarded_inputs = steer.await_args.args
+    assert forwarded_adapter is adapter
+    assert forwarded_request.request_id == "r"
+    assert forwarded_inputs == {"query": "x"}
 
 
 class _ReplayAdapter:
@@ -517,3 +524,117 @@ async def test_a_steered_turn_ends_with_its_reply_in_the_history(monkeypatch) ->
         ("user", None, "also do this"),
         ("assistant", "chat.final", "done both"),
     ]
+
+
+async def _steer_while_the_stream_ends(end: OutputSchema | Exception | None) -> tuple[bool, list[dict[str, Any]], Any]:
+    """Steer, hold the provider's send, end the stream with ``end``, then let the send return."""
+    io = _RunningIO()
+    adapter = _adapter(io)
+    payloads: list[dict[str, Any]] = []
+    sending = asyncio.Event()
+    sent = asyncio.Event()
+
+    async def slow_send(*_args: Any, **_kwargs: Any) -> SendReceipt:
+        sending.set()
+        await sent.wait()
+        return SendReceipt(message_id="message-2", turn_id="turn-1", accepted_mode=DeliveryMode.STEER)
+
+    io.harness.send.side_effect = slow_send
+
+    async def consume() -> None:
+        async for chunk in external_harness_helpers.process_external_harness_stream(
+            adapter, _request("request-1", "first"), {"query": "first"},
+        ):
+            payloads.append(chunk.payload)
+
+    consumer = asyncio.create_task(consume())
+    await _wait_streaming(adapter)
+    await io.queue.put(OutputSchema(type=TURN_LIFECYCLE, index=0, payload={"turn_id": "turn-1", "kind": "started"}))
+    await _spin()
+    steer = asyncio.create_task(external_harness_helpers.steer_external_harness(
+        adapter, _request("request-2", "one more thing"), {"query": "one more thing"},
+    ))
+    await asyncio.wait_for(sending.wait(), timeout=5)
+    await io.queue.put(end)
+    await _spin()
+    sent.set()
+    accepted = await asyncio.wait_for(steer, timeout=5)
+    await asyncio.wait_for(consumer, timeout=5)
+    return accepted, payloads, adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end", [RuntimeError("provider gone"), None], ids=["stream-failed", "stream-closed"])
+async def test_a_steer_the_provider_takes_as_the_stream_breaks_is_shown_before_the_error(
+    end: Exception | None,
+) -> None:
+    # The stream fails, or ends without the turn's end, while the provider takes
+    # the steer. The steer was accepted, so the stream shows it before its error.
+    accepted, payloads, adapter = await _steer_while_the_stream_ends(end)
+
+    assert accepted is True
+    assert [payload["event_type"] for payload in payloads] == ["chat.input_received", "chat.error"]
+    assert payloads[0]["input_request_id"] == "request-2"
+    assert adapter._external_harness_boundaries is None
+
+
+@pytest.mark.asyncio
+async def test_an_empty_steer_is_refused_before_it_is_sent() -> None:
+    io = _RunningIO()
+    io.state = HarnessState.RUNNING
+    adapter = _adapter(io)
+    adapter._external_harness_boundaries = asyncio.Queue()
+
+    for query in ("", "   ", None):
+        with pytest.raises(SessionInputRejectedError):
+            await external_harness_helpers.steer_external_harness(
+                adapter, _request("r", ""), {"query": query},
+            )
+    io.harness.send.assert_not_awaited()
+    assert adapter._external_harness_boundaries.empty()
+
+
+@pytest.mark.asyncio
+async def test_a_text_steer_records_the_text_the_provider_got() -> None:
+    io = _RunningIO()
+    io.state = HarnessState.RUNNING
+    adapter = _adapter(io)
+    boundaries: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    adapter._external_harness_boundaries = boundaries
+
+    assert await external_harness_helpers.steer_external_harness(
+        adapter, _request("r", "typed", content="typed"), {"query": "the prompt sent"},
+    )
+
+    sent = io.harness.send.await_args.args[0]
+    assert harness_input_text(sent) == "the prompt sent"
+    assert boundaries.get_nowait()["content"] == "the prompt sent"
+
+
+@pytest.mark.asyncio
+async def test_closing_the_interleaving_reads_a_failure_it_did_not_yield() -> None:
+    # The output fails while a steered input is being yielded; the consumer then
+    # closes the stream. The failure is read, so asyncio does not log it.
+    loop = asyncio.get_running_loop()
+    logged: list[dict[str, Any]] = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: logged.append(context))
+
+    async def failing_outputs():
+        raise RuntimeError("provider gone")
+        yield  # pragma: no cover
+
+    boundaries: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    boundaries.put_nowait({"input_request_id": "request-2"})
+    try:
+        merged = external_harness_helpers._with_input_boundaries(failing_outputs(), boundaries)
+        assert await merged.__anext__() == ("input", {"input_request_id": "request-2"})
+        await _spin()
+        await merged.aclose()
+        del merged
+        gc.collect()
+        await _spin()
+    finally:
+        loop.set_exception_handler(previous)
+
+    assert [context.get("message") for context in logged] == []
