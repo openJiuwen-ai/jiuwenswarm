@@ -6842,7 +6842,7 @@
     "viewDetails": "查看详情",
     "gotIt": "知道了",
     "memberDetails": "组件情况",
-    "installCancelled": "安装已取消。",
+    "installCancelled": "安装已取消，已安装的能力会保留，可以稍后继续。",
     "mcpDetailsTitle": "REA MCP 详情",
     "tools": "工具数量",
     "inventoryGroups": "工具组 / 工具可用项",
@@ -6878,6 +6878,7 @@
     "visualState": {
       "available": "可用",
       "installing": "安装中",
+      "verifying": "待验证",
       "detecting": "检测中",
       "needsAction": "需配置",
       "detected": "已检测",

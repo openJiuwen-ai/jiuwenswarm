@@ -226,6 +226,7 @@ class AgentManager:
         self._latest_env_overrides: dict[str, Any] = {}
         # reload 串行锁: 防止并发 reload 叠加导致内存爆炸
         self._reload_lock: asyncio.Lock = asyncio.Lock()
+        self._mcp_change_locks: dict[str, asyncio.Lock] = {}
         self._last_reload_fingerprint: str | None = None
         self._latest_effective_config: dict[str, Any] | None = None
         # A cached root may be returned before its first session processor or
@@ -1087,6 +1088,25 @@ class AgentManager:
         if hasattr(agent, "apply_sandbox_runtime_patch"):
             return agent
         return None
+
+    @asynccontextmanager
+    async def mcp_change_guard(self, name: str):
+        """Serialize lifecycle changes for one MCP connector."""
+
+        key = str(name or "").strip().casefold()
+        if not key:
+            yield
+            return
+        locks = getattr(self, "_mcp_change_locks", None)
+        if locks is None:
+            locks = {}
+            self._mcp_change_locks = locks
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+        async with lock:
+            yield
 
     async def apply_mcp_change(
         self, name: str, action: str, *, enabled: bool = True,

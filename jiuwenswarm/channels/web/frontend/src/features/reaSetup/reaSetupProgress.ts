@@ -1,4 +1,4 @@
-import type { ReaSetupJob } from './types';
+import type { ReaSetupJob, ReaSetupScan } from './types';
 
 export const ACTIVE_INSTALL_JOB_STORAGE_KEY = 'reaSetup.activeJob.v2';
 export const REMAINING_DISPLAY_INTERVAL_MS = 30000;
@@ -26,6 +26,7 @@ const RETRYABLE_REA_SETUP_ERROR_CODES = new Set([
 export type VisualState =
   | 'available'
   | 'installing'
+  | 'verifying'
   | 'needsAction'
   | 'detected'
   | 'unsupported'
@@ -38,6 +39,16 @@ type JobStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 function isActiveStatus(status: ReaSetupJob['status'] | undefined): boolean {
   return status === 'queued' || status === 'running';
+}
+
+export function classifyCompletedReaSetupJob(
+  job: Pick<ReaSetupJob, 'status' | 'error'>,
+): 'cancelled' | 'error' | null {
+  if (job.status === 'cancelled') return 'cancelled';
+  if (job.status === 'failed' && typeof job.error === 'string' && job.error.trim()) {
+    return 'error';
+  }
+  return null;
 }
 
 const defaultSleep: Sleep = (milliseconds) =>
@@ -233,16 +244,57 @@ export function estimatePaceRemainingSeconds(
   return Math.max(1, Math.round(Math.max(minimumRemaining, Math.min(pace, maximumRemaining))));
 }
 
-export function shouldDeferEnhancedDetection(
-  job: ReaSetupJob | null,
-  capabilityCardCount: number,
-): boolean {
-  return Boolean(
-    job
-    && isActiveStatus(job.status)
-    && job.kind === 'base'
-    && capabilityCardCount === 0,
-  );
+export function mergeReaSetupScan(
+  previous: ReaSetupScan | null,
+  next: ReaSetupScan,
+  scope: 'all' | 'base' | 'enhanced',
+): ReaSetupScan {
+  if (scope !== 'base') return next;
+  const baseSnapshot = previous ?? next;
+  return {
+    ...baseSnapshot,
+    ...next,
+    enhanced: previous?.enhanced ?? [],
+    enhanced_plan: previous?.enhanced_plan ?? [],
+    capability_cards: previous?.capability_cards ?? [],
+    rea_inventory_diagnostics: previous?.rea_inventory_diagnostics ?? {},
+  };
+}
+
+export function resolveEnhancedVisualState(evidence: {
+  planState?: string;
+  available?: boolean | null;
+  inventoryState?: string | null;
+}): VisualState {
+  if (evidence.available === true) return 'available';
+  if (evidence.planState === 'unsupported') return 'unsupported';
+  if (evidence.planState === 'needs_action') return 'needsAction';
+  if (evidence.inventoryState === 'partial') return 'partial';
+  return 'notInstalled';
+}
+
+export function resolveActiveComponentVisualState(evidence: {
+  stepStates: readonly string[];
+  resultState?: string;
+  resultSource?: string | null;
+}): VisualState | null {
+  if (evidence.resultState === 'failed') return 'failed';
+  if (evidence.resultState === 'needs_action') return 'needsAction';
+  if (evidence.resultState === 'unsupported') return 'unsupported';
+  if (evidence.stepStates.includes('failed')) return 'failed';
+  if (evidence.resultSource === 'live-mcp') return 'available';
+  if (evidence.stepStates.includes('running')) return 'installing';
+  if (
+    evidence.resultState === 'installed'
+    || evidence.resultState === 'reused'
+    || (
+      evidence.stepStates.length > 0
+      && evidence.stepStates.every((state) => state === 'succeeded' || state === 'skipped')
+    )
+  ) {
+    return 'verifying';
+  }
+  return null;
 }
 
 export function aggregateCapabilityVisualState(
@@ -257,9 +309,10 @@ export function aggregateCapabilityVisualState(
   }
   if (memberStates.every((state) => state === 'unsupported')) return 'unsupported';
   if (memberStates.every((state) => state === 'available')) return 'available';
+  if (memberStates.some((state) => state === 'installing')) return 'installing';
+  if (memberStates.some((state) => state === 'verifying')) return 'verifying';
   if (memberStates.some((state) => state === 'available')) return 'partial';
   if (memberStates.some((state) => state === 'failed')) return 'failed';
-  if (memberStates.some((state) => state === 'installing')) return 'installing';
   if (options.liveState) return options.liveState;
   if (memberStates.some((state) => state === 'needsAction')) return 'needsAction';
   return 'notInstalled';

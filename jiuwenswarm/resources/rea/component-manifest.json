@@ -909,6 +909,7 @@
       "env_key": "REA_BROWSER_EXECUTABLE",
       "executable_names": ["chrome.exe", "chrome", "Google Chrome for Testing"],
       "default_selected": true,
+      "requires_install_evidence": true,
       "artifact_by_platform": {
         "windows-x64": {
           "version": "157.0.8103.38",
@@ -1085,6 +1086,107 @@
       "extract_to": "rea/tools/cutter/2.5.0"
     },
     {
+      "id": "frida",
+      "display_name": "Frida",
+      "group": "runtime_tool",
+      "install_mode": "managed",
+      "platforms": ["windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
+      "auto_platforms": ["windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
+      "install_hint": "为 REA 内置的 frida@17.23.2 下载并校验官方 NAPI binding",
+      "env_key": "REA_FRIDA_BINDING",
+      "default_selected": true,
+      "artifact_by_platform": {
+        "windows-x64": {
+          "version": "17.23.2",
+          "url": "https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-win32-x64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-win32-x64.tar.gz",
+            "https://ghfast.top/https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-win32-x64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 50515627,
+          "sha256": "e9dbc08d386130610430137f0bb31d90af7b08c0f5710942d4313368ada930ea",
+          "destination": "rea/cache/frida-17.23.2-napi-v8-win32-x64.tar.gz",
+          "max_bytes": 67108864
+        },
+        "linux-x64": {
+          "version": "17.23.2",
+          "url": "https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-linux-x64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-linux-x64.tar.gz",
+            "https://ghfast.top/https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-linux-x64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 39443166,
+          "sha256": "9fa8f668ce91eb03713e8564de4f8fbde232233ee91d729c16773fde11dbae95",
+          "destination": "rea/cache/frida-17.23.2-napi-v8-linux-x64.tar.gz",
+          "max_bytes": 67108864
+        },
+        "linux-arm64": {
+          "version": "17.23.2",
+          "url": "https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-linux-arm64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-linux-arm64.tar.gz",
+            "https://ghfast.top/https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-linux-arm64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 27142488,
+          "sha256": "11083f016a429e87506cd68166bd1445da8febd506a24edf3f6c4a9a7a3ea9fe",
+          "destination": "rea/cache/frida-17.23.2-napi-v8-linux-arm64.tar.gz",
+          "max_bytes": 67108864
+        },
+        "macos-x64": {
+          "version": "17.23.2",
+          "url": "https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-darwin-x64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-darwin-x64.tar.gz",
+            "https://ghfast.top/https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-darwin-x64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 29267518,
+          "sha256": "f8953b09720cbdccd271c1d6caa4fff085474a9f24def3fe46160526aacdb40b",
+          "destination": "rea/cache/frida-17.23.2-napi-v8-darwin-x64.tar.gz",
+          "max_bytes": 67108864
+        },
+        "macos-arm64": {
+          "version": "17.23.2",
+          "url": "https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-darwin-arm64.tar.gz",
+          "fallback_urls": [
+            "https://gh-proxy.com/https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-darwin-arm64.tar.gz",
+            "https://ghfast.top/https://github.com/frida/frida/releases/download/17.23.2/frida-v17.23.2-napi-v8-darwin-arm64.tar.gz"
+          ],
+          "archive_type": "tar.gz",
+          "size_bytes": 38219481,
+          "sha256": "850fba220a2d9b6aae282ac6dde37f48847e73597b7a06d648737ff9addc3340",
+          "destination": "rea/cache/frida-17.23.2-napi-v8-darwin-arm64.tar.gz",
+          "max_bytes": 67108864
+        }
+      },
+      "installer_by_platform": {
+        "windows-x64": {"type": "frida_binding"},
+        "linux-x64": {"type": "frida_binding"},
+        "linux-arm64": {"type": "frida_binding"},
+        "macos-x64": {"type": "frida_binding"},
+        "macos-arm64": {"type": "frida_binding"}
+      },
+      "license": "LGPL-2.0 WITH WxWindows-exception-3.1",
+      "source_url": "https://github.com/frida/frida-node",
+      "assisted_setup": {
+        "summary": "Workswarm 为 REA 内置的 frida@17.23.2 下载官方预编译 NAPI binding，并用实际设备枚举验证。",
+        "prerequisites": ["已完成基础 REA 安装"],
+        "instructions": [
+          "自动下载固定版本 binding 并按 SHA-256 校验。",
+          "安装后重新加载 REA MCP，并实际调用 list_frida_devices。",
+          "只有实际调用成功，Frida 才显示可用。"
+        ],
+        "links": [
+          {"label": "Frida releases", "url": "https://github.com/frida/frida/releases/tag/17.23.2"},
+          {"label": "frida-node", "url": "https://github.com/frida/frida-node"}
+        ],
+        "activation": "保存后会重新验证 MCP；只有实际调用成功才算可用。"
+      }
+    },
+    {
       "id": "gdb",
       "display_name": "GDB",
       "group": "specialized_tool",
@@ -1139,16 +1241,93 @@
       "display_name": "GNU objdump",
       "group": "specialized_tool",
       "install_mode": "system",
+      "install_mode_by_platform": {
+        "windows-x64": "managed"
+      },
+      "auto_platforms": ["windows-x64"],
       "platforms": ["windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64"],
-      "install_hint": "Workswarm 不自动管理系统 binutils；请安装 objdump 后配置 REA_OBJDUMP_COMMAND",
+      "install_hint": "Windows 自动安装固定版本 GNU binutils；其他平台请安装 objdump 后配置 REA_OBJDUMP_COMMAND",
       "env_key": "REA_OBJDUMP_COMMAND",
-      "default_selected": false,
+      "default_selected": true,
+      "artifact_by_platform": {
+        "windows-x64": {
+          "version": "2.47-5",
+          "url": "https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/mingw64/mingw-w64-x86_64-binutils-2.47-5-any.pkg.tar.zst",
+          "fallback_urls": [
+            "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-binutils-2.47-5-any.pkg.tar.zst",
+            "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-binutils-2.47-5-any.pkg.tar.zst"
+          ],
+          "archive_type": "tar.zst",
+          "size_bytes": 6631823,
+          "sha256": "a5e6de675bcd9d47bdb94f555ab6af9589a4c7dc813ab053c1c9c71f4aa03406",
+          "destination": "rea/cache/binutils/mingw-w64-x86_64-binutils-2.47-5-any.pkg.tar.zst",
+          "max_bytes": 16777216,
+          "companions": [
+            {
+              "version": "1.0-1",
+              "url": "https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/mingw64/mingw-w64-x86_64-gettext-runtime-1.0-1-any.pkg.tar.zst",
+              "fallback_urls": [
+                "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-gettext-runtime-1.0-1-any.pkg.tar.zst",
+                "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-gettext-runtime-1.0-1-any.pkg.tar.zst"
+              ],
+              "archive_type": "tar.zst",
+              "size_bytes": 427276,
+              "sha256": "be68d7f260633284b910c588c6d82ee304a81c8817a686d2cd9df83f872c27af",
+              "destination": "rea/cache/binutils/mingw-w64-x86_64-gettext-runtime-1.0-1-any.pkg.tar.zst",
+              "max_bytes": 4194304
+            },
+            {
+              "version": "1.19.1-1",
+              "url": "https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/mingw64/mingw-w64-x86_64-libiconv-1.19.1-1-any.pkg.tar.zst",
+              "fallback_urls": [
+                "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-libiconv-1.19.1-1-any.pkg.tar.zst",
+                "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libiconv-1.19.1-1-any.pkg.tar.zst"
+              ],
+              "archive_type": "tar.zst",
+              "size_bytes": 742982,
+              "sha256": "50e915aa36fdbe6c84acc8954e939275609ba051cdb4eeeff3884453c28efde0",
+              "destination": "rea/cache/binutils/mingw-w64-x86_64-libiconv-1.19.1-1-any.pkg.tar.zst",
+              "max_bytes": 4194304
+            },
+            {
+              "version": "2.3.3-4",
+              "url": "https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/mingw64/mingw-w64-x86_64-zlib-ng-compat-2.3.3-4-any.pkg.tar.zst",
+              "fallback_urls": [
+                "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-zlib-ng-compat-2.3.3-4-any.pkg.tar.zst",
+                "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-zlib-ng-compat-2.3.3-4-any.pkg.tar.zst"
+              ],
+              "archive_type": "tar.zst",
+              "size_bytes": 154503,
+              "sha256": "7ec5bb78df534d3a167c7a0b5d6788fef1e82bedf9751d885b10c4c1baf73834",
+              "destination": "rea/cache/binutils/mingw-w64-x86_64-zlib-ng-compat-2.3.3-4-any.pkg.tar.zst",
+              "max_bytes": 4194304
+            },
+            {
+              "version": "1.6.0-1",
+              "url": "https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/mingw64/mingw-w64-x86_64-zstd-1.6.0-1-any.pkg.tar.zst",
+              "fallback_urls": [
+                "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-zstd-1.6.0-1-any.pkg.tar.zst",
+                "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-zstd-1.6.0-1-any.pkg.tar.zst"
+              ],
+              "archive_type": "tar.zst",
+              "size_bytes": 565400,
+              "sha256": "a923bc374cafd840cc05d7a35cafe84b3a8623469afe47c847ebc77509f82d7d",
+              "destination": "rea/cache/binutils/mingw-w64-x86_64-zstd-1.6.0-1-any.pkg.tar.zst",
+              "max_bytes": 4194304
+            }
+          ]
+        }
+      },
+      "extract_to": "rea/tools/objdump/2.47-5",
+      "executable_names": ["objdump.exe", "objdump"],
+      "license": "GPL-3.0-or-later AND GPL-2.0-or-later AND LGPL-3.0-or-later AND LGPL-2.0-or-later; dependency licenses retained under mingw64/share/licenses",
+      "source_url": "https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-binutils",
       "assisted_setup": {
-        "summary": "objdump 属于系统 binutils。Workswarm 只保存可执行文件路径，不修改系统 PATH。",
-        "prerequisites": ["已安装 GNU binutils"],
+        "summary": "Windows 使用受管 GNU binutils；其他平台由用户提供 objdump 可执行文件。",
+        "prerequisites": ["Windows 自动安装无需额外前置；其他平台需要 GNU binutils"],
         "instructions": [
-          "使用对应平台的系统包管理器安装 binutils。",
-          "选择 objdump 可执行文件并保存。",
+          "Windows 由 Workswarm 下载固定版本并配置，不修改系统 PATH。",
+          "其他平台使用系统包管理器安装 binutils，或选择 objdump 可执行文件并保存。",
           "重新检测后以 REA 的 inspect_with_objdump 工具的可用性为准。"
         ],
         "links": [

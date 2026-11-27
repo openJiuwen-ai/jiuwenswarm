@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 
 PROTOCOL_VERSION = "2025-11-25"
+FUNCTIONAL_PROBE_TIMEOUT_SECONDS = 10.0
+FUNCTIONAL_TOOL_PROBES: dict[str, dict[str, Any]] = {
+    "list_frida_devices": {},
+    "list_cutter_sessions": {},
+    "inspect_adb_client": {},
+    "inspect_apktool_client": {},
+    "inspect_with_objdump": {"operation": "architectures"},
+    "execute_rizin_command": {},
+}
 
 
 def _reader(stdout, messages: queue.Queue[dict[str, Any] | BaseException]) -> None:
@@ -33,6 +45,19 @@ def _send(process: subprocess.Popen[str], payload: dict[str, Any]) -> None:
         raise RuntimeError("REA MCP stdin is unavailable")
     process.stdin.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     process.stdin.flush()
+
+
+def mcp_record_environment(record: dict[str, Any]) -> dict[str, str]:
+    """Build the same restricted environment used by the registered REA MCP."""
+
+    from jiuwenswarm.common.rea_setup import _record_process_env, resolve_node_runtime
+
+    runtime = resolve_node_runtime(str(record.get("command") or "").strip() or None)
+    record_env = record.get("env")
+    return _record_process_env(
+        runtime,
+        record_env if isinstance(record_env, dict) else None,
+    )
 
 
 def _receive(
@@ -85,6 +110,178 @@ def validate_tool_inventory(
     }
 
 
+def binary_session_from_call_result(call_result: dict[str, Any]) -> dict[str, Any]:
+    """Extract ``binary_session`` from a raw MCP ``tools/call`` result."""
+
+    if not isinstance(call_result, dict):
+        raise RuntimeError("binary_session returned no structured result")
+    structured = call_result.get("structuredContent")
+    binary_session = structured.get("result") if isinstance(structured, dict) else None
+    if isinstance(binary_session, dict):
+        return binary_session
+    content = call_result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            text = item.get("text") if isinstance(item, dict) else None
+            if not isinstance(text, str):
+                continue
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            candidate = parsed.get("result") if isinstance(parsed, dict) else None
+            if isinstance(candidate, dict):
+                return candidate
+    raise RuntimeError("binary_session returned no structured result")
+
+
+def _tool_names(tools: Iterable[dict[str, Any]]) -> set[str]:
+    return {
+        str(tool.get("name") or tool.get("id") or "")
+        for tool in tools
+        if isinstance(tool, dict) and str(tool.get("name") or tool.get("id") or "")
+    }
+
+
+def _probe_error_text(call_result: dict[str, Any]) -> str:
+    content = call_result.get("content")
+    if isinstance(content, list):
+        texts = [
+            str(item.get("text") or "").strip()
+            for item in content
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        if texts:
+            return "; ".join(texts)[-2000:]
+    structured = call_result.get("structuredContent")
+    if structured:
+        return json.dumps(structured, ensure_ascii=False)[-2000:]
+    return "REA tool returned an error"
+
+
+def _probe_payload(call_result: dict[str, Any]) -> dict[str, Any]:
+    structured = call_result.get("structuredContent")
+    if isinstance(structured, dict):
+        result = structured.get("result")
+        if isinstance(result, dict):
+            return result
+        return structured
+    content = call_result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            text = item.get("text") if isinstance(item, dict) else None
+            if not isinstance(text, str):
+                continue
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                result = parsed.get("result")
+                return result if isinstance(result, dict) else parsed
+    return {}
+
+
+def _semantic_probe_failure(
+    name: str,
+    payload: dict[str, Any],
+) -> str | None:
+    if name == "list_frida_devices":
+        devices = payload.get("devices")
+        if isinstance(devices, list) and not devices:
+            return "Frida returned no local or remote devices"
+    if name == "list_cutter_sessions":
+        sessions = payload.get("sessions")
+        if isinstance(sessions, list) and not sessions:
+            discovery = str(payload.get("discovery_status") or "no_live_bridge_found")
+            return f"Cutter has no live bridge session ({discovery})"
+    return None
+
+
+def normalize_functional_probe_result(
+    name: str,
+    call_result: Any = None,
+    *,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Normalize a safe tools/call probe into capability evidence."""
+
+    if error:
+        return {
+            "ok": False,
+            "reason": "functional_probe_failed",
+            "error": error,
+        }
+    result = call_result if isinstance(call_result, dict) else {}
+    if bool(result.get("isError")):
+        return {
+            "ok": False,
+            "reason": "functional_probe_failed",
+            "error": _probe_error_text(result),
+        }
+    semantic_failure = _semantic_probe_failure(name, _probe_payload(result))
+    if semantic_failure:
+        return {
+            "ok": False,
+            "reason": "functional_probe_failed",
+            "error": semantic_failure,
+        }
+    return {
+        "ok": True,
+        "reason": "available",
+        "error": None,
+    }
+
+
+async def run_functional_tool_probes(
+    call_tool: Callable[[str, dict[str, Any]], Awaitable[Any]],
+    tools: list[dict[str, Any]],
+    *,
+    timeout: float = FUNCTIONAL_PROBE_TIMEOUT_SECONDS,
+    argument_overrides: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Call target-free provider diagnostics and retain per-tool evidence."""
+
+    available = _tool_names(tools)
+
+    async def run_probe(
+        name: str,
+        arguments: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        call_arguments = dict(arguments)
+        call_arguments.update((argument_overrides or {}).get(name) or {})
+        if name == "execute_rizin_command":
+            call_arguments = {
+                "path": sys.executable,
+                "command": "iI",
+                **call_arguments,
+            }
+        try:
+            call_result = await asyncio.wait_for(
+                call_tool(name, call_arguments),
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                name,
+                normalize_functional_probe_result(
+                    name,
+                    error=str(exc) or type(exc).__name__,
+                ),
+            )
+        return name, normalize_functional_probe_result(name, call_result)
+
+    probes = [
+        (name, arguments)
+        for name, arguments in FUNCTIONAL_TOOL_PROBES.items()
+        if name in available
+    ]
+    completed = await asyncio.gather(
+        *(run_probe(name, arguments) for name, arguments in probes)
+    )
+    return dict(completed)
+
+
 def probe_rea_mcp_inventory(
     record: dict[str, Any],
     *,
@@ -96,9 +293,7 @@ def probe_rea_mcp_inventory(
     args = [str(item) for item in record.get("args") or []]
     if not command:
         raise RuntimeError("REA MCP command is missing")
-    env = os.environ.copy()
-    if isinstance(record.get("env"), dict):
-        env.update({str(key): str(value) for key, value in record["env"].items() if value is not None})
+    env = mcp_record_environment(record)
     process = subprocess.Popen(  # noqa: S603
         [command, *args],
         stdin=subprocess.PIPE,
@@ -170,25 +365,65 @@ def probe_rea_mcp_inventory(
         if called.get("error"):
             raise RuntimeError(str(called["error"]))
         result = called.get("result") if isinstance(called.get("result"), dict) else {}
-        structured = result.get("structuredContent")
-        binary_session = structured.get("result") if isinstance(structured, dict) else None
-        if not isinstance(binary_session, dict):
-            content = result.get("content")
-            if isinstance(content, list) and content:
-                text = content[0].get("text") if isinstance(content[0], dict) else None
-                if isinstance(text, str):
-                    parsed = json.loads(text)
-                    binary_session = parsed.get("result") if isinstance(parsed, dict) else None
-        if not isinstance(binary_session, dict):
-            raise RuntimeError("binary_session returned no structured result")
+        binary_session = binary_session_from_call_result(result)
         tools = listed.get("result", {}).get("tools")
         if not isinstance(tools, list):
             raise RuntimeError("tools/list returned no tools")
+        functional_probes: dict[str, dict[str, Any]] = {}
+        available_tools = _tool_names(tools)
+        next_request_id = 4
+        for name, arguments in FUNCTIONAL_TOOL_PROBES.items():
+            if name not in available_tools:
+                continue
+            call_arguments = dict(arguments)
+            if name == "execute_rizin_command":
+                call_arguments = {
+                    "path": sys.executable,
+                    "command": "iI",
+                    **call_arguments,
+                }
+            request_id = next_request_id
+            next_request_id += 1
+            _send(
+                process,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": call_arguments},
+                },
+            )
+            probe_deadline = min(
+                deadline,
+                time.monotonic() + FUNCTIONAL_PROBE_TIMEOUT_SECONDS,
+            )
+            try:
+                probed = _receive(messages, probe_deadline, request_id)
+            except TimeoutError as exc:
+                functional_probes[name] = normalize_functional_probe_result(
+                    name,
+                    error=str(exc),
+                )
+                continue
+            error = probed.get("error")
+            if error:
+                functional_probes[name] = normalize_functional_probe_result(
+                    name,
+                    error=str(error),
+                )
+            else:
+                functional_probes[name] = normalize_functional_probe_result(
+                    name,
+                    probed.get("result"),
+                )
+        if functional_probes:
+            binary_session["functional_probes"] = functional_probes
         validation = validate_tool_inventory(tools, binary_session)
         return {
             "tools": tools,
             "binary_session": binary_session,
             "server_info": initialized.get("result", {}).get("serverInfo"),
+            "functional_probe_results": functional_probes,
             **validation,
         }
     finally:
