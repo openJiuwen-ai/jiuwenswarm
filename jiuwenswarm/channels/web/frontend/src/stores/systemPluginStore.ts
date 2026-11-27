@@ -7,8 +7,12 @@ import {
 } from '../services/extensionsV2Api';
 import type { SystemPluginDetail, SystemPluginSummary } from '../types/systemPlugin';
 
-type MutationResult = { ok: true } | { ok: false; error: string };
+type MutationFailure = { ok: false; error: string };
+type MutationResult = { ok: true } | MutationFailure;
+type UninstallSuccess = { ok: true; detail: 'removed' | 'updated' | 'unavailable' };
+type UninstallResult = UninstallSuccess | MutationFailure;
 type SystemPluginLoadOptions = { refresh?: boolean; silent?: boolean };
+type ListLoadResult = { ok: true; packages?: SystemPluginSummary[] } | { ok: false };
 
 // Hub preview links are short-lived presigned URLs that change on every request.
 const PREVIEW_URL_TTL_MS = 20 * 60 * 1000;
@@ -42,10 +46,10 @@ interface SystemPluginState {
   error: string | null;
   loadCatalog: (options?: SystemPluginLoadOptions) => Promise<boolean>;
   loadMine: (options?: SystemPluginLoadOptions) => Promise<boolean>;
-  loadDetail: (id: string, version?: string) => Promise<boolean>;
+  loadDetail: (id: string, version?: string, cacheId?: string) => Promise<boolean>;
   install: (id: string, version?: string) => Promise<MutationResult>;
   importPath: (path: string) => Promise<MutationResult>;
-  uninstall: (id: string, version?: string) => Promise<MutationResult>;
+  uninstall: (id: string, version?: string, detailId?: string) => Promise<UninstallResult>;
   reload: (id: string) => Promise<MutationResult>;
   setEnabled: (id: string, enable: boolean) => Promise<MutationResult>;
   clearError: () => void;
@@ -91,7 +95,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
   let pendingLoads = 0;
   const listRequestSeq: Record<'catalog' | 'mine', number> = { catalog: 0, mine: 0 };
 
-  const load = async (scope: 'catalog' | 'mine', options?: SystemPluginLoadOptions) => {
+  const load = async (scope: 'catalog' | 'mine', options?: SystemPluginLoadOptions): Promise<ListLoadResult> => {
     const silent = options?.silent ?? false;
     const seq = ++listRequestSeq[scope];
     const requestScope = catalogScope();
@@ -100,21 +104,23 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       set({ loading: true });
     }
     try {
-      const packages = await systemPluginApi.catalog(scope, options?.refresh === true);
-      if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return true;
-      scheduleCatalogRefresh(
-        `systemPluginStore.ts:${scope}`,
-        packages.cache,
-        () => { void load(scope, { silent: true }); },
-        () => listRequestSeq[scope] === seq,
-      );
-      const unique = uniqueById(packages);
-      set(scope === 'catalog' ? { catalog: unique } : { mine: unique });
-      return true;
+      const result = await systemPluginApi.catalog(scope, options?.refresh === true);
+      if (requestScope !== catalogScope()) return { ok: true };
+      const packages = uniqueById(result);
+      if (listRequestSeq[scope] === seq) {
+        scheduleCatalogRefresh(
+          `systemPluginStore.ts:${scope}`,
+          result.cache,
+          () => { void load(scope, { silent: true }); },
+          () => listRequestSeq[scope] === seq,
+        );
+        set(scope === 'catalog' ? { catalog: packages } : { mine: packages });
+      }
+      return { ok: true, packages };
     } catch (error) {
-      if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return true;
+      if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return { ok: true };
       if (!silent && !isTransientManagementError(error)) set({ error: messageOf(error) });
-      return false;
+      return { ok: false };
     } finally {
       if (!silent) {
         pendingLoads -= 1;
@@ -139,13 +145,25 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       };
     });
 
-  const mutate = async (
+  const mutate = async <T extends { ok: true }>(id: string, action: () => Promise<T>): Promise<T | MutationFailure> => {
+    setBusy(id, true);
+    try {
+      return await action();
+    } catch (error) {
+      const message = messageOf(error);
+      set({ error: message });
+      return { ok: false, error: message };
+    } finally {
+      setBusy(id, false);
+    }
+  };
+
+  const mutateAndSync = (
     id: string,
     action: () => Promise<void>,
     options?: { tolerateTransient?: boolean; confirmed?: () => void },
-  ): Promise<MutationResult> => {
-    setBusy(id, true);
-    try {
+  ): Promise<MutationResult> =>
+    mutate(id, async () => {
       let handled = false;
       try {
         await action();
@@ -162,14 +180,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       await syncDetail(id);
       if (handled) options?.confirmed?.();
       return { ok: true };
-    } catch (error) {
-      const message = messageOf(error);
-      set({ error: message });
-      return { ok: false, error: message };
-    } finally {
-      setBusy(id, false);
-    }
-  };
+    });
 
   return {
     catalog: [],
@@ -181,16 +192,16 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
 
     clearError: () => set({ error: null }),
 
-    loadCatalog: (options) => load('catalog', options),
+    loadCatalog: async (options) => (await load('catalog', options)).ok,
 
-    loadMine: (options) => load('mine', options),
+    loadMine: async (options) => (await load('mine', options)).ok,
 
-    loadDetail: async (id, version) => {
+    loadDetail: async (id, version, cacheId = id) => {
       try {
         const detail = await systemPluginApi.show(id, version);
         if (!detail) return false;
         const next = reusePreviewUrl(detail);
-        set((state) => ({ detailCache: { ...state.detailCache, [id]: next } }));
+        set((state) => ({ detailCache: { ...state.detailCache, [id]: next, [cacheId]: next } }));
         return true;
       } catch (error) {
         if (!isTransientManagementError(error)) set({ error: messageOf(error) });
@@ -198,7 +209,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       }
     },
 
-    install: (id, version) => mutate(id, () => systemPluginApi.install(id, version)),
+    install: (id, version) => mutateAndSync(id, () => systemPluginApi.install(id, version)),
     importPath: async (path) => {
       set({ loading: true });
       try {
@@ -211,10 +222,28 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
         set({ loading: false });
       }
     },
-    uninstall: (id, version) => mutate(id, () => systemPluginApi.uninstall(id, version)),
-    reload: (id) => mutate(id, () => systemPluginApi.reload(id)),
+    uninstall: (id, version, detailId = id) =>
+      mutate<UninstallSuccess>(id, async () => {
+        await systemPluginApi.uninstall(id, version);
+        void load('catalog', { silent: true });
+        const mine = await load('mine');
+        // The marketplace can keep listing Hub and preset packages after uninstall.
+        const installed = mine.ok ? mine.packages?.some((item) => item.id === id || item.packageId === id) : undefined;
+        if (version && installed && (await get().loadDetail(id, undefined, detailId))) {
+          return { ok: true, detail: 'updated' };
+        }
+        set((state) => {
+          const detailCache = { ...state.detailCache };
+          for (const [key, detail] of Object.entries(detailCache)) {
+            if (key === id || key === detailId || detail.packageId === id) delete detailCache[key];
+          }
+          return { detailCache };
+        });
+        return { ok: true, detail: !version || installed === false ? 'removed' : 'unavailable' };
+      }),
+    reload: (id) => mutateAndSync(id, () => systemPluginApi.reload(id)),
     setEnabled: (id, enable) =>
-      mutate(id, () => systemPluginApi.setEnabled(id, enable), {
+      mutateAndSync(id, () => systemPluginApi.setEnabled(id, enable), {
         tolerateTransient: true,
         confirmed: () => applyEnabled(id, enable),
       }),
