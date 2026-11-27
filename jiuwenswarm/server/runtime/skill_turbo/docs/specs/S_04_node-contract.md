@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_04 / node-contract |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：plan_node.py / json_utils.py / thinking_seam.py；executor.py 的回调绑定、LLM 与 ask_user 实现侧） |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联 feature | [[F_02]]（`_needs_fallback` 标志检测 + 回调槽 12→11）；[[F_04]]（python_cmd 注入契约）；关联 bugfix [[B_02]]（异常通道 guard 置位 + 标志剥离解耦） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
@@ -40,6 +40,11 @@ PlanNode 基类契约，**双视角**：技能代码作者视角（怎么写节�
 | adapter 侧 HITL 三件套 / ContextVar 桥 / 外层集成 | [[S_09]] |
 
 ## 不变量
+
+普通段结果捕获由 [[S_11]] 的 executor 上下文负责，不改 PlanNode 模板方法或回调槽。
+根返回在序列化前提取 __segment_handoff__，子节点同样在显示/after 前剥离该键；
+__artifact__ 仍按真实节点 owner 收集（包括多层流式子树），不将所有输出归到段根。
+AbortError 在节点模板内仍原样透传，can_pause=false 仅在段门面收口；fallback 的实际修复结果由 handler 回传段上下文，再统一后置验收。
 
 任意时刻，PlanNode 契约必须满足下列 16 条断言：
 
