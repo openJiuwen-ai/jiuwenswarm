@@ -13,6 +13,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+from openjiuwen.harness.prompts import resolve_language
+
 IMAGE_CONTENT_OMITTED = (
     "[Image content omitted from chat-model context. Use the original image "
     "path or a vision tool when image analysis is required.]"
@@ -32,6 +34,81 @@ _CURRENT_MULTIMODAL_IMAGE_FILES: ContextVar[tuple[dict[str, Any], ...]] = Contex
     default=(),
 )
 logger = logging.getLogger(__name__)
+
+# Status lines are shared by the model-facing toolHint and the user-facing
+# fallback notice, so both languages keep the three reasons apart.
+_IMAGE_INPUT_STATUS_MESSAGES = {
+    "cn": {
+        "disabled": "当前模型{model_label}已在配置中关闭原生图片输入。",
+        "unsupported": "当前模型{model_label}的当前接口经检测不支持原生图片输入。",
+        "unknown": "尚未确认当前模型{model_label}的接口是否支持原生图片输入。",
+    },
+    "en": {
+        "disabled": (
+            "Native image input is disabled in configuration for the current "
+            "model{model_label}."
+        ),
+        "unsupported": (
+            "The current model{model_label} interface did not accept native image "
+            "input in the capability check."
+        ),
+        "unknown": (
+            "It is not confirmed whether the current model{model_label} interface "
+            "accepts native image input."
+        ),
+    },
+}
+_IMAGE_NOT_NATIVE_INPUT = {
+    "cn": "本次图片未作为原生图片输入发送给主模型。",
+    "en": "This image was not sent to the primary model as native image input.",
+}
+_IMAGE_TOOL_HINT_AVAILABLE = {
+    "cn": (
+        "请调用已配置的图片理解工具；"
+        "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
+        "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
+    ),
+    "en": (
+        "Please call the configured image-understanding tool; "
+        "prefer image_reading(local_url=mediaPath, prompt=question), "
+        "or use visual_question_answering(image_path_or_url=mediaPath, question=question)."
+    ),
+}
+_IMAGE_TOOL_HINT_UNAVAILABLE = {
+    "cn": (
+        "没有配置可用的视觉模型工具。"
+        "请根据上述状态向用户说明本次无法直接读图的原因，不要猜测图片内容。"
+        "能力未确认不等于模型不支持读图。"
+    ),
+    "en": (
+        "No vision model tool is configured. "
+        "Based on the status above, explain to the user why the image cannot be "
+        "read directly this turn; do not guess image contents. "
+        "Unconfirmed capability does not mean the model cannot read images."
+    ),
+}
+_IMAGE_STEER_HINT = {
+    "cn": (
+        "这是当前任务的补充输入。转向队列只携带文本；上传的图片尚未读取。"
+        "对 mediaItems 中的每一项，在描述或比较图片之前，请先用该条目的 mediaPath 调用 "
+        "{invocation}。"
+        "若读取失败或仅返回元数据，请说明失败原因，不要猜测图片内容。"
+    ),
+    "en": (
+        "This is supplemental input for the current task. The steering queue carries text only; "
+        "the uploaded images have not yet been read. For every entry in mediaItems, call "
+        "{invocation} using that entry's mediaPath before describing or comparing the images. "
+        "If reading fails or returns only metadata, explain the failure; do not guess image contents."
+    ),
+}
+_IMAGE_TOOL_CONTEXT_PREFIX = {
+    "cn": "\n\n图片附件上下文（供 ReAct 选择图片理解工具使用）：\n",
+    "en": "\n\nImage attachment context (for ReAct to select an image-understanding tool):\n",
+}
+_IMAGE_STEER_DEFAULT_QUESTION = {
+    "cn": "阅读附带的图片，并据此继续当前任务。",
+    "en": "Read the attached images and use them to continue the current task.",
+}
 
 
 def is_image_content_block(part: Any) -> bool:
@@ -74,42 +151,41 @@ def extract_multimodal_image_files(params: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def image_input_status_message(status: str, model_label: str = "") -> str:
+def image_input_status_message(
+    status: str,
+    model_label: str = "",
+    language: str = "cn",
+) -> str:
     """Describe the same image-input capability in prompts and fallback notices."""
-    model = f"当前模型{model_label}"
-    messages = {
-        "disabled": f"{model}已在配置中关闭原生图片输入。",
-        "unsupported": f"{model}的当前接口经检测不支持原生图片输入。",
-    }
-    return messages.get(status, f"尚未确认{model}的接口是否支持原生图片输入。")
+    language = resolve_language(language)
+    catalog = _IMAGE_INPUT_STATUS_MESSAGES.get(language, _IMAGE_INPUT_STATUS_MESSAGES["cn"])
+    template = catalog.get(status, catalog["unknown"])
+    return template.format(model_label=model_label)
 
 
-def _image_tool_hint(image_input_status: str, vision_tool_available: bool, steer_image_tool: str | None) -> str:
+def _image_tool_hint(
+    image_input_status: str,
+    vision_tool_available: bool,
+    steer_image_tool: str | None,
+    language: str = "cn",
+) -> str:
+    language = resolve_language(language)
     if steer_image_tool:
         invocation = (
             "read_file(file_path=mediaPath)"
             if steer_image_tool == "read_file"
             else "visual_question_answering(image_path_or_url=mediaPath, question=question)"
         )
-        return (
-            "This is supplemental input for the current task. The steering queue carries text only; "
-            "the uploaded images have not yet been read. For every entry in mediaItems, call "
-            f"{invocation} using that entry's mediaPath before describing or comparing the images. "
-            "If reading fails or returns only metadata, explain the failure; do not guess image contents."
-        )
+        template = _IMAGE_STEER_HINT.get(language, _IMAGE_STEER_HINT["cn"])
+        return template.format(invocation=invocation)
     if vision_tool_available:
-        tool_hint = (
-            "请调用已配置的图片理解工具；"
-            "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
-            "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
-        )
+        tool_hint = _IMAGE_TOOL_HINT_AVAILABLE.get(language, _IMAGE_TOOL_HINT_AVAILABLE["cn"])
     else:
-        tool_hint = (
-            "没有配置可用的视觉模型工具。"
-            "请根据上述状态向用户说明本次无法直接读图的原因，不要猜测图片内容。"
-            "能力未确认不等于模型不支持读图。"
-        )
-    return image_input_status_message(image_input_status) + "本次图片未作为原生图片输入发送给主模型。" + tool_hint
+        tool_hint = _IMAGE_TOOL_HINT_UNAVAILABLE.get(language, _IMAGE_TOOL_HINT_UNAVAILABLE["cn"])
+    not_native = _IMAGE_NOT_NATIVE_INPUT.get(language, _IMAGE_NOT_NATIVE_INPUT["cn"])
+    status_msg = image_input_status_message(image_input_status, language=language)
+    sep = " " if language == "en" else ""
+    return sep.join([status_msg, not_native, tool_hint])
 
 
 def prepare_image_tool_inputs(
@@ -120,12 +196,14 @@ def prepare_image_tool_inputs(
     vision_tool_available: bool,
     image_input_status: str = "unknown",
     steer_image_tool: str | None = None,
+    language: str = "cn",
 ) -> dict[str, Any]:
     """Serialize image-tool context for both ordinary chat and text-only steer.
 
     Every caller reaches this point with the routing decision made, so the log
     line naming the route taken is emitted here, not during extraction.
     """
+    language = resolve_language(language)
     if enable_read_image_multimodal and steer_image_tool is None:
         pending = inputs.get("_multimodal_image_files")
         if isinstance(pending, list) and pending:
@@ -161,7 +239,9 @@ def prepare_image_tool_inputs(
         raw_question = params.get("content")
     question = raw_question.strip() if isinstance(raw_question, str) else ""
     if steer_image_tool and not question:
-        question = "Read the attached images and use them to continue the current task."
+        question = _IMAGE_STEER_DEFAULT_QUESTION.get(
+            language, _IMAGE_STEER_DEFAULT_QUESTION["cn"]
+        )
     first_path = str(image_files[0].get("path") or "").strip()
     if not first_path:
         # Defensive: _normalize_image_file drops records with no path.
@@ -200,13 +280,16 @@ def prepare_image_tool_inputs(
         "mediaItems": media_items,
         "question": question,
         "imageInputStatus": image_input_status,
-        "toolHint": _image_tool_hint(image_input_status, vision_tool_available, steer_image_tool),
+        "toolHint": _image_tool_hint(
+            image_input_status, vision_tool_available, steer_image_tool, language=language,
+        ),
     }
     updated = dict(inputs)
     updated.pop("_multimodal_image_files", None)
+    prefix = _IMAGE_TOOL_CONTEXT_PREFIX.get(language, _IMAGE_TOOL_CONTEXT_PREFIX["cn"])
     updated["query"] = (
         query
-        + "\n\n图片附件上下文（供 ReAct 选择图片理解工具使用）：\n"
+        + prefix
         + json.dumps(tool_context, ensure_ascii=False)
     )
     # Without a vision tool the same block tells the model to say it cannot

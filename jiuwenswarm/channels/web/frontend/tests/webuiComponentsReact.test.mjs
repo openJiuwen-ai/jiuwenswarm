@@ -441,6 +441,28 @@ const frame = (root, revision = 1, scope = target) => ({
   target: scope, schema_version: 1, revision, mode: 'replace', root,
 });
 const events = { 'ui.click': { id: 'confirm', args: { source: 'toolbar' } } };
+
+for (const [slotId, limit] of [
+  ['conversation.header.title.after', 2],
+  ['conversation.header.actions', 3],
+]) {
+  test(`${slotId} renders at most ${limit} list instances`, async () => {
+    const base = { session_id: 'sess-1', slot_id: slotId, package_id: 'pkg.0', instance_key: 'main' };
+    const app = await setup({ component: 'Text', props: { value: '0' } }, base);
+    try {
+      for (let index = 1; index <= limit; index += 1) {
+        await act(async () => app.transport.injectRenderFrame(frame(
+          { component: 'Text', props: { value: String(index) } },
+          1,
+          { ...base, package_id: `pkg.${index}` },
+        )));
+      }
+      assert.equal(app.container.querySelectorAll('[data-testid="webui-host-instance"]').length, limit);
+    } finally {
+      await app.close();
+    }
+  });
+}
 async function click(element) {
   assert.ok(element, 'click target must exist');
   await act(async () => element.dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
@@ -504,8 +526,7 @@ test('a confirmed restore in settings removes the application presentation launc
   document.body.append(container);
   const root = createRoot(container);
   const path = window.location.href;
-  // Enter through the recovery route so navigation is already settled.
-  window.history.replaceState(null, '', '/system-plugin-recovery');
+  window.history.replaceState(null, '', '/chat/new');
   const render = (settings) => root.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
     createElement(ApplicationPresentationHost, { sessionId: 'sess-1', connected: true }),
     settings && createElement(SystemPluginRecoverySettings)));
@@ -518,6 +539,7 @@ test('a confirmed restore in settings removes the application presentation launc
   });
   try {
     await act(async () => render(true));
+    assert.equal(window.location.pathname, '/chat/new');
     const source = container.querySelector('iframe').contentWindow;
     const message = (type, data, from = source, fromOrigin = origin) =>
       window.dispatchEvent(new window.MessageEvent('message', { origin: fromOrigin, source: from,
@@ -2560,6 +2582,103 @@ test('task navigation and its page mount without a session and retain their inst
   }
 });
 
+test('application menu navigation and page mount without a session and stay mounted across session switches', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  function Harness({ sessionId }) {
+    const [page, setPage] = useState(null);
+    return createElement(
+      WebUIProvider,
+      { runtime, registry: componentRendererRegistry },
+      createElement(
+        WebUISlotProvider,
+        { sessionId, onOpenPage: setPage, activePage: page },
+        createElement(WebUINavigationHost, { slotId: 'application.menu' }),
+        page ? createElement(WebUIPageHost, { target: page }) : null,
+      ),
+    );
+  }
+  const render = async (sessionId) => act(async () => root.render(createElement(Harness, { sessionId })));
+  const menuTarget = {
+    scope: 'application',
+    slot_id: 'application.menu',
+    package_id: 'probe.slot-app-menu',
+    instance_key: 'menu-probe',
+  };
+  try {
+    await render(null);
+    const ready = transport.dispatches[0];
+    assert.equal(ready.event, 'ui.ready');
+    assert.equal(ready.target.scope, 'application');
+    assert.equal(ready.target.sessionId, '');
+    await act(async () =>
+      transport.injectRenderFrame(
+        frame(
+          {
+            component: 'Button',
+            props: { value: '菜单探针' },
+            events: { 'ui.click': { id: 'menu.open' } },
+          },
+          1,
+          menuTarget,
+        ),
+      ),
+    );
+    const entry = container.querySelector('[data-testid="webui-button"]');
+    assert.ok(entry);
+    assert.equal(entry.textContent, '菜单探针');
+
+    for (const sessionId of ['session-a', 'session-b', null, 'session-c']) {
+      await render(sessionId);
+      assert.equal(container.querySelector('[data-testid="webui-button"]'), entry);
+      assert.equal(transport.dispatches.filter((request) => request.event === 'ui.ready').length, 1);
+    }
+
+    await click(entry);
+    const pageReady = transport.dispatches.find((request) => request.target.slotId === 'application.menu.main');
+    assert.ok(pageReady);
+    assert.deepEqual(pageReady.target, {
+      scope: 'application',
+      sessionId: '',
+      slotId: 'application.menu.main',
+      packageId: menuTarget.package_id,
+      instanceKey: menuTarget.instance_key,
+    });
+    await act(async () =>
+      transport.injectRenderFrame(
+        frame(
+          {
+            component: 'Box',
+            children: [{ component: 'Text', props: { value: '菜单探针主页面' } }],
+          },
+          1,
+          { ...menuTarget, slot_id: 'application.menu.main' },
+        ),
+      ),
+    );
+    const pageText = container.querySelector('[data-testid="webui-text"]');
+    assert.ok(pageText);
+    assert.equal(pageText.textContent, '菜单探针主页面');
+
+    for (const sessionId of ['session-a', 'session-b', null]) {
+      await render(sessionId);
+      assert.equal(container.querySelector('[data-testid="webui-button"]'), entry);
+      assert.equal(container.querySelector('[data-testid="webui-text"]'), pageText);
+      assert.equal(transport.dispatches.filter((request) => request.event === 'ui.ready').length, 2);
+    }
+    assert.equal(runtime.getScopeSnapshot('', 'application.menu').instanceKeys.length, 1);
+    assert.equal(runtime.getScopeSnapshot('', 'application.menu.main').instanceKeys.length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    runtime.dispose();
+  }
+});
+
 test('WebUIEntryHost renders application.entry with Avatar and closes on clear frame', async () => {
   window.localStorage.removeItem('workswarm.webui.entry.visited');
   const transport = createMockTransport();
@@ -2815,16 +2934,55 @@ test('Dropdown renders plugin-composed labels and native popup width without ini
   } finally { await app.close(); }
 });
 
-test('application footer mounts multiple contributions without a session', async () => {
+test('application footer keeps three contributions without a session', async () => {
   const scope = { scope: 'application', slot_id: 'application.sidebar.footer', package_id: 'pkg.one', instance_key: 'main' };
   const app = await setup({ component: 'Text', props: { value: 'First' } }, scope);
   try {
-    await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Second' } }, 1,
-      { ...scope, package_id: 'pkg.two' })));
+    for (const [packageId, value] of [['pkg.two', 'Second'], ['pkg.three', 'Third']]) {
+      await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value } }, 1,
+        { ...scope, package_id: packageId })));
+    }
     assert.match(app.container.textContent, /First/);
     assert.match(app.container.textContent, /Second/);
+    assert.match(app.container.textContent, /Third/);
+    assert.equal(app.container.querySelectorAll('[data-testid="webui-host-instance"]').length, 3);
+    await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Fourth' } }, 1,
+      { ...scope, package_id: 'pkg.four' })));
+    assert.doesNotMatch(app.container.textContent, /Fourth/);
+    assert.equal(app.container.querySelectorAll('[data-testid="webui-host-instance"]').length, 3);
     assert.equal(app.transport.dispatches[0].target.scope, 'application');
     assert.equal(app.transport.dispatches[0].target.sessionId, '');
+    await act(async () => app.transport.injectClearFrame({ target: scope, revision: 2 }));
+    assert.doesNotMatch(app.container.textContent, /First/);
+    assert.match(app.container.textContent, /Second/);
+    assert.match(app.container.textContent, /Third/);
+    assert.match(app.container.textContent, /Fourth/, 'the next mounted contribution takes the freed slot');
+    assert.equal(app.container.querySelectorAll('[data-testid="webui-host-instance"]').length, 3);
+  } finally { await app.close(); }
+});
+
+test('footer errors do not hide delivered contributions and recovered errors update the slot', async () => {
+  const scope = { scope: 'application', slot_id: 'application.sidebar.footer', package_id: 'pkg.initial', instance_key: 'main' };
+  const failed = { ...scope, package_id: 'pkg.failed' };
+  const app = await setup({ component: 'Text', props: { value: 'Initial' } }, scope);
+  try {
+    await act(async () => app.transport.injectClearFrame({ target: scope, revision: 2 }));
+    await act(async () => app.transport.injectErrorFrame({
+      target: failed, revision: 0, code: 'SCHEMA_ERROR', message: 'bad tree',
+    }));
+    for (const [packageId, value] of [['pkg.one', 'One'], ['pkg.two', 'Two'], ['pkg.three', 'Three']]) {
+      await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value } }, 1,
+        { ...scope, package_id: packageId })));
+    }
+    assert.match(app.container.textContent, /One/);
+    assert.match(app.container.textContent, /Two/);
+    assert.match(app.container.textContent, /Three/);
+    assert.equal(app.container.querySelectorAll('[data-testid="webui-host-instance"]').length, 3);
+
+    await act(async () => app.transport.injectRenderFrame(frame({ component: 'Text', props: { value: 'Recovered' } }, 1,
+      failed)));
+    assert.match(app.container.textContent, /Recovered/);
+    assert.doesNotMatch(app.container.textContent, /Three/);
   } finally { await app.close(); }
 });
 

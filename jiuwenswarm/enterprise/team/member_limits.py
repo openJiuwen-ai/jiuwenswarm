@@ -25,25 +25,36 @@ TEAM_MEMBER_QUOTA_EXCEEDED = "TEAM_MEMBER_QUOTA_EXCEEDED"
 TEAM_MEMBER_QUOTA_UNAVAILABLE = "TEAM_MEMBER_QUOTA_UNAVAILABLE"
 
 
-def _t(message_id: str, **params: Any) -> str:
+def _t(message_id: str, *, language: str | None = None, **params: Any) -> str:
     from jiuwenswarm.common.i18n import t
     from jiuwenswarm.enterprise.config.preferred_language import (
         resolve_preferred_language,
     )
 
-    return t(message_id, language=resolve_preferred_language(), **params)
+    return t(
+        message_id,
+        language=language if language is not None else resolve_preferred_language(),
+        **params,
+    )
 
 
-def teammate_quota_user_message(limit: int) -> str:
+def teammate_quota_user_message(limit: int, *, language: str | None = None) -> str:
     """User-facing spawn failure. ``limit`` is whole-team size including the leader."""
-    return _t("enterprise.team.teammate_full", limit=max(int(limit), 0))
+    return _t(
+        "enterprise.team.teammate_full",
+        language=language,
+        limit=max(int(limit), 0),
+    )
 
 
-def teammate_quota_fail_reason(limit: int) -> str:
-    return f"{TEAM_MEMBER_QUOTA_EXCEEDED}: {teammate_quota_user_message(limit)}"
+def teammate_quota_fail_reason(limit: int, *, language: str | None = None) -> str:
+    return (
+        f"{TEAM_MEMBER_QUOTA_EXCEEDED}: "
+        f"{teammate_quota_user_message(limit, language=language)}"
+    )
 
 
-def teammate_quota_unavailable_reason() -> str:
+def teammate_quota_unavailable_reason(*, language: str | None = None) -> str:
     """Failure when admission cannot be evaluated (deadlock/timeout/outage).
 
     A transient DB failure is not evidence that the team is full; claiming
@@ -51,14 +62,17 @@ def teammate_quota_unavailable_reason() -> str:
     """
     return (
         f"{TEAM_MEMBER_QUOTA_UNAVAILABLE}: "
-        "成员配额校验暂时不可用，本次未创建成员，请稍后重试"
+        f"{_t('enterprise.team.teammate_quota_unavailable', language=language)}"
     )
 
 
-def requested_team_size_user_message(requested: int, limit: int) -> str:
+def requested_team_size_user_message(
+    requested: int, limit: int, *, language: str | None = None
+) -> str:
     """User-facing refusal when the original sentence already exceeds the cap."""
     return _t(
         "enterprise.team.requested_size_over",
+        language=language,
         requested=int(requested),
         limit=max(int(limit), 0),
     )
@@ -235,16 +249,20 @@ def whole_team_member_limit(request: Any, config_base: dict[str, Any] | None = N
     return cap, cap
 
 
-def predefined_team_size_user_message(team_size: int, limit: int) -> str:
+def predefined_team_size_user_message(
+    team_size: int, limit: int, *, language: str | None = None
+) -> str:
     """User-facing refusal when a team template/package exceeds the cap.
 
     Unlike ``requested_team_size_user_message`` the size comes from the
     materialized roster (an AgentGroup or a Team skill), not from the user's
     sentence, so the wording must not claim the user asked for it.
     """
-    return (
-        f"无法创建：该团队预设 {int(team_size)} 人（含 Leader），"
-        f"超过该团队最多 {max(int(limit), 0)} 人。"
+    return _t(
+        "enterprise.team.predefined_size_over",
+        language=language,
+        team_size=int(team_size),
+        limit=max(int(limit), 0),
     )
 
 

@@ -37,6 +37,7 @@ test('catalog contains the supported components', () => {
     id: 'application.sidebar.footer',
     display: 'list',
     scope: 'application',
+    maxVisible: 3,
   });
   assert.deepEqual(componentCatalog.getSlot('application.background'), {
     id: 'application.background',
@@ -52,6 +53,8 @@ test('catalog contains the supported components', () => {
     assert.equal(componentCatalog.getSlot(slotId).rerender, 'keep-mounted', slotId);
   }
   assert.equal(componentCatalog.getSlot('conversation.input.above').rerender, undefined);
+  assert.equal(componentCatalog.getSlot('conversation.header.title.after').maxVisible, 2);
+  assert.equal(componentCatalog.getSlot('conversation.header.actions').maxVisible, 3);
   assert.deepEqual(componentCatalog.getSlot('application.splash'), {
     id: 'application.splash',
     display: 'single',
@@ -61,7 +64,18 @@ test('catalog contains the supported components', () => {
   });
   // Gateway settings share application.settings with AgentServer packages; there is no separate page slot.
   assert.ok(!componentCatalog.getSlot('application.settings.page'));
-  assert.deepEqual(componentCatalog.getSlot('application.menu.main').rootComponents, ['Iframe']);
+  assert.deepEqual(componentCatalog.getSlot('application.menu'), {
+    id: 'application.menu',
+    display: 'list',
+    scope: 'application',
+  });
+  assert.deepEqual(componentCatalog.getSlot('application.menu.main'), {
+    id: 'application.menu.main',
+    display: 'single',
+    scope: 'application',
+    rootComponents: ['Iframe'],
+    rerender: 'keep-mounted',
+  });
   assert.equal(WEBUI_COMPONENT_SCHEMA_VERSION, 1);
 });
 

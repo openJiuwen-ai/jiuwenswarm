@@ -37,7 +37,10 @@ function setup(load) {
       const win = created.at(-1);
       win.appView = this;
       const contents = this.webContents = win.webContents = new EventEmitter();
-      contents.session = { setPermissionRequestHandler: handler => { win.permission = handler; }, setPermissionCheckHandler: () => {} };
+      contents.session = {
+        setPermissionRequestHandler: handler => { win.permission = handler; },
+        setPermissionCheckHandler: handler => { win.checkPermission = handler; },
+      };
       contents.setWindowOpenHandler = handler => { win.popup = handler; };
       contents.loadURL = async (url, options) => { win.url = url; win.loads = (win.loads || 0) + 1; if (load) await load(url, options); };
       contents.isDestroyed = () => !!this.destroyed;
@@ -75,9 +78,39 @@ test('desktop apps use isolated persistent windows without taskbar buttons and w
   created[0].webContents.emit('page-title-updated', {}, 'Page');
   assert.equal(created[0].options.title, 'Game · WorkSwarm');
   assert.equal(owner.listenerCount('closed'), 1);
-  let permission;
-  created[0].permission(null, 'camera', allowed => { permission = allowed; });
-  assert.equal(permission, false);
+});
+
+test('desktop app permissions follow the app origin and native window placement', async () => {
+  const { open, created } = setup();
+  await open('game', 'http://localhost:8080/', 'Game');
+  const win = created[0];
+  const appUrl = 'http://localhost:8080/play';
+  const assertPermission = (permission, requestingUrl, expected, requester = win.webContents) => {
+    const details = { requestingUrl };
+    let granted;
+    win.permission(requester, permission, allowed => { granted = allowed; }, details);
+    assert.equal(granted, expected, `permission request: ${permission} from ${requestingUrl}`);
+    assert.equal(win.checkPermission(requester, permission, appUrl, details), expected,
+      `permission check: ${permission} from ${requestingUrl}`);
+  };
+
+  assertPermission('pointerLock', appUrl, true);
+  assertPermission('fullscreen', appUrl, true);
+  assertPermission('pointerLock', 'https://example.com/game', false);
+  assertPermission('pointerLock', undefined, false);
+  assertPermission('pointerLock', appUrl, false, null);
+  for (const permission of ['media', 'display-capture', 'keyboardLock', 'automatic-fullscreen', 'openExternal']) {
+    assertPermission(permission, appUrl, false);
+  }
+
+  await open('game', 'http://localhost:8080/', 'Game', true);
+  assertPermission('pointerLock', appUrl, true);
+  assertPermission('fullscreen', appUrl, false);
+
+  await open('game', 'http://localhost:8081/', 'Game');
+  assertPermission('pointerLock', appUrl, false);
+  assertPermission('pointerLock', 'http://localhost:8081/play', true);
+  assertPermission('fullscreen', 'http://localhost:8081/play', true);
 });
 
 test('same app restores its hidden minimized window without reloading; new port uses the same partition', async () => {

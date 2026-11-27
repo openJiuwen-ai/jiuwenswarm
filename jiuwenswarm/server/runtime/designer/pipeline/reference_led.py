@@ -142,10 +142,14 @@ _REF_PHRASES: dict[str, dict[str, str]] = {
         "supporting_cast": "配角们",
     },
 }
-# Markers that reference_prompt_issues accepts in either content language.
-_CONTINUES_MARKERS = ("continues from", "承接上一镜")
-_MOTION_SOURCE_MARKERS = ("first frame", "animate this image", "首帧")
-_REFERENCE_ORDER_MARKERS = ("image 1", "last reference", "最后一张参考图")
+# A prompt that already names the score rule is left as written.
+_SCORE_NAMED_MARKERS = (
+    "不要配乐",
+    "不要氛围音床",
+    "无音乐",
+    "no ambient music bed",
+    "no music",
+)
 
 _SUBJECT_ROLE = {
     "character": ROLE_CHARACTER,
@@ -339,43 +343,78 @@ def _shown_look(cfg: dict[str, Any], lang: str) -> str:
     return phrase(_REF_PHRASES, lang, "match_look") if look == MATCH_REFERENCE_LOOK else look
 
 
-def reference_prompt_issues(prompt: str, cfg: dict[str, Any] | None) -> list[str]:
+def _r2v_sound_line(cfg: dict[str, Any], lang: str) -> str:
+    """The practice composer's sound line, chosen from this clip's policy and cues."""
+    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+        _sound_line,
+    )
+
+    return _sound_line(cfg, lang)
+
+
+def copy_r2v_sound_inputs(
+    cfg: dict[str, Any],
+    shot: dict[str, Any] | None,
+    analysis: dict[str, Any] | None,
+) -> None:
+    """Put ``audio_policy``, ``sfx``, and speech on an R2V clip.
+
+    ``_sound_line`` reads those fields. A practice clip is stamped with them
+    before its prompt is written. An R2V clip that lacks a policy falls through
+    to the room-tone sentence, and a non-silent clip with no speech is told
+    that nobody speaks.
+    """
+    from jiuwenswarm.server.runtime.designer.audio_locks import (
+        normalize_speech_by_character,
+        speech_line_from_by_character,
+    )
+
+    shot = shot if isinstance(shot, dict) else {}
+    analysis = analysis if isinstance(analysis, dict) else {}
+    audio = analysis.get("audio") if isinstance(analysis.get("audio"), dict) else {}
+    policy = str(shot.get("audio_policy") or audio.get("policy") or "").strip()
+    if policy:
+        cfg["audio_policy"] = policy
+    if policy == "silent":
+        cfg["sfx"] = []
+        cfg["speech_by_character"] = {}
+        cfg["speech_line"] = ""
+        return
+    cues = shot.get("sfx") if isinstance(shot.get("sfx"), list) else shot.get("sound_cues")
+    if isinstance(cues, list):
+        cfg["sfx"] = [str(cue).strip() for cue in cues if str(cue).strip()][:3]
+    characters = analysis.get("characters") if isinstance(analysis.get("characters"), list) else []
+    by_char = normalize_speech_by_character(shot, characters)
+    speech_line = speech_line_from_by_character(by_char) or str(
+        shot.get("speech_line") or shot.get("dialogue") or shot.get("speech") or ""
+    ).strip()
+    if by_char:
+        cfg["speech_by_character"] = by_char
+    if speech_line:
+        cfg["speech_line"] = speech_line
+
+
+def append_r2v_diegetic_sound(prompt: str, cfg: dict[str, Any] | None) -> str:
+    """Append the same sound sentence a practice clip would get for this config.
+
+    Silence, named effects, and plain room tone are three different sentences.
+    Only the last two forbid a score. A prompt that already names that rule is
+    left as written.
+    """
     cfg = cfg if isinstance(cfg, dict) else {}
+    if str(cfg.get("reference_call_mode") or "").strip().casefold() != "r2v":
+        return str(prompt or "").strip()
+    lang = current_content_language()
+    line = _r2v_sound_line(cfg, lang).strip()
     text = str(prompt or "").strip()
-    reasons: list[str] = []
+    if not line:
+        return text
+    folded = text.casefold()
+    if any(marker.casefold() in folded for marker in _SCORE_NAMED_MARKERS):
+        return text
     if not text:
-        return ["empty"]
-    action = str(cfg.get("clip_action") or "").strip()
-    if action and action not in text:
-        reasons.append("missing_action")
-    look = _shown_look(cfg, current_content_language())
-    if look and look not in text:
-        reasons.append("missing_style")
-    lighting = str(cfg.get("lighting") or "").strip()
-    if lighting and lighting not in text:
-        reasons.append("missing_lighting")
-    crowd = str(cfg.get("crowd") or "").strip()
-    if crowd and crowd not in text:
-        reasons.append("missing_crowd")
-    try:
-        index = int(cfg.get("clip_index") or 1)
-    except (TypeError, ValueError):
-        index = 1
-    if index > 1:
-        end = str(cfg.get("previous_end_state") or "").strip()
-        if not any(marker in text.lower() for marker in _CONTINUES_MARKERS):
-            reasons.append("missing_continuation")
-        if end and end not in text:
-            reasons.append("missing_previous_end")
-        prev = str(cfg.get("previous_action") or "").strip()
-        if prev and (f"Action: {prev}" in text or f"动作：{prev}" in text):
-            reasons.append("repeats_previous_action")
-    mode = str(cfg.get("reference_call_mode") or "")
-    if mode == "i2v" and not any(marker in text.lower() for marker in _MOTION_SOURCE_MARKERS):
-        reasons.append("missing_motion_source")
-    if mode == "r2v" and not any(marker in text.lower() for marker in _REFERENCE_ORDER_MARKERS):
-        reasons.append("missing_reference_order")
-    return reasons
+        return line
+    return join_sentences([text, line], lang)
 
 
 def compose_reference_clip_prompt(cfg: dict[str, Any] | None) -> str:
@@ -426,7 +465,8 @@ def compose_reference_clip_prompt(cfg: dict[str, Any] | None) -> str:
         lines.append(phrase(_REF_PHRASES, lang, f"contract_{contract}"))
     else:
         lines.append(phrase(_REF_PHRASES, lang, "contract_default"))
-    return join_sentences([line for line in lines if line.strip()], lang)
+    text = join_sentences([line for line in lines if line.strip()], lang)
+    return append_r2v_diegetic_sound(text, cfg)
 
 
 def build_reference_led_video_graph(
@@ -821,6 +861,8 @@ def build_reference_led_video_graph(
                 mid = str(job["motion_slots"][0].get("node_id") or "")
                 if mid and mid not in cfg["inputs"]:
                     cfg["inputs"].append(mid)
+        if str(job.get("call_mode") or "") == "r2v":
+            copy_r2v_sound_inputs(cfg, shot, analysis)
         cfg["generate"] = {"prompt": compose_reference_clip_prompt(cfg)}
         cfg["director_task"] = (
             "Write the reference-led shot prompt from this clip config, then call_video_model."
@@ -1759,12 +1801,17 @@ def _paths_from_plan(cfg: dict[str, Any], graph: dict[str, Any] | None) -> list[
 
 def _merge_ref_paths(planned: list[str], fallback: list[str]) -> list[str]:
     """Keep plan order, then append any edge-collected paths the plan missed."""
+    from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+        reference_path_key,
+    )
+
     out: list[str] = []
     seen: set[str] = set()
     for path in list(planned or []) + list(fallback or []):
         text = str(path or "").strip()
-        if not text or text in seen:
+        key = reference_path_key(text) if text else ""
+        if not key or key in seen:
             continue
-        seen.add(text)
+        seen.add(key)
         out.append(text)
     return out

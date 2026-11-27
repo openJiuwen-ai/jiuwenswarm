@@ -61,6 +61,7 @@ from jiuwenswarm.agents.harness.common.memory.config import (
     is_auto_memory_enabled,
     is_memory_enabled,
 )
+from jiuwenswarm.agents.harness.common.memory.plugin import supported_memory_session
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     EVOLUTION_INTERRUPT_METADATA_SOURCES,
     is_interrupt_resume_payload,
@@ -99,6 +100,12 @@ from jiuwenswarm.common.schema.agent import (
     AgentResponseChunk,
 )
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
+from jiuwenswarm.server.runtime.agent_adapter.method_guard import (
+    is_chat_turn_method,
+    method_not_found_response,
+    method_not_found_stream_payload,
+    req_method_value,
+)
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     configure_skill_library,
@@ -2880,6 +2887,13 @@ class JiuWenSwarm:
             code = getattr(exc, "code", None)
             if isinstance(code, str) and code.strip():
                 err_payload["code"] = code.strip()
+            # i18n 元信息：前端按 detail_key + detail_params 渲染本地化文案。
+            detail_key = getattr(exc, "detail_key", None)
+            if isinstance(detail_key, str) and detail_key.strip():
+                err_payload["detail_key"] = detail_key.strip()
+                detail_params = getattr(exc, "detail_params", None)
+                if isinstance(detail_params, dict) and detail_params:
+                    err_payload["detail_params"] = detail_params
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -4036,6 +4050,15 @@ class JiuWenSwarm:
         if package_catalog_response is not None:
             return package_catalog_response
 
+        if not is_chat_turn_method(request.req_method):
+            logger.warning(
+                "[JiuWenSwarm] 未命中任何 handler 的已知方法被拒绝: "
+                "request_id=%s method=%s",
+                request.request_id,
+                req_method_value(request.req_method),
+            )
+            return method_not_found_response(request)
+
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         validator = getattr(adapter, "validate_auto_permission_workspace_request", None)
         if callable(validator):
@@ -4173,7 +4196,8 @@ class JiuWenSwarm:
                 raise
 
             # cloud memory: before chat hook
-            if memory_mode == "cloud":
+            plugin_owns_memory = supported_memory_session(request.params or {})
+            if memory_mode == "cloud" and not plugin_owns_memory:
                 mem_ctx = MemoryHookContext(
                     session_id=request.session_id or "default",
                     request_id=request.request_id or "",
@@ -4270,7 +4294,7 @@ class JiuWenSwarm:
                 _schedule_feedback_once("success")
 
                 # cloud memory: after chat hook
-                if memory_mode == "cloud":
+                if memory_mode == "cloud" and not plugin_owns_memory:
                     after_ctx = MemoryHookContext(
                         session_id=request.session_id or "default",
                         request_id=request.request_id or "",
@@ -4286,7 +4310,7 @@ class JiuWenSwarm:
                 # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
                 mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
                 config = get_config()
-                if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
+                if not plugin_owns_memory and is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                     _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
 
             if not feedback_scheduled:
@@ -4794,11 +4818,14 @@ class JiuWenSwarm:
             )
             return
 
-        # 无状态 RPC（skills / plugins / Skill Graph）不需要 adapter，
-        # 委托给非流式 handler 并包装为单个 chunk，避免触发 adapter 懒初始化。
+        # 无状态 RPC（skills / session assets / assets / plugins / Skill Graph）
+        # 不需要 adapter，委托给非流式 handler 并包装为单个 chunk，
+        # 避免触发 adapter 懒初始化。清单与非流式入口保持一致。
         # skilldev 已由上面的流式分支处理，这里不会再命中。
         for stateless_handler in (
             self._handle_skills_request,
+            self._handle_session_asset_request,
+            self._handle_assets_package_request,
             self._handle_plugins_request,
             self._handle_package_catalog_request,
         ):
@@ -4823,6 +4850,21 @@ class JiuWenSwarm:
                     is_complete=True,
                 )
                 return
+
+        if not is_chat_turn_method(request.req_method):
+            logger.warning(
+                "[JiuWenSwarm] 未命中任何 handler 的已知方法被拒绝(stream): "
+                "request_id=%s method=%s",
+                request.request_id,
+                req_method_value(request.req_method),
+            )
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload=method_not_found_stream_payload(request.req_method),
+                is_complete=True,
+            )
+            return
 
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         validator = getattr(adapter, "validate_auto_permission_workspace_request", None)
@@ -5014,7 +5056,8 @@ class JiuWenSwarm:
             )
 
         # cloud memory: before chat hook
-        if memory_mode == "cloud":
+        plugin_owns_memory = supported_memory_session(request.params or {})
+        if memory_mode == "cloud" and not plugin_owns_memory:
             mem_ctx = MemoryHookContext(
                 session_id=request.session_id or "default",
                 request_id=request.request_id or "",
@@ -6321,7 +6364,7 @@ class JiuWenSwarm:
         _schedule_feedback_once(completion_status)
 
         # cloud memory: after chat hook
-        if memory_mode == "cloud":
+        if memory_mode == "cloud" and not plugin_owns_memory:
             assistant_message = final_answer_content or "".join(final_answer_chunks)
             after_ctx = MemoryHookContext(
                 session_id=request.session_id or "default",
@@ -6338,7 +6381,7 @@ class JiuWenSwarm:
         # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
         mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
         config = get_config()
-        if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
+        if not plugin_owns_memory and is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
             _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=True)
 
         if completion_receipt is not None:

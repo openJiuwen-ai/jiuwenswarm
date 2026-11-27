@@ -192,3 +192,18 @@ class GroupQuestions:
                     reset_session_id(token)
         await self.publish({"event_type": "chat.ask_user_answer", "request_id": request_id})
         return {"request_id": request_id, "accepted": True}
+
+    async def cancel_for_member(self, member_name: str) -> list[str]:
+        """Cancel pending questions owned by a removed member and collapse their UI cards."""
+        cancelled: list[str] = []
+        async with group_lock(self.group_id):
+            records = self.read()
+            for request_id, record in records.items():
+                if record.get("status") == "pending" and record.get("member_name") == member_name:
+                    record["status"] = "cancelled"
+                    cancelled.append(request_id)
+            if cancelled:
+                self.save(records)
+        for request_id in cancelled:
+            await self.publish({"event_type": "chat.ask_user_answer", "request_id": request_id})
+        return cancelled

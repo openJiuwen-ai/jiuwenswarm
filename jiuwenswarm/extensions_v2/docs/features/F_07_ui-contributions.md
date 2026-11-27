@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-07 界面项声明、挂载与上行交互 |
 | 所属模块 | `jiuwenswarm/extensions_v2/webui/{contributions,adapter}.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[F_06 渲染服务](F_06_render-service.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-27 |
 | 方案状态 | 已实现 |
 
 ## 1. 问题与目标
@@ -90,32 +90,37 @@ flowchart LR
 | `conversation.input.above` | `list` | 输入区上方，可并列多个实例 |
 | `conversation.input.below` | `single` | 输入区下方，只展示最新实例 |
 | `conversation.panel.right` | `list` | 右侧工作区，可并列多个实例；插件实例与原生页签并列 |
-| `conversation.header.title.after` | `list` | 会话标题之后，横向排列 |
-| `conversation.header.actions` | `list` | 会话头部操作区，横向排列 |
+| `conversation.header.title.after` | `list` | 会话标题之后，横向排列；最多 2 个实例 |
+| `conversation.header.actions` | `list` | 会话头部操作区，横向排列；最多 3 个实例 |
 | `conversation.session.content.after` | `list` | 单轮回复内容之后、footer 之前，只在 footer 可见的最后一条助手消息挂载一次，按 `instance_key=requestId` 归属 |
 | `conversation.turn.footer.actions` | `list` | 单轮回复 meta 行，横向排列 |
 | `message.assistant.meta` | `list` | 助手消息 meta 行，按 `instance_key=requestId` 对应单轮实例 |
 | `application.entry` | `single` | 应用范围的首次访问入口 |
-| `application.sidebar.footer` | `list` | 左侧图标栏底部的应用范围入口区；多个实例纵向排列 |
+| `application.sidebar.footer` | `list` | 左侧图标栏底部的应用范围入口区；最多 3 个实例，每个实例最大宽度与侧栏一致、最大高度为 48px |
 | `application.settings` | `list` | 设置页内容区 |
-| `application.menu` | `list` | 左侧导航栏，点击进入 `application.menu.main` |
-| `application.menu.main` | `single` | 应用菜单主页面 |
+| `application.menu` | `list` | 应用范围的左侧导航栏，点击进入 `application.menu.main` |
+| `application.menu.main` | `single` | 应用范围的菜单主页面 |
 | `task.function` | `list` | 应用范围的侧栏任务功能区，点击进入 `task.function.main` |
 | `task.function.main` | `single` | 应用范围的任务功能区页面，保留会话侧栏 |
 
 槽位是平台预定义位置，插件只能选择，不能新增。前端在没有实例时不渲染容器。
 `application.entry` 为应用范围的 single 入口，由 `WebUIEntryHost` 在浏览器首次访问时挂载；ready 被接受后写入访问标记，后续刷新跳过挂载，clear 或失败关闭入口。
-`application.sidebar.footer` 同为应用范围的 list 槽位，由 `WebUIHost` 在左侧图标栏底部挂载，不要求聊天会话；多个实例纵向排列，没有实例时不渲染容器。
-`task.function` 与 `task.function.main` 同为应用范围，复用当前 Web 连接的实例身份，不要求聊天会话；
-入口与页面共享包和实例标识。切换会话不重新挂载入口，也不因 session 变化关闭任务页面。
+`application.sidebar.footer` 同为应用范围的 list 槽位，由 `WebUIHost` 在左侧图标栏底部挂载，不要求聊天会话；最多显示 3 个实例，每个实例最大宽度与侧栏一致、最大高度为 48px，超出内容由实例自身裁剪，没有实例时不渲染容器。
+`application.menu`、`application.menu.main`、`task.function` 与 `task.function.main` 同为应用范围，复用当前 Web 连接的实例身份，不要求聊天会话；
+入口与页面共享包和实例标识。切换会话不重新挂载入口（避免侧栏入口闪烁），也不因 session 变化关闭已打开的菜单或任务页面。
+应用范围槽位的 Handler 中 `ops.session_context` 为 `None`，插件需传 `session_id=""`（或复用 `request.target.session_id`）且不得声明 `scope="session"`；旧版按会话作用域编写并强依赖 `ops.session_context` 或显式 `scope="session"` 的 `application.menu` 插件需同步迁移并重载。
 `application.menu.main`、`task.function.main` 与 `conversation.panel.right` 采用 `keep-mounted`：
 实例存活期内保留整树挂载键，React 按节点协调新帧。需要由服务端决定跨帧值时，使用受控属性并处理对应事件。
-离开任务页面查看聊天时，宿主保留已打开的应用范围页面及其 iframe，仅隐藏页面容器；
-返回同一任务入口复用原页面。会话范围菜单页面仍随导航卸载，选择其他插件页面时释放原页面。
-`application.menu`、`application.menu.main` 仍为会话范围，新建空对话中不挂载；设置范围见 [S_18](../specs/S_18_settings-location.md)。
-平台在 `webui/constants.py` 的 `SLOT_SPECS` 中维护槽位的范围和展示模式；范围及目标字段见
-[F_06 第 3.2 节](F_06_render-service.md#32-数据模型)。新增槽位还需要接入前端，不能只改后端表项；
-前端挂载方式见 [F_08 第 4.5 节](F_08_frontend-render.md#45-会话与全局槽位的挂载)。
+离开菜单或任务页面查看聊天时，宿主保留已打开的应用范围页面及其 iframe，仅隐藏页面容器；
+返回同一入口复用原页面，选择其他插件页面时释放原页面。
+设置范围见 [S_18](../specs/S_18_settings-location.md)。
+平台在 `webui/constants.py` 的 `SLOT_SPECS` 中维护槽位的范围、展示模式和可选的 `max_instances`；
+范围及目标字段见 [F_06 第 3.2 节](F_06_render-service.md#32-数据模型)。`list` 槽位默认不限制实例数，
+声明 `max_instances` 后，超过上限的新实例在 `render_core` 被拒绝，已有实例仍可更新；计数范围与容量组一致，
+会话槽位按会话、应用槽位按连接。前端 `catalog/slots.ts` 用相同的 `maxVisible` 截断显示，优先保留有效帧；仅错误实例在有空位时显示，同类实例按到达顺序排列。
+当前标题后槽位为 2、头部操作区为 3、侧栏底部为 3。
+新增槽位还需要接入前端，不能只改后端表项；前端挂载方式见
+[F_08 第 4.5 节](F_08_frontend-render.md#45-会话与全局槽位的挂载)。
 
 #### 3.3.1 定义会话槽位和全局槽位
 
@@ -415,10 +420,17 @@ render → Handler → replace；前端测试使用 jsdom 验证页面点击产�
   截图和分步记录保存在当前任务的 `task-slot-browser` 交付目录。
 - 修复后任务导航定向组件测试与 `npx vite build` 通过，差异空白检查通过；未运行格式化、lint 或类型检查。
 
+### 2026-11-26 侧栏菜单槽位应用作用域调整与验证
+
+- 针对 GitCode Issue `#7150`（切换会话时侧栏 `application.menu` 入口闪烁），将 `application.menu` 与 `application.menu.main` 调整为 `application` 作用域（与 `task.function` / `task.function.main` 对齐）。
+- 后端：`.venv/bin/pytest tests/unit_tests/extensions_v2/webui/ -q --no-cov`，**614 passed**（覆盖 `application.menu` / `application.menu.main` 的连接校验、`scope="session"` 拒绝、`apply_slot_scope` 对省略 `scope` 时旧 `session_id` 的归一化、`ui.ready` 下 `ops.session_context is None` 的实际派发渲染及根组件白名单规则）。
+- 前端目录：运行 `test:webui-contracts`（179）、`test:webui-protocol`（14）、`test:webui-runtime`（28）、`test:webui-events`（93）、`test:webui-renderer`（19）、`test:webui-components`（467，含新增的 `application.menu` 空会话挂载与跨会话切换不卸载、不重发 `ui.ready` 的 JSDOM 回归）、`test:webui-plugin-panels`（29）、`test:webui-transport`（9）、`test:plugin-settings`（17）、`test:webui-client`（44）及 `npm run build`（`tsc && vite build`），全部通过。
+- `git diff --check` 通过；按仓库约束未运行格式化或静态检查；未在真实运行的跨进程 `WebClient + Gateway + AgentServer` 环境加载 `probe.slot-app-menu` 开展端到端浏览器联调。
+
 ## 9. 风险与遗留
 
 - 目标包与槽位贡献校验不等于用户授权或业务权限校验。
 - 目录随生效记录刷新、包卸载后目录失效尚未单独验证；当前用例只覆盖实例清理。
 - 本地化资源已声明和校验，但尚未参与标题解析。
 - 界面项不支持运行时禁用、灰度或按用户过滤。
-- 当前槽位为 15 个位置：应用范围包含 `application.entry`、`application.sidebar.footer`、`task.function` 和 `task.function.main`；其余 11 个位置默认使用会话范围，设置槽位还允许显式应用范围。新增槽位时，前后端登记的名称、范围和展示模式必须一致，未知槽位或范围不一致的目标会被拒绝。
+- 当前槽位为 15 个位置：应用范围包含 `application.entry`、`application.sidebar.footer`、`application.menu`、`application.menu.main`、`task.function` 和 `task.function.main`；其余 9 个位置默认使用会话范围，设置槽位还允许显式应用范围。新增槽位时，前后端登记的名称、范围、展示模式和可选实例上限（`max_instances` / `maxVisible`）必须一致，未知槽位或范围不一致的目标会被拒绝。

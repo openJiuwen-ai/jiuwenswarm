@@ -50,6 +50,10 @@ def test_explicit_settings_keep_precedence_without_probing(monkeypatch, declared
     read_cache.assert_not_called()
 
 
+_CN_CONTEXT_PREFIX = "图片附件上下文（供 ReAct 选择图片理解工具使用）：\n"
+_EN_CONTEXT_PREFIX = "Image attachment context (for ReAct to select an image-understanding tool):\n"
+
+
 @pytest.mark.parametrize("vision_tool_available", [False, True])
 @pytest.mark.parametrize("status, wording", [
     ("unknown", "尚未确认"), ("disabled", "配置中关闭"),
@@ -75,7 +79,7 @@ def test_notice_and_prompt_agree_without_changing_attachment_routing(
         request, inputs, enable_read_image_multimodal=False,
         vision_tool_available=vision_tool_available, image_input_status=snapshot,
     )
-    context = json.loads(updated["query"].split("图片附件上下文（供 ReAct 选择图片理解工具使用）：\n", 1)[1])
+    context = json.loads(updated["query"].split(_CN_CONTEXT_PREFIX, 1)[1])
     assert notice["image_input_status"] == context["imageInputStatus"] == status
     assert wording in notice["content"]
     assert wording in context["toolHint"]
@@ -92,6 +96,49 @@ def test_notice_and_prompt_agree_without_changing_attachment_routing(
     else:
         assert "不要猜测图片内容" in context["toolHint"]
         assert "未配置可用的视觉模型工具" in notice["content"]
+
+
+@pytest.mark.parametrize("vision_tool_available", [False, True])
+@pytest.mark.parametrize("status, wording", [
+    ("unknown", "It is not confirmed"),
+    ("disabled", "disabled in configuration"),
+    ("unsupported", "did not accept native image"),
+])
+def test_english_notice_and_prompt_agree(monkeypatch, status, wording, vision_tool_available):
+    monkeypatch.setattr(
+        interface_deep, "get_cached_image_support",
+        lambda _model: False if status == "unsupported" else None,
+    )
+    model = _model(False) if status == "disabled" else _model()
+    snapshot = Adapter._native_image_input_status({}, model)
+    assert snapshot == status
+    request = _request()
+    inputs = Adapter._prepare_multimodal_image_inputs(request, {"query": request.params["query"]})
+    notice = Adapter._build_image_tool_fallback_notice(
+        request, model=model,
+        vision_tool_available=vision_tool_available, image_input_status=snapshot,
+        language="en",
+    )
+    updated = Adapter._prepare_react_image_tool_prompt(
+        request, inputs, enable_read_image_multimodal=False,
+        vision_tool_available=vision_tool_available, image_input_status=snapshot,
+        language="en",
+    )
+    context = json.loads(updated["query"].split(_EN_CONTEXT_PREFIX, 1)[1])
+    assert notice["image_input_status"] == context["imageInputStatus"] == status
+    assert wording in notice["content"]
+    assert wording in context["toolHint"]
+    assert "尚未确认" not in notice["content"]
+    assert "尚未确认" not in context["toolHint"]
+    assert ". This image was not sent" in context["toolHint"]
+    if vision_tool_available:
+        assert "image_reading(" in context["toolHint"]
+        assert ". Please call the configured image-understanding tool" in context["toolHint"]
+        assert "An image understanding tool is used instead." in notice["content"]
+    else:
+        assert "do not guess image contents" in context["toolHint"]
+        assert ". No vision model tool is configured" in context["toolHint"]
+        assert "No vision model tool is configured" in notice["content"]
 
 
 def test_supported_images_and_text_only_requests_have_no_fallback():
@@ -115,7 +162,13 @@ def test_supported_images_and_text_only_requests_have_no_fallback():
 
 
 @pytest.mark.parametrize("reader", ["read_file", "visual_question_answering"])
-def test_steer_forces_path_prompt_without_changing_primary_model_capability(reader):
+@pytest.mark.parametrize("language, hint_marker", [
+    ("cn", "对 mediaItems 中的每一项"),
+    ("en", "For every entry in mediaItems"),
+])
+def test_steer_forces_path_prompt_without_changing_primary_model_capability(
+    reader, language, hint_marker,
+):
     request = _request()
     request.params["query"] = ""
     inputs = Adapter._prepare_multimodal_image_inputs(request, {
@@ -123,13 +176,14 @@ def test_steer_forces_path_prompt_without_changing_primary_model_capability(read
     })
     updated = Adapter._prepare_react_image_tool_prompt(
         request, inputs, enable_read_image_multimodal=True,
-        vision_tool_available=True, image_input_status="supported", steer_image_tool=reader,
+        vision_tool_available=True, image_input_status="supported",
+        steer_image_tool=reader, language=language,
     )
     context = json.loads(updated["query"].rsplit("\n", 1)[-1])
     assert context["imageInputStatus"] == "supported"
     assert context["question"]
     assert f"{reader}(" in context["toolHint"]
-    assert "For every entry in mediaItems" in context["toolHint"]
+    assert hint_marker in context["toolHint"]
     assert "_multimodal_image_files" not in updated
     assert "_multimodal_image_files" in inputs
 

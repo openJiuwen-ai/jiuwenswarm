@@ -525,6 +525,21 @@ async def test_agent_mode_web_tools_keep_chinese_schema_for_zh(monkeypatch):
     for name in _WEB_TOOL_NAMES:
         assert _CJK.search(registered[name].card.description), name
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edition", ["enterprise", "personal"])
+async def test_read_email_is_discoverable_in_both_editions(monkeypatch, edition):
+    from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import classify_tool
+    from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import discovery_search_text
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+    adapter, _registered = _make_adapter(monkeypatch, "en")
+    cards = {card.name: card for card in await adapter._get_tool_cards("agent-1")}
+    assert "read_pdf" in cards
+    assert "read_docx" in cards
+    assert "邮件" in discovery_search_text(cards["read_email"])
+    assert classify_tool("read_email").operation_family == classify_tool("read_docx").operation_family
+
+
 # --- from test_enterprise_skill_http_route.py ---
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -738,9 +753,21 @@ def team_config(language):
 
 @pytest.mark.parametrize('language, expected', [('zh', 'cn'), (' ZH ', 'cn'), ('cn', 'cn'), ('en', 'en')])
 def test_team_config_uses_core_language(language, expected, monkeypatch):
-    monkeypatch.setenv('AGENT_PROMPT_LANGUAGE', 'en')
+    """Harness language follows request memo (simulated UI preference), not config_base alone."""
+    from jiuwenswarm.enterprise.config import preferred_language as pref
+
+    # Memo is enterprise-only; personal edition always falls back to yaml.
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("GATEWAY_DB_TYPE", "mariadb")
+    monkeypatch.setenv("GATEWAY_DB_HOST", "db.internal")
+    monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+    monkeypatch.setenv("GATEWAY_DB_USER", "root")
+    monkeypatch.setenv("GATEWAY_DB_PASSWORD", "p@ss")
+    monkeypatch.setenv("GATEWAY_DB_NAME", "gw")
+
     config = team_config(language)
-    spec = load_team_spec_dict(config_base=config)
+    with pref.bind_preferred_language_memo(user_id="test", language=language):
+        spec = load_team_spec_dict(config_base=config)
     assert spec['language'] == expected
     assert config['preferred_language'] == language
 

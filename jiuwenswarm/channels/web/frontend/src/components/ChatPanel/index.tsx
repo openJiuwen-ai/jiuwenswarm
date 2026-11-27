@@ -67,6 +67,7 @@ import { GoalBar } from '../GoalBar';
 import { HarnessProgressBar } from './HarnessProgressBar';
 import { AgentTeamActivityCard } from './TeamEventGroupDisplay';
 import { isTeamActivityMessage, parseTeamEventMessage } from './teamEventUtils';
+import { stripUploadDocumentBlocks, toQueueContentPreview } from '../../utils/documentMessage';
 import { isTeamLeaderMember, type TeamMemberIdentity } from '../../utils/teamMemberAvatar';
 import { writeClipboard } from '../../utils/writeClipboard';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
@@ -514,9 +515,12 @@ export function AgentActivityCard({
       if (mediaItemCount > 0 && !window.confirm(t('chat.editTaskDropAttachments', { count: mediaItemCount }))) {
         return;
       }
-      setInputValue(sid, content);
+      // Queue rows store agent-facing 【上传文档】 blocks; restore only the query
+      // text (do not invent a filename placeholder into the composer).
+      const editText = stripUploadDocumentBlocks(content);
+      setInputValue(sid, editText);
       removeFromTaskQueue(sid, taskId);
-      window.dispatchEvent(new CustomEvent('chat-input-sync', { detail: { sessionId: sid, value: content } }));
+      window.dispatchEvent(new CustomEvent('chat-input-sync', { detail: { sessionId: sid, value: editText } }));
     }
   };
 
@@ -659,7 +663,9 @@ export function AgentActivityCard({
                     <img src={lineUpIcon} alt="" className="w-4 h-4" />
                   </div>
                   <span className="team-event-group-row__member" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {message.content}
+                    {toQueueContentPreview(message.content, {
+                      fallbackLabel: t('chatUi.queuedUploadDocument'),
+                    })}
                   </span>
                 </div>
                 <span
@@ -731,7 +737,10 @@ export function AgentActivityCard({
                     className="team-event-group-row__member"
                     style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                   >
-                    {task.content}
+                    {toQueueContentPreview(task.content, {
+                      mediaItems: task.mediaItems,
+                      fallbackLabel: t('chatUi.queuedUploadDocument'),
+                    })}
                   </span>
                   {(task.mediaItems?.length ?? 0) > 0 && (
                     <span
@@ -1358,7 +1367,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
     ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
   const shouldShowShareExport = !isEnterprise() && Boolean(onExportShare);
-  const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
+  const shouldShowHumanShare = !isEnterprise() && mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const isAuthorized = useAuthStore((state) => state.islogin);
   const showFreeModelsCampaign = !isEnterprise() && !isAuthorized;
@@ -2290,7 +2299,12 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <span>{sessionProjectName}</span>
               </div>
             )}
-            <WebUIHost slotId="conversation.header.title.after" sessionId={activeSessionId} layout="row" />
+            <WebUIHost
+              slotId="conversation.header.title.after"
+              sessionId={activeSessionId}
+              layout="row"
+              className="chat-panel-header__plugin-title"
+            />
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
             {diagnosisEntryAvailable && onToggleDiagnosis && (
@@ -2310,6 +2324,7 @@ export const ChatPanel = React.memo(function ChatPanel({
               slotId="conversation.header.actions"
               sessionId={activeSessionId}
               layout="row"
+              className="chat-panel-header__plugin-actions"
               instanceClassName="flex min-w-0 items-center gap-2"
               styles={pluginHeaderActionStyles}
             />
@@ -2421,7 +2436,9 @@ export const ChatPanel = React.memo(function ChatPanel({
           <HarnessProgressBar />
         </div>
       )}
-      {humanShareOpen && <HumanSharePanel commands={teamHumanShareCommands} onClose={() => setHumanShareOpen(false)} />}
+      {shouldShowHumanShare && humanShareOpen && (
+        <HumanSharePanel commands={teamHumanShareCommands} onClose={() => setHumanShareOpen(false)} />
+      )}
       <div
         ref={scrollContainerRef}
         className="chat-scroll flex-1 overflow-y-auto"

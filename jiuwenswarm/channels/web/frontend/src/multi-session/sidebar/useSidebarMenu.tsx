@@ -110,10 +110,19 @@ export async function toggleSessionPin(session: Session, translate: Translate): 
   try {
     await useWorkspaceStore.getState().pinSession(session.session_id, !session.pinned);
   } catch (error) {
-    toast.open({
-      content: `${translate('multiSession.project.pinFailed')}: ${error instanceof Error ? error.message : String(error)}`,
-      variant: 'error',
-    });
+    // 缺任务标识的存量 cron 会话被后端 FORBIDDEN 拒绝：给出可读原因而不是
+    // 生涩的通用失败文案（会话仍留在原列表，用户不会丢失入口）。
+    if (getArchiveErrorCode(error) === 'FORBIDDEN') {
+      toast.open({
+        content: translate('multiSession.project.errors.pinCronNoIdentity'),
+        variant: 'error',
+      });
+    } else {
+      toast.open({
+        content: `${translate('multiSession.project.pinFailed')}: ${error instanceof Error ? error.message : String(error)}`,
+        variant: 'error',
+      });
+    }
   } finally {
     refreshExpandedCronSessions();
   }

@@ -17,6 +17,7 @@ from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.harness.rails import SubagentRail
 
 from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from jiuwenswarm.agents.harness.common.memory import plugin as memory_plugin
 from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers
 from jiuwenswarm.common.config import get_config, update_config
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -24,11 +25,13 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.agents.harness.common.rails import runtime_prompt_rail
 from jiuwenswarm.runtime import checkpointer
+from jiuwenswarm.server.runtime import managed_memory_http
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.session import session_metadata
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from tests.unit_tests.agentserver.memory.test_bundled_memory_plugin import memory_service as memory_service
 from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP
 from tests.unit_tests.office.conftest import ScriptedModel
 
@@ -36,10 +39,11 @@ MODE = "agent.work.normal"
 LEFT_OUT_SECTIONS = {"subagent_tools", "input", "output"}
 LEFT_OUT_TOOLS = {"subagent_spawn", "subagent_wait", "subagent_list", "subagent_send_input", "subagent_close",
                   "subagent_resume", "send_file_to_user"}
-KEPT_SECTIONS = {"identity", "safety", "tools", "skills", "memory", "progressive_tool_rules", "env",
+KEPT_SECTIONS = {"identity", "safety", "tools", "skills", "external_memory", "progressive_tool_rules", "env",
                  "directory_boundaries", "offload", "memory_forbidden"}
-KEPT_TOOLS = {"memory_search", "memory_get", "write_memory", "edit_memory", "read_memory", "skill_tool", "tool_search",
-              "tool_call", "todo_create", "ask_user", "fetch_webpage", "read_file", "write_file", "bash"}
+KEPT_TOOLS = {"skill_tool", "tool_search", "tool_call", "todo_create", "ask_user", "fetch_webpage",
+              "read_file", "write_file", "bash"}
+MEMORY_TOOLS = {"agent_memory_search", "agent_memory_read_md_file", "agent_memory_edit_md_file"}
 OFFICE_TOOLS = {"read_presentation_context", "list_open_documents"}
 FROM_ANOTHER_CONVERSATION = {SESSION_MESSAGE_INTERNAL_KEY: {
     "message_id": "msg-1", "source_session_id": "deck-b", "source_request_id": "req-b",
@@ -54,25 +58,29 @@ class PromptModel(ScriptedModel):
     def __init__(self) -> None:
         super().__init__([])
         self.agent = None
-        self.prompts: list[tuple[set[str], set[str], bool]] = []
+        self.prompts: list[tuple[set[str], set[str], bool, set[str]]] = []
 
     async def invoke(self, messages, tools=None, **kwargs):
         response = await super().invoke(messages, tools=tools, **kwargs)
         if any(getattr(m, "role", "") == "system" for m in messages):
             builder = self.agent.system_prompt_builder
             sections = {s.name for s in builder.get_all_sections().values() if s.render(builder.language).strip()}
-            self.prompts.append((sections, self.seen[-1][1], bool(self.agent.find_rails_by_type((SubagentRail,)))))
+            memory_tools = {name for name in MEMORY_TOOLS if self.agent.ability_manager.get(name) is not None}
+            subagent_rail = bool(self.agent.find_rails_by_type((SubagentRail,)))
+            self.prompts.append((sections, self.seen[-1][1], subagent_rail, memory_tools))
         return response
 
 
 @pytest.fixture
-async def server(sessions, tmp_path, monkeypatch):
+async def server(sessions, tmp_path, monkeypatch, memory_service):
     """The root adapter of AgentServer's agent; its session children use one model that remembers prompts."""
-    # These assertions cover the native MemoryRail's prompt section and tools.
-    # Select it explicitly so the fixture is independent of the shipped provider.
-    config = copy.deepcopy(get_config())
-    config["memory"]["builtin"]["provider"] = ""
-    update_config(lambda _config: config)
+    url, _requests = memory_service
+    listener = managed_memory_http.managed_memory_http
+    monkeypatch.setattr(listener, "connection_options", lambda: {"base_url": url})
+    monkeypatch.setattr(listener, "status", lambda: {"running": True, "base_url": url})
+    monkeypatch.setattr("jiuwenswarm.common.utils.external_cli_state_sidecar_path",
+                        lambda _workspace: tmp_path / "external-cli-state.json")
+    memory_plugin.ensure_memory_plugin_installed()
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: sessions)
     # Each test owns a different workspace, so its checkpoint store must match it.
     monkeypatch.setattr(checkpointer, "_PERSISTENT_CHECKPOINTER_READY", False)
@@ -127,7 +135,7 @@ class Server:
         return [chunk.payload async for chunk in adapter._process_message_stream_impl(request, inputs)
                 if isinstance(chunk.payload, dict)]
 
-    async def turn(self, session_id: str, **params) -> tuple[set[str], set[str], bool]:
+    async def turn(self, session_id: str, **params) -> tuple[set[str], set[str], bool, set[str]]:
         """Run one chat.send; what its first model call saw."""
         calls = len(self.model.prompts)
         payloads = await self.send(session_id, **params)
@@ -135,9 +143,11 @@ class Server:
         return self.model.prompts[calls]
 
 
-def assert_built_for_the_task_pane(sections: set[str], tools: set[str], subagent_rail: bool) -> None:
+def assert_built_for_the_task_pane(sections: set[str], tools: set[str], subagent_rail: bool,
+                                   memory_tools: set[str]) -> None:
     assert not sections & LEFT_OUT_SECTIONS and not tools & LEFT_OUT_TOOLS and not subagent_rail
     assert KEPT_SECTIONS <= sections and KEPT_TOOLS | OFFICE_TOOLS <= tools
+    assert memory_tools == MEMORY_TOOLS
 
 
 async def test_a_task_pane_conversation_has_only_the_capabilities_its_app_keeps(server, attach_pane) -> None:
@@ -176,9 +186,10 @@ async def test_a_task_pane_conversation_s_rebuilt_agent_leaves_them_out_again(se
 async def test_a_conversation_of_no_client_app_keeps_every_capability(server) -> None:
     server.create("web-chat", "")
 
-    sections, tools, subagent_rail = await server.turn("web-chat")
+    sections, tools, subagent_rail, memory_tools = await server.turn("web-chat")
 
     assert LEFT_OUT_SECTIONS | KEPT_SECTIONS <= sections and LEFT_OUT_TOOLS | KEPT_TOOLS <= tools and subagent_rail
+    assert memory_tools == MEMORY_TOOLS
     assert not tools & OFFICE_TOOLS
 
 

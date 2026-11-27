@@ -7,6 +7,7 @@ MEMORY_RUNTIME_PACKAGES = (
     "jiuwen_memory.api",
     "jiuwen_memory.config",
     "jiuwen_memory.common.security",
+    "jiuwen_memory.common.trace.trace_impl",
     "jiuwen_memory.common.normalizer.normalizer_impl",
     "jiuwen_memory.construction",
     "jiuwen_memory.control",

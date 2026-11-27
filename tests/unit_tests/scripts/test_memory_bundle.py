@@ -83,6 +83,7 @@ def test_collection_scope_covers_security_and_excludes_optional_model_backends()
     packages = memory_bundle.MEMORY_RUNTIME_PACKAGES
     modules = memory_bundle.MEMORY_RUNTIME_MODULES
     assert "jiuwen_memory.common.security" in packages
+    assert "jiuwen_memory.common.trace.trace_impl" in packages
     assert "jiuwen_memory.common.normalizer.normalizer_impl" in packages
     assert "jiuwen_memory.storage.shadow_impl.sqlite_shadow_index" in modules
     assert "jiuwen_memory.storage.watchdog_impl.local_watchdog" in modules
@@ -92,12 +93,24 @@ def test_collection_scope_covers_security_and_excludes_optional_model_backends()
     assert not any("bge" in name or "spacy" in name or "milvus" in name for name in modules)
 
 
+@pytest.mark.parametrize("present", [False, True])
+def test_portal_resource_check_rejects_missing_homepage(monkeypatch, tmp_path, present):
+    monkeypatch.setattr(verifier, "files", lambda package: tmp_path)
+    if present:
+        (tmp_path / "index.html").write_text("<!doctype html>", encoding="utf-8")
+        verifier.verify_memory_portal_resources()
+    else:
+        with pytest.raises(FileNotFoundError):
+            verifier.verify_memory_portal_resources()
+
+
 def test_frozen_failure_preserves_diagnostics_without_logging(monkeypatch, tmp_path):
     async def fail(root):
         raise RuntimeError("missing frozen implementation")
 
     monkeypatch.setattr(verifier.sys, "frozen", True, raising=False)
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(verifier, "verify_memory_portal_resources", lambda: None)
     monkeypatch.setattr(verifier, "verify_memory_runtime", fail)
     assert verifier.main() == 1
     assert "missing frozen implementation" in (tmp_path / "memory-bundle-check.log").read_text(encoding="utf-8")

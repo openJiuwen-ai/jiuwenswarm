@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import threading
+import time
+import uuid
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -15,9 +19,12 @@ from openjiuwen.core.session.stream.base import OutputSchema
 from openjiuwen.core.single_agent.interrupt.response import InterruptKind
 from openjiuwen.harness.resources import RuntimeSpec, read_agent_template_card
 from openjiuwen.harness_protocol import (
+    DeliveryMode,
     HarnessCapability,
     HarnessCheckpoint,
+    HarnessInput,
     HarnessState,
+    HarnessStateError,
     ResumePolicy,
     UnsupportedHarnessCapabilityError,
     json_value_to_builtin,
@@ -27,7 +34,7 @@ from openjiuwen.harness_providers import (
     build_harness_context,
     create_harness,
 )
-from openjiuwen.harness_providers.io_adapter import TURN_LIFECYCLE
+from openjiuwen.harness_providers.io_adapter import TURN_LIFECYCLE, to_harness_input
 
 from jiuwenswarm.common.schema.agent import (
     AgentRequest,
@@ -57,6 +64,9 @@ _CLI_AGENT_LABELS = {
     "claude": "Claude",
     "codex": "Codex",
 }
+# Bounds starting the short-lived Codex App Server plus thread/fork, below the
+# web client's 60 s session.fork timeout so the server answers first.
+_CODEX_FORK_TIMEOUT_SECONDS = 45.0
 _ERROR_TEXT: dict[str, tuple[str, str]] = {
     "template_name_type": (
         "agent_template_name 必须是字符串",
@@ -94,6 +104,23 @@ _ERROR_TEXT: dict[str, tuple[str, str]] = {
     "startup_failed": (
         "External Harness 启动失败",
         "External Harness startup failed",
+    ),
+    "fork_at_message_unsupported": (
+        "三方专家会话不支持从某条消息处复制；请复制整个会话",
+        "A copy of an External Harness session cannot start at a message; copy the whole session",
+    ),
+    "fork_unsupported": (
+        "该三方专家 (provider={provider!r}) 不支持复制其 CLI 会话",
+        "This external expert (provider={provider!r}) cannot fork its CLI session",
+    ),
+    "fork_expert_changed": (
+        "三方专家会话的副本只能沿用原专家 {template!r}；请先恢复原专家选择再复制，或新建会话后切换专家",
+        "A copy of an External Harness session keeps its expert {template!r}; "
+        "restore that expert before copying, or start a new session to switch experts",
+    ),
+    "fork_failed": (
+        "复制 CLI 会话失败: {detail}",
+        "Forking the CLI session failed: {detail}",
     ),
     "input_rejected": (
         "External Harness 已拒绝该输入",
@@ -299,6 +326,214 @@ async def load_persisted_external_harness_binding(
         session_id,
         {"agent_template_name": template_name},
     )
+
+
+def _session_workspace(session_id: str) -> Path:
+    """Return the working folder an External Harness of the session runs in."""
+    project_dir = get_session_metadata(session_id, cache_bust=True).get("project_dir")
+    if isinstance(project_dir, str) and project_dir.strip():
+        return Path(project_dir.strip()).expanduser().resolve(strict=False)
+    return get_default_project_session_workspace_dir(session_id).resolve(strict=False)
+
+
+def _claude_projects_dir() -> Path:
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) / "projects" if config_dir else Path.home() / ".claude" / "projects"
+
+
+def _fork_claude_session(source_session: str, source_cwd: Path, target_cwd: Path) -> str:
+    """Fork a Claude Code session and place the fork where the target's CLI resumes it."""
+    from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
+
+    # A frozen app installs claude_agent_sdk outside the bundle; this process
+    # must expose its site-packages before importing it.
+    activate_external_cli_runtime_paths()
+    from claude_agent_sdk import fork_session, project_key_for_directory
+
+    forked = fork_session(source_session, directory=str(source_cwd)).session_id
+    source_key = project_key_for_directory(source_cwd)
+    target_key = project_key_for_directory(target_cwd)
+    if source_key != target_key:
+        projects = _claude_projects_dir()
+        written = projects / source_key / f"{forked}.jsonl"
+        if not written.is_file():
+            # A StopIteration here would surface as a meaningless RuntimeError
+            # once it crosses asyncio.to_thread, so look up with a default.
+            found = next(iter(projects.glob(f"*/{forked}.jsonl")), None)
+            if found is None:
+                raise FileNotFoundError(
+                    f"forked Claude Code transcript {forked}.jsonl not found under {projects}"
+                )
+            written = found
+        target_dir = projects / target_key
+        target_dir.mkdir(parents=True, exist_ok=True)
+        os.replace(written, target_dir / written.name)
+    return forked
+
+
+async def _fork_codex_thread(source_thread: str, codex_bin: str | None, target_cwd: Path) -> str:
+    """Fork a Codex thread through a short-lived App Server.
+
+    Raises:
+        TimeoutError: The App Server did not start and fork the thread within
+            ``_CODEX_FORK_TIMEOUT_SECONDS``.
+    """
+    from openai_codex import AsyncCodex, CodexConfig
+
+    config = CodexConfig(codex_bin=codex_bin, cwd=str(target_cwd), env=dict(os.environ))
+
+    async def fork() -> str:
+        async with AsyncCodex(config=config) as codex:
+            thread = await codex.thread_fork(source_thread, cwd=str(target_cwd))
+        return str(thread.id)
+
+    try:
+        return await asyncio.wait_for(fork(), timeout=_CODEX_FORK_TIMEOUT_SECONDS)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"codex thread/fork did not finish within {_CODEX_FORK_TIMEOUT_SECONDS:g}s"
+        ) from exc
+
+
+def _check_fork_keeps_expert(
+    bound_template_name: str,
+    session_equipment_override: Mapping[str, object] | None,
+) -> None:
+    """Refuse a copy whose equipment override names an expert other than the bound one.
+
+    The copy is bound to the source's expert and the binding cannot change, so
+    an override switching (or clearing) the expert would leave a copy whose
+    every message fails with ``binding_conflict``.
+
+    Raises:
+        ValueError: The override selects a different expert or clears it.
+    """
+    if not session_equipment_override or "agent_template_name" not in session_equipment_override:
+        return
+    requested = session_equipment_override.get("agent_template_name")
+    requested_name = requested.strip() if isinstance(requested, str) else ""
+    keeps_expert = False
+    if requested_name:
+        try:
+            keeps_expert = (
+                equipment.resolve_equipment_runtime_id("agent_templates", requested_name)
+                == bound_template_name
+            )
+        except Exception:
+            logger.debug("resolve requested expert %r failed", requested_name, exc_info=True)
+    if not keeps_expert:
+        raise ValueError(_error_text("fork_expert_changed", template=bound_template_name))
+
+
+async def fork_external_harness_session(
+    source_session_id: str,
+    target_session_id: str,
+    *,
+    at_message: bool = False,
+    session_equipment_override: Mapping[str, object] | None = None,
+) -> bool:
+    """Bind a copy of an External Harness session to a fork of its CLI session.
+
+    The target is bound to the source's expert, and its harness resumes from a
+    fork of the source's CLI session (Claude Code ``fork_session``, Codex
+    ``thread/fork``), placed for the target's working folder; the source's own
+    CLI session is unchanged. A source that has run no turn has no CLI session
+    yet, and the target starts one of its own. Return False when the source is
+    not an External Harness session.
+
+    Args:
+        source_session_id: Session being copied.
+        target_session_id: The copy.
+        at_message: Whether the copy starts at a message; refused for an
+            External Harness session.
+        session_equipment_override: Equipment the copy was given in place of
+            the source's; refused when it switches or clears the expert.
+
+    Raises:
+        ValueError: The copy is refused, or forking the CLI session failed.
+    """
+    stored = get_session_metadata(source_session_id, cache_bust=True).get("session_runtime_binding")
+    if not isinstance(stored, dict) or stored.get("kind") != _EXTERNAL_HARNESS_KIND:
+        return False
+    if at_message:
+        raise ValueError(_error_text("fork_at_message_unsupported"))
+    agent_template_name = str(stored.get("agent_template_name") or "")
+    provider_name = str(stored.get("provider_name") or "")
+    _check_fork_keeps_expert(agent_template_name, session_equipment_override)
+    binding: dict[str, Any] = {
+        "kind": _EXTERNAL_HARNESS_KIND,
+        "agent_template_name": agent_template_name,
+        "provider_name": provider_name,
+    }
+    source_checkpoint = _load_external_harness_checkpoint(
+        session_id=source_session_id,
+        agent_template_name=agent_template_name,
+        provider_name=provider_name,
+    )
+    target_checkpoint: HarnessCheckpoint | None = None
+    if source_checkpoint is not None:
+        data = dict(source_checkpoint.data)
+        target_cwd = _session_workspace(target_session_id)
+        try:
+            if provider_name == "claudecode" and isinstance(data.get("session_id"), str):
+                forked = await asyncio.to_thread(
+                    _fork_claude_session,
+                    data["session_id"],
+                    _session_workspace(source_session_id),
+                    target_cwd,
+                )
+                data["session_id"] = forked
+            elif provider_name == "codex" and isinstance(data.get("thread_id"), str):
+                runtime = await load_persisted_external_harness_binding(source_session_id) or {}
+                config = _merge_host_external_cli_config(
+                    provider_name, _runtime_config(runtime.get("runtime") or {}),
+                )
+                codex_bin = config.get("codex_bin")
+                forked = await _fork_codex_thread(
+                    data["thread_id"],
+                    str(codex_bin) if codex_bin else None,
+                    target_cwd,
+                )
+                data["thread_id"] = forked
+            else:
+                raise ValueError(_error_text("fork_unsupported", provider=provider_name))
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(
+                _error_text("fork_failed", detail=_visible_error(exc, type(exc).__name__))
+            ) from exc
+        data["resumed"] = False
+        target_checkpoint = HarnessCheckpoint(
+            provider=source_checkpoint.provider,
+            schema_version=source_checkpoint.schema_version,
+            agent_id=source_checkpoint.agent_id,
+            host_session_id=target_session_id,
+            checkpoint_id=f"fork-{uuid.uuid4().hex}",
+            sequence=0,
+            data=data,
+            provider_session_id=forked,
+        )
+    with _BINDING_LOCK:
+        update_session_metadata(
+            session_id=target_session_id,
+            session_runtime_binding=binding,
+            **(
+                {
+                    "session_harness_checkpoint": _checkpoint_metadata(
+                        target_checkpoint,
+                        agent_template_name=agent_template_name,
+                        provider_name=provider_name,
+                    )
+                }
+                if target_checkpoint is not None
+                else {}
+            ),
+            touch_last_message_at=False,
+            cache_bust=True,
+            sync_write=True,
+        )
+    return True
 
 
 def _runtime_config(runtime: RuntimeSpec | Mapping[str, Any]) -> dict[str, Any]:
@@ -600,6 +835,237 @@ async def stream_turn_output(
             return
 
 
+async def _with_input_boundaries(
+    outputs: AsyncIterator[OutputSchema],
+    boundaries: asyncio.Queue[dict[str, Any]],
+) -> AsyncIterator[tuple[str, Any]]:
+    """Interleave the turn's output with the input steered into it.
+
+    Yields ``("output", chunk)`` for the turn's own output and
+    ``("input", boundary)`` for each steered input, in the order they arrive;
+    a boundary that is ready is yielded before the output that follows it.
+    """
+    iterator = outputs.__aiter__()
+    next_output: asyncio.Future[Any] | None = None
+    next_boundary: asyncio.Future[Any] | None = None
+    try:
+        while True:
+            if next_output is None:
+                next_output = asyncio.ensure_future(iterator.__anext__())
+            if next_boundary is None:
+                next_boundary = asyncio.ensure_future(boundaries.get())
+            done, _ = await asyncio.wait(
+                {next_output, next_boundary},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if next_boundary in done:
+                boundary = next_boundary.result()
+                next_boundary = None
+                yield "input", boundary
+                continue
+            try:
+                chunk = next_output.result()
+            except StopAsyncIteration:
+                return
+            next_output = None
+            yield "output", chunk
+    finally:
+        taken = None
+        if next_boundary is not None and next_boundary.done() and not next_boundary.cancelled():
+            taken = next_boundary.result()
+        for pending in (next_output, next_boundary):
+            if pending is not None and not pending.done():
+                pending.cancel()
+                try:
+                    await pending
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+        if taken is not None:
+            # A steered input taken from the queue but not yielded stays first in it.
+            rest = [boundaries.get_nowait() for _ in range(boundaries.qsize())]
+            for boundary in (taken, *rest):
+                boundaries.put_nowait(boundary)
+        closer = getattr(iterator, "aclose", None)
+        if callable(closer):
+            await closer()
+
+
+# How long a steer that finds its turn ended waits for the provider to leave
+# RUNNING, so that its request starts the next turn.
+_TURN_RELEASE_WAIT_S = 1.0
+_TURN_RELEASE_POLL_S = 0.01
+
+
+def _steer_lock(adapter: Any) -> asyncio.Lock:
+    """The lock that orders a steer's send with the end of the turn's stream.
+
+    A steer holds it from its last check of the turn's queue until its
+    boundary is on it; the stream takes it to close the queue.
+    """
+    lock = getattr(adapter, "_external_harness_steer_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        adapter._external_harness_steer_lock = lock  # pylint: disable=protected-access
+    return lock
+
+
+async def _declined_at_turn_end(io: Any) -> bool:
+    """Decline a steer whose turn has ended, once the provider has released it.
+
+    The request then takes the path of a new message, which starts the next
+    turn only when the provider is no longer RUNNING.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TURN_RELEASE_WAIT_S
+    while io.state is HarnessState.RUNNING and loop.time() < deadline:
+        await asyncio.sleep(_TURN_RELEASE_POLL_S)
+    return False
+
+
+async def _close_steer_intake(
+    adapter: Any,
+    boundaries: asyncio.Queue[dict[str, Any]],
+    merged: AsyncIterator[tuple[str, Any]],
+) -> list[dict[str, Any]]:
+    """Stop the turn taking steers; return the steered inputs it has not shown.
+
+    A steer that was sending while the turn ended has its boundary on the
+    queue once the lock is free. A later steer finds the queue closed and
+    becomes the next turn.
+    """
+    async with _steer_lock(adapter):
+        if getattr(adapter, "_external_harness_boundaries", None) is boundaries:
+            adapter._external_harness_boundaries = None  # pylint: disable=protected-access
+    await merged.aclose()
+    return [boundaries.get_nowait() for _ in range(boundaries.qsize())]
+
+
+_STEER_IMAGES_LEAD = (
+    "The user attached these images to this message. "
+    "They are files on this machine; read them from their paths."
+)
+
+
+async def _steer_images(request: AgentRequest, params: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The steer's uploaded images, checked against the session's uploads off the event loop.
+
+    An image that is not an upload of this session, or cannot be read as an
+    image, raises ``ValueError``; the steer is then not sent.
+    """
+    if not params.get("media_items"):
+        return []
+    from jiuwenswarm.server.runtime.attachments.steer_images import (
+        resolve_steer_image_references,
+    )
+
+    return await asyncio.to_thread(resolve_steer_image_references, params, request.session_id)
+
+
+def _steer_content(query: Any, images: list[dict[str, Any]]) -> HarnessInput:
+    """The provider input of a steer: its prompt and, after it, the paths of its images.
+
+    A new message gives the provider its images as upload paths in the
+    prompt (``files_updated_by_user``); a steer names them in a text block of
+    the same input, with the same records.
+    """
+    if not images:
+        return to_harness_input(query)
+    records = [
+        {key: image.get(key) for key in ("filename", "path", "mime_type", "size_bytes")}
+        for image in images
+    ]
+    listing = json.dumps({"uploaded_images": records}, ensure_ascii=False)
+    return to_harness_input([
+        {"type": "text", "text": str(query or "")},
+        {"type": "text", "text": f"{_STEER_IMAGES_LEAD}\n{listing}"},
+    ])
+
+
+async def steer_external_harness(
+    adapter: Any,
+    request: AgentRequest,
+    inputs: dict[str, Any],
+) -> bool:
+    """Steer the session's running External Harness turn with new input.
+
+    The input goes to the provider as a steer of its active turn, and its
+    boundary, ``chat.input_received``, enters the stream of that turn as it
+    does for a turn of Swarm's own agent. Return False, before sending, when
+    there is no running turn whose stream this adapter projects or the
+    provider does not steer; the input then takes the path of a new message.
+    A steer that finds the turn ended waits until the provider has released
+    it first, so that this path starts the next turn.
+    """
+    from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
+    io = getattr(adapter, "_external_harness", None)
+    boundaries = getattr(adapter, "_external_harness_boundaries", None)
+    if io is None or io.state is not HarnessState.RUNNING:
+        return False
+    if io.has_pending_interrupt():
+        raise SessionInputRejectedError(_error_text("waiting_for_interaction"))
+    if io.delivery_mode(immediate=True) is not DeliveryMode.STEER:
+        return False
+    if boundaries is None:
+        return await _declined_at_turn_end(io)
+    params = request.params if isinstance(request.params, dict) else {}
+    query = inputs.get("query")
+    images = await _steer_images(request, params)
+    async with _steer_lock(adapter):
+        if io.state is not HarnessState.RUNNING or (
+            getattr(adapter, "_external_harness_boundaries", None) is not boundaries
+        ):
+            # The turn ended while the images were checked.
+            ended = True
+        else:
+            try:
+                await io.harness.send(_steer_content(query, images), mode=DeliveryMode.STEER)
+            except HarnessStateError:
+                # The turn ended before the provider took the input.
+                ended = True
+            else:
+                boundaries.put_nowait(_steer_boundary(request, params, query, images))
+                ended = False
+    if ended:
+        return await _declined_at_turn_end(io)
+    return True
+
+
+def _steer_boundary(
+    request: AgentRequest,
+    params: Mapping[str, Any],
+    query: Any,
+    images: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The input boundary of a steer the provider took."""
+    from agent_gateway.common.session_message import (
+        SESSION_MESSAGE_INTERNAL_KEY,
+        SESSION_MESSAGE_ORIGIN,
+    )
+
+    if images:
+        # An image-only steer has no text of its own; the prompt is not the person's words.
+        content = str(params.get("content") or params.get("query") or "")
+    else:
+        content = str(params.get("content") or params.get("query") or query or "")
+    boundary: dict[str, Any] = {
+        "input_request_id": request.request_id,
+        "content": content,
+        "timestamp": time.time() * 1000,
+    }
+    if images:
+        boundary["media_items"] = images
+    cross_session = params.get(SESSION_MESSAGE_INTERNAL_KEY)
+    if isinstance(cross_session, dict):
+        boundary.update({
+            "message_origin": SESSION_MESSAGE_ORIGIN,
+            "session_message_id": cross_session.get("message_id"),
+            "cross_session": {**cross_session, "content": boundary["content"]},
+        })
+    return boundary
+
+
+
 def _response_chunk(
     request: AgentRequest,
     payload: dict[str, Any],
@@ -797,6 +1263,7 @@ async def process_external_harness_stream(
     inputs: dict[str, Any],
 ) -> AsyncIterator[AgentResponseChunk]:
     """Run one External Harness request and project its ordered chat stream."""
+    input_timestamp_ms = time.time() * 1000
     _bind_external_workspace(adapter, inputs)
     try:
         io = await _ensure_external_harness(adapter, request)
@@ -874,12 +1341,54 @@ async def process_external_harness_stream(
 
     has_streamed_answer = False
     receipt_turn_id = None if receipt is None else receipt.turn_id
-    try:
-        async for chunk in stream_turn_output(
+    # Input steered into this turn (steer_external_harness) and not yet answered.
+    boundaries: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    pending_input_ids: list[str] = []
+    adapter._external_harness_boundaries = boundaries  # pylint: disable=protected-access
+
+    def output_phase() -> AgentResponseChunk:
+        applied = list(pending_input_ids)
+        pending_input_ids.clear()
+        return _response_chunk(
+            request,
+            {
+                "event_type": "chat.output_phase",
+                "output_phase_id": f"phase-{uuid.uuid4().hex}",
+                "applied_input_ids": applied,
+                "input_timestamp": input_timestamp_ms,
+                # The stream clock in milliseconds, which history takes from
+                # every record of an output phase.
+                "timestamp": time.time() * 1000,
+            },
+            complete=False,
+        )
+
+    def input_received(boundary: dict[str, Any]) -> AgentResponseChunk:
+        return _response_chunk(
+            request,
+            {"event_type": "chat.input_received", **boundary},
+            complete=False,
+        )
+
+    merged = _with_input_boundaries(
+        stream_turn_output(
             io,
             receipt_turn_id,
             resume=resume,
-        ):
+        ),
+        boundaries,
+    )
+    try:
+        async for source, chunk in merged:
+            if source == "input":
+                pending_input_ids.append(chunk["input_request_id"])
+                yield input_received(chunk)
+                continue
+            if chunk.type in (TURN_LIFECYCLE, INTERACTION):
+                # The provider took these steers as the turn ended or asked;
+                # they are shown, not answered by this turn's output.
+                for boundary in await _close_steer_intake(adapter, boundaries, merged):
+                    yield input_received(boundary)
             if chunk.type == TURN_LIFECYCLE:
                 payload = chunk.payload if isinstance(chunk.payload, dict) else {}
                 kind = str(payload.get("kind") or "")
@@ -891,6 +1400,8 @@ async def process_external_harness_stream(
                 if kind == "finished":
                     final_output = payload.get("final_output")
                     content = final_output if isinstance(final_output, str) else ""
+                    if pending_input_ids:
+                        yield output_phase()
                     yield _response_chunk(
                         request,
                         {"event_type": "chat.final", "content": content},
@@ -925,6 +1436,9 @@ async def process_external_harness_stream(
             )
             if parsed is None:
                 continue
+            if pending_input_ids:
+                # The first output after steered input answers it.
+                yield output_phase()
             if chunk.type == "llm_output" and parsed.get("event_type") == "chat.delta":
                 has_streamed_answer = True
             is_interaction = chunk.type == INTERACTION
@@ -951,6 +1465,9 @@ async def process_external_harness_stream(
             complete=True,
         )
         return
+    finally:
+        if getattr(adapter, "_external_harness_boundaries", None) is boundaries:
+            adapter._external_harness_boundaries = None  # pylint: disable=protected-access
 
     yield _response_chunk(
         request,

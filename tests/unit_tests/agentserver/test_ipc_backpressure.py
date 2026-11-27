@@ -1186,6 +1186,9 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
         assert "Traceback" in stderr and "WorkerForceExit" in stderr
         assert "injected diagnostic exit" in stderr
         assert "fatal exit" in stderr
+        diagnostic = process.diagnostic_path.read_text(encoding="utf-8")
+        assert "WorkerForceExit" in diagnostic and "injected diagnostic exit" in diagnostic
+        assert "Traceback" in diagnostic and f"pid={pid}" in diagnostic
         assert f"[Worker stderr pid={pid}]" not in caplog.text
         (tmp_path / "acceptance.json").write_text(
             json.dumps(

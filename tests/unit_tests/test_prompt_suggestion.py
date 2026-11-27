@@ -35,6 +35,7 @@ from openjiuwen.harness.schema.state import DeepAgentState, PlanModeState
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion, topic_controls
@@ -239,7 +240,7 @@ def product(tmp_path, monkeypatch):
     monkeypatch.setattr(interface_module, "build_user_prompt", lambda query, **_kw: query)
 
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    gateway = MessageHandler(SimpleNamespace())
+    gateway = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     page = _Page()
     store = TopicStarterStore(tmp_path / "recommendation.db")
 

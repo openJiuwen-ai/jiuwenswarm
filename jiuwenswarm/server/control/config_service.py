@@ -482,6 +482,9 @@ def get_panel() -> dict[str, Any]:
         )
         ttse_cfg = react_cfg.get("ttse") or {}
         payload["ttse_enabled"] = _bool_text(ttse_cfg.get("enabled"), False)
+        from jiuwenswarm.common.config_panel.memory_config import flatten_memory_config
+
+        payload.update(flatten_memory_config(raw))
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = _bool_text(memory_cfg.get("enabled"), False)
         payload["memory_forbidden_description"] = memory_cfg.get("description") or {}

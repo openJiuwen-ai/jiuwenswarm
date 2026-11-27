@@ -720,6 +720,7 @@ export interface SessionRuntime {
    * 面板里手动关闭开关。恢复历史会话时由后端 session_equipment 快照重新填充。
    */
   enabledPlugins: string[];
+  draftDisabledPlugins: string[];
   enabledMcps: string[];
   /** 是否已从后端快照恢复，或已由用户在本地明确修改。 */
   extensionsHydrated: boolean;
@@ -805,6 +806,7 @@ function createEmptyRuntime(
     teamLeaderIdentity: null,
     teamGroupIdentity: null,
     enabledPlugins: [],
+    draftDisabledPlugins: [],
     enabledMcps: [],
     extensionsHydrated: false,
     enableSwarmflow: false,
@@ -908,6 +910,7 @@ interface SessionState {
   removeEnabledPlugin: (sessionId: string, pluginId: string) => void;
   /** 本会话启用插件：清空 */
   clearEnabledPlugins: (sessionId: string) => void;
+  setDraftPluginEnabled: (pluginId: string, enabled: boolean) => void;
   /** 本会话启用MCP：追加（去重） */
   addEnabledMcp: (sessionId: string, mcpName: string) => void;
   /** 本会话启用MCP：移除指定项 */
@@ -1924,6 +1927,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ...runtime,
             enabledPlugins: runtime.enabledPlugins.filter((s) => s !== normalized),
             extensionsHydrated: true,
+          },
+        },
+      };
+    });
+  },
+
+  setDraftPluginEnabled: (pluginId, enabled) => {
+    const sessionId = TRANSIENT_NEW_CONVERSATION_ID;
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      const selected = runtime.enabledPlugins.filter((id) => id !== pluginId);
+      const disabled = runtime.draftDisabledPlugins.filter((id) => id !== pluginId);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            enabledPlugins: enabled ? [...selected, pluginId] : selected,
+            draftDisabledPlugins: enabled ? disabled : [...disabled, pluginId],
           },
         },
       };

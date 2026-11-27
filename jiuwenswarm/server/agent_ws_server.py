@@ -128,6 +128,7 @@ from jiuwenswarm.common.utils import (
 
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.runtime import AgentRuntime
+from jiuwenswarm.runtime.service import is_stateless_method_request
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES, RuntimeEvent
 from jiuwenswarm.runtime.host_services import (
     install_runtime_push_handler,
@@ -291,6 +292,7 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _workflow_run_meta,
     split_history_record_for_stream,
 )
+from jiuwenswarm.server.edition_gate import enterprise_only_denial
 from jiuwenswarm.server.interrupt_intent import (
     normalized_intent_request,
     reject_interrupt_result_payload,
@@ -1819,13 +1821,24 @@ class AgentWebSocketServer:
         # delay startup; ContextEngine is local-only and uses string fallback
         # if this task has not completed when the first context is created.
         async def _prepare_tokenizers() -> bool:
-            return await self._schedule_tokenizer_warmup(get_config(), reason="startup")
+            config = await asyncio.to_thread(get_config)
+            return await self._schedule_tokenizer_warmup(config, reason="startup")
 
         preparation.register("tokenizers", _prepare_tokenizers)
 
         # 端口已 listen, 后台预热 checkpointer, 不阻塞启动与握手.
         # _checkpointer_warmup_task 供 shutdown 时 cancel, 避免任务悬挂.
         async def _start_runtime() -> None:
+            from jiuwenswarm.server.runtime.managed_memory_http import start_bundled_memory_http
+
+            memory_start = asyncio.create_task(asyncio.to_thread(start_bundled_memory_http))
+            try:
+                await asyncio.shield(memory_start)
+            except asyncio.CancelledError:
+                await asyncio.gather(memory_start, return_exceptions=True)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] built-in memory HTTP startup failed (%s)", type(exc).__name__)
             retry_delay = 1.0
             while True:
                 try:
@@ -2296,6 +2309,9 @@ class AgentWebSocketServer:
                 logger.warning("[AgentWebSocketServer] checkpointer warmup stop failed: %s", exc)
         close_client_attachments()
         await self._stop_recommendation_host()
+        from jiuwenswarm.server.runtime.memory_portal import close_memory_portal_services
+
+        await close_memory_portal_services()
         preparation = getattr(self, "_preparation_registry", None)
         if preparation is not None:
             await preparation.close()
@@ -2430,6 +2446,12 @@ class AgentWebSocketServer:
             # unfinished two-phase provision still needs its original owner to
             # commit or abort it before shutdown can be retried.
             if runtime_close_completed or closing_runtime.closed:
+                from jiuwenswarm.server.runtime.managed_memory_http import managed_memory_http
+
+                try:
+                    await asyncio.to_thread(managed_memory_http.stop)
+                except Exception:  # noqa: BLE001
+                    logger.warning("[AgentWebSocketServer] managed memory HTTP shutdown failed")
                 # AgentRuntime is intentionally one-shot for process-style CLI
                 # commands. AgentServer historically supports start after stop,
                 # so prepare a fresh Runtime, manager and plan-state owner for
@@ -3092,13 +3114,13 @@ class AgentWebSocketServer:
                 )
             return
 
-        from jiuwenswarm.server.front.protocol import unsupported_method_wire
+        from jiuwenswarm.server.front.protocol import rejected_method_wire
 
         if isinstance(data, dict):
             method = data.get("method")
             if method is None:
                 method = data.get("req_method")
-            error_wire = unsupported_method_wire(
+            error_wire = rejected_method_wire(
                 method,
                 request_id=data.get("request_id"),
                 channel_id=data.get("channel") or data.get("channel_id"),
@@ -3126,7 +3148,7 @@ class AgentWebSocketServer:
                 )
                 if not isinstance(legacy, dict):
                     raise ValueError("legacy_agent_request missing or not a dict")
-                error_wire = unsupported_method_wire(
+                error_wire = rejected_method_wire(
                     legacy.get("req_method"),
                     request_id=legacy.get("request_id"),
                     channel_id=legacy.get("channel_id"),
@@ -3390,6 +3412,24 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        denial = enterprise_only_denial(request.req_method)
+        if denial is not None:
+            response = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": denial, "code": "FORBIDDEN"},
+                metadata=request.metadata,
+                agent_ref=request.agent_ref,
+            )
+            async with send_lock:
+                await send_wire_payload(
+                    ws,
+                    encode_agent_response_for_wire(
+                        response, response_id=request.request_id
+                    ),
+                )
+            return
         if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
             params = request.params if isinstance(request.params, dict) else {}
             channels = params.get("channels")
@@ -4401,14 +4441,8 @@ class AgentWebSocketServer:
 
     @staticmethod
     def _is_stateless_method_request(request: AgentRequest) -> bool:
-        """Return True for prefix-matched read-only RPCs that skip adapter setup."""
-        return (
-            request.req_method is not None
-            and request.req_method.value.startswith(
-                ("skills.", "skilldev.", "plugins.", "symphony.",
-                 "agent_groups.", "agent_templates.", "plugin_packages.")
-            )
-        )
+        """Return True for RPCs that skip session adapter setup."""
+        return is_stateless_method_request(request)
 
     # Skill plaza / catalog reads that must work even when the chat session
     # attached by the UI has been permanently deleted (#5886). Write RPCs such
@@ -8108,115 +8142,21 @@ class AgentWebSocketServer:
         )
 
     async def _handle_team_snapshot(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        from jiuwenswarm.agents.harness.team import get_team_manager
-        from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
-            TeamMonitorHandler,
-        )
+        from jiuwenswarm.server.handlers.team import _snapshot_tasks, resolve_team_snapshot
 
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()
         channel_id = request.channel_id or "web"
         empty_payload = {"members": [], "departed_members": [], "tasks": [], "team_id": None}
-
         # ``team_name`` 显式指定了要看的 team（team 选择器切 team 时就是这么调的）。
         requested_team_name = str(params.get("team_name") or "").strip()
 
-        team_manager = get_team_manager(channel_id)
-        monitor_handler = team_manager.get_monitor_handler(session_id) if session_id else None
-
-        # TeamManager 的 monitor 表按 session_id 索引，一个 session 只保住最后一个
-        # monitor；而 TeamRuntimePool 允许一个 session 同时挂多个 team（专家团就是
-        # 每个 team 一条 `org-expert-*` 记录）。此时 session 级的 live 快照属于
-        # *另一个* team，直接返回会把别队的成员/任务画到当前选中的 team 上。
-        monitor_team = monitor_handler.team_id if monitor_handler is not None else None
-        live_matches_request = (
-            monitor_handler is not None
-            and monitor_handler.is_running
-            and (not requested_team_name or monitor_team == requested_team_name)
+        snapshot, source, runtime_available = await resolve_team_snapshot(
+            session_id=session_id,
+            requested_team_name=requested_team_name,
+            channel_id=channel_id,
+            get_session_metadata_fn=get_session_metadata,
         )
-
-        snapshot: dict[str, Any] | None = None
-        source = "empty"
-        runtime_available: bool | None = True if live_matches_request else None
-        if live_matches_request:
-            try:
-                snapshot = await monitor_handler.get_team_snapshot()
-                if snapshot is not None:
-                    source = "live"
-            except Exception as e:
-                logger.warning("[AgentWebSocketServer] team.snapshot (live) failed: %s", e)
-
-        def _snapshot_tasks(payload: dict[str, Any] | None) -> list[Any]:
-            if not isinstance(payload, dict):
-                return []
-            tasks = payload.get("tasks")
-            return tasks if isinstance(tasks, list) else []
-
-        # Resolve one exact identity for the runtime probe and DB fallback.
-        # A session monitor may belong to another Team; a replacement worker
-        # may have none. Probe only when the matching live board is missing.
-        snapshot_team_name = requested_team_name
-        if not snapshot_team_name and session_id:
-            snapshot_team_name = str(team_manager.get_active_team_name(session_id) or "").strip()
-            if not snapshot_team_name:
-                snapshot_team_name = str(
-                    (get_session_metadata(session_id) or {}).get("team_name") or ""
-                ).strip()
-        if snapshot is None and snapshot_team_name and session_id:
-            try:
-                from openjiuwen.core.runner.runner import GLOBAL_RUNNER
-
-                scoped_monitor = await GLOBAL_RUNNER.get_agent_team_monitor(
-                    team_name=snapshot_team_name,
-                    session_id=session_id,
-                )
-                runtime_available = scoped_monitor is not None
-                if scoped_monitor is not None:
-                    scoped_snapshot = await TeamMonitorHandler(
-                        scoped_monitor, session_id
-                    ).get_team_snapshot()
-                    if scoped_snapshot is not None:
-                        snapshot = scoped_snapshot
-                        source = "live-scoped"
-            except Exception as e:
-                logger.warning(
-                    "[AgentWebSocketServer] team.snapshot (scoped live) failed: "
-                    "session_id=%s team_name=%s error=%s",
-                    session_id,
-                    snapshot_team_name,
-                    e,
-                )
-
-        # History restore often hits this RPC after the monitor has stopped, OR
-        # while a live handler is still registered but already returns a truthy
-        # empty board ({tasks: [], members: [], team_id: ...}). `if not snapshot`
-        # alone would skip DB in that case and leave the frontend with no
-        # title/content. Fall back whenever live has no tasks.
-        needs_db = snapshot is None or not _snapshot_tasks(snapshot)
-        if needs_db and session_id:
-            team_name = snapshot_team_name
-            if team_name:
-                try:
-                    db_snapshot = await TeamMonitorHandler.get_team_snapshot_from_db(
-                        session_id, team_name
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[AgentWebSocketServer] team.snapshot (db) failed: "
-                        "session_id=%s team_name=%s error=%s",
-                        session_id,
-                        team_name,
-                        e,
-                    )
-                    db_snapshot = None
-                # Prefer DB when it has tasks, or when live was missing entirely.
-                # If both boards have empty tasks, keep live so in-memory
-                # members (if any) are not wiped by an empty DB read.
-                if db_snapshot is not None and (
-                    snapshot is None or _snapshot_tasks(db_snapshot)
-                ):
-                    snapshot = db_snapshot
-                    source = "db"
 
         # A replacement worker can read the old DB's busy/running rows without
         # having restored any TeamAgent. Do not mutate those historical rows or
@@ -14433,6 +14373,8 @@ class AgentWebSocketServer:
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
+            if result.session_equipment is not None:
+                payload["session_equipment"] = result.session_equipment
             if result.execution_profile != "default":
                 payload["execution_profile"] = result.execution_profile
                 payload["mode"] = result.canonical_mode

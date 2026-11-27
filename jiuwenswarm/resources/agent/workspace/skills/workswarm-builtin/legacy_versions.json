@@ -2,6 +2,10 @@
   "_catalog_files": {
     "SKILL.md": [
       {
+        "digest": "ed3204dd169b9984f504b49ce50550b8e1180bd077ab53a725c00b16ccb548d8",
+        "revision": "f3e7c9ea0f1e3761049f1ae4561992d13b98aa6d"
+      },
+      {
         "digest": "04c46377ccb5d3330127c3249be8d8e77185ce2ff0b32834dd4ff2d5805ce3f3",
         "revision": "4ac45f2c9569bbac401e98401cba3ab286d9c0fa"
       },
@@ -35,6 +39,10 @@
       }
     ],
     "references/capabilities/workswarm-app-builder/SKILL.md": [
+      {
+        "digest": "a2013444c1070fad934d51374c39302c22f96578c0c52768e64acba79f0f7eb1",
+        "revision": "f3e7c9ea0f1e3761049f1ae4561992d13b98aa6d"
+      },
       {
         "digest": "51440f4d8f3b5831401d4a1e8ee6e5fe693425323dba3818e971952895dddedc",
         "revision": "eb0da001058a675a5646bbbef4408436d19f8f82"

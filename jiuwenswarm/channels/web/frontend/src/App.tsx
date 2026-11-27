@@ -1,3 +1,5 @@
+import { MemoryPage } from './features/memory/MemoryPage';
+import { applyMemorySnapshot, getMemoryRevision, useMemoryEnabled } from './features/memory/featureConfig';
 import { gatewayFetch } from './services/gatewayFetch';
 import { browserClientCapabilities } from './features/webui/client/browserClient';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
@@ -322,7 +324,6 @@ function normalizeConfigBoolean(value: unknown): boolean {
 
 const rightPanelWebUIStyles: WebUIStyleOverrides = {
   Panel: { className: 'flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-auto p-3' },
-  Box: { style: { minWidth: 0, minHeight: 0 } },
 };
 
 type MainNavKey = SidebarNavKey | 'connectorMarket' | 'webui' | ApplicationPluginNavKey;
@@ -575,6 +576,9 @@ function getClientRequestContextSnapshot(): string {
 /** 首屏首个客户端能力快照的等待上限，仅用于请求已失败后的补偿重试。 */
 const FIRST_DECLARATION_WAIT_MS = 3000;
 
+/** 首个客户端能力快照到达前的 config.get 补偿重试间隔；窗口保持短，真实错误尽快上屏。 */
+const CONFIG_RETRY_DELAYS_MS = [500, 1000, 2000];
+
 /**
  * 等待首个客户端能力快照：快照到达后插件的请求凭证才会注入。
  * 已经到达或等待超时都立即返回，不阻塞不支持能力快照的后端。
@@ -599,6 +603,11 @@ function waitForFirstDeclarations(timeoutMs = FIRST_DECLARATION_WAIT_MS): Promis
     if (host.hasDeclarations()) finish(true);
     else timerId = window.setTimeout(() => finish(host.hasDeclarations()), timeoutMs);
   });
+}
+
+/** 后端重启/断连窗口内不要把配置拉取失败渲染成配置错误。 */
+function isBackendRestartWindow(isConnected: boolean, restartModalOpen: boolean): boolean {
+  return !isConnected || restartModalOpen || browserClientCapabilities.isAwaitingDeclarations();
 }
 
 function AppContent({
@@ -644,6 +653,7 @@ function AppContent({
   }, [isJiuwenMate]);
   const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
   const [webUIPage, setWebUIPage] = useState<WebUIPageTarget | null>(null);
+  const memoryEnabled = useMemoryEnabled();
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -771,10 +781,10 @@ function AppContent({
   }, [activeNav]);
 
   useEffect(() => {
-    if (!masterEnabled && activeNav === 'personalContext') {
+    if ((!masterEnabled && activeNav === 'personalContext') || (!memoryEnabled && activeNav === 'memory')) {
       setActiveNav('chat');
     }
-  }, [activeNav, masterEnabled]);
+  }, [activeNav, masterEnabled, memoryEnabled]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -856,6 +866,10 @@ function AppContent({
   const creatingSessionRef = useRef(false);
   const pendingAppEditsRef = useRef(new Map<string, Promise<Session>>());
   const appEditTokensRef = useRef(new Map<string, string>());
+  const [appEditSessionToReveal, setAppEditSessionToReveal] = useState<string | null>(null);
+  const handleAppEditSessionRevealed = useCallback((id: string) => {
+    setAppEditSessionToReveal((pendingId) => pendingId === id ? null : pendingId);
+  }, []);
   /** 离开新建任务页后，仍未发送的临时会话可以被再次打开。 */
   const pendingNewConversationRef = useRef(route.kind === 'chat-new');
   const sessionIdsCreatedInThisPageRef = useRef(new Set<string>());
@@ -976,9 +990,6 @@ function AppContent({
       setSingleAgentPanelExpanded(false);
       setToolPanelHidden(true);
       return () => { cancelled = true; };
-    } else if (route.kind === 'system-plugin-recovery') {
-      setRequestedSettingsNavigation({ moduleId: 'systemPluginRecovery' });
-      setActiveNav('settings');
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== chatRoutePath({ kind: 'chat-new' })) {
         navigate({ kind: 'chat-new' }, { replace: true });
@@ -1315,6 +1326,7 @@ function AppContent({
       ...getHiddenNavItemsForPlatform(frontendPlatform),
       ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS),
     ];
+    if (!memoryEnabled) base.push('memory');
     // 用户空间仅企业版 + WORKSPACE_QUOTA_ENABLED；关闭时隐藏工作空间与审批入口。
     if (!workspaceQuotaEnabled) {
       base.push('workspace', 'approvals');
@@ -1333,10 +1345,13 @@ function AppContent({
     // 总开关关闭时隐藏导航入口（设置页入口保留，供打开总开关）
     if (!masterEnabled) return [...rsiFiltered, 'personalContext'];
     return rsiFiltered;
-  }, [frontendPlatform, masterEnabled, reaFeatureEnabled, rsiFeatureEnabled, workspaceQuotaEnabled]);
+  }, [frontendPlatform, masterEnabled, memoryEnabled, reaFeatureEnabled, rsiFeatureEnabled, workspaceQuotaEnabled]);
   const jiuwenMateHiddenPages = useMemo<JiuwenMateExistingPage[]>(
-    () => (FEATURE_PERSONAL_CONTEXT_UI && masterEnabled ? [] : ['personalContext']),
-    [masterEnabled],
+    () => [
+      ...(FEATURE_PERSONAL_CONTEXT_UI && masterEnabled ? [] : ['personalContext' as const]),
+      ...(memoryEnabled ? [] : ['memory' as const]),
+    ],
+    [masterEnabled, memoryEnabled],
   );
 
   useEffect(() => {
@@ -2449,14 +2464,14 @@ function AppContent({
   }, [designModelGate, isConnected, loadSessionMetadata, route]);
 
   // 获取服务端配置（通过 WS 方法）
-  const fetchConfig = useCallback(async (retried = false): Promise<void> => {
+  const fetchConfig = useCallback(async (attempt = 0): Promise<void> => {
     const contextEpoch = browserClientCapabilities.getEpoch();
-    // 首屏请求可能早于首个客户端能力快照，此时插件凭证尚未注入。
-    const hadDeclarations = browserClientCapabilities.hasDeclarations();
     try {
       const collaborationRevision = getMultiModelCollaborationRevision();
+      const memoryRevision = getMemoryRevision();
       const config = await request<Record<string, unknown>>('config.get');
       if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
+      applyMemorySnapshot(config.memory_portal_enabled, memoryRevision);
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setREAFeatureEnabled(normalizeREAEnabled(config.rea_enabled));
@@ -2484,11 +2499,17 @@ function AppContent({
       }
     } catch (error) {
       if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
-      // 首个客户端能力快照到达前的请求没有插件凭证，可能被插件策略拒绝：
-      // 等快照到达后补偿重试一次，避免误报“无法通过 WebSocket 获取后端配置”。
-      if (!retried && !hadDeclarations && (await waitForFirstDeclarations())) {
+      // 冷启动/重启窗口内，首个客户端能力快照到达前的请求没有插件凭证，
+      // 可能被插件策略拒绝；按退避重试，不要立刻渲染成配置错误。
+      if (!browserClientCapabilities.hasUsableDeclarations()
+        && attempt < CONFIG_RETRY_DELAYS_MS.length) {
+        if (browserClientCapabilities.isAwaitingDeclarations()) {
+          await waitForFirstDeclarations(CONFIG_RETRY_DELAYS_MS[attempt]);
+        } else {
+          await new Promise((resolve) => window.setTimeout(resolve, CONFIG_RETRY_DELAYS_MS[attempt]));
+        }
         if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
-        return fetchConfig(true);
+        return fetchConfig(attempt + 1);
       }
       console.error('Failed to fetch config:', error);
       setServerConfig(null);
@@ -3804,8 +3825,10 @@ function AppContent({
       );
       moveConversationDraft(NEW_CONVERSATION_ID, newSid);
 
+      if (created.session_equipment) restoreSessionEquipment(newSid, created.session_equipment);
       (pendingRuntime?.selectedSkills ?? []).forEach((skill) => sessionStore.addSelectedSkill(newSid, skill));
       (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
+      (pendingRuntime?.draftDisabledPlugins ?? []).forEach((id) => sessionStore.removeEnabledPlugin(newSid, id));
       (pendingRuntime?.enabledMcps ?? []).forEach((name) => sessionStore.addEnabledMcp(newSid, name));
       if (pendingRuntime?.metadata) sessionStore.setSessionMetadata(newSid, pendingRuntime.metadata);
       if (pendingRuntime?.teamGroupIdentity) {
@@ -4065,8 +4088,10 @@ function AppContent({
         // 同样搬家：欢迎页（'new'）上如果已经通过"+"菜单"扩展"面板开了某些插件/MCP 的会话内
         // 开关（或者是"使用"按钮带过来的 initialEnabledPlugins/initialEnabledMcps），真实
         // session_id 创建后要跟着过去，否则下面 removeRuntime('new') 会把这些选择直接冲掉。
+        if (created.session_equipment) restoreSessionEquipment(newSid, created.session_equipment);
         const pendingEnabledPlugins = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.enabledPlugins ?? [];
         pendingEnabledPlugins.forEach((id) => useSessionStore.getState().addEnabledPlugin(newSid, id));
+        (newRuntime?.draftDisabledPlugins ?? []).forEach((id) => useSessionStore.getState().removeEnabledPlugin(newSid, id));
         useSessionStore.getState().clearEnabledPlugins(NEW_CONVERSATION_ID);
         const pendingEnabledMcps = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.enabledMcps ?? [];
         pendingEnabledMcps.forEach((name) => useSessionStore.getState().addEnabledMcp(newSid, name));
@@ -4398,7 +4423,13 @@ function AppContent({
         forcedHistoryRefreshRef.current.add(targetSessionId);
       }
 
-      if (options?.canActivate && !options.canActivate()) return;
+      // 与上方元数据加载失败/会话缺失/team switch 失败路径保持同一释放纪律:
+      // 闸门在二次 canActivate 检查前已挂起,直接 return 会让该会话的实时事件
+      // 永久积压在闸门内(无上限、无淘汰),直到用户下次打开会话才一次性 flush。
+      if (options?.canActivate && !options.canActivate()) {
+        releasePendingSessionEvents(targetSessionId);
+        return;
+      }
       setHistoryLoadingMore(false);
       const existingRuntime = useChatStore.getState().getRuntime(targetSessionId);
       if (!existingRuntime) {
@@ -4804,6 +4835,24 @@ function AppContent({
       closeSidebarPeek();
       await handleRestoreSession(session.session_id, session.mode, session, undefined, { canActivate: isCurrent });
       if (sessionIdRef.current !== session.session_id) return;
+      const projectId = session.project_id;
+      if (projectId) {
+        const workspace = useWorkspaceStore.getState();
+        const workMode = session.work_mode;
+        const switchMode = !isEnterprise() && workMode && workMode !== workspace.workMode;
+        if (switchMode) {
+          void workspace.setWorkMode(workMode);
+        } else if (!workspace.projects.some((project) => project.project_id === projectId)) {
+          void workspace.loadProjects();
+        }
+        // Switching modes clears expansion state synchronously before fetching projects.
+        if (!useWorkspaceStore.getState().expandedProjectIds[projectId]) {
+          workspace.toggleProjectExpanded(projectId);
+        } else {
+          void workspace.loadProjectSessions(projectId);
+        }
+        setAppEditSessionToReveal(session.session_id);
+      }
       useSessionStore.getState().setAppMarketPreview(session.session_id, {
         appId: target.appId, name: target.name, instanceId: target.instanceId,
       });
@@ -5159,6 +5208,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     promptSuggestionBox.setEnabled(normalizeConfigBoolean(serverConfig?.prompt_suggestion_enabled));
   }, [promptSuggestionBox.setEnabled, serverConfig?.prompt_suggestion_enabled]);
   const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage, settingsNavigation?: SettingsNavigationTarget) => {
+    if (nav === 'memory') {
+      return memoryEnabled ? <MemoryPage isConnected={isConnected} request={request} /> : null;
+    }
     if (nav === 'agents') {
       return (
         <div className="app-section min-h-0">
@@ -5266,7 +5318,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     }
   }, [activeNav, sessionId, webUIPage]);
 
-  if (isJiuwenMate && route.kind !== 'system-plugin-recovery') {
+  if (isJiuwenMate) {
     return (
       <>
         <JiuwenMateApp
@@ -5360,16 +5412,22 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}
       >
         {configError && (
-          <div className="card mb-4" data-testid="app-config-error">
-            <div className="text-sm text-text-muted">
-              {configError}. {t('app.configErrorHint')}
-              <span className="mono"> python -m tests.web_gateway_jiuwenclaw_integration </span>
-              {t('app.configErrorDefault')}
-              <span className="mono"> jiuwenswarm/channels/web/frontend/.env.local </span>
-              {t('app.configErrorEnv')} <span className="mono">VITE_API_BASE</span> {t('common.and')}{' '}
-              <span className="mono">VITE_WS_BASE</span>.
+          isBackendRestartWindow(isConnected, restartModalOpen) ? (
+            <div className="card mb-4" data-testid="app-config-restarting">
+              <div className="text-sm text-text-muted">{t('app.restarting')}</div>
             </div>
-          </div>
+          ) : (
+            <div className="card mb-4" data-testid="app-config-error">
+              <div className="text-sm text-text-muted">
+                {configError}. {t('app.configErrorHint')}
+                <span className="mono"> python -m tests.web_gateway_jiuwenclaw_integration </span>
+                {t('app.configErrorDefault')}
+                <span className="mono"> jiuwenswarm/channels/web/frontend/.env.local </span>
+                {t('app.configErrorEnv')} <span className="mono">VITE_API_BASE</span> {t('common.and')}{' '}
+                <span className="mono">VITE_WS_BASE</span>.
+              </div>
+            </div>
+          )
         )}
 
         {sidebarPeek && sidebarPeek !== 'settings' && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
@@ -5379,6 +5437,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 activeSessionId={route.kind === 'group-chat'
                   ? route.groupId ?? null
                   : activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                revealSessionId={activeNav === 'chat' ? appEditSessionToReveal : null}
+                onSessionRevealed={handleAppEditSessionRevealed}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}
@@ -5411,6 +5471,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 activeSessionId={route.kind === 'group-chat'
                   ? route.groupId ?? null
                   : sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                revealSessionId={appEditSessionToReveal}
+                onSessionRevealed={handleAppEditSessionRevealed}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}
@@ -5815,6 +5877,12 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         {FEATURE_APP_UPDATER_UI && activeNav === 'updatepanel' && (
           <div className="app-section">
             <UpdatePanel isConnected={isConnected} request={request} />
+          </div>
+        )}
+
+        {memoryEnabled && activeNav === 'memory' && (
+          <div className="app-section" data-testid="app-memory-section">
+            <MemoryPage isConnected={isConnected} request={request} />
           </div>
         )}
 

@@ -41,9 +41,14 @@ def feishu_roster_cli_redirect(command: object) -> ToolOutput | None:
 
 def converted(group: dict, message: ConversationMessage) -> GroupMessage:
     identities = {item["member_name"]: item["id"] for item in group["members"] if item["kind"] == "colleague"}
+    active_names = {item["member_name"] for item in group["members"]}
+    former = group.get("former_members") or {}
+    sender_name = message.sender_name or message.sender
+    if message.sender != "user" and message.sender not in active_names and message.sender in former:
+        sender_name = f"{sender_name} (已离群)"
     return GroupMessage(
         message_id=message.message_id, sender_id=identities.get(message.sender, message.sender),
-        sender_name=message.sender_name or message.sender,
+        sender_name=sender_name,
         sender_kind="human" if message.sender == "user" else "agent",
         received_at=datetime.fromtimestamp(message.timestamp / 1000, timezone.utc),
         text=message.content[:65536], mention_ids=tuple(identities.get(name, name) for name in message.mentions),

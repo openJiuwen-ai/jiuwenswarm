@@ -71,6 +71,7 @@ export function DefinitionDetailPage({
   onInstall,
   onUninstall,
   onDelete,
+  onEdit,
 }: DefinitionDetailPageProps) {
   const { t } = useTranslation();
 
@@ -179,6 +180,20 @@ export function DefinitionDetailPage({
                       data-testid="agent-management-detail-connect-btn"
                     >
                       {busy ? t('agentManagement.actions.connecting') : t('agentManagement.actions.connect')}
+                    </button>
+                  ) : null}
+
+                  {/* 本地创建的专家支持编辑；市场来源只有安装/卸载语义 */}
+                  {detail.source === 'local' ? (
+                    <button
+                      type="button"
+                      className="detail-action"
+                      disabled={busy}
+                      aria-busy={busy}
+                      onClick={() => onEdit(detail.id)}
+                      data-testid="agent-management-detail-edit-btn"
+                    >
+                      {t('agentManagement.actions.edit')}
                     </button>
                   ) : null}
 

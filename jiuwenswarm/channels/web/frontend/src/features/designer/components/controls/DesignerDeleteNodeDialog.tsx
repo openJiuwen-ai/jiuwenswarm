@@ -1,6 +1,12 @@
 import { X } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import {
+  collectSceneDeletionImpacts,
+  type DesignerSceneBindingNode,
+} from '../../designerSceneBinding';
+import { useDesignerStore } from '../../designerStore';
+import { useDesignerUiStore } from '../../designerUiStore';
 
 type DesignerDeleteNodeDialogProps = {
   onCancel: () => void;
@@ -9,6 +15,16 @@ type DesignerDeleteNodeDialogProps = {
 
 export function DesignerDeleteNodeDialog({ onCancel, onConfirm }: DesignerDeleteNodeDialogProps) {
   const { t } = useTranslation();
+  const domainGraph = useDesignerStore((state) => state.domainGraph);
+  const pendingDeleteNodeIds = useDesignerUiStore((state) => state.pendingDeleteNodeIds);
+  const sceneImpacts = useMemo(
+    () =>
+      collectSceneDeletionImpacts(
+        (domainGraph?.nodes ?? []) as unknown as DesignerSceneBindingNode[],
+        pendingDeleteNodeIds,
+      ),
+    [domainGraph, pendingDeleteNodeIds],
+  );
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -47,6 +63,25 @@ export function DesignerDeleteNodeDialog({ onCancel, onConfirm }: DesignerDelete
         </button>
         <h2 id="designer-delete-node-title">{t('designer.nodeActions.deleteConfirmTitle')}</h2>
         <p>{t('designer.nodeActions.deleteConfirmMessage')}</p>
+        {sceneImpacts.length > 0 ? (
+          <div
+            className="designer-delete-node__scene-warning"
+            data-testid="designer-delete-node-scene-warning"
+          >
+            <p>{t('designer.nodeActions.deleteSceneWarning', { count: sceneImpacts.length })}</p>
+            <ul>
+              {sceneImpacts.map((impact) => (
+                <li
+                  key={impact.clipId}
+                  data-testid="designer-delete-node-scene-warning-item"
+                  data-variant={impact.clipId}
+                >
+                  {t('designer.nodeActions.deleteSceneMissing', { clip: impact.clipLabel })}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         <div className="designer-delete-node__actions">
           <button
             type="button"

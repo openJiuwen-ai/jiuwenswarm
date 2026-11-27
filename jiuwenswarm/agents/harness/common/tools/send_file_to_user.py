@@ -625,13 +625,51 @@ class SendFileToolkit:
             # it makes delivery uncertain on exceptions, so staged assets must
             # retain their registrations instead of being revoked prematurely.
             exposure_started = True
-            delivered = await send_runtime_push(msg)
-            if not delivered and is_enterprise():
+            # Enterprise team sessions reach the browser only through the team
+            # session live subscription (the web client has no session
+            # WebSocket in that mode). A plain host push can still succeed --
+            # the AgentServer push hub has the gateway as a subscriber -- while
+            # the gateway has no web peer to forward the frame to, so the file
+            # card and the artifact panel never see it. Prefer the same live
+            # path every other team frame uses; non-team sessions have no live
+            # and fall back to the host push unchanged.
+            delivered = False
+            push_needed = True
+            if is_enterprise():
                 from jiuwenswarm.enterprise.team.session_live import (
                     publish_team_session_file,
                 )
 
-                delivered = publish_team_session_file(msg)
+                try:
+                    delivered = publish_team_session_file(msg)
+                except Exception:
+                    logger.exception(
+                        "[SendFileToolkit] team session live publish failed: %s",
+                        msg.get("session_id"),
+                    )
+                if delivered:
+                    # Live only reaches web subscribers. Keep the gateway push
+                    # for explicit non-web targets (feishu, human seats).
+                    targets = (msg.get("metadata") or {}).get("send_file_targets") or []
+                    push_needed = any(
+                        str(target).strip().lower() not in ("", "web")
+                        for target in targets
+                    )
+            if push_needed or not delivered:
+                try:
+                    delivered = (await send_runtime_push(msg)) or delivered
+                except Exception:
+                    if not delivered:
+                        raise
+                    # Live already reached web subscribers. A failed gateway push
+                    # only affects the non-web targets, so keep the delivery
+                    # committed: otherwise a retry would publish a second card.
+                    logger.warning(
+                        "[SendFileToolkit] gateway push failed after live publish: "
+                        "session_id=%s",
+                        msg.get("session_id"),
+                        exc_info=True,
+                    )
             if not delivered:
                 exposure_started = False
                 raise RuntimeError(

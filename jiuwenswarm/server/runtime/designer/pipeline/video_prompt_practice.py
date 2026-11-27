@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Story-form reference-video prompts for Wan, Seedance, and MiniMax-H3.
+"""Initial story-form drafts for Wan, Seedance, and MiniMax-H3.
 
 Locks live on the node. The video call is a concise positive narrative only:
 image refs, wardrobe, placement, visibility, action, speech — never forbid lists,
 sit/stand examples, or scene-genre hardcodes. Exited cast is omitted until the
-storyboard returns them to this setting.
+storyboard returns them to this setting. These templates seed new drafts;
+authored tool-call prompts are preserved by video_call_contract.
 """
 
 from __future__ import annotations
@@ -14,10 +15,7 @@ import re
 from typing import Any
 
 from jiuwenswarm.common.schema.designer_graph import (
-    CONFIG_KEY_INPUTS,
     NODE_ROLE_CHARACTER,
-    PIPELINE_COMPOSE,
-    PIPELINE_MUSIC,
     node_config,
     node_pipeline,
 )
@@ -32,6 +30,11 @@ from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
     sentence,
     strip_phrase,
 )
+from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+    ReferenceSlot,
+    image_word as reference_image_word,
+    scene_slot,
+)
 
 _PHRASES: dict[str, dict[str, str]] = {
     "en": {
@@ -39,7 +42,6 @@ _PHRASES: dict[str, dict[str, str]] = {
         "says": '{who} says: "{line}".',
         "says_offscreen": '{who}, heard offscreen, says: "{line}".',
         "voice_says": 'A voice says: "{line}".',
-        "audio": "Audio: {bits}.",
         "sound_diegetic_only": (
             "Sound: diegetic sound of this shot only — action sound and room tone; "
             "no music, no score, no underscore, no ambient music bed."
@@ -56,16 +58,17 @@ _PHRASES: dict[str, dict[str, str]] = {
             "This shot opens already past earlier finished moments in the storyboard — "
             "same setting and faces continue from that authored start_state."
         ),
-        "scene_as_in": "The scene is as in {scene_word}: {place}.",
-    "scene_as_in_unnamed": "The scene is as shown in {scene_word}.",
         "scene_description": "Scene description: {desc}.",
         "props_in_view": "Props in view: {props}.",
         "connected_still": "{word} is the connected still {label}, and that subject is visible in this shot.",
         "cast_references": "the cast references",
         "camera": "The camera {cam}.",
-        "offscreen_heard": "{who}{wearing} is in the scene from {scene_word}, outside this camera frame, and is heard.",
+        "in_scene_ref": "in the scene from {scene_word}",
+        "in_scene_plain": "in the scene",
+        "offscreen_heard": "{who}{wearing} is {in_scene}, outside this camera frame, and is heard.",
         "offscreen_wearing": ", wearing {wardrobe},",
         "cast_from": "{who} from {image_word}",
+        "cast_name": "{who}",
         "cast_wearing": "wearing {wardrobe}",
         "turnaround_refs": (
             "{images}: each is one person shown from the front, side, and back, with a head close-up; "
@@ -75,11 +78,12 @@ _PHRASES: dict[str, dict[str, str]] = {
             "Within the group, each person differs in gesture, timing, and attention; "
             "no two share the same pose."
         ),
-        "cast_seat": "{seat} in the scene from {scene_word}",
-        "cast_in_scene": "in the scene from {scene_word} ({scene})",
-        "cast_partial": "is in the scene from {scene_word}, partially visible",
-        "cast_out_of_frame": "is in the scene from {scene_word}, outside this camera frame",
+        "cast_seat": "{seat} {in_scene}",
+        "cast_in_scene": "{in_scene}",
+        "cast_partial": "is {in_scene}, partially visible",
+        "cast_out_of_frame": "is {in_scene}, outside this camera frame",
         "shot_brief": "Film shot {idx} only. Camera {camera}. Action: {action}.",
+        "shot_brief_scene": "Scene: {scene}.",
         "shot_brief_cast": "Focus cast on screen: {cast}.",
         "shot_brief_default_camera": "medium / eye-level",
     },
@@ -88,7 +92,6 @@ _PHRASES: dict[str, dict[str, str]] = {
         "says": "{who}说：“{line}”。",
         "says_offscreen": "{who}在画外说：“{line}”。",
         "voice_says": "画外音说：“{line}”。",
-        "audio": "音乐：{bits}。",
         "sound_diegetic_only": "声音：仅本镜头的现场音（动作声与环境底噪）；不要配乐、不要背景音乐、不要氛围音床。",
         "sound_cues_only": "声音：仅{cues}；不要配乐、不要背景音乐、不要氛围音床。",
         "sound_silent": "声音：静音，无对白、无音效、无音乐。",
@@ -97,24 +100,26 @@ _PHRASES: dict[str, dict[str, str]] = {
         "tod_with_lighting": "时间是{label}；{lighting}。",
         "tod": "时间是{label}。",
         "continue": "本镜头开始时，分镜中此前已完成的情节不再重演，同一场景和人物从既定的起始状态继续。",
-        "scene_as_in": "场景如 {scene_word} 所示：{place}。",
-    "scene_as_in_unnamed": "场景如 {scene_word} 所示。",
         "scene_description": "场景描述：{desc}。",
         "props_in_view": "画面中的道具：{props}。",
         "connected_still": "{word} 是相连的静帧「{label}」，该主体在本镜头中可见。",
         "cast_references": "角色参考图",
         "camera": "镜头：{cam}。",
-        "offscreen_heard": "{who}{wearing}位于 {scene_word} 的场景中，在本镜头画框之外，只闻其声。",
+        "in_scene_ref": "位于 {scene_word} 的场景中",
+        "in_scene_plain": "位于场景中",
+        "offscreen_heard": "{who}{wearing}{in_scene}，在本镜头画框之外，只闻其声。",
         "offscreen_wearing": "（身穿{wardrobe}）",
         "cast_from": "{who}（{image_word}）",
+        "cast_name": "{who}",
         "cast_wearing": "身穿{wardrobe}",
         "turnaround_refs": "{images} 各是一个人的正面、侧面、背面三视图加头部特写，镜头里每人只出现一次。",
         "group_variation": "组内每个人的手势、节奏与注意力各不相同，没有两个人是同一姿势。",
-        "cast_seat": "{seat}，位于 {scene_word} 的场景中",
-        "cast_in_scene": "位于 {scene_word} 的场景中（{scene}）",
-        "cast_partial": "位于 {scene_word} 的场景中，部分可见",
-        "cast_out_of_frame": "位于 {scene_word} 的场景中，在本镜头画框之外",
+        "cast_seat": "{seat}，{in_scene}",
+        "cast_in_scene": "{in_scene}",
+        "cast_partial": "{in_scene}，部分可见",
+        "cast_out_of_frame": "{in_scene}，在本镜头画框之外",
         "shot_brief": "仅拍第{idx}镜。镜头：{camera}。动作：{action}。",
+        "shot_brief_scene": "场景：{scene}。",
         "shot_brief_cast": "出镜角色：{cast}。",
         "shot_brief_default_camera": "中景平视",
     },
@@ -128,11 +133,6 @@ _BAD_DIRECTIVE = re.compile(
     r"\bno whip\b|\bno style\b|\balready_done\b|"
     r"\bfor example\b|\be\.g\.\b|\beg\b)"
 )
-_WORD = re.compile(r"[a-z0-9']{4,}")
-_STOP = {
-    "this", "that", "with", "from", "into", "they", "them", "their", "then",
-    "shot", "clip", "scene", "camera", "while", "about", "there", "where",
-}
 
 
 def shot_brief_prompt(
@@ -141,9 +141,14 @@ def shot_brief_prompt(
     camera: str,
     action: str,
     cast_names: list[str] | None = None,
+    scene: str = "",
     lang: str | None = None,
 ) -> str:
-    """User-visible clip prompt seeded from the storyboard row; locks stay in config."""
+    """User-visible clip prompt seeded from the storyboard row; locks stay in config.
+
+    ``scene`` is the place the shot happens in. It is plain text the user may
+    edit or delete; the image binding for the scene plate is added at call time.
+    """
     lang = lang or current_content_language()
     body = phrase(
         _PHRASES,
@@ -153,10 +158,24 @@ def shot_brief_prompt(
         camera=strip_phrase(camera) or phrase(_PHRASES, lang, "shot_brief_default_camera"),
         action=strip_phrase(action),
     )
+    place = strip_phrase(scene)
+    if place:
+        body = join_sentences([body, phrase(_PHRASES, lang, "shot_brief_scene", scene=place)], lang)
     cast = list_separator(lang).join(str(n).strip() for n in (cast_names or []) if str(n).strip())
     if cast:
         body = join_sentences([body, phrase(_PHRASES, lang, "shot_brief_cast", cast=cast)], lang)
     return body
+
+
+def clip_scene_label(cfg: dict[str, Any] | None) -> str:
+    """Place label of a clip's setting, from its scene specs; "" when none is known."""
+    from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
+        visual_place_name,
+    )
+
+    cfg = cfg if isinstance(cfg, dict) else {}
+    specs = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
+    return visual_place_name(specs.get("scene_name"))
 
 
 def active_video_family(model: str | None = None) -> str:
@@ -170,9 +189,7 @@ def active_video_family(model: str | None = None) -> str:
 
 
 def _image_word(index: int, family: str) -> str:
-    if family == "seedance":
-        return f"@Image {index}"
-    return f"Image {index}"
+    return reference_image_word(index, family)
 
 
 def _analysis(graph: dict[str, Any] | None) -> dict[str, Any]:
@@ -210,31 +227,6 @@ def on_screen_names(cfg: dict[str, Any], graph: dict[str, Any] | None) -> list[s
         if label and label not in out:
             out.append(label)
     return out
-
-
-def _scene_name(cfg: dict[str, Any], lang: str = "en") -> str:
-    """Best available place label, or "" when the shot names no place.
-
-    Never asserts a place the storyboard did not provide: the former fallback
-    wrote "the empty room" onto outdoor and aerial shots. Omitting the noun is
-    always safer than naming the wrong one.
-    """
-    bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
-    for key in ("scene_name", "place", "description"):
-        place = str(bible.get(key) or "").strip()
-        if not place:
-            continue
-        place = re.split(r"[.。]", place, maxsplit=1)[0].strip()[:80]
-        if not place:
-            continue
-        # A short label is a place name; a long clause is prose, not a name.
-        # CJK writes without spaces, so cap characters as well as words.
-        if len(place.split()) <= 8 and len(place) <= 40:
-            return place
-    setting = str(cfg.get("setting_id") or "").strip()
-    if setting and not setting.lower().startswith("set_"):
-        return setting
-    return ""
 
 
 def _style_phrase(cfg: dict[str, Any]) -> str:
@@ -292,33 +284,10 @@ def _speech_lines(
     return [phrase(_PHRASES, lang, "voice_says", line=line)]
 
 
-def film_scored_by_music_node(graph: dict[str, Any] | None) -> bool:
-    """A music node feeding compose owns the film score, so no clip may score it."""
-    nodes = [n for n in ((graph or {}).get("nodes") or []) if isinstance(n, dict)]
-    music = {str(n.get("id") or "") for n in nodes if node_pipeline(n) == PIPELINE_MUSIC}
-    music.discard("")
-    if not music:
-        return False
-    compose = {str(n.get("id") or "") for n in nodes if node_pipeline(n) == PIPELINE_COMPOSE}
-    for edge in (graph or {}).get("edges") or []:
-        if not isinstance(edge, dict):
-            continue
-        if str(edge.get("source") or "") in music and str(edge.get("target") or "") in compose:
-            return True
-    return any(
-        music.intersection(str(item) for item in (node_config(n).get(CONFIG_KEY_INPUTS) or []))
-        for n in nodes
-        if node_pipeline(n) == PIPELINE_COMPOSE
-    )
-
-
 def _music_line(cfg: dict[str, Any], lang: str = "en", graph: dict[str, Any] | None = None) -> str:
     """A clip never describes a score.
 
-    The film's music is generated once by the music node and mixed in at compose,
-    so a clip that asked for music made the cut jump and doubled the score. The
-    phrase table and the ``clip_scores_film_music`` validator stay in place to
-    catch a legacy prompt that still carries an in-clip score.
+    The film's music is generated once by the music node and mixed in at compose.
     """
     return ""
 
@@ -962,8 +931,7 @@ def _story_cast_sentence(
     wardrobe: str,
     seat: str,
     doing: str,
-    scene_word: str,
-    scene: str,
+    in_scene: str,
     visibility: str = "full",
     lang: str = "en",
     group: bool = False,
@@ -974,19 +942,22 @@ def _story_cast_sentence(
     glued onto an auxiliary verb whose tense would corrupt it.
     """
     zh = lang == "zh"
-    bits = [phrase(_PHRASES, lang, "cast_from", who=who, image_word=image_word)]
+    if image_word:
+        bits = [phrase(_PHRASES, lang, "cast_from", who=who, image_word=image_word)]
+    else:
+        bits = [phrase(_PHRASES, lang, "cast_name", who=who)]
     if wardrobe:
         bits.append(phrase(_PHRASES, lang, "cast_wearing", wardrobe=wardrobe))
     if visibility == "full":
         if seat:
-            bits.append(phrase(_PHRASES, lang, "cast_seat", seat=seat, scene_word=scene_word))
+            bits.append(phrase(_PHRASES, lang, "cast_seat", seat=seat, in_scene=in_scene))
         else:
-            bits.append(phrase(_PHRASES, lang, "cast_in_scene", scene_word=scene_word, scene=scene))
+            bits.append(phrase(_PHRASES, lang, "cast_in_scene", in_scene=in_scene))
     elif visibility == "partial":
-        bits.append(phrase(_PHRASES, lang, "cast_partial", scene_word=scene_word))
+        bits.append(phrase(_PHRASES, lang, "cast_partial", in_scene=in_scene))
     else:
         # In-setting but out of this frame (not exited). Positive camera framing only.
-        bits.append(phrase(_PHRASES, lang, "cast_out_of_frame", scene_word=scene_word))
+        bits.append(phrase(_PHRASES, lang, "cast_out_of_frame", in_scene=in_scene))
     text = ("，" if zh else ", ").join(bits)
     identity = text if text.endswith((".", "。")) else sentence(text, lang)
     out = identity
@@ -1010,9 +981,16 @@ def compose_practice_prompt(
     action: str = "",
     camera: str = "",
     model: str | None = None,
-    extra_image_labels: list[str] | None = None,
+    slots: list[ReferenceSlot] | None = None,
 ) -> str:
-    """Story-form video prompt: only present cast; omit exited until they return."""
+    """Story-form video prompt: only present cast; omit exited until they return.
+
+    With ``slots`` (the images attached to the call) every image number comes
+    from the attach order, and a member or scene without an attached image is
+    named without one. Without slots the prompt is a seed for a call whose
+    files are not known yet, and cast/scene are numbered in Wan attach order.
+    The place itself is named by the reference binding appended at call time.
+    """
     cfg = cfg if isinstance(cfg, dict) else {}
     family = active_video_family(model)
     gone = {x.casefold() for x in exited_ids(cfg)}
@@ -1025,17 +1003,32 @@ def compose_practice_prompt(
     names = [n for n in on_screen_names(cfg, graph) if n.casefold() not in gone_names]
     lang = current_content_language()
     zh = lang == "zh"
-    place = _scene_name(cfg, lang)
-    extra_labels = [str(item).strip() for item in (extra_image_labels or []) if str(item).strip()]
-    scene_index = max(1, len(tokens) + len(extra_labels) + 1)
-    scene_word = _image_word(scene_index, family)
-    sentences: list[str] = []
-
-    if place:
-        sentences.append(phrase(_PHRASES, lang, "scene_as_in", scene_word=scene_word, place=strip_phrase(place)))
+    if slots is None:
+        scene_word = _image_word(len(tokens) + 1, family)
+        extras: list[tuple[str, str]] = []
     else:
-        # No place name in the storyboard: point at the image without inventing one.
-        sentences.append(phrase(_PHRASES, lang, "scene_as_in_unnamed", scene_word=scene_word))
+        scene = scene_slot(slots)
+        scene_word = _image_word(scene.index, family) if scene is not None else ""
+        extras = [
+            (_image_word(slot.index, family), slot.label)
+            for slot in slots
+            if slot.role in {"upload", "other"}
+        ]
+    in_scene = (
+        phrase(_PHRASES, lang, "in_scene_ref", scene_word=scene_word)
+        if scene_word
+        else phrase(_PHRASES, lang, "in_scene_plain")
+    )
+
+    def cast_word(position: int, who: str) -> str:
+        if slots is None:
+            return _image_word(position, family)
+        for slot in slots:
+            if slot.role == "character" and slot.label.casefold() == who.casefold():
+                return _image_word(slot.index, family)
+        return ""
+
+    sentences: list[str] = []
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
     objects = bible.get("objects") if isinstance(bible.get("objects"), list) else []
     props = [
@@ -1078,17 +1071,17 @@ def compose_practice_prompt(
         who = _name_for_id(token, graph) or str(token)
         if who.casefold() in gone_names:
             continue
-        if token.casefold() in turnaround or who.casefold() in turnaround:
-            turnaround_words.append(_image_word(index, family))
+        image_word = cast_word(index, who)
+        if image_word and (token.casefold() in turnaround or who.casefold() in turnaround):
+            turnaround_words.append(image_word)
         sentences.append(
             _story_cast_sentence(
                 who=who,
-                image_word=_image_word(index, family),
+                image_word=image_word,
                 wardrobe=_wardrobe_for(token, cfg, graph, lang),
                 seat=_seat_for(token, cfg, graph, lang),
                 doing=_action_for(token, cfg, graph, action),
-                scene_word=scene_word,
-                scene=place,
+                in_scene=in_scene,
                 visibility="full",
                 lang=lang,
                 group=_cast_form_for(token, who, graph) == "group",
@@ -1104,8 +1097,7 @@ def compose_practice_prompt(
             )
         )
 
-    for offset, label in enumerate(extra_labels, start=len(tokens) + 1):
-        word = _image_word(offset, family)
+    for word, label in extras:
         sentences.append(phrase(_PHRASES, lang, "connected_still", word=word, label=label))
 
     for who in _partial_names(cfg, graph):
@@ -1118,8 +1110,7 @@ def compose_practice_prompt(
                 wardrobe=_wardrobe_for(who, cfg, graph, lang),
                 seat=_seat_for(who, cfg, graph, lang),
                 doing=_action_for(who, cfg, graph, ""),
-                scene_word=scene_word,
-                scene=place,
+                in_scene=in_scene,
                 visibility="partial",
                 lang=lang,
             )
@@ -1136,7 +1127,7 @@ def compose_practice_prompt(
         wardrobe = _wardrobe_for(who, cfg, graph, lang)
         wearing = phrase(_PHRASES, lang, "offscreen_wearing", wardrobe=wardrobe) if wardrobe else ""
         sentences.append(
-            phrase(_PHRASES, lang, "offscreen_heard", who=who, wearing=wearing, scene_word=scene_word)
+            phrase(_PHRASES, lang, "offscreen_heard", who=who, wearing=wearing, in_scene=in_scene)
         )
 
     cam = strip_phrase(camera or cfg.get("camera") or "")
@@ -1177,24 +1168,6 @@ def compose_practice_prompt(
     text = re.sub(r"\s{2,}", " ", text).strip()
     text, _cov_notes = ensure_story_lock_coverage(text, cfg, graph=graph)
     return text
-
-
-def _covers_beat(prompt: str, action: str) -> bool:
-    words = [w for w in _WORD.findall(action.lower()) if w not in _STOP]
-    if len(words) < 3:
-        return True
-    hay = prompt.lower()
-    hit = sum(1 for word in words if word in hay)
-    return hit >= max(2, int(len(words) * 0.4))
-
-
-def _story_leads_prompt(prompt: str, action: str) -> bool:
-    """Storyboard shot must appear in the narrative body, not only in a trailer line."""
-    text = str(prompt or "").strip()
-    beat = str(action or "").strip()
-    if not beat or len(beat.split()) < 3:
-        return True
-    return _covers_beat(text, beat)
 
 
 def _prompt_origin(cfg: dict[str, Any] | None) -> str:
@@ -1244,375 +1217,3 @@ def resolve_still_call_prompt(cfg: dict[str, Any] | None, fallback: str = "") ->
     if user:
         return user
     return str(fallback or "").strip()
-
-
-_LOCK_BANNER_LINE = re.compile(
-    r"(?i)^\s*(?:style\s*lock|costume\s*lock|clothing\s*lock|wardrobe\s*lock|"
-    r"positioning\s*lock|scene\s*specs|forbid|forbidden|already-?done|on\s*screen)\b"
-)
-# Keep enough Film-shot narrative for prop/color edits (e.g. blue car) to
-# survive rewrite into Image-N practice form.
-_SEED_CAP = 1200
-
-
-def narrative_seed_from_user_prompt(prompt: str) -> str:
-    """Positive story lines from a toolbar prompt; drop lock-essay / forbid noise."""
-    text = str(prompt or "").strip()
-    if not text:
-        return ""
-    if not _BAD_DIRECTIVE.search(text) and not _LOCK_BANNER_LINE.search(text):
-        return text[:_SEED_CAP]
-    chunks: list[str] = []
-    for part in re.split(r"(?<=[.!?])\s+|\n+", text):
-        line = part.strip().lstrip("-").strip()
-        if not line:
-            continue
-        if _BAD_DIRECTIVE.search(line) or _LOCK_BANNER_LINE.search(line):
-            continue
-        # Inline lock essays (same paragraph as Action:) — cut from the banner on.
-        cut = re.split(
-            r"(?i)\b(?:style\s*lock|costume\s*lock|clothing\s*lock|wardrobe\s*lock|"
-            r"positioning\s*lock|scene\s*specs|forbid|forbidden|already-?done|"
-            r"identity\s*sheets|strategy\s*=)\b",
-            line,
-            maxsplit=1,
-        )[0].strip(" ,;.—-")
-        if not cut or _BAD_DIRECTIVE.search(cut):
-            continue
-        chunks.append(cut.rstrip("."))
-    return ". ".join(chunks).strip()[:_SEED_CAP]
-
-
-def _compose_cfg_for_user_origin(cfg: dict[str, Any], *, camera: str) -> dict[str, Any]:
-    """Compose without re-seeding from stale storyboard beats/camera/cast_actions."""
-    out = dict(cfg)
-    out["clip_action"] = ""
-    out["character_action"] = ""
-    out["cast_actions"] = {}
-    out["camera"] = str(camera or "")
-    return out
-
-
-def prompt_respects_practice(
-    prompt: str,
-    *,
-    cfg: dict[str, Any] | None,
-    graph: dict[str, Any] | None = None,
-    honor_user_origin: bool = False,
-) -> list[str]:
-    """Reasons the video call should be rewritten. Empty means it can be sent."""
-    cfg = cfg if isinstance(cfg, dict) else {}
-    if str(cfg.get("reference_call_mode") or "").strip():
-        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
-            reference_prompt_issues,
-        )
-
-        return reference_prompt_issues(str(prompt or ""), cfg)
-    text = str(prompt or "").strip()
-    reasons: list[str] = []
-    if not text:
-        return ["empty"]
-    if len(text) > 2200:
-        reasons.append("too_long")
-    if _BAD_DIRECTIVE.search(text):
-        reasons.append("negative_or_example_or_lock_essay")
-    if not re.search(r"(?i)(?:from\s+(?:@)?image\s*\d+|(?:@)?image\s*\d+\s+is\b)", text):
-        reasons.append("missing_image_binding")
-    if not re.search(r"(?i)scene is as in\s+(?:@)?image\s*\d+|in the scene from\s+(?:@)?image", text):
-        reasons.append("missing_in_scene")
-    for name in on_screen_names(cfg, graph):
-        if name.casefold() in {n.casefold() for n in exited_names(cfg, graph)}:
-            continue
-        if name.casefold() not in text.casefold():
-            reasons.append(f"missing_on_screen:{name}")
-            break
-    if on_screen_names(cfg, graph) and not re.search(r"(?i)\bwearing\b|\bfrom image\b", text):
-        reasons.append("missing_cast_presence")
-    if str(cfg.get("costume_lock") or "").strip() and not re.search(r"(?i)\bwearing\b", text):
-        reasons.append("missing_wardrobe_lock")
-    # Exited cast must not reappear in the call unless storyboard put them on_screen.
-    on = {n.casefold() for n in on_screen_names(cfg, graph)}
-    for name in exited_names(cfg, graph):
-        if name.casefold() in on:
-            continue
-        if name.casefold() in text.casefold():
-            reasons.append(f"exited_cast_leaked:{name}")
-            break
-    seats = cfg.get("seat_anchors") if isinstance(cfg.get("seat_anchors"), dict) else {}
-    if seats and not re.search(
-        r"(?i)\b(?:stays|placement|screen-?left|screen-?right|near|beside|zone|facing|"
-        r"standing|seated|sitting|leaning|kneeling)\b",
-        text,
-    ):
-        reasons.append("missing_placement_handoff")
-    elif str(cfg.get("positioning_lock") or "").strip() and not re.search(
-        r"(?i)\b(?:stays|placement|facing|zone|screen-?left|screen-?right|near|beside)\b",
-        text,
-    ):
-        reasons.append("missing_position_handoff")
-    if str(cfg.get("previous_clip_wan_prompt") or cfg.get("previous_clip_action") or "").strip():
-        if not re.search(r"(?i)\b(?:continue|continues|same setting|same placement|same room)\b", text):
-            reasons.append("missing_prior_continue")
-    if film_scored_by_music_node(graph):
-        # A clip never writes a score any more, so a hit here is a stale prompt:
-        # match the score label itself rather than a phrase this build emits.
-        labels = [
-            str(_PHRASES[lang].get("audio") or "").split("{bits}")[0].strip().casefold()
-            for lang in _PHRASES
-        ]
-        if any(label and label in text.casefold() for label in labels):
-            reasons.append("clip_scores_film_music")
-    # Toolbar user edits are authoritative for beat fidelity; do not force stale clip_action.
-    if not honor_user_origin:
-        action = str(cfg.get("clip_action") or "").strip()
-        if action and not _covers_beat(text, action):
-            reasons.append("misses_storyboard_beat")
-        if action and not _story_leads_prompt(text, action):
-            reasons.append("story_buried_under_locks")
-    # Film-lock content coverage (story prose, not LOCK banners).
-    if _has_spoken_dialogue(cfg):
-        lang = str(cfg.get("language_lock") or "").strip()
-        if lang:
-            display = _language_display(lang).lower()
-            mentioned = "spoken dialogue" in text.casefold() or (
-                display
-                and re.search(rf"(?i)\b{re.escape(display)}\b", text) is not None
-            )
-            if not mentioned and len(lang) > 3 and lang.lower() in text.casefold():
-                mentioned = True
-            if not mentioned:
-                reasons.append("missing_language_lock")
-    payload = _time_of_day_payload(cfg)
-    if (
-        payload.get("time_of_day")
-        and payload["time_of_day"].lower() != "unspecified"
-        and not _tod_covered_in_text(text, cfg)
-    ):
-        reasons.append("missing_time_of_day")
-    quotes = [str(cfg.get("speech_line") or "").strip().strip('"')]
-    by_char = cfg.get("speech_by_character") if isinstance(cfg.get("speech_by_character"), dict) else {}
-    quotes.extend(str(value or "").strip().strip('"') for value in by_char.values())
-    gone = {n.casefold() for n in exited_names(cfg, graph)}
-    for quote in quotes:
-        if not quote:
-            continue
-        # Skip speech attributed only to exited people — they are omitted from the call.
-        skip = False
-        for key, value in by_char.items():
-            if str(value or "").strip().strip('"').casefold() == quote.casefold():
-                if _name_for_id(str(key), graph).casefold() in gone:
-                    skip = True
-                    break
-        if skip:
-            continue
-        if quote.casefold() not in text.casefold():
-            reasons.append("misses_speech")
-            break
-    return reasons
-
-
-_ACTION_LABELS = ("primary action", "character action", "storyboard shot", "storyboard beat", "action")
-
-
-def _pull_labeled(prompt: str, prefixes: tuple[str, ...]) -> str:
-    """First matching label wins. Prefix order is priority, not line order."""
-    lines = [raw.strip().lstrip("-").strip() for raw in str(prompt or "").splitlines()]
-    for prefix in prefixes:
-        for line in lines:
-            low = line.lower()
-            rest = low[len(prefix):].lstrip() if low.startswith(prefix) else ""
-            if rest and re.match(r"^(?:\d+\s*)?:", rest):
-                value = line.split(":", 1)[-1].strip().strip(".")
-                value = re.split(
-                    r"(?i)\b(?:no whip|no crash|do not|don't|never|forbid)\b",
-                    value,
-                    maxsplit=1,
-                )[0].strip(" ,;.—-")
-                if value and not _BAD_DIRECTIVE.search(value):
-                    return value[:240]
-    return ""
-
-
-def director_prepare_video_prompt(
-    prompt: str,
-    *,
-    cfg: dict[str, Any] | None,
-    graph: dict[str, Any] | None = None,
-    clip_index: int = 0,
-    model: str | None = None,
-    action: str = "",
-    camera: str = "",
-    extra_image_labels: list[str] | None = None,
-) -> tuple[str, list[str]]:
-    """Keep a concise faithful story-form prompt; otherwise rewrite locks into narrative."""
-    del clip_index
-    cfg = cfg if isinstance(cfg, dict) else {}
-    user_text = resolve_user_origin_prompt(cfg, prompt)
-    honor_user = bool(user_text)
-    if honor_user:
-        prompt = user_text
-    if str(cfg.get("reference_call_mode") or "").strip():
-        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
-            compose_reference_clip_prompt,
-            reference_prompt_issues,
-        )
-
-        raw = str(prompt or "").strip()
-        reasons = reference_prompt_issues(raw, cfg)
-        if not reasons:
-            note = "kept_user_prompt" if honor_user else "kept_reference_led_prompt"
-            return raw, [note]
-        return compose_reference_clip_prompt(cfg), ["rewritten_reference_led", *reasons]
-    reasons = prompt_respects_practice(
-        prompt, cfg=cfg, graph=graph, honor_user_origin=honor_user,
-    )
-    try:
-        from jiuwenswarm.server.runtime.designer.pipeline.shot_consistency_contract import (
-            prompt_violates_consistency,
-        )
-
-        for r in prompt_violates_consistency(prompt, cfg=cfg):
-            if r not in reasons:
-                reasons.append(r)
-    except Exception:  # noqa: BLE001
-        pass
-    # Lock essays / labeled banners are not story form.
-    raw = str(prompt or "").strip()
-    if extra_image_labels:
-        reasons = [*reasons, "wired_user_images"]
-    if raw and re.search(
-        r"(?i)\b(?:costume lock|positioning lock|scene specs|style lock|forbid|already-?done)\b"
-        r"|^\s*on screen\s*:",
-        raw,
-        flags=re.M,
-    ):
-        reasons = [*reasons, "lock_banner_not_story"]
-    if not reasons:
-        note = "kept_user_prompt" if honor_user else "kept_agent_prompt"
-        return raw, [note]
-    # User-origin rewrites seed action/camera from the user surface, not stale beats.
-    if honor_user:
-        mined_action = (
-            narrative_seed_from_user_prompt(action)
-            or narrative_seed_from_user_prompt(user_text)
-            or _pull_labeled(
-                user_text,
-                ("primary action", "character action", "storyboard shot", "storyboard beat", "action"),
-            )
-        )
-        move = _pull_labeled(user_text, ("camera move",))
-        angle = camera or _pull_labeled(user_text, ("camera for shot", "camera"))
-    else:
-        mined_action = (
-            action
-            or str(cfg.get("clip_action") or "")
-            or _pull_labeled(prompt, _ACTION_LABELS)
-        )
-        move = _pull_labeled(prompt, ("camera move",))
-        angle = (
-            camera
-            or str(cfg.get("camera") or "")
-            or _pull_labeled(prompt, ("camera for shot", "camera"))
-        )
-    if move and angle and move.casefold() not in angle.casefold():
-        mined_camera = f"{move}, {angle}"
-    else:
-        mined_camera = move or angle
-    compose_cfg = (
-        _compose_cfg_for_user_origin(cfg, camera=mined_camera) if honor_user else cfg
-    )
-    composed = compose_practice_prompt(
-        cfg=compose_cfg,
-        graph=graph,
-        action=mined_action,
-        camera=mined_camera,
-        model=model,
-        extra_image_labels=extra_image_labels,
-    )
-    return composed, ["director_rewrote", *reasons]
-
-
-def director_approve_video_prompt(
-    prompt: str,
-    *,
-    cfg: dict[str, Any] | None,
-    graph: dict[str, Any] | None = None,
-    clip_index: int = 0,
-    model: str | None = None,
-    action: str = "",
-    camera: str = "",
-    extra_image_labels: list[str] | None = None,
-) -> tuple[str, list[str]]:
-    """Director gate: concise story-form that still enforces wardrobe/seat/visibility locks.
-
-    Approves a leaf rewrite when it is narrative, faithful, and short. Otherwise edits
-    via compose_practice_prompt into the story-form Image-N binding.
-
-    When generate.prompt_origin == user and a non-empty user prompt exists, that text
-    is authoritative for beat fidelity; storyboard clip_action/camera are not forced.
-    """
-    cfg = cfg if isinstance(cfg, dict) else {}
-    user_text = resolve_user_origin_prompt(cfg, prompt)
-    honor_user = bool(user_text)
-    if honor_user:
-        prompt = user_text
-        beat = (
-            narrative_seed_from_user_prompt(action)
-            or narrative_seed_from_user_prompt(user_text)
-            or user_text
-        )
-        cam = (
-            camera
-            or _pull_labeled(user_text, ("camera move", "camera for shot", "camera"))
-        )
-    else:
-        beat = (
-            action
-            or str(cfg.get("clip_action") or "")
-            or _pull_labeled(prompt, _ACTION_LABELS)
-        )
-        cam = (
-            camera
-            or str(cfg.get("camera") or "")
-            or _pull_labeled(prompt, ("camera move", "camera for shot", "camera"))
-        )
-    approved, notes = director_prepare_video_prompt(
-        prompt,
-        cfg=cfg,
-        graph=graph,
-        clip_index=clip_index,
-        model=model,
-        action=beat,
-        camera=cam,
-        extra_image_labels=extra_image_labels,
-    )
-    reasons = list(notes)
-    # Storyboard beat force-rewrite stays for non-user origins only.
-    if not honor_user and beat and not _covers_beat(approved, beat):
-        approved = compose_practice_prompt(
-            cfg=cfg,
-            graph=graph,
-            action=beat,
-            camera=cam,
-            model=model,
-            extra_image_labels=extra_image_labels,
-        )
-        reasons = ["director_rewrote_for_storyboard", *reasons]
-    elif not honor_user and beat and not _story_leads_prompt(approved, beat):
-        approved = compose_practice_prompt(
-            cfg=cfg,
-            graph=graph,
-            action=beat,
-            camera=cam,
-            model=model,
-            extra_image_labels=extra_image_labels,
-        )
-        reasons = ["director_rewrote_story_first", *reasons]
-    elif "director_rewrote" not in notes and (
-        "kept_agent_prompt" in notes or "kept_user_prompt" in notes
-    ):
-        tag = "director_approved_user" if honor_user else "director_approved"
-        reasons = [tag, *reasons]
-    else:
-        reasons = ["director_checked", *reasons]
-    return approved.strip(), reasons

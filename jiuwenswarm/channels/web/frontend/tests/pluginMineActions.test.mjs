@@ -15,12 +15,14 @@ await build({
     'src/components/ConnectorMarket/MarketplacePage.tsx',
     'src/components/ConnectorMarket/PluginDetailPage.tsx',
     'src/components/ConnectorMarket/SystemPluginDetailPage.tsx',
+    'src/multi-session/state/createConversationSession.ts',
   ],
   bundle: true,
   packages: 'external',
   platform: 'node',
   format: 'esm',
   outdir: 'node_modules/.cache/plugin-mine-actions',
+  entryNames: '[name]',
   outExtension: { '.js': '.mjs' },
   loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
   define: { 'import.meta.env': '{}' },
@@ -127,6 +129,7 @@ await i18next.use(initReactI18next).init({
 const { MarketplacePage } = await import('../node_modules/.cache/plugin-mine-actions/MarketplacePage.mjs');
 const { PluginDetailPage } = await import('../node_modules/.cache/plugin-mine-actions/PluginDetailPage.mjs');
 const { SystemPluginDetailPage } = await import('../node_modules/.cache/plugin-mine-actions/SystemPluginDetailPage.mjs');
+const { createConversationSession } = await import('../node_modules/.cache/plugin-mine-actions/createConversationSession.mjs');
 const plugin = {
   id: 'legacy-plugin', runtimePackageName: 'legacy-plugin', source: 'local',
   displayName: { zh: '本地插件', en: 'Local plugin' },
@@ -156,7 +159,7 @@ function resetState({ installed = false, connected = false } = {}) {
     connect: async name => { calls.connect.push(name); return null; },
   };
   globalThis.systemPluginActionState = {
-    catalog: [], mine: [], detailCache: {}, busyIds: {}, loading: false,
+    catalog: [], mine: [], detailCache: {}, busyIds: {}, installingIds: {}, loading: false,
     loadDetail: async () => true,
     install: async id => { calls.systemInstall.push(id); return { ok: true }; },
     uninstall: async () => ({ ok: true }),
@@ -362,6 +365,52 @@ test('system plugin detail install continues when conflict discovery fails', asy
   });
 });
 
+for (const [confirmation, version, outcome, fallback, expectedNavigation] of [
+  ['secondary', '2.0.0', { ok: true, detail: 'removed' }, false, ['deleted']],
+  ['ok', undefined, { ok: true, detail: 'removed' }, false, ['deleted']],
+  ['secondary', '2.0.0', { ok: true, detail: 'removed' }, true, ['back']],
+  ['secondary', '2.0.0', { ok: true, detail: 'updated' }, false, []],
+  ['secondary', '2.0.0', { ok: true, detail: 'unavailable' }, false, []],
+  ['secondary', '2.0.0', { ok: false, error: 'uninstall denied' }, false, []],
+]) {
+  test(`system plugin uninstall handles ${outcome.detail ?? 'failure'} (${confirmation}, fallback ${fallback})`, async () => {
+    resetState();
+    const state = globalThis.systemPluginActionState;
+    state.detailCache['target-asset'] = {
+      id: 'target-asset', assetId: 'target-asset', packageId: 'target-plugin', version: '2.0.0',
+      versions: ['1.0.0', '2.0.0'], installedVersion: '2.0.0', displayName: { zh: '目标插件', en: 'Target plugin' },
+      displayDescription: '', details: '', readme: '', tags: [], avatar: null, preview: null, events: [],
+      installed: true, active: true, enabled: true, source: 'hub', origin: 'hub',
+    };
+    const detailCalls = [];
+    state.loadDetail = async (...args) => { detailCalls.push(args); return true; };
+    const uninstallCalls = [];
+    state.uninstall = async (...args) => {
+      uninstallCalls.push(args);
+      if (outcome.detail === 'unavailable') state.detailCache = {};
+      return outcome;
+    };
+    const navigation = [];
+    await render(SystemPluginDetailPage, {
+      id: 'target-asset', onBack: () => navigation.push('back'),
+      onDeleted: fallback ? undefined : () => navigation.push('deleted'),
+    }, async host => {
+      await act(async () => host.querySelector('[data-testid="connector-market-system-plugin-detail-uninstall"]').click());
+      const dialog = document.querySelector('[data-testid="connector-market-confirm-dialog"]');
+      await act(async () => dialog.querySelector(`[data-testid="connector-market-confirm-${confirmation}"]`).click());
+      assert.deepEqual(uninstallCalls, [['target-plugin', version, 'target-asset']]);
+      assert.deepEqual(navigation, expectedNavigation);
+      assert.deepEqual(detailCalls, [['target-asset']]);
+      const error = host.querySelector('[data-testid="connector-market-system-plugin-detail-error"]');
+      assert.equal(error?.textContent, outcome.error);
+      if (outcome.detail === 'unavailable') {
+        assert.ok(host.querySelector('[data-testid="connector-market-system-plugin-detail-state-body"] button'));
+        assert.equal(host.querySelector('[data-testid="connector-market-system-plugin-detail-uninstall"]'), null);
+      }
+    });
+  });
+}
+
 for (const fromMy of [true, false]) {
   test(`${fromMy ? 'my' : 'marketplace'} uninstalled plugin detail respects the page action scope`, async () => {
     const calls = resetState();
@@ -383,6 +432,40 @@ for (const fromMy of [true, false]) {
     });
   });
 }
+
+test('session creation preserves the selected memory plugin', async () => {
+  const equipment = { plugin_names: ['agent-memory-plugin'] };
+  const created = await createConversationSession(
+    async () => ({ sessionId: 'web_real', projectId: 'default', workMode: 'work', session_equipment: equipment }),
+    { create_token: 'stable-token', mode: 'agent', persist_session: true },
+  );
+  assert.deepEqual(created.session_equipment, equipment);
+});
+
+test('memory plugin detail shows the managed HTTP listener without transport controls', async () => {
+  resetState({ installed: true, connected: true });
+  globalThis.pluginActionState.detailCache[plugin.id].memoryAccess = {
+    mode: 'http', managed_http: { running: true, base_url: 'http://127.0.0.1:8137' },
+  };
+
+  await render(PluginDetailPage, { id: plugin.id, onBack() {} }, async host => {
+    assert.match(host.textContent, /内置 HTTP 服务/);
+    assert.match(host.textContent, /服务运行中/);
+    assert.match(host.textContent, /127\.0\.0\.1:8137/);
+    assert.equal(host.querySelector('input[type="url"], input[type="password"], [role="radiogroup"]'), null);
+  });
+});
+
+test('memory plugin detail remains usable without listener status', async () => {
+  resetState({ installed: true, connected: true });
+  globalThis.pluginActionState.detailCache[plugin.id].memoryAccess = { mode: 'http', managed_http: null };
+
+  await render(PluginDetailPage, { id: plugin.id, fromMy: true, onBack() {}, onUse() {} }, async host => {
+    const use = host.querySelector('[data-testid="connector-market-plugin-detail-use"]');
+    assert.ok(use);
+    assert.equal(use.disabled, false);
+  });
+});
 
 test('my ready plugin detail can use the installed package', async () => {
   const calls = resetState({ installed: true, connected: true });
@@ -424,5 +507,118 @@ test('mcp marketplace search failure shows an error toast instead of a silent em
     assert.equal(record.variant, 'error');
     assert.match(String(record.content), /连接器广场暂时不可用/);
     assert.match(String(record.content), /Hub unavailable/);
+  });
+});
+
+test('system plugin detail uninstall confirms once when only one version exists', async () => {
+  await i18next.changeLanguage('zh');
+  const calls = resetState();
+  const uninstalled = [];
+  globalThis.systemPluginActionState.uninstall = async (id, version) => {
+    uninstalled.push([id, version]);
+    return { ok: true, detail: 'removed' };
+  };
+  globalThis.systemPluginActionState.detailCache['demo.suite'] = {
+    id: 'demo.suite', packageId: 'demo.suite', version: '1.0.0', versions: ['1.0.0'],
+    installedVersion: '1.0.0', displayName: { zh: '演示组合包', en: 'Demo suite' },
+    displayDescription: { zh: '', en: 'Bundle' }, details: '', readme: '', tags: [],
+    avatar: null, preview: null, events: [], installed: true, active: true, enabled: true,
+    kind: 'bundle', overallStatus: 'enabled', systemPlugins: [], source: 'local', origin: 'user',
+  };
+  let deleted = 0;
+  await render(
+    SystemPluginDetailPage,
+    { id: 'demo.suite', onBack() {}, onDeleted() { deleted += 1; } },
+    async host => {
+      await act(async () => host.querySelector('[data-testid="connector-market-system-plugin-detail-uninstall"]').click());
+      const dialog = document.querySelector('[data-testid="connector-market-confirm-dialog"]');
+      assert.ok(dialog);
+      assert.equal(dialog.querySelector('[data-testid="connector-market-confirm-secondary"]'), null);
+      assert.deepEqual(uninstalled, []);
+      await act(async () => dialog.querySelector('[data-testid="connector-market-confirm-ok"]').click());
+    },
+  );
+  assert.deepEqual(uninstalled, [['demo.suite', '1.0.0']]);
+  assert.equal(deleted, 1);
+});
+
+test('system plugin detail toggle carries the version in view', async () => {
+  await i18next.changeLanguage('zh');
+  const calls = resetState();
+  const toggles = [];
+  globalThis.systemPluginActionState.setEnabled = async (id, enable, version) => {
+    toggles.push([id, enable, version]);
+    return { ok: true };
+  };
+  globalThis.systemPluginActionState.detailCache['demo.suite'] = {
+    id: 'demo.suite', packageId: 'demo.suite', version: '1.0.0', versions: ['1.0.0', '1.0.1'],
+    installedVersion: '1.0.0', displayName: { zh: '演示组合包', en: 'Demo suite' },
+    displayDescription: { zh: '', en: 'Bundle' }, details: '', readme: '', tags: [],
+    avatar: null, preview: null, events: [], installed: true, active: true, enabled: true,
+    kind: 'bundle', overallStatus: 'enabled', systemPlugins: [], source: 'local', origin: 'user',
+  };
+  await render(SystemPluginDetailPage, { id: 'demo.suite', onBack() {} }, async host => {
+    const toggle = host.querySelector('[data-testid="connector-market-system-plugin-detail-enabled"] button');
+    assert.ok(toggle);
+    await act(async () => toggle.click());
+  });
+  assert.deepEqual(toggles, [['demo.suite', false, '1.0.0']]);
+});
+
+for (const language of ['zh', 'en']) {
+  test(`system plugin card shows the installing state while install runs (${language})`, async () => {
+    await i18next.changeLanguage(language);
+    const calls = resetState();
+    const systemPlugin = {
+      id: 'token-weather', packageId: 'token-weather', version: '1.0.0', installedVersion: '',
+      displayName: { zh: 'Token 天气', en: 'Token Weather' },
+      displayDescription: { zh: '系统插件', en: 'System plugin' },
+      tags: [], avatar: null, installed: false, active: false, enabled: false,
+    };
+    globalThis.systemPluginActionState.catalog = [systemPlugin];
+    globalThis.systemPluginActionState.installingIds = { 'token-weather': true };
+
+    await render(MarketplacePage, marketProps(calls, 'plugin', 'plugin', 'system'), async host => {
+      assert.match(host.textContent, language === 'zh' ? /安装中/ : /Installing/);
+      assert.equal(host.querySelector('[data-testid="connector-market-card-install"]'), null);
+    });
+  });
+}
+
+test('system plugin card returns to the install action after install fails', async () => {
+  await i18next.changeLanguage('zh');
+  const calls = resetState();
+  globalThis.systemPluginActionState.installingIds = {};
+  globalThis.systemPluginActionState.catalog = [{
+    id: 'token-weather', packageId: 'token-weather', version: '1.0.0', installedVersion: '',
+    displayName: { zh: 'Token 天气', en: 'Token Weather' },
+    displayDescription: { zh: '系统插件', en: 'System plugin' },
+    tags: [], avatar: null, installed: false, active: false, enabled: false,
+  }];
+
+  await render(MarketplacePage, marketProps(calls, 'plugin', 'plugin', 'system'), async host => {
+    assert.ok(host.querySelector('[data-testid="connector-market-card-install"]'));
+    assert.doesNotMatch(host.textContent, /安装中/);
+  });
+});
+
+test('system plugin detail install shows the installing label while running', async () => {
+  await i18next.changeLanguage('zh');
+  const calls = resetState();
+  globalThis.systemPluginActionState.installingIds = { 'target-asset': true };
+  globalThis.systemPluginActionState.detailCache['target-asset'] = {
+    id: 'target-asset', assetId: 'target-asset', packageId: 'target-plugin', version: '1.0.0',
+    versions: ['1.0.0'], installedVersion: '', displayName: { zh: '目标插件', en: 'Target plugin' },
+    displayDescription: { zh: '待安装', en: 'Not installed' }, details: '', readme: '', tags: [],
+    avatar: null, preview: null, events: [], installed: false, active: false, enabled: true,
+    kind: 'plugin', overallStatus: 'not-installed', systemPlugins: [], source: 'hub', origin: 'hub',
+  };
+
+  await render(SystemPluginDetailPage, { id: 'target-asset', onBack() {} }, async host => {
+    const button = host.querySelector('[data-testid="connector-market-system-plugin-detail-install"]');
+    assert.ok(button);
+    assert.match(button.textContent, /安装中/);
+    assert.equal(button.getAttribute('aria-busy'), 'true');
+    assert.equal(button.disabled, true);
   });
 });

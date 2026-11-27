@@ -227,7 +227,7 @@ async def _stop_tree(proc: asyncio.subprocess.Process) -> None:
     if proc.returncode is None:
         try:
             children = psutil.Process(proc.pid).children(recursive=True)
-        except psutil.Error:
+        except (psutil.Error, PermissionError):
             pass
     if os.name != "nt":
         # Killed whether or not the launcher is still alive: a launcher that exited
@@ -326,15 +326,25 @@ class LarkCli:
         cmd = self._base_args(executable) + list(args)
         limit = self._timeout if timeout is None else timeout
         async with _store_lock(self._store):
+            spawn = asyncio.create_task(asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._env,
+                # Its own process group, so a stop reaches the whole tree.
+                start_new_session=os.name != "nt",
+            ))
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=self._env,
-                    # Its own process group, so a stop reaches the whole tree.
-                    start_new_session=os.name != "nt",
-                )
+                proc = await asyncio.shield(spawn)
+            except asyncio.CancelledError:
+                # The launcher may already have started children before asyncio returns its handle.
+                try:
+                    proc = await spawn
+                except OSError:
+                    pass
+                else:
+                    await _stop_tree(proc)
+                raise
             except OSError as exc:
                 raise ProviderError("transport", f"无法启动 {self._binary}：{exc}") from exc
             try:

@@ -240,6 +240,34 @@ async def test_reenabled_application_view_resumes_above_package_clear_revision(t
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_absent_application_clear_failure_restores_revision(tmp_path: Path, cancel: bool) -> None:
+    transport = FakeTransport()
+    runtime, _manager = await _runtime(tmp_path, transport)
+    target = RenderTarget("", "application.sidebar.footer", PACKAGE, INSTANCE,
+                          scope="application", connection_id="web-1")
+    first = await runtime.render(UiRenderInput(target=target, mode=RenderMode.CLEAR))
+    assert first is not None and first.revision == 1
+
+    if cancel:
+        async def cancel_clear(frame):
+            raise asyncio.CancelledError()
+
+        transport.send_clear = cancel_clear
+        with pytest.raises(asyncio.CancelledError):
+            await runtime.render(UiRenderInput(target=target, mode=RenderMode.CLEAR))
+    else:
+        transport.fail = True
+        failed = await runtime.render(UiRenderInput(target=target, mode=RenderMode.CLEAR))
+        assert failed is not None and failed.status is RenderStatus.DELIVERY_FAILED
+        transport.fail = False
+
+    result = await runtime.render(UiRenderInput(target=target, root=RenderNode("Text", {"value": "visible"})))
+    assert result is not None and result.revision == 2
+    assert transport.frames[-1].revision > transport.clears[-1].revision
+
+
+@pytest.mark.asyncio
 async def test_eviction_happens_after_the_new_frame_is_delivered(tmp_path: Path) -> None:
     transport = FakeTransport()
     registry = ActiveRenderRegistry(max_instances_per_session=1)
@@ -255,6 +283,133 @@ async def test_eviction_happens_after_the_new_frame_is_delivered(tmp_path: Path)
     assert runtime.registry.get(first) is None
     assert runtime.registry.get(second) is not None
     assert [frame.target.key for frame in transport.clears] == [first.key]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("slot_id", "limit"),
+    [
+        ("conversation.header.title.after", 2),
+        ("conversation.header.actions", 3),
+    ],
+)
+async def test_header_slot_instance_limit_rejects_new_instances(
+    tmp_path: Path,
+    slot_id: str,
+    limit: int,
+) -> None:
+    transport = FakeTransport()
+    runtime, _manager = await _runtime(tmp_path, transport)
+    targets = [
+        RenderTarget("s1", slot_id, f"pkg.{index}", "main")
+        for index in range(limit)
+    ]
+
+    for index, target in enumerate(targets):
+        delivered = await runtime.render(
+            UiRenderInput(target=target, root=RenderNode("Text", {"value": str(index)}))
+        )
+        assert delivered is not None and delivered.status is RenderStatus.DELIVERED
+
+    blocked = RenderTarget("s1", slot_id, "pkg.overflow", "main")
+    rejected = await runtime.render(
+        UiRenderInput(target=blocked, root=RenderNode("Text", {"value": "blocked"}))
+    )
+
+    assert rejected is not None and rejected.status is RenderStatus.REJECTED
+    assert runtime.registry.get(blocked) is None
+    assert transport.errors == []
+
+    updated = await runtime.render(
+        UiRenderInput(target=targets[0], root=RenderNode("Text", {"value": "updated"}))
+    )
+    assert updated is not None and updated.status is RenderStatus.DELIVERED
+
+
+@pytest.mark.asyncio
+async def test_sidebar_footer_limits_new_instances_per_connection(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    runtime, _manager = await _runtime(tmp_path, transport)
+    slot_id = "application.sidebar.footer"
+    root = RenderNode("Text", {"value": "footer"})
+    accepted = [
+        RenderTarget(
+            "", slot_id, f"pkg.{index}", "footer",
+            scope="application", connection_id="web-1",
+        )
+        for index in range(3)
+    ]
+    blocked = RenderTarget(
+        "", slot_id, "pkg.overflow", "footer",
+        scope="application", connection_id="web-1",
+    )
+    other = RenderTarget(
+        "", slot_id, "pkg.other", "footer",
+        scope="application", connection_id="web-2",
+    )
+
+    for index, target in enumerate(accepted):
+        delivered = await runtime.render(
+            UiRenderInput(target=target, root=RenderNode("Text", {"value": str(index)}))
+        )
+        assert delivered is not None and delivered.status is RenderStatus.DELIVERED
+
+    rejected = await runtime.render(UiRenderInput(target=blocked, root=root))
+    isolated = await runtime.render(UiRenderInput(target=other, root=root))
+    updated = await runtime.render(
+        UiRenderInput(target=accepted[0], root=RenderNode("Text", {"value": "updated"}))
+    )
+
+    assert rejected is not None and rejected.status is RenderStatus.REJECTED
+    assert isolated is not None and isolated.status is RenderStatus.DELIVERED
+    assert updated is not None and updated.status is RenderStatus.DELIVERED
+    assert runtime.registry.get(blocked) is None
+    assert transport.errors == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_header_render_releases_slot_capacity(tmp_path: Path) -> None:
+    transport = DelayedTransport(blocked_instance="cancelled")
+    runtime, _manager = await _runtime(tmp_path, transport)
+    slot_id = "conversation.header.title.after"
+    cancelled = RenderTarget("s1", slot_id, PACKAGE, "cancelled")
+    root = RenderNode("Text", {"value": "title"})
+    task = asyncio.create_task(runtime.render(UiRenderInput(target=cancelled, root=root)))
+    try:
+        await asyncio.wait_for(transport.entered.wait(), timeout=2)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert runtime.registry.get(cancelled) is None
+    targets = [RenderTarget("s1", slot_id, PACKAGE, key) for key in ("first", "second")]
+    for target in targets:
+        result = await runtime.render(UiRenderInput(target=target, root=root))
+        assert result is not None and result.status is RenderStatus.DELIVERED
+
+    assert [frame.target.key for frame in transport.frames] == [target.key for target in targets]
+
+
+@pytest.mark.asyncio
+async def test_header_cleanup_at_capacity_does_not_evict_other_instances(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    registry = ActiveRenderRegistry(max_instances_per_session=2)
+    runtime, _manager = await _runtime(tmp_path, transport, registry=registry)
+    slot_id = "conversation.header.title.after"
+    root = RenderNode("Text", {"value": "title"})
+    targets = [RenderTarget("s1", slot_id, PACKAGE, key) for key in ("first", "second")]
+    for target in targets:
+        result = await runtime.render(UiRenderInput(target=target, root=root))
+        assert result is not None and result.status is RenderStatus.DELIVERED
+
+    missing = RenderTarget("s1", slot_id, PACKAGE, "missing")
+    for _ in range(2):
+        result = await runtime.render(UiRenderInput(target=missing, mode=RenderMode.CLEAR))
+        assert result is not None and result.status is RenderStatus.DELIVERED
+
+    assert [instance.target.key for instance in registry.snapshot()] == [target.key for target in targets]
+    assert [frame.target.key for frame in transport.clears] == [missing.key, missing.key]
 
 
 @pytest.mark.asyncio

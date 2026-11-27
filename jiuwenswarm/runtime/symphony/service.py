@@ -20,8 +20,8 @@ from typing import Any, Callable, TypeAlias
 
 import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
 
-from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.model_error_messages import user_facing_model_error
+from jiuwenswarm.enterprise.config.preferred_language import resolve_preferred_language
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 from jiuwenswarm.server.runtime.skill.skillpack import (
     load_skillpack,
@@ -420,9 +420,7 @@ class SwarmSymphonyService:
         if candidate_skill_ids is not None and (capability_type != "skill" or candidate_ids is not None):
             return {"success": False, "detail": "candidate_skill_ids is a Skill-only alias for candidate_ids"}
         candidate_ids = normalize_candidate_ids(candidate_ids if candidate_ids is not None else candidate_skill_ids)
-        language = _resolve_orchestration_language(
-            get_config().get("preferred_language", "zh")
-        )
+        language = _resolve_orchestration_language(resolve_preferred_language())
         config = load_symphony_config()
         requested_mode = str(mode or config.orchestration.plan.mode).strip()
         try:

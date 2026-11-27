@@ -64,6 +64,9 @@ class SlotSpec:
     capacity: str
     scope: SlotScope
     additional_scopes: tuple[SlotScope, ...] = ()
+    # Optional per-slot instance cap. It is independent of the global
+    # MAX_INSTANCES_PER_SESSION budget and only rejects newly created instances.
+    max_instances: int | None = None
 
     def accepts_scope(self, scope: str) -> bool:
         """Accept only the default or explicitly declared alternate scopes."""
@@ -75,8 +78,14 @@ def _slot(
     scope: SlotScope = SlotScope.SESSION,
     *,
     additional_scopes: tuple[SlotScope, ...] = (),
+    max_instances: int | None = None,
 ) -> SlotSpec:
-    return SlotSpec(capacity=capacity, scope=scope, additional_scopes=additional_scopes)
+    return SlotSpec(
+        capacity=capacity,
+        scope=scope,
+        additional_scopes=additional_scopes,
+        max_instances=max_instances,
+    )
 
 
 # Allowlist. Session rows still require a chat id. Application rows are delivered
@@ -84,19 +93,21 @@ def _slot(
 SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
     {
         "application.entry": _slot("single", SlotScope.APPLICATION),
-        "application.sidebar.footer": _slot("list", SlotScope.APPLICATION),
+        # Keep the sidebar footer cap in sync with catalog/slots.ts maxVisible.
+        "application.sidebar.footer": _slot("list", SlotScope.APPLICATION, max_instances=3),
         "conversation.input.above": _slot("list"),
         "conversation.input.below": _slot("single"),
         "conversation.panel.right": _slot("list"),
-        "application.menu": _slot("list"),
-        "application.menu.main": _slot("single"),
+        "application.menu": _slot("list", SlotScope.APPLICATION),
+        "application.menu.main": _slot("single", SlotScope.APPLICATION),
         "task.function": _slot("list", SlotScope.APPLICATION),
         "task.function.main": _slot("single", SlotScope.APPLICATION),
         "application.settings": _slot("list", additional_scopes=(SlotScope.APPLICATION,)),
         "conversation.session.content.after": _slot("list"),
         "conversation.turn.footer.actions": _slot("list"),
-        "conversation.header.title.after": _slot("list"),
-        "conversation.header.actions": _slot("list"),
+        # Keep in sync with catalog/slots.ts maxVisible.
+        "conversation.header.title.after": _slot("list", max_instances=2),
+        "conversation.header.actions": _slot("list", max_instances=3),
         "message.assistant.meta": _slot("list"),
     }
 )

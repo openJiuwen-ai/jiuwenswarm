@@ -102,9 +102,24 @@ class SessionLogMiddleware:
             unbind_log_session(token, previous_trace)
 
 
+def _exclude_health_telemetry(scope: Scope) -> bool:
+    """Keep health probes out of native FastAPI telemetry, including failures."""
+    return (
+        scope.get("type") == "http"
+        and scope.get("method") == "GET"
+        and scope.get("path") == f"{API_PREFIX}/health"
+    )
+
+
 def build_http_app(app_services: AppServices) -> FastAPI:
     """造出 HTTP 应用。业务函数通过工具箱拿服务，不接触 WebSocket 服务器。"""
-    app = FastAPI(title="JiuwenSwarm HTTP", docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="JiuwenSwarm HTTP",
+        docs_url=None,
+        redoc_url=None,
+        # Older FastAPI versions accept this extra argument without native telemetry.
+        telemetry={"exclude": _exclude_health_telemetry},
+    )
     app.add_middleware(SessionLogMiddleware)
     # 后加的包在最外层，先拦超大请求体，再记日志。
     app.add_middleware(RequestBodyLimitMiddleware)
@@ -467,7 +482,15 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     metadata，HTTP 用头补齐同一字段）。企业版的专家包名单在
     ``X-Jiuwenswarm-Expert-Packages``。没有 ``X-User-Id`` 时 ``user_id`` 为空，
     表示这次请求按匿名处理，和 WebSocket 入口缺省身份时一样。
+
+    平台展示身份（``agent_id`` / 模板 id）由 Gateway 经
+    ``X-Agent-Identity-Id`` / ``X-Runtime-Template-Id`` /
+    ``X-Agent-Template-Id`` 透传，这里重建为 ``metadata.agent_identity``，
+    供租户作用域写入工作区留痕。``agent_name`` 不经 HTTP 头透传（Gateway
+    为避免非 ASCII 头失败仅保留在自身 metadata），展示名走 WS query 等
+    路径；它与路由层 ``X-Agent-Id`` 是两个概念。
     """
+    from agent_gateway.common.request_identity import apply_agent_identity_metadata
     from jiuwenswarm.common.request_identity import (
         apply_routing_metadata,
         normalize_routing_identity,
@@ -504,6 +527,14 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
         else:
             if isinstance(cron_meta, dict) and cron_meta:
                 metadata["cron"] = cron_meta
+    metadata = apply_agent_identity_metadata(
+        metadata,
+        {
+            "agent_id": _header(request, "x-agent-identity-id", ""),
+            "runtime_template_id": _header(request, "x-runtime-template-id", ""),
+            "agent_template_id": _header(request, "x-agent-template-id", ""),
+        },
+    )
     from jiuwenswarm.common.request_ext import (
         INTERNAL_HEADER_NAME,
         RequestExtCodecError,

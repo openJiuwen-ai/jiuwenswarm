@@ -28,6 +28,16 @@ sys.modules.setdefault(bootstrap_module.__name__, bootstrap_module)
 
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler, _format_ws_diagnostics
 
+_PERSONAL_HOST_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+
+
+@pytest.fixture(autouse=True)
+def _pin_personal_edition(monkeypatch: pytest.MonkeyPatch):
+    """CSP 沙箱头是个人版行为：企业版（JIUWENSWARM_EDITION=enterprise）不加
+    CSP。CI 环境可能携带企业版变量，这里固定为个人版语义以保证用例确定性
+    （!10678 UT FAILED 定位）。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "community")
+
 
 def test_format_ws_diagnostics_forwards_parts_and_fields():
     assert _format_ws_diagnostics({"client": "127.0.0.1"}, reason="peer closed") == (
@@ -352,6 +362,7 @@ def test_verified_download_get_and_head_use_conventional_staged_file_handler(
 def test_inline_verified_download_sandboxes_documents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
     source = tmp_path / "report.html"
     source.write_text("<script>alert(1)</script>", encoding="utf-8")
     owner = VerifiedDownloadAssetOwner(
@@ -399,9 +410,7 @@ def test_inline_verified_download_sandboxes_documents(
             response.read()
         finally:
             connection.close()
-        # file-api responses set their own security headers and the host-wide
-        # policy is not added to them (``_host_document_policy``). An attachment
-        # is downloaded, not rendered, so it carries no CSP at all.
+        # Downloading an attachment adds no document-specific sandbox to the host policy.
         connection = HTTPConnection("127.0.0.1", server.server_port)
         connection.request("GET", f"/file-api/download?token={quote(token)}")
         response = connection.getresponse()
@@ -409,7 +418,7 @@ def test_inline_verified_download_sandboxes_documents(
             assert response.status == 200
             assert response.headers["Content-Disposition"].startswith("attachment;")
             assert response.headers["X-Content-Type-Options"] == "nosniff"
-            assert response.headers.get_all("Content-Security-Policy") is None
+            assert response.headers.get_all("Content-Security-Policy") == [_PERSONAL_HOST_CSP]
             response.read()
         finally:
             connection.close()
@@ -419,7 +428,8 @@ def test_inline_verified_download_sandboxes_documents(
         server.server_close()
 
 
-def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path):
+def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
     agent_root = tmp_path / "agent"
     uploads = agent_root / "sessions" / "session-1" / "uploads"
     uploads.mkdir(parents=True)
@@ -489,8 +499,8 @@ def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path):
         status, headers, _ = request("GET", png_path)
         assert status == 200
         assert headers["X-Content-Type-Options"] == "nosniff"
-        # Images are not documents, and file-api responses get no host-wide policy.
-        assert headers.get_all("Content-Security-Policy") is None
+        # The PNG receives only the host policy.
+        assert headers.get_all("Content-Security-Policy") == [_PERSONAL_HOST_CSP]
     finally:
         server.shutdown()
         thread.join()

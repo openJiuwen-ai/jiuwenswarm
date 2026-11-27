@@ -9,6 +9,7 @@ modules:
   - jiuwenswarm/server/runtime/marketplace
   - jiuwenswarm/channels/web/frontend
 files:
+  - jiuwenswarm/extensions/app_market/app_icon.py
   - jiuwenswarm/server/runtime/marketplace/hub_asset_port.py
   - jiuwenswarm/server/runtime/marketplace/hub_asset_type_adapter.py
   - jiuwenswarm/server/runtime/marketplace/hub_models.py
@@ -36,7 +37,7 @@ files:
 
 # Hub 应用分发与本地安装契约
 
-最近修订日期为 2026-11-24。
+最近修订日期为 2026-11-26。
 
 本契约以本地单用户部署为验收范围：安装、启动、编辑、更新、卸载均在同一台机器、同一所有者下完成。个人版未登录连接采用空所有者标识，企业版安装需要已认证身份；共享部署的权限配额与远程页面访问不在本期范围。
 
@@ -48,11 +49,14 @@ files:
 - Hub 发布 HTTP 请求体上限 512 MiB（含 multipart 开销）。Swarm 制品下载上限 600 MiB，zip 内非目录条目声明大小之和（源文件）上限 512 MiB。单文件 64 MiB、1000 条目、压缩比 50:1 沿用现有检查。
 - 内层 `index.html` 若声明 `application-version`，必须等于包版本；Hub 发布和 Swarm 安装、更新均核对该版本。超过 64 KiB 的入口文件须在前 64 KiB 内结束 head 或开始 body。
 
+- 已安装卡片和详情使用本地图标。安装和更新优先读取外层 `icon.png`，其次读取入口 HTML 的本地图标声明（未声明时尝试内层 `icon.png`）。可用图标大小上限为 256 KiB，以图片数据写入清单。旧安装清单未嵌入图片时，列表从已有安装目录解析图片，无需重新安装。缺少可用图片时显示占位图标。Hub 的签名图标 URL 用于应用广场。
+
 ## AI 角色声明与展示
 
 - 新开发的运行时 AI 应用将 UTF-8 的 `app-ai-roles.json` 放在入口 HTML 同目录。版本 1 声明至少一个会话组，包含应用内唯一的组 ID、`agent` 或 `team`、会话简介及角色列表。单角色组有一个角色，团队组声明 leader 和 1–5 名成员。角色填写组内唯一的 ID、名称和简介。头像可省略，声明时必须指向应用目录内的 PNG、JPEG、WebP 或 GIF。字段和示例由 [AI 角色清单规范](../../../../../../jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/references/ai-roles.md)维护。
 - 本地 `app_market.publish` 和 Swarm 的 Hub 发布预检校验已提供的清单。有效清单将发布权限标记为 `ai`。Hub 根据预检快照重算并携带清单和打包范围内的头像。没有清单的登记兼容旧 HTML 标记，Hub 打包沿用本地登记中的权限。能力声明用于展示，运行授权仍按制品摘要确认。
 - `app_market.ai_roles` 按当前连接所有者与 `app_id` 读取本地或已安装应用的清单，返回公开的 `session_groups`。头像以受限大小的图像数据返回，前端缺图时使用角色名生成占位头像。详情加载时发起请求，列表、运行和 Hub 安装前详情无需读取角色文件。无清单返回空列表，清单有误时返回 `app_ai_roles_invalid`。
+- 应用详情将所有单角色卡片放在同一个响应式网格中，各自的会话说明写入对应卡片。每个团队的成员、队长标记和共享会话说明仍放在同一个团队分组。
 
 ## 从 Swarm 发布本地应用
 
@@ -102,7 +106,7 @@ files:
 
 ## 兼容性
 
-- 本地命令行、Python 桌面和 Electron 开发版/打包版启动共用 Swarm 的 Gateway 配置准备逻辑。Gateway 未指定独立配置且默认配置文件缺失时，使用 Swarm 实例的配置。Swarm 默认配置先扫描 `EXTENSION_DIRS` 中的自定义目录，再扫描包内 `jiuwenswarm/extensions`。旧的 Swarm 默认值随配置模板迁移。已有的 Gateway 默认配置若仍使用旧版内置目录表达式，Swarm 启动时会追加包内目录。显式的 Gateway 配置、扩展目录设置及 AgentOS 部署配置沿用各自规则。
+- 本地命令行、Python 桌面和 Electron 开发版/打包版启动共用 Swarm 的 Gateway 配置准备逻辑。本地 Gateway 默认读取实例的 `config/config-gateway.yaml`。该文件缺失时使用 Swarm 实例的配置目录与扩展环境设置。初始化生成的 Gateway 默认配置先扫描 `EXTENSION_DIRS` 中的自定义目录，再扫描包内 `jiuwenswarm/extensions`。启动时在 Gateway 实际读取的配置中补齐旧默认值遗漏的包内目录。显式的 Gateway 配置、扩展目录设置及 AgentOS 部署配置沿用各自规则。
 - 本地应用 `app_market.publish/list/start/stop/delete/edit_session` 入口保持不变；个人版空所有者重复 `start` 复用同一运行实例（避免重复静态服务），同一应用按所有者各保留一份运行实例；`publish_app` 重新登记本地应用时保留来源、摘要、项目绑定字段，以及置顶状态与原始注册时间 `created_at`，Hub 来源登记不继承旧副本的项目和编辑会话绑定。打包到 Hub 的 `plugin.yaml` 不包含本地项目或编辑会话信息。
 - 个人版允许空身份启动已有所有者的本地应用，清单中已记录的所有者在启动成功或失败时均保留。企业版和 Hub 应用继续按原所有者校验。
 - 既有插件/MCP/Agent 资产的 Hub 客户端、下载器与安装器调用默认参数不变。

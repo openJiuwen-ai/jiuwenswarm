@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
+
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
 from jiuwenswarm.agents.harness.team.team_manager import PauseSessionResult
 from jiuwenswarm.common import host_services
@@ -210,7 +212,7 @@ async def test_pause_completion_pushes_member_and_session_states_when_gateway_ca
     observer: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     manager.add_waiter("session-a", "observer", observer, generation=2, attach_only=True)
     gateway = object.__new__(MessageHandler)
-    gateway.__init__(AsyncMock())
+    gateway.__init__(AsyncMock(), session_login_bindings=NullSessionLoginBindings())
     sent_messages = AsyncMock()
     monkeypatch.setattr(gateway, "publish_robot_messages", sent_messages)
     gateway_observer = asyncio.get_running_loop().create_future()

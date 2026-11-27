@@ -40,6 +40,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const detail = useSystemPluginStore((s) => s.detailCache[id]);
   const packageId = detail?.packageId || id;
   const busy = useSystemPluginStore((s) => !!s.busyIds[id] || !!s.busyIds[packageId]);
+  const installingIds = useSystemPluginStore((s) => s.installingIds);
   const loadDetail = useSystemPluginStore((s) => s.loadDetail);
   const install = useSystemPluginStore((s) => s.install);
   const uninstall = useSystemPluginStore((s) => s.uninstall);
@@ -212,6 +213,8 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
       ? t('connectorMarket.systemPlugin.sourceLocal')
       : '';
   const busyBlocked = busy || loading || versionLoading || installCheckPending;
+  // 与 agent 插件详情页一致：安装（含冲突预检）期间按钮显示“安装中…”。
+  const installing = installCheckPending || !!installingIds[packageId] || !!installingIds[id];
   const versions = detail.versions ?? [];
   const installedVersion = detail.installedVersion || (detail.installed ? detail.version : '');
   const initialVersion = installedVersion && versions.includes(installedVersion)
@@ -267,7 +270,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
 
   async function handleReload() {
     await runAction(async () => {
-      const result = await reload(packageId);
+      const result = await reload(packageId, isBundle ? currentVersion : undefined);
       if (result.ok) await loadDetail(id, currentVersion);
       return result;
     });
@@ -275,15 +278,22 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
 
   async function handleUninstall(version?: string) {
     setConfirmUninstall(false);
-    const ok = await runAction(() => uninstall(packageId, version));
-    if (!ok) return;
-    if (!version) {
-      onDeleted?.();
+    setActionError(null);
+    const result = await uninstall(packageId, version, id);
+    if (!result.ok) {
+      setActionError(result.error);
       return;
+    }
+    if (result.detail === 'removed') {
+      (onDeleted ?? onBack)();
+      return;
+    }
+    if (result.detail === 'unavailable') {
+      setFailed(true);
+      setTab('content');
     }
     setSelectedVersion(null);
     resetPanes();
-    if (!(await loadDetail(id))) onDeleted?.();
   }
 
   async function handleVersionChange(version: string) {
@@ -323,7 +333,9 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
 
   async function handleEnabledChange(enable: boolean) {
     await runAction(async () => {
-      const result = await setEnabled(packageId, enable);
+      // 详情页的开关跟随当前查看的版本：多版本下不指定版本会命中“最新安装版本”，
+      // 出现切到老版本后开关却操作新版本的问题。
+      const result = await setEnabled(packageId, enable, isBundle ? currentVersion : undefined);
       if (result.ok) await loadDetail(id, currentVersion);
       return result;
     });
@@ -378,10 +390,14 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
                 <button
                   type="button"
                   className="detail-action detail-action--install"
-                  disabled={busyBlocked}
+                  disabled={busyBlocked || installing}
+                  aria-busy={installing || undefined}
                   onClick={() => { void requestInstall(); }}
+                  data-testid="connector-market-system-plugin-detail-install"
                 >
-                  {t('connectorMarket.systemPlugin.install')}
+                  {installing
+                    ? t('connectorMarket.card.installing')
+                    : t('connectorMarket.systemPlugin.install')}
                 </button>
               )}
               {installedVersion && (
@@ -406,6 +422,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
                   className="detail-action"
                   disabled={busyBlocked}
                   onClick={() => setConfirmUninstall(true)}
+                  data-testid="connector-market-system-plugin-detail-uninstall"
                 >
                   <UninstallIcon aria-hidden="true" />
                   {t('connectorMarket.systemPlugin.uninstall')}
@@ -627,7 +644,18 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
         </div>
       </div>
 
-      {confirmUninstall && (
+      {confirmUninstall && (versions.length <= 1 && uninstallTarget ? (
+        <ConfirmDialog
+          title={t('connectorMarket.systemPlugin.uninstall')}
+          message={t('connectorMarket.systemPlugin.uninstallSingleConfirm', {
+            name: title,
+            version: uninstallTarget,
+          })}
+          confirmLabel={t('connectorMarket.systemPlugin.uninstall')}
+          onCancel={() => setConfirmUninstall(false)}
+          onConfirm={() => { void handleUninstall(uninstallTarget); }}
+        />
+      ) : (
         <ConfirmDialog
           title={t('connectorMarket.systemPlugin.uninstall')}
           message={t('connectorMarket.systemPlugin.uninstallConfirm', {
@@ -642,7 +670,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
           onCancel={() => setConfirmUninstall(false)}
           onConfirm={() => { void handleUninstall(); }}
         />
-      )}
+      ))}
 
       {pendingInstallVersion && (
         <ConfirmDialog
