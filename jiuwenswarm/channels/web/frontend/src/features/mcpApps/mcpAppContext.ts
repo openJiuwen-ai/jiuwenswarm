@@ -47,6 +47,8 @@ interface ValidationResult<T> {
 type MessageHandler = (sessionId: string, content: string) => Promise<boolean>;
 
 const contexts = new Map<string, StoredContext>();
+// 挂载点引用计数（同 key 可同时/先后挂在交付物与主内容分支）
+const instanceMounts = new Map<string, number>();
 const pendingMessages = new Set<string>();
 const messageAttempts = new Map<string, number[]>();
 let messageHandler: MessageHandler | null = null;
@@ -92,18 +94,30 @@ function normalizeTextBlocks(
 
 export function registerMcpAppInstance(identity: McpAppInstanceIdentity, now = Date.now()): () => void {
   const key = instanceKey(identity);
-  contexts.set(key, {
-    identity,
-    context: null,
-    serializedBytes: 0,
-    updatedAt: now,
-    tokens: CONTEXT_RATE_BURST,
-    lastRefillAt: now,
-  });
+  // 引用计数：同一实例（同 toolCallId）可因折叠/展开在交付物与主内容
+  // 分支间迁移挂载点——最后一个挂载点卸载时才清理（PR !10997 CR-1）。
+  const mountCount = (instanceMounts.get(key) ?? 0) + 1;
+  instanceMounts.set(key, mountCount);
+  if (mountCount === 1) {
+    contexts.set(key, {
+      identity,
+      context: null,
+      serializedBytes: 0,
+      updatedAt: now,
+      tokens: CONTEXT_RATE_BURST,
+      lastRefillAt: now,
+    });
+  }
   return () => {
-    contexts.delete(key);
-    pendingMessages.delete(key);
-    messageAttempts.delete(key);
+    const remaining = (instanceMounts.get(key) ?? 1) - 1;
+    if (remaining <= 0) {
+      instanceMounts.delete(key);
+      contexts.delete(key);
+      pendingMessages.delete(key);
+      messageAttempts.delete(key);
+    } else {
+      instanceMounts.set(key, remaining);
+    }
   };
 }
 
@@ -243,6 +257,7 @@ export async function dispatchMcpAppMessage(sessionId: string, content: string):
 
 export function resetMcpAppContextForTests(): void {
   contexts.clear();
+  instanceMounts.clear();
   pendingMessages.clear();
   messageAttempts.clear();
   messageHandler = null;

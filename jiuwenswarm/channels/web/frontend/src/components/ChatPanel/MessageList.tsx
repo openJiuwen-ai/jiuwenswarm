@@ -581,7 +581,6 @@ export function ChatTimelineList({
                   key={`${item.key}-deliverable`}
                   executions={deliverables}
                   sessionId={sessionId}
-                  renderMcpApps={false}
                   notices={[]}
                   showAvatar={false}
                   teamLayout={isTeamMode}
@@ -612,6 +611,7 @@ export function ChatTimelineList({
               <ToolGroupDisplay
                 executions={item.executions}
                 sessionId={sessionId}
+                renderMcpApps={(turnFoldable || streak) ? contentOpen : true}
                 notices={item.notices}
                 showAvatar={hideAvatar ? false : item.showAvatar}
                 teamLayout={isTeamMode}
