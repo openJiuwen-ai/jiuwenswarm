@@ -62,6 +62,41 @@ async def test_core_handler_accepts_usage_update() -> None:
 
 
 @pytest.mark.asyncio
+async def test_team_usage_notification_exposes_the_bound_leader_window(monkeypatch) -> None:
+    bus = ExtensionEventBus()
+    register_context_usage_events(bus)
+    register_session_query_events(bus)
+    register_session_ops(bus)
+    observed = []
+
+    async def observe(event, ops, next_handler):
+        observed.append(await ops.session.usage(breakdown="summary"))
+        return await next_handler(event)
+
+    bus.register_event_handler(CONTEXT_USAGE_EVENT, observe, {}, HandlerLevel.USER)
+    await bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
+    monkeypatch.setattr(assembly, "get_extension_bus", lambda: bus)
+    task = notify_context_usage(
+        ContextUsageUpdate("s1", "round-1", input_tokens=320, output_tokens=40, total_tokens=360),
+        context_usage={
+            "session_id": "s1",
+            "request_id": "model-call-2",
+            "role": "leader",
+            "member_name": "owner",
+            "timestamp": "2026-11-27T09:00:00Z",
+            "context_window": {"limit_tokens": 1000, "input_tokens": 120},
+            "parts": {},
+            "measurement": {"authoritative_total": True},
+        },
+        team_leader=True,
+    )
+    assert task is not None
+    await task
+
+    assert observed == [{"context": {"window": 1000, "tokens": 120, "percent": 12}, "rateLimits": []}]
+
+
+@pytest.mark.asyncio
 async def test_core_handler_rejects_unknown_payload() -> None:
     bus = ExtensionEventBus()
     register_context_usage_events(bus)
