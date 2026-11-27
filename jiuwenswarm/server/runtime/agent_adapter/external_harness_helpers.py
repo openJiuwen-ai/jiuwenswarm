@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
+import subprocess
 import threading
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -852,8 +854,111 @@ def _visible_error(error: object, fallback: str) -> str:
     return message or fallback
 
 
+_GIT_PROBE_TIMEOUT_SEC = 10.0
+_GIT_WORKTREE_ADD_TIMEOUT_SEC = 120.0
+
+
+def _run_project_git(
+    project: Path, args: list[str], timeout: float
+) -> subprocess.CompletedProcess[str]:
+    """Run git in ``project`` without a shell, stdin or Swarm's ``GIT_*`` variables.
+
+    Messages are in English (``LC_ALL=C``) so that callers can read them, and
+    output is decoded as UTF-8 with replacement. A missing git, a git that
+    cannot start and a git that runs past ``timeout`` raise ``ValueError``.
+    """
+    git = shutil.which("git")
+    if git is None:
+        raise ValueError("project_worktree needs git, and git was not found on PATH")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment["LC_ALL"] = "C"
+    try:
+        return subprocess.run(
+            [git, "-C", str(project), *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=environment,
+            timeout=timeout,
+            shell=False,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ValueError(
+            f"git {args[0]} did not finish within {timeout:g} s in {project}"
+        ) from error
+    except OSError as error:
+        raise ValueError(f"git could not be run: {error}") from error
+
+
+def _discard_worktree(project: Path, folder: Path) -> None:
+    """Remove a worktree that ``git worktree add`` left unfinished, as far as git can."""
+    for args in (["worktree", "remove", "--force", str(folder)], ["worktree", "prune"]):
+        try:
+            _run_project_git(project, args, _GIT_PROBE_TIMEOUT_SEC)
+        except ValueError as error:
+            logger.warning("External Harness worktree cleanup failed: %s", error)
+
+
+def _session_worktree(project: Path, session_id: str) -> Path:
+    """The session's linked Git worktree of ``project``, made on first use.
+
+    The worktree is the session's own workspace folder, checked out detached at
+    the project's ``HEAD``, so that the session's changes and commits stay out
+    of the project's working tree. A project that is not a Git repository is
+    used as it is. Every other case that keeps the session from its own
+    worktree raises ``ValueError``: git is missing, fails or times out, the
+    repository has no commit, or the session folder holds other files.
+
+    The function blocks while git runs; async callers run it in a thread.
+    """
+    folder = get_default_project_session_workspace_dir(session_id).resolve(strict=False)
+    if (folder / ".git").exists():
+        return folder
+    probe = _run_project_git(project, ["rev-parse", "--git-dir"], _GIT_PROBE_TIMEOUT_SEC)
+    if probe.returncode != 0:
+        if "not a git repository" in probe.stderr.lower():
+            logger.info(
+                "External Harness project %s is not a Git repository; no worktree is made",
+                project,
+            )
+            return project
+        raise ValueError(f"git cannot read the project {project}: {probe.stderr.strip()[:500]}")
+    head = _run_project_git(
+        project, ["rev-parse", "--verify", "--quiet", "HEAD"], _GIT_PROBE_TIMEOUT_SEC
+    )
+    if head.returncode != 0:
+        raise ValueError(f"the project {project} has no commit yet; a worktree needs one")
+    if folder.exists() and any(folder.iterdir()):
+        raise ValueError(f"the session folder {folder} is not empty; it cannot hold a worktree")
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    # A registration left by a worktree folder that was deleted would make `add` refuse the folder.
+    _run_project_git(project, ["worktree", "prune"], _GIT_PROBE_TIMEOUT_SEC)
+    try:
+        made = _run_project_git(
+            project,
+            ["worktree", "add", "--detach", str(folder), "HEAD"],
+            _GIT_WORKTREE_ADD_TIMEOUT_SEC,
+        )
+    except ValueError:
+        _discard_worktree(project, folder)
+        raise
+    if made.returncode != 0:
+        _discard_worktree(project, folder)
+        raise ValueError(f"git worktree add failed: {made.stderr.strip()[:500]}")
+    return folder
+
+
 def _bind_external_workspace(adapter: Any, inputs: dict[str, Any]) -> None:
-    """Adopt the conversation project once; an existing session root stays put."""
+    """Adopt the conversation project once; an existing session root stays put.
+
+    A request with ``project_worktree`` asks for the session to work in a
+    linked worktree of its project (``_external_workspace``).
+    """
+    if inputs.get("project_worktree") is True:
+        adapter._project_worktree = True  # pylint: disable=protected-access
     if str(getattr(adapter, "_project_dir", "") or "").strip():
         return
     project_dir = inputs.get("project_dir")
@@ -867,7 +972,10 @@ def _bind_external_workspace(adapter: Any, inputs: dict[str, Any]) -> None:
 def _external_workspace(adapter: Any, session_id: str) -> Path:
     project_dir = str(getattr(adapter, "_project_dir", "") or "").strip()
     if project_dir:
-        return Path(project_dir).expanduser().resolve(strict=False)
+        project = Path(project_dir).expanduser().resolve(strict=False)
+        if getattr(adapter, "_project_worktree", False) is True:
+            return _session_worktree(project, session_id)
+        return project
     return get_default_project_session_workspace_dir(session_id).resolve(strict=False)
 
 
@@ -906,7 +1014,8 @@ async def _ensure_external_harness(
         runtime=binding["runtime"],
         package_path=binding["package_path"],
         language=str(language),
-        cwd=_external_workspace(adapter, session_id),
+        # Making a session worktree runs git, which must not block the event loop.
+        cwd=await asyncio.to_thread(_external_workspace, adapter, session_id),
         env=dict(os.environ),
     )
     adapter._external_harness = io  # pylint: disable=protected-access

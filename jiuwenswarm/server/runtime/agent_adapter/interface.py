@@ -2327,6 +2327,8 @@ class JiuWenSwarm:
             inputs["project_dir"] = project_dir
         if cwd:
             inputs["cwd"] = cwd
+        if params.get("project_worktree") is True:
+            inputs["project_worktree"] = True
 
         run = params.get("run")
         if run:

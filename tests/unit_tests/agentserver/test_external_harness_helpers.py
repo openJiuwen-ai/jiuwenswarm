@@ -1,6 +1,9 @@
 import asyncio
 from collections.abc import Callable
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -1260,3 +1263,228 @@ async def test_external_user_input_question_carries_the_interrupt_id() -> None:
     assert parsed["request_id"] == "ext-q"
     assert parsed["interrupt_id"] == "ext-q"
     assert parsed["kind"] == "ask_user"
+
+
+_GIT = shutil.which("git")
+needs_git = pytest.mark.skipif(_GIT is None, reason="git is not installed")
+
+
+@pytest.fixture
+def isolated_git(tmp_path, monkeypatch):
+    """Keep the runner's global Git configuration and ``GIT_*`` variables out of the tests."""
+    home = tmp_path / "home"
+    home.mkdir()
+    for key in list(os.environ):
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    return home
+
+
+def _git(folder: Path, *args: str) -> str:
+    return subprocess.run(
+        [_GIT, "-C", str(folder), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+    ).stdout.strip()
+
+
+def _repository(folder: Path) -> Path:
+    folder.mkdir(parents=True)
+    _git(folder, "init", "-q")
+    (folder / "README.md").write_text("fixture\n", encoding="utf-8")
+    _git(folder, "add", "-A")
+    _git(
+        folder,
+        "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+        "commit", "-qm", "first",
+    )
+    return folder
+
+
+def _sessions_in(monkeypatch, sessions: Path) -> None:
+    monkeypatch.setattr(
+        external_harness_helpers,
+        "get_default_project_session_workspace_dir",
+        lambda session_id: sessions / session_id,
+    )
+
+
+def _worktree_adapter(project: Path) -> SimpleNamespace:
+    adapter = SimpleNamespace(_project_dir=str(project))
+    external_harness_helpers._bind_external_workspace(adapter, {"project_worktree": True})
+    return adapter
+
+
+@needs_git
+def test_project_worktree_works_in_a_linked_worktree_of_the_project(
+    tmp_path, monkeypatch, isolated_git
+):
+    project = _repository(tmp_path / "repo")
+    sessions = tmp_path / "sessions"
+    _sessions_in(monkeypatch, sessions)
+    # The session's project is bound when its adapter is made; the request asks for a worktree.
+    adapter = SimpleNamespace(_project_dir=str(project))
+    external_harness_helpers._bind_external_workspace(adapter, {"project_worktree": True})
+    folder = external_harness_helpers._external_workspace(adapter, "s1")
+    assert folder == (sessions / "s1").resolve()
+    assert (folder / "README.md").read_text(encoding="utf-8") == "fixture\n"
+    common = Path(folder, _git(folder, "rev-parse", "--git-common-dir")).resolve()
+    assert common == (project / ".git").resolve()
+    # A later start of the same session finds the worktree made.
+    again = SimpleNamespace(_project_dir="")
+    external_harness_helpers._bind_external_workspace(
+        again, {"project_dir": str(project), "project_worktree": True}
+    )
+    assert external_harness_helpers._external_workspace(again, "s1") == folder
+
+
+@needs_git
+def test_project_without_worktree_or_git_is_used_as_it_is(tmp_path, monkeypatch, isolated_git):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    _sessions_in(monkeypatch, tmp_path / "sessions")
+    adapter = SimpleNamespace(_project_dir="")
+    external_harness_helpers._bind_external_workspace(
+        adapter, {"project_dir": str(plain), "project_worktree": True}
+    )
+    assert external_harness_helpers._external_workspace(adapter, "s2") == plain.resolve()
+    repo = _repository(tmp_path / "repo")
+    other = SimpleNamespace(_project_dir="")
+    external_harness_helpers._bind_external_workspace(other, {"project_dir": str(repo)})
+    assert external_harness_helpers._external_workspace(other, "s3") == repo.resolve()
+
+
+def _worktrees(project: Path) -> list[str]:
+    listing = _git(project, "worktree", "list", "--porcelain")
+    return [line for line in listing.splitlines() if line.startswith("worktree ")]
+
+
+@needs_git
+def test_project_worktree_refuses_a_session_folder_with_other_files(
+    tmp_path, monkeypatch, isolated_git
+):
+    project = _repository(tmp_path / "repo")
+    sessions = tmp_path / "sessions"
+    _sessions_in(monkeypatch, sessions)
+    (sessions / "s1").mkdir(parents=True)
+    (sessions / "s1" / "notes.txt").write_text("kept\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not empty"):
+        external_harness_helpers._external_workspace(_worktree_adapter(project), "s1")
+    assert (sessions / "s1" / "notes.txt").read_text(encoding="utf-8") == "kept\n"
+    assert len(_worktrees(project)) == 1
+
+
+@needs_git
+def test_project_worktree_is_made_again_after_its_folder_was_deleted(
+    tmp_path, monkeypatch, isolated_git
+):
+    project = _repository(tmp_path / "repo")
+    sessions = tmp_path / "sessions"
+    _sessions_in(monkeypatch, sessions)
+    folder = external_harness_helpers._external_workspace(_worktree_adapter(project), "s1")
+    shutil.rmtree(folder)
+    again = external_harness_helpers._external_workspace(_worktree_adapter(project), "s1")
+    assert again == folder
+    assert (folder / "README.md").read_text(encoding="utf-8") == "fixture\n"
+    assert len(_worktrees(project)) == 2
+
+
+@needs_git
+def test_project_worktree_needs_a_commit(tmp_path, monkeypatch, isolated_git):
+    project = tmp_path / "empty"
+    project.mkdir()
+    _git(project, "init", "-q")
+    _sessions_in(monkeypatch, tmp_path / "sessions")
+    with pytest.raises(ValueError, match="no commit"):
+        external_harness_helpers._external_workspace(_worktree_adapter(project), "s1")
+
+
+def test_project_worktree_reports_a_missing_git(tmp_path, monkeypatch):
+    _sessions_in(monkeypatch, tmp_path / "sessions")
+    monkeypatch.setattr(external_harness_helpers.shutil, "which", lambda _name: None)
+    with pytest.raises(ValueError, match="git was not found"):
+        external_harness_helpers._external_workspace(_worktree_adapter(tmp_path), "s1")
+
+
+def test_project_worktree_reports_a_project_git_cannot_read(tmp_path, monkeypatch):
+    _sessions_in(monkeypatch, tmp_path / "sessions")
+
+    def refuse(project, args, timeout):
+        return subprocess.CompletedProcess(args, 128, "", "fatal: detected dubious ownership")
+
+    monkeypatch.setattr(external_harness_helpers, "_run_project_git", refuse)
+    with pytest.raises(ValueError, match="dubious ownership"):
+        external_harness_helpers._external_workspace(_worktree_adapter(tmp_path), "s1")
+
+
+@needs_git
+@pytest.mark.parametrize("failure", ["exit", "timeout"])
+def test_a_failed_worktree_add_raises_and_leaves_no_worktree(
+    tmp_path, monkeypatch, isolated_git, failure
+):
+    project = _repository(tmp_path / "repo")
+    sessions = tmp_path / "sessions"
+    _sessions_in(monkeypatch, sessions)
+    real_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if "add" in command:
+            # Let git register and fill the worktree, then report the failure.
+            real_run(command, *args, **kwargs)
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+            return subprocess.CompletedProcess(command, 128, "", "fatal: disk full")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(external_harness_helpers.subprocess, "run", run)
+    expected = "disk full" if failure == "exit" else "did not finish"
+    with pytest.raises(ValueError, match=expected):
+        external_harness_helpers._external_workspace(_worktree_adapter(project), "s1")
+    monkeypatch.setattr(external_harness_helpers.subprocess, "run", real_run)
+    assert len(_worktrees(project)) == 1
+    assert not (sessions / "s1").exists()
+
+
+async def test_ensure_external_harness_finds_the_workspace_off_the_event_loop(
+    tmp_path, monkeypatch
+):
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def workspace(_adapter, _session_id):
+        threads.append(threading.get_ident())
+        return tmp_path
+
+    monkeypatch.setattr(external_harness_helpers, "_external_workspace", workspace)
+    io = SimpleNamespace(state=HarnessState.IDLE)
+    start = AsyncMock(return_value=io)
+    monkeypatch.setattr(external_harness_helpers, "start_external_harness", start)
+    adapter = SimpleNamespace(
+        _external_harness=None,
+        _external_harness_binding={
+            "kind": "external_harness",
+            "agent_template_name": "codex-expert",
+            "provider_name": "codex",
+            "runtime": {"config": {}},
+            "package_path": "codex-expert",
+        },
+        _parent_session_id="s1",
+        _project_dir="",
+        _resolve_runtime_language=lambda: "zh",
+    )
+    request = AgentRequest(
+        request_id="r1",
+        channel_id="web",
+        session_id="s1",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "hello"},
+    )
+    assert await external_harness_helpers._ensure_external_harness(adapter, request) is io
+    assert threads and threads[0] != loop_thread
+    assert start.await_args.kwargs["cwd"] == tmp_path
