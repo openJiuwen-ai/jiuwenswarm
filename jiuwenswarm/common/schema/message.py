@@ -42,6 +42,7 @@ class ReqMethod(Enum):
     GROUP_GET = "group.get"
     GROUP_UPDATE = "group.update"
     GROUP_MEMBER_ADD = "group.member.add"
+    GROUP_MEMBER_REMOVE = "group.member.remove"
     GROUP_HISTORY_GET = "group.history.get"
     COMMAND_BTW = "command.btw"
     COMMAND_ADD_DIR = "command.add_dir"

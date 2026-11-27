@@ -395,3 +395,26 @@ async def test_joint_decision_that_can_no_longer_start_wakes_nobody(group, teams
     group.backend.notify_group_member.assert_not_awaited()
     if change == "team left":
         assert teams.routes(GROUP) == {}
+
+
+async def test_prompt_marks_departed_member_history_and_excludes_from_candidates(group):
+    from openjiuwen.agent_teams.schema.conversation import ConversationMessage
+
+    history = [
+        ConversationMessage(
+            message_id="m0", team_name="team-one", session_id=GROUP,
+            client_message_id="client-m0", sender="former-mate", sender_name="小九",
+            content="你要选方案 A 还是方案 B？", timestamp=900, mentions=[], attachments=[],
+        ),
+        ConversationMessage(
+            message_id="m1", team_name="team-one", session_id=GROUP,
+            client_message_id="client-m1", sender="user", sender_name="user",
+            content="选 A", timestamp=1000, mentions=[], attachments=[],
+        ),
+    ]
+    candidates = auto._candidates(group.state)
+    prompt = auto._prompt(candidates, history[:-1], history[-1])
+    assert "departed=true" in prompt[0]["content"]
+    assert '"departed": true' in prompt[1]["content"]
+    assert '"from": "小九"' in prompt[1]["content"]
+    assert all(item["member_name"] != "former-mate" for item in candidates)

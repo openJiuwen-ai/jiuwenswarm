@@ -404,6 +404,20 @@ class AgentManager:
                 await self.control_request("local", state.record.request_id,
                                            reason="cancel", access=state.record.access)
 
+    async def cancel_swarmchat_member(
+        self, group_id: str, agent_id: str, member_name: str | None = None,
+    ) -> None:
+        """Cancel pending SwarmChat requests and detach inbound callbacks for a removed colleague."""
+        if self._swarmchat is not None and member_name:
+            await self._swarmchat.detach_member(group_id, member_name)
+        for state in self._sessions.pending_requests("local"):
+            route = state.record.route_snapshot
+            if route is None or state.record.agent_id != agent_id:
+                continue
+            if route.channel == "swarmchat" and route.target_id == group_id:
+                await self.control_request("local", state.record.request_id,
+                                           reason="cancel", access=state.record.access)
+
     async def reconcile_swarmchat_requests(self) -> None:
         from jiuwenswarm.server.jiuwenmate.swarmchat.membership import require_membership
 
