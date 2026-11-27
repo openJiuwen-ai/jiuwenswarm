@@ -38,13 +38,24 @@ def test_sandbox_page_sends_csp_header_from_query():
 
 def test_sandbox_csp_never_allows_self_or_injected_keywords():
     header = build_mcp_app_csp(
-        {"connectDomains": ["'self'", "https://ok.test; script-src *", "*", "http://127.0.0.1:19000"]},
-        own_origin="http://127.0.0.1:19000",
+        {
+            "connectDomains": ["'self'", "https://ok.test; script-src *", "*", "http://127.0.0.1:19002"],
+            # CR-11：frameDomains 自身 origin 必须剔除——内层 iframe 在服务
+            # origin（沙箱现挂 Gateway Web HTTP :19002）上 allow-same-origin，
+            # 放行 frame-src 即给 App 同源嵌套 frame，可读写后端 /api/v1/*。
+            "frameDomains": ["http://127.0.0.1:19002/", "https://frames.test"],
+            "resourceDomains": ["http://127.0.0.1:19002/api", "https://cdn.test"],
+            "baseUriDomains": ["http://127.0.0.1:19002"],
+        },
+        own_origin="http://127.0.0.1:19002",
     )
     connect = next(d for d in header.split("; ") if d.startswith("connect-src"))
-    # 自身 origin 被拒（内层 iframe 在服务 origin 上 allow-same-origin，
-    # 否则 server 可声明 connect 打穿 "connect-src never includes self"）
+    # 自身 origin 被拒（connect/frame/resource/baseUri 四域统一剔除）
     assert connect == "connect-src 'none'"
+    frame = next(d for d in header.split("; ") if d.startswith("frame-src"))
+    assert frame == "frame-src https://frames.test"
+    assert "127.0.0.1:19002" not in header
+    assert "https://cdn.test" in header
     assert "'self'" not in header
     assert header.count("script-src") == 1
 

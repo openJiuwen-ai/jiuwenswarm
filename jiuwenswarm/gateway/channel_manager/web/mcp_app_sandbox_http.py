@@ -39,10 +39,16 @@ _NONE = "'none'"
 _CSP_SOURCE = re.compile(r"^(https?://[a-z0-9.*-]+(:\d+)?(/[^\s;,'\"]*)?|data:|blob:)$", re.IGNORECASE)
 
 
-def _sources(value: Any) -> str:
+def _sources(value: Any, own_key: str | None = None) -> str:
     if not isinstance(value, list):
         return ""
-    return " ".join(item for item in value if isinstance(item, str) and _CSP_SOURCE.match(item))
+    sources = [item for item in value if isinstance(item, str) and _CSP_SOURCE.match(item)]
+    if own_key:
+        # 服务自身 origin 一律剔除（含 frameDomains）：内层 iframe 在该
+        # origin 上 allow-same-origin，放行 frame-src 即给 App 一个同源
+        # 嵌套 frame，可读写后端 /api/v1/*（PR !10997 CR-11）。
+        sources = [item for item in sources if _origin_key(item) != own_key]
+    return " ".join(sources)
 
 
 def _origin_key(source: str) -> str:
@@ -56,22 +62,18 @@ def build_mcp_app_csp(csp: Any, own_origin: str | None = None) -> str:
 
     Script/worker allowances match the ext-apps reference host (basic-host):
     bundled and WebGL apps (CesiumJS, Three.js) need eval, WebAssembly and
-    blob: workers. ``connect-src`` stays limited to declared domains, and a
-    source matching the serving origin is dropped: the inner iframe is
-    allow-same-origin on that origin, so a server could otherwise declare
-    its way past the "connect-src never includes 'self'" claim
-    (PR !10997 CR-5).
+    blob: workers. ``connect-src`` stays limited to declared domains. All
+    source domains (connect/frame/resource/baseUri) drop a source matching
+    the serving origin: the inner iframe is allow-same-origin on that
+    origin, so a server could otherwise declare its way to same-origin
+    frames and read/write the backend API (PR !10997 CR-11).
     """
     csp = csp if isinstance(csp, dict) else {}
     own_key = _origin_key(own_origin) if own_origin else None
-    resources = _sources(csp.get("resourceDomains"))
-    connect = _sources(csp.get("connectDomains"))
-    if own_key:
-        connect = " ".join(
-            source for source in connect.split(" ") if source and _origin_key(source) != own_key
-        )
-    frames = _sources(csp.get("frameDomains"))
-    bases = _sources(csp.get("baseUriDomains"))
+    resources = _sources(csp.get("resourceDomains"), own_key)
+    connect = _sources(csp.get("connectDomains"), own_key)
+    frames = _sources(csp.get("frameDomains"), own_key)
+    bases = _sources(csp.get("baseUriDomains"), own_key)
     directives = [
         "default-src 'none'",
         f"script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: {resources}".strip(),
