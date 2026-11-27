@@ -74,12 +74,14 @@ def batch_fixture(segment, monkeypatch, storage):
         return value
     monkeypatch.setattr(agent_module, 'SkillTurbo', lambda config: new())
 
-    async def run(items=None, *, params=None, resume_ctx=None, user_input=None, config=None, **changes):
+    async def run(items=None, *, params=None, resume_ctx=None, user_input=None, config=None,
+                  auto_batch=False, accelerator='', **changes):
         value = new()
         if config is not None:
             value._env.config['skill_turbo'] = {'enabled': True, **config}
         frames = [frame async for frame in value.run_batch_stream(
-            skill='demo-craft', accelerators=items if items is not None else [{'id': s['id']} for s in specs],
+            skill='demo-craft', accelerators=items if items is not None or auto_batch else [{'id': s['id']} for s in specs],
+            auto_batch=auto_batch, accelerator=accelerator,
             params=params, inputs={**segment.inputs, **changes}, session=storage.session(),
             request_id='req', channel_id='test', resume_ctx=resume_ctx, user_input=user_input)]
         return value.segment_result(), frames

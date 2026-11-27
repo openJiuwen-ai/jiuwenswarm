@@ -66,6 +66,31 @@ async def test_model_inputs_and_directory_follow_visibility_and_flags(disclosure
     assert 'disabled' in ctx.inputs.tools[0].description
 
 
+@pytest.mark.parametrize('rail_type', [SkillAcceleratorRail, FlashTurboPromptRail])
+@pytest.mark.parametrize('language', ['cn', 'en'])
+async def test_auto_batch_disclosure_and_disabled_schema_share_same_policy(disclosure, rail_type, language):
+    host, _, card = disclosure
+    card.parameters = copy.deepcopy(tools.skill_turbo.card.input_params)
+    rail = rail_type()
+    rail._resolve_language = lambda: language
+    rail.init(host)
+    ctx = SimpleNamespace(agent=host, session=object(), inputs=ModelCallInputs(tools=[card]))
+    await rail.before_model_call(ctx)
+    description = ctx.inputs.tools[0].description
+    assert 'auto_batch=false' in description
+    assert ('省略或null' if language == 'cn' else 'Omitted/null auto_batch defaults') in description
+    assert ('先做某一步' if language == 'cn' else 'do a step first') in description
+    assert ('后续步骤及输入获取方式已经明确' if language == 'cn' else 'how to obtain their inputs are clear') in description
+    assert 'auto_batch' in ctx.inputs.tools[0].parameters['properties']
+    rail.config['batch_enabled'] = False
+    ctx.inputs = ModelCallInputs(tools=[card])
+    await rail.before_model_call(ctx)
+    assert 'auto_batch=false' not in ctx.inputs.tools[0].description
+    assert 'auto_batch' not in ctx.inputs.tools[0].parameters['properties']
+    assert 'accelerators' not in ctx.inputs.tools[0].parameters['properties']
+    assert 'auto_batch' in card.parameters['properties']
+
+
 def test_catalog_budgets_order_and_review():
     specs = []
     for i in range(10):

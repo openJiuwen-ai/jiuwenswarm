@@ -245,7 +245,7 @@ def test_external_name_ambiguity_and_safety_rejection(tmp_path, isolated, caplog
 def test_tool_signature_keeps_legacy_and_adds_single_segment_fields(tmp_path, isolated):
     make_skill(tmp_path)
     schema = isolated.skill_turbo.card.input_params
-    assert set(schema["properties"]) == {"query", "fresh_start", "skill", "accelerator", "params", "accelerators"}
+    assert set(schema["properties"]) == {"query", "fresh_start", "skill", "accelerator", "params", "accelerators", "auto_batch"}
     isolated.refresh_skill_acceleration_description()
     assert "accelerators=" not in isolated.skill_turbo.card.description
     assert isolated._TEMPLATE_EXCLUSION_SUFFIX in isolated.skill_turbo.card.description
