@@ -48,6 +48,7 @@ from jiuwenswarm.gateway.telemetry import (
     ensure_request_trace,
     start_request_trace,
 )
+from jiuwenswarm.gateway.trace_context import trace_context_from_headers
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +110,12 @@ def _bind_proxy_request_trace(
 
     def start():
         nonlocal owned
+        headers = getattr(ws, "headers", None) or getattr(ws, "request_headers", None)
+        carrier = trace_context_from_headers(headers)
         operation = start_request_trace(
             request_id, method, channel=channel.channel_id, connection_id=str(id(ws)),
             session_id=session_id or "", user_id=user_id or "",
+            trace_context=carrier or None,
         )
         if operation is not None:
             track = getattr(channel, "_track_request_trace", None)
