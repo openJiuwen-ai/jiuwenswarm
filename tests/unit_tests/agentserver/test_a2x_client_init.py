@@ -401,13 +401,14 @@ async def test_create_instance_continues_when_a2x_client_init_fails(monkeypatch:
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "load_user_rails", AsyncMock()),
         patch.object(interface_module, "create_deep_agent", return_value=created_instance) as create_agent_mock,
     ):
-        await adapter.create_instance()
+        await adapter.create_instance(config_base=config_base)
 
     create_agent_mock.assert_called_once()
     kwargs = create_agent_mock.call_args.kwargs
     assert "runtime_cwd" not in kwargs
     assert "project_root" not in kwargs
     assert kwargs["enable_read_image_multimodal"] is False
+    assert kwargs["completion_timeout"] == 21600.0
 
 
 @pytest.mark.asyncio
@@ -482,6 +483,7 @@ def test_make_deep_agent_config_keeps_read_image_multimodal_without_vision_model
     # defers that to ``ensure_instance`` so the chat path does not pay for it.
     adapter.mark_as_session_scoped("sess_a2x_test")
     config_base = _make_config("teamleader")
+    config_base["react"]["completion_timeout"] = "7200"
     monkeypatch.setattr(interface_module, "get_config", lambda: config_base)
 
     with patch.object(
@@ -498,6 +500,7 @@ def test_make_deep_agent_config_keeps_read_image_multimodal_without_vision_model
         )
 
     assert deep_cfg.enable_read_image_multimodal is False
+    assert deep_cfg.completion_timeout == 7200.0
 
 
 def test_make_deep_agent_config_disables_read_image_multimodal_with_vision_model(

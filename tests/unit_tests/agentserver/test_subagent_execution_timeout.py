@@ -63,6 +63,33 @@ async def dispatch(child, *, session_id="parent-A", call_id="call-1"):
     )
 
 
+async def test_unlimited_parent_delegates_with_child_deadline(tmp_path, monkeypatch, mocker):
+    from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
+    from openjiuwen.core.foundation.llm.schema.message import AssistantMessage
+    from openjiuwen.harness import create_deep_agent
+    from openjiuwen.harness.tools.subagent.task_tool import create_task_tool
+
+    model = Model(
+        ModelClientConfig(client_provider="OpenAI", api_key="offline", api_base="https://example.invalid"),
+        ModelRequestConfig(model="offline"),
+    )
+    monkeypatch.setattr(Model, "invoke", AsyncMock(return_value=AssistantMessage(content="done")))
+    parent = create_deep_agent(
+        model=model, workspace=str(tmp_path), completion_timeout=None, add_general_purpose_agent=True,
+        enable_sys_operation=False,
+    )
+    create_child = mocker.spy(parent, "create_subagent")
+    (tool,) = create_task_tool(parent, available_agents="general-purpose")
+    result = await tool.invoke(
+        {"subagent_type": "general-purpose", "task_description": "test"},
+        session=Session(session_id="unlimited-parent"), tool_call_id="delegate",
+    )
+
+    assert parent.deep_config.completion_timeout is None
+    assert create_child.spy_return.deep_config.completion_timeout == 1800.0
+    assert result.success and result.data["output"] == "done"
+
+
 @pytest.mark.parametrize("task_loop", [False, True])
 async def test_deadline_returns_failure_and_cancels_only_this_call(debug_capture, task_loop):
     stopped = asyncio.Event()
