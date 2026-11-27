@@ -169,7 +169,7 @@ export default function ModelPicker({
       alwaysShow: false,
     },
   ];
-  const showFreeModelsCta = !excludeFreeModels && campaign.state !== 'off' && freeModels.length === 0;
+  const showFreeModelsCta = !excludeFreeModels && campaign.state === 'active' && freeModels.length === 0;
 
   useEffect(() => {
     if (disabled) {

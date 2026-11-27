@@ -12,6 +12,7 @@ import freeModelIcon from '../../../../assets/settings/models/free.svg';
 import { requestLogin, useAuthStore } from '../../../../stores/authStore';
 import { useSessionStore } from '../../../../stores/sessionStore';
 import { useFreeModelsCampaign } from '../../../free-models/campaign';
+import { campaignBannerVariant, campaignErrorMessageKey } from '../../../free-models/campaignError';
 import { FreeModelSettingsDialog } from './FreeModelSettingsDialog';
 import { LOGIN_MODEL_SOURCE } from './modelListOperations';
 import './FreeModelsSettings.css';
@@ -27,6 +28,7 @@ export function FreeModelsSettings({ onSaved }: { onSaved?: () => void }) {
   const quotaAvailable = useAuthStore((state) => state.quotaAvailable);
   const quotaLoading = useAuthStore((state) => state.quotaLoading);
   const refreshQuota = useAuthStore((state) => state.refreshQuota);
+  const refresh = useAuthStore((state) => state.refresh);
   const availableModels = useSessionStore((state) => state.availableModels);
   const loginModels = useMemo(
     () => availableModels.filter((model) => model.source === LOGIN_MODEL_SOURCE),
@@ -38,14 +40,48 @@ export function FreeModelsSettings({ onSaved }: { onSaved?: () => void }) {
     if (campaignActive && islogin) void refreshQuota();
   }, [campaignActive, islogin, refreshQuota]);
 
-  if (campaign.state === 'off') return null;
+  const variant = campaignBannerVariant(campaign.state);
+  if (variant === 'off') return null;
 
-  if (!campaignActive) {
+  if (variant === 'ended') {
     return (
       <section className="free-models-banner free-models-banner--ended" data-testid="settings-free-models-notice">
         <div className="free-models-banner__copy">
           <strong data-testid="settings-free-models-banner-title">{t('settingsPanel.freeModels.endedTitle')}</strong>
           <p data-testid="settings-free-models-banner-description">{t('settingsPanel.freeModels.endedDescription')}</p>
+        </div>
+      </section>
+    );
+  }
+
+  if (variant === 'error') {
+    const messageKey = campaignErrorMessageKey(campaign.error);
+    const messageParams = campaign.error?.kind === 'http'
+      ? { status: campaign.error.status ?? '?' }
+      : {};
+    return (
+      <section
+        className="free-models-banner"
+        data-testid="settings-free-models-error"
+        data-variant={campaign.error?.kind ?? 'unknown'}
+      >
+        <div className="free-models-banner__copy">
+          <strong data-testid="settings-free-models-banner-title">
+            {t('settingsPanel.freeModels.unavailableTitle')}
+          </strong>
+          <p data-testid="settings-free-models-banner-description">
+            {t(messageKey, messageParams)}
+          </p>
+        </div>
+        <div className="free-models-banner__actions">
+          <button
+            type="button"
+            className="free-models-banner__action"
+            onClick={() => { void refresh(); }}
+            data-testid="settings-free-models-retry"
+          >
+            {t('settingsPanel.freeModels.retry')}
+          </button>
         </div>
       </section>
     );

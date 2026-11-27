@@ -2,13 +2,17 @@ import { useEffect } from 'react';
 
 import type { CampaignState } from '../../services/authClient';
 import { useAuthStore } from '../../stores/authStore';
+import type { CampaignError } from './campaignError';
 
 export interface FreeModelsCampaign {
   state: CampaignState;
+  /** Why the campaign state could not be loaded; null unless state is `unavailable`. */
+  error: CampaignError | null;
 }
 
 export function useFreeModelsCampaign(): FreeModelsCampaign {
   const state = useAuthStore((store) => store.campaignState);
+  const error = useAuthStore((store) => store.campaignError);
   const enabled = useAuthStore((store) => store.enabled);
   const initialized = useAuthStore((store) => store.initialized);
   const refresh = useAuthStore((store) => store.refresh);
@@ -30,5 +34,5 @@ export function useFreeModelsCampaign(): FreeModelsCampaign {
     };
   }, [enabled, refresh]);
 
-  return { state };
+  return { state, error };
 }
