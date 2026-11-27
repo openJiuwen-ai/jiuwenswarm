@@ -265,6 +265,7 @@ generated: true
 | [B_20261126_1628_upload-doc-block-auto-title](jiuwenswarm/B_20261126_1628_upload-doc-block-auto-title.md) | B | 会话自动标题被【上传文档】协议块污染 | whds5279 | 无独立 D：修复既有标题生成与上传协议块注入的跨层契约冲突，不引入新方案。 |
 | [B_20261126_1940_enterprise-agent-switch-route](jiuwenswarm/channels/web/B_20261126_1940_enterprise-agent-switch-route.md) | B | Open a new conversation after an enterprise Agent switch | linda | 无独立 D：Minimal fix explicitly approved in the task; no separate design document. |
 | [B_20261126_2208_application-menu-slot-flicker](jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
+| [B_20261126_1221_team-file-card-duplicate](jiuwenswarm/channels/web/frontend/B_20261126_1221_team-file-card-duplicate.md) | B | 团队模式 chat.file 二次投递使文件卡片重复渲染为两张 | chen hui | 无独立 D：事件时序契约缺陷修复，无独立 D；依据前端 team-leader 消息按 teamStream.requestId 关联的既有契约与各事件处理器的去重守卫约定。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 
@@ -405,6 +406,14 @@ generated: true
 |---|---|---|---|---|
 | [B_20261124_1704_skills-uninstall-missing-name-400](extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 | [B_20261123_1757_harmony-process-identity](jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
+
+<a id="module-jiuwenswarm-extensions-runtime_management_extension"></a>
+
+## jiuwenswarm/extensions/runtime_management_extension
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_1704_skills-uninstall-missing-name-400](extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
 
 <a id="module-jiuwenswarm-resources-agent-workspace-skills"></a>
 
