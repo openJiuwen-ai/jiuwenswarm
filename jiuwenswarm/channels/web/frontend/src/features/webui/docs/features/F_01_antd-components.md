@@ -1,6 +1,6 @@
 # WebUI 组件目录与渲染适配
 
-建档日期：2026-10-30。最近修订：2026-11-23。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
+建档日期：2026-10-30。最近修订：2026-11-26。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
 Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)，作为插件侧、后端和前端共同遵循的属性定义；
 本次核对完整字段、嵌套结构、事件、默认值和功能影响，并将后续变更顺序写入仓库规则。
 实施及验证记录在本文件维护；属性清单只在 S_17 维护，现有规则代码继续负责执行，尚无自动生成链路。
@@ -10,7 +10,7 @@ Props 统一规范建设：新增扩展 V2 的 [S_17 Props 权威规约](../../.
 ## 背景与范围
 
 组件目录集中描述组件属性、事件数据和槽位规则，供校验器及其他消费者查询。
-目录包含 26 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown`、`Icon`、`Form`、`Form.Item`、`MediaSurface`、`FileImport` 与 `ApplicationSurface`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`application.appearance`、`application.presentation`、`task.function` 与 `task.function.main`，其余 11 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
+目录包含 26 个组件（包括 `Avatar`、`FileTree`、`FilePreview`、`Dropdown`、`Icon`、`Form`、`Form.Item`、`MediaSurface`、`FileImport` 与 `ApplicationSurface`），并登记应用范围的 `application.entry`、`application.sidebar.footer`、`application.menu`、`application.menu.main`、`application.background`、`application.splash`、`application.appearance`、`application.presentation`、`task.function` 与 `task.function.main`，其余 9 个位置默认使用会话范围，设置槽位也允许显式应用范围。登记组件或槽位只表示可查询其规则，
 实际显示仍取决于渲染器注册和页面挂载。
 
 ## 方案与取舍

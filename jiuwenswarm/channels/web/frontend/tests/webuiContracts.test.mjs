@@ -61,7 +61,18 @@ test('catalog contains the supported components', () => {
   });
   // Gateway settings share application.settings with AgentServer packages; there is no separate page slot.
   assert.ok(!componentCatalog.getSlot('application.settings.page'));
-  assert.deepEqual(componentCatalog.getSlot('application.menu.main').rootComponents, ['Iframe']);
+  assert.deepEqual(componentCatalog.getSlot('application.menu'), {
+    id: 'application.menu',
+    display: 'list',
+    scope: 'application',
+  });
+  assert.deepEqual(componentCatalog.getSlot('application.menu.main'), {
+    id: 'application.menu.main',
+    display: 'single',
+    scope: 'application',
+    rootComponents: ['Iframe'],
+    rerender: 'keep-mounted',
+  });
   assert.equal(WEBUI_COMPONENT_SCHEMA_VERSION, 1);
 });
 
