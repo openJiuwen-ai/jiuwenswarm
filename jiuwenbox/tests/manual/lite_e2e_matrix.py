@@ -1,3 +1,7 @@
+# Static-check: this is a manual verification harness. The `CASE <id> ...`
+# lines are its output protocol, so `print` is intentional and must not be
+# converted to logging. External binaries are resolved via shutil.which.
+# pylint: disable=logging-fstring-interpolation
 """LiteRuntime verification suite: engine-level smoke + HTTP-level matrix.
 
 Three layers behind one entry point:
@@ -88,12 +92,14 @@ STATE_DIR = os.path.expanduser("~/.jiuwenbox/sandboxes")
 # and a host directory bind-mounted into both the container and the sandbox.
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOCKER = shutil.which("docker")
+GIT = shutil.which("git") or "git"
+PS = shutil.which("ps") or "ps"
 
 
 def _git_sha():
     try:
         proc = subprocess.run(
-            ["git", "-C", REPO_DIR, "rev-parse", "--short", "HEAD"],
+            [GIT, "-C", REPO_DIR, "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, timeout=5,
         )
         return (proc.stdout or "").strip() or "unknown"
@@ -184,6 +190,8 @@ async def main():
 
 asyncio.run(main())
 '''
+
+
 def _uds_socket_path():
     """Return the socket path when BASE is a unix:// URI, else None."""
     parsed = urllib.parse.urlparse(BASE)
@@ -233,7 +241,7 @@ def _decode_body(raw):
         return None
     try:
         return json.loads(raw)
-    except (ValueError, UnicodeDecodeError):
+    except ValueError:
         return raw[:300]
 
 
@@ -247,13 +255,13 @@ def req(method, path, body=None, timeout=60):
 def check(cid, cond, detail=""):
     status = "PASS" if cond else "FAIL"
     line = f"CASE {cid} {status} {detail}".rstrip()
-    print(line, flush=True)
+    print(line, flush=True)  # noqa
     RESULTS.append((cid, status, detail))
     return bool(cond)
 
 
 def skip(cid, reason):
-    print(f"CASE {cid} SKIP {reason}".rstrip(), flush=True)
+    print(f"CASE {cid} SKIP {reason}".rstrip(), flush=True)  # noqa
     RESULTS.append((cid, "SKIP", reason))
 
 
@@ -361,7 +369,7 @@ def bootstrap_pids():
     """One-run supervisor PIDs mapped to their parent PID."""
     try:
         raw = subprocess.run(
-            ["ps", "-eo", "pid=,ppid=,args="], capture_output=True, text=True, timeout=5
+            [PS, "-eo", "pid=,ppid=,args="], capture_output=True, text=True, timeout=5
         ).stdout
     except Exception:
         return {}
@@ -392,7 +400,7 @@ def server_pids():
         return set()
     try:
         raw = subprocess.run(
-            ["ps", "-eo", "pid=,args="], capture_output=True, text=True, timeout=5
+            [PS, "-eo", "pid=,args="], capture_output=True, text=True, timeout=5
         ).stdout
     except Exception:
         return set()
@@ -440,7 +448,7 @@ def case_engine_smoke():
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "src"
     )
     if src not in sys.path:
-        sys.path.insert(0, src)
+        sys.path.append(src)
     try:
         import asyncio
 
@@ -461,7 +469,7 @@ def case_engine_smoke():
         skip("ENGINE-0", f"deployment unavailable: {type(exc).__name__}: {exc}")
         return
 
-    print(
+    print(  # noqa
         f"DEPLOY bwrap={dep.bwrap} python={dep.python} "
         f"sandbox_python={dep.sandbox_python} "
         f"allow_host_network={dep.allow_host_network} backing_root={dep.backing_root}",
@@ -578,7 +586,8 @@ def case_fs():
     rb = shell(sidb, "cat /home/u/who 2>/dev/null || echo EMPTY") if cb[0] == 201 else cb
     check("FS-5", ca[0] == 201 and cb[0] == 201 and "AAA" in out(ra[1]) and "EMPTY" in out(rb[1]),
           f"a={ra[0]}:{out(ra[1]).strip()!r} b={rb[0]}:{out(rb[1]).strip()!r}")
-    delete(sida); delete(sidb)
+    delete(sida)
+    delete(sidb)
 
 
 def case_seccomp():
@@ -594,7 +603,8 @@ def case_seccomp():
     sid = sid_for("sec2")
     pol = policy(syscall={"x86_64": {"blocked": ["unlink"]}, "arm64": {"blocked": []}})
     c = create(sid, pol)
-    r = shell(sid, "touch /workspace/t && /bin/unlink /workspace/t 2>&1; ls /workspace/t 2>/dev/null") if c[0] == 201 else c
+    cmd = "touch /workspace/t && /bin/unlink /workspace/t 2>&1; ls /workspace/t 2>/dev/null"
+    r = shell(sid, cmd) if c[0] == 201 else c
     text = out(r[1])
     check("SEC-2", c[0] == 201 and r[0] == 200 and "Operation not permitted" in text and "/workspace/t" in text,
           f"create={c[0]} exec={r[0]} out={text.strip()!r}")
@@ -708,7 +718,8 @@ def case_isolated():
     # ISO-4 out-of-list domain rejected
     sid = sid_for("iso4")
     c = create(sid, isolated_policy())
-    r = shell(sid, "curl -sS -m 12 -o /dev/null -w '%{http_code}' http://github.com || echo CURL-FAIL", 25) if c[0] == 201 else c
+    cmd = "curl -sS -m 12 -o /dev/null -w '%{http_code}' http://github.com || echo CURL-FAIL"
+    r = shell(sid, cmd, 25) if c[0] == 201 else c
     text = out(r[1])
     check("ISO-4",
           c[0] == 201 and r[0] == 200 and isinstance(r[1], dict)
@@ -882,13 +893,17 @@ def case_concurrency():
 
     ta = threading.Thread(target=work, args=("a", sa), daemon=True)
     tb = threading.Thread(target=work, args=("b", sb), daemon=True)
-    ta.start(); tb.start(); ta.join(20); tb.join(20)
+    ta.start()
+    tb.start()
+    ta.join(20)
+    tb.join(20)
     ia, ib = interval_of(holder.get("a")), interval_of(holder.get("b"))
     overlap = min(ia[1], ib[1]) - max(ia[0], ib[0]) if ia and ib else -1
     ok = (ca[0] == 201 and cb[0] == 201 and ia and ib and overlap > 0.5)
     check("CON-1", ok, f"a={ia} b={ib} overlap={overlap:.2f}s "
                        f"codes=({holder.get('a',(-1,))[0]},{holder.get('b',(-1,))[0]})")
-    delete(sa); delete(sb)
+    delete(sa)
+    delete(sb)
 
     # CON-2 same-sandbox serialized
     sid = sid_for("con2")
@@ -900,7 +915,10 @@ def case_concurrency():
 
     ta = threading.Thread(target=work2, args=("a",), daemon=True)
     tb = threading.Thread(target=work2, args=("b",), daemon=True)
-    ta.start(); tb.start(); ta.join(20); tb.join(20)
+    ta.start()
+    tb.start()
+    ta.join(20)
+    tb.join(20)
     ia, ib = interval_of(holder.get("a")), interval_of(holder.get("b"))
     serial = bool(ia and ib) and (ia[1] <= ib[0] + 0.05 or ib[1] <= ia[0] + 0.05)
     ok = c[0] == 201 and ia and ib and serial
@@ -915,7 +933,8 @@ def case_concurrency():
     rb = shell(sb, "cat /workspace/only-a.txt 2>/dev/null || echo ABSENT") if cb[0] == 201 else cb
     ok = (ca[0] == 201 and cb[0] == 201 and "WROTE" in out(wa[1]) and "ABSENT" in out(rb[1]))
     check("CON-3", ok, f"a={out(wa[1]).strip()!r} b={out(rb[1]).strip()!r}")
-    delete(sa); delete(sb)
+    delete(sa)
+    delete(sb)
 
     # CON-4 restart drains inflight: sync on a host-visible STARTED marker,
     # then require the old run to end as cancelled (not success).
@@ -1039,11 +1058,12 @@ def ct_bwrap(extra=()):
     # bwrap is spawned as a child of jiuwenbox's supervisor in the real
     # deployment, never as container PID 1 (where writing the userns uid_map
     # is denied). Mirror that by running it under sh -c.
-    bwrap = " ".join(shlex.quote(part) for part in [
+    parts = [
         "bwrap", "--unshare-user", "--uid", "0", "--gid", "0",
         "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
         "--", "/bin/echo", CONTAINER_OUTPUT,
-    ])
+    ]
+    bwrap = " ".join(shlex.quote(part) for part in parts)
     argv = ["run", "--rm", *CT_FLAGS, *extra, CT_IMAGE, "sh", "-c", bwrap]
     return docker(*argv, timeout=180)
 
@@ -1093,10 +1113,11 @@ def ct_matrix_base():
 def _matrix_docker_args():
     """docker exec argv that runs the chapter-6 matrix in the right container."""
     container = CT_CLIENT if CT_TOPO == "split" else CT_NAME
-    return (
+    argv = (
         "exec", "-e", f"E2E_BASE={ct_matrix_base()}", container,
         "python3", "/ct-tests/lite_e2e_matrix.py", "--http-only",
     )
+    return argv
 
 
 def ct_wait_health(seconds=60):
@@ -1111,11 +1132,12 @@ def ct_wait_health(seconds=60):
 def ct_plan():
     """The docker commands the container layer issues, in order."""
     img, name = CT_IMAGE, CT_NAME
-    bwrap = " ".join(shlex.quote(part) for part in [
+    parts = [
         "bwrap", "--unshare-user", "--uid", "0", "--gid", "0",
         "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
         "--", "/bin/echo", CONTAINER_OUTPUT,
-    ])
+    ]
+    bwrap = " ".join(shlex.quote(part) for part in parts)
     mounts, server_cmd = ct_server_spec()
     run_server = ["docker", "run", "-d", "--name", name, *CT_FLAGS]
     if CT_TOPO == "uds":
@@ -1171,9 +1193,9 @@ def ct_plan():
 def case_container(dry_run=False):
     """Layer 3: the same runtime inside a Docker container."""
     if dry_run:
-        print("PLAN container layer (nothing executed):", flush=True)
+        print("PLAN container layer (nothing executed):", flush=True)  # noqa
         for line in ct_plan():
-            print("  " + line, flush=True)
+            print("  " + line, flush=True)  # noqa
         return
     if DOCKER is None:
         skip("CT-1", "docker not installed")
@@ -1182,7 +1204,7 @@ def case_container(dry_run=False):
     if rc != 0:
         skip("CT-1", f"docker daemon unavailable: {cout[:120]}")
         return
-    print(f"CONTAINER image={CT_IMAGE} name={CT_NAME} port={CT_PORT} "
+    print(f"CONTAINER image={CT_IMAGE} name={CT_NAME} port={CT_PORT} "  # noqa
           f"topo={CT_TOPO} policy={CT_POLICY}",
           flush=True)
 
@@ -1192,7 +1214,7 @@ def case_container(dry_run=False):
                 if rc == 0 and "|" in info else "")
     label = (info.split("|")[1].strip() if rc == 0 and "|" in info else "")
     if rc != 0 or label != CT_SOURCE:
-        print(f"BUILD {CT_IMAGE} source={CT_SOURCE} (missing or stale)", flush=True)
+        print(f"BUILD {CT_IMAGE} source={CT_SOURCE} (missing or stale)", flush=True)  # noqa
         rc, cout = docker(
             "build", "-f", os.path.join(REPO_DIR, "docker", "Dockerfile.lite"),
             "-t", CT_IMAGE, "--label", f"jiuwenbox.source={CT_SOURCE}",
@@ -1265,9 +1287,9 @@ def case_container(dry_run=False):
     os.makedirs(CT_DATA, mode=0o777, exist_ok=True)
     os.chmod(CT_DATA, 0o777)
     if CT_TOPO == "internal":
-        _driver, err = ct_internal_harness()
+        _driver, harness_err = ct_internal_harness()
         if _driver is None:
-            check("CT-4", False, f"internal harness unavailable: {err}")
+            check("CT-4", False, f"internal harness unavailable: {harness_err}")
             return
     mounts, server_cmd = ct_server_spec()
     global BASE
@@ -1430,7 +1452,7 @@ def case_container(dry_run=False):
                   "--format", "{{.Name}}")[1].splitlines() if CT_TOPO == "split" else []
     try:
         raw = subprocess.run(
-            ["ps", "-eo", "pid=,args="], capture_output=True, text=True, timeout=5
+            [PS, "-eo", "pid=,args="], capture_output=True, text=True, timeout=5
         ).stdout
     except Exception:
         raw = ""
@@ -1447,9 +1469,9 @@ def summarize():
     passed = sum(1 for _, s, _ in RESULTS if s == "PASS")
     failed = sum(1 for _, s, _ in RESULTS if s == "FAIL")
     skipped = sum(1 for _, s, _ in RESULTS if s == "SKIP")
-    print(f"SUMMARY total={total} pass={passed} fail={failed} skip={skipped}", flush=True)
+    print(f"SUMMARY total={total} pass={passed} fail={failed} skip={skipped}", flush=True)  # noqa
     if failed:
-        print("FAILED IDS: " + ", ".join(cid for cid, s, _ in RESULTS if s == "FAIL"), flush=True)
+        print("FAILED IDS: " + ", ".join(cid for cid, s, _ in RESULTS if s == "FAIL"), flush=True)  # noqa
     return 0 if failed == 0 else 1
 
 
@@ -1458,7 +1480,7 @@ def run_http_matrix():
     for _ in range(30):
         code, body = req("GET", "/health", timeout=5)
         if code == 200:
-            print("HEALTH", code, body, flush=True)
+            print("HEALTH", code, body, flush=True)  # noqa
             break
         time.sleep(1)
     else:
@@ -1475,24 +1497,24 @@ def run_http_matrix():
 
 def main(argv):
     if any(a in ("-h", "--help") for a in argv):
-        print(__doc__.strip())
+        print(__doc__.strip())  # noqa
         return 0
     dry_run = "--dry-run" in argv
     argv = ["--container" if a == "--docker" else a for a in argv if a != "--dry-run"]
     flags = ("--engine-only", "--http-only", "--container")
     unknown = [a for a in argv if a not in flags]
     if unknown:
-        print(f"unknown arguments: {unknown}", file=sys.stderr)
+        print(f"unknown arguments: {unknown}", file=sys.stderr)  # noqa
         return 2
     picked = [flag for flag in flags if flag in argv]
     layer = picked[0][2:].replace("-only", "") if picked else "all"
     if len(picked) > 1:
-        print(f"only one layer flag is allowed, got {picked}", file=sys.stderr)
+        print(f"only one layer flag is allowed, got {picked}", file=sys.stderr)  # noqa
         return 2
     if dry_run and layer != "container":
-        print("--dry-run only applies to the container layer", file=sys.stderr)
+        print("--dry-run only applies to the container layer", file=sys.stderr)  # noqa
         return 2
-    print(f"LAYER {layer}" + (f" BASE {BASE}" if layer != "container" else ""), flush=True)
+    print(f"LAYER {layer}" + (f" BASE {BASE}" if layer != "container" else ""), flush=True)  # noqa
     if layer in ("all", "engine"):
         case_engine_smoke()
     if layer in ("all", "http"):

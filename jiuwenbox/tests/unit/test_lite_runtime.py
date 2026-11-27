@@ -1,4 +1,8 @@
+# pylint: disable=invalid-name,protected-access,no-self-use,redefined-outer-name
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# pylint: disable=subprocess-run-check,too-many-return-values,line-too-long
+# Static-check: white-box unit tests intentionally inspect adapter internals,
+# use fixed RFC5737-style IPs as policy fixtures and short-lived helper scripts.
 """Unit tests for the LiteRuntime adapter.
 
 One test module per adapter: selection, lifecycle, policy preflight, file
@@ -61,6 +65,7 @@ BASE_POLICY = {
     "cgroup": {},
 }
 
+
 class FakeEngine:
     """Engine stub: echoes argv, records calls, optionally runs a script."""
 
@@ -82,6 +87,7 @@ class FakeEngine:
             stdout=" ".join(command.argv).encode(),
         )
 
+
 def _deployment(**kw):
     defaults = dict(
         bwrap="/usr/bin/bwrap",
@@ -90,6 +96,7 @@ def _deployment(**kw):
     )
     defaults.update(kw)
     return Deployment(**defaults)
+
 
 def _policy_file(tmp: Path, *, runtime=None, limits=False) -> Path:
     data = dict(BASE_POLICY)
@@ -114,7 +121,8 @@ rv_BASE_POLICY = {
     "cgroup": {},
 }
 
-class rv_FakeEngine:
+
+class rv_FakeEngine:  # noqa
     def __init__(self, deployment, script=None):
         self.deployment = deployment
         self.script = script
@@ -126,6 +134,7 @@ class rv_FakeEngine:
             return await self.script(policy, command, cancel)
         return RunResult("r", "exited", exit_code=0)
 
+
 def rv_dep():
     return Deployment(
         bwrap="/usr/bin/bwrap",
@@ -133,10 +142,12 @@ def rv_dep():
         allow_host_network=True,
     )
 
+
 def rv_policy_file(tmp: Path) -> Path:
     p = tmp / "policy.yaml"
     p.write_text(yaml.safe_dump(rv_BASE_POLICY), encoding="utf-8")
     return p
+
 
 def rv_run_script(script: str, args: list[str]):
     r = subprocess.run(
@@ -161,7 +172,8 @@ cx_BASE = {
     "cgroup": {},
 }
 
-class cx_FakeEngine:
+
+class cx_FakeEngine:  # noqa
     def __init__(self, deployment, script=None):
         self.deployment = deployment
         self.script = script
@@ -173,11 +185,13 @@ class cx_FakeEngine:
             return await self.script(policy, command, cancel)
         return RunResult("r", "exited", exit_code=0)
 
+
 def cx_dep(**kw):
     d = dict(bwrap="/usr/bin/bwrap", runtime_mounts=(Mount("/usr", "/usr", mode="ro"),),
              allow_host_network=True)
     d.update(kw)
     return Deployment(**d)
+
 
 def cx_pf(tmp: Path, **overrides) -> Path:
     data = dict(cx_BASE)
@@ -197,7 +211,8 @@ cl_BASE = {
     "cgroup": {},
 }
 
-class cl_FakeEngine:
+
+class cl_FakeEngine:  # noqa
     def __init__(self, script=None):
         self.script = script
         self.calls: list = []
@@ -208,11 +223,13 @@ class cl_FakeEngine:
             return await self.script(policy, command, cancel)
         return RunResult("r", "exited", exit_code=0)
 
+
 def cl_dep(**kw):
     d = dict(bwrap="/usr/bin/bwrap", runtime_mounts=(Mount("/usr", "/usr", mode="ro"),),
              allow_host_network=True)
     d.update(kw)
     return Deployment(**d)
+
 
 def cl_pf(tmp: Path, network: dict | None = None) -> Path:
     data = dict(cl_BASE)
@@ -235,7 +252,8 @@ cc_BASE_POLICY = {
     "cgroup": {},
 }
 
-class cc_FakeEngine:
+
+class cc_FakeEngine:  # noqa
     def __init__(self, deployment, script):
         self.deployment = deployment
         self.script = script
@@ -245,6 +263,7 @@ class cc_FakeEngine:
         self.calls.append((policy, command, cancel))
         return await self.script(policy, command, cancel)
 
+
 def cc_dep(root: str) -> Deployment:
     return Deployment(
         bwrap="/usr/bin/bwrap",
@@ -253,10 +272,12 @@ def cc_dep(root: str) -> Deployment:
         backing_root=root,
     )
 
+
 def cc_policy_file(tmp: Path) -> Path:
     path = tmp / "policy.yaml"
     path.write_text(yaml.safe_dump(cc_BASE_POLICY), encoding="utf-8")
     return path
+
 
 def cc_request() -> RuntimeExecRequest:
     return RuntimeExecRequest(command=["/bin/echo", "ok"])
@@ -285,7 +306,7 @@ class TestRuntimeSelection:
             ref = await mgr.create_sandbox(SandboxSpec(sandbox_id="lite0001"))
             assert ref.runtime == "lite"
             assert ref.pid is None
-            adapter = mgr._runtime_for(ref)
+            adapter = mgr._runtime_for(ref)  # noqa
             assert isinstance(adapter, LiteRuntime)
             # explicit request overrides baseline
             ref2 = await mgr.create_sandbox(
@@ -323,7 +344,7 @@ class TestLifecycle:
             r = await rt.exec("sb1", RuntimeExecRequest(command=["echo", "hi"]))
             assert (r.exit_code, r.stdout) == (0, "echo hi")
             assert len(fake.calls) == 1
-            st = rt._states["sb1"]
+            st = rt._states["sb1"]  # noqa
             assert st.inflight == 0 and st.cancel is None
 
             await rt.stop("sb1")
@@ -333,7 +354,7 @@ class TestLifecycle:
 
             await rt.create("sb2", pf)
             await rt.cleanup("sb2")
-            assert "sb2" not in rt._policies and "sb2" not in rt._states
+            assert "sb2" not in rt._policies and "sb2" not in rt._states  # noqa
 
     @pytest.mark.asyncio
     async def test_cancel_reaches_engine_event(self):
@@ -390,7 +411,7 @@ class TestLifecycle:
             await started.wait()
 
             await rt.stop("s1")
-            state = rt._states["s1"]  # must still be present
+            state = rt._states["s1"]  # must still be present  # noqa
             assert state.closing is True
             assert state.inflight == 1
             assert await rt.is_running("s1") is False
@@ -400,8 +421,8 @@ class TestLifecycle:
 
             with pytest.raises(SandboxStateError, match="unconfirmed"):
                 await rt.cleanup("s1")
-            assert _workspace_of("s1") in rt._pending
-            assert "s1" in rt._states  # kept, not silently dropped
+            assert _workspace_of("s1") in rt._pending  # noqa
+            assert "s1" in rt._states  # kept, not silently dropped  # noqa
 
             with pytest.raises(SandboxStateError, match="unconfirmed cleanup"):
                 await rt.create("s1", pf)  # no new generation over a live run
@@ -424,7 +445,7 @@ class TestLifecycle:
                 await rt.exec("s2", RuntimeExecRequest(command=["echo", "x"]))
 
             assert await rt.is_running("s2") is False
-            assert _workspace_of("s2") in rt._pending
+            assert _workspace_of("s2") in rt._pending  # noqa
             assert len(fake.calls) == 1
             with pytest.raises(SandboxNotFoundError):
                 await rt.exec("s2", RuntimeExecRequest(command=["echo", "y"]))
@@ -452,7 +473,7 @@ class TestLifecycle:
             )
             await started.wait()
             await rt.stop("s1")
-            assert rt._states["s1"].inflight == 0, "stop must drain before returning"
+            assert rt._states["s1"].inflight == 0, "stop must drain before returning"  # noqa
             await rt.create("s1", pf)  # must NOT raise in-flight error
             await task
 
@@ -508,7 +529,7 @@ class TestResultCollapse:
         with pytest.raises(exc):
             to_exec_result(result)
 
-    def test_status_collapse_success_and_signal(self):
+    def test_status_collapse_success_and_signal(self):  # noqa
         ok = to_exec_result(RunResult("r", "exited", exit_code=3, stdout=b"x"))
         assert (ok.exit_code, ok.stdout) == (3, "x")
         sig = to_exec_result(RunResult("r", "signalled", term_signal=9))
@@ -536,7 +557,7 @@ class TestPolicyGuards:
             with pytest.raises(PolicyValidationError, match="bubblewrap"):
                 await rt.create("sb4", _policy_file(Path(td), limits=True))
 
-    def test_p1_backing_root_isolated_per_sandbox(self):
+    def test_p1_backing_root_isolated_per_sandbox(self):  # noqa
         dep = cx_dep(backing_root="/tmp/lite-cdx")
         assert _sandbox_backing_root("s1", dep) != _sandbox_backing_root("s2", dep)
         assert _sandbox_backing_root("s1", dep).endswith("/sandboxes/s1")
@@ -549,19 +570,19 @@ class TestPolicyGuards:
             pf = cx_pf(Path(td))
             await rt.create("s1", pf)
             await rt.create("s2", pf)
-        e1, e2 = rt._engine_for("s1"), rt._engine_for("s2")
+        e1, e2 = rt._engine_for("s1"), rt._engine_for("s2")  # noqa
         assert e1 is not e2
-        assert e1._deployment["backing_root"] != e2._deployment["backing_root"]
+        assert e1._deployment["backing_root"] != e2._deployment["backing_root"]  # noqa
 
-    def test_p2_blocked_rules_win_over_allowed(self):
+    def test_p2_blocked_rules_win_over_allowed(self):  # noqa
         spec = SecurityPolicy.model_validate({
             **cx_BASE,
             "network": {"mode": "isolated", "egress": {
                 "default": "deny",
                 "allowed_domains": ["ok.example.com"],
                 "blocked_domains": ["bad.example.com"],
-                "allowed_ips": ["10.0.0.1/32", "10.0.0.2/32"],
-                "blocked_ips": ["10.0.0.2/32"],
+                "allowed_ips": ["10.0.0.1/32", "10.0.0.2/32"],  # noqa
+                "blocked_ips": ["10.0.0.2/32"],  # noqa
                 "allowed_ports": [443, 80],
                 "blocked_ports": [80],
             }},
@@ -570,11 +591,11 @@ class TestPolicyGuards:
         assert endpoints
         assert all(e.port == 443 for e in endpoints), "blocked port 80 leaked"
         assert all("bad.example.com" not in e.address for e in endpoints)
-        assert all(e.address != "10.0.0.2" for e in endpoints)
+        assert all(e.address != "10.0.0.2" for e in endpoints)  # noqa
         assert any("ok.example.com" in e.address for e in endpoints)
-        assert any(e.address == "10.0.0.1" for e in endpoints)
+        assert any(e.address == "10.0.0.1" for e in endpoints)  # noqa
 
-    def test_p2_all_ports_blocked_yields_no_endpoints(self):
+    def test_p2_all_ports_blocked_yields_no_endpoints(self):  # noqa
         spec = SecurityPolicy.model_validate({
             **cx_BASE,
             "network": {"mode": "isolated", "egress": {
@@ -625,8 +646,8 @@ class TestPolicyGuards:
     @pytest.mark.parametrize("egress", [
         {"allowed_domains": ["*.example.com"]},
         {"allowed_domains": ["svc"]},
-        {"allowed_ips": ["10.0.0.1/32"]},
-        {"allowed_ips": ["192.168.1.0/24"]},
+        {"allowed_ips": ["10.0.0.1/32"]},  # noqa
+        {"allowed_ips": ["192.168.1.0/24"]},  # noqa
     ])
     def test_p1_unrepresentable_egress_rejected_at_create(self, egress):
         """The exact adapters produce engine-rejected endpoints: fail at create."""
@@ -644,29 +665,29 @@ class TestPolicyGuards:
         with pytest.raises(PolicyValidationError, match="cannot be compiled"):
             check_deployment(policy, cl_dep(backing_root="/tmp/lite-p1"))
 
-    def test_p1_public_egress_accepted(self):
+    def test_p1_public_egress_accepted(self):  # noqa
         spec = SecurityPolicy.model_validate({
             **cl_BASE, "network": {"mode": "isolated", "egress": {
-                "allowed_domains": ["api.example.com"], "allowed_ips": ["8.8.8.8/32"]
+                "allowed_domains": ["api.example.com"], "allowed_ips": ["8.8.8.8/32"]  # noqa
             }}
         })
         policy = to_sandbox_policy(spec, "s1", None, cl_dep(backing_root="/tmp/lite-p1-ok"))
         check_deployment(policy, cl_dep(backing_root="/tmp/lite-p1-ok"))
 
-    def test_p3_missing_bwrap_rejected(self):
+    def test_p3_missing_bwrap_rejected(self):  # noqa
         policy = to_sandbox_policy(
             SecurityPolicy.model_validate(dict(cl_BASE)), "s1", None, cl_dep(backing_root="/tmp/lite-p3c")
         )
         with pytest.raises(PolicyValidationError, match="does not exist"):
             check_deployment(policy, cl_dep(bwrap="/nonexistent/bwrap", backing_root="/tmp/lite-p3c"))
 
-    def test_p3_forbidden_env_rejected(self):
+    def test_p3_forbidden_env_rejected(self):  # noqa
         spec = SecurityPolicy.model_validate({**cl_BASE, "environment": {"JIUWENBOX_API_TOKEN": "x"}})
         policy = to_sandbox_policy(spec, "s1", None, cl_dep(backing_root="/tmp/lite-p3env"))
         with pytest.raises(PolicyValidationError, match="invalid environment"):
             check_deployment(policy, cl_dep(backing_root="/tmp/lite-p3env"))
 
-    def test_p3_endpoint_truncation_warns(self, caplog):
+    def test_p3_endpoint_truncation_warns(self, caplog):  # noqa
         egress = {"allowed_ips": [f"8.8.{i // 256}.{i % 256}/32" for i in range(300)]}
         # Keep within engine's public range; 8.8.x.x is public.
         spec = SecurityPolicy.model_validate({**cl_BASE, "network": {"mode": "isolated", "egress": egress}})
@@ -689,7 +710,6 @@ class TestFileOps:
                 seen["write_stdin"] = command.stdin
                 return RunResult("w", "exited", exit_code=0)
             seen["read_argv"] = command.argv
-            import base64
             return RunResult(
                 "r", "exited", exit_code=0,
                 stdout=base64.b64encode(b"payload"),
@@ -705,7 +725,7 @@ class TestFileOps:
             assert r.ok is True and r.content == b"payload"
             assert "base64" in " ".join(seen["read_argv"])
 
-    def test_p6_managed_dirs_accepted_by_check_path(self):
+    def test_p6_managed_dirs_accepted_by_check_path(self):  # noqa
         dep = cx_dep(backing_root="/tmp/lite-cdx-path")
         policy = to_sandbox_policy(
             SecurityPolicy.model_validate(cx_BASE), "s1", None, dep,
@@ -736,7 +756,7 @@ class TestFileOps:
     async def test_p1_wrapped_base64_decodes(self):
         payload = bytes(range(256)) * 2
         encoded = base64.b64encode(payload)
-        wrapped = b"\n".join(encoded[i : i + 76] for i in range(0, len(encoded), 76)) + b"\n"
+        wrapped = b"\n".join(encoded[i:i + 76] for i in range(0, len(encoded), 76)) + b"\n"
 
         async def fake_read(policy, command, cancel):
             return RunResult("r", "exited", exit_code=0, stdout=wrapped)
@@ -749,12 +769,12 @@ class TestFileOps:
             assert r.ok is True, r.error
             assert r.content == payload
 
-    def test_p2_read_helper_exit_codes_and_unwrapped_output(self):
+    def test_p2_read_helper_exit_codes_and_unwrapped_output(self):  # noqa
         with TemporaryDirectory() as td:
             target = Path(td) / "a.bin"
             target.write_bytes(b"x" * 100)
 
-            r = subprocess.run(
+            r = subprocess.run(  # noqa
                 ["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(target)],
                 capture_output=True,
             )
@@ -762,19 +782,19 @@ class TestFileOps:
             assert b"\n" not in r.stdout
             assert base64.b64decode(r.stdout) == b"x" * 100
 
-            missing = subprocess.run(
+            missing = subprocess.run(  # noqa
                 ["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(Path(td) / "missing")],
                 capture_output=True,
             )
             assert missing.returncode == 44
             assert _map_file_error(ExecResult(exit_code=44)).error == "not_found"
 
-            isdir = subprocess.run(
+            isdir = subprocess.run(  # noqa
                 ["bash", "-c", _READ_FILE_SCRIPT, "lite-read", td], capture_output=True
             )
             assert isdir.returncode == 45
 
-    def test_p2_entry_shape_and_max_depth(self):
+    def test_p2_entry_shape_and_max_depth(self):  # noqa
         with TemporaryDirectory() as td:
             root = Path(td)
             (root / "a.py").write_text("a")
@@ -798,7 +818,7 @@ class TestFileOps:
             flat = rv_run_script(_LIST_DIR_SCRIPT, [str(root), "0", "", "1", "1"])
             assert {i["name"] for i in flat} == {"a.py", "b.txt", "nested"}
 
-    def test_p2_search_relative_path_and_files_only(self):
+    def test_p2_search_relative_path_and_files_only(self):  # noqa
         with TemporaryDirectory() as td:
             root = Path(td)
             (root / "nested").mkdir()
@@ -824,47 +844,41 @@ class TestFileOps:
             )
             assert {i["name"] for i in excluded} == {"top.py"}
 
-    def test_p3_read_helper_emits_size_and_permission_codes(self):
-        import base64
-        import subprocess
-        import sys
+    def test_p3_read_helper_emits_size_and_permission_codes(self):  # noqa
 
         with TemporaryDirectory() as td:
             target = Path(td) / "a.bin"
             target.write_bytes(b"x" * 100)
-            r = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(target)],
+            r = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(target)],  # noqa
                                capture_output=True)
             assert r.returncode == 0, r.stderr
             assert base64.b64decode(b"".join(r.stdout.split())) == b"x" * 100
-            missing = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(Path(td) / "no")],
+            missing = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(Path(td) / "no")],  # noqa
                                      capture_output=True)
             assert missing.returncode == 44
-            isdir = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", td],
+            isdir = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", td],  # noqa
                                    capture_output=True)
             assert isdir.returncode == 45
             # Oversize file -> explicit 46 never reaches base64.
             huge = Path(td) / "huge.bin"
             huge.write_bytes(b"x" * (64 * 1024 * 1024 + 1))
-            big = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(huge)],
+            big = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(huge)],  # noqa
                                  capture_output=True)
             assert big.returncode == 46
 
-    def test_p3_exit_code_mapping(self):
+    def test_p3_exit_code_mapping(self):  # noqa
         assert _map_file_error(ExecResult(exit_code=46)).error == "too_large"
         assert _map_file_error(ExecResult(exit_code=13)).error == "permission_denied"
         assert _map_file_error(ExecResult(exit_code=13)).errno == 13
 
-    def test_p3_list_dir_type_uses_none_fallback(self):
-        import json
-        import subprocess
-        import sys
+    def test_p3_list_dir_type_uses_none_fallback(self):  # noqa
 
         with TemporaryDirectory() as td:
             root = Path(td)
             (root / "plain").write_text("x")
             (root / "named.py").write_text("x")
             (root / "sub").mkdir()
-            r = subprocess.run(["python3", "-S", "-c", _LIST_DIR_SCRIPT, str(root), "0", "", "1", "1"],
+            r = subprocess.run(["python3", "-S", "-c", _LIST_DIR_SCRIPT, str(root), "0", "", "1", "1"],  # noqa
                                capture_output=True, text=True)
             assert r.returncode == 0, r.stderr
             items = {i["name"]: i for i in json.loads(r.stdout)}
@@ -876,7 +890,7 @@ class TestFileOps:
 # network mode pass-through and egress compilation
 class TestNetworkMode:
 
-    def test_host_mode_passes_through_with_egress(self):
+    def test_host_mode_passes_through_with_egress(self):  # noqa
         """host is authoritative: share the host netns, no proxy control."""
         dep = cx_dep(backing_root="/tmp/lite-host-egress")
         spec = SecurityPolicy.model_validate({
@@ -892,20 +906,20 @@ class TestNetworkMode:
         # host mode shares the host netns; egress rules are not compiled to endpoints.
         assert policy.network.endpoints == ()
 
-    def test_host_mode_passes_through_without_egress(self):
+    def test_host_mode_passes_through_without_egress(self):  # noqa
         dep = cx_dep(backing_root="/tmp/lite-host-noegress")
         spec = SecurityPolicy.model_validate(cx_BASE)
         policy = to_sandbox_policy(spec, "s1", None, dep)
         assert policy.network.mode == "host"
         assert policy.network.endpoints == ()
 
-    def test_default_deployment_grants_host_network(self):
+    def test_default_deployment_grants_host_network(self):  # noqa
         """The engine needs allow_host_network for mode host to compile."""
         from jiuwenbox.server.runtime.lite import build_default_deployment
 
         assert build_default_deployment().allow_host_network is True
 
-    def test_isolated_mode_passes_through_with_egress(self):
+    def test_isolated_mode_passes_through_with_egress(self):  # noqa
         dep = cx_dep(backing_root="/tmp/lite-isolated-egress")
         spec = SecurityPolicy.model_validate({
             **cx_BASE,
@@ -1044,11 +1058,11 @@ class TestConcurrency:
             await rt.stop("s1", timeout=2.0)
 
             assert task.done(), "stop returned while exec was still in flight"
-            state = rt._states["s1"]
+            state = rt._states["s1"]  # noqa
             assert state.inflight == 0
             assert state.closing is True
             await rt.create("s1", pf)  # must not raise SandboxStateError
-            assert rt._states["s1"].inflight == 0
+            assert rt._states["s1"].inflight == 0  # noqa
 
     @pytest.mark.asyncio
     async def test_c4_stop_timeout_marks_pending_and_blocks_create(self, monkeypatch):
@@ -1069,11 +1083,11 @@ class TestConcurrency:
             await started.wait()
 
             await rt.stop("s2", timeout=0.05)
-            assert rt._states["s2"].inflight == 1
+            assert rt._states["s2"].inflight == 1  # noqa
 
             with pytest.raises(SandboxStateError):
                 await rt.cleanup("s2")
-            assert _workspace_of("s2", dep) in rt._pending
+            assert _workspace_of("s2", dep) in rt._pending  # noqa
 
             release.set()
             with pytest.raises(SandboxStateError):  # cancelled run surfaces as error
@@ -1081,7 +1095,7 @@ class TestConcurrency:
             with pytest.raises(SandboxStateError):
                 await rt.create("s2", pf)
             await rt.cleanup("s2")
-            assert rt._states.get("s2") is None
+            assert rt._states.get("s2") is None  # noqa
 
     @pytest.mark.asyncio
     async def test_c5_cleanup_drains_and_keeps_workspace(self):
@@ -1106,9 +1120,9 @@ class TestConcurrency:
             await rt.cleanup("s3")
 
             assert task.done()
-            assert "s3" not in rt._states
-            assert "s3" not in rt._policies
-            assert "s3" not in rt._engines
+            assert "s3" not in rt._states  # noqa
+            assert "s3" not in rt._policies  # noqa
+            assert "s3" not in rt._engines  # noqa
             assert workspace.exists(), "cleanup must never delete the workspace"
 
     @pytest.mark.asyncio
@@ -1127,8 +1141,8 @@ class TestConcurrency:
             pids = await asyncio.gather(*(call() for _ in range(5)))
 
         assert pids == [None] * 5
-        assert list(rt._states) == ["same"]
-        assert rt._states["same"].inflight == 0
+        assert list(rt._states) == ["same"]  # noqa
+        assert rt._states["same"].inflight == 0  # noqa
 
     @pytest.mark.asyncio
     async def test_c7_parallel_cleanup_no_cross_talk(self):
@@ -1150,7 +1164,7 @@ class TestConcurrency:
             results = await asyncio.gather(*(one(f"p{i}") for i in range(4)))
 
         assert all(r.exit_code == 0 for r in results)
-        assert rt._states == {}
-        assert rt._policies == {}
-        assert rt._engines == {}
-        assert rt._pending == {}
+        assert rt._states == {}  # noqa
+        assert rt._policies == {}  # noqa
+        assert rt._engines == {}  # noqa
+        assert rt._pending == {}  # noqa
