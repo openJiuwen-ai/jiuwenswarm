@@ -24,10 +24,9 @@ def test_gateway_uses_local_instance_config_and_extension_dirs(tmp_path: Path, m
 
     env: dict[str, str] = {}
     utils.prepare_local_gateway_config(env)
-    expected_dirs = extension_dirs or "agent_gateway/extensions"
     assert env == {
         "JIUWENSWARM_GATEWAY_CONFIG_DIR": str(config_dir),
-        "EXTENSION_DIRS": f"{expected_dirs};jiuwenswarm/extensions",
+        "EXTENSION_DIRS": extension_dirs,
     }
 
 
@@ -47,8 +46,6 @@ def test_gateway_preserves_deployment_config(tmp_path: Path, monkeypatch, gatewa
     original = env.copy()
     if gateway_config == "infra":
         original["JIUWENSWARM_GATEWAY_CONFIG_DIR"] = str(config.parent)
-    if gateway_config != "agentos":
-        original["EXTENSION_DIRS"] = "D:/custom/ext;jiuwenswarm/extensions"
     utils.prepare_local_gateway_config(env)
     assert env == original
     assert config.read_text(encoding="utf-8") == original_config
@@ -69,17 +66,14 @@ def test_gateway_migrates_stock_infra_config(tmp_path: Path, monkeypatch):
     for _ in range(2):
         env: dict[str, str] = {}
         utils.prepare_local_gateway_config(env)
-        assert env == {
-            "JIUWENSWARM_GATEWAY_CONFIG_DIR": str(config.parent),
-            "EXTENSION_DIRS": "agent_gateway/extensions;jiuwenswarm/extensions",
-        }
+        assert env == {"JIUWENSWARM_GATEWAY_CONFIG_DIR": str(config.parent)}
         assert config.read_text(encoding="utf-8") == original.replace(
             legacy_dirs, f"{legacy_dirs};jiuwenswarm/extensions",
         )
         assert swarm_config.read_text(encoding="utf-8") == original
 
 
-def test_explicit_stock_gateway_config_gets_swarm_extension_dirs(tmp_path, monkeypatch):
+def test_explicit_stock_gateway_config_is_migrated(tmp_path, monkeypatch):
     config = tmp_path / "infra" / "config" / "config.yaml"
     config.parent.mkdir(parents=True)
     legacy_dirs = "${EXTENSION_DIRS:-agent_gateway/extensions}"
@@ -91,7 +85,7 @@ def test_explicit_stock_gateway_config_gets_swarm_extension_dirs(tmp_path, monke
     env = {"JIUWENSWARM_GATEWAY_CONFIG_DIR": str(config.parent)}
     utils.prepare_local_gateway_config(env)
 
-    assert env["EXTENSION_DIRS"] == "agent_gateway/extensions;jiuwenswarm/extensions"
+    assert env == {"JIUWENSWARM_GATEWAY_CONFIG_DIR": str(config.parent)}
     assert config.read_text(encoding="utf-8") == original.replace(
         legacy_dirs, f"{legacy_dirs};jiuwenswarm/extensions",
     )

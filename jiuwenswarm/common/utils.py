@@ -1175,17 +1175,6 @@ def _include_swarm_gateway_extensions(config: Any) -> bool:
     return True
 
 
-def _ensure_swarm_extension_dirs(env: dict[str, str]) -> None:
-    """Append Swarm's built-ins to the personal Gateway extension search path."""
-    current = (env.get("EXTENSION_DIRS") or "").strip()
-    dirs = [part.strip() for part in current.split(";") if part.strip()]
-    if not dirs:
-        dirs.append("agent_gateway/extensions")
-    if "jiuwenswarm/extensions" not in dirs:
-        dirs.append("jiuwenswarm/extensions")
-    env["EXTENSION_DIRS"] = ";".join(dirs)
-
-
 def _install_gateway_config(
     workspace_dir: Path,
     legacy_config: Path | None,
@@ -1742,7 +1731,6 @@ def prepare_local_gateway_config(env: dict[str, str]) -> None:
     if env.get(key, "").strip():
         env[key] = str(gateway_dir)
         if not is_agentos_runtime():
-            _ensure_swarm_extension_dirs(env)
             gateway_config = gateway_dir / "config.yaml"
             if gateway_config.is_file():
                 _migrate_local_gateway_extension_dirs(gateway_config)
@@ -1752,7 +1740,6 @@ def prepare_local_gateway_config(env: dict[str, str]) -> None:
 
     gateway_config = gateway_dir / "config.yaml"
     if gateway_config.is_file():
-        _ensure_swarm_extension_dirs(env)
         _migrate_local_gateway_extension_dirs(gateway_config)
         env[key] = str(gateway_dir)
         return
@@ -1764,7 +1751,6 @@ def prepare_local_gateway_config(env: dict[str, str]) -> None:
     extension_dirs = dotenv_values(get_env_file()).get("EXTENSION_DIRS")
     if extension_dirs is not None:
         env["EXTENSION_DIRS"] = extension_dirs
-    _ensure_swarm_extension_dirs(env)
 
 
 def prepare_runtime_workspace(
