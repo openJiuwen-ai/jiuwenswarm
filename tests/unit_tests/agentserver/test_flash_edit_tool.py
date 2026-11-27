@@ -16,6 +16,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import pytest_asyncio
@@ -30,6 +31,7 @@ from openjiuwen.harness.tools.filesystem import (
     ReadFileTool,
     _FILE_READ_REGISTRY,
 )
+from openjiuwen.harness.tools import filesystem as core_filesystem
 
 from jiuwenswarm.agents.harness.flash.tools import flash_file_history
 from jiuwenswarm.agents.harness.flash.tools import flash_edit_tool
@@ -279,6 +281,52 @@ async def test_retry_quote_variant_edit_hints_already_applied(sys_op, temp_dir):
     assert "already applied" in retry.error
     assert Path(file_path).read_bytes() == "wrapLabel(‘旅人’, 17);\n".encode()
     assert proxy.fs_proxy.write_calls == 1
+
+
+@pytest.mark.parametrize("length", [513, 3900])
+async def test_large_repetitive_edit_miss_skips_similarity(
+    sys_op, temp_dir, flash_history_path, monkeypatch, length,
+):
+    """长重复文本只给普通未命中错误，不进入二次复杂度的比较。"""
+    read_tool, edit_tool, proxy = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "repetitive.txt")
+    old = "a" * (length - 1) + "b"
+    new = "a" * (length - 1) + "c"
+    original = (new + "\n").encode()
+    Path(file_path).write_bytes(original)
+    assert (await read_tool.invoke({"file_path": file_path})).success
+    reads = proxy.fs_proxy.read_calls
+    matcher = Mock(side_effect=AssertionError("相似度比较不应执行"))
+    monkeypatch.setattr(core_filesystem.difflib, "SequenceMatcher", matcher)
+
+    result = await edit_tool.invoke({"file_path": file_path, "old_string": old, "new_string": new})
+
+    assert result.success is False
+    assert result.error == f"old_string not found in '{file_path}'."
+    matcher.assert_not_called()
+    assert Path(file_path).read_bytes() == original
+    assert proxy.fs_proxy.read_calls == reads
+    assert proxy.fs_proxy.write_calls == 0
+    assert not flash_history_path.exists()
+
+
+async def test_similarity_budget_boundary_still_hints(sys_op, temp_dir):
+    """预算内的重复片段仍能获得提示，收紧成本不关闭整个能力。"""
+    read_tool, edit_tool, proxy = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "boundary.txt")
+    old = "a" * 511 + "b"
+    new = "a" * 511 + "c"
+    original = (new + "\n").encode()
+    Path(file_path).write_bytes(original)
+    assert (await read_tool.invoke({"file_path": file_path})).success
+
+    result = await edit_tool.invoke({"file_path": file_path, "old_string": old, "new_string": new})
+
+    assert result.success is False
+    assert "already exists at line 1" in result.error
+    assert "already applied" in result.error
+    assert Path(file_path).read_bytes() == original
+    assert proxy.fs_proxy.write_calls == 0
 
 
 async def test_cache_hit_zero_fs_reads(sys_op, temp_dir):

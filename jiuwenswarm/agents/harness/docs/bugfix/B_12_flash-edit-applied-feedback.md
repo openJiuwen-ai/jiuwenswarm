@@ -17,20 +17,29 @@
 
 Flash 在普通匹配与引号容错都失败后，调用 core 提供的 `_old_string_not_found_error`，传入清洗后的旧新文本、当前内容快照和现有 `where`。父类 helper 判断新文本存在且与旧文本相似时，返回带位置的可能已应用提示及 `read_file` 建议；仍保持 `success=False`。
 
-helper 是纯文本判断，不增加读取、写入或跨调用状态。多 hunk 中任一项失败仍在写回之前返回，保留批量原子性。单元素 hunks 继续使用 `old_string`，多元素使用 `hunks[i]`。编辑锁、缓存、CAS、换行和 JSONL history 机制沿用既有行为。
+helper 是纯文本判断，不增加读取、写入或跨调用状态。Flash 将继承的 `_APPLIED_EDIT_SIMILARITY_MAX_CHARS` 限为 512：任一归一化块超过该上限便跳过相似度提示，返回普通未命中错误，避免 3900 字符重复片段在同步 `SequenceMatcher(autojunk=False)` 中长时间占用事件循环。512 字符内继续复用 core 判断；这只限制提示，不限制实际可编辑文本长度。Team 的 `AccelSysOperationRail` 也注册同一个工具，得到相同限制。
 
-实际 core 必须包含 [agent-core !4013](https://gitcode.com/openJiuwen/agent-core/pull/4013)。本次只将 `uv.lock` 的 core 解析提交更新到含该修复的 `dev-stable` 合并提交；新旧提交的 `pyproject.toml` 相同，其他锁定包不变。
+多 hunk 中任一项失败仍在写回之前返回，保留批量原子性。单元素 hunks 继续使用 `old_string`，多元素使用 `hunks[i]`。编辑锁、缓存、CAS、换行和 JSONL history 机制沿用既有行为。
+
+实际 core 必须包含 [agent-core !4013](https://gitcode.com/openJiuwen/agent-core/pull/4013)。最终锁定其已被合入的实现提交，而不是随后包含其他修复的合并快照。初版锁定快照中的模型客户端会因 `top_p` 被拒而缓存删除全部采样参数，影响后续新客户端的合法 `temperature`。收敛依赖后，编辑 helper 不变，模型客户端与本 PR 原始 core 基线逐字节相同，不引入该降级机制。新旧目标 core 的 `pyproject.toml` 相同，其他锁定包不变；确切版本及对照证据见 PR 说明。
 
 未复制 helper，避免维护两套相似度、防误报与引号兼容规则；未将“新文本存在”直接判为成功，也未跳过失败 hunk 继续写入，因为启发式提示不能证明整项编辑完成。未修改循环阈值、模型配置或 Relay。
 
 ## 验证与限制
 
-Linux、Python 3.13.15，本地 editable core 与更新后的锁定提交一致。通过工具公开 `invoke` 使用真实临时文件验证：
+初版在 Linux、Python 3.13.15、当时锁定的 editable core 上通过工具公开 `invoke` 与真实临时文件验证：
 
 - 新增 10 个用例；修改前 6 个提示用例失败、4 个防误报用例通过；修改后编辑测试文件共 36 项通过。
 - 成功后原参数重试覆盖缓存／全量读取、传统参数／单元素 hunks；确认提示含位置与读取建议，文件和历史不变，无额外写入，缓存分支无额外读取。
 - 负例覆盖泛化新串、空新串、缩短编辑和旧新文本均缺失；另验证多 hunk 失败时不应用已规划修改，以及直／弯引号重试。
 - 与 `test_flash_file_guard.py`、`test_flash_adapter_tool_face.py` 组合运行共 77 项通过。现有环境缺少锁定的 `openjiuwen-protocol`，首次组合收集失败；在临时目录安装该锁定版本并加入测试 `PYTHONPATH` 后通过，未更改共享虚拟环境。
 - `uv lock --check --offline` 通过。
+
+de 检视后针对最终依赖重新验证，使用锁定提交的临时源码副本和原虚拟环境的其他依赖，不修改共享 editable core：
+
+- 新增长度 513／3900 的两个负例与 512 边界正例；修改前 2 failed／1 passed，修改后上述三文件及 `test_team_accel.py` 共 90 passed、无跳过，1 条依赖弃用警告。负例确认不调用 `SequenceMatcher`，文件、历史和缓存命中读取次数不变。
+- 对公开 `FlashEditFileTool.invoke` 的一次同条件探针：3900 字符缓存命中路径的事件循环回调延迟由约 1063 ms 降至约 0.34 ms。这是本机单次 Linux 对照，不是 Windows 时延保证。
+- 使用真实 OpenAI SDK 和模拟 HTTP 400 响应，初版依赖会在拒绝 `top_p` 后删除新客户端的 `temperature=0.3`；最终依赖保留 `0.3`。首次含不支持参数的请求仍按原始基线报错，本 PR 不新增采样去参重试。
+- 原日志三组编辑的归一化旧／新长度为 60/60、63/63、207/107，均在 512 上限内，实际 Flash helper 仍给出已应用提示。最终依赖锁检查通过。
 
 未启动产品实例，未验证现场模型是否采纳提示、原 Code 场景闭合或 Windows 目标构建。工具反馈改善不能代替上述产品验收。core 私有 helper 后续升级时，需保留 Flash 真实编辑与重试回归以发现签名或语义漂移。

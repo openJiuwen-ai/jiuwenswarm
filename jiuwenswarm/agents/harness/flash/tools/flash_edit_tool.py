@@ -282,6 +282,9 @@ def get_flash_edit_input_params(language: str = "cn") -> Dict[str, Any]:
 class FlashEditFileTool(EditFileTool):
     """EditFileTool with snapshot-cache matching, JSONL history and hunks."""
 
+    # 同步提示只比较短片段，限制重复文本对 Flash／Team 共享事件循环的占用。
+    _APPLIED_EDIT_SIMILARITY_MAX_CHARS = 512
+
     def __init__(self, operation, language: str = "cn", agent_id: Optional[str] = None):
         super().__init__(operation, language, agent_id)
         lang = language or "cn"
