@@ -21,6 +21,7 @@ from _flash_test_utils import FakeCtx as _FakeCtx
 from jiuwenswarm.agents.harness.flash.rails.flash_persona_rail import (
     _DIRECTORY_MODEL_CN,
     _EXEC_PRINCIPLES_CN,
+    _EXEC_PRINCIPLES_EN,
     _EXEC_PRIORITY_CN,
     _IDENTITY_BLOCKS_CN,
     _PATH_PERMISSION_CN,
@@ -237,3 +238,12 @@ class TestMaybeSplitIdentity:
         intro = agent.system_prompt_builder.get_section("identity")
         assert intro.content["en"].startswith("# Identity\n\n")
         assert not intro.content["en"].startswith("# 身份")
+
+
+def test_exec_principles_include_time_anchor_alignment() -> None:
+    """400 执行质量准则：含「时间锚点对齐」认知规则（防回退）。
+
+    回答年份/届次事实题前先对齐目标时间与当前时间/事件周期，目标不存在时先核实或明说无法确认。
+    """
+    assert "时间锚点对齐" in _EXEC_PRINCIPLES_CN
+    assert "Time-anchor alignment" in _EXEC_PRINCIPLES_EN

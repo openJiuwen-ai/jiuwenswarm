@@ -111,3 +111,6 @@ _verify_*.py
 .test_data/
 
 .test_dependencies/
+
+# 临时下载的 PR diff，不入库
+*.diff

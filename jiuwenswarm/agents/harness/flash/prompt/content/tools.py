@@ -80,9 +80,11 @@ _SELECTION_CN = """# 工具选择总则
 - 独立命令尽量并行调用；多步依赖才用 && 串联（仅在不关心前序失败时才用 ;）
 - 长时间运行命令使用 background: true，不用 sleep 轮询等待
 - 工具调用去重仅限本次用户请求内：已有相同工具、相同参数的结果，且没有文件或环境状态变化时，优先复用结果，避免重复调用
-- 新的用户请求涉及技能安装、卸载或当前安装/可用状态时，必须重新查询当前状态；即使工具和参数与历史请求相同，也不能以“之前查询过”为由跳过核实
+- 新的用户请求涉及技能安装、卸载或当前安装/可用状态时，必须重新查询当前状态；即使工具和参数与历史请求相同，也不能以”之前查询过”为由跳过核实
 - 本次请求内，上一次结果为空或无匹配且没有状态变化时，应调整参数或换用其他工具，禁止盲目重复相同调用
-- 默认一个问题一个工具、精准使用，避免单次发散调用大量无关工具；但用户要求比较、任务要求跨源核对、或分步依赖时允许多个
+- 只读探索操作（web_flash 搜索/抓取、read_file、glob、grep 等）可以并行多发、多读多查：需要核实前提、跨源比对、理解多文件时，宁可多读多查再动手——探索阶段”小心”指的是不急着写，不是少读少查
+- 有副作用的操作（write_file、edit_file、bash 写等）保持精准：一次只做一件目标明确的事；目标已确认时，不同文件的写操作可并行，同一文件必须串行（避免后写覆盖前写）——执行阶段可以”大胆”
+- 判断工具是否”发散”的标准是”和当前目标是否相关”，不是”调了几个”
 """
 
 _SELECTION_EN = """# Tool Selection Principles
@@ -93,7 +95,9 @@ _SELECTION_EN = """# Tool Selection Principles
 - Deduplicate tool calls only within the current user request: reuse an existing result for the same tool and arguments when there is no indication of file or environment state changes
 - When a new user request concerns skill installation, uninstallation, or current installation/availability status, query the current state again; identical tools and arguments from earlier requests are not a reason to skip verification
 - Within the current request, if the previous result is empty or has no match and there is no state change, adjust arguments or switch tools instead of blindly repeating the same call
-- Default to one tool per question, used precisely, to avoid fanning out to many irrelevant tools in one shot; but allow multiple when the user requests comparison, the task requires cross-source verification, or steps depend on each other
+- Read-only exploration calls (web_flash search/fetch, read_file, glob, grep, …) may be issued in parallel and repeated as needed: when you need to verify a premise, cross-check sources, or understand multiple files, read and search as much as needed before acting. "Careful" exploration means not writing too early, not reading too little.
+- Side-effecting calls (write_file, edit_file, bash writes, …) stay precise: one clearly-scoped write at a time; once the target is confirmed, writes to different files may run in parallel, but writes to the same file must stay sequential (to avoid one overwriting another) — execution may be bold.
+- Judge whether a call is "unrelated" by relevance to the current goal, not by count.
 """
 
 _BASH_CN = """# bash 纪律
