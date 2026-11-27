@@ -329,7 +329,8 @@ async def test_import_local_overwrite_preserves_archive(
     with pytest.raises(SkillRpcError) as exc:
         await manager.handle_skills_import_local({"path": str(_zip_skill(tmp_path, name="document-review"))})
     assert exc.value.code == ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED
-    assert exc.value.message == "Skill document-review already exists. Confirm overwrite."
+    assert exc.value.detail_key == "skills.errors.importOverwriteRequired"
+    assert exc.value.detail_params == {"name": "document-review"}
 
     pkg = _zip_skill(tmp_path, name="document-review", filename="new.zip")
     # 更新包描述
@@ -351,6 +352,23 @@ async def test_import_local_overwrite_preserves_archive(
     assert (skill_dir / ARCHIVE_DIRNAME / VERSIONS_DIRNAME / INDEX_FILENAME).is_file()
     assert "updated description" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
     assert "updated description" in (content / "SKILL.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_import_local_single_file_conflict_has_i18n_details(
+    manager: SkillManager, tmp_path: Path,
+) -> None:
+    source = tmp_path / "SKILL.md"
+    source.write_text(_skill_md("document-review"), encoding="utf-8")
+    params = {"path": str(source)}
+    assert (await manager.handle_skills_import_local(params))["success"] is True
+
+    with pytest.raises(SkillRpcError) as exc:
+        await manager.handle_skills_import_local(params)
+
+    assert exc.value.code == ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED
+    assert exc.value.detail_key == "skills.errors.importOverwriteRequired"
+    assert exc.value.detail_params == {"name": "document-review"}
 
 
 @pytest.mark.asyncio

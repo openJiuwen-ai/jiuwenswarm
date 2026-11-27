@@ -1040,7 +1040,8 @@ async def test_apply_strict_success_and_idempotent(
     )
     assert status == 409
     assert payload["code"] == ERROR_SKILL_ALREADY_EXISTS
-    assert payload["message"] == "Skill ppt already exists. Confirm overwrite."
+    assert payload["detail_key"] == "skills.errors.importOverwriteRequired"
+    assert payload["detail_params"] == {"name": "ppt"}
 
     # best_effort：同名冲突落 skipped，幂等无副作用
     content_type, form = _apply_form(package, mode="best_effort")
@@ -1051,6 +1052,9 @@ async def test_apply_strict_success_and_idempotent(
     assert payload["applied"] == []
     assert len(payload["skipped"]) == 2
     assert all(s["reason"] == ERROR_SKILL_ALREADY_EXISTS for s in payload["skipped"])
+    for item in payload["skipped"]:
+        assert item["detail_key"] == "skills.errors.importOverwriteRequired"
+        assert item["detail_params"] == {"name": item["name"]}
     # 内容未被覆盖
     weather_md = (manager._skills_dir / "weather" / "SKILL.md").read_text(encoding="utf-8")
     assert "天气查询" in weather_md

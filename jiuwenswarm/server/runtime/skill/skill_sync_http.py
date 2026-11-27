@@ -456,10 +456,11 @@ def handle_sync_apply_http(
         _notify_agentserver_skills_landed(result)
         return 200, result
     except SkillRpcError as exc:
-        return (
-            skill_sync_http_error_status(exc.code),
-            skill_sync_http_error_body(exc.code, exc.message),
-        )
+        body: dict[str, Any] = {**skill_sync_http_error_body(exc.code, exc.message)}
+        if exc.detail_key:
+            body["detail_key"] = exc.detail_key
+            body["detail_params"] = exc.detail_params
+        return skill_sync_http_error_status(exc.code), body
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         logger.exception("[skill_sync_http] apply failed: %s", exc)
         return (

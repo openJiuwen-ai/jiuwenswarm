@@ -6658,7 +6658,7 @@ class SkillManager:
             if not force:
                 raise SkillRpcError(
                     conflict_code or ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
-                    f"Skill {skill_name} already exists. Confirm overwrite.",
+                    f"skill {skill_name} 已存在，需确认覆盖",
                     detail_key="skills.errors.importOverwriteRequired",
                     detail_params={"name": skill_name},
                 )
@@ -7028,7 +7028,9 @@ class SkillManager:
                 if not force:
                     raise SkillRpcError(
                         ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
-                        f"Skill {skill_name} already exists. Confirm overwrite (force=true).",
+                        f"skill {skill_name} 已存在，需确认覆盖（force=true）",
+                        detail_key="skills.errors.importOverwriteRequired",
+                        detail_params={"name": skill_name},
                     )
                 # 单文件覆盖：保留 .archive，仅替换该 md
                 preserved_version = None
@@ -10896,7 +10898,9 @@ class SkillManager:
             if item["existing"] and not overwrite:
                 raise SkillRpcError(
                     ERROR_SKILL_ALREADY_EXISTS,
-                    f"Skill {item['name']} already exists. Confirm overwrite.",
+                    f"skill {item['name']} 已存在，需确认覆盖",
+                    detail_key="skills.errors.importOverwriteRequired",
+                    detail_params={"name": item["name"]},
                 )
             if item["builtin"]:
                 raise SkillRpcError(
@@ -11331,9 +11335,15 @@ class SkillManager:
                         ERROR_SKILL_BUILTIN_READ_ONLY: "内置 Skill 不可覆盖",
                         ERROR_SKILL_OPERATION_UNSUPPORTED: "暂不支持导入 SkillPack",
                     }.get(skip_reason, "包校验未通过")
-                    skipped.append(
-                        {"name": safe_name, "reason": skip_reason, "detail": detail}
-                    )
+                    skipped_item: dict[str, Any] = {
+                        "name": safe_name, "reason": skip_reason, "detail": detail,
+                    }
+                    if skip_reason == ERROR_SKILL_ALREADY_EXISTS:
+                        skipped_item.update(
+                            detail_key="skills.errors.importOverwriteRequired",
+                            detail_params={"name": safe_name},
+                        )
+                    skipped.append(skipped_item)
                     continue
                 result = self._install_imported_skill_dir(
                     item["src"],

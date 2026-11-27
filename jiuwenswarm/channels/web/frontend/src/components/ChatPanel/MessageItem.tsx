@@ -40,6 +40,7 @@ import { QaSummaryCard } from '../InteractionSlot/QaSummaryCard';
 import { isQaSummaryContent } from '../InteractionSlot/qaSummary';
 import { GoalCompletedCard } from '../GoalBar/GoalCompletedCard';
 import { isGoalCompletedContent } from '../GoalBar/goalCompletedMessage';
+import { errorToMessage } from '../SkillPanel/skillUploadErrors';
 import { a2uiContentToText } from '../../features/a2ui/a2uiContent';
 import { formatTimestamp, onTtsStop, sanitizeTtsText } from '../../utils';
 import { useSpeechSynthesis } from '../../hooks';
@@ -1479,7 +1480,7 @@ export function FileDownloadList({
       setTimeout(() => setSaveSuccessIndex(null), 2000);
     } catch (error) {
       if (isImportOverwriteRequired(error)) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
+        const errorMsg = errorToMessage(error, t);
         const overwrite = window.confirm(t('chatUi.saveSkillOverwriteConfirm', { message: errorMsg }));
         if (!overwrite) return;
         try {

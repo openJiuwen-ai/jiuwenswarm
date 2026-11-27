@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   errorToMessage,
@@ -23,6 +24,26 @@ test('errorToMessage prefers detailKey with params when t is provided', () => {
 
 test('errorToMessage falls back to Error.message without detailKey', () => {
   assert.equal(errorToMessage(new Error('plain upload failure'), fakeT), 'plain upload failure');
+});
+
+test('overwrite conflict from a WebError payload follows the UI language', () => {
+  const error = Object.assign(new Error('skill demo 已存在，需确认覆盖'), {
+    payload: {
+      detail_key: 'skills.errors.importOverwriteRequired',
+      detail_params: { name: 'demo' },
+    },
+  });
+  const expected = {
+    en: 'Skill "demo" already exists and requires overwrite confirmation',
+    zh: '技能「demo」已存在，需确认覆盖',
+  };
+  for (const [language, message] of Object.entries(expected)) {
+    const path = new URL(`../src/i18n/locales/${language}.json`, import.meta.url);
+    const locale = JSON.parse(readFileSync(path, 'utf8'));
+    const t = (key, params) => key.split('.').reduce((value, part) => value[part], locale)
+      .replace('{{name}}', params.name);
+    assert.equal(errorToMessage(error, t), message);
+  }
 });
 
 test('resolveUploadErrorMessage uses detailKey first', () => {
