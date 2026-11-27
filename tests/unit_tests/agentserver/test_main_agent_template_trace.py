@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Work and Code report the routed template without renaming the running Agent."""
+"""Work and Code trace the verified display name when available."""
 
 from contextlib import ExitStack, contextmanager
 from contextvars import Context
@@ -21,12 +21,17 @@ from openjiuwen.extensions.observability.span_context import (
 from openjiuwen.harness import observability
 from openjiuwen.harness.deep_agent import DeepAgent
 from openjiuwen.harness.observability.rail import AgentObservabilityRail
+from starlette.requests import Request
+
+from agent_gateway.southbound.data.rest_map import assemble_rest_request
+from e2a.models import E2AEnvelope
 
 from jiuwenswarm.agents.harness import agent_observability
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.enterprise.config import config_provider
 from jiuwenswarm.enterprise.config.effective import db_queries
 from jiuwenswarm.enterprise.config.effective.schemas import EffectiveEnterpriseConfig, RoutingContext
+from jiuwenswarm.server.agent_http_routes import _rebuild_identity_from_headers
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
@@ -38,7 +43,7 @@ def enterprise_edition(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_catalog_reads(monkeypatch):
-    read = AsyncMock(side_effect=AssertionError("Trace naming must use the existing policy"))
+    read = AsyncMock(side_effect=AssertionError("Trace naming must not query the catalog"))
     monkeypatch.setattr(db_queries, "list_records", read)
     yield
     read.assert_not_called()
@@ -90,6 +95,10 @@ def _request(mode, streaming=False):
     )
 
 
+def _manager_name(name, bot_id="selected-bot"):
+    return {"_jiuwen_trace_agent_name": {"bot_id": bot_id, "name": name}}
+
+
 def _policy(name, bot_id="selected-bot"):
     return EffectiveEnterpriseConfig(
         routing=RoutingContext(group_id="", bot_id=bot_id, user_id=""),
@@ -103,11 +112,32 @@ def _policy(name, bot_id="selected-bot"):
     (JiuWenSwarmDeepAdapter, "agent"), (JiuwenSwarmCodeAdapter, "code"),
 ])
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_first_turn_names_only_the_recording_trace(monkeypatch, tracer, adapter_type, mode, streaming):
+@pytest.mark.parametrize("verified_name,policy,expected_name", [
+    (None, _policy("配置模板"), "main_agent"),
+    ("需求助手", _policy("配置模板"), "需求助手"),
+    ("需求助手", None, "需求助手"),
+])
+async def test_first_turn_names_only_the_recording_trace(
+    monkeypatch, tracer, adapter_type, mode, streaming, verified_name, policy, expected_name,
+):
     adapter, rail = _adapter(adapter_type)
     request = _request(mode, streaming)
+    if verified_name is not None:
+        envelope = E2AEnvelope(
+            request_id=request.request_id,
+            channel=request.channel_id,
+            session_id=request.session_id,
+            method="chat.send",
+            params=request.params,
+            channel_context={**request.metadata, "ext": _manager_name(verified_name)},
+        )
+        rest = assemble_rest_request(envelope, base_url="http://agent.test")
+        _, request.metadata = _rebuild_identity_from_headers(Request({
+            "type": "http",
+            "headers": [(key.lower().encode("ascii"), value.encode("ascii")) for key, value in rest.headers.items()],
+        }))
     assert adapter._enterprise_config is None
-    resolve = AsyncMock(return_value=config_provider.AgentConfigResult(config={}, policy=_policy("  需求助手  ")))
+    resolve = AsyncMock(return_value=config_provider.AgentConfigResult(config={}, policy=policy))
     monkeypatch.setattr(config_provider, "resolve_agent_config", resolve)
     await adapter._load_enterprise_config(request, base={})
     monkeypatch.setattr(adapter, "_has_valid_model_config", lambda name: True)
@@ -127,14 +157,14 @@ async def test_first_turn_names_only_the_recording_trace(monkeypatch, tracer, ad
         await rail.before_task_iteration(ctx)
         try:
             agent_span = get_current_agent_span()
-            assert agent_span.name == "agent.需求助手.task_iteration.1"
-            assert agent_span.attributes["gen_ai.agent.name"] == "需求助手"
+            assert agent_span.name == f"agent.{expected_name}.task_iteration.1"
+            assert agent_span.attributes["gen_ai.agent.name"] == expected_name
         finally:
             await rail.after_task_iteration(ctx)
         assert adapter._instance.card.name == adapter._agent_name == "main_agent"
         assert adapter._instance.card.id == "runtime-agent"
         scheduler = Context()
-        assert scheduler.run(rail.resolve_agent_name, adapter._instance) == "需求助手"
+        assert scheduler.run(rail.resolve_agent_name, adapter._instance) == expected_name
         with agent_observability.main_agent_trace_turn(request.session_id):
             assert scheduler.run(rail.resolve_agent_name, adapter._instance) == "main_agent"
         raise DispatchReached
@@ -162,12 +192,12 @@ async def test_first_turn_names_only_the_recording_trace(monkeypatch, tracer, ad
 def test_overlapping_turns_keep_separate_names_and_children_keep_their_cards(tracer):
     adapter, rail = _adapter(JiuWenSwarmDeepAdapter, "configured")
     request = _request("agent")
-    adapter._enterprise_config = _policy("模板甲")
+    request.metadata["ext"] = _manager_name("模板甲")
 
     with _root(tracer) as first:
         adapter._set_main_agent_trace_name(request, first)
         with _root(tracer) as second:
-            adapter._enterprise_config = _policy("模板乙")
+            request.metadata["ext"] = _manager_name("模板乙")
             adapter._set_main_agent_trace_name(request, second)
             assert rail.resolve_agent_name(adapter._instance) == "模板乙"
             child = DeepAgent(AgentCard(id="child", name="researcher"))
@@ -191,7 +221,8 @@ def test_scheduler_callback_without_turn_context_does_not_take_another_turns_nam
         stack.callback(owner.run, turn.close)
         owner.run(turn.enter_context, agent_observability.main_agent_trace_turn(session_id))
         span = owner.run(turn.enter_context, _sdk_root(tracer, session_id))
-        adapter._enterprise_config = _policy(name) if name else None
+        if name is not None:
+            request.metadata["ext"] = _manager_name(name)
         owner.run(adapter._set_main_agent_trace_name, request, span)
         return owner
 
@@ -231,7 +262,7 @@ async def test_request_rejected_before_tracing_keeps_active_turn_identifiable(
 
     monkeypatch.setattr(adapter, "_ensure_enterprise_models", AsyncMock())
     monkeypatch.setattr(adapter, "_model_config_error", reject_before_trace)
-    adapter._enterprise_config = _policy("模板甲")
+    active.metadata["ext"] = _manager_name("模板甲")
     with agent_observability.main_agent_trace_turn(active.session_id), _sdk_root(tracer, active.session_id) as span:
         adapter._set_main_agent_trace_name(active, span)
         if streaming:
@@ -258,7 +289,7 @@ def test_template_rail_failure_keeps_native_observability(monkeypatch, failure):
 def test_rebuilt_agent_gets_observed_name_on_its_own_rail(tracer):
     adapter, old_rail = _adapter(JiuWenSwarmDeepAdapter)
     request = _request("agent")
-    adapter._enterprise_config = _policy("模板甲")
+    request.metadata["ext"] = _manager_name("模板甲")
     with _root(tracer) as first:
         adapter._set_main_agent_trace_name(request, first)
         assert old_rail.resolve_agent_name(adapter._instance) == "模板甲"
@@ -273,8 +304,9 @@ def test_rebuilt_agent_gets_observed_name_on_its_own_rail(tracer):
 @pytest.mark.parametrize("run_span", [None, INVALID_SPAN])
 def test_disabled_or_unsampled_trace_keeps_card_name(run_span):
     adapter, rail = _adapter(JiuWenSwarmDeepAdapter)
-    adapter._enterprise_config = _policy("模板甲")
-    adapter._set_main_agent_trace_name(_request("agent"), run_span)
+    request = _request("agent")
+    request.metadata["ext"] = _manager_name("模板甲")
+    adapter._set_main_agent_trace_name(request, run_span)
     assert rail.resolve_agent_name(adapter._instance) == adapter._instance.card.name == "main_agent"
 
 
@@ -283,9 +315,10 @@ def test_explicit_agent_definition_keeps_its_observed_name(tracer, mode):
     adapter_type = JiuwenSwarmCodeAdapter if mode == "code" else JiuWenSwarmDeepAdapter
     adapter, rail = _adapter(adapter_type, "expert")
     adapter._session_instance_agent_definition = {"name": "expert"}
-    adapter._enterprise_config = _policy("模板甲")
+    request = _request(mode)
+    request.metadata["ext"] = _manager_name("已校验名称")
     with _root(tracer) as span:
-        adapter._set_main_agent_trace_name(_request(mode), span)
+        adapter._set_main_agent_trace_name(request, span)
         assert rail.resolve_agent_name(adapter._instance) == adapter._instance.card.name == "expert"
 
 
@@ -294,41 +327,41 @@ def test_other_modes_keep_their_own_name(tracer, params):
     adapter, rail = _adapter(JiuWenSwarmDeepAdapter, "leader")
     request = _request("agent")
     request.params.update(params)
-    adapter._enterprise_config = _policy("模板甲")
+    request.metadata["ext"] = _manager_name("已校验名称")
     with _root(tracer) as span:
         adapter._set_main_agent_trace_name(request, span)
         assert rail.resolve_agent_name(adapter._instance) == adapter._instance.card.name == "leader"
 
 
-@pytest.mark.parametrize("policy,routed_bot", [
-    (None, "selected-bot"),
-    (_policy("  "), "selected-bot"),
-    (_policy(None), "selected-bot"),
-    (_policy("另一个模板", bot_id="other-bot"), "selected-bot"),
-    (_policy("模板甲"), ""),
+@pytest.mark.parametrize("ext", [
+    None,
+    _manager_name(None),
+    _manager_name(" "),
+    _manager_name("a" * 129),
+    _manager_name("另一个 Agent", bot_id="other-bot"),
 ])
-def test_missing_or_mismatched_template_falls_back_for_this_turn(tracer, policy, routed_bot):
+def test_missing_or_invalid_manager_name_falls_back_to_runtime_name(tracer, ext):
     adapter, rail = _adapter(JiuwenSwarmCodeAdapter, "configured")
     request = _request("code")
-    adapter._enterprise_config = _policy("模板甲")
+    # A matching configuration template is present but is not a trace name source.
+    adapter._enterprise_config = _policy("当前配置模板")
+    request.metadata["ext"] = _manager_name("已校验名称")
     with _root(tracer) as previous:
         adapter._set_main_agent_trace_name(request, previous)
-        assert rail.resolve_agent_name(adapter._instance) == "模板甲"
+        assert rail.resolve_agent_name(adapter._instance) == "已校验名称"
     with _root(tracer) as current:
-        adapter._enterprise_config = policy
-        request.metadata = {"routing": {"bot_id": routed_bot}}
-        request.params.update({"bot_id": "other-bot", "agent_name": "伪造名称"})
+        request.metadata["ext"] = ext
+        request.params.update({"bot_id": "selected-bot", "agent_name": "伪造名称"})
         adapter._set_main_agent_trace_name(request, current)
         assert rail.resolve_agent_name(adapter._instance) == adapter._instance.card.name == "configured"
 
 
 @pytest.mark.parametrize("metadata", [None, {}, {"routing": {}}])
-def test_missing_routing_metadata_ignores_template_identity_in_params(tracer, caplog, metadata):
+def test_missing_routing_metadata_ignores_identity_in_params(tracer, caplog, metadata):
     adapter, rail = _adapter(JiuWenSwarmDeepAdapter, "configured")
-    adapter._enterprise_config = _policy("模板甲")
     request = _request("agent")
     request.params.update({"bot_id": "selected-bot", "agent_name": "伪造名称"})
-    request.metadata = metadata
+    request.metadata = {**metadata, "ext": _manager_name("已校验名称")} if metadata is not None else None
     with _root(tracer) as span:
         caplog.clear()
         adapter._set_main_agent_trace_name(request, span)
@@ -336,10 +369,10 @@ def test_missing_routing_metadata_ignores_template_identity_in_params(tracer, ca
         assert not any(record.exc_info for record in caplog.records)
 
 
-def test_non_mapping_params_skip_template_naming(tracer):
+def test_non_mapping_params_skip_trace_naming(tracer):
     adapter, rail = _adapter(JiuWenSwarmDeepAdapter, "configured")
-    adapter._enterprise_config = _policy("模板甲")
     request = _request("agent")
+    request.metadata["ext"] = _manager_name("已校验名称")
     request.params = ["invalid"]
     with _root(tracer) as span:
         adapter._set_main_agent_trace_name(request, span)
