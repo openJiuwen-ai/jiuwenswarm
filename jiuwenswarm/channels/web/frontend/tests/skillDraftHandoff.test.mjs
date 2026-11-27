@@ -155,6 +155,33 @@ test('trying a skill preserves a text-only draft and its position after another 
   }
 });
 
+test('seeding a preselected skill at offset 0 restores its chip before the prompt text', () => {
+  // 行为级守护 #7158：App 的 enterNewConversation 为预选技能记录 offset=0，
+  // InputArea 依 inputSkillPositions 用 createComposerSkillRange 重建 chip。
+  // 这里复刻该重建路径，断言 chip 落在文案前、纯文本不被污染、位置记录仍为 offset=0。
+  const dom = new JSDOM('<div contenteditable="true"></div>');
+  const { document } = dom.window;
+  const editor = document.querySelector('div');
+  const prompt = '帮我创建一个xxx专家，擅长xxx';
+  editor.textContent = prompt;
+  const positions = [{ name: 'workswarm-builtin', offset: 0 }];
+  const existing = new Set();
+  for (const { name, offset } of positions) {
+    if (existing.has(name)) continue;
+    const chip = document.createElement('span');
+    chip.dataset.skill = name;
+    chip.setAttribute('contenteditable', 'false');
+    chip.textContent = name;
+    createComposerSkillRange(editor, offset).insertNode(chip);
+    existing.add(name);
+  }
+  assert.equal(editor.firstElementChild?.dataset.skill, 'workswarm-builtin');
+  assert.equal(readComposerText(editor), prompt);
+  // offset=0 说明 chip 之前没有任何文本，即 chip 排在文案前。
+  assert.deepEqual(readComposerSkillPositions(editor), [{ name: 'workswarm-builtin', offset: 0 }]);
+  dom.window.close();
+});
+
 test('trying a skill with an empty draft still inserts a chip and sets its requested mode', () => {
   const harness = createHarness('', null);
   try {

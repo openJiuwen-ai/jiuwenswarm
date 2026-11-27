@@ -3625,6 +3625,8 @@ function AppContent({
       // 依 selectedSkills 重建 chip 时插到开头，而不是追加到末尾（#7158）。
       // 无预选技能时必须传 undefined，让 store 在文本未变时沿用既有 inputSkillPositions
       // （如 preparePresentationConversation 带同一份草稿进入新会话，不能清掉原 chip 位置）。
+      // 目前所有入口每次只传一个预选技能，统一 offset=0 即可排在文案前；若将来传多个，
+      // 需注意 InputArea 依 offset 逐个插入，同点插入会反转其相对顺序。
       const initialSkillPositions = options.initialSelectedSkills?.length
         ? options.initialSelectedSkills.map((name) => ({ name, offset: 0 }))
         : undefined;
