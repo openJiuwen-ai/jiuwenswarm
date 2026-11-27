@@ -671,6 +671,7 @@ generated: true
 | [F_20261124_1556_app-market-ai-roles](features/F_20261124_1556_app-market-ai-roles.md) | F | 应用市场 AI 角色清单与接入指引 | kdgmpw | 无独立 D：依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。 |
 | [B_20261103_1636_builtin-catalog-upgrade](bugfix/jiuwenswarm/server/runtime/skill/builtin-catalog-upgrade.md) | B | 旧内置技能未归一与应用市场入口不明显 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [B_20261104_1509_catalog-script-paths](bugfix/jiuwenswarm/resources/B_20261104_1509_catalog-script-paths.md) | B | 内置能力搬迁后的生成目录与 PPT 同步路径回归 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
+| [B_20261127_1452_builtin-catalog-direct-naming](bugfix/jiuwenswarm/server/runtime/skill/B_20261127_1452_builtin-catalog-direct-naming.md) | B | 内置能力总目录未列出子技能名称导致点名失效 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin"></a>
