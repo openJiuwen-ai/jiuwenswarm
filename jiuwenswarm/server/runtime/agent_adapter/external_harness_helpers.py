@@ -1487,8 +1487,10 @@ async def process_external_harness_stream(
         )
         return
     finally:
-        # A consumer that closes the stream early still waits for a steer that is sending.
+        # A consumer that closes the stream early still waits for a steer that is
+        # sending, and stops the reader of the provider's output with the stream.
         await _stop_steer_intake(adapter, boundaries)
+        await merged.aclose()
 
     for boundary in await _close_steer_intake(adapter, boundaries, merged):
         yield input_received(boundary)

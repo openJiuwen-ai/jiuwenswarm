@@ -638,3 +638,34 @@ async def test_closing_the_interleaving_reads_a_failure_it_did_not_yield() -> No
         loop.set_exception_handler(previous)
 
     assert [context.get("message") for context in logged] == []
+
+
+@pytest.mark.asyncio
+async def test_closing_the_stream_early_stops_reading_the_provider() -> None:
+    # The consumer leaves while the stream shows a steered input, when the read
+    # of the turn's next output is pending. That read stops with the stream, so
+    # it cannot take the output of a later turn.
+    io = _RunningIO()
+    adapter = _adapter(io)
+    stream = external_harness_helpers.process_external_harness_stream(
+        adapter, _request("request-1", "first"), {"query": "first"},
+    )
+    reading = asyncio.ensure_future(stream.__anext__())
+    await _wait_streaming(adapter)
+    await io.queue.put(OutputSchema(type=TURN_LIFECYCLE, index=0, payload={"turn_id": "turn-1", "kind": "started"}))
+    await _spin()
+    assert await external_harness_helpers.steer_external_harness(
+        adapter, _request("request-2", "one more thing"), {"query": "one more thing"},
+    )
+    first = await asyncio.wait_for(reading, timeout=5)
+    assert first.payload["event_type"] == "chat.input_received"
+
+    await stream.aclose()
+
+    pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task() and not task.done()]
+    assert pending == []
+    later = OutputSchema(type="llm_output", index=2, payload={"content": "for the next turn"})
+    await io.queue.put(later)
+    await _spin()
+    assert io.queue.qsize() == 1 and io.queue.get_nowait() is later
+    assert adapter._external_harness_boundaries is None
