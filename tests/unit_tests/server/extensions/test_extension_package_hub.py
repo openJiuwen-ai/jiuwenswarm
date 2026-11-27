@@ -1464,6 +1464,105 @@ async def test_expert_catalog_keeps_hub_card_with_same_named_local_package(exten
     assert [(c['id'], c['source']) for c in mine] == [('sales-expert', 'local')]
 
 
+class TwinExpertHub(PagingHubAssetPort):
+    """Hub listing one expert under two asset ids with the same package name."""
+
+    def __init__(self, *, second_version: str = "1.2.3") -> None:
+        super().__init__()
+        self.second_version = second_version
+
+    async def search_assets(self, request) -> HubSearchPage:
+        self.list_calls.append(f"{request.kind}:{request.page}:{request.page_size}")
+        items = (
+            _item("expert-a", package_name="sales-expert"),
+            replace(
+                _item("expert-b", package_name="sales-expert"),
+                public_latest_version=self.second_version,
+            ),
+        )
+        return HubSearchPage(items=items, total=2, page=request.page, page_size=100)
+
+
+@pytest.mark.asyncio
+async def test_expert_plaza_collapses_same_named_same_version_hub_assets(
+    extension_workspace: Path,
+) -> None:
+    """A package republished unchanged must not produce two plaza cards."""
+    cards = await catalog.list_agent_templates_with_hub(
+        {"filter": "builtin+hub"}, hub_port=TwinExpertHub(),
+    )
+
+    assert [(card["id"], card["packageName"]) for card in cards] == [
+        ("expert-a", "sales-expert")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_expert_plaza_keeps_installed_twin_over_uninstalled_duplicate(
+    extension_workspace: Path,
+) -> None:
+    """The installed asset stays reachable even when its duplicate sorts first."""
+    root = extension_workspace / "plugins" / "agent_templates"
+    HubInstallStateStore(root).upsert(
+        HubInstallRecord(
+            asset_id="expert-b",
+            kind="agent_template",
+            version="1.2.3",
+            checksum_sha256="a" * 64,
+            installed_at="2026-09-01T00:00:00Z",
+            package_id="sales-expert",
+        )
+    )
+    catalog.upsert_agent_template_marketplace_entry(
+        "sales-expert", installed=True, source="hub",
+    )
+    (root / "local" / "sales-expert").mkdir(parents=True)
+    (root / "local" / "sales-expert" / "manifest.json").write_text(
+        json.dumps({"package_type": "agent_template", "name": "sales-expert"}),
+        encoding="utf-8",
+    )
+
+    cards = await catalog.list_agent_templates_with_hub(
+        {"filter": "builtin+hub"}, hub_port=TwinExpertHub(),
+    )
+
+    # expert-b is claimed by provenance, so only the uninstalled twin is dropped.
+    assert [(card["id"], card["installed"]) for card in cards] == [("expert-b", True)]
+
+
+@pytest.mark.asyncio
+async def test_expert_plaza_keeps_same_named_assets_with_different_versions(
+    extension_workspace: Path,
+) -> None:
+    """Same name with a different version may be a genuinely diverged expert."""
+    cards = await catalog.list_agent_templates_with_hub(
+        {"filter": "builtin+hub"}, hub_port=TwinExpertHub(second_version="2.0.0"),
+    )
+
+    assert [card["id"] for card in cards] == ["expert-a", "expert-b"]
+
+
+def test_collapse_keeps_every_installed_expert_and_ignores_other_sources() -> None:
+    """Installed twins both stay; local and builtin cards are never collapsed."""
+    uninstalled = {"source": "hub", "packageName": "p", "version": "1.0.0", "installed": False}
+    installed = {**uninstalled, "installed": True}
+    local = {"source": "local", "packageName": "p", "version": "1.0.0", "installed": False}
+    builtin = {"source": "builtin", "packageName": "p", "version": "1.0.0", "installed": True}
+
+    kept = catalog._collapse_republished_expert_cards(
+        {
+            "twin-a": dict(uninstalled, id="twin-a"),
+            "twin-b": dict(installed, id="twin-b"),
+            "twin-c": dict(installed, id="twin-c"),
+            "twin-d": dict(uninstalled, id="twin-d"),
+            "local": dict(local, id="local"),
+            "builtin": dict(builtin, id="builtin"),
+        }
+    )
+
+    assert sorted(kept) == ["builtin", "local", "twin-b", "twin-c"]
+
+
 _HIDDEN_EXPERT = "794db1bfe8884d6897d62d3584894a59"
 _HIDDEN_GROUP = "32c223d69b834c35b40bc3935c6f9f67"
 

@@ -2527,12 +2527,41 @@ async def _list_equipment_with_hub(
         if kind != _AGENT_TEMPLATE_KIND and name_taken and source_filter not in {"builtin", "builtin+hub"}:
             continue
         cards_by_id[item.asset_id] = _hub_list_card(item)
+    if kind == _AGENT_TEMPLATE_KIND:
+        cards_by_id = _collapse_republished_expert_cards(cards_by_id)
     cards = [cards_by_id[key] for key in sorted(cards_by_id)]
     result = _apply_list_source_filter(cards, params, package_kind=kind)
     if cache_state is not None:
         from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
         return CatalogCards(result, cache_state)
     return result
+
+
+def _collapse_republished_expert_cards(cards_by_id: dict[str, dict]) -> dict[str, dict]:
+    """Drop uninstalled experts republished to Hub under several asset ids.
+
+    Two Hub assets with the same package name and latest version are one package
+    published twice; listing each turns the plaza into duplicate cards. Only an
+    uninstalled twin is dropped. Assets with different versions may have
+    diverged and are kept. Every installed asset is kept so its identity stays
+    reachable.
+    """
+    installed_ids = {card_id for card_id, card in cards_by_id.items() if card.get("installed")}
+    kept: dict[str, dict] = {}
+    for card_id in sorted(cards_by_id, key=lambda key: (key not in installed_ids, key)):
+        card = cards_by_id[card_id]
+        if card.get("source") != "hub" or not card.get("packageName") or card_id in installed_ids:
+            kept[card_id] = card
+            continue
+        twin_key = (card["packageName"], str(card.get("version") or ""))
+        if any(
+            other.get("source") == "hub"
+            and (other.get("packageName"), str(other.get("version") or "")) == twin_key
+            for other in kept.values()
+        ):
+            continue
+        kept[card_id] = card
+    return kept
 
 
 async def list_agent_templates_with_hub(
