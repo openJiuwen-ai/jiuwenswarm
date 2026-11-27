@@ -875,13 +875,13 @@ def cleanup_stale_openjiuwen_descs() -> None:
 def _read_previous_external_cli_state(config_path: Path) -> dict[str, Any]:
     """读取 config.yaml 里用户的三方 agent 配置。
 
-    返回 external_cli_agents 列表、路径历史与 external_transport 节点。
-    文件缺失（全新数据目录）返回不含 agent 的空态；**读取/解析失败抛异常**，
+    返回 external_cli_agents 列表、路径历史、禁用模式记录与 external_transport
+    节点。文件缺失（全新数据目录）返回不含 agent 的空态；**读取/解析失败抛异常**，
     由调用方区分"读取失败"与"确认无启用 agent"——旁路刷新不得把读取失败
     当成空态覆盖唯一的恢复备份（!10406 第五轮检视）。
     """
     if not config_path.exists():
-        return {"agents": [], "histories": {}, "transport": None}
+        return {"agents": [], "histories": {}, "transport": None, "disabled_modes": {}}
     import yaml
 
     with config_path.open("r", encoding="utf-8") as handle:
@@ -889,12 +889,23 @@ def _read_previous_external_cli_state(config_path: Path) -> dict[str, Any]:
     team = ((data.get("modes") or {}).get("team") or {}).get("jiuwen_team") or {}
     agents = team.get("external_cli_agents")
     histories = team.get("external_cli_path_histories")
+    disabled_modes = team.get("external_cli_disabled_modes")
+    if not isinstance(disabled_modes, dict) or not disabled_modes:
+        disabled_modes = {}
     if not isinstance(agents, list) or not agents:
-        return {"agents": [], "histories": {}, "transport": team.get("external_transport")}
+        # 没有启用中的 agent 也要保留禁用模式记录，否则恢复后禁用卡片
+        # 一律退回自定义空态（!10561 检视）。
+        return {
+            "agents": [],
+            "histories": {},
+            "transport": team.get("external_transport"),
+            "disabled_modes": disabled_modes,
+        }
     return {
         "agents": agents,
         "histories": histories if isinstance(histories, dict) else {},
         "transport": team.get("external_transport"),
+        "disabled_modes": disabled_modes,
     }
 
 
@@ -922,7 +933,8 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
             return bool(name) and name in allowed
 
         agents = [item for item in state["agents"] if _allowed_entry(item)]
-        if not agents:
+        disabled_modes = state.get("disabled_modes") or {}
+        if not agents and not disabled_modes:
             logger.info("覆盖前没有仍受支持的三方 agent 配置可保留")
             return
         yaml_rt = YAML()
@@ -932,7 +944,8 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
         modes = data.setdefault("modes", {})
         team = modes.setdefault("team", {})
         jiuwen_team = team.setdefault("jiuwen_team", {})
-        jiuwen_team["external_cli_agents"] = agents
+        if agents:
+            jiuwen_team["external_cli_agents"] = agents
         histories = state.get("histories") or {}
         if histories:
             jiuwen_team["external_cli_path_histories"] = histories
@@ -941,6 +954,8 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
         transport = state.get("transport")
         if transport is not None:
             jiuwen_team["external_transport"] = transport
+        if disabled_modes:
+            jiuwen_team["external_cli_disabled_modes"] = disabled_modes
         # 原子写回：恢复写一半崩溃会留下半截 config.yaml，启动直接失败
         # （!10406 检视），与 config.py 的落盘出口保持同样的原子语义。
         tmp = config_path.with_name(f"{config_path.stem}.{uuid.uuid4().hex}.yaml.tmp")
@@ -993,7 +1008,7 @@ def refresh_external_cli_state_sidecar(config_path: Path, workspace_dir: Path) -
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"读取三方 agent 配置失败，跳过旁路刷新（保留既有旁路）: {exc}")
         return
-    payload = state or {"agents": [], "histories": {}, "transport": None}
+    payload = state or {"agents": [], "histories": {}, "transport": None, "disabled_modes": {}}
     sidecar = external_cli_state_sidecar_path(workspace_dir)
     sidecar.parent.mkdir(parents=True, exist_ok=True)
     tmp = sidecar.with_name(f"{sidecar.stem}.{uuid.uuid4().hex}.tmp")
@@ -1010,20 +1025,26 @@ def refresh_external_cli_state_sidecar(config_path: Path, workspace_dir: Path) -
 
 
 def _read_external_cli_state_sidecar(workspace_dir: Path) -> Optional[dict[str, Any]]:
-    """读取状态旁路文件；缺失/解析失败/无启用 agent 时返回 None。"""
+    """读取状态旁路文件；缺失/解析失败/既无启用 agent 也无禁用模式记录时返回 None。"""
     try:
         sidecar = external_cli_state_sidecar_path(workspace_dir)
         if not sidecar.exists():
             return None
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
-        agents = payload.get("agents") if isinstance(payload, dict) else None
-        if not isinstance(agents, list) or not agents:
+        if not isinstance(payload, dict):
+            return None
+        agents = payload.get("agents")
+        agents = agents if isinstance(agents, list) and agents else []
+        disabled_modes = payload.get("disabled_modes")
+        disabled_modes = disabled_modes if isinstance(disabled_modes, dict) and disabled_modes else {}
+        if not agents and not disabled_modes:
             return None
         histories = payload.get("histories")
         return {
             "agents": agents,
             "histories": histories if isinstance(histories, dict) else {},
             "transport": payload.get("transport"),
+            "disabled_modes": disabled_modes,
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"读取三方 agent 状态旁路文件失败: {exc}")
