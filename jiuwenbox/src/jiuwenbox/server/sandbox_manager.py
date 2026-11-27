@@ -102,6 +102,7 @@ from jiuwenbox.server.runtime.errors import SandboxNotFoundError, SandboxConflic
 
 RUNTIME_PROCESS = "process"
 RUNTIME_CONCH = "conch"
+RUNTIME_LITE = "lite"
 
 
 def normalize_sandbox_runtime(sandbox_runtime: str | None) -> str:
@@ -113,9 +114,11 @@ def normalize_sandbox_runtime(sandbox_runtime: str | None) -> str:
         return RUNTIME_PROCESS
     if value == "conch":
         return RUNTIME_CONCH
+    if value == RUNTIME_LITE:
+        return RUNTIME_LITE
     raise PolicyValidationError(
         f"Unsupported sandbox_runtime {sandbox_runtime!r}; "
-        "expected 'bwrap' or 'conch'"
+        "expected 'bwrap', 'conch' or 'lite'"
     )
 
 
@@ -165,6 +168,7 @@ class SandboxManager:
     ) -> None:
         self.runtime = runtime or ProcessRuntime()
         self._conch_runtime = None
+        self._lite = None
         self._policy_updates_enabled = (
             os.getenv("JIUWENBOX_RUNTIME_PROFILE", "").lower() == "agentos"
             or update_policy_path is not None
@@ -611,6 +615,10 @@ class SandboxManager:
             with perf_trace.span("api.prepare", sandbox_id):
                 runtime_name = normalize_sandbox_runtime(spec.sandbox_runtime)
                 policy = self._resolve_effective_policy(policy_data, policy_mode)
+                # An explicit runtime wins; otherwise fall back to the effective policy.
+                if runtime_name == RUNTIME_PROCESS and not (spec.sandbox_runtime or "").strip():
+                    if getattr(policy, "runtime", "") == RUNTIME_LITE:
+                        runtime_name = RUNTIME_LITE
                 logger.debug(
                     "Creating sandbox %s with policy %s", sandbox_id, str(policy),
                 )
@@ -1977,6 +1985,11 @@ class SandboxManager:
                 from jiuwenbox.server.runtime.conch import ConchRuntime
                 self._conch_runtime = ConchRuntime()
             return self._conch_runtime
+        if ref.runtime == RUNTIME_LITE:
+            if getattr(self, "_lite", None) is None:
+                from jiuwenbox.server.runtime.lite import LiteRuntime
+                self._lite = LiteRuntime()
+            return self._lite
         return self.runtime
 
 

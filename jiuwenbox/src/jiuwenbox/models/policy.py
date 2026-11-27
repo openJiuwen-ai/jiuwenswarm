@@ -999,6 +999,10 @@ class SecurityPolicy(BaseModel):
 
     version: int = 1
     name: str = "default"
+    # Execution backend: omitted / "process" keeps the persistent local runtime,
+    # "lite" selects the one-shot runtime. Selection reads the effective policy
+    # in SandboxManager.create_sandbox; an explicit sandbox_runtime request wins.
+    runtime: Literal["process", "lite"] = "process"
     environment: dict[str, str] = Field(default_factory=dict)
     filesystem_policy: FilesystemPolicy = Field(default_factory=FilesystemPolicy)
     process: ProcessPolicy = Field(default_factory=ProcessPolicy)
