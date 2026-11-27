@@ -92,7 +92,9 @@ def test_explicit_stock_gateway_config_gets_swarm_extension_dirs(tmp_path, monke
     utils.prepare_local_gateway_config(env)
 
     assert env["EXTENSION_DIRS"] == "agent_gateway/extensions;jiuwenswarm/extensions"
-    assert config.read_text(encoding="utf-8") == original
+    assert config.read_text(encoding="utf-8") == original.replace(
+        legacy_dirs, f"{legacy_dirs};jiuwenswarm/extensions",
+    )
 
 
 @pytest.mark.parametrize("existing_gateway_config", [False, True])
