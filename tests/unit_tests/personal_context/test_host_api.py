@@ -9,6 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import BinaryIO, cast
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -2960,11 +2961,16 @@ async def test_patch_fetch_service_allows_when_other_service_collecting(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fails", [False, True])
 async def test_delete_fetch_service_removes_config_cursor_and_preserves_context(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_fails: bool,
 ) -> None:
     host, core = fake_host
+    discard = Mock(side_effect=OSError("optional cleanup failed") if cleanup_fails else None)
+    monkeypatch.setattr(core, "_discard_run_token_usage", discard, raising=False)
     await host.configure(_config(enabled=False, root_dir=tmp_path))
     context_page = host._home / "workspace" / "context" / "description.md"
     source_meta = host._home / "workspace" / "source-meta" / "source.md"
@@ -2992,6 +2998,7 @@ async def test_delete_fetch_service_removes_config_cursor_and_preserves_context(
     assert [name for name, _value in core.calls].count("remove_fetch_run_history") == 1
     assert [name for name, _value in core.calls].count("remove_fetch_cursor") == 1
     assert [name for name, _value in core.calls].count("restore_fetch_cursor") == 0
+    discard.assert_called_once_with("local-notes")
 
 
 @pytest.mark.asyncio
@@ -3045,8 +3052,11 @@ async def test_delete_fetch_service_cursor_remove_failure_keeps_configuration(
 async def test_delete_fetch_service_apply_failure_restores_cursor_and_config(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     host, core = fake_host
+    discard = Mock()
+    monkeypatch.setattr(core, "_discard_run_token_usage", discard, raising=False)
     await host.configure(_config(enabled=False, root_dir=tmp_path))
     old_config = host._config
     old_stored = deepcopy(host._stored_config)
@@ -3069,6 +3079,7 @@ async def test_delete_fetch_service_apply_failure_restores_cursor_and_config(
     assert host._config is old_config
     assert host._stored_config == old_stored
     assert host._config_path.read_bytes() == old_yaml
+    discard.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -3213,17 +3224,22 @@ async def test_patch_fetch_service_never_creates_missing_service(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("usage", [
+    None,
+    {"total_tokens": 0, "has_estimate": False, "incomplete": False},
+    {"total_tokens": None, "has_estimate": False, "incomplete": True},
+])
 async def test_get_fetch_run_status_returns_all_or_one_service(
-    fake_host, tmp_path, monkeypatch
+    fake_host, tmp_path, monkeypatch, usage
 ):
     from unittest.mock import AsyncMock
 
     host, core = fake_host
     await host.configure(_config(enabled=False, root_dir=tmp_path))
-    expected = {
-        "service_id": "local-notes",
-        "runs": [{"run_id": "a" * 32, "run_state": "succeeded"}],
-    }
+    source_run = {"run_id": "a" * 32, "run_state": "succeeded"}
+    if usage is not None:
+        source_run["token_usage"] = usage
+    expected = {"service_id": "local-notes", "runs": [deepcopy(source_run)]}
     query = AsyncMock(return_value=expected)
     monkeypatch.setattr(core, "get_fetch_run_status", query, raising=False)
     result = await host.get_fetch_run_status("local-notes")
@@ -3231,13 +3247,12 @@ async def test_get_fetch_run_status_returns_all_or_one_service(
     assert result["service_id"] == "local-notes"
     assert result["runs"] == [
         {
-            "run_id": "a" * 32,
-            "run_state": "succeeded",
+            **source_run,
             "last_error_code": "",
             "last_error_stage": "",
         }
     ]
-    assert expected["runs"] == [{"run_id": "a" * 32, "run_state": "succeeded"}]
+    assert expected["runs"] == [source_run]
     query.assert_awaited_with("local-notes", run_id=None)
     await host.get_fetch_run_status("local-notes", run_id="a" * 32)
     query.assert_awaited_with("local-notes", run_id="a" * 32)
