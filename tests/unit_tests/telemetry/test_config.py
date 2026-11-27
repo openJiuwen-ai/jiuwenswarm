@@ -16,6 +16,7 @@ _OTEL_ENV_KEYS = (
     "OTEL_SERVICE_NAME",
     "OTEL_LOG_MESSAGES",
     "OTEL_CLAW_ID",
+    "OTEL_CLAW_VERSION",
     "OTEL_TRACES_EXPORTER",
     "OTEL_METRICS_EXPORTER",
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
@@ -98,6 +99,7 @@ def test_telemetry_config_defaults_are_exact_and_frozen(monkeypatch):
         "redact_completions": False,
         "log_messages": True,
         "claw_id": None,
+        "claw_version": None,
         "session_stuck_threshold_ms": 300000.0,
         "session_stuck_check_interval_s": 30.0,
     }
