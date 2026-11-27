@@ -4,10 +4,79 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
+from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
+
+
+def _surface_update(surface_id, *components):
+    return {"surfaceUpdate": {"surfaceId": surface_id, "components": list(components)}}
+
+
+def _text(component_id, usage_hint):
+    return {
+        "id": component_id,
+        "component": {"Text": {"text": {"literalString": "Content"}, "usageHint": usage_hint}},
+    }
+
+
+def _column(component_id, child):
+    return {"id": component_id, "component": {"Column": {"children": {"explicitList": [child]}}}}
+
+
+def _tagged_block(*messages):
+    return f"<a2ui-json>{json.dumps(messages)}</a2ui-json>"
+
+
+@pytest.mark.parametrize("hint", ("h1", "h2", "h3", "h4", "h5", "caption", "body"))
+def test_a2ui_validator_rejects_text_usage_hint_matching_its_own_id(hint):
+    result = get_protocol_spec().validate_response(_tagged_block(_surface_update("form", _text(hint, hint))))
+
+    assert not result.valid
+    assert f"usageHint {hint!r}" in result.error
+
+
+@pytest.mark.parametrize("split_blocks", (False, True))
+def test_a2ui_validator_rejects_text_usage_hint_matching_a_parent_id(split_blocks):
+    begin = {"beginRendering": {"surfaceId": "form", "root": "body"}}
+    parent = _column("body", "copy")
+    child = _text("copy", "body")
+    if split_blocks:
+        response = _tagged_block(begin, _surface_update("form", parent, _text("copy", "h1")))
+        response += _tagged_block(_surface_update("form", child))
+    else:
+        response = _tagged_block(begin, _surface_update("form", parent, child))
+
+    result = get_protocol_spec().validate_response(response)
+
+    assert not result.valid
+    assert "Text 'copy'" in result.error
+    assert "usageHint 'body'" in result.error
+    assert "surface 'form'" in result.error
+
+
+def test_a2ui_validator_scopes_usage_hint_collisions_to_one_live_surface():
+    response = _tagged_block(
+        _surface_update("first", _column("body", "title"), _text("title", "h1")),
+        _surface_update("second", _text("copy", "body")),
+        {"deleteSurface": {"surfaceId": "first"}},
+    ) + _tagged_block(_surface_update("first", _text("copy", "body")))
+
+    assert get_protocol_spec().validate_response(response).valid
+
+
+def test_a2ui_validator_checks_latest_component_definition_after_an_update():
+    response = _tagged_block(
+        _surface_update("form", _text("copy", "body")),
+        _surface_update("form", _text("copy", "h1"), _column("body", "copy")),
+    )
+
+    assert get_protocol_spec().validate_response(response).valid
+
 
 def test_a2ui_validator_accepts_single_level_template():
-    from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
-
     response = """<a2ui-json>
 [
   {
@@ -76,8 +145,6 @@ def test_a2ui_validator_accepts_single_level_template():
 
 
 def test_a2ui_validator_rejects_nested_templates():
-    from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
-
     response = """<a2ui-json>
 [
   {

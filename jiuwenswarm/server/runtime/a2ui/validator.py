@@ -272,12 +272,42 @@ def _validate_template_runtime_semantics(messages: list[dict[str, Any]]) -> None
                     )
 
 
+def _validate_text_usage_hint_collisions(messages: list[dict[str, Any]]) -> None:
+    """Keep literal Text usage hints from being resolved as component references."""
+    surfaces: dict[str, dict[str, str | None]] = {}
+    for message in messages:
+        deleted = message.get("deleteSurface")
+        if deleted is not None:
+            surfaces.pop(deleted["surfaceId"], None)
+            continue
+        update = message.get("surfaceUpdate")
+        if update is None:
+            continue
+
+        surface_id = update["surfaceId"]
+        hints_by_id = surfaces.setdefault(surface_id, {})
+        for component in update["components"]:
+            text = component["component"].get("Text")
+            hints_by_id[component["id"]] = text.get("usageHint") if text is not None else None
+
+        # The v0.8 renderer resolves any property string matching an id in this surface.
+        for text_id, usage_hint in hints_by_id.items():
+            if usage_hint is not None and usage_hint in hints_by_id:
+                raise ValueError(
+                    f"Text {text_id!r} usageHint {usage_hint!r} matches a component id in "
+                    f"surface {surface_id!r}. To prevent a renderer reference collision, "
+                    f"rename component id {usage_hint!r} and update its references. "
+                    "Keep the Text usageHint unchanged."
+                )
+
+
 def validate_a2ui_messages(catalog: Any, messages: list[dict[str, Any]]) -> None:
     if not messages:
         raise ValueError("A2UI message list is empty")
     catalog.validator.validate(messages)
     _validate_template_runtime_semantics(messages)
     _validate_image_runtime_semantics(messages)
+    _validate_text_usage_hint_collisions(messages)
 
 
 def validate_a2ui_response(
@@ -289,6 +319,7 @@ def validate_a2ui_response(
     try:
         tagged_blocks = iter_tagged_block_bodies(content or "")
         if tagged_blocks:
+            response_messages: list[dict[str, Any]] = []
             for block_index, body in tagged_blocks:
                 try:
                     parsed = json.loads(body.strip())
@@ -316,6 +347,9 @@ def validate_a2ui_response(
                         valid=False,
                         error=f"A2UI block {block_index}: {exc}",
                     )
+                response_messages.extend(messages)
+            if len(tagged_blocks) > 1:
+                _validate_text_usage_hint_collisions(response_messages)
             return A2UIValidationResult(valid=True)
 
         for part in parse_response(content):

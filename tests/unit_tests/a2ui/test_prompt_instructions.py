@@ -369,6 +369,8 @@ def test_a2ui_officeclaw_component_rules_scoped_by_channel():
         assert "[Text-bold]" in en
         zh = build_a2ui_autonomy_instruction("zh", channel=ch)
         assert "[文本加粗]" in zh
+        assert 'No component id may be "h1", "h2", "h3", "h4", "h5", "caption", or "body".' in en
+        assert '任何组件的 id 都不得命名为 "h1"/"h2"/"h3"/"h4"/"h5"/"caption"/"body"。' in zh
 
 
 def test_a2ui_prompt_section_passes_channel_through():
