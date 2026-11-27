@@ -86,7 +86,7 @@ skill_turbo/
 ├── interactive_ask.py      # 引导模式（interactive_ask）判定与 resume 恢复
 ├── node_artifact_store.py  # 节点产物 session 持久化（只存摘要/路径；plan_code_hash 门禁继承）
 ├── hitl_dedup.py          # OuterCallIDDeduplicator：HITL 卡片 request_id derive+seq 计数收口（挂 adapter 实例跨请求存续）
-├── task_slot_guard.py     # taskProgress 槽位泄漏登记簿（模块级跨请求单例；claim/release/peek + 上限淘汰，[[B_03]]）
+├── task_slot_guard.py     # 历史任务槽位登记簿（外层 rail 兼容；Turbo 工具不再登记/补发，[[S_08]]）
 ├── context_binding.py      # 9 通道 ContextVar 统一 bind/reset（新增通道=bind 一段+RESETTERS 一行）
 ├── evolver.py              # 执行轨迹（预留未接线）
 ├── json_utils.py           # extract_llm_json 四级提取（无 LLM 级重试，重试归调用方/rail）

@@ -6,19 +6,19 @@
 |---|---|
 | 类型 | spec |
 | 编号 / slug | S_11 / explicit-segment-execution |
-| 最近一次修订日期 | 2026-11-16 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联模块 | agent、executor、skill_turbo_tools、resume_context、permission_bridge |
 | 关联 feature | [[F_07]] |
 
 ## 范围 / 边界
 
 第四步在 [[S_10]] 的唯一台账和输入装配 API 上接入真实 PlanNode。legacy 和指定技能的
-`__full__` 保留整流程语义；批次和步骤force由 [[S_13]] 编排，单段工具不新增顶层force。PPT四段业务在技能侧；第六步加载描述及交付关联见 [[S_12]]。
+`__full__` 保留整流程语义；批次和步骤force由 [[S_13]] 编排，单段工具不新增顶层force。公开工具指定普通起始段且省略/null auto_batch 默认组批；精确单段须显式 auto_batch=false。底层 run_accelerator_stream 不改变单段语义。PPT四段业务在技能侧；第六步加载描述及交付关联见 [[S_12]]。
 
 ## 不变量
 
-1. N1 `skill_turbo(query, fresh_start=False, skill='', accelerator='', params=None, accelerators=None)` 保留旧位置参数。
-   普通段精确选择，零 planner；不接受顶层force；accelerators选择批次且与accelerator互斥，未选择普通段或批次时拒绝params。
+1. N1 `skill_turbo(query, fresh_start=False, skill='', accelerator='', params=None, accelerators=None, auto_batch=False)` 保留旧位置参数。
+   普通段精确选择，零 planner；不接受顶层force；accelerators选择批次且与accelerator互斥，未选择普通段或批次时拒绝params。auto_batch省略/null由调用形式分流，普通起始段默认组批，显式false执行单段；true须带skill及普通accelerator，互斥accelerators/__full__。自动批次params仅传起始段，经 [[S_13]] 批量执行器运行。
 2. N2 执行前无缓存重读当前清单和源码并验证。初次身份保存、实际重试失效保存未经确认，零业务执行。
 3. N3 已完成段核对文件和事实后默认跳过，零新 run；query/fresh_start 不改变任务身份。
 4. N4 根输出在 JSON 序列化前捕获；内部 handoff 不进入显示和 after，子节点产物仍保留真实 owner。

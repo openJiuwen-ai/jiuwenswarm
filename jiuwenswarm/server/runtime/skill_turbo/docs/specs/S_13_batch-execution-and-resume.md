@@ -6,8 +6,8 @@
 |---|---|
 | 类型 / 编号 | spec / S_13 |
 | 关联模块 | batch.py、segment_execution.py、segment_inputs.py、skill_turbo_tools.py |
-| 最近一次修订日期 | 2026-11-16 |
-| 关联 feature | F_10_batch-execution-and-resume.md |
+| 最近一次修订日期 | 2026-11-25 |
+| 关联 feature | F_10_batch-execution-and-resume.md；F_11_declaration-driven-auto-batch.md |
 
 ## 公开入口与范围
 
@@ -18,6 +18,25 @@ standalone=false可以独占单元素批量（含force），原列表长度大�
 共享params在每段均须合法，step.params的非None值覆盖共享；未知/保留键即使值为None也拒绝。
 单段不新增顶层force；query-only和__full__保留legacy。
 
+## 声明驱动的自动组批
+
+公开工具的 `auto_batch: bool | None = None` 为三态；省略或 null 时，准确 skill 加普通 accelerator
+默认沿声明组批；false 明确只执行该段，true 明确要求组批。没有后继声明只执行起始段。
+这是有意改变省略模式的语义，已有只执行单段的调用者须补 auto_batch=false。
+显式 accelerators 列表、__full__、仅 skill 和旧 query 入口在省略/null 时保持原分流；
+true 必须同时指定准确 skill 和普通 accelerator，与 accelerators、__full__ 冲突即 invalid_args。
+起始段的 params 只作为该段 step.params，后段经前段输出、原台账和合法文件严格装配，不虚构参数或转成共享参数。
+batch_enabled=false 时省略/null 的普通起始段保留单段能力；显式 true 仍按既有批次开关阻断。
+底层 run_batch_stream 仍接收已确定的布尔模式，run_accelerator_stream 保持精确单段语义。
+
+可选 batch.auto_next 声明同技能启用且 order 更大的后继；未知、反向、自循环及独占关系非法。
+引擎只沿当前声明组批，遵守 max_batch_steps（最多8）并在链尾、审阅边界或独占边界结束。
+自动计划再交原 build_batch_plan 校验及 run_batch_stream 执行，不另建调度或台账。
+返回 planned_steps 确认实际规划；next_accelerator 仅在正常完成、审阅或澄清停点返回实际已完成段的声明后继，否则为 None，不能据此跳过失败段。
+
+恢复记录原起始段、原 params 和实际组批列表；原调用参数或定义变化均拒绝恢复，不根据新声明重新扩展。
+批次及步骤的既有失败、人工确认、取消、完成复用和发送保护保持有效。
+
 `SkillTurbo.run_batch_stream`为批门面，segment_result返回批结果，artifact_holder保留本批实际owner。
 不并行、不回滚业务文件、不猜自然语言取消，不创建第二套任务调度或台账。
 批内忽略fresh_start，初始query定位任务后由宿主todo/session身份复用；新交付物仍须先成功创建新外层todo。
@@ -25,6 +44,7 @@ standalone=false可以独占单元素批量（含force），原列表长度大�
 ## 静态校验与副作用门槛
 
 build_batch_plan只读当前声明、源码和可取得台账；不open任务、不创建业务目录、不执行root或planner。
+批次入口先核验显式工作区，缺失或非法时返回 blocked/workspace_missing，不从内部默认目录补齐。
 校验shape、长度、精确id/order、独占、共享/步骤参数、JSON可序列化性、schema和前提可达性。
 hard不足blocked，soft告警但不豁免schema.required。仅前序启用段的声明输出可解释缺失，producer须匹配。
 当前已验证事实可供依赖，不能用显式参数伪造producer；文件前提还须实际存在或由合法前序输出可达。

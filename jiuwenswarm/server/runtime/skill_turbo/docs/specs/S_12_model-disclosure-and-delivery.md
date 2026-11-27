@@ -3,7 +3,7 @@
 | 项 | 值 |
 |---|---|
 | 类型 / 编号 | spec / S_12 |
-| 修订日期 | 2026-11-16 |
+| 修订日期 | 2026-11-25 |
 | 关联 feature | F_09_model-disclosure-and-delivery.md |
 
 ## 请求级披露
@@ -25,6 +25,13 @@ PPT完整交付为目标，中间段成功不完成todo；SVG段不扩展为nati
 局部改稿不调用generate；合法完整单页集合可首次export，输入排除沿用第五步。
 export的next_steps为空表示PPT内部无后续段，更新外层todo的文字放continue_hint；活跃外层todo仍阻止Flash自动结案。
 第七步按 [[S_13]] 的batch_enabled开关披露批量及步骤force；仍不自动选首段，不新增单段顶层force。新增独立交付物先成功创建新todo，再串行调用。
+
+统一规则：后续步骤及输入获取方式已经明确时，优先一次调用多个阶段。用户限定执行范围、要求中间检查或需要根据结果决定后续步骤时，在对应边界停止。
+模型明确选择普通起始段后，省略/null auto_batch 默认沿 batch.auto_next 组批；true 显式要求组批，false 精确单段。
+「先做某一步」也可能限定范围，不要求用户说出「单段」；只准备或只生成不导出时传 false，
+先出大纲确认再生成时启用 outline_review 并保留大纲边界。显式列表仍由模型选择。
+加载附录披露后继、三态及起始段参数语义。batch_enabled=false 时省略模式保留单段，
+实际请求工具卡同时移除 accelerators 与 auto_batch，不披露自动组批调用。
 
 ## 根技能加载附录
 

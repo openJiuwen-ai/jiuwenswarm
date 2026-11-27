@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / skill-routing-and-registration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（environment.py、planner.py、skill_meta.py、turbo_package_loader.py、tools_loader.py、skill_turbo_tools.py） |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联 feature | F_03_multi-deliverable-todo-guide.md；F_05_enable-turbo-switch.md |
 
 ## 范围 / 边界
@@ -323,4 +323,4 @@ HITL resume 不走 planner：直接使用持久化的 `resume_ctx["plan_code"]`�
 
 外部缓存与展示缓存按有序规范roots隔离，元数据集合及逐文件stat参与失效；Environment保留Python安全校验及mtime。Skill保存兼容builder生成的full_plan_code，Registry精确按external_name索引，歧义拒绝；查询深拷贝且不读盘、不调用模型。__full__不在普通段列表。
 
-声明由 Registry 只读索引；实际普通段执行另按 [[S_11]] 无缓存重读当前声明与源码，并复用安全校验。工具新增 skill/accelerator/params，模型加载说明仍沿用旧描述，批量及 force 未开放。声明测试入口为 test_accelerator_manifest.py 与 test_accelerator_catalog.py；实际 SDK 入口见 test_segment_tool_boundary.py。
+声明由 Registry 只读索引；实际普通段执行另按 [[S_11]] 无缓存重读当前声明与源码，并复用安全校验。工具使用 skill/accelerator/params；显式 accelerators 批次及步骤 force、auto_batch 自动组批见 [[S_13]]，模型加载说明见 [[S_12]]。batch.auto_next 仅能指向同技能启用、order 更大且非独占的段，来源也不得独占；非法链接整份声明拒绝。声明测试入口为 test_accelerator_manifest.py、test_auto_batch_execution.py 与 test_accelerator_catalog.py；实际 SDK 入口见 test_segment_tool_boundary.py。

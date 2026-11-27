@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / outer-integration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（外层接缝：`server/runtime/agent_adapter/interface_deep.py`、`agents/harness/common/rails/*`、`server/agent_ws_server.py`、`common/e2a/gateway_normalize.py`；双仓部署边界见附录） |
-| 最近一次修订日期 | 2026-11-16 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联 feature | [[F_02]]（outer_todo_pending 第 8 通道 / 附件注入链 / resume 入口统一 / 发卡去重收口）、[[F_03]]（指南多交付物清单编排与串行契约，4.3 规则要点 ⑦）；关联 bugfix [[B_04]]（outer_todo_completed_before 第 9 通道，fresh 守卫后续交付物放行） |
 
 ## 范围 / 边界
@@ -252,7 +252,7 @@ executor chunk → 工具层 skip/映射/剥 id（[[S_08]]）→ `parent_session
 
 ### P5 带外推送旁路
 
-`task.update` 全量快照 → `_push_task_event_out_of_band` → `AgentWebSocketServer.send_push`（PushRegistry 扇出）→ 返回送达数（0=未投递）。`task.start`/`task.complete` 留 FIFO 与 chat.* 同序，禁止带外。
+所有 Turbo 技能的内部 task.start/task.complete/task.update 在公开工具边界统一过滤，不经父流或 OOB 外发；正文、思考、工具等仅剥内部 task_id。执行器内部任务状态保留，见 [[S_08]] 与 [[F_12]]。
 
 ### P6 HITL 发卡与暂停收口（adapter 侧）
 
@@ -286,7 +286,7 @@ AbortError 透传到工具层 → 返回 `__skill_turbo_hitl__` 标记 dict → 
 | B10 | 沙箱关闭残留 | `sandbox_config_rpc` 关沙箱时清 Runner.resource_mgr sysop 残留，防 `environment._resolve_sys_operation` 兜底命中已关闭实例 | 无 |
 | B11 | parent_session 为 None | task 事件 drop 并告警（任务列表到不了前端）；resume 侧 session_id 缺失仅告警继续（checkpointer key 可能 miss） | 无专项 |
 | B12 | rail 构建失败 | 两个 rail 工厂异常安全返回 None，不阻塞 adapter 初始化（缺指南注入/交付总结但加速仍可运行） | 无 |
-| B13 | send_push 0 送达 | 无订阅者 / 编码失败 / 过滤无匹配 / sink 全败 → warning + return 0；调用方必须以返回值判定成败（N4） | 部分：test_skill_turbo_tools（OOB 旁路）；0 送达判定无 |
+| B13 | send_push 0 送达 | 无订阅者 / 编码失败 / 过滤无匹配 / sink 全败 → warning + return 0；调用方必须以返回值判定成败（N4） | Turbo 内部阶段不再使用 OOB；其他 send_push 消费方仍遵守 N4 |
 | B14 | ③ 先于 ② 部署 | 新引擎进程扫不到外部 turbo_codes → 清单为空 → PromptRail 不注入 + planner 无匹配 → `SkillTurboNotHandled` 降级（用户表现为"加速不生效"而非报错；只能靠部署顺序与验证日志预防） | 无（部署顺序预防） |
 | B15 | gateway 帧误判 | `chat.error` + is_complete 会被 normalize 为 E2A final FAILED、前端清 activeRequestIdRef 终结本轮——这正是降级路径禁止发 chat.error 的边界（[[S_07]]/[[S_08]]），改事件桥时须逐帧推演 | 部分：test_exit_path_frames（E10/E11 禁发 chat.error）；gateway 帧归 gateway 侧 |
 
