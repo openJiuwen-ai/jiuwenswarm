@@ -52,23 +52,59 @@ def _tool_states(binary_session: dict[str, Any]) -> tuple[dict[str, dict[str, An
     return states, availability
 
 
-def _component_state(item: dict[str, Any] | None) -> str:
+def _has_live_tool(
+    tool_names: list[str],
+    tool_states: dict[str, dict[str, Any]],
+) -> bool:
+    """Whether the live MCP can currently serve at least one listed tool."""
+
+    return any(
+        bool((tool_states.get(name) or {}).get("available"))
+        or str((tool_states.get(name) or {}).get("reason") or "") == "target_required"
+        for name in tool_names
+    )
+
+
+def _all_tools_unsupported(
+    tool_names: list[str],
+    tool_states: dict[str, dict[str, Any]],
+) -> bool:
+    states = [tool_states.get(name) for name in tool_names]
+    return bool(states) and all(
+        item is not None and item.get("reason") == "unsupported_host"
+        for item in states
+    )
+
+
+def _component_state(
+    item: dict[str, Any] | None,
+    confirmation_tools: list[str] | None = None,
+    tool_states: dict[str, dict[str, Any]] | None = None,
+) -> str:
     if not item:
         return "missing"
-    if bool(item.get("available")):
-        return "available"
     code = str(item.get("code") or "")
     state = str(item.get("state") or item.get("local_state") or item.get("status") or "")
     inventory = item.get("inventory")
     inventory_state = (
         str(inventory.get("state") or "") if isinstance(inventory, dict) else ""
     )
+    if (
+        bool(item.get("available"))
+        or state in _READY_STATES
+        or inventory_state in _READY_STATES
+    ):
+        tools = confirmation_tools or []
+        states = tool_states or {}
+        if not tools or _has_live_tool(tools, states):
+            return "available"
+        if _all_tools_unsupported(tools, states):
+            return "unsupported"
+        return "needs_action"
     if code == "unsupported_host" or state == "unsupported" or inventory_state == "unsupported":
         return "unsupported"
     if state == "failed":
         return "failed"
-    if state in _READY_STATES or inventory_state in _READY_STATES:
-        return "available"
     if state in _NEEDS_ACTION_STATES or inventory_state in _NEEDS_ACTION_STATES:
         return "needs_action"
     if str(item.get("install_mode") or "") in {"manual", "manual_license", "system"}:
@@ -273,7 +309,11 @@ def build_capability_cards(
                     if str(item).strip()
                 ]
                 mapped_tools.update(confirmation_tools)
-                state = _component_state(enhanced.get(component_id))
+                state = _component_state(
+                    enhanced.get(component_id),
+                    confirmation_tools,
+                    tool_states,
+                )
                 for name in confirmation_tools:
                     reason = str((tool_states.get(name) or {}).get("reason") or "")
                     if reason == "target_required":
@@ -336,6 +376,16 @@ def build_capability_cards(
         if not platform_matches:
             for member in members:
                 member["state"] = "unsupported"
+        elif status_tools and not _has_live_tool(status_tools, tool_states):
+            # Component discovery alone is not enough: the registered MCP must
+            # expose a usable tool for this capability card.
+            for member in members:
+                if member["state"] == "available":
+                    member["state"] = (
+                        "unsupported"
+                        if _all_tools_unsupported(status_tools, tool_states)
+                        else "needs_action"
+                    )
 
         cards.append(
             {

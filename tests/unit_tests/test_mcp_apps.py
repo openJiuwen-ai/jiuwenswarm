@@ -102,6 +102,14 @@ async def test_call_tool_rejects_model_only_tool(session):
 
 
 @pytest.mark.asyncio
+async def test_diagnostic_tool_can_call_model_only_tool(session):
+    result = await apps.call_diagnostic_tool("store", "secret", {})
+
+    assert result["structuredContent"] == {"products": [1, 2]}
+    assert session.calls == [("secret", {})]
+
+
+@pytest.mark.asyncio
 async def test_call_tool_unknown_tool(session):
     with pytest.raises(KeyError):
         await apps.call_app_tool("store", "nope", {})

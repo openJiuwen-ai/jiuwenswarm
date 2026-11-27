@@ -24,12 +24,11 @@ class ReaSetupApplicationPlugin(ApplicationPluginExtension):
         channel: Any,
         services: ApplicationPluginServices,
     ) -> None:
-        del services
         from jiuwenswarm.gateway.channel_manager.web.rea_setup_handlers import (
             register_rea_setup_handlers,
         )
 
-        register_rea_setup_handlers(channel)
+        register_rea_setup_handlers(channel, services)
 
 
 async def register_extensions(registry: Any) -> list[ReaSetupApplicationPlugin]:

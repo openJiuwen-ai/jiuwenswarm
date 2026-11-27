@@ -42,6 +42,7 @@
 .rea-progress-card { order: 1; }
 .rea-task-guide { order: 2; }
 .rea-install-area { order: 3; }
+.rea-cancel-notice { order: 4; }
 .rea-error { order: 4; }
 .rea-secondary-action-row { order: 5; }
 
@@ -713,6 +714,12 @@ button.rea-step-card:hover img {
   background: url("../../assets/rea/status-card-unsupported.png") center / contain no-repeat;
 }
 
+.rea-status.is-notInstalled i {
+  border: 0;
+  border-radius: 0;
+  background: url("../../assets/rea/status-card-unsupported.png") center / contain no-repeat;
+}
+
 .rea-status.is-partial {
   color: #191919;
 }
@@ -969,6 +976,23 @@ button.rea-step-card:hover img {
 }
 
 .rea-error span {
+  flex: 1;
+}
+
+.rea-cancel-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid #d9e2ec;
+  border-radius: 10px;
+  background: #f7f9fb;
+  color: #52616b;
+  font-size: 12px;
+}
+
+.rea-cancel-notice span {
   flex: 1;
 }
 
@@ -1436,6 +1460,7 @@ button.rea-step-card:hover img {
     margin-bottom: 4px;
   }
 
+  .rea-cancel-notice,
   .rea-error {
     align-items: flex-start;
     flex-direction: column;

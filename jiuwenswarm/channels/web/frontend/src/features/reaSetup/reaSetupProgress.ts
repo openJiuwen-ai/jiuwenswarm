@@ -1,4 +1,4 @@
-import type { ReaSetupJob } from './types';
+import type { ReaSetupJob, ReaSetupScan } from './types';
 
 export const ACTIVE_INSTALL_JOB_STORAGE_KEY = 'reaSetup.activeJob.v2';
 export const REMAINING_DISPLAY_INTERVAL_MS = 30000;
@@ -38,6 +38,16 @@ type JobStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 function isActiveStatus(status: ReaSetupJob['status'] | undefined): boolean {
   return status === 'queued' || status === 'running';
+}
+
+export function classifyCompletedReaSetupJob(
+  job: Pick<ReaSetupJob, 'status' | 'error'>,
+): 'cancelled' | 'error' | null {
+  if (job.status === 'cancelled') return 'cancelled';
+  if (job.status === 'failed' && typeof job.error === 'string' && job.error.trim()) {
+    return 'error';
+  }
+  return null;
 }
 
 const defaultSleep: Sleep = (milliseconds) =>
@@ -233,16 +243,33 @@ export function estimatePaceRemainingSeconds(
   return Math.max(1, Math.round(Math.max(minimumRemaining, Math.min(pace, maximumRemaining))));
 }
 
-export function shouldDeferEnhancedDetection(
-  job: ReaSetupJob | null,
-  capabilityCardCount: number,
-): boolean {
-  return Boolean(
-    job
-    && isActiveStatus(job.status)
-    && job.kind === 'base'
-    && capabilityCardCount === 0,
-  );
+export function mergeReaSetupScan(
+  previous: ReaSetupScan | null,
+  next: ReaSetupScan,
+  scope: 'all' | 'base' | 'enhanced',
+): ReaSetupScan {
+  if (scope !== 'base') return next;
+  const baseSnapshot = previous ?? next;
+  return {
+    ...baseSnapshot,
+    ...next,
+    enhanced: previous?.enhanced ?? [],
+    enhanced_plan: previous?.enhanced_plan ?? [],
+    capability_cards: previous?.capability_cards ?? [],
+    rea_inventory_diagnostics: previous?.rea_inventory_diagnostics ?? {},
+  };
+}
+
+export function resolveEnhancedVisualState(evidence: {
+  planState?: string;
+  available?: boolean | null;
+  inventoryState?: string | null;
+}): VisualState {
+  if (evidence.available === true) return 'available';
+  if (evidence.planState === 'unsupported') return 'unsupported';
+  if (evidence.planState === 'needs_action') return 'needsAction';
+  if (evidence.inventoryState === 'partial') return 'partial';
+  return 'notInstalled';
 }
 
 export function aggregateCapabilityVisualState(

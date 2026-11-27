@@ -241,6 +241,8 @@ async def _persist_and_probe_mcp(
     old_item: dict[str, Any] | None,
     types: McpUpsertTypes,
     item: dict[str, Any] | None = None,
+    *,
+    force_reload: bool = False,
 ) -> AgentResponse:
     """Shared add/update persistence + live-connect probe.
 
@@ -259,7 +261,7 @@ async def _persist_and_probe_mcp(
     else:
         old_relevant = {k: old_item[k] for k in payload if k in old_item}
         config_changed = old_relevant != payload
-    if not config_changed:
+    if not config_changed and not force_reload:
         logger.info("[command.mcp] add/update skipped reload: '%s' config unchanged", name)
     # config.yaml legacy stock has no connection_state and no state.json
     # rollback target — skip the probe; keep the direct write+reload path.
@@ -463,6 +465,7 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
                 resp = await _persist_and_probe_mcp(services, 
                     request, server_payload, old_item,
                     types=McpUpsertTypes(ok="added", fail="add_failed"),
+                    force_reload=bool(params.get("force_reload", False)),
                 )
         elif action in {"enable", "disable"}:
             name = str(params.get("name", "")).strip()
@@ -585,7 +588,33 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
                     request, normalized, old_item,
                     types=McpUpsertTypes(ok="updated", fail="update_failed"),
                     item=_mask_sensitive_fields(normalized),
+                    force_reload=bool(params.get("force_reload", False)),
                 )
+        elif action == "inspect_inventory":
+            name = str(params.get("name", "")).strip()
+            if not name:
+                raise ValueError("MCP server name is required")
+            if name != "rea":
+                raise ValueError("inspect_inventory is only supported for rea")
+            from jiuwenswarm.server.runtime.mcp import apps as mcp_apps
+
+            tools = await mcp_apps.list_app_tools(name)
+            call_result = await mcp_apps.call_diagnostic_tool(
+                name,
+                "binary_session",
+                {},
+            )
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={
+                    "type": "inventory",
+                    "server_name": name,
+                    "tools": tools,
+                    "binary_session_result": call_result,
+                },
+            )
         elif action == "list_tools":
             name = str(params.get("name", "")).strip()
             if not name:
@@ -640,7 +669,7 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
             )
         else:
             raise ValueError("Unsupported action, must be one of " \
-                             "list|show|add|update|enable|disable|remove|list_tools")
+                             "list|show|add|update|enable|disable|remove|inspect_inventory|list_tools")
     except KeyError as exc:
         resp = AgentResponse(
             request_id=request.request_id,
