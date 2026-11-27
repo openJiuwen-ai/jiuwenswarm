@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { CheckCircle2, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import qwenLogo from '../../../../assets/providers/qwen.svg';
+import doubaoLogo from '../../../../assets/providers/doubao.svg';
 import { settingsActionIcons } from '../../../../assets/settings';
 import { Button, Select, Switch } from '../../../../components/ui';
 import { FormDialog } from '../../../../components/form';
@@ -23,6 +24,10 @@ const DEFAULTS: SettingsValues = {
   qwen_omni_api_key: '',
   qwen_omni_model: '',
   qwen_omni_voice: '',
+  doubao_realtime_url: '',
+  doubao_model: '',
+  doubao_voice: '',
+  doubao_api_key: '',
   reply_language: 'match',
   voice_protocol: 'openai_http',
   voice_asr_endpoint: '',
@@ -33,8 +38,8 @@ const DEFAULTS: SettingsValues = {
   voice_tts_voice: '',
 };
 
-const SECRET_KEYS = ['qwen_omni_api_key'] as const;
-type Payload = { values: SettingsValues; configured_secret_lengths: Record<string, number> };
+const SECRET_KEYS = ['qwen_omni_api_key', 'doubao_api_key'] as const;
+type Payload = { values: SettingsValues; defaults: Partial<SettingsValues>; configured_secret_lengths: Record<string, number> };
 
 function secretPlaceholder(length?: number): string {
   return Number.isSafeInteger(length) && Number(length) > 0 ? '*'.repeat(Number(length)) : '';
@@ -89,6 +94,7 @@ export function VideoDuplexModelSettings({
 }) {
   const { t } = useTranslation();
   const [values, setValues] = useState<SettingsValues>(DEFAULTS);
+  const [fieldDefaults, setFieldDefaults] = useState<Partial<SettingsValues>>({});
   const [secretLengths, setSecretLengths] = useState<Record<string, number>>({});
   const [draft, setDraft] = useState<SettingsValues | null>(null);
   const [loading, setLoading] = useState(true);
@@ -102,6 +108,7 @@ export function VideoDuplexModelSettings({
 
   const applyPayload = (payload: Payload) => {
     setValues({ ...DEFAULTS, ...payload.values });
+    setFieldDefaults(payload.defaults || {});
     setSecretLengths(payload.configured_secret_lengths || {});
   };
 
@@ -132,15 +139,18 @@ export function VideoDuplexModelSettings({
   }, [t]);
 
   const configured = isConfigured(values, secretLengths);
-  const modelName = values.qwen_omni_model;
-  const providerName = 'Qwen Omni Realtime';
+  const isDoubao = values.video_live_provider === 'doubao';
+  const doubaoName = t('settingsPanel.videoDuplex.doubaoProvider');
+  const modelField = isDoubao ? 'doubao_model' : 'qwen_omni_model';
+  const modelName = values[modelField].trim() || fieldDefaults[modelField];
+  const providerName = isDoubao ? doubaoName : 'Qwen Omni Realtime';
   const updateDraft = <K extends keyof SettingsValues>(key: K, value: SettingsValues[K]) => {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
   };
 
   const openEditor = () => {
     setError('');
-    setDraft({ ...values, video_live_provider: 'qwen_omni' });
+    setDraft({ ...values, video_live_provider: isDoubao ? 'doubao' : 'qwen_omni' });
   };
 
   const saveDraft = async () => {
@@ -152,11 +162,13 @@ export function VideoDuplexModelSettings({
     setSaving(true);
     setError('');
     const outgoing: Record<string, string> = {
-      video_live_provider: 'qwen_omni',
-      qwen_omni_realtime_url: draft.qwen_omni_realtime_url,
-      qwen_omni_api_key: draft.qwen_omni_api_key,
-      qwen_omni_model: draft.qwen_omni_model,
-      qwen_omni_voice: draft.qwen_omni_voice,
+      video_live_provider: draft.video_live_provider,
+      ...(draft.video_live_provider === 'doubao' ? { doubao_api_key: draft.doubao_api_key, doubao_realtime_url: draft.doubao_realtime_url, doubao_model: draft.doubao_model, doubao_voice: draft.doubao_voice } : {
+        qwen_omni_realtime_url: draft.qwen_omni_realtime_url,
+        qwen_omni_api_key: draft.qwen_omni_api_key,
+        qwen_omni_model: draft.qwen_omni_model,
+        qwen_omni_voice: draft.qwen_omni_voice,
+      }),
       reply_language: draft.reply_language,
     };
     SECRET_KEYS.forEach((key) => {
@@ -279,7 +291,7 @@ export function VideoDuplexModelSettings({
             <>
               <div className="settings-agent-media__model-card">
                 <img
-                  src={qwenLogo}
+                  src={isDoubao ? doubaoLogo : qwenLogo}
                   alt=""
                   className="video-duplex-model-settings__model-icon"
                   aria-hidden="true"
@@ -389,7 +401,8 @@ export function VideoDuplexModelSettings({
           title={t('settingsPanel.videoDuplex.dialogTitle')}
           submitting={saving}
           confirmDisabled={disabled || deleting || !isConfigured(draft, secretLengths)}
-          description={t('settingsPanel.videoDuplex.requiredFields')}
+          description={t(draft.video_live_provider === 'doubao'
+            ? 'settingsPanel.videoDuplex.doubaoRequiredFields' : 'settingsPanel.videoDuplex.requiredFields')}
           confirmLabel={t('common.save')}
           cancelLabel={t('common.cancel')}
           dialogClassName="settings-model-dialog"
@@ -406,40 +419,52 @@ export function VideoDuplexModelSettings({
             {replyLanguageSelect(draft.reply_language, (value) => updateDraft('reply_language', value), {
               testId: 'settings-video-duplex-reply-language-draft',
             })}
-            <label className="video-duplex-model-settings__field">
-              <span>{t('settingsPanel.videoDuplex.providerLabel')}</span>
-              <input
-                value="Qwen Omni Realtime"
-                readOnly
+            <SettingRow title={t('settingsPanel.videoDuplex.providerLabel')}>
+              <Select
+                value={draft.video_live_provider}
+                aria-label={t('settingsPanel.videoDuplex.providerLabel')}
+                options={[
+                  { value: 'qwen_omni', label: 'Qwen Omni Realtime' },
+                  { value: 'doubao', label: doubaoName },
+                ]}
+                onChange={(value) => updateDraft('video_live_provider', value === 'doubao' ? 'doubao' : 'qwen_omni')}
                 data-testid="settings-video-duplex-provider"
               />
-            </label>
+            </SettingRow>
             <ConfigField
-              field="qwen_omni_realtime_url"
-              value={draft.qwen_omni_realtime_url}
-              label="Qwen Realtime WebSocket"
-              onChange={(value) => updateDraft('qwen_omni_realtime_url', value)}
-            />
-            <ConfigField
-              field="qwen_omni_api_key"
-              value={draft.qwen_omni_api_key}
-              label="Qwen API Key"
-              secret
-              placeholder={secretPlaceholder(secretLengths.qwen_omni_api_key)}
-              onChange={(value) => updateDraft('qwen_omni_api_key', value)}
-            />
-            <ConfigField
-              field="qwen_omni_model"
-              value={draft.qwen_omni_model}
-              label={t('settingsPanel.videoDuplex.qwenModelLabel')}
-              onChange={(value) => updateDraft('qwen_omni_model', value)}
-            />
-            <ConfigField
-              field="qwen_omni_voice"
-              value={draft.qwen_omni_voice}
+              field={(draft.video_live_provider === 'doubao' ? 'doubao_realtime_url' : 'qwen_omni_realtime_url')}
+              value={draft[(draft.video_live_provider === 'doubao' ? 'doubao_realtime_url' : 'qwen_omni_realtime_url')]}
+              label={draft.video_live_provider === 'doubao' ? 'Doubao Realtime WebSocket' : 'Qwen Realtime WebSocket'}
+
               required={false}
-              label={t('settingsPanel.videoDuplex.qwenVoiceLabel')}
-              onChange={(value) => updateDraft('qwen_omni_voice', value)}
+              placeholder={fieldDefaults[draft.video_live_provider === 'doubao' ? 'doubao_realtime_url' : 'qwen_omni_realtime_url']}
+              onChange={(value) => updateDraft((draft.video_live_provider === 'doubao' ? 'doubao_realtime_url' : 'qwen_omni_realtime_url'), value)}
+            />
+            <ConfigField
+              field={(draft.video_live_provider === 'doubao' ? 'doubao_api_key' : 'qwen_omni_api_key')}
+              value={draft[(draft.video_live_provider === 'doubao' ? 'doubao_api_key' : 'qwen_omni_api_key')]}
+              label={draft.video_live_provider === 'doubao' ? 'Doubao API Key' : 'Qwen API Key'}
+              secret
+              placeholder={secretPlaceholder(secretLengths[(draft.video_live_provider === 'doubao' ? 'doubao_api_key' : 'qwen_omni_api_key')])}
+              onChange={(value) => updateDraft((draft.video_live_provider === 'doubao' ? 'doubao_api_key' : 'qwen_omni_api_key'), value)}
+            />
+            <ConfigField
+              field={(draft.video_live_provider === 'doubao' ? 'doubao_model' : 'qwen_omni_model')}
+              value={draft[(draft.video_live_provider === 'doubao' ? 'doubao_model' : 'qwen_omni_model')]}
+              label={draft.video_live_provider === 'doubao' ? 'Doubao Model' : 'Qwen Model'}
+
+              required={false}
+              placeholder={fieldDefaults[draft.video_live_provider === 'doubao' ? 'doubao_model' : 'qwen_omni_model']}
+              onChange={(value) => updateDraft((draft.video_live_provider === 'doubao' ? 'doubao_model' : 'qwen_omni_model'), value)}
+            />
+            <ConfigField
+              field={(draft.video_live_provider === 'doubao' ? 'doubao_voice' : 'qwen_omni_voice')}
+              value={draft[(draft.video_live_provider === 'doubao' ? 'doubao_voice' : 'qwen_omni_voice')]}
+              label={draft.video_live_provider === 'doubao' ? 'Doubao Voice' : 'Qwen Voice'}
+
+              required={false}
+              placeholder={fieldDefaults[draft.video_live_provider === 'doubao' ? 'doubao_voice' : 'qwen_omni_voice']}
+              onChange={(value) => updateDraft((draft.video_live_provider === 'doubao' ? 'doubao_voice' : 'qwen_omni_voice'), value)}
             />
           </div>
           {error ? (

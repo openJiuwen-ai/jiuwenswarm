@@ -1,7 +1,8 @@
 class DuplexCaptureProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
-    this.chunk = new Int16Array(Math.round(sampleRate / 10));
+    this.chunkSamples = Math.round(sampleRate * (options?.processorOptions?.chunkMs ?? 100) / 1000);
+    this.chunk = new Int16Array(this.chunkSamples);
     this.offset = 0;
   }
 
@@ -13,7 +14,7 @@ class DuplexCaptureProcessor extends AudioWorkletProcessor {
       this.chunk[this.offset++] = sample < 0 ? sample * 32768 : sample * 32767;
       if (this.offset === this.chunk.length) {
         const ready = this.chunk;
-        this.chunk = new Int16Array(Math.round(sampleRate / 10));
+        this.chunk = new Int16Array(this.chunkSamples);
         this.offset = 0;
         this.port.postMessage(ready.buffer, [ready.buffer]);
       }

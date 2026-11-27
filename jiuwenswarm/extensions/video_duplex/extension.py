@@ -168,8 +168,10 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
         )
 
     def websocket_routes(self) -> tuple[WebSocketRouteContribution, ...]:
+        from jiuwenswarm.extensions.video_duplex.backend.doubao_realtime import DOUBAO_PROXY_PATH
         from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import (
             QWEN_OMNI_PROXY_PATH,
+            serve_doubao_websocket,
             serve_qwen_omni_websocket,
         )
 
@@ -177,6 +179,11 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
             WebSocketRouteContribution(
                 path=QWEN_OMNI_PROXY_PATH,
                 endpoint=serve_qwen_omni_websocket,
+                available_when_disabled=True,
+            ),
+            WebSocketRouteContribution(
+                path=DOUBAO_PROXY_PATH,
+                endpoint=serve_doubao_websocket,
                 available_when_disabled=True,
             ),
         )

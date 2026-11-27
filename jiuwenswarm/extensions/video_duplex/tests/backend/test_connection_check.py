@@ -20,13 +20,18 @@ class AsyncContext:
         self.closed = True
 
 
+@pytest.mark.parametrize("provider", ["qwen_omni", "doubao"])
 @pytest.mark.parametrize("event,success", [
     ('{"type":"session.updated"}', True),
     ('{"type":"error","error":{"message":"secret detail"}}', False),
 ])
-async def test_qwen_checks_session_and_closes_socket(monkeypatch, event, success):
+async def test_realtime_checks_session_and_closes_socket(monkeypatch, provider, event, success):
     monkeypatch.setenv("VIDEO_LIVE_MODE", "realtime")
-    monkeypatch.setenv("VIDEO_REALTIME_PROVIDER", "qwen_omni")
+    monkeypatch.setenv("VIDEO_REALTIME_PROVIDER", provider)
+    monkeypatch.setenv("DOUBAO_REALTIME_URL", "wss://example.test/realtime")
+    monkeypatch.setenv("DOUBAO_REALTIME_API_KEY", "test-key")
+    if provider == "doubao":
+        event = event.replace("session.updated", "session.created")
     monkeypatch.setenv("QWEN_OMNI_REALTIME_URL", "wss://example.test/realtime")
     monkeypatch.setenv("QWEN_OMNI_MODEL_NAME", "test-model")
     monkeypatch.setenv("QWEN_OMNI_API_KEY", "test-key")
@@ -44,8 +49,9 @@ async def test_qwen_checks_session_and_closes_socket(monkeypatch, event, success
         with pytest.raises(ValueError, match="provider rejected"):
             await check.check_saved_connection()
     assert connection.closed
-    assert calls[0][0] == "wss://example.test/realtime?model=test-model"
-    assert calls[0][1]["additional_headers"] == {"Authorization": "Bearer test-key"}
+    assert calls[0][0] == "wss://example.test/realtime" + ("?model=test-model" if provider == "qwen_omni" else "")
+    expected_headers = {"X-Api-Key": "test-key"} if provider == "doubao" else {"Authorization": "Bearer test-key"}
+    assert calls[0][1]["additional_headers"] == expected_headers
 
 
 @pytest.mark.parametrize("status,body,error", [

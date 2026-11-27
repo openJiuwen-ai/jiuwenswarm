@@ -64,6 +64,10 @@ def _isolate_video_mode_environment(monkeypatch) -> None:
         "QWEN_OMNI_API_KEY",
         "QWEN_OMNI_MODEL_NAME",
         "QWEN_OMNI_VOICE",
+        "DOUBAO_REALTIME_API_KEY",
+        "DOUBAO_REALTIME_URL",
+        "DOUBAO_REALTIME_MODEL",
+        "DOUBAO_REALTIME_VOICE",
         "JOYAI_API_BASE",
         "JOYAI_API_KEY",
         "JOYAI_MODEL_NAME",
@@ -119,7 +123,10 @@ def test_unconfigured_duplex_settings_do_not_prefill_models_or_endpoints(monkeyp
     for env_key in (*settings.SETTING_ENV_KEYS.values(), "VIDEO_LIVE_MODE", "VIDEO_REALTIME_PROVIDER"):
         monkeypatch.delenv(env_key, raising=False)
 
-    values = settings.settings_payload(enabled=True)["values"]
+    payload = settings.settings_payload(enabled=True)
+    values = payload["values"]
+    assert payload["defaults"] == settings.FIELD_DEFAULTS
+    assert all(payload["defaults"].values())
     assert values["video_live_provider"] == "qwen_omni"
     assert values["voice_protocol"] == "openai_http"
     assert values["reply_language"] == "match"
@@ -733,6 +740,23 @@ async def test_video_config_selects_qwen_gateway_without_reference_audio(
 
 
 @pytest.mark.asyncio
+async def test_video_config_selects_doubao_without_exposing_credentials(monkeypatch):
+    monkeypatch.setenv("VIDEO_REALTIME_PROVIDER", "doubao")
+    monkeypatch.setenv("DOUBAO_REALTIME_API_KEY", "test-seed-secret")
+    channel = _video_channel()
+    await channel.handlers["video.realtime.config"](object(), "config-request", {}, "web-session")
+    payload = channel.responses[-1][1]["payload"]
+    assert payload["provider"] == "doubao"
+    assert payload["url"] == "/ws/video/doubao"
+    assert payload["model"] == "1.3.0.0"
+    assert payload["tools"] == video_live.qwen_omni_tools(queue_manager=True)
+    assert "test-seed-secret" not in json.dumps(payload)
+    settings_data = settings.settings_payload(enabled=True)
+    assert settings_data["values"]["doubao_api_key"] == ""
+    assert settings_data["configured_secret_lengths"]["doubao_api_key"] == len("test-seed-secret")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["qwen_omni", "joyai"])
 async def test_realtime_context_restore_requires_conversation_ownership(monkeypatch, provider):
     from unittest.mock import AsyncMock
@@ -834,9 +858,11 @@ async def test_joyai_restores_history_on_user_turns_with_fresh_task_state(monkey
 
 
 @pytest.mark.asyncio
-async def test_qwen_tool_rpc_delegates_original_instruction_to_core_agent(
-    monkeypatch,
+@pytest.mark.parametrize("provider", ["qwen_omni", "doubao"])
+async def test_realtime_tool_rpc_delegates_original_instruction_to_core_agent(
+    monkeypatch, provider,
 ) -> None:
+    monkeypatch.setenv("VIDEO_REALTIME_PROVIDER", provider)
     requests = []
 
     class FakeAgentClient:

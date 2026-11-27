@@ -1,4 +1,4 @@
-export type Provider = 'joyai' | 'qwen_omni';
+export type Provider = 'joyai' | 'qwen_omni' | 'doubao';
 export type VoiceProtocol = 'native_ws' | 'openai_http';
 export type ReplyLanguage = 'match' | 'zh-CN' | 'en';
 
@@ -11,6 +11,10 @@ export type SettingsValues = {
   qwen_omni_api_key: string;
   qwen_omni_model: string;
   qwen_omni_voice: string;
+  doubao_realtime_url: string;
+  doubao_model: string;
+  doubao_voice: string;
+  doubao_api_key: string;
   reply_language: ReplyLanguage;
   voice_protocol: VoiceProtocol;
   voice_asr_endpoint: string;
@@ -22,12 +26,11 @@ export type SettingsValues = {
 };
 
 export function isConfigured(values: SettingsValues, secretLengths: Record<string, number>): boolean {
-  const hasSecret = (key: 'qwen_omni_api_key') =>
+  const hasSecret = (key: 'qwen_omni_api_key' | 'doubao_api_key') =>
     Boolean(values[key].trim() || secretLengths[key] > 0);
+  if (values.video_live_provider === 'doubao') return hasSecret('doubao_api_key');
   if (values.video_live_provider === 'qwen_omni') {
-    return Boolean(
-      values.qwen_omni_realtime_url.trim() && values.qwen_omni_model.trim() && hasSecret('qwen_omni_api_key'),
-    );
+    return hasSecret('qwen_omni_api_key');
   }
   return false;
 }

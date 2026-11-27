@@ -31,6 +31,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { webClient, webRequest } from '../../../../channels/web/frontend/src/services/webClient';
 import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
+import { RealtimeProtocol } from './realtimeProtocol';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
 import { JoyAIProvider } from './joyaiProvider';
 import { captureVideoFrame, FrameEncoder } from './frameEncoding';
@@ -417,6 +418,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     });
     if (queued) {
       setSearchStatus(`${payload.engine || 'Jiuwen Core Agent'}完成，摘要已加入播报队列…`);
+
     } else {
       reportRealtimeEvent('search_result_queue_failed', {
         job_id: payload.job_id,
@@ -606,6 +608,16 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     if (updateState) setScreens([]);
   }, []);
 
+  const rejectImageSharing = (reason: string) => {
+    // Stop capture only. Keep the microphone, task subscriptions and live conversation intact.
+    pendingScreenAutostartRef.current = false;
+    releaseScreens();
+    releaseSource();
+    setSource(null);
+    setSourceName('');
+    toast.open({ content: t('videoLive.screenCapture.modelUnsupported', { reason }), variant: 'warning' });
+  };
+
   const resetSource = () => {
     stopModelTransport();
     setIsRecording(false);
@@ -687,6 +699,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   }, [isPlaying, screens, source]);
 
   const startCamera = async (): Promise<boolean> => {
+    if (duplexRef.current?.supportsImageInput === false) {
+      rejectImageSharing(t('videoLive.screenCapture.imagePreviouslyRejected'));
+      return false;
+    }
     resetSource();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -738,6 +754,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
+    if (duplexRef.current?.supportsImageInput === false) {
+      rejectImageSharing(t('videoLive.screenCapture.imagePreviouslyRejected'));
+      return;
+    }
 
     resetSource();
     const url = URL.createObjectURL(file);
@@ -783,6 +803,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const screenFallbackNoticeRef = useRef(SCREEN_SHARE_UNSUPPORTED_NOTICE);
   const startScreen = async (allowUnsupported = false): Promise<boolean | 'unsupported'> => {
     screenFallbackNoticeRef.current = SCREEN_SHARE_UNSUPPORTED_NOTICE;
+    if (duplexRef.current?.supportsImageInput === false) {
+      rejectImageSharing(t('videoLive.screenCapture.imagePreviouslyRejected'));
+      return false;
+    }
     if (screens.length >= MAX_SCREENS) {
       setError(`最多同时读取 ${MAX_SCREENS} 个屏幕。`);
       return false;
@@ -933,13 +957,15 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           provider: config.provider || 'realtime',
         });
         setModel(config.model);
-        if (config.provider !== 'qwen_omni') {
+        if (config.provider !== 'qwen_omni' && config.provider !== 'doubao') {
           throw new Error(t('videoLive.qwenOnly'));
         }
-        const videoFrames = new RealtimeVideoFrameScheduler(1_000);
+        const videoFrames = new RealtimeVideoFrameScheduler(RealtimeProtocol.frameIntervalMs(config.provider));
         startupStage = 'realtime_session_create';
         const session = createRealtimeDuplexSession(
           {
+            provider: config.provider,
+            model: config.model,
             url: config.url || '',
             voice: config.voice,
             tools: config.tools,
@@ -1034,6 +1060,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               }
             },
             onError: setError,
+            onImageInputUnsupported: (reason) => {
+              if (mediaGeneration === mediaGenerationRef.current) rejectImageSharing(reason);
+            },
             onIdleTimeout: () => {
               if (duplexRef.current !== session) return;
               // Keep the conversation, shared video and controller alive while
@@ -1356,6 +1385,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     if (!text) return;
     if (!duplexRef.current && !joyaiProviderRef.current?.active) await startRealtime();
     if (!duplexRef.current && !joyaiProviderRef.current?.active) return;
+    if (duplexRef.current?.supportsTextInput === false) {
+      setError(t('videoLive.errors.doubaoVoiceOnly'));
+      return;
+    }
     try {
       const turnId = crypto.randomUUID();
       latestUserInstructionRef.current = { text, turnId };

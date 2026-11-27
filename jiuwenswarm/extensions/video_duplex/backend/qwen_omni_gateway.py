@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Authenticated WebSocket relay for Alibaba Cloud Qwen-Omni Realtime."""
+"""Authenticated WebSocket relays for Qwen-Omni and Doubao Seed-Realtime."""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 import websockets
 from websockets.exceptions import ConnectionClosed
+
+from jiuwenswarm.extensions.video_duplex.backend import doubao_realtime
+from jiuwenswarm.extensions.video_duplex.backend.settings import FIELD_DEFAULTS
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +34,10 @@ class QwenOmniRealtimeConfig:
     @classmethod
     def from_environment(cls) -> QwenOmniRealtimeConfig:
         return cls(
-            upstream_url=os.environ.get("QWEN_OMNI_REALTIME_URL", "").strip(),
+            upstream_url=os.environ.get("QWEN_OMNI_REALTIME_URL", "").strip() or FIELD_DEFAULTS["qwen_omni_realtime_url"],
             api_key=os.environ.get("QWEN_OMNI_API_KEY", "").strip(),
-            model=os.environ.get("QWEN_OMNI_MODEL_NAME", "").strip(),
-            voice=os.environ.get("QWEN_OMNI_VOICE", "").strip() or "Tina",
+            model=os.environ.get("QWEN_OMNI_MODEL_NAME", "").strip() or FIELD_DEFAULTS["qwen_omni_model"],
+            voice=os.environ.get("QWEN_OMNI_VOICE", "").strip() or FIELD_DEFAULTS["qwen_omni_voice"],
         )
 
     def validate(self) -> None:
@@ -123,34 +126,54 @@ async def _relay_upstream_to_browser(websocket: WebSocket, upstream: object, api
                 await _send_gateway_error(websocket, error[0], error[1])
                 logger.warning("Qwen-Omni upstream rejected session code=%s", error[0])
                 continue
+            if error and api_key:
+                message = message.replace(api_key, "******")
             await websocket.send_text(message)
 
 
 async def serve_qwen_omni_websocket(websocket: WebSocket) -> None:
     """Relay one browser session to Qwen-Omni without exposing its API key."""
+    await _serve_realtime_websocket(websocket, doubao=False)
+
+
+async def serve_doubao_websocket(websocket: WebSocket) -> None:
+    """Relay one browser session to Seed-Realtime without exposing its API key."""
+    await _serve_realtime_websocket(websocket, doubao=True)
+
+
+async def _serve_realtime_websocket(websocket: WebSocket, *, doubao: bool) -> None:
     await websocket.accept()
-    config = QwenOmniRealtimeConfig.from_environment()
+    provider = "doubao" if doubao else "qwen"
+    label = "Doubao Seed-Realtime" if doubao else "Qwen-Omni Realtime"
     try:
-        upstream_url = config.upstream_with_model()
+        if doubao:
+            key = doubao_realtime.api_key()
+            upstream_url = doubao_realtime.upstream_url()
+            headers = {"X-Api-Key": key}
+        else:
+            config = QwenOmniRealtimeConfig.from_environment()
+            upstream_url = config.upstream_with_model()
+            key = config.api_key
+            headers = {"Authorization": f"Bearer {key}"}
     except ValueError as exc:
-        await _send_gateway_error(websocket, "qwen_gateway_config_error", str(exc))
-        await websocket.close(code=1008, reason="Qwen-Omni gateway is not configured")
+        await _send_gateway_error(websocket, f"{provider}_gateway_config_error", str(exc))
+        await websocket.close(code=1008, reason=f"{label} gateway is not configured")
         return
 
     close_code, close_reason = 1000, ""
     try:
         async with websockets.connect(
             upstream_url,
-            additional_headers={"Authorization": f"Bearer {config.api_key}"},
+            additional_headers=headers,
             open_timeout=15,
             close_timeout=5,
             ping_interval=20,
             ping_timeout=30,
             max_size=8 * 1024 * 1024,
         ) as upstream:
-            logger.info("Qwen-Omni Realtime relay connected model=%s", config.model)
+            logger.info("%s relay connected", label)
             browser_task = asyncio.create_task(_relay_browser_to_upstream(websocket, upstream))
-            upstream_task = asyncio.create_task(_relay_upstream_to_browser(websocket, upstream, config.api_key))
+            upstream_task = asyncio.create_task(_relay_upstream_to_browser(websocket, upstream, key))
             tasks = {browser_task, upstream_task}
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -164,10 +187,10 @@ async def serve_qwen_omni_websocket(websocket: WebSocket) -> None:
                 close_reason = getattr(upstream, "close_reason", "") or ""
                 if upstream_task in done and browser_task not in done:
                     message = _safe_upstream_error(
-                        RuntimeError(f"Qwen Realtime 连接已关闭（{close_code}）：{close_reason or '服务端未提供具体原因'}"),
-                        config.api_key,
+                        RuntimeError(f"{label} 连接已关闭（{close_code}）：{close_reason or '服务端未提供具体原因'}"),
+                        key,
                     )
-                    await _send_gateway_error(websocket, "qwen_gateway_upstream_closed", message)
+                    await _send_gateway_error(websocket, f"{provider}_gateway_upstream_closed", message)
             finally:
                 for task in tasks:
                     if not task.done():
@@ -177,18 +200,18 @@ async def serve_qwen_omni_websocket(websocket: WebSocket) -> None:
         close_code = exc.rcvd.code if exc.rcvd else 1011
         close_reason = exc.rcvd.reason if exc.rcvd else "Upstream disconnected without a close frame"
         await _send_gateway_error(
-            websocket, "qwen_gateway_upstream_closed", _safe_upstream_error(exc, config.api_key)
+            websocket, f"{provider}_gateway_upstream_closed", _safe_upstream_error(exc, key)
         )
     except WebSocketDisconnect:
         return
     except Exception as exc:  # noqa: BLE001 - isolate one upstream session
-        message = _safe_upstream_error(exc, config.api_key)
-        logger.warning("Qwen-Omni Realtime relay failed: %s", message)
-        await _send_gateway_error(websocket, "qwen_gateway_upstream_error", message)
-        close_code, close_reason = 1011, "Qwen upstream connection failed"
+        message = _safe_upstream_error(exc, key)
+        logger.warning("%s relay failed: %s", label, message)
+        await _send_gateway_error(websocket, f"{provider}_gateway_upstream_error", message)
+        close_code, close_reason = 1011, f"{label} upstream connection failed"
     finally:
-        close_reason = _safe_upstream_error(Exception(close_reason), config.api_key) if close_reason else ""
-        logger.info("Qwen-Omni relay closed code=%s reason=%s", close_code, close_reason)
+        close_reason = _safe_upstream_error(Exception(close_reason), key) if close_reason else ""
+        logger.info("%s relay closed code=%s reason=%s", label, close_code, close_reason)
         if close_code in {1004, 1005, 1006, 1015}:
             close_reason = f"Upstream close {close_code}: {close_reason}"
             close_code = 1011

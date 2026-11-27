@@ -149,3 +149,8 @@
     grid-template-columns: 1fr;
   }
 }
+
+.video-duplex-settings__field input::placeholder {
+  color: var(--color-text-tertiary);
+  opacity: 1;
+}

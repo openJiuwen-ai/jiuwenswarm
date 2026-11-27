@@ -48,13 +48,17 @@ export interface QwenOmniMediaSnapshot {
   hasDeferredImage: boolean;
 }
 
+export function realtimeInstructions(options: QwenOmniSessionOptions): string {
+  return [QWEN_SESSION_INSTRUCTIONS, speakLanguageInstruction(normalizeReplyLanguage(options.replyLanguage)), options.restoreInstructions, options.extraInstructions].filter(Boolean).join('\n');
+}
+
 export function createQwenOmniSessionUpdate(options: QwenOmniSessionOptions): Record<string, unknown> {
   return {
     type: 'session.update',
     session: {
       modalities: ['audio', 'text'],
       voice: options.voice || 'Tina',
-      instructions: [QWEN_SESSION_INSTRUCTIONS, speakLanguageInstruction(normalizeReplyLanguage(options.replyLanguage)), options.restoreInstructions, options.extraInstructions].filter(Boolean).join('\n'),
+      instructions: realtimeInstructions(options),
       audio: {
         input: { format: { type: 'pcm', sample_rate: options.inputRate } },
         output: { format: { type: 'pcm', sample_rate: options.outputRate } },
