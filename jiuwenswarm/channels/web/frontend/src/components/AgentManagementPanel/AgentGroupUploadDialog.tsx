@@ -218,6 +218,10 @@ export function DefinitionUploadDialog({
       setSubmitting(false);
       return;
     }
+    // 暂存成功：清掉此前失败尝试残留的暂存文案，防止直接重试确认的场景下
+    // 陈旧 pickerError 盖住父组件经 error 属性回传的细化文案（渲染优先级
+    // pickerError > error）。
+    setPickerError(null);
     try {
       // 导入阶段交给父组件既有的 import + install + 回滚链：其失败由父组件
       // 自行捕获并按页签细化文案（assetIssueKeyForKind）经 error 属性回传；
