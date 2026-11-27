@@ -507,6 +507,7 @@ generated: true
 | [B_20261121_0108_pypi-update-version-baseline](bugfix/jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
 | [B_20261123_1757_harmony-process-identity](bugfix/jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
 | [B_20261124_2201_rea-npx-readiness](bugfix/jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
+| [B_20261127_1636_macos-resident-worker-clock-drift](bugfix/jiuwenswarm/server/supervisor/B_20261127_1636_macos-resident-worker-clock-drift.md) | B | macOS 升级后旧 Worker 因创建时间漂移无法退出 | XINCHEN ZHANG | 无独立 D：在现有 Worker HELLO、部署归属和关闭应答契约内修复旧版兼容路径，无独立设计文档。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 | [S_01_process-identity](specs/jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
@@ -743,6 +744,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261110_1042_issue6191-ipc-recovery](bugfix/jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
+| [B_20261127_1636_macos-resident-worker-clock-drift](bugfix/jiuwenswarm/server/supervisor/B_20261127_1636_macos-resident-worker-clock-drift.md) | B | macOS 升级后旧 Worker 因创建时间漂移无法退出 | XINCHEN ZHANG | 无独立 D：在现有 Worker HELLO、部署归属和关闭应答契约内修复旧版兼容路径，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-jiuwenmate"></a>
 
@@ -856,6 +858,7 @@ generated: true
 | [B_20261107_1505_6226-forwarding-replay](bugfix/jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 | [B_20261110_1042_issue6191-ipc-recovery](bugfix/jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
 | [B_20261123_1757_harmony-process-identity](bugfix/jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
+| [B_20261127_1636_macos-resident-worker-clock-drift](bugfix/jiuwenswarm/server/supervisor/B_20261127_1636_macos-resident-worker-clock-drift.md) | B | macOS 升级后旧 Worker 因创建时间漂移无法退出 | XINCHEN ZHANG | 无独立 D：在现有 Worker HELLO、部署归属和关闭应答契约内修复旧版兼容路径，无独立设计文档。 |
 | [S_01_process-identity](specs/jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 
 <a id="module-jiuwenswarm-server-worker"></a>

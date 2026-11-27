@@ -20,7 +20,7 @@ files:
 
 # 受限系统进程身份与 PID 重用校验
 
-最近修订日期：2026-11-25。
+最近修订日期：2026-11-27。
 
 ## 范围与事实源
 
@@ -65,7 +65,12 @@ runtime owner 保留已有 `started_at`、`start_ticks` 与旧记录的读取行
    存在但身份不可读抛 `AccessDenied`；存在性本身不能授权信号或证明身份匹配。服务树目标在身份检查期间退出时按已无进程处理。
 6. **S-PID-06**：解析进程名时使用最后一个右括号定位字段起点，不能直接按空格切整行。
 
-常驻 Worker 更换代码构建时，目标分支的旧时间戳漂移回收路径仍须重新验证用户、解释器、Worker 模块和端点。
+macOS 常驻 Worker 退出时，如果旧 HELLO 只上报墙钟创建时间且时间不符，
+退役流程可以用已连接 Unix socket 的内核对端 PID 复核归属。对端 PID 必须与 HELLO 匹配，
+部署、用户、可执行文件和端点仍须通过既有校验。复核后以本端观察到的进程身份确认退出。
+内核对端 PID 不可读取或不匹配时拒绝退役。
+
+非 macOS 平台更换常驻 Worker 时，发布分支的旧时间戳漂移回收路径仍须重新验证用户、解释器、Worker 模块和端点。
 该路径仅适用于 HELLO 没有声明 `process_start_ticks` 的旧 Worker；已声明的内核身份发生变化或不可验证时，
 不得当作时间戳漂移放行回收。
 
@@ -76,3 +81,4 @@ runtime owner 保留已有 `started_at`、`start_ticks` 与旧记录的读取行
 - `tests/unit_tests/agentserver/test_worker_process_identity.py`：权限拒绝、不同端权限、PID 重用、HELLO 和清理。
 - `tests/unit_tests/server/test_runtime_owner_identity.py`：旧 owner 记录及保守失败。
 - [本次故障与验证](../../../bugfix/jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md)。
+- [macOS Worker 时间戳漂移的修复与验证](../../../bugfix/jiuwenswarm/server/supervisor/B_20261127_1636_macos-resident-worker-clock-drift.md)。
