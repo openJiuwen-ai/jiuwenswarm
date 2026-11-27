@@ -453,9 +453,33 @@ def project_detail(
             "preview": _preview_image(entry.root),
             "events": [] if entry.is_bundle else _events(display),
             "systemPlugins": _system_plugins(entry, store, bundle_record),
+            "versionStates": _version_states(store, entry.package_id, entry.is_bundle),
         }
     )
     return detail
+
+
+def _version_states(
+    store: ExtensionInstallState | None,
+    package_id: str,
+    is_bundle: bool,
+) -> list[dict[str, str]]:
+    """Return the stored load state of every version the selector offers.
+
+    A version that failed to load stays marked so the detail page can disable
+    it instead of offering a switch this copy cannot honour.
+    """
+
+    if store is None:
+        return []
+    if is_bundle:
+        records = [record for record in store.bundles() if record.bundle_id == package_id]
+    else:
+        records = [record for record in store.packages() if record.package_id == package_id]
+    return [
+        {"version": record.version, "status": record.status, "error": record.error}
+        for record in records
+    ]
 
 
 def resolve_install_source(

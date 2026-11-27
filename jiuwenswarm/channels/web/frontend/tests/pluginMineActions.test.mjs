@@ -71,6 +71,15 @@ await build({
           : `export const ${path} = {};`,
         loader: 'js',
       }));
+      builder.onResolve({ filter: /ui\/Toast\/toastStore$/ }, () => ({ path: 'toastStore', namespace: 'action-toast' }));
+      builder.onLoad({ filter: /.*/, namespace: 'action-toast' }, () => ({
+        contents: [
+          'const record = config => { (globalThis.connectorToastCalls ||= []).push(config); return 0; };',
+          'export const toast = { open: record, close() {}, closeAll() {} };',
+          'export const toastStore = { open() {}, close() {}, closeAll() {}, subscribe: () => () => {}, getSnapshot: () => [] };',
+        ].join('\n'),
+        loader: 'js',
+      }));
       builder.onResolve({ filter: /\.svg\?react$/ }, ({ path }) => ({ path, namespace: 'action-svg' }));
       builder.onLoad({ filter: /.*/, namespace: 'action-svg' }, () => ({
         contents: 'export default function SvgStub() { return null; }',
@@ -104,6 +113,7 @@ after(() => {
   delete globalThis.connectorActionState;
   delete globalThis.systemPluginActionState;
   delete globalThis.systemPluginActionApi;
+  delete globalThis.connectorToastCalls;
   dom.window.close();
 });
 
@@ -130,6 +140,7 @@ const plugin = {
 
 function resetState({ installed = false, connected = false } = {}) {
   const calls = { install: [], connect: [], use: [], detail: [], systemInstall: [] };
+  globalThis.connectorToastCalls = [];
   globalThis.pluginActionState = {
     packages: [plugin], localPackages: [plugin],
     installed: { [plugin.id]: installed },
@@ -581,4 +592,79 @@ test('system plugin detail install shows the installing label while running', as
     assert.equal(button.getAttribute('aria-busy'), 'true');
     assert.equal(button.disabled, true);
   });
+});
+
+function themeDetail(versionStates) {
+  return {
+    id: 'theme.pkg', packageId: 'theme.pkg', version: '2.2.2',
+    versions: ['2.0.0', '2.2.2'], installedVersion: '2.2.2',
+    versionStates,
+    displayName: { zh: '主题壁纸', en: 'Theme' },
+    displayDescription: { zh: '', en: '' }, details: '', readme: '', tags: [],
+    avatar: null, preview: null, events: [], installed: true, active: true, enabled: true,
+    kind: 'plugin', overallStatus: 'enabled', source: 'hub', origin: 'hub',
+  };
+}
+
+test('system plugin detail disables a version that failed to load', async () => {
+  await i18next.changeLanguage('zh');
+  resetState();
+  globalThis.systemPluginActionState.detailCache['theme.pkg'] = themeDetail([
+    { version: '2.0.0', status: 'failed', error: "No module named 'demo'" },
+    { version: '2.2.2', status: 'active' },
+  ]);
+
+  await render(SystemPluginDetailPage, { id: 'theme.pkg', onBack() {} }, async host => {
+    const trigger = host.querySelector('[data-testid="connector-market-system-plugin-detail-versions"]');
+    assert.ok(trigger);
+    assert.match(trigger.textContent, /2\.2\.2/);
+    await act(async () => trigger.click());
+    const failed = document.querySelector('[data-testid="ui-select-option"][data-variant="2.0.0"]');
+    const active = document.querySelector('[data-testid="ui-select-option"][data-variant="2.2.2"]');
+    assert.ok(failed);
+    assert.equal(failed.disabled, true);
+    assert.equal(failed.getAttribute('title'), '该版本加载失败，无法切换');
+    assert.equal(active.disabled, false);
+  });
+});
+
+test('system plugin detail returns to the installed version when a switch fails', async () => {
+  await i18next.changeLanguage('zh');
+  const attempts = [];
+  const loads = [];
+  resetState();
+  globalThis.systemPluginActionState.install = async (id, version, options) => {
+    attempts.push([id, version, options]);
+    return { ok: false, error: "No module named 'demo'" };
+  };
+  globalThis.systemPluginActionState.loadDetail = async (id, version) => {
+    loads.push([id, version]);
+    return true;
+  };
+  globalThis.systemPluginActionState.detailCache['theme.pkg'] = themeDetail([
+    { version: '2.0.0', status: 'standby' },
+    { version: '2.2.2', status: 'active' },
+  ]);
+
+  await render(SystemPluginDetailPage, { id: 'theme.pkg', onBack() {} }, async host => {
+    const trigger = host.querySelector('[data-testid="connector-market-system-plugin-detail-versions"]');
+    await act(async () => trigger.click());
+    const target = document.querySelector('[data-testid="ui-select-option"][data-variant="2.0.0"]');
+    await act(async () => target.click());
+    const dialog = document.querySelector('[data-testid="connector-market-confirm-dialog"]');
+    assert.ok(dialog);
+    await act(async () => dialog.querySelector('[data-testid="connector-market-confirm-ok"]').click());
+    assert.equal(host.querySelector('[data-testid="connector-market-system-plugin-detail-error"]'), null);
+    assert.equal(globalThis.connectorToastCalls.length, 1);
+    const [notice] = globalThis.connectorToastCalls;
+    assert.ok(notice);
+    assert.equal(notice.variant, 'error');
+    assert.match(notice.content, /2\.0\.0/);
+    assert.match(notice.content, /2\.2\.2/);
+    assert.match(notice.content, /原因/);
+    assert.match(notice.content, /No module named/);
+    assert.match(trigger.textContent, /2\.2\.2/);
+  });
+  assert.deepEqual(attempts, [['theme.pkg', '2.0.0', { reportError: false }]]);
+  assert.deepEqual(loads.filter(([, version]) => version).at(-1), ['theme.pkg', '2.2.2']);
 });

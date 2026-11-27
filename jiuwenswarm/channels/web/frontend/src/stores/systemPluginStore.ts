@@ -12,6 +12,9 @@ type MutationResult = { ok: true } | MutationFailure;
 type UninstallSuccess = { ok: true; detail: 'removed' | 'updated' | 'unavailable' };
 type UninstallResult = UninstallSuccess | MutationFailure;
 type SystemPluginLoadOptions = { refresh?: boolean; silent?: boolean };
+/** ``reportError: false`` keeps the failure out of the global error toast;
+ *  the caller shows its own, more specific prompt. */
+type MutationOptions = { reportError?: boolean };
 type ListLoadResult = { ok: true; packages?: SystemPluginSummary[] } | { ok: false };
 
 // Hub preview links are short-lived presigned URLs that change on every request.
@@ -49,7 +52,7 @@ interface SystemPluginState {
   loadCatalog: (options?: SystemPluginLoadOptions) => Promise<boolean>;
   loadMine: (options?: SystemPluginLoadOptions) => Promise<boolean>;
   loadDetail: (id: string, version?: string, cacheId?: string) => Promise<boolean>;
-  install: (id: string, version?: string) => Promise<MutationResult>;
+  install: (id: string, version?: string, options?: MutationOptions) => Promise<MutationResult>;
   importPath: (path: string) => Promise<MutationResult>;
   uninstall: (id: string, version?: string, detailId?: string) => Promise<UninstallResult>;
   reload: (id: string, version?: string) => Promise<MutationResult>;
@@ -147,13 +150,17 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       };
     });
 
-  const mutate = async <T extends { ok: true }>(id: string, action: () => Promise<T>): Promise<T | MutationFailure> => {
+  const mutate = async <T extends { ok: true }>(
+    id: string,
+    action: () => Promise<T>,
+    options?: MutationOptions,
+  ): Promise<T | MutationFailure> => {
     setBusy(id, true);
     try {
       return await action();
     } catch (error) {
       const message = messageOf(error);
-      set({ error: message });
+      if (options?.reportError !== false) set({ error: message });
       return { ok: false, error: message };
     } finally {
       setBusy(id, false);
@@ -163,7 +170,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
   const mutateAndSync = (
     id: string,
     action: () => Promise<void>,
-    options?: { tolerateTransient?: boolean; confirmed?: () => void },
+    options?: { tolerateTransient?: boolean; confirmed?: () => void } & MutationOptions,
   ): Promise<MutationResult> =>
     mutate(id, async () => {
       let handled = false;
@@ -182,7 +189,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       await syncDetail(id);
       if (handled) options?.confirmed?.();
       return { ok: true };
-    });
+    }, options);
 
   return {
     catalog: [],
@@ -212,10 +219,10 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       }
     },
 
-    install: async (id, version) => {
+    install: async (id, version, options) => {
       set((state) => ({ installingIds: { ...state.installingIds, [id]: true } }));
       try {
-        return await mutateAndSync(id, () => systemPluginApi.install(id, version));
+        return await mutateAndSync(id, () => systemPluginApi.install(id, version), options);
       } finally {
         set((state) => {
           const installingIds = { ...state.installingIds };
