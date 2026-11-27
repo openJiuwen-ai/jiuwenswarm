@@ -3978,6 +3978,11 @@ async def _process_team_message_stream(
             query = f"Player input:\n{query}"
             turn = turn.with_text(query)
         group_input = None if (private_group_heartbeat or npc_team) else _group_chat_input(request, query)
+        if not private_group_heartbeat and not npc_team and isinstance(request_params, dict):
+            from jiuwenswarm.agents.harness.common.memory.plugin import persist_team_memory_selection
+
+            mode = (request.metadata or {}).get("mode") or request_params.get("mode") or "team"
+            persist_team_memory_selection(session_id, {**request_params, "mode": mode})
     except ValueError as exc:
         yield AgentResponseChunk(
             request_id=rid, channel_id=channel_id,

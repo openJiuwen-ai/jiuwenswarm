@@ -6107,6 +6107,17 @@
     "detail": {
       "breadcrumbMy": "我的扩展",
       "breadcrumbPlugin": "插件详情",
+      "memoryConnection": {
+        "edit": "编辑连接配置",
+        "hint": "填写完整的 MCP 服务 URL 和 API Key，保存后重新连接记忆服务。",
+        "url": "MCP 服务 URL",
+        "key": "API Key"
+      },
+      "memoryAccess": {
+        "managedHttp": "内置 HTTP 服务",
+        "serviceRunning": "服务运行中",
+        "serviceStopped": "服务未启动"
+      },
       "breadcrumbMcp": "连接器详情",
       "mcpDisconnectedBanner": "当前插件依赖的连接器未连接，无法正常使用",
       "mcpDisconnectedBannerSelf": "尚未连接，连接后即可使用",

@@ -6110,6 +6110,17 @@
     "detail": {
       "breadcrumbMy": "My Extensions",
       "breadcrumbPlugin": "Plugin details",
+      "memoryConnection": {
+        "edit": "Edit connection settings",
+        "hint": "Enter the full MCP service URL and API key, then save to reconnect to the memory service.",
+        "url": "MCP service URL",
+        "key": "API key"
+      },
+      "memoryAccess": {
+        "managedHttp": "Built-in HTTP service",
+        "serviceRunning": "Service running",
+        "serviceStopped": "Service not running"
+      },
       "breadcrumbMcp": "Connector details",
       "mcpDisconnectedBanner": "This plugin's connector isn't connected, so it can't be used normally",
       "mcpDisconnectedBannerSelf": "Not connected yet. Connect to start using it",

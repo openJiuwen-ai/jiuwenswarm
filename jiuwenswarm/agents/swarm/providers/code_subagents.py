@@ -117,7 +117,11 @@ def build_code_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext) -> 
         logger.warning("[swarm.code_agent] skipped: no parent model on build context")
         return None
     rails = None
-    coding_memory_rail = ctx.extras.get(CODING_MEMORY_EXTRAS_KEY)
+    from jiuwenswarm.agents.swarm.providers.team_memory import TEAM_MEMORY_MOUNT_EXTRAS_KEY
+
+    coding_memory_rail = ctx.extras.get(TEAM_MEMORY_MOUNT_EXTRAS_KEY)
+    if coding_memory_rail is None:
+        coding_memory_rail = ctx.extras.get(CODING_MEMORY_EXTRAS_KEY)
     if coding_memory_rail is not None:
         # SysOperationRail is code_agent's default rail; passing rails overrides
         # the defaults, so it must be included explicitly alongside the shared
