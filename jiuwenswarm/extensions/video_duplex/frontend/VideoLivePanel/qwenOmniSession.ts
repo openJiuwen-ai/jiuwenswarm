@@ -2,6 +2,7 @@ import { duplexErrorDetail } from '../duplexErrorMessage';
 import { DEFAULT_RESULT_SPEECH, RealtimeProtocol } from './realtimeProtocol.js';
 import {
   APPROVAL_SOURCES,
+  type ApprovalInteraction,
   approvalCardHeader,
   pendingApprovalInstructions,
   pendingCardTurnNotice,
@@ -159,7 +160,7 @@ export class RealtimeDuplexSession {
   private cancelSocketStartup: (() => void) | null = null;
   private responseId: string | null = null;
   private pendingOperations: Array<{ callId: string; output: unknown; callEpoch: number | null }> = [];
-  private pendingQuestions: Array<{ jobId: string; interaction: unknown }> = [];
+  private pendingQuestions: Array<{ jobId: string; interaction: ApprovalInteraction }> = [];
   // Open approval cards (job:interaction -> header), kept in the session instructions.
   // Card identity and option labels, so the model can answer by voice in one call.
   private pendingApprovals = new Map<string, Record<string, unknown>>();
@@ -413,8 +414,7 @@ export class RealtimeDuplexSession {
     this.sessionReady = false;
     this.transcriptPending = false;
     this.pendingTranscriptText = [];
-    this.notificationSpeechText = null;
-    this.notificationSpeechResponseId = null;
+    this.clearNotificationSpeech();
     this.responseActive = false;
     this.pendingResponseInterrupt = false;
     this.providerSpeechActive = false;
@@ -511,10 +511,7 @@ export class RealtimeDuplexSession {
 
   enqueueQuestion(
     jobId: string,
-    interaction: {
-      id?: string; request_id: string; state: string; source?: string;
-      questions?: Array<{ header?: string; question?: string; options?: Array<{ label?: string }> }>;
-    },
+    interaction: ApprovalInteraction,
   ): void {
     const interactionId = interaction.id || interaction.request_id;
     if (interaction.state !== 'pending') {
@@ -1134,18 +1131,19 @@ export class RealtimeDuplexSession {
         }
       }
       this.responseActive = true;
-      if (this.protocol.directSpeech && this.notificationSpeechText !== null) {
-        this.notificationSpeechResponseId = this.responseId;
-        this.finishAssistantText(this.notificationSpeechText, this.responseId);
-        this.notificationSpeechText = null;
-      }
       if (this.pendingResponseInterrupt) {
         this.pendingResponseInterrupt = false;
         this.speechReplyPendingAt = null;
         this.speechReplyId = null;
         this.interruptedResponseIds.add(this.responseId);
+        this.clearNotificationSpeech();
         this.send(this.protocol.cancel());
         return;
+      }
+      if (this.protocol.directSpeech && this.notificationSpeechText !== null) {
+        this.notificationSpeechResponseId = this.responseId;
+        this.finishAssistantText(this.notificationSpeechText, this.responseId);
+        this.notificationSpeechText = null;
       }
       this.speechReplyId = this.speechReplyPendingAt !== null ? this.responseId : null;
       if (this.staleReply === 'pending') {
@@ -1175,7 +1173,7 @@ export class RealtimeDuplexSession {
       const directSpeechDone = this.protocol.directSpeech && type === 'response.output_audio.done'
           && this.notificationSpeechResponseId === outputResponseId;
       if (directSpeechDone) {
-        this.notificationSpeechResponseId = null;
+        this.clearNotificationSpeech();
         this.responseActive = false;
       }
       const affectsActive = !eventResponseId || eventResponseId === this.responseId || this.notificationConflictWaiting;
@@ -1184,6 +1182,7 @@ export class RealtimeDuplexSession {
         this.callbacks.onError(duplexErrorDetail(details?.error || details || 'Realtime 模型响应失败，服务端未提供具体原因', { stage: type, response_id: eventResponseId }));
       }
       if (type === 'response.done' && affectsActive) {
+        this.clearNotificationSpeech();
         this.responseActive = false;
         this.pendingResponseInterrupt = false;
         this.notificationConflictWaiting = false;
@@ -1245,6 +1244,7 @@ export class RealtimeDuplexSession {
       const imageAppendError = /^Error append image before append audio\.?$/i.test(message);
       const supersededResponse = message === 'Response request cancelled by new input';
       if (!imageAppendError && !supersededResponse && !message.includes('Conversation already has an active response')) {
+        if (!eventResponseId || eventResponseId === this.responseId) this.clearNotificationSpeech();
         this.releaseResponseOutput(outputResponseId, 'failed');
       }
       const media = this.protocol.media.snapshot();
@@ -1282,6 +1282,7 @@ export class RealtimeDuplexSession {
         return;
       }
       if (supersededResponse) {
+        if (!eventResponseId || eventResponseId === this.responseId) this.clearNotificationSpeech();
         // Qwen discarded the pending response when the next spoken input arrived.
         this.pendingResponseInterrupt = false;
         if (!this.responseId) this.responseActive = false;
@@ -1291,7 +1292,13 @@ export class RealtimeDuplexSession {
     }
   }
 
+  private clearNotificationSpeech(): void {
+    this.notificationSpeechText = null;
+    this.notificationSpeechResponseId = null;
+  }
+
   private clearPlayback(): void {
+    this.clearNotificationSpeech();
     this.playbackGeneration += 1;
     this.playbackOperation = Promise.resolve();
     this.queuedDrainResponseId = null;

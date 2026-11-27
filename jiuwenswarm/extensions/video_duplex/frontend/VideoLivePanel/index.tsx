@@ -700,7 +700,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
 
   const startCamera = async (): Promise<boolean> => {
     if (duplexRef.current?.supportsImageInput === false) {
-      rejectImageSharing(t('videoLive.screenCapture.imagePreviouslyRejected'));
+      screenFallbackNoticeRef.current = t('videoLive.screenCapture.imagePreviouslyRejected');
+      if (allowUnsupported) return 'unsupported';
+      rejectImageSharing(screenFallbackNoticeRef.current);
       return false;
     }
     resetSource();

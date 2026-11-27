@@ -2169,3 +2169,35 @@ test('Doubao tool-only output begins the shared response before forwarding its f
   assert.equal(functionCalls.length,1);
   assert.equal(functionCalls[0].callId,'voice-call');
 });
+
+for (const ack of ['session.created', 'session.updated']) {
+  test(`Qwen without restore accepts ${ack} and releases a queued result`, async () => {
+    const {session, socket, opening, event} = contextSocket({restoreInstructions: ''});
+    await opening;
+    session.enqueueToolResult({jobId: 'ready-result', question: 'result', brief: realtimeBrief('done')});
+    assert.equal(session.sessionReady, false);
+    assert.equal(socket.sent.some(e => e.type === 'response.create'), false);
+    event({type: ack});
+    assert.equal(session.sessionReady, true);
+    assert.equal(socket.sent.filter(e => e.type === 'response.create').length, 1);
+  });
+}
+
+for (const ending of ['response.done', 'error', 'response.cancelled', 'interrupt', 'stop']) {
+  test(`Doubao ${ending} discards pending notice text before the next response`, () => {
+    const {session, assistantTexts} = createSession(null, {}, {provider: 'doubao'});
+    session.requestResponse(false, 'old notice');
+    if (ending === 'interrupt') session.interruptResponse('new-input', 100, 1000, 80);
+    else if (ending === 'stop') {
+      const socket = session.socket;
+      socket.close = () => {};
+      session.stop();
+      socket.onmessage({data: JSON.stringify({type: 'session.closed'})});
+    }
+    else session.handleEvent({type: ending, error: {message: 'speech rejected'}});
+    assert.equal(session.notificationSpeechText, null);
+    assert.equal(session.notificationSpeechResponseId, null);
+    session.handleEvent({type: 'response.created', response: {id: 'next'}});
+    assert.equal(assistantTexts.some(item => item.text === 'old notice'), false);
+  });
+}

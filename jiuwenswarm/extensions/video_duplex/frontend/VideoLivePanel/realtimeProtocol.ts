@@ -58,7 +58,8 @@ export class RealtimeProtocol {
 
   waitForReady(restore: boolean): boolean { return this.seed || restore; }
   readyAck(type: string, restore: boolean): boolean {
-    return type === (this.seed || !restore ? 'session.created' : 'session.updated');
+    if (this.seed) return type === 'session.created';
+    return type === 'session.updated' || (!restore && type === 'session.created');
   }
 
   normalize(event: Record<string, unknown>, responseId: string | null): Array<Record<string, unknown>> {
