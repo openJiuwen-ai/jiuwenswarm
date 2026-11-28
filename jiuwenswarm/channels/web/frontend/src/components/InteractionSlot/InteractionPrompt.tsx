@@ -12,6 +12,7 @@ import remarkGfm from 'remark-gfm';
 import { FileText, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { useChatStore } from '../../stores';
 import type { AskUserQuestionPayload, Message, Question, UserAnswer } from '../../types';
+import { ASK_USER_CANCELLED, ASK_USER_SKIPPED } from '../../types/askUserDisposition';
 import { buildQaSummaryContent, type QaSummaryData, type QaSummaryItem } from './qaSummary';
 import { isSkillPackagePrompt } from './promptRouting';
 
@@ -22,17 +23,9 @@ const CUSTOM_OPTION_LABEL = 'Other';
 const MAX_PAGES = 4;
 
 /**
- * 「跳过」/「取消」时回传给后端的标记文本。
- *
- * 协议里没有独立于 options 之外的「跳过」/「取消」信号——ask_user 的结构化问答
- * 唯一的输出通道就是 selected_options / custom_input 拼成的文本，最终由 LLM
- * 读文本自行判断语义（见 jiuwenswarm/agents/harness/common/rails/ask_user_rail.py
- * StructuredAskUserRail.resolve_interrupt）。这里比照后端既有的同类标记文本
- * （如 interface.py 里硬编码的「用户拒绝」「用户希望继续规划」）不做 i18n，
- * 因为它是喂给 LLM 的内部信号而非界面文案。
+ * Skip/Cancel 协议：disposition + 裸哨兵进 custom_input（语言无关）。
+ * 展示文案只用 t('interactionPrompt.skippedAnswer'|'cancelledAnswer'|skippedSummary)。
  */
-const SKIPPED_ANSWER_TEXT = '用户已跳过此题，未选择任何选项。';
-const CANCELLED_ANSWER_TEXT = '用户已取消本次问答，未作答。';
 
 interface InteractionPromptProps {
   pending: AskUserQuestionPayload;
@@ -53,8 +46,8 @@ interface PageState {
   /** 单选场景下是否选中「自定义」项 */
   customActive: boolean;
   /**
-   * 该页是否因「点击跳过按钮且当前无任何选择/输入」而被显式标记为跳过。
-   * 仅用于 answerFor 判断是否要用 SKIPPED_ANSWER_TEXT 替代「默认选第一项」的兜底；
+   * 该页是否因「点击跳过按钮」而被显式标记为跳过。
+   * answerFor 用 disposition+哨兵替代「默认选第一项」兜底，不写本地化 custom_input。
    * 一旦用户在该页重新做出任何选择/输入，会被清除。
    */
   skippedNoSelection?: boolean;
@@ -178,7 +171,12 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
       // 该页是被「跳过」按钮显式标记为「无选择」的：如实告知后端「已跳过」，
       // 不再套用下面「默认选第一项」的兜底（否则会把跳过误传成某个具体选项）。
       if (s.skippedNoSelection && s.selected.length === 0 && !customText) {
-        return { question: q?.question, selected_options: [], custom_input: SKIPPED_ANSWER_TEXT };
+        return {
+          question: q?.question,
+          selected_options: [],
+          custom_input: ASK_USER_SKIPPED,
+          disposition: 'skipped',
+        };
       }
       // Other 已激活但未输入：不得回落成第一个普通选项（#2330）。
       // 已选中预定义选项时优先使用 selected_options，不能被残留的 customActive 抢走。
@@ -203,11 +201,19 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
   );
 
   const buildAnswers = useCallback(
-    (overrides?: Record<number, PageState>, forcedTextByIdx?: Record<number, string>): UserAnswer[] =>
+    (
+      overrides?: Record<number, PageState>,
+      forcedByIdx?: Record<number, Pick<UserAnswer, 'custom_input' | 'disposition'>>,
+    ): UserAnswer[] =>
       questions.map((q, idx) => {
-        const forced = forcedTextByIdx?.[idx];
+        const forced = forcedByIdx?.[idx];
         if (forced !== undefined) {
-          return { question: q.question, selected_options: [], custom_input: forced };
+          return {
+            question: q.question,
+            selected_options: [],
+            custom_input: forced.custom_input,
+            disposition: forced.disposition,
+          };
         }
         return answerFor(idx, overrides);
       }),
@@ -239,7 +245,11 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
   }, [questions, states, t]);
 
   const submit = useCallback(
-    (withEcho: boolean, overrides?: Record<number, PageState>, forcedTextByIdx?: Record<number, string>) => {
+    (
+      withEcho: boolean,
+      overrides?: Record<number, PageState>,
+      forcedByIdx?: Record<number, Pick<UserAnswer, 'custom_input' | 'disposition'>>,
+    ) => {
       if (submitting) return;
       setSubmitting(true);
       const nextStates = overrides ?? statesRef.current;
@@ -257,7 +267,7 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
       }
       void onSubmit(
         pending.request_id,
-        buildAnswers(nextStates, forcedTextByIdx),
+        buildAnswers(nextStates, forcedByIdx),
         pending.source,
       ).finally(() => setSubmitting(false));
     },
@@ -283,10 +293,7 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
   const handleSkip = useCallback(() => {
     // 跳过：无论当前页此前是否已经选中过某个选项/填过自定义输入，点击"跳过"
     // 都必须视为"这道题被跳过了"，绝不能把之前的选择原样带出去（bug011）。
-    // 显式标记为"已跳过"，后续 answerFor/buildSummary 会用 SKIPPED_ANSWER_TEXT
-    // 如实告知后端，而不是套用"默认选第一项"的兜底逻辑——这一点是本次修复的核心，
-    // 务必确保 skippedNoSelection 分支在 answerFor 里排在"默认选第一项"兜底之前
-    // （见 answerFor 实现），不会被兜底逻辑抢先命中。
+    // 显式标记 skippedNoSelection；answerFor 发 disposition+裸哨兵，不写本地化句。
     // patch() 触发的 setStates 是异步的，若末页直接 submit 会读到旧值，
     // 因此显式构造覆盖态传给 submit，避免依赖尚未生效的 state。
     const skippedState: PageState = { ...emptyPage(), skippedNoSelection: true };
@@ -297,13 +304,15 @@ export function InteractionPrompt({ pending, onSubmit, echoAnswer = true, varian
   }, [states, page, patch, isLast, submit, goNextPage]);
 
   const handleCancel = useCallback(() => {
-    // 取消整轮：不管当前页/其它页有没有选择、选了什么，统一对每道题回传明确的
-    // "已取消"标记，避免后端/LLM 把取消误当成某个具体选项的选择；不回显到聊天记录。
-    const forcedTextByIdx: Record<number, string> = {};
+    // 取消整轮：每题 disposition+裸哨兵；不回显到聊天记录。
+    const forcedByIdx: Record<number, Pick<UserAnswer, 'custom_input' | 'disposition'>> = {};
     questions.forEach((_, idx) => {
-      forcedTextByIdx[idx] = CANCELLED_ANSWER_TEXT;
+      forcedByIdx[idx] = {
+        custom_input: ASK_USER_CANCELLED,
+        disposition: 'cancelled',
+      };
     });
-    submit(false, undefined, forcedTextByIdx);
+    submit(false, undefined, forcedByIdx);
   }, [submit, questions]);
 
   const submitSkillPackageAction = useCallback(

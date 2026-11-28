@@ -219,6 +219,12 @@ export interface UserAnswer {
   question?: string;
   selected_options: string[];
   custom_input?: string;
+  /**
+   * Skip/Cancel semantics for ask_user. Language-agnostic; pair with bare
+   * sentinel in custom_input ([ASK_USER_SKIPPED] / [ASK_USER_CANCELLED]).
+   * Ordinary answers omit this field.
+   */
+  disposition?: 'skipped' | 'cancelled';
   /** @deprecated Not recommended for new identity logic; echo until alias retirement. */
   card_id?: string;
 }

@@ -22,6 +22,7 @@ import {
 import { AutoReviewerDetails } from './AutoReviewerStatus';
 import { McpAppView } from './McpAppView';
 import { isSensitiveQuestion } from '../InteractionSlot/qaSummary';
+import { remapAskUserDispositionResult } from '../../types/askUserDisposition';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
@@ -191,7 +192,14 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
     (typeof toolCall.arguments.query === 'string' && isSensitiveQuestion(toolCall.arguments.query)) ||
     questions.some((question) => typeof question?.question === 'string' && isSensitiveQuestion(question.question))
   );
-  const displayedResult = useAnswerSummary ? t('chatUi.toolResult.answersInSummary') : result?.result || '';
+  const rawResult = result?.result || '';
+  const remappedAskUserResult =
+    toolCall.name === 'ask_user' && rawResult
+      ? remapAskUserDispositionResult(rawResult, t)
+      : rawResult;
+  const displayedResult = useAnswerSummary
+    ? t('chatUi.toolResult.answersInSummary')
+    : remappedAskUserResult;
   const hasArguments = Object.keys(toolCall.arguments).length > 0;
   const toolNameLabel = toolCall.name?.trim() || result?.toolName || 'tool';
   const resultWordCount = isSymphonyCommandTool(toolCall.name) && result

@@ -6066,7 +6066,9 @@
     "confirm": "确定",
     "customOption": "自定义",
     "customPlaceholder": "没有合适的选项？输入您的答案...",
-    "skippedSummary": "已跳过"
+    "skippedSummary": "已跳过",
+    "skippedAnswer": "用户已跳过此题，未选择任何选项。",
+    "cancelledAnswer": "用户已取消本次问答，未作答。"
   },
   "skillPackagePrompt": {
     "creating": "正在创建…",

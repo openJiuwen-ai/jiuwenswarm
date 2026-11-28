@@ -57,6 +57,10 @@ import {
   ChatInputProvenance,
 } from '../types';
 import {
+  isAskUserSkipOrCancelDisposition,
+  isAskUserSkipOrCancelText,
+} from '../types/askUserDisposition';
+import {
   ensureSessionRuntimes,
   useChatStore,
   useTodoStore,
@@ -2990,9 +2994,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             answers[0]?.custom_input?.trim()
             || answers[0]?.selected_options.join(', ').trim()
             || '';
-          // 取消/跳过：发显式 skip，后端立即把该轮按"未回答"跳过，
-          // 而不是让问题悬着等人超时；然后再关闭对话框。
-          if (!answerText || answerText.includes('已跳过') || answerText.includes('已取消')) {
+          // 取消/跳过：发显式 skip。与 answerText 同口径，只看 answers[0]
+          // （多题部分跳过不得把整轮放大成 skip）。
+          const isSkipOrCancelAnswer =
+            isAskUserSkipOrCancelDisposition(answers[0]?.disposition)
+            || isAskUserSkipOrCancelText(answerText);
+          if (!answerText || isSkipOrCancelAnswer) {
             try {
               await request('chat.swarmflow_reply', {
                 session_id: sessionId,

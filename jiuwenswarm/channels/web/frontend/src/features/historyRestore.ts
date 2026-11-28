@@ -15,6 +15,10 @@ import {
 } from '../utils/crossSessionMessage';
 import { isA2UIClientEventContent } from './a2ui/a2uiContent';
 import { buildQaSummaryContent } from '../components/InteractionSlot/qaSummary';
+import {
+  askUserDispositionDisplayKey,
+  remapAskUserDispositionLine,
+} from '../types/askUserDisposition';
 import i18n from '../i18n';
 import { normalizeToolCallPayload, normalizeToolResultPayload } from './tool-events/toolEventNormalizer';
 import {
@@ -1781,7 +1785,7 @@ function buildAnsweredQaSummaryMessage(
   const items = (pending.questions ?? []).map((q) => {
     const ans = answerByQuestion.get(q.question);
     const answerTexts: string[] = [];
-    const answerSources: Array<'option' | 'input'> = [];
+    const answerSources: Array<'option' | 'input' | 'skipped'> = [];
     if (ans) {
       for (const opt of ans.selected_options ?? []) {
         if (opt.trim()) {
@@ -1790,8 +1794,15 @@ function buildAnsweredQaSummaryMessage(
         }
       }
       if (ans.custom_input && ans.custom_input.trim()) {
-        answerTexts.push(ans.custom_input);
-        answerSources.push('input');
+        const custom = ans.custom_input;
+        answerTexts.push(
+          remapAskUserDispositionLine(custom, (key) => i18n.t(key)),
+        );
+        const dispositionSource =
+          ans.disposition === 'skipped'
+          || ans.disposition === 'cancelled'
+          || askUserDispositionDisplayKey(custom) != null;
+        answerSources.push(dispositionSource ? 'skipped' : 'input');
       }
     }
     const header = q.header && q.header.trim() ? q.header : undefined;

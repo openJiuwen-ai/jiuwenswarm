@@ -85,8 +85,8 @@ These three user actions all mean "no modification requested". Treat them identi
 |---|---|---|
 | Selects "无需修改，进入下一阶段" | the option label | Proceed to [R4] |
 | Selects "Other" and types the modification request | the typed text | Apply the revision, then follow the User Gate below |
-| Clicks 「跳过」 (skip) | `用户已跳过此题，未选择任何选项。` | Proceed to [R4] |
-| Clicks 「取消」 (cancel) | `用户已取消本次问答，未作答。` | Proceed to [R4] |
+| Clicks 「跳过」 (skip) | `[ASK_USER_SKIPPED]` (legacy: `用户已跳过此题，未选择任何选项。` / `Skipped. No option selected.`) | Proceed to [R4] |
+| Clicks 「取消」 (cancel) | `[ASK_USER_CANCELLED]` (legacy: `用户已取消本次问答，未作答。` / `Cancelled. No answer provided.`) | Proceed to [R4] |
 
 - NEVER call `ask_user` again after an empty submission, a skip or a cancel: re-asking after an empty submission stalls the flow — the user has already signalled "no modifications".
 - Treat the answer as modification feedback ONLY when the user picked "需要修改（请补充具体意见）" or typed a request into the "Other" box. If they picked the modification option without any detail, ask once for the details; if that follow-up comes back empty, skipped or cancelled, treat it as no modification and go to [R4].
