@@ -69,11 +69,35 @@ export async function waitForClientContext(): Promise<boolean> {
   });
 }
 
-function reportFailure(payload: SystemPluginReportPayload | null | undefined): string | null {
-  if (!payload || !Array.isArray(payload.reports)) return 'INVALID_MANAGEMENT_RESPONSE';
+function reportFailure(
+  payload: SystemPluginReportPayload | null | undefined,
+): { message: string; code?: string } | null {
+  if (!payload || !Array.isArray(payload.reports)) {
+    return { message: 'INVALID_MANAGEMENT_RESPONSE' };
+  }
   const failed = (payload.reports ?? []).find((report) => report.status !== 'SUCCESS');
   if (!failed) return null;
-  return failed.error?.message ?? failed.error?.code ?? 'INSTALL_FAILED';
+  return {
+    message: failed.error?.message ?? failed.error?.code ?? 'INSTALL_FAILED',
+    code: failed.error?.code,
+  };
+}
+
+/** Report codes the UI maps to its own copy instead of showing the raw message. */
+export const EXTENSION_PACKAGE_BUSY = 'EXTENSION_PACKAGE_BUSY';
+
+function failureError(failure: { message: string; code?: string }): Error {
+  const error = new Error(failure.message);
+  if (failure.code) Object.assign(error, { code: failure.code });
+  return error;
+}
+
+function throwReportFailure(
+  payload: SystemPluginReportPayload | null | undefined,
+  fallback: string,
+): void {
+  const failure = payload ? reportFailure(payload) : { message: fallback };
+  if (failure) throw failureError(failure);
 }
 
 export const systemPluginApi = {
@@ -122,8 +146,7 @@ export const systemPluginApi = {
       },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
-    const failure = result ? reportFailure(result) : 'INSTALL_FAILED';
-    if (failure) throw new Error(failure);
+    throwReportFailure(result, 'INSTALL_FAILED');
   },
 
   async importPath(path: string): Promise<void> {
@@ -132,8 +155,7 @@ export const systemPluginApi = {
       { path },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
-    const failure = result ? reportFailure(result) : 'IMPORT_FAILED';
-    if (failure) throw new Error(failure);
+    throwReportFailure(result, 'IMPORT_FAILED');
   },
 
   async uninstall(packageId: string, version?: string): Promise<void> {
@@ -142,8 +164,7 @@ export const systemPluginApi = {
       { package_id: packageId, ...(version ? { version } : {}) },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
-    const failure = result ? reportFailure(result) : 'UNINSTALL_FAILED';
-    if (failure) throw new Error(failure);
+    throwReportFailure(result, 'UNINSTALL_FAILED');
   },
 
   async reload(packageId: string, version?: string): Promise<void> {
@@ -152,8 +173,7 @@ export const systemPluginApi = {
       { package_id: packageId, ...(version ? { version } : {}) },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
-    const failure = result ? reportFailure(result) : 'RELOAD_FAILED';
-    if (failure) throw new Error(failure);
+    throwReportFailure(result, 'RELOAD_FAILED');
   },
 
   async setEnabled(packageId: string, enable: boolean, version?: string): Promise<void> {
@@ -162,7 +182,6 @@ export const systemPluginApi = {
       { package_id: packageId, enable, ...(version ? { version } : {}) },
       { timeoutMs: INSTALL_TIMEOUT_MS },
     )) as SystemPluginReportPayload | null;
-    const failure = result ? reportFailure(result) : 'SET_ENABLED_FAILED';
-    if (failure) throw new Error(failure);
+    throwReportFailure(result, 'SET_ENABLED_FAILED');
   },
 };

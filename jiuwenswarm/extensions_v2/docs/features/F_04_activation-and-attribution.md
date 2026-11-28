@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-04 包归属与 Handler 发布 |
 | 所属模块 | agent-core `openjiuwen/core/extension/runtime.py`、`management/handlers.py` |
 | 设计依据 | [F_02 控制面复用](F_02_control-plane.md)、agent-core [包加载规约](../../../../../agent-core/openjiuwen/core/extension/docs/specs/S_01_package-loading.md) |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-11-28 |
 | 方案状态 | 已实现，单元验证通过；在途计数存在对端缺口 |
 
 ## 1. 问题与目标
@@ -134,6 +134,6 @@ JiuwenSwarm 的 WebUI 事件由宿主注册为 CORE，`ops.build` 的 BUILTIN Ha
 
 ## 9. 风险与遗留
 
-- **在途计数未接线（agent-core）**：`Runtime.begin_calls/end_calls` 已定义，但 EventBus 调用路径尚未调用它们，`inflight` 恒为 0，`EXTENSION_PACKAGE_BUSY` 在真实链路不可达。宿主不自研计数，避免与对端接口重复；对端接入后门面与测试无需改签名。
+- **在途计数已接入（agent-core）**：`Runtime._tracked_handler` 为每次 handler 调用成对调用 `begin_calls/end_calls`，嵌套的 state/store ops（`state_call`/`store_call`）同样成对计数，全部位于 `try/finally`；宿主 `SessionStartGate` 在 session.start 期间也成对保护。在途调用存在时禁用/卸载返回 `EXTENSION_PACKAGE_BUSY`，拒绝时包状态不变、可重试。
 - `Runtime.unpublish` 只移除注册记录和生效记录，不释放 `sys.modules`；模块生命周期由重载时的命名隔离与进程退出兜底。
 - 撤销与登记之间的原子性受 EventBus 单次同步注册保证；跨多次注册的并发可见性由调用快照隔离。

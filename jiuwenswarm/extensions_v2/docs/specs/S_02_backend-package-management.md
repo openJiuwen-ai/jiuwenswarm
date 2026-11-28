@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | spec / S_02 |
-| 最近修订 | 2026-11-27 |
+| 最近修订 | 2026-11-28 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
 | 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md)、[F_35](../features/F_35_system-plugin-recovery.md) |
 
@@ -21,7 +21,7 @@
 | `extensions.v2.catalog` | `scope: "catalog" \| "mine"` | 列出预设包或已生效包 |
 | `extensions.v2.show` | `package_id: str`，可选 `version: str` | 返回一个包的详情投影；指定版本时优先返回该版本的 Hub 详情 |
 | `extensions.v2.install` | `paths: list[str]`，非空，每项为现有 ZIP 文件的绝对路径 | 安装 ZIP 扩展包，拒绝目录；同标识的新版本保留旧版本并切换生效，已存在的同版本（含组合包）以 FAILED Report 返回 `PACKAGE_EXISTS` |
-| `extensions.v2.install` | `package_ids: list[str]`，可选 `version: str` | 按包 ID 从本地预设或 Hub 安装；目标版本已生效时幂等，换版本时保留旧副本并切换生效 |
+| `extensions.v2.install` | `package_ids: list[str]`，可选 `version: str` | 按包 ID 从本地预设或 Hub 安装；目标版本已生效时幂等，换版本时保留旧副本并切换生效；Gateway 域包等待宿主加载结果，加载失败以 FAILED Report 返回并保持原版本生效 |
 | `extensions.v2.import` | `path: str`，现有目录或归档的绝对路径 | 按 `package.domain` 分流安装（Gateway 入口） |
 | `extensions.v2.uninstall` | `package_id: str`，可选 `version: str` | 不带 `version` 时卸载所有版本；带 `version` 时只删除该独立副本，其他版本与同名同版本的组合包成员不受影响 |
 | `extensions.v2.reload` | `package_id: str`，可选 `version: str`（仅组合包） | 从安装副本热重载，不先卸载；指定版本时只处理该版本，未生效版本为空操作；独立插件携带 `version` 返回 `INVALID_PARAMS` |
@@ -37,6 +37,8 @@ Plan 或修改安装目录的参数。
 
 选择已安装版本时，直接重新启用该版本目录，不重新导入文件。启停操作会改写 `manifest.json.enable`，
 不会因此拒绝切回旧版本。安装记录保留原内容摘要；从外部导入相同 ID、相同版本但内容不同的系统插件时，仍拒绝安装。
+禁用或卸载会等包内数据调用结束：仍有在途调用时返回 FAILED Report，`error.code` 为
+`EXTENSION_PACKAGE_BUSY`，包状态不变、可重试；界面按该 code 展示运行中任务的提示，不直接显示 Core 的英文模板。
 旧记录没有原内容摘要时，切换版本不会将安装副本当前内容记作原摘要；外部导入仍与现有安装副本比较，不能据此确认原始 ZIP 的内容。
 
 `extensions.v2.import` 面向未定域的上传入口，由 Gateway 读取包根 `manifest.json` 后分流：
@@ -180,11 +182,18 @@ Web 服务故障时，持有启动器登记的本机恢复地址的管理员可�
 | `assetId` | Hub 资源 ID；本地上传与预设为空 |
 | `installedVersion` | 当前安装版本；未安装为空 |
 | `versions` | Hub 已发布版本；本地包只有自身版本 |
+| `versionStates` | 详情投影中各已安装版本的存储状态 `{version, status, error}`；`failed` 表示该副本加载失败，界面禁用对应版本 |
 | `origin` / `source` | 安装来源，`source` 为界面使用的 `hub` / `local` 二分 |
 
 按包 ID 安装时：目标版本已生效直接返回成功；目标版本尚未安装时从 Hub 下载或使用本地副本，
 先停用当前版本再启用目标版本，旧版本文件保留在工作区。用户上传与预设包记录 `origin=user` / `origin=preset`，
 Hub 下载记录 `origin=hub` 与 `asset_id`。用户上传的包可在详情页发布，发布类型为 `system_plugin`。
+
+Gateway 域的独立包由 Gateway 进程加载，AgentServer 在界面请求（带 `extensions_v2_require_all_members`）
+下等待该副本的加载结果，最多 30 秒：加载失败返回 FAILED Report，切换前生效的版本恢复生效；
+失败报告仍向浏览器重发 `extensions.v2.installed`，让已恢复版本重新发送 `ui.ready`，界面不停在清除状态。
+没有其他已安装版本时删除失败副本与记录，避免留下无法重载的已安装插件；已有其他版本时保留失败副本并记为 `failed`。
+超时仍按 `pending` 返回，由 Gateway 的重试与后续同步收敛。
 
 ## 3. Web 命令
 
