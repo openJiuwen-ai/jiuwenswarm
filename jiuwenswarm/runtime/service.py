@@ -30,7 +30,13 @@ from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.app_role import is_app_role_team, is_npc_session
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch, client_tool_answers
-from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS, asked_interaction_ids, interaction_ids
+from jiuwenswarm.runtime.interaction import (
+    USER_INTERACTION_EVENTS,
+    asked_interaction_ids,
+    interaction_ids,
+    team_control_outcome,
+    team_control_result,
+)
 from jiuwenswarm.runtime.session import (
     RuntimeSessionCoordinator,
     RuntimeSessionState,
@@ -2059,6 +2065,7 @@ class AgentRuntime:
                         ),
                         interaction_ids=asked_interaction_ids,
                         team=team_details,
+                        control_outcome=team_control_result,
                     )
                 return await self._invoke_started(
                     request,
@@ -2717,6 +2724,7 @@ class AgentRuntime:
                         team_operation,
                         details=details,
                         interaction_ids=interaction_ids,
+                        control_outcome=team_control_outcome,
                         channel_id=request.channel_id or "default",
                     )
                 else:
