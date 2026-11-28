@@ -39,9 +39,10 @@ async def test_create_stdio_reaches_runtime_and_survives_stopped_lifecycle_resta
         restarted = await client.post("/api/v1/sandboxes/logs-create/start")
         assert restarted.status_code == 200, restarted.text
     assert runtime.create.await_count == 2
-    for key in ("stdout", "stderr"):
-        assert response.json()[key] == getattr(saved, key) == restarted.json()[key] == payload[key]
-        assert all(call.kwargs[key] == payload[key] for call in runtime.create.await_args_list)
+    for key, path in (("stdout", tmp_path / "agent.out"), ("stderr", tmp_path / "agent.err")):
+        expected = str(path)
+        assert response.json().get(key) == getattr(saved, key) == restarted.json().get(key) == expected
+        assert all(call.kwargs.get(key) == expected for call in runtime.create.await_args_list)
 
 
 @pytest.mark.parametrize("value", ["relative.out", "/tmp/nul\x00.out"])
