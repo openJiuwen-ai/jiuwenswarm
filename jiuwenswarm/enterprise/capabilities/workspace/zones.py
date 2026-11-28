@@ -33,7 +33,6 @@ _ROLE_MD_NAMES: Final[frozenset[str]] = frozenset(
         "AGENT.md",
         "SOUL.md",
         "IDENTITY.md",
-        "HEARTBEAT.md",
         "USER.md",
     }
 )
