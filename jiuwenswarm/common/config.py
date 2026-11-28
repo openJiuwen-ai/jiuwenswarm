@@ -3955,6 +3955,8 @@ def _deep_merge(
 
 
 _LEGACY_AGENT_SUBMODE_KEYS: tuple[str, ...] = ("plan", "fast", "agent.plan", "agent.fast")
+_LEGACY_SYMPHONY_SECTIONS = ("enabled", "paths", "fingerprint", "build", "evolution", "skill_retrieval")
+_LEGACY_SYMPHONY_ORCHESTRATION_FIELDS = ("mode", "top_k", "max_depth")
 
 
 def _migrate_legacy_symphony_config(
@@ -3966,6 +3968,15 @@ def _migrate_legacy_symphony_config(
     symphony = user_data.get("symphony")
     if not isinstance(symphony, dict):
         return False
+
+    # Importing Core Symphony can initialize file logging during workspace setup.
+    orchestration = symphony.get("orchestration")
+    has_legacy_orchestration = isinstance(orchestration, dict) and any(
+        key in orchestration for key in _LEGACY_SYMPHONY_ORCHESTRATION_FIELDS
+    )
+    if not has_legacy_orchestration and not any(key in symphony for key in _LEGACY_SYMPHONY_SECTIONS):
+        return False
+
     from jiuwenswarm.common.symphony_config import load_symphony_config, migrate_legacy_symphony_config
 
     converted = migrate_legacy_symphony_config(symphony, template=template_data.get("symphony"))

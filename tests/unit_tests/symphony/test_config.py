@@ -20,6 +20,7 @@ def test_product_defaults_are_explicit_and_preserve_core_defaults(monkeypatch, t
     assert [source.model_dump() for source in cfg.capability.sources] == [
         {"type": "skill", "root": str(tmp_path / "skills")},
     ]
+    assert cfg.capability.scan.max_depth == 1
     assert cfg.storage.artifact_root == str(tmp_path / "symphony" / "runtime")
     assert not cfg.retrieval.enabled and not cfg.orchestration.enabled and not cfg.orchestration.experience.enabled
     assert cfg.orchestration.min_edge_confidence == 0.5
@@ -292,7 +293,9 @@ def test_explicit_values_override_product_and_context_defaults(monkeypatch, tmp_
 @pytest.mark.parametrize("path", ["jiuwenswarm/resources/config.yaml", "deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml"])
 def test_real_templates_validate_and_keep_explicit_build_limits(path):
     data = yaml.safe_load(Path(path).read_text())
+    assert data["symphony"]["capability"]["scan"]["max_depth"] == 1
     cfg = symphony_config.load_symphony_config(data)
+    assert cfg.capability.scan.max_depth == 1
     assert cfg.orchestration.build.max_concurrency == 4
     assert cfg.orchestration.build.matching.batch_size == 16
     assert cfg.capability.fingerprint.extraction.max_concurrency == 4

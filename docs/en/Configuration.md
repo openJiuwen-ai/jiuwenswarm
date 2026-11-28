@@ -450,6 +450,7 @@ Paths below are relative to `symphony`. Main-template values are explicit settin
 
 | Setting | Default / template | Purpose |
 |---|---|---|
+| `capability.scan.max_depth` | `1` | Capability directory scan depth. Set `null` to leave depth limited only by the scan budget. |
 | `capability.fingerprint.extraction.max_concurrency` / `batch_size` | omitted `1/1`, template `4/2` | Extraction; effective concurrency is capped by graph build concurrency |
 | `orchestration.build.max_concurrency` / `matching.batch_size` | omitted `1/12`, template `4/16` | Relation matching concurrency and batch size |
 | `orchestration.min_edge_confidence` | `0.5` | Shared graph build and planning threshold |
