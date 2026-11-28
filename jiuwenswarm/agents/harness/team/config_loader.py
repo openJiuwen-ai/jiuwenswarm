@@ -122,6 +122,24 @@ def resolve_team_sqlite_db_path(config_base: dict[str, Any] | None = None) -> Pa
     return get_agent_teams_home() / conn_str
 
 
+def resolve_team_hide_dm(config_base: dict[str, Any] | None = None) -> bool:
+    """Read the plugin-query visibility policy from the selected team config.
+
+    ``hide_dm`` sits next to ``storage`` in the active team template (a
+    ``modes.team`` entry or the legacy ``team`` section): True hides direct
+    (non-broadcast) messages from ``ops.team`` queries, the same policy the
+    monitor surface applies for group chats. The default False keeps direct
+    messages visible to plugins (the previous hard-coded behavior).
+    """
+    if config_base is None:
+        config_base = get_config()
+
+    team_raw = _resolve_team_raw_for_storage(config_base)
+    if not isinstance(team_raw, dict):
+        return False
+    return bool(team_raw.get("hide_dm", False))
+
+
 def resolve_team_runtime_database_config(config_base: dict[str, Any] | None = None):
     """Database handle for team runtime reads outside a live TeamAgent.
 
