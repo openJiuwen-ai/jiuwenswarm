@@ -385,9 +385,11 @@ def _build_channel_context(
 
 
 # 请求入口捕获的 W3C trace 头（traceparent/tracestate），请求生命周期内有效。
+# default 用 None 而非共享可变 dict：ContextVar 的 default 会被所有 task 读到，
+# 可变共享对象一旦被原地修改会全局污染；读取方统一 ``or {}`` 判空。
 _W3C_PROPAGATION_KEYS = ("traceparent", "tracestate")
-_W3C_HEADER_CONTEXT: ContextVar[dict[str, str]] = ContextVar(
-    "jiuwenswarm_http_w3c_headers", default={}
+_W3C_HEADER_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "jiuwenswarm_http_w3c_headers", default=None
 )
 
 
@@ -400,7 +402,8 @@ def capture_w3c_headers(headers: Any) -> None:
             if headers.get(key)
         }
         _W3C_HEADER_CONTEXT.set(values)
-    except Exception:
+    except Exception as error:
+        logger.debug("[AgentHTTPServer] capture w3c headers failed: %s", error)
         return
 
 

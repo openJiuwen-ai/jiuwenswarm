@@ -591,8 +591,8 @@ def request_context(request: Any) -> RequestContext:
         from jiuwenswarm.server.agent_http_server import capture_w3c_headers
 
         capture_w3c_headers(headers)
-    except Exception:
-        pass
+    except Exception as error:
+        logger.debug("[AgentHTTPRoutes] capture w3c headers failed: %s", error)
     request_id = headers.get("x-request-id") or new_request_id()
     channel_id = headers.get("x-channel-id") or "web"
     session_id = (request.path_params or {}).get("session_id") or headers.get("x-session-id")
