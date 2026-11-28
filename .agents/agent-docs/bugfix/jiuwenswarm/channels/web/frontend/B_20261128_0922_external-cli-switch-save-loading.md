@@ -53,13 +53,28 @@ develop/【通用】前端，录屏佐证）。功能正确性不受影响：保
 **设计决策（两层）：**
 
 - 第一层（通用组件契约）：`Switch` 组件新增可选 `loading` prop——轨道中央渲染
-  `Loader2` spinner（复用滑块反色变量 `--color-text-inverse`）、隐藏滑块
-  （`ui-switch--loading > span { opacity: 0 }`，并为滑块补 opacity 过渡）、
-  `aria-busy` 标记、`loading` 隐含 `disabled` 锁定交互。不传时行为与原实现
-  完全一致，既有使用方（此前仅 ExternalCliAgentsSection 使用）零影响。
+  `Loader2` spinner、隐藏滑块（`ui-switch--loading > span { opacity: 0 }`，并为
+  滑块补 opacity 过渡）、`aria-busy` 标记、`loading` 隐含 `disabled` 锁定交互。
+  spinner 颜色按轨道状态分档：OFF 灰轨道（启用主场景）用深色
+  `--color-text-strong`，checked 蓝轨道用 `--color-text-inverse`，并以
+  `.ui-switch--loading:disabled { opacity: 1 }` 抵消 disabled 的整块减淡。不传
+  loading 时行为与原实现完全一致，既有使用方（此前仅 ExternalCliAgentsSection
+  使用）零影响。
 - 第二层（卡片接线）：`ExternalCliAgentsSection` 的内置 agent 卡片开关传
   `loading={committing[cliAgent]}`，保存往返（含启用前的探测校验）期间原地
   转圈，落定后 spinner 退场、开关按持久化结果变蓝或回 OFF。
+
+> 检视回归（atomgit-bot Medium，PR !11141 第二轮）：初版 spinner 恒用
+> `--color-text-inverse`（白），且 loading 隐含 disabled 触发既有
+> `.ui-switch:disabled { opacity: 0.56 }` 整块减淡——启用场景（OFF
+> `--color-switch-track-off` #c2c2c2 轨道，即 #6823 的原始场景）白 spinner
+> 合成到白卡片上对比度 ~1.3:1，近乎不可见，处理中信号只在"关闭已启用 agent"
+> 的蓝轨道场景成立，修复目标在主场景落空。修复 = spinner 基础色改
+> `--color-text-strong`（#18181b，OFF 轨道对比度 ~10:1）、checked 态覆盖为
+> inverse、`loading:disabled` 抵消减淡（与 `:disabled` 特异性同为 (0,2,0)，
+> 靠源码顺序取胜）；测试以 Switch.css 源码正则钉住颜色分档与规则顺序——
+> JSDOM 环境 esbuild 的 css loader 为 empty，真实可见性无法在 DOM 层断言，
+> 只能源码钉住。
 
 **备选与拒绝：**
 
@@ -101,15 +116,17 @@ spinner 有意跟随卡片级 commit——开关转圈本身就是保存在途�
   `disabled` 在位；resolve 后四者全部退场、开关恢复可点。
 - 断言调整：上述全局负断言 → 开关正向断言（见前节），#6620 的安装按钮正向断言
   保持不变。
-- `npm run test:external-cli-install-state`：42/42 通过（含既有 41 用例零回归，
-  旧负断言所在用例随语义更新通过）。
+- `npm run test:external-cli-install-state`：42/42 通过（含既有 41 用例零回归；
+  loading 用例内含 Switch.css 源码断言，钉住 spinner 颜色分档与
+  `.ui-switch--loading:disabled` 抵消规则的源码顺序）。
 - `npx tsc --noEmit`：0 错误。
 - 探索期教训（未进入终版）：乐观方案期间曾发现，探测 stub 一律返回 missing 会
   因 !10678 的"未安装锁死"语义禁用开关，探测失败类用例必须用提交拒绝构造才能
   挂起；该坑对后续写开关相关测试有参考价值。
 - 未验证：浏览器内真实子进程探测时长的端到端体感（依赖本机 CLI 响应速度）；
-  转测时可在 0.2.x 环境复核"启用三方 agent 开关期间 spinner 在位、无长时间
-  无反馈灰窗"。
+  spinner 在 OFF 轨道上的真实可辨识度（对比度按主题 token 值推算 ~10:1，未做
+  浏览器截图验证）。转测时可在 0.2.x 环境复核"启用三方 agent 开关期间深色
+  spinner 清晰可辨、无长时间无反馈灰窗"。
 
 ## 防错模式与资料同步
 

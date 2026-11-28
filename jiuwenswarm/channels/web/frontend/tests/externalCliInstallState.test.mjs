@@ -996,6 +996,22 @@ test('the enable switch shows a loading spinner while the save is in flight (#68
     assert.ok(!settled.className.includes('ui-switch--loading'), '保存落定后 loading 类应移除');
     assert.equal(settled.querySelector('.ui-switch__spinner'), null, '保存落定后 spinner 应卸载');
     assert.equal(settled.getAttribute('aria-busy'), null);
+    // CSS 契约钉住（JSDOM 环境 esbuild 的 css loader 为 empty，真实可见性无法在
+    // DOM 层断言，只能以源码正则钉住 atomgit 检视的可见性修复）：spinner 颜色按
+    // 轨道状态分档——OFF 灰轨道用深色 text-strong（启用是主场景），checked 蓝轨道
+    // 用 inverse；loading 抵消 disabled 的整块减淡。
+    const switchCss = readFileSync(
+      new URL('../src/components/ui/Switch/Switch.css', import.meta.url),
+      'utf8',
+    );
+    assert.match(switchCss, /\.ui-switch__spinner \{[^}]*color: var\(--color-text-strong\)/);
+    assert.match(switchCss, /\.ui-switch--checked \.ui-switch__spinner \{[^}]*color: var\(--color-text-inverse\)/);
+    assert.match(switchCss, /\.ui-switch--loading:disabled \{\s*opacity: 1;\s*\}/);
+    // 抵消规则与 .ui-switch:disabled 同特异性 (0,2,0)，必须位于其后靠源码顺序取胜
+    assert.ok(
+      switchCss.indexOf('.ui-switch--loading:disabled') > switchCss.indexOf('.ui-switch:disabled'),
+      'loading:disabled 抵消规则必须在 :disabled 之后',
+    );
   } finally {
     env.cleanup();
   }
