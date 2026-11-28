@@ -649,8 +649,9 @@ export function ApprovalsPanel() {
                       <td className="px-4 py-3 text-text">
                         <button
                           type="button"
-                          className="block w-[12rem] max-w-[12rem] whitespace-nowrap text-left font-mono text-xs text-text-muted hover:text-text-strong"
-                          title={t('approvals.copyOrderNum')}
+                          className="block w-[12rem] max-w-[12rem] truncate text-left font-mono text-xs text-text-muted hover:text-text-strong"
+                          title={item.order_num}
+                          aria-label={`${t('approvals.copyOrderNum')} ${item.order_num}`}
                           onClick={() => {
                             void copyOrderNum(item.order_num);
                           }}
