@@ -104,6 +104,12 @@ class SwarmConnectorHubProvider(ConnectorSourceProvider):
         context: ProviderInvocationContext,
     ) -> ConnectorDetail:
         del context
+        if ConnectorDetail is None:
+            # SPI v2 符号缺失时的显式降级：详情能力不可用，而不是在构造处抛
+            # ``'NoneType' object is not callable``（JW-68）。
+            raise RuntimeError(
+                "connector detail is unavailable: installed agent-gateway lacks SPI v2 symbols"
+            )
         if connector_ref.source_id != self.source_id:
             raise ValueError(
                 f"source_id mismatch: expected {self.source_id}, got {connector_ref.source_id}"
