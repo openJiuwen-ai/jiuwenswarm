@@ -427,7 +427,7 @@ class RoundTerminalArbiter:
                 ProposalSource.DEATH_PROBE,
                 ProposalSource.STALL_WATCHDOG,
                 ProposalSource.PROGRESS_UNAVAILABLE,
-            ):
+        ):
             # 判死类：检测层自带条件（活性基线/任务判活/kernel 活性/进度数据可用性），
             # 裁决器只收口——带 error + 级联收流
             return await self._emit_terminal(
@@ -626,12 +626,22 @@ class RoundTerminalArbiter:
             return await self._resolve_not_established(e, cascade_allowed=True)
         if settled is not True:
             return Outcome.SUPPRESSED
+        # 降级轮（典型：build_team 失败）收口后主动停运行时，并按
+        # "完成+告警"口径携带降级详情（soft=True），与
+        # _emit_settle_unknown_terminal / _resolve_not_established 对齐；
+        # 非降级轮保持旧行为。
+        degraded = self._has_session_degraded()
+        error = (
+                (self._session_degraded_detail() if degraded else None)
+                or self._ledger.unrecovered_error
+        )
+        cascade_source = "settle-degraded" if degraded else None
         return await self._emit_terminal(
-            error=self._ledger.unrecovered_error,
+            error=error,
             stats=None,
-            soft=False,
-            cascade_source=None,
-            log_reason="settle",
+            soft=degraded,
+            cascade_source=cascade_source,
+            log_reason="settle_degraded" if degraded else "settle",
         )
 
     async def _emit_settle_terminal_guarded(self, *, context: str) -> None:
@@ -645,6 +655,61 @@ class RoundTerminalArbiter:
             logger.warning(
                 "[RoundTerminalArbiter] settle terminal emit failed (%s): "
                 "session_id=%s round_id=%s",
+                context,
+                self._session_id,
+                self._round_id,
+                exc_info=True,
+            )
+
+    async def _emit_settle_unknown_terminal(self) -> str:
+        """settle 读数重试耗尽仍未知时的有界兜底终态。
+
+        ``settle`` 返回 None 表示读数不可得。若连续 ``none_max_attempts``
+        窗仍未知（典型：半建成团队 leader 成员行缺失）。
+        流仍存活时强制发一帧终态：有降级标记按"完成+告警"（soft，携带
+        降级详情），无降级按未确认末态（error）。
+        """
+        if not self._has_stream_task():
+            return Outcome.SUPPRESSED
+        if self._ledger.pending_interaction:
+            return Outcome.SUPPRESSED
+        if self._is_pause_in_progress():
+            logger.info(
+                "[RoundTerminalArbiter] settle unknown terminal skipped "
+                "(pause in progress): session_id=%s round_id=%s",
+                self._session_id,
+                self._round_id,
+            )
+            return Outcome.SUPPRESSED
+        degraded = self._has_session_degraded()
+        error = (
+                (self._session_degraded_detail() if degraded else None)
+                or self._ledger.unrecovered_error
+                or UNCONFIRMED_FINAL_STATE_TEXT
+        )
+        return await self._emit_terminal(
+            error=error,
+            stats=None,
+            soft=degraded,
+            # 降级轮同样要停运行时；非降级未知轮保持旧行为。
+            cascade_source=(
+                "settle-unknown-degraded" if degraded else None
+            ),
+            log_reason=(
+                "settle_unknown_exhausted_degraded"
+                if degraded
+                else "settle_unknown_exhausted_error"
+            ),
+        )
+
+    async def _emit_settle_unknown_terminal_guarded(self, *, context: str) -> None:
+        """后台任务专用包装：发帧异常只告警，不外抛成 never-retrieved。"""
+        try:
+            await self._emit_settle_unknown_terminal()
+        except Exception:
+            logger.warning(
+                "[RoundTerminalArbiter] settle unknown terminal emit failed "
+                "(%s): session_id=%s round_id=%s",
                 context,
                 self._session_id,
                 self._round_id,
@@ -708,11 +773,18 @@ class RoundTerminalArbiter:
                 if result is None:
                     none_attempts += 1
                     if none_attempts >= self._none_max_attempts:
-                        logger.info(
-                            "[RoundTerminalArbiter] settle terminal abandoned "
-                            "after retries: session_id=%s round_id=%s",
+                        # 读数永久未知也不能静默弃收：团队流仍活着时
+                        # 强制发一帧终态（降级→完成+告警；否则未确认末态 error）。
+                        logger.warning(
+                            "[RoundTerminalArbiter] settle unknown exhausted "
+                            "after %s windows; forcing terminal: session_id=%s "
+                            "round_id=%s",
+                            none_attempts,
                             self._session_id,
                             self._round_id,
+                        )
+                        await self._emit_settle_unknown_terminal_guarded(
+                            context="unknown exhausted"
                         )
                         return
                     continue
