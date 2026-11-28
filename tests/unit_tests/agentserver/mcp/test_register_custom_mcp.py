@@ -517,3 +517,43 @@ def test_register_custom_allows_edit_of_existing_custom_same_name(tmp_path: Path
     assert result["command"] == "new"
     rec = state_store.get_mcp_record("my-custom")
     assert rec["command"] == "new"
+
+
+def test_register_custom_rejects_overlong_name_before_path_lookup(monkeypatch) -> None:
+    """A name over the credential-safe limit must fail as bad_request before
+    _resolve_package stats the path, instead of leaking OSError [Errno 36]."""
+    _patch_state_store(monkeypatch)
+    with patch("jiuwenswarm.server.runtime.mcp.registry._resolve_package") as resolve:
+        with pytest.raises(ValueError, match="250 bytes"):
+            registry.register_custom_mcp("x" * 251, {
+                "transport": "streamable-http",
+                "url": "http://127.0.0.1:59993/mcp",
+            })
+    resolve.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["../escape", "a/b", "a\\b", "a:b", ".."])
+def test_register_custom_rejects_unsafe_path_name(name: str, monkeypatch) -> None:
+    """The name is used as a package/credential path component; separators and
+    dot segments must be rejected before any filesystem access."""
+    _patch_state_store(monkeypatch)
+    with patch("jiuwenswarm.server.runtime.mcp.registry._resolve_package") as resolve:
+        with pytest.raises(ValueError, match="invalid path characters"):
+            registry.register_custom_mcp(name, {
+                "transport": "streamable-http",
+                "url": "http://127.0.0.1:59993/mcp",
+            })
+    resolve.assert_not_called()
+
+
+def test_register_custom_accepts_credential_safe_max_name(monkeypatch) -> None:
+    """The max name plus the credential ".json" suffix must fit NAME_MAX."""
+    _patch_state_store(monkeypatch)
+    name = "a" * registry._CUSTOM_MCP_NAME_MAX_BYTES
+    assert len(f"{name}.json".encode("utf-8")) <= 255
+    with patch("jiuwenswarm.server.runtime.mcp.registry._resolve_package", return_value=None):
+        result = registry.register_custom_mcp(name, {
+            "transport": "streamable-http",
+            "url": "http://127.0.0.1:59993/mcp",
+        })
+    assert result["name"] == name
