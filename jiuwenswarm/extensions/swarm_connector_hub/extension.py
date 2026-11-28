@@ -36,8 +36,6 @@ _ENV_REF_RE = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
 _DEFAULT_TIMEOUT = 60.0
 _DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = (
     "openjiuwen-market.obs.*.myhuaweicloud.com",
-    "127.0.0.1",
-    "localhost",
 )
 _DEFAULTS: dict[str, Any] = {
     "endpoint": DEFAULT_HUB_BASE_URL,
