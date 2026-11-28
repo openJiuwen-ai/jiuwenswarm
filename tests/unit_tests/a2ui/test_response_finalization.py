@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 VALID_A2UI_RESPONSE = """<a2ui-json>
 [
   {
@@ -66,7 +65,9 @@ Email summary:
 
 @pytest.mark.asyncio
 async def test_finalize_a2ui_assistant_content_repairs_invalid_response(monkeypatch):
-    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import (
+        finalize_a2ui_assistant_content,
+    )
 
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
 
@@ -87,7 +88,9 @@ async def test_finalize_a2ui_assistant_content_repairs_invalid_response(monkeypa
 
 @pytest.mark.asyncio
 async def test_finalize_a2ui_assistant_content_repairs_parseable_invalid_response(monkeypatch):
-    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import (
+        finalize_a2ui_assistant_content,
+    )
 
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
     repair_prompts = []
@@ -163,7 +166,9 @@ async def test_finalize_a2ui_assistant_content_never_returns_empty_when_repair_u
 
     The entry must always return non-empty content so the resend path fires.
     """
-    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import (
+        finalize_a2ui_assistant_content,
+    )
 
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
 
@@ -187,7 +192,9 @@ async def test_finalize_a2ui_assistant_content_never_returns_empty_when_repair_u
 @pytest.mark.asyncio
 async def test_finalize_a2ui_assistant_content_leaves_valid_response_unchanged(monkeypatch):
     from jiuwenswarm.server.runtime.a2ui.runtime import response_finalization
-    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import (
+        finalize_a2ui_assistant_content,
+    )
 
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
 
@@ -213,7 +220,9 @@ async def test_finalize_a2ui_assistant_content_leaves_valid_response_unchanged(m
 @pytest.mark.asyncio
 async def test_finalize_a2ui_assistant_content_times_out_to_text_fallback(monkeypatch):
     from jiuwenswarm.server.runtime.a2ui.runtime import response_finalization
-    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import (
+        finalize_a2ui_assistant_content,
+    )
 
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
     monkeypatch.setattr(response_finalization, "_A2UI_FINALIZATION_TIMEOUT_SECONDS", 0.01)
@@ -238,7 +247,9 @@ async def test_finalize_a2ui_assistant_content_times_out_to_text_fallback(monkey
 
 @pytest.mark.asyncio
 async def test_finalize_a2ui_assistant_content_repairs_untagged_a2ui_like_response(monkeypatch):
-    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import (
+        finalize_a2ui_assistant_content,
+    )
 
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
     repair_prompts = []
@@ -262,7 +273,9 @@ async def test_finalize_a2ui_assistant_content_repairs_untagged_a2ui_like_respon
 
 @pytest.mark.asyncio
 async def test_finalize_a2ui_assistant_content_skips_when_disabled(monkeypatch):
-    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import (
+        finalize_a2ui_assistant_content,
+    )
 
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "false")
 
@@ -282,7 +295,9 @@ async def test_finalize_a2ui_assistant_content_skips_when_disabled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_finalize_a2ui_assistant_content_retries_without_a2ui_after_failed_repairs(monkeypatch):
-    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import (
+        finalize_a2ui_assistant_content,
+    )
 
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
     repair_prompts = []
@@ -312,7 +327,9 @@ async def test_finalize_a2ui_assistant_content_retries_without_a2ui_after_failed
 
 @pytest.mark.asyncio
 async def test_finalize_a2ui_assistant_content_returns_safe_text_when_retry_fails(monkeypatch):
-    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import finalize_a2ui_assistant_content
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import (
+        finalize_a2ui_assistant_content,
+    )
 
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
 
@@ -321,7 +338,6 @@ async def test_finalize_a2ui_assistant_content_returns_safe_text_when_retry_fail
 
     async def retry_without_a2ui_call(query: str):
         _ = query
-        return None
 
     result = await finalize_a2ui_assistant_content(
         INVALID_A2UI_RESPONSE,
@@ -336,3 +352,50 @@ async def test_finalize_a2ui_assistant_content_returns_safe_text_when_retry_fail
     assert "[A2UI content could not be rendered]" not in result
     assert "A2UI 界面生成失败" not in result
     assert result == "Here is a form."
+
+
+DOUBLE_MOUNTED_A2UI_RESPONSE = """怎么落地，你选：
+<a2ui-json>
+[
+  {"beginRendering": {"surfaceId": "fish_fix_choice", "root": "root_card"}},
+  {"surfaceUpdate": {"surfaceId": "fish_fix_choice", "components": [
+    {"id": "root_card", "component": {"Card": {"child": "main_col"}}},
+    {"id": "main_col", "component": {"Column": {"children": {"explicitList": ["g1", "opt", "go_btn"]}}}},
+    {"id": "g1", "component": {"Column": {"children": {"explicitList": ["g1_title", "opt"]}}}},
+    {"id": "g1_title", "component": {"Text": {"text": {"literalString": "选一个方案"}}}},
+    {"id": "opt", "component": {"MultipleChoice": {"selections": {"path": "/form/fix"}, "options": [
+      {"label": {"literalString": "A"}, "value": "a"}, {"label": {"literalString": "C"}, "value": "c"}
+    ], "maxAllowedSelections": 1}}},
+    {"id": "go_btn", "component": {"Button": {"child": "go_text", "action": {"name": "apply_fix"}}}},
+    {"id": "go_text", "component": {"Text": {"text": {"literalString": "按这个执行"}}}}
+  ]}}
+]
+</a2ui-json>"""
+
+
+@pytest.mark.asyncio
+async def test_finalize_a2ui_assistant_content_repairs_double_mounted_component(monkeypatch):
+    """BUG20261124415272: a multi-parent tree must not pass the fast path; it goes to repair."""
+    from jiuwenswarm.server.runtime.a2ui.runtime.response_finalization import (
+        finalize_a2ui_assistant_content,
+    )
+
+    monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
+    repair_prompts = []
+
+    async def repair_call(prompt: str):
+        repair_prompts.append(prompt)
+        return SimpleNamespace(content=VALID_A2UI_RESPONSE)
+
+    result = await finalize_a2ui_assistant_content(
+        DOUBLE_MOUNTED_A2UI_RESPONSE,
+        user_query="给我一个方案选择卡片",
+        request_id="req-double-mounted",
+        repair_call=repair_call,
+        a2ui_enabled=True,
+    )
+
+    assert result == VALID_A2UI_RESPONSE
+    assert len(repair_prompts) == 1
+    assert "single-parent" in repair_prompts[0]
+    assert "'opt'" in repair_prompts[0]

@@ -9,6 +9,8 @@ from collections.abc import Callable, Iterable
 from itertools import chain
 from typing import Any
 
+from a2ui.schema.validator import extract_component_ref_fields, get_component_references
+
 from jiuwenswarm.server.runtime.a2ui.parser import (
     coerce_message_list,
     iter_tagged_block_bodies,
@@ -273,6 +275,64 @@ def _validate_template_runtime_semantics(messages: list[dict[str, Any]]) -> None
                     )
 
 
+def _iter_mounted_child_refs(
+    component: dict[str, Any],
+    ref_fields_map: dict[str, tuple[set[str], set[str]]],
+) -> list[tuple[str, str]]:
+    """Return (child_id, field) pairs that mount a child directly under this component.
+
+    ``template.componentId`` is excluded on purpose: a template is instantiated per data
+    item with item-relative bindings, so sharing it does not render the same bound
+    instance twice. Only direct mounts (child / children.explicitList / tabItems[].child /
+    Modal children) can render one component id under two parents.
+    """
+    return [
+        (ref_id, field_name)
+        for ref_id, field_name in get_component_references(component, ref_fields_map)
+        if "template" not in field_name
+    ]
+
+
+def _validate_single_parent_tree(catalog: Any, messages: list[dict[str, Any]]) -> None:
+    """Reject a component id mounted more than once in one surfaceUpdate.
+
+    A2UI v0.8 renders one instance per reference. A component mounted under two parents
+    (or twice under one parent) is rendered twice, and both copies share the same data
+    binding, so they display and change in lockstep. The prompt already requires a
+    single-parent tree; the SDK topology check only rejects cycles and orphans.
+    """
+    ref_fields_map = None
+    for message in messages:
+        surface_update = message.get("surfaceUpdate") if isinstance(message, dict) else None
+        if not isinstance(surface_update, dict):
+            continue
+        components = surface_update.get("components")
+        if not isinstance(components, list):
+            continue
+        if ref_fields_map is None:
+            ref_fields_map = extract_component_ref_fields(catalog)
+        component_ids = {
+            component.get("id")
+            for component in components
+            if isinstance(component, dict) and isinstance(component.get("id"), str)
+        }
+        parents: dict[str, list[str]] = {}
+        for component in components:
+            if not isinstance(component, dict) or component.get("id") not in component_ids:
+                continue
+            for child_id, field_name in _iter_mounted_child_refs(component, ref_fields_map):
+                if child_id in component_ids:
+                    parents.setdefault(child_id, []).append(f"{component['id']}.{field_name}")
+        for child_id, mounts in parents.items():
+            if len(mounts) > 1:
+                raise ValueError(
+                    "A2UI component tree must be single-parent: component "
+                    f"{child_id!r} is mounted {len(mounts)} times ({', '.join(mounts)}). "
+                    "Each component id may be referenced by exactly one parent, once; "
+                    "keep it under one parent and remove the other references."
+                )
+
+
 def _validate_text_usage_hint_collisions(messages: Iterable[dict[str, Any]]) -> None:
     """Check explicit Text hints against the IDs retained by the v0.8 renderer."""
     surfaces: dict[str, dict[str, str | None]] = {}
@@ -317,6 +377,7 @@ def validate_a2ui_messages(catalog: Any, messages: list[dict[str, Any]]) -> None
     if not messages:
         raise ValueError("A2UI message list is empty")
     catalog.validator.validate(messages)
+    _validate_single_parent_tree(catalog, messages)
     _validate_template_runtime_semantics(messages)
     _validate_image_runtime_semantics(messages)
     _validate_text_usage_hint_collisions(messages)

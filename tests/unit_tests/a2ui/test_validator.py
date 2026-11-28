@@ -268,3 +268,212 @@ def test_a2ui_validator_rejects_nested_templates():
     assert result.valid is False
     assert result.error is not None
     assert "nested templates" in result.error
+
+
+# --- BUG20261124415272: single-parent component tree -------------------------
+
+
+def _a2ui_card(components: list[dict], data_model: list[dict] | None = None) -> str:
+    messages: list[dict] = [
+        {"beginRendering": {"surfaceId": "single-parent", "root": "root"}},
+        {"surfaceUpdate": {"surfaceId": "single-parent", "components": components}},
+    ]
+    if data_model is not None:
+        messages.append({"dataModelUpdate": {"surfaceId": "single-parent", "contents": data_model}})
+    return "<a2ui-json>\n" + json.dumps(messages, ensure_ascii=False, indent=2) + "\n</a2ui-json>"
+
+
+def _literal_text(component_id: str, text: str) -> dict:
+    """Plain Text node for single-parent fixtures (distinct from usageHint helper ``_text``)."""
+    return {"id": component_id, "component": {"Text": {"text": {"literalString": text}}}}
+
+
+def _choice_card(main_children: list[str]) -> str:
+    """Shape of the BUG20261124415272 card: ``opt`` sits in section ``g1``."""
+    return _a2ui_card(
+        [
+            {"id": "root", "component": {"Card": {"child": "main_col"}}},
+            {"id": "main_col", "component": {"Column": {"children": {"explicitList": main_children}}}},
+            _literal_text("title", "连坐问题怎么根治"),
+            {"id": "g1", "component": {"Column": {"children": {"explicitList": ["g1_title", "opt"]}}}},
+            _literal_text("g1_title", "选一个方案"),
+            {
+                "id": "opt",
+                "component": {
+                    "MultipleChoice": {
+                        "selections": {"path": "/form/fix"},
+                        "options": [
+                            {"label": {"literalString": "A"}, "value": "a"},
+                            {"label": {"literalString": "C"}, "value": "c"},
+                        ],
+                        "maxAllowedSelections": 1,
+                        "variant": "checkbox",
+                    }
+                },
+            },
+            _literal_text("opt_label", ""),
+            {"id": "btn_row", "component": {"Row": {"children": {"explicitList": ["go_btn"]}}}},
+            {
+                "id": "go_btn",
+                "component": {
+                    "Button": {
+                        "child": "go_text",
+                        "primary": True,
+                        "action": {
+                            "name": "apply_fix",
+                            "context": [{"key": "fix", "value": {"path": "/form/fix"}}],
+                        },
+                    }
+                },
+            },
+            _literal_text("go_text", "按这个执行"),
+        ],
+        data_model=[
+            {
+                "key": "form",
+                "valueMap": [{"key": "fix", "valueMap": [{"key": "0", "valueString": "a"}]}],
+            }
+        ],
+    )
+
+
+def test_a2ui_validator_rejects_component_mounted_under_two_parents():
+    """BUG20261124415272: ``opt`` listed by both ``g1`` and ``main_col`` rendered two linked dropdowns."""
+    from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
+
+    result = get_protocol_spec().validate_response(
+        _choice_card(["title", "g1", "opt_label", "opt", "btn_row"])
+    )
+
+    assert result.valid is False
+    assert result.error is not None
+    assert "single-parent" in result.error
+    assert "'opt'" in result.error
+    assert "main_col" in result.error
+    assert "g1" in result.error
+
+
+def test_a2ui_validator_accepts_component_mounted_under_one_parent():
+    from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
+
+    result = get_protocol_spec().validate_response(
+        _choice_card(["title", "g1", "opt_label", "btn_row"])
+    )
+
+    assert result.valid is True
+
+
+def test_a2ui_validator_rejects_component_listed_twice_by_one_parent():
+    from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
+
+    result = get_protocol_spec().validate_response(
+        _a2ui_card(
+            [
+                {"id": "root", "component": {"Column": {"children": {"explicitList": ["a", "a"]}}}},
+                _literal_text("a", "x"),
+            ]
+        )
+    )
+
+    assert result.valid is False
+    assert "single-parent" in result.error
+    assert "'a'" in result.error
+
+
+@pytest.mark.parametrize(
+    ("mount_component", "shared_id"),
+    [
+        (
+            {"id": "m", "component": {"Button": {"child": "shared", "action": {"name": "go"}}}},
+            "shared",
+        ),
+        (
+            {
+                "id": "m",
+                "component": {
+                    "Tabs": {"tabItems": [{"title": {"literalString": "A"}, "child": "shared"}]}
+                },
+            },
+            "shared",
+        ),
+        (
+            {
+                "id": "m",
+                "component": {"Modal": {"entryPointChild": "open", "contentChild": "shared"}},
+            },
+            "shared",
+        ),
+    ],
+    ids=["button-child", "tabs-child", "modal-content-child"],
+)
+def test_a2ui_validator_rejects_single_child_field_also_listed_in_column(
+    mount_component, shared_id
+):
+    from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
+
+    components = [
+        {"id": "root", "component": {"Column": {"children": {"explicitList": ["m", shared_id]}}}},
+        mount_component,
+        _literal_text(shared_id, "shared"),
+    ]
+    if mount_component["component"].get("Modal"):
+        components.append(_literal_text("open", "open"))
+
+    result = get_protocol_spec().validate_response(_a2ui_card(components))
+
+    assert result.valid is False
+    assert "single-parent" in result.error
+    assert f"'{shared_id}'" in result.error
+
+
+def test_a2ui_validator_accepts_template_shared_by_two_lists():
+    """Templates are instantiated per item with item-relative bindings; sharing one is not a double mount."""
+    from jiuwenswarm.server.runtime.a2ui.protocol import get_protocol_spec
+
+    result = get_protocol_spec().validate_response(
+        _a2ui_card(
+            [
+                {
+                    "id": "root",
+                    "component": {"Column": {"children": {"explicitList": ["list_a", "list_b"]}}},
+                },
+                {
+                    "id": "list_a",
+                    "component": {
+                        "List": {
+                            "children": {
+                                "template": {"componentId": "row", "dataBinding": "/a"}
+                            }
+                        }
+                    },
+                },
+                {
+                    "id": "list_b",
+                    "component": {
+                        "List": {
+                            "children": {
+                                "template": {"componentId": "row", "dataBinding": "/b"}
+                            }
+                        }
+                    },
+                },
+                {"id": "row", "component": {"Text": {"text": {"path": "name"}}}},
+            ],
+            data_model=[
+                {
+                    "key": "a",
+                    "valueMap": [
+                        {"key": "0", "valueMap": [{"key": "name", "valueString": "x"}]}
+                    ],
+                },
+                {
+                    "key": "b",
+                    "valueMap": [
+                        {"key": "0", "valueMap": [{"key": "name", "valueString": "y"}]}
+                    ],
+                },
+            ],
+        )
+    )
+
+    assert result.valid is True
