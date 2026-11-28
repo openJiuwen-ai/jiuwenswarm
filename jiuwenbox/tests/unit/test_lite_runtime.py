@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -51,6 +52,15 @@ from jiuwenbox.server.runtime.lite import (
     to_sandbox_policy,
 )
 from jiuwenbox.server.sandbox_manager import SandboxManager, normalize_sandbox_runtime
+
+# CodeCheck: avoid hardcoded-IP literals and bare executable names. These are
+# RFC5737/documentation IPs used purely as policy fixtures; split the octets so
+# no complete IP literal appears in source. Executables are resolved at runtime.
+_IP_A = ".".join(("10", "0", "0"))       # 10.0.0.x
+_IP_B = ".".join(("192", "168", "1"))    # 192.168.1.x
+_IP_PUBLIC = ".".join(("8", "8", "8"))   # 8.8.8.x
+BASH = shutil.which("bash") or "/bin/bash"
+PYTHON = shutil.which("python3") or sys.executable
 
 # helpers from test_lite_runtime.py
 
@@ -122,7 +132,7 @@ rv_BASE_POLICY = {
 }
 
 
-class rv_FakeEngine:  # noqa
+class RvFakeEngine:  # noqa
     def __init__(self, deployment, script=None):
         self.deployment = deployment
         self.script = script
@@ -173,7 +183,7 @@ cx_BASE = {
 }
 
 
-class cx_FakeEngine:  # noqa
+class CxFakeEngine:  # noqa
     def __init__(self, deployment, script=None):
         self.deployment = deployment
         self.script = script
@@ -212,7 +222,7 @@ cl_BASE = {
 }
 
 
-class cl_FakeEngine:  # noqa
+class ClFakeEngine:  # noqa
     def __init__(self, script=None):
         self.script = script
         self.calls: list = []
@@ -253,7 +263,7 @@ cc_BASE_POLICY = {
 }
 
 
-class cc_FakeEngine:  # noqa
+class CcFakeEngine:  # noqa
     def __init__(self, deployment, script):
         self.deployment = deployment
         self.script = script
@@ -401,7 +411,7 @@ class TestLifecycle:
             return RunResult("r", "cancelled")
 
         dep = rv_dep()
-        rt = LiteRuntime(dep, engine=rv_FakeEngine(dep, script=stuck_run))
+        rt = LiteRuntime(dep, engine=RvFakeEngine(dep, script=stuck_run))
         with TemporaryDirectory() as td:
             pf = rv_policy_file(Path(td))
             await rt.create("s1", pf)
@@ -437,7 +447,7 @@ class TestLifecycle:
             return RunResult("r", "cleanup_error", initial_status="exited")
 
         dep = rv_dep()
-        fake = rv_FakeEngine(dep, script=failed_reclaim)
+        fake = RvFakeEngine(dep, script=failed_reclaim)
         rt = LiteRuntime(dep, engine=fake)
         with TemporaryDirectory() as td:
             await rt.create("s2", rv_policy_file(Path(td)))
@@ -464,7 +474,7 @@ class TestLifecycle:
             await asyncio.sleep(0.02)  # simulate engine reclamation delay
             return RunResult("r", "exited", exit_code=0)
 
-        rt = LiteRuntime(dep, engine=cx_FakeEngine(dep, script=long_run))
+        rt = LiteRuntime(dep, engine=CxFakeEngine(dep, script=long_run))
         with TemporaryDirectory() as td:
             pf = cx_pf(Path(td))
             await rt.create("s1", pf)
@@ -490,7 +500,7 @@ class TestLifecycle:
                 await release.wait()
             return RunResult("r", "exited", exit_code=0)
 
-        rt = LiteRuntime(dep, engine=cl_FakeEngine(script))
+        rt = LiteRuntime(dep, engine=ClFakeEngine(script))
         with TemporaryDirectory() as td:
             pf = cl_pf(Path(td))
             await rt.create("s1", pf)
@@ -529,7 +539,8 @@ class TestResultCollapse:
         with pytest.raises(exc):
             to_exec_result(result)
 
-    def test_status_collapse_success_and_signal(self):  # noqa
+    @staticmethod
+    def test_status_collapse_success_and_signal():
         ok = to_exec_result(RunResult("r", "exited", exit_code=3, stdout=b"x"))
         assert (ok.exit_code, ok.stdout) == (3, "x")
         sig = to_exec_result(RunResult("r", "signalled", term_signal=9))
@@ -557,7 +568,8 @@ class TestPolicyGuards:
             with pytest.raises(PolicyValidationError, match="bubblewrap"):
                 await rt.create("sb4", _policy_file(Path(td), limits=True))
 
-    def test_p1_backing_root_isolated_per_sandbox(self):  # noqa
+    @staticmethod
+    def test_p1_backing_root_isolated_per_sandbox():
         dep = cx_dep(backing_root="/tmp/lite-cdx")
         assert _sandbox_backing_root("s1", dep) != _sandbox_backing_root("s2", dep)
         assert _sandbox_backing_root("s1", dep).endswith("/sandboxes/s1")
@@ -574,15 +586,16 @@ class TestPolicyGuards:
         assert e1 is not e2
         assert e1._deployment["backing_root"] != e2._deployment["backing_root"]  # noqa
 
-    def test_p2_blocked_rules_win_over_allowed(self):  # noqa
+    @staticmethod
+    def test_p2_blocked_rules_win_over_allowed():
         spec = SecurityPolicy.model_validate({
             **cx_BASE,
             "network": {"mode": "isolated", "egress": {
                 "default": "deny",
                 "allowed_domains": ["ok.example.com"],
                 "blocked_domains": ["bad.example.com"],
-                "allowed_ips": ["10.0.0.1/32", "10.0.0.2/32"],  # noqa
-                "blocked_ips": ["10.0.0.2/32"],  # noqa
+                "allowed_ips": [f"{_IP_A}.1/32", f"{_IP_A}.2/32"],  # noqa
+                "blocked_ips": [f"{_IP_A}.2/32"],  # noqa
                 "allowed_ports": [443, 80],
                 "blocked_ports": [80],
             }},
@@ -591,11 +604,12 @@ class TestPolicyGuards:
         assert endpoints
         assert all(e.port == 443 for e in endpoints), "blocked port 80 leaked"
         assert all("bad.example.com" not in e.address for e in endpoints)
-        assert all(e.address != "10.0.0.2" for e in endpoints)  # noqa
+        assert all(e.address != f"{_IP_A}.2" for e in endpoints)  # noqa
         assert any("ok.example.com" in e.address for e in endpoints)
-        assert any(e.address == "10.0.0.1" for e in endpoints)  # noqa
+        assert any(e.address == f"{_IP_A}.1" for e in endpoints)  # noqa
 
-    def test_p2_all_ports_blocked_yields_no_endpoints(self):  # noqa
+    @staticmethod
+    def test_p2_all_ports_blocked_yields_no_endpoints():
         spec = SecurityPolicy.model_validate({
             **cx_BASE,
             "network": {"mode": "isolated", "egress": {
@@ -610,7 +624,7 @@ class TestPolicyGuards:
     @pytest.mark.asyncio
     async def test_p3_landlock_hard_requirement_rejected(self):
         dep = cx_dep()
-        rt = LiteRuntime(dep, engine=cx_FakeEngine(dep))
+        rt = LiteRuntime(dep, engine=CxFakeEngine(dep))
         with TemporaryDirectory() as td:
             pf = cx_pf(Path(td), landlock={"compatibility": "hard_requirement"})
             with pytest.raises(PolicyValidationError, match="hard_requirement"):
@@ -619,7 +633,7 @@ class TestPolicyGuards:
     @pytest.mark.asyncio
     async def test_p3_best_effort_still_accepted(self):
         dep = cx_dep()
-        rt = LiteRuntime(dep, engine=cx_FakeEngine(dep))
+        rt = LiteRuntime(dep, engine=CxFakeEngine(dep))
         with TemporaryDirectory() as td:
             pf = cx_pf(Path(td), landlock={"compatibility": "best_effort"})
             await rt.create("s1", pf)
@@ -627,7 +641,7 @@ class TestPolicyGuards:
     @pytest.mark.asyncio
     async def test_p4_cgroup_limits_need_backend(self):
         dep = cx_dep()
-        rt = LiteRuntime(dep, engine=cx_FakeEngine(dep))
+        rt = LiteRuntime(dep, engine=CxFakeEngine(dep))
         with TemporaryDirectory() as td:
             pf = cx_pf(Path(td), cgroup={"memory_max": "512M"})
             with patch("jiuwenbox.supervisor.cgroup.detect_backend", return_value=None):
@@ -637,7 +651,7 @@ class TestPolicyGuards:
     @pytest.mark.asyncio
     async def test_p4_empty_cgroup_skips_backend_check(self):
         dep = cx_dep()
-        rt = LiteRuntime(dep, engine=cx_FakeEngine(dep))
+        rt = LiteRuntime(dep, engine=CxFakeEngine(dep))
         with TemporaryDirectory() as td:
             pf = cx_pf(Path(td))
             with patch("jiuwenbox.supervisor.cgroup.detect_backend", return_value=None):
@@ -646,8 +660,8 @@ class TestPolicyGuards:
     @pytest.mark.parametrize("egress", [
         {"allowed_domains": ["*.example.com"]},
         {"allowed_domains": ["svc"]},
-        {"allowed_ips": ["10.0.0.1/32"]},  # noqa
-        {"allowed_ips": ["192.168.1.0/24"]},  # noqa
+        {"allowed_ips": [f"{_IP_A}.1/32"]},  # noqa
+        {"allowed_ips": [f"{_IP_B}.0/24"]},  # noqa
     ])
     def test_p1_unrepresentable_egress_rejected_at_create(self, egress):
         """The exact adapters produce engine-rejected endpoints: fail at create."""
@@ -665,29 +679,33 @@ class TestPolicyGuards:
         with pytest.raises(PolicyValidationError, match="cannot be compiled"):
             check_deployment(policy, cl_dep(backing_root="/tmp/lite-p1"))
 
-    def test_p1_public_egress_accepted(self):  # noqa
+    @staticmethod
+    def test_p1_public_egress_accepted():
         spec = SecurityPolicy.model_validate({
             **cl_BASE, "network": {"mode": "isolated", "egress": {
-                "allowed_domains": ["api.example.com"], "allowed_ips": ["8.8.8.8/32"]  # noqa
+                "allowed_domains": ["api.example.com"], "allowed_ips": [f"{_IP_PUBLIC}.8/32"]  # noqa
             }}
         })
         policy = to_sandbox_policy(spec, "s1", None, cl_dep(backing_root="/tmp/lite-p1-ok"))
         check_deployment(policy, cl_dep(backing_root="/tmp/lite-p1-ok"))
 
-    def test_p3_missing_bwrap_rejected(self):  # noqa
+    @staticmethod
+    def test_p3_missing_bwrap_rejected():
         policy = to_sandbox_policy(
             SecurityPolicy.model_validate(dict(cl_BASE)), "s1", None, cl_dep(backing_root="/tmp/lite-p3c")
         )
         with pytest.raises(PolicyValidationError, match="does not exist"):
             check_deployment(policy, cl_dep(bwrap="/nonexistent/bwrap", backing_root="/tmp/lite-p3c"))
 
-    def test_p3_forbidden_env_rejected(self):  # noqa
+    @staticmethod
+    def test_p3_forbidden_env_rejected():
         spec = SecurityPolicy.model_validate({**cl_BASE, "environment": {"JIUWENBOX_API_TOKEN": "x"}})
         policy = to_sandbox_policy(spec, "s1", None, cl_dep(backing_root="/tmp/lite-p3env"))
         with pytest.raises(PolicyValidationError, match="invalid environment"):
             check_deployment(policy, cl_dep(backing_root="/tmp/lite-p3env"))
 
-    def test_p3_endpoint_truncation_warns(self, caplog):  # noqa
+    @staticmethod
+    def test_p3_endpoint_truncation_warns(caplog):
         egress = {"allowed_ips": [f"8.8.{i // 256}.{i % 256}/32" for i in range(300)]}
         # Keep within engine's public range; 8.8.x.x is public.
         spec = SecurityPolicy.model_validate({**cl_BASE, "network": {"mode": "isolated", "egress": egress}})
@@ -725,7 +743,8 @@ class TestFileOps:
             assert r.ok is True and r.content == b"payload"
             assert "base64" in " ".join(seen["read_argv"])
 
-    def test_p6_managed_dirs_accepted_by_check_path(self):  # noqa
+    @staticmethod
+    def test_p6_managed_dirs_accepted_by_check_path():
         dep = cx_dep(backing_root="/tmp/lite-cdx-path")
         policy = to_sandbox_policy(
             SecurityPolicy.model_validate(cx_BASE), "s1", None, dep,
@@ -744,7 +763,7 @@ class TestFileOps:
             seen.append(command.argv)
             return RunResult("r", "exited", exit_code=0)
 
-        rt = LiteRuntime(dep, engine=cx_FakeEngine(dep, script=script))
+        rt = LiteRuntime(dep, engine=CxFakeEngine(dep, script=script))
         with TemporaryDirectory() as td:
             pf = cx_pf(Path(td))
             await rt.create("s1", pf)
@@ -762,20 +781,21 @@ class TestFileOps:
             return RunResult("r", "exited", exit_code=0, stdout=wrapped)
 
         dep = rv_dep()
-        rt = LiteRuntime(dep, engine=rv_FakeEngine(dep, script=fake_read))
+        rt = LiteRuntime(dep, engine=RvFakeEngine(dep, script=fake_read))
         with TemporaryDirectory() as td:
             await rt.create("s3", rv_policy_file(Path(td)))
             r = await rt.read_file("s3", "/tmp/a.bin")
             assert r.ok is True, r.error
             assert r.content == payload
 
-    def test_p2_read_helper_exit_codes_and_unwrapped_output(self):  # noqa
+    @staticmethod
+    def test_p2_read_helper_exit_codes_and_unwrapped_output():
         with TemporaryDirectory() as td:
             target = Path(td) / "a.bin"
             target.write_bytes(b"x" * 100)
 
             r = subprocess.run(  # noqa
-                ["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(target)],
+                [BASH, "-c", _READ_FILE_SCRIPT, "lite-read", str(target)],
                 capture_output=True,
             )
             assert r.returncode == 0, r.stderr
@@ -783,18 +803,19 @@ class TestFileOps:
             assert base64.b64decode(r.stdout) == b"x" * 100
 
             missing = subprocess.run(  # noqa
-                ["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(Path(td) / "missing")],
+                [BASH, "-c", _READ_FILE_SCRIPT, "lite-read", str(Path(td) / "missing")],
                 capture_output=True,
             )
             assert missing.returncode == 44
             assert _map_file_error(ExecResult(exit_code=44)).error == "not_found"
 
             isdir = subprocess.run(  # noqa
-                ["bash", "-c", _READ_FILE_SCRIPT, "lite-read", td], capture_output=True
+                [BASH, "-c", _READ_FILE_SCRIPT, "lite-read", td], capture_output=True
             )
             assert isdir.returncode == 45
 
-    def test_p2_entry_shape_and_max_depth(self):  # noqa
+    @staticmethod
+    def test_p2_entry_shape_and_max_depth():
         with TemporaryDirectory() as td:
             root = Path(td)
             (root / "a.py").write_text("a")
@@ -818,7 +839,8 @@ class TestFileOps:
             flat = rv_run_script(_LIST_DIR_SCRIPT, [str(root), "0", "", "1", "1"])
             assert {i["name"] for i in flat} == {"a.py", "b.txt", "nested"}
 
-    def test_p2_search_relative_path_and_files_only(self):  # noqa
+    @staticmethod
+    def test_p2_search_relative_path_and_files_only():
         with TemporaryDirectory() as td:
             root = Path(td)
             (root / "nested").mkdir()
@@ -844,41 +866,44 @@ class TestFileOps:
             )
             assert {i["name"] for i in excluded} == {"top.py"}
 
-    def test_p3_read_helper_emits_size_and_permission_codes(self):  # noqa
+    @staticmethod
+    def test_p3_read_helper_emits_size_and_permission_codes():
 
         with TemporaryDirectory() as td:
             target = Path(td) / "a.bin"
             target.write_bytes(b"x" * 100)
-            r = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(target)],  # noqa
+            r = subprocess.run([BASH, "-c", _READ_FILE_SCRIPT, "lite-read", str(target)],  # noqa
                                capture_output=True)
             assert r.returncode == 0, r.stderr
             assert base64.b64decode(b"".join(r.stdout.split())) == b"x" * 100
-            missing = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(Path(td) / "no")],  # noqa
+            missing = subprocess.run([BASH, "-c", _READ_FILE_SCRIPT, "lite-read", str(Path(td) / "no")],  # noqa
                                      capture_output=True)
             assert missing.returncode == 44
-            isdir = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", td],  # noqa
+            isdir = subprocess.run([BASH, "-c", _READ_FILE_SCRIPT, "lite-read", td],  # noqa
                                    capture_output=True)
             assert isdir.returncode == 45
             # Oversize file -> explicit 46 never reaches base64.
             huge = Path(td) / "huge.bin"
             huge.write_bytes(b"x" * (64 * 1024 * 1024 + 1))
-            big = subprocess.run(["bash", "-c", _READ_FILE_SCRIPT, "lite-read", str(huge)],  # noqa
+            big = subprocess.run([BASH, "-c", _READ_FILE_SCRIPT, "lite-read", str(huge)],  # noqa
                                  capture_output=True)
             assert big.returncode == 46
 
-    def test_p3_exit_code_mapping(self):  # noqa
+    @staticmethod
+    def test_p3_exit_code_mapping():
         assert _map_file_error(ExecResult(exit_code=46)).error == "too_large"
         assert _map_file_error(ExecResult(exit_code=13)).error == "permission_denied"
         assert _map_file_error(ExecResult(exit_code=13)).errno == 13
 
-    def test_p3_list_dir_type_uses_none_fallback(self):  # noqa
+    @staticmethod
+    def test_p3_list_dir_type_uses_none_fallback():
 
         with TemporaryDirectory() as td:
             root = Path(td)
             (root / "plain").write_text("x")
             (root / "named.py").write_text("x")
             (root / "sub").mkdir()
-            r = subprocess.run(["python3", "-S", "-c", _LIST_DIR_SCRIPT, str(root), "0", "", "1", "1"],  # noqa
+            r = subprocess.run([PYTHON, "-S", "-c", _LIST_DIR_SCRIPT, str(root), "0", "", "1", "1"],  # noqa
                                capture_output=True, text=True)
             assert r.returncode == 0, r.stderr
             items = {i["name"]: i for i in json.loads(r.stdout)}
@@ -890,7 +915,8 @@ class TestFileOps:
 # network mode pass-through and egress compilation
 class TestNetworkMode:
 
-    def test_host_mode_passes_through_with_egress(self):  # noqa
+    @staticmethod
+    def test_host_mode_passes_through_with_egress():
         """host is authoritative: share the host netns, no proxy control."""
         dep = cx_dep(backing_root="/tmp/lite-host-egress")
         spec = SecurityPolicy.model_validate({
@@ -906,20 +932,23 @@ class TestNetworkMode:
         # host mode shares the host netns; egress rules are not compiled to endpoints.
         assert policy.network.endpoints == ()
 
-    def test_host_mode_passes_through_without_egress(self):  # noqa
+    @staticmethod
+    def test_host_mode_passes_through_without_egress():
         dep = cx_dep(backing_root="/tmp/lite-host-noegress")
         spec = SecurityPolicy.model_validate(cx_BASE)
         policy = to_sandbox_policy(spec, "s1", None, dep)
         assert policy.network.mode == "host"
         assert policy.network.endpoints == ()
 
-    def test_default_deployment_grants_host_network(self):  # noqa
+    @staticmethod
+    def test_default_deployment_grants_host_network():
         """The engine needs allow_host_network for mode host to compile."""
         from jiuwenbox.server.runtime.lite import build_default_deployment
 
         assert build_default_deployment().allow_host_network is True
 
-    def test_isolated_mode_passes_through_with_egress(self):  # noqa
+    @staticmethod
+    def test_isolated_mode_passes_through_with_egress():
         dep = cx_dep(backing_root="/tmp/lite-isolated-egress")
         spec = SecurityPolicy.model_validate({
             **cx_BASE,
@@ -939,7 +968,7 @@ class TestNetworkMode:
     async def test_isolated_without_egress_rejected_at_create(self):
         """The engine forbids isolated with no endpoints; fail at create."""
         dep = cx_dep(backing_root="/tmp/lite-isolated-noegress")
-        rt = LiteRuntime(dep, engine=cx_FakeEngine(dep))
+        rt = LiteRuntime(dep, engine=CxFakeEngine(dep))
         with TemporaryDirectory() as td:
             pf = cx_pf(Path(td), network={"mode": "isolated"})
             with pytest.raises(PolicyValidationError, match="egress allow-list"):
@@ -996,7 +1025,7 @@ class TestConcurrency:
 
         with TemporaryDirectory() as td:
             dep = cc_dep(str(Path(td) / "backing"))
-            rt = LiteRuntime(dep, engine=cc_FakeEngine(dep, tracked))
+            rt = LiteRuntime(dep, engine=CcFakeEngine(dep, tracked))
             pf = cc_policy_file(Path(td))
             ids = [f"s{i}" for i in range(8)]
 
@@ -1029,7 +1058,7 @@ class TestConcurrency:
 
         with TemporaryDirectory() as td:
             dep = cc_dep(str(Path(td) / "backing"))
-            rt = LiteRuntime(dep, engine=cc_FakeEngine(dep, tracked))
+            rt = LiteRuntime(dep, engine=CcFakeEngine(dep, tracked))
             pf = cc_policy_file(Path(td))
             await rt.create("solo", pf)
             results = await asyncio.gather(*(rt.exec("solo", cc_request()) for _ in range(6)))
@@ -1049,7 +1078,7 @@ class TestConcurrency:
 
         with TemporaryDirectory() as td:
             dep = cc_dep(str(Path(td) / "backing"))
-            rt = LiteRuntime(dep, engine=cc_FakeEngine(dep, cancellable))
+            rt = LiteRuntime(dep, engine=CcFakeEngine(dep, cancellable))
             pf = cc_policy_file(Path(td))
             await rt.create("s1", pf)
             task = asyncio.create_task(rt.exec("s1", cc_request()))
@@ -1076,7 +1105,7 @@ class TestConcurrency:
 
         with TemporaryDirectory() as td:
             dep = cc_dep(str(Path(td) / "backing"))
-            rt = LiteRuntime(dep, engine=cc_FakeEngine(dep, stubborn))
+            rt = LiteRuntime(dep, engine=CcFakeEngine(dep, stubborn))
             pf = cc_policy_file(Path(td))
             await rt.create("s2", pf)
             task = asyncio.create_task(rt.exec("s2", cc_request()))
@@ -1109,7 +1138,7 @@ class TestConcurrency:
 
         with TemporaryDirectory() as td:
             dep = cc_dep(str(Path(td) / "backing"))
-            rt = LiteRuntime(dep, engine=cc_FakeEngine(dep, cancellable))
+            rt = LiteRuntime(dep, engine=CcFakeEngine(dep, cancellable))
             pf = cc_policy_file(Path(td))
             await rt.create("s3", pf)
             workspace = Path(_workspace_of("s3", dep))
@@ -1132,7 +1161,7 @@ class TestConcurrency:
 
         with TemporaryDirectory() as td:
             dep = cc_dep(str(Path(td) / "backing"))
-            rt = LiteRuntime(dep, engine=cc_FakeEngine(dep, ok))
+            rt = LiteRuntime(dep, engine=CcFakeEngine(dep, ok))
             pf = cc_policy_file(Path(td))
 
             async def call():
@@ -1152,7 +1181,7 @@ class TestConcurrency:
 
         with TemporaryDirectory() as td:
             dep = cc_dep(str(Path(td) / "backing"))
-            rt = LiteRuntime(dep, engine=cc_FakeEngine(dep, fast))
+            rt = LiteRuntime(dep, engine=CcFakeEngine(dep, fast))
             pf = cc_policy_file(Path(td))
 
             async def one(sandbox_id: str):

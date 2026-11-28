@@ -67,6 +67,7 @@ writable cgroup v2 delegation.
 Exit code is 0 only when no case fails.
 """
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -78,6 +79,29 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+# --- output: CASE <id> ... is the harness protocol; no log prefix allowed ---
+# Dedicated handlers with a bare formatter isolate the protocol from any root
+# logger configuration installed by jiuwenbox on import.
+_BARE = logging.Formatter("%(message)s")
+_OUT = logging.getLogger("lite_e2e_matrix.out")
+_OUT.setLevel(logging.INFO)
+_OUT.propagate = False
+_out_handler = logging.StreamHandler(sys.stdout)
+_out_handler.setFormatter(_BARE)
+_OUT.addHandler(_out_handler)
+_ERR = logging.getLogger("lite_e2e_matrix.err")
+_ERR.setLevel(logging.INFO)
+_ERR.propagate = False
+_err_handler = logging.StreamHandler(sys.stderr)
+_err_handler.setFormatter(_BARE)
+_ERR.addHandler(_err_handler)
+
+
+def emit(message, *, err=False):
+    """Write one protocol line to stdout (or stderr) without a log prefix."""
+    (_ERR if err else _OUT).info(message)
 
 BASE = os.environ.get("E2E_BASE", "http://127.0.0.1:8323")
 RESULTS: list[tuple[str, str, str]] = []
@@ -255,13 +279,13 @@ def req(method, path, body=None, timeout=60):
 def check(cid, cond, detail=""):
     status = "PASS" if cond else "FAIL"
     line = f"CASE {cid} {status} {detail}".rstrip()
-    print(line, flush=True)  # noqa
+    emit(line)
     RESULTS.append((cid, status, detail))
     return bool(cond)
 
 
 def skip(cid, reason):
-    print(f"CASE {cid} SKIP {reason}".rstrip(), flush=True)  # noqa
+    emit(f"CASE {cid} SKIP {reason}".rstrip())
     RESULTS.append((cid, "SKIP", reason))
 
 
@@ -469,11 +493,10 @@ def case_engine_smoke():
         skip("ENGINE-0", f"deployment unavailable: {type(exc).__name__}: {exc}")
         return
 
-    print(  # noqa
+    emit(
         f"DEPLOY bwrap={dep.bwrap} python={dep.python} "
         f"sandbox_python={dep.sandbox_python} "
-        f"allow_host_network={dep.allow_host_network} backing_root={dep.backing_root}",
-        flush=True,
+        f"allow_host_network={dep.allow_host_network} backing_root={dep.backing_root}"
     )
     if not os.path.exists(dep.bwrap):
         skip("ENGINE-1", f"bwrap not found at {dep.bwrap}")
@@ -1193,9 +1216,9 @@ def ct_plan():
 def case_container(dry_run=False):
     """Layer 3: the same runtime inside a Docker container."""
     if dry_run:
-        print("PLAN container layer (nothing executed):", flush=True)  # noqa
+        emit("PLAN container layer (nothing executed):")
         for line in ct_plan():
-            print("  " + line, flush=True)  # noqa
+            emit("  " + line)
         return
     if DOCKER is None:
         skip("CT-1", "docker not installed")
@@ -1204,9 +1227,10 @@ def case_container(dry_run=False):
     if rc != 0:
         skip("CT-1", f"docker daemon unavailable: {cout[:120]}")
         return
-    print(f"CONTAINER image={CT_IMAGE} name={CT_NAME} port={CT_PORT} "  # noqa
-          f"topo={CT_TOPO} policy={CT_POLICY}",
-          flush=True)
+    emit(
+        f"CONTAINER image={CT_IMAGE} name={CT_NAME} port={CT_PORT} "
+        f"topo={CT_TOPO} policy={CT_POLICY}"
+    )
 
     fmt = '{{.Id}}|{{index .Config.Labels "jiuwenbox.source"}}'
     rc, info = docker("image", "inspect", CT_IMAGE, "--format", fmt, timeout=30)
@@ -1214,7 +1238,7 @@ def case_container(dry_run=False):
                 if rc == 0 and "|" in info else "")
     label = (info.split("|")[1].strip() if rc == 0 and "|" in info else "")
     if rc != 0 or label != CT_SOURCE:
-        print(f"BUILD {CT_IMAGE} source={CT_SOURCE} (missing or stale)", flush=True)  # noqa
+        emit(f"BUILD {CT_IMAGE} source={CT_SOURCE} (missing or stale)")
         rc, cout = docker(
             "build", "-f", os.path.join(REPO_DIR, "docker", "Dockerfile.lite"),
             "-t", CT_IMAGE, "--label", f"jiuwenbox.source={CT_SOURCE}",
@@ -1469,9 +1493,9 @@ def summarize():
     passed = sum(1 for _, s, _ in RESULTS if s == "PASS")
     failed = sum(1 for _, s, _ in RESULTS if s == "FAIL")
     skipped = sum(1 for _, s, _ in RESULTS if s == "SKIP")
-    print(f"SUMMARY total={total} pass={passed} fail={failed} skip={skipped}", flush=True)  # noqa
+    emit(f"SUMMARY total={total} pass={passed} fail={failed} skip={skipped}")
     if failed:
-        print("FAILED IDS: " + ", ".join(cid for cid, s, _ in RESULTS if s == "FAIL"), flush=True)  # noqa
+        emit("FAILED IDS: " + ", ".join(cid for cid, s, _ in RESULTS if s == "FAIL"))
     return 0 if failed == 0 else 1
 
 
@@ -1480,7 +1504,7 @@ def run_http_matrix():
     for _ in range(30):
         code, body = req("GET", "/health", timeout=5)
         if code == 200:
-            print("HEALTH", code, body, flush=True)  # noqa
+            emit(f"HEALTH {code} {body}")
             break
         time.sleep(1)
     else:
@@ -1497,24 +1521,24 @@ def run_http_matrix():
 
 def main(argv):
     if any(a in ("-h", "--help") for a in argv):
-        print(__doc__.strip())  # noqa
+        emit(__doc__.strip())
         return 0
     dry_run = "--dry-run" in argv
     argv = ["--container" if a == "--docker" else a for a in argv if a != "--dry-run"]
     flags = ("--engine-only", "--http-only", "--container")
     unknown = [a for a in argv if a not in flags]
     if unknown:
-        print(f"unknown arguments: {unknown}", file=sys.stderr)  # noqa
+        emit(f"unknown arguments: {unknown}", err=True)
         return 2
     picked = [flag for flag in flags if flag in argv]
     layer = picked[0][2:].replace("-only", "") if picked else "all"
     if len(picked) > 1:
-        print(f"only one layer flag is allowed, got {picked}", file=sys.stderr)  # noqa
+        emit(f"only one layer flag is allowed, got {picked}", err=True)
         return 2
     if dry_run and layer != "container":
-        print("--dry-run only applies to the container layer", file=sys.stderr)  # noqa
+        emit("--dry-run only applies to the container layer", err=True)
         return 2
-    print(f"LAYER {layer}" + (f" BASE {BASE}" if layer != "container" else ""), flush=True)  # noqa
+    emit(f"LAYER {layer}" + (f" BASE {BASE}" if layer != "container" else ""))
     if layer in ("all", "engine"):
         case_engine_smoke()
     if layer in ("all", "http"):
