@@ -93,3 +93,32 @@ test('employee rail entry is labeled Chat', async () => {
   assert.equal(JSON.parse(zh).jiuwenmate.nav.messages, '聊天');
   assert.equal(JSON.parse(en).jiuwenmate.nav.messages, 'Chat');
 });
+
+test('editor session header cannot paint over the right panel tabs when the panel widens', async () => {
+  // The app-edit session header shares its row with the right panel's tab bar. A
+  // narrow chat column used to let its action group overflow across the divider.
+  // Wrap the rows instead of clipping so every control stays reachable.
+  const chatCss = await readSource('src/components/ChatPanel/ChatPanel.css');
+  const headerRule = chatCss.match(/^\.chat-panel-header\s*\{[^}]*\}/m)?.[0] ?? '';
+  assert.doesNotMatch(headerRule, /overflow:\s*hidden/);
+
+  const chatSurface = String.raw`\.single-agent-surface--chat:not\(\.single-agent-surface--navigation\)`;
+  assert.match(chatCss, new RegExp(`${chatSurface} \\.chat-panel-header \\{[^}]*flex-wrap: wrap`));
+  assert.match(chatCss, new RegExp(`${chatSurface} \\.chat-panel-header \\{[^}]*min-height: 68px`));
+  assert.match(chatCss, new RegExp(`${chatSurface} \\.chat-panel-header__actions \\{[^}]*flex-wrap: wrap`));
+  assert.match(chatCss, new RegExp(`${chatSurface} \\.chat-panel-header__actions \\{[^}]*max-width: 100%`));
+
+  // The resource monitor belongs to the app market page, not the editor header.
+  const action = await readSource('src/components/AppMarketPanel/AppMarketEditorAction.tsx');
+  assert.doesNotMatch(action, /AppMarketResources/);
+  assert.match(action, /className="app-market-editor-open-preview"/);
+
+  // At narrow widths the labelled preview action collapses to its icon so the
+  // remaining header actions still fit beside the session title.
+  const marketCss = await readSource('src/components/AppMarketPanel/AppMarketPanel.css');
+  assert.match(
+    marketCss,
+    /@container \(max-width: 360px\) \{[\s\S]*?\.app-market-editor-open-preview \.ui-button__label \{\s*display: none;/,
+  );
+  assert.match(marketCss, /\.app-market-editor-open-preview \{[^}]*width: 32px;/);
+});
