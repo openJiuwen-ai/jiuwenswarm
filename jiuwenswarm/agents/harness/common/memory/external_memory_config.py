@@ -62,17 +62,28 @@ def get_external_memory_config(
     if not isinstance(ext, dict):
         ext = {}
 
-    return {
+    allowed = ext.get("allowed_plugins")
+    if allowed is not None and not isinstance(allowed, list):
+        logger.warning("[ExternalMemoryConfig] allowed_plugins must be a list; refusing all plugins")
+        allowed = []  # fail closed on malformed config
+    result = {
         "provider": (ext.get("provider") or "").strip(),
         "user_id": ext.get("user_id") or _DEFAULT_USER,
         "scope_id": ext.get("scope_id") or _DEFAULT_SCOPE,
-        "allowed_plugins": ext.get("allowed_plugins") or [],
+        "allowed_plugins": allowed,
         "openjiuwen": ext.get("openjiuwen") or {},
         "mem0": ext.get("mem0") or {},
         "openviking": ext.get("openviking") or {},
         "lakebase": ext.get("lakebase") or {},
         "jiuwen": ext.get("jiuwen") or {},
     }
+    # Generic plugin channel: pass through any non-builtin provider sub-block
+    # (e.g. memory.external.hindsight.*) so plugin factories can read their config.
+    reserved = set(result)
+    for key, value in ext.items():
+        if key not in reserved and isinstance(value, dict):
+            result[key] = value
+    return result
 
 
 def is_external_memory_enabled(config: Optional[Dict[str, Any]] = None) -> bool:

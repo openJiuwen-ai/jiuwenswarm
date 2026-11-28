@@ -91,6 +91,12 @@ memory:
 | `OPENVIKING_ENDPOINT` | OpenViking service address |
 | `OPENVIKING_API_KEY` | OpenViking API key |
 
+Custom plugin loading: the resolved `memory.external` section, including any
+non-reserved dict sub-blocks (e.g. `hindsight:`), is passed to the plugin
+factory as its `config`. `allowed_plugins`: unset means any installed plugin
+is accepted; an empty list rejects all plugins; a non-empty list is a strict
+whitelist. A non-list value fails closed (all plugins rejected).
+
 ### Dreaming Configuration
 
 Dreaming is a sleep-time memory consolidation mechanism (see [Dreaming: Sleep-Time Memory Consolidation](#dreaming-sleep-time-memory-consolidation) below). Disabled by default — must be explicitly turned on.

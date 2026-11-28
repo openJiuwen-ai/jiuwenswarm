@@ -135,10 +135,25 @@ def test_external_config_defaults_when_missing():
     assert out["provider"] == ""
     assert out["user_id"] == "__default__"
     assert out["scope_id"] == "__default__"
-    assert out["allowed_plugins"] == []
+    assert out["allowed_plugins"] is None  # unset: accept all plugins
     assert out["openjiuwen"] == {}
     assert out["mem0"] == {}
     assert out["openviking"] == {}
+
+
+def test_external_config_empty_allowlist_stays_empty(caplog):
+    out = emc.get_external_memory_config(
+        {"memory": {"external": {"allowed_plugins": []}}})
+    assert out["allowed_plugins"] == []  # explicit [] must survive normalization
+
+
+def test_external_config_non_list_allowlist_fails_closed(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        out = emc.get_external_memory_config(
+            {"memory": {"external": {"allowed_plugins": "hindsight"}}})
+    assert out["allowed_plugins"] == []  # malformed type -> reject all plugins
+    assert "must be a list" in caplog.text
 
 
 def test_external_config_values_passthrough():
