@@ -17,3 +17,13 @@ export { webClient } from '../../src/services/webClient.ts';
 export { PresentationWindow } from '../../src/features/webui/presentation/PresentationWindow.tsx';
 export { createPresentationOverlay, fitOverlayBounds } from '../../src/features/webui/presentation/overlay.ts';
 export { createPresentationStartHandler } from '../../src/features/webui/presentation/start.ts';
+export {
+  clampLauncherPosition,
+  getLauncherMenuPlacement,
+  LAUNCHER_DRAG_THRESHOLD_PX,
+  LAUNCHER_POSITION_STORAGE_KEY,
+  LAUNCHER_VIEWPORT_MARGIN,
+  readStoredLauncherPosition,
+  reconcileDismissedKeys,
+  writeStoredLauncherPosition,
+} from '../../src/features/webui/presentation/launcherState.ts';

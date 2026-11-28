@@ -161,3 +161,4 @@
 | `features/A4PAuthorizationModal` | `a4p-authorization` | A4P 授权卡片及范围选择 |
 
 | `features/groupChat` | `group-chat` | 群聊创建、成员、公开消息、任务卡片与产物 |
+| `features/webui/presentation` | `webui-presentation` | 应用形态宿主; 悬浮启动器与关闭; 悬浮/桌面容器控制 |
