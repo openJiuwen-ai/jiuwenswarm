@@ -53,6 +53,14 @@ export interface AuthStatus {
   userName?: string | null;
   sessionId?: string;
   expired?: boolean;
+  /**
+   * Optional config-endpoint failure details for `state: 'unavailable'`.
+   * Bridges that expose the upstream HTTP status/code let the page distinguish
+   * a certificate error from an unreachable/firewalled endpoint.
+   */
+  errorStatus?: number;
+  errorCode?: string;
+  errorMessage?: string;
 }
 
 export interface AuthErrorBody {

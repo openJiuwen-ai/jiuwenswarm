@@ -898,7 +898,13 @@
       "endedTitle": "活动已结束",
       "endedDescription": "本期限时免费模型活动已结束，感谢参与",
       "configTitle": "免费模型配置",
-      "configDescription": "为限时免费模型单独设置上下文窗口等参数"
+      "configDescription": "为限时免费模型单独设置上下文窗口等参数",
+      "unavailableTitle": "免费模型状态暂不可用",
+      "unavailableDescription": "暂时无法获取免费模型配置，请稍后重试。",
+      "certificateError": "服务端证书异常，无法获取免费模型配置。",
+      "networkError": "网络异常，无法连接免费模型配置服务。",
+      "httpError": "免费模型配置接口返回 HTTP {{status}}，请稍后重试。",
+      "retry": "重试"
     },
     "categories": {
       "memory": "记忆",

@@ -898,7 +898,13 @@
       "endedTitle": "Campaign ended",
       "endedDescription": "This round of limited-time free models has ended. Thanks for taking part.",
       "configTitle": "Free model settings",
-      "configDescription": "Set the context window and other options for the limited-time free models"
+      "configDescription": "Set the context window and other options for the limited-time free models",
+      "unavailableTitle": "Free models status unavailable",
+      "unavailableDescription": "Unable to load the free-model configuration. Please try again later.",
+      "certificateError": "The server certificate is invalid, so the free-model configuration cannot be loaded.",
+      "networkError": "Network error: unable to reach the free-model configuration service.",
+      "httpError": "The free-model configuration endpoint returned HTTP {{status}}. Please try again later.",
+      "retry": "Retry"
     },
     "categories": {
       "memory": "Memory",

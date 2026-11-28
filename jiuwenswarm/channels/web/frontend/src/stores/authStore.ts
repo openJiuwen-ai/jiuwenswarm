@@ -26,6 +26,7 @@ import {
   openExternal,
   status as fetchStatus,
 } from '../services/authClient';
+import { classifyCampaignError, type CampaignError } from '../features/free-models/campaignError';
 
 /** 查询登录状态的退避重试间隔，累计约 60 秒，覆盖 gateway 慢启动。 */
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
@@ -45,6 +46,8 @@ interface AuthState {
   enabled: boolean;
   /** 活动状态：界面据此显示登录入口、公告，还是什么都不显示。 */
   campaignState: CampaignState;
+  /** 配置接口失败时的具体原因；active/ended/off 时为 null。 */
+  campaignError: CampaignError | null;
   /** 华为账号中心地址，换账号时把用户领过去退出。 */
   accountCenterUrl: string;
   /**
@@ -158,9 +161,20 @@ function attachTriggers(onTrigger: () => void, onLeave: () => void): () => void 
 }
 
 function applyStatus(data: AuthStatus): Partial<AuthState> {
+  const campaignState = data.state ?? (data.enabled !== false ? 'active' : 'off');
   return {
     enabled: data.enabled !== false,
-    campaignState: data.state ?? (data.enabled !== false ? 'active' : 'off'),
+    campaignState,
+    // `unavailable` only says the config request failed. Preserve the concrete
+    // cause when the backend forwards it, so the page never renders "ended"
+    // for a network/certificate problem.
+    campaignError: campaignState === 'unavailable'
+      ? classifyCampaignError({
+          status: data.errorStatus,
+          code: data.errorCode,
+          message: data.errorMessage,
+        })
+      : null,
     accountCenterUrl: data.accountCenterUrl || DEFAULT_ACCOUNT_CENTER_URL,
     islogin: Boolean(data.islogin),
     userId: data.userId ?? null,
@@ -175,9 +189,23 @@ function messageOf(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function classifyRefreshError(error: unknown): CampaignError {
+  if (error instanceof AuthApiError) {
+    return classifyCampaignError({ status: error.status, code: error.code, message: error.message });
+  }
+  if (error instanceof TypeError || error instanceof DOMException) {
+    return classifyCampaignError({
+      network: true,
+      message: error instanceof Error ? error.message : undefined,
+    });
+  }
+  return classifyCampaignError({ message: error instanceof Error ? error.message : undefined });
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   enabled: false,
   campaignState: 'off',
+  campaignError: null,
   accountCenterUrl: DEFAULT_ACCOUNT_CENTER_URL,
   switchStep: 'idle',
   sameAccountAfterSwitch: false,
@@ -218,24 +246,40 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // 多处 UI 会同时发现「还没查过」，共用同一次在途查询，不各起一条退避重试
     if (!refreshInflight) {
       refreshInflight = (async () => {
-        // 前端常比 gateway 先起来，第一次很可能打在还没监听的端口上：退避重试；
-        // 只有明确回 404（没有 /auth 路由）才认定登录功能是关的
+        let lastError: unknown = null;
         for (let attempt = 0; attempt < RETRY_DELAYS_MS.length + 1; attempt += 1) {
           try {
             set(applyStatus(await fetchStatus()));
             return;
           } catch (error) {
-            const definitivelyOff = error instanceof AuthApiError && error.status === 404;
-            const lastAttempt = attempt >= RETRY_DELAYS_MS.length;
-            if (definitivelyOff || lastAttempt) {
+            lastError = error;
+            // 明确回 404（没有 /auth 路由）= 这套部署没开登录/免费模型，隐藏入口即可；
+            // 不要把它显示成网络错误，更不要显示成活动结束。
+            if (error instanceof AuthApiError && error.status === 404) {
+              set({
+                enabled: false,
+                campaignState: 'off',
+                campaignError: null,
+                islogin: false,
+                initialized: true,
+              });
+              return;
+            }
+            if (attempt >= RETRY_DELAYS_MS.length) {
               break;
             }
             await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
           }
         }
-        // Gateway无应答时按"暂时连不上"处理，不说活动结束；
-        // 标签页重新可见时还会再查一次
-        set({ enabled: false, campaignState: 'unavailable', islogin: false, initialized: true });
+        // Gateway 无应答/配置接口失败：显示可解释的错误，不说活动结束；
+        // 标签页重新可见时还会再查一次。
+        set({
+          enabled: false,
+          campaignState: 'unavailable',
+          campaignError: classifyRefreshError(lastError),
+          islogin: false,
+          initialized: true,
+        });
       })().finally(() => {
         refreshInflight = null;
       });
