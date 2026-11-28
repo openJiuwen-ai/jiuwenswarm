@@ -8,7 +8,7 @@
 | 编号 / slug | S_20 / stream-event-emission-channel |
 | 关联模块（agent-core 仓） | `openjiuwen/core/session/stream/`（`base.py` 三 schema 与模式枚举 / `emitter.py` StreamEmitter + AsyncStreamQueue / `writer.py` StreamWriter 三型 / `manager.py` StreamWriterManager / `chunk_logging.py` 分块日志开关） |
 | 关联模块（jiuwenswarm 仓） | `agents/harness/common/rails/stream_event_rail.py`（发射面：六个 `_emit_*` + sid 解析 + cwd rebind + symphony 桥接）；`agents/harness/common/rails/symphony/tool_stream_events.py`（SymphonyToolStreamHandler）；装配层：`server/runtime/agent_adapter/interface_deep.py`（`_build_stream_event_rail` @9620 / `_RailBuildInfo` 注册 @10618）、`server/runtime/agent_adapter/interface_code.py`（@730）、`server/runtime/agent_adapter/interface_flash.py`（`_FLASH_RAIL_KEEP` @238 继承）、`server/runtime/skill_turbo/executor.py`（@471）、`agents/harness/team/team_runtime_inheritance.py`（@202）、`agents/harness/common/auto_harness/service.py`（@276）、`agents/swarm/providers/builtin_rails.py`（`swarm.stream_event` 命名空间）；消费侧：`jiuwenswarm/cli/events.py`（终态/交互判定）、`jiuwenswarm/perf/todo_tracker.py`（todo 快照旁路） |
-| 最近一次修订日期 | 2026-11-25 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -46,6 +46,10 @@
 - **N8（flash 继承不重建）**：`interface_flash._FLASH_RAIL_KEEP` 含 `"_stream_event_rail"`——flash 复用 deep 父类已建实例，跳过每请求"卸载→重建"churn，生命周期交给 `_set_user_interaction_enabled`。从该集合移除会破坏 flash 会话的 sid 连续性与暂停状态。
 - **N9（发射跳过名单）**：`before_tool_call` 对 `skill_acceleration_exec` 且 `RESUME_USER_INPUT_KEY` 非空（resume 重放）跳过 `_emit_tool_call` / `_emit_tool_update`；`is_todo_close_nudge(tc)` 同跳。`after_tool_call` 对 deepresearch_execute 的 TIE 结果、todo close nudge 提前 return。这些跳过是防重复事件（resume 侧已发过 / nudge 是内部机制）。
 - **N10（装配失败降级为 None 不抛）**：`_build_stream_event_rail`（deep @9620）try/except——构建失败记 warning 返回 None，adapter 以 `_stream_event_rail is None` 分支继续运行（无流式事件但功能不瘫）。
+
+## 阶段加速交付接缝
+
+SkillTurbo的新模式在现有工具/文本事件中使用可选turbo_context、turbo_delivery，adapter解析保留任务、外层/子调用和文件归属；不新增事件类型。目录加载和交付总结实际SDK顺序、Flash收尾约束由 `jiuwenswarm/server/runtime/skill_turbo/docs/specs/S_12_model-disclosure-and-delivery.md` 维护；实现/测试记录见同模块F_09。
 
 ## 接口契约
 

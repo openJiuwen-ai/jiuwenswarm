@@ -17,6 +17,10 @@ description: SkillTurbo 技能加速引擎模块说明书——给修改/检视�
 - `docs/specs/S_07_fallback-and-degradation.md` — 降级体系（4 层决策 / fallback 子代理 / 契约判定 / 回写）
 - `docs/specs/S_08_event-stream-protocol.md` — 事件流前端协议（事件全集 / 顺序约束 / 缓冲 / 转发 / 交付总结时序）
 - `docs/specs/S_09_outer-integration.md` — 外层集成面（adapter 装配 / ContextVar 桥 / WS-gateway / 双仓部署）
+- `docs/specs/S_10_segment-state-and-inputs.md` — 跨段台账、产物命名空间、唯一输入/后置检查
+- `docs/specs/S_13_batch-execution-and-resume.md` — 同技能串行批、静态依赖、逐段提交/force、审阅组合及原段断点
+- `docs/specs/S_12_model-disclosure-and-delivery.md` — 请求级三载体披露、根加载附录、交付归属及SDK顺序
+- `docs/specs/S_11_explicit-segment-execution.md` — 显式单段、真实结果聚合、内容快照与段恢复
 
 ## 统一术语
 
@@ -82,7 +86,7 @@ skill_turbo/
 ├── interactive_ask.py      # 引导模式（interactive_ask）判定与 resume 恢复
 ├── node_artifact_store.py  # 节点产物 session 持久化（只存摘要/路径；plan_code_hash 门禁继承）
 ├── hitl_dedup.py          # OuterCallIDDeduplicator：HITL 卡片 request_id derive+seq 计数收口（挂 adapter 实例跨请求存续）
-├── task_slot_guard.py     # taskProgress 槽位泄漏登记簿（模块级跨请求单例；claim/release/peek + 上限淘汰，[[B_03]]）
+├── task_slot_guard.py     # 历史任务槽位登记簿（外层 rail 兼容；Turbo 工具不再登记/补发，[[S_08]]）
 ├── context_binding.py      # 9 通道 ContextVar 统一 bind/reset（新增通道=bind 一段+RESETTERS 一行）
 ├── evolver.py              # 执行轨迹（预留未接线）
 ├── json_utils.py           # extract_llm_json 四级提取（无 LLM 级重试，重试归调用方/rail）
@@ -92,10 +96,16 @@ skill_turbo/
 ├── thinking_seam.py        # thinking 参数 fail-open 注入 + 参数被拒启发式判定（裸参重试一次）
 ├── tools_loader.py         # 10 分组工具装载（异常隔离）+ send_file 每请求刷新
 ├── turbo_package_loader.py # 外部 turbo 发现（enable_turbo 开关）+ 动态包注册/清洗碰撞/rebind + resume 自愈重注册
+├── accelerator_manifest.py # 阶段声明模型、统一解析/校验与指纹；不导入业务入口
+├── accelerator_registry.py # 已注册 Skill 的只读精确索引；__full__ 兼容入口；不读盘/调用模型
+├── skill_run_ledger.py     # 跨段任务身份/事实/有限历史；会话执行租约；不接管HITL断点
+├── segment_inputs.py       # 唯一装配/前置与后置验证；路径和文件检查有界offload
+├── segment_context.py      # 显式门面结果状态/单次段控制状态/原始文件内容快照
+├── segment_execution.py    # 精确选择与单段门面；复用状态/装配owner，不调用planner
 ├── validator.py            # PlanCodeValidator 三 profile（import 白黑名单/危险函数/require_abort_reraise 静态强制）
 ├── rails/                  # ask_user_rail（HITL）/ artifact_rail（产物检测+事件）/ delivery_summary_rail（交付骨架时序）/ permission_rail（审批卡）/ skill_prompt_rail（指南注入）
 ├── runtime/                # skill_turbo_runtime 门面（契约符号 re-export + CONTRACT_VERSION）+ tool_utils（通用工具单副本）
-└── docs/                   # 设计文档归档（specs/ 9 份 + features/ 变更归档 + 归档规约 AGENTS.md）
+└── docs/                   # 设计文档归档（specs/ 11 份 + features/ 变更归档 + 归档规约 AGENTS.md）
 ```
 
 ## 架构铁律
@@ -108,7 +118,7 @@ skill_turbo/
    _execute_node_stream 消费循环）、agent 3（run / run_stream / resume_stream），穷尽全表见
    [[S_06]] P1 步 6；validator `require_abort_reraise` 静态强制技能代码宽泛 except 前置
    守卫、门面纯 re-export 保证类型同一——三道防线缺一即 HITL 失效（中断被吞 / 用户中断被
-   降级成契约失败）。**新增任何宽泛 except 必须先答"AbortError 怎么过"**。
+   降级成契约失败）。普通段 can_pause=false 是唯一显式例外：仍穿透节点模板，在段门面收口 failed，禁止 fallback/暂停信号/恢复入口（[[S_11]]）。**新增任何宽泛 except 必须先答"AbortError 怎么过"**。
 2. **AbortError / FallbackContractError 单一符号源**（[[S_05]]）。两者仅从 `plan_node` re-export
    （源头 openjiuwen / fallback_handler），禁止任何环节二次定义或绕过 import——isinstance/except
    判定依赖同一类对象。
@@ -120,7 +130,7 @@ skill_turbo/
    外层 skill_acceleration_exec call id（或其 `#n` 变体），必经 `_dedupe_ask_user_card`
    （序号计数收口 hitl_dedup.OuterCallIDDeduplicator，挂 adapter 实例跨请求存续）。
 5. **tcid 确定性**（[[S_06]] N4）。`skill_turbo-tc-{name}-{args_hash}-{idx}`（args_hash =
-   `sha1` 对 `request_id` 与 canonical_args 以竖线拼接后取前 8 位 hex）；
+   `sha1` 对请求域与 canonical_args 以竖线拼接后取前 8 位 hex；请求域通常为`request_id`，批次按 [[S_13]] 追加batch_id/cursor）；
    request_id 混入使 **resume 精确匹配必然失效，name+idx 回退命中是预期路径**。改 tcid 格式必须
    同步两个解析函数并重新评估回退命中链。
 6. **退出路径事件终态收口对称**（[[S_01]] E1-E13 / [[S_08]]）。改任何异常分支前对照 E 表：
@@ -133,7 +143,7 @@ skill_turbo/
 8. **工具失败信号双轨兼容**（[[S_05]]）。工具层失败两轨并存（抛异常 / `success=False` 结构化
    结果），消费点必须双轨判定；禁止 `str(ToolOutput)` 兜底进业务流；读失败与合法空值必须可区分。
 9. **持久化状态写入规则**（[[S_06]] / [[S_01]]）。skill_turbo 持久化一律走 `{card.id}__skill_turbo`
-   隔离键 + ResumeContextManager / node_artifact_store 单一 owner（禁手写字面量键）；save 显式写
+   隔离键 + ResumeContextManager / node_artifact_store / SkillRunLedger 单一 owner（禁手写字面量键）；save 显式写
    全量键（merge 语义下删键=显式写 None）；clear 走 isolated session 通道 + 同步清调用方内存快照。
 10. **并发安全三则**（[[S_01]]）。每请求新建 SkillTurbo/Executor 实例；`_prepare_root_node` 对
     模块级 root 单例 **deepcopy 后再绑回调**；工具按全局 tool_id 从 `Runner.resource_mgr` 现取
@@ -153,7 +163,7 @@ skill_turbo/
 - **请求级**：每次 `skill_acceleration_exec` 调用新建实例；请求上下文经模块级 ContextVar 传递
   （`_current_request_metadata` / `_skill_turbo_resume_answers` 等，见 [[S_09]] 9 通道表）。
 - **跨请求**：HITL 断点 / 节点产物经 checkpointer 持久化（隔离键）；类级扫描缓存
-  （`_scan_cache` / `_external_scan_cache`）跨实例共享、按 mtime 失效。
+  跨实例共享；内置 `_scan_cache` 按 mtime 失效，外部 `_external_scan_cache` 按有序来源、逐文件元数据及 TTL 失效；IO 失败禁止恢复旧注册。
 - **部署顺序**：① agent-core → ② 技能源（技能侧仓）→ ③ jiuwenswarm（回滚逆序；错序后果见 [[S_09]]）。
 
 ## 测试

@@ -7,10 +7,13 @@
 | 类型 | spec |
 | 编号 / slug | S_06 / hitl-interrupt-resume |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（executor.py、agent.py、plan_node.py、permission_bridge.py、resume_context.py、interactive_ask.py、hitl_dedup.py、rails/ask_user_rail.py、rails/permission_rail.py、skill_turbo_tools.py、context_binding.py、node_artifact_store.py）+ `agent_adapter/interface_deep.py`、`agent_adapter/interface.py` + `agents/harness/common/rails/stream_event_rail.py` + openjiuwen harness（`ToolInterruptHandler.handle_resume`） |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联 feature | [[F_01]]（fresh 调用产物守卫）、[[F_02]]（resume 统一走 handle_resume + 发卡去重收口）；关联 bugfix [[B_01]]（duplicate 占位不追加停止提示 + 防重三件套测试补齐）、[[B_04]]（fresh 守卫后续交付物放行，第 9 ContextVar 通道） |
 
 ## 范围 / 边界
+
+同技能批次在第七步接入，完整静态校验、逐段owner、步骤force、审阅组合、segment.batch断点及调用ID隔离以 [[S_13]] 为准；legacy协议不扩大。
+
 
 ### 本规约管什么
 
@@ -91,13 +94,15 @@ ask_user / 权限类中断的**完整生命周期**：
 
 ## 不变量
 
+下述原有 14 守卫点、三层暂停投影和恢复路径描述适用于 legacy / __full__；普通段 can_pause=true 复用同一链路。普通段 can_pause=false 的统一终止例外、段断点确认失败不发卡、无断点答案不 fresh，以及段门面恢复的差异以 [[S_11]] 为准。
+
 任意时刻，HITL 子系统必须满足下列断言（可判定口径）：
 
 1. **N1 断点清理完备性**：任何退出路径（rail approve / resume 成功 / resume 不可复用（SkillTurboNotHandled）/ cancel / supplement）必须清理 HITL 持久化状态（`__skill_turbo_resume_ctx__` 与 `__react_agent_interruption__`）；**瞬时失败是唯一合法保留场景**。当前由 5 处清理入口拼装实现（见 P5 清理触点表），无单一 owner 断言——改动任一入口必须对照全表。
 2. **N2 AbortError 不吞**：引擎侧 **14 处守卫点**一律透传——plan_node 4 处（`PlanNode.run` / `run_stream` / `execute_subplan` / `execute_subplan_stream`）、executor 7 处（`execute_plan_stream`、`_run_rail_hook`、`use_tool` 两层【工具执行分支 + 外层捕获落盘分支】、`call_llm` / `stream_llm` 重试循环【不进重试】、`_execute_node_stream` 消费循环【AbortError/TIE 分支】）、agent 3 处（`SkillTurbo.run` / `run_stream` / `resume_stream`）。穷尽全表见 P1 步 6；任何新增宽泛 `except` 必须回答"AbortError 怎么过"。
 3. **N3 AbortError 单一符号**：仅从 `plan_node` re-export（re-export 自 openjiuwen core），禁止二次定义 / 别处 import 源。
-4. **N4 tcid 确定性**：tcid 是 `(request_id, tool_name, canonical_args, idx)` 的确定性函数，无随机成分；两个解析函数（`_parse_tool_name_from_call_id` / `_parse_call_idx_from_call_id`）与生成格式强耦合，改一处必改另一处。request_id 混入哈希后，**resume 的 name+idx 回退命中是预期路径而非异常**（日志按 info 定级）。
-5. **N5 checkpointer 键同一性**：`__skill_turbo_resume_ctx__` / `__skill_turbo_node_artifacts__` / `__skill_turbo` agent_id 后缀三个键为单一权威定义（resume_context.py、node_artifact_store.py）；save / load / clear / mark 全走 `ResumeContextManager`（产物走 `NodeArtifactStore` 封装），禁止手写字面量键名。
+4. **N4 tcid 确定性**：tcid 是 `(请求域, tool_name, canonical_args, idx)` 的确定性函数；请求域通常为request_id，批次追加原控制中持久化的batch_id/cursor（[[S_13]]），不在生成调用ID时另取随机值。两个解析函数（`_parse_tool_name_from_call_id` / `_parse_call_idx_from_call_id`）与生成格式强耦合，改一处必改另一处。request_id 混入哈希后，**resume 的 name+idx 回退命中是预期路径而非异常**（日志按 info 定级）。
+5. **N5 checkpointer 键同一性**：resume_ctx、node_artifacts、skill_ledger 的键分别由 resume_context、node_artifact_store、SkillRunLedger 定义；`__skill_turbo` agent_id 后缀只由 resume_context 定义。断点走 ResumeContextManager，产物走 node_artifact_store，台账走 SkillRunLedger，禁止各消费方手写键名。
 6. **N6 clear 落盘语义**：清隔离键必须走 **isolated session 通道**（独立 create_agent_session + set_skill_turbo_id + pre_run + update_state(None) + post_run）+ **同步清调用方 session 内存快照**。checkpointer post_run 是全量覆盖而非增量合并，若调用方随后 post_run 自己的 session，含旧条目的内存快照会把磁盘上刚清掉的 resume_ctx 写回复活。
 7. **N7 save 替换语义**：`save_resume_ctx` 必须显式写全量键（含 `resume_in_flight=None`），不得依赖 merge 增量——openjiuwen `update_state` 是 update_dict merge 语义，缺键不删旧键。
 8. **N8 发卡单路 owner + 外层 call id 对齐**：SkillTurbo 的 ask_user 卡片唯一产出源是 harness `__interaction__` 转换（fresh 首卡与 resume 内二次中断卡同源——`ToolInterruptHandler.commit_interrupt` 直接 write_stream，DeepAdapter `_parse_stream_chunk` 转换）；request_id 恒为外层 `skill_acceleration_exec` call id（或其 `#n` 变体），必经 `_dedupe_ask_user_card`（序号计数收口 `hitl_dedup.OuterCallIDDeduplicator`）。`StreamEventRail` 不主动 emit SkillTurbo 的 ask_user 卡片。
@@ -116,7 +121,8 @@ ask_user / 权限类中断的**完整生命周期**：
 ```
 args_canonical = json.dumps(kwargs, sort_keys=True, default=str)
                 （TypeError/ValueError 时回退 repr(sorted(kwargs.items()))）
-args_hash      = sha1(f"{request_id}|{args_canonical}".encode())[:8]   # 8 位 hex
+request_domain = request_id                          # batch时为request_id|batch_id|cursor
+args_hash      = sha1(f"{request_domain}|{args_canonical}".encode())[:8]   # 8 位 hex
 key            = f"{tool_name}|{args_hash}"
 idx            = self._tool_call_counter[key]   # per-Executor，每次执行从 0 重数
 tool_call_id   = f"skill_turbo-tc-{tool_name}-{args_hash}-{idx}"
@@ -438,6 +444,12 @@ P5 步 5 cancel 保留的 `node_artifacts` 需要消费方，否则"停止后继
 
 ## 与其它 spec 的关系
 
+新增的 `isolated_skill_state` 是台账与命名空间桶的专用读写通道：同会话写锁内独立 pre_run，先删再写实现替换，单次提交后重读确认并同步已参与通道的 turbo Session 快照；读 Session 仅关闭流。即使 ACK 丢失也尝试读取实际状态同步，当前操作仍报告失败；若存储持续不可读，后续执行方必须避免对陈旧快照 post_run。它不写 INTERRUPTION_KEY，不代替 ResumeContextManager。详见 [[S_10]]。
+
+新节点产物格式为 version=2、legacy、segments；缺省 API 继续读写 legacy 块，保留 sibling 段桶。显式 namespace 必须含任务/技能/段并匹配入口 hash；名字不同或缺 hash 不继承。新桶始终独立提交，不 post_run/关闭调用方，因此中断前传 skip_post_run=True 也保留调用方生命周期。executor 普通段在清理、继承、暂停前和 finally 使用同一 namespace，legacy 路径不变。
+
+普通段恢复按 [[S_11]] 验证原 inputs、身份、调用参数及声明/技能源文件原始内容集合。segment 控制状态必须经隔离 Session 替换、提交确认；读取也用新隔离快照，不能假定重复 pre_run 会刷新旧 Session。segment 与 in-flight 删除不得用嵌套 merge 的缺键表达。连续卡片保存已回答 ask_user 的原参数、节点和调用序号及结果，重放时先复用旧答案再消费当前 pending；跳过已完成阶段时推进其已回答调用序号，沿用原 tcid 公式及 name+idx 回退。can_pause=false 在段门面收口失败，use_tool 不保存断点，暂停信号不外发；CancelledError 仍立即透传。
+
 | Spec | 关系 |
 |---|---|
 | [[S_01]] execution-pipeline | 本 spec 的中断路径嵌在 S_01 主循环内；退出路径全景表 E1-E13 中 **E8（HITL 中断）** 的完整展开即本 spec P1。executor 层"AbortError 不发终态帧"的收口约束由 S_01 固化，本 spec 补 adapter 层收尾。重放续执行五机制与 S_01 的 task_states / node_artifacts 生命周期共用地基。 |
@@ -448,3 +460,11 @@ P5 步 5 cancel 保留的 `node_artifacts` 需要消费方，否则"停止后继
 | [[S_07]] fallback-and-degradation | AbortError 不进 fallback 是两 spec 的共同边界：plan_node 模板方法中 AbortError / FallbackContractError 直通，fallback_handler validator 内 AbortError 也原样上抛。本 spec P1 步 6 的透传链在 S_07 有降级矩阵视角。 |
 | [[S_08]] event-stream-protocol | 三件套事件（tool_call(pending_approval) / tool_update / ask_user_question）与 invocation_paused 终结帧的字段定义、前端消费契约归 S_08；本 spec 只定"何时发、谁发、发几张"。 |
 | [[S_09]] outer-integration | ContextVar 桥（9 通道 bind / reset、`skill_turbo_resume_answers` / `skill_turbo_hitl_tic` 等）的机制细节归 S_09；本 spec 引用其结论：跨上下文主信号走工具返回值，ContextVar 仅同上下文兜底。 |
+
+隔离通道的运行时 agent_id 读取由 resume_context 的 SDK 适配函数统一负责。锁定 SDK 的
+Session.get_agent_id() 返回原始 card ID，不含隔离后缀，不能替代运行时配置 ID。
+该接缝读取现有内部 Session 并验证 ID，不改变隔离键或同步主会话的边界。
+
+隔离通道的进程内 scope 随活跃操作、等待者及存活调用方保留，最后一个使用者释放后回收。
+存活调用方在后续提交时仍需同步快照，因此不能按单次提交完成或断点清理直接销毁 scope；
+回收不改变 checkpointer 的键、数据结构或暂停恢复语义，见 [[S_10]] N2。

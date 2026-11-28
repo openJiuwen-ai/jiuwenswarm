@@ -30,6 +30,7 @@ from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
     emit_pending_ppt_delivery_summary,
     set_pending_ppt_delivery_summary,
     take_pending_ppt_delivery_summary,
+    pending_summary_matches_result,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class _DeliveryState:
     delivered: list[str] = field(default_factory=list)
     finish_call_id: str = ""
     completed_call_id: str = ""
+    can_finish: bool = True
     context: Any = None
     context_engine: Any = None
 
@@ -147,6 +149,10 @@ class FlashDeliverySummaryRail(SkillTurboDeliverySummaryRail):
         ):
             clear_pending_ppt_delivery_summary()
             return
+        state = _delivery_state.get()
+        if state is not None and isinstance(result, dict) and result.get('mode') in {'segment', 'batch'}:
+            state.can_finish = (result.get('delivery_confirmed') is True and result.get('status') == 'ok'
+                                and not any(result.get(key) for key in ('already_done', 'next_steps', 'remaining_steps', 'resume_remaining', 'outer_work_remaining')))
         result_failed = isinstance(result, dict) and result.get("success") is False
         if result_failed or getattr(result, "success", None) is False:
             clear_pending_ppt_delivery_summary()
@@ -155,7 +161,7 @@ class FlashDeliverySummaryRail(SkillTurboDeliverySummaryRail):
         # 既有发送接口只返回 bool；保留正文用于模型历史，再原样交回该接口。
         # 取出与回填之间没有 await，缓存仍是当前任务的 ContextVar。
         summary = take_pending_ppt_delivery_summary()
-        if not summary:
+        if not summary or not pending_summary_matches_result(summary, ctx.inputs):
             return
         set_pending_ppt_delivery_summary(summary)
         if not await emit_pending_ppt_delivery_summary(ctx.session):
@@ -164,7 +170,7 @@ class FlashDeliverySummaryRail(SkillTurboDeliverySummaryRail):
 
         state = _delivery_state.get()
         if state is not None:
-            state.pending.append(summary)
+            state.pending.append(summary['summary'] if isinstance(summary, dict) else summary)
             state.context = ctx.context
             state.context_engine = getattr(ctx.agent, "context_engine", None)
             state.completed_call_id = str(getattr(ctx.inputs.tool_call, "id", "") or "")
@@ -189,7 +195,11 @@ class FlashDeliverySummaryRail(SkillTurboDeliverySummaryRail):
         state = _delivery_state.get()
         if state is None or not await self._append_history(state):
             return
-        if not state.finish_call_id or state.finish_call_id != state.completed_call_id:
+        if not state.can_finish or not state.finish_call_id or state.finish_call_id != state.completed_call_id:
+            return
+        from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import get_skill_turbo_outer_todo_pending
+        pending = get_skill_turbo_outer_todo_pending()
+        if isinstance(pending, dict) and pending.get('count', 0) > 0:
             return
         if not ctx.close_steering_if_empty():
             return

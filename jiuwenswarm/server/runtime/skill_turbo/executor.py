@@ -195,6 +195,11 @@ def is_skill_turbo_thinking_param_error(exc: BaseException) -> bool:
 # ──────────────────────── 全局上下文变量 ────────────────────────
 # Session管理（用于发送事件）
 _session_var: ContextVar[Session | None] = ContextVar("skill_turbo_session", default=None)
+_segment_nodes_var: ContextVar[tuple] = ContextVar('skill_turbo_segment_nodes', default=())
+_SEGMENT_PAUSE_EVENT_TYPES = {
+    '__interaction__', 'chat.ask_user_question', 'chat.invocation_paused',
+    'invocation_paused', '__skill_turbo_hitl__',
+}
 
 # 流式输出缓冲层：对 chat.delta / chat.reasoning 累加后再 flush，
 # 减少高频小 chunk 对前端的消息压力。与 subagent_executor 的
@@ -456,6 +461,8 @@ def _parse_call_idx_from_call_id(tool_call_id: Any) -> int | None:
 class SkillTurboExecutor:
     """规划代码运行时引擎。"""
 
+    segment_context = None
+
     def __init__(
         self,
         environment: SkillTurboEnvironment,
@@ -532,6 +539,7 @@ class SkillTurboExecutor:
         # 运行期在 _after_subplan_execute 中累积，仅在中断前/流末 finally 落盘，
         # 避免每节点 post_run 的 IO 开销与事件流冲突。
         self._node_artifacts_holder: dict[str, dict[str, Any]] = {}
+        self.segment_context = None
 
         # ──────────────────────── LLM 并发限制 ────────────────────────
         # 实例级 Semaphore，限制本 Executor 内 call_llm / stream_llm 的并发数。
@@ -723,17 +731,6 @@ class SkillTurboExecutor:
             enable_task_tracking=True,
         )
 
-        # 新一轮 SkillTurbo 执行：清除上轮残留的 node_artifacts，避免全新任务误复用旧产物。
-        # holder 此时必为空（每次请求新建 Executor），清的是 session 中持久化的旧记录。
-        # HITL resume 重放时保留产物（执行跳过主要靠 resume inputs；清盘会误伤可复用记录）。
-        if not self._resume_replay:
-            await self._clear_stale_node_artifacts()
-        else:
-            # P2-2：resume 重放从 session 继承同 plan_code 的已完成节点产物。
-            # 新 executor 的 holder 为空，completed 阶段又被 _should_skip_subplan_execute
-            # 跳过不再采集——若不继承，finally 落盘会用「空底+新增」覆盖 session，
-            # 中断前已完成阶段的产物就此丢失。
-            await self._inherit_node_artifacts_for_replay(plan_code)
 
         logger.info(
             "[SkillTurboExecutor] execute_plan_stream start plan_code_len=%s input_keys=%s resume_replay=%s",
@@ -745,9 +742,40 @@ class SkillTurboExecutor:
         yield self._make_plan_started_chunk(request_id, channel_id)
 
         try:
+            # 新一轮 SkillTurbo 执行：清除上轮残留的 node_artifacts，避免全新任务误复用旧产物。
+            # holder 此时必为空（每次请求新建 Executor），清的是 session 中持久化的旧记录。
+            # HITL resume 重放时保留产物（执行跳过主要靠 resume inputs；清盘会误伤可复用记录）。
+            if not self._resume_replay:
+                await self._clear_stale_node_artifacts()
+            else:
+                # P2-2：resume 重放从 session 继承同 plan_code 的已完成节点产物。
+                # 新 executor 的 holder 为空，completed 阶段又被 _should_skip_subplan_execute
+                # 跳过不再采集——若不继承，finally 落盘会用「空底+新增」覆盖 session，
+                # 中断前已完成阶段的产物就此丢失。
+                await self._inherit_node_artifacts_for_replay(plan_code)
             try:
+                if self.segment_context is not None:
+                    from jiuwenswarm.server.runtime.skill_turbo.segment_context import execution_snapshot
+                    from jiuwenswarm.server.runtime.skill_turbo.turbo_package_loader import ensure_execution_package
+
+                    expected = self.segment_context.control['execution_snapshot']
+                    try:
+                        current = await asyncio.to_thread(execution_snapshot, expected['skill_root'])
+                    except (OSError, ValueError) as exc:
+                        raise PlanCodeLoadError('execution_definition_unverifiable') from exc
+                    if current != expected:
+                        raise PlanCodeLoadError('execution_definition_changed_before_start')
+                    record = next(s for s in self._env.skills.values() if s.external_name == self.segment_context.skill)
+                    try:
+                        await asyncio.to_thread(
+                            ensure_execution_package, record.name, record.turbo_codes_dir, current['fingerprint'],
+                        )
+                    except (OSError, ValueError) as exc:
+                        raise PlanCodeLoadError('execution_package_unavailable') from exc
                 root = self._prepare_root_node(plan_code)
             except PlanCodeValidationError as e:
+                if self.segment_context is not None:
+                    raise
                 yield self._make_error_chunk(
                     request_id,
                     channel_id,
@@ -756,6 +784,8 @@ class SkillTurboExecutor:
                 yield self._make_complete_chunk(request_id, channel_id)
                 return
             except PlanCodeLoadError as e:
+                if self.segment_context is not None:
+                    raise
                 yield self._make_error_chunk(
                     request_id,
                     channel_id,
@@ -795,6 +825,9 @@ class SkillTurboExecutor:
                 if event_type == "chat.error":
                     plan_failed = True
                     plan_error = str(payload.get("error") or "") or None
+                    if self.segment_context is not None:
+                        self.segment_context.error = plan_error or 'node_execution_failed'
+                        continue
 
                 # PPT stage 的开始/完成横幅属于主回答气泡。它们必须保持在
                 # task.start 之前 / task.complete 之后立即发送，不能进入通用
@@ -887,6 +920,9 @@ class SkillTurboExecutor:
             yield self._make_complete_chunk(request_id, channel_id)
 
         except asyncio.TimeoutError:
+            if self.segment_context is not None:
+                self.segment_context.error = 'execution_timeout'
+                raise
             error = f"执行超时: 超过 {self._config.execution_timeout} 秒"
             yield self._make_error_chunk(request_id, channel_id, error)
             yield self._make_plan_finished_chunk(
@@ -920,6 +956,9 @@ class SkillTurboExecutor:
             yield self._make_complete_chunk(request_id, channel_id)
             raise
         except Exception as e:
+            if self.segment_context is not None:
+                self.segment_context.error = str(e)
+                raise
             error = str(e)
             yield self._make_error_chunk(request_id, channel_id, error)
             yield self._make_plan_finished_chunk(
@@ -935,6 +974,11 @@ class SkillTurboExecutor:
             session = _session_var.get()
             if session is not None and self._node_artifacts_holder:
                 await self._persist_node_artifacts(session)
+            if self.segment_context is not None:
+                self.segment_context.fallback_count = self._fallback_count
+                self.segment_context.outputs = dict(merged_inputs)
+                if session is not None:
+                    await session.close_stream()
             self._reset_execution_context(context_tokens)
             self._execution_inputs = {}
             self._resume_replay = False
@@ -1180,7 +1224,7 @@ class SkillTurboExecutor:
             tokens["current_task_holder"] = _current_task_holder_var.set({"task_id": None})
 
         self._current_trace = ExecutionTrace(
-            plan_code_hash=self._hash_code(plan_code),
+            plan_code_hash=self.hash_plan_code(plan_code),
             input_keys=list(inputs.keys()),
             start_time=start,
         )
@@ -1252,6 +1296,9 @@ class SkillTurboExecutor:
         session = _session_var.get()
         if session is None:
             return
+        if self.segment_context is not None:
+            await clear_node_artifacts(session, namespace=self.segment_context.namespace)
+            return
         sid = getattr(session, "session_id", None) or getattr(session, "_session_id", None)
         card = self._env.card
         clear_session = None
@@ -1300,6 +1347,17 @@ class SkillTurboExecutor:
         session = _session_var.get()
         if session is None:
             return
+        if self.segment_context is not None:
+            state = await load_node_artifacts(
+                session, namespace=self.segment_context.namespace, plan_code_hash=self.hash_plan_code(plan_code),
+            )
+            if state is None:
+                task_states = (self._pending_resume or {}).get('task_states') or []
+                if any(t.get('status') == 'completed' for t in task_states):
+                    raise PlanCodeLoadError('segment_artifacts_unavailable')
+            if state:
+                self._node_artifacts_holder.update(state['nodes'])
+            return
         sid = getattr(session, "session_id", None) or getattr(session, "_session_id", None)
         card = self._env.card
         load_session = None
@@ -1318,7 +1376,7 @@ class SkillTurboExecutor:
             if not isinstance(nodes, dict) or not nodes:
                 return
             persisted_hash = str(state.get("plan_code_hash") or "")
-            current_hash = self._hash_code(plan_code)
+            current_hash = self.hash_plan_code(plan_code)
             if persisted_hash and persisted_hash != current_hash:
                 logger.warning(
                     "[SkillTurboExecutor] skip inheriting node artifacts: "
@@ -1355,7 +1413,7 @@ class SkillTurboExecutor:
                     )
 
     async def _persist_node_artifacts(
-        self, session: Any, *, skip_post_run: bool = False
+        self, session: Any, *, skip_post_run: bool = False, require_confirmed: bool = False
     ) -> None:
         """将内存中的节点产物记录落盘到 session state（checkpointer 持久化）。
 
@@ -1381,10 +1439,13 @@ class SkillTurboExecutor:
                 session,
                 skill=skill,
                 nodes=dict(self._node_artifacts_holder),
-                plan_code_hash=self._hash_code(self._current_plan_code or ""),
+                plan_code_hash=self.hash_plan_code(self._current_plan_code or ""),
                 skip_post_run=skip_post_run,
+                **({'namespace': self.segment_context.namespace} if self.segment_context is not None else {}),
             )
         except Exception as exc:
+            if require_confirmed:
+                raise
             logger.warning(
                 "[SkillTurboExecutor] persist_node_artifacts failed: %s", exc, exc_info=True
             )
@@ -1667,6 +1728,9 @@ class SkillTurboExecutor:
         - call_index：本次执行内同 (name, args) 的第几次调用（从 0 起算）
         """
         request_id = str(_request_id_var.get() or "")
+        batch = self.segment_context.control.get('batch') if self.segment_context is not None else None
+        if batch is not None:
+            request_id += f"|{batch['batch_id']}|{batch['cursor']}"
         try:
             args_canonical = json.dumps(kwargs, sort_keys=True, default=str)
         except (TypeError, ValueError):
@@ -1694,6 +1758,14 @@ class SkillTurboExecutor:
         """
         session = _session_var.get()
         tool_call_id = self._next_tool_call_id(tool_name, kwargs)
+        answered_call = None
+        if self.segment_context is not None and tool_name == 'ask_user':
+            active_nodes = _segment_nodes_var.get()
+            answered_call = {'node': active_nodes[-1].plan_name if active_nodes else '',
+                             'arguments': copy.deepcopy(kwargs), 'index': _parse_call_idx_from_call_id(tool_call_id)}
+            for previous in self.segment_context.answered_tools:
+                if all(previous.get(key) == value for key, value in answered_call.items()):
+                    return copy.deepcopy(previous['result'])
         resume_input, tool_call_id = self._consume_pending_resume_input(
             tool_call_id, tool_name
         )
@@ -1767,6 +1839,9 @@ class SkillTurboExecutor:
                 )
                 trace_status = "skipped"
                 trace_result = ctx.inputs.tool_result
+                if (answered_call is not None and isinstance(trace_result, dict)
+                        and trace_result.get('status') == 'answered'):
+                    self.segment_context.answered_tools.append({**answered_call, 'result': copy.deepcopy(trace_result)})
                 return ctx.inputs.tool_result
 
             # rail approve（含 resume approve）：清掉断点 ctx，正常执行
@@ -1804,7 +1879,16 @@ class SkillTurboExecutor:
                     type(result).__name__,
                 )
 
-                ctx.inputs.tool_result = result
+                if self.segment_context is not None:
+                    if tool_name == 'send_file_to_user':
+                        self.segment_context.send_calls.append({
+                            'tool_call_id': tool_call_id, 'arguments': copy.deepcopy(kwargs),
+                        })
+                    from jiuwenswarm.server.runtime.skill_turbo.segment_context import public_segment_output
+
+                    ctx.inputs.tool_result = public_segment_output(result)
+                else:
+                    ctx.inputs.tool_result = result
                 await self._run_rail_hook("after_tool_call", ctx)
                 trace_status = "ok"
                 trace_result = result
@@ -1837,6 +1921,9 @@ class SkillTurboExecutor:
             # （plan_code/inputs/pending_tool_call_id），供 resume 时重放执行并命中
             # 同一 tool_call_id 恢复。透传给上层发 HITL 三件套。
             trace_status = "interrupted"
+            if self.segment_context is not None and not self.segment_context.spec.hitl.can_pause:
+                # 保持AbortError穿过PlanNode，统一边界再转failed；此处不保存或发卡。
+                raise
             metadata = (
                 self._execution_inputs.get("metadata")
                 if isinstance(self._execution_inputs, dict)
@@ -1861,13 +1948,19 @@ class SkillTurboExecutor:
                 ) from None
             try:
                 outer_task_id = get_current_task_id()
+                task_states = self._snapshot_task_states()
+                if self.segment_context is not None:
+                    await self._persist_node_artifacts(_session_var.get(), skip_post_run=True, require_confirmed=True)
                 await save_resume_ctx(
                     _session_var.get(),
                     plan_code=self._current_plan_code,
                     inputs=self._execution_inputs,
                     pending_tool_call_id=tool_call_id,
-                    task_states=self._snapshot_task_states(),
+                    task_states=task_states,
                     outer_task_id=outer_task_id,
+                    **({'segment': self.segment_context.checkpoint(
+                        self._execution_inputs, task_states=task_states, pending_tool_call_id=tool_call_id,
+                    )} if self.segment_context is not None else {}),
                 )
                 logger.info(
                     "[SkillTurboExecutor] HITL interrupt resume_ctx saved tcid=%s outer_task_id=%s",
@@ -1878,6 +1971,10 @@ class SkillTurboExecutor:
                 logger.warning(
                     "[SkillTurboExecutor] save resume_ctx failed: %s", save_exc
                 )
+                if self.segment_context is not None:
+                    raise FallbackContractError(
+                        node_name='segment', reason=f'segment_checkpoint_save_failed: {save_exc}',
+                    ) from save_exc
             raise
         finally:
             _emit_trace_output()
@@ -2179,7 +2276,7 @@ class SkillTurboExecutor:
     ) -> AsyncIterator[str]:
         """
         流式调用 LLM（使用Rail机制）。
-        
+
         注意：reasoning_content 会自动处理并发送事件，业务代码无需关心。
 
         Args:
@@ -2193,7 +2290,7 @@ class SkillTurboExecutor:
 
         Yields:
             str: 流式文本片段（普通文本内容）
-            
+
         内部机制：
             - reasoning / 正文事件经 session stream **实时**刷出（与 DeepAgent 对齐；
               失败轮前端可能留下脏前缀，随后由重试通知 / 成功轮覆盖）
@@ -2411,7 +2508,7 @@ class SkillTurboExecutor:
             error,
             self._fallback_count,
         )
-        return await handler.fallback(
+        result = await handler.fallback(
             FallbackCall(
                 node_name=node.plan_name,
                 instruction=node.instruction or "",
@@ -2421,6 +2518,9 @@ class SkillTurboExecutor:
                 result_validator=node.validate_fallback_success,
             )
         )
+        if self.segment_context is not None:
+            self.segment_context.capture_repair(node, result)
+        return result
 
     async def fallback_stream(
         self,
@@ -2461,17 +2561,22 @@ class SkillTurboExecutor:
             error,
             self._fallback_count,
         )
-        async for chunk in handler.fallback_stream(
-            FallbackCall(
+        fallback_result = {} if self.segment_context is not None else None
+        call = FallbackCall(
                 node_name=node.plan_name,
                 instruction=node.instruction or "",
                 inputs=inputs,
                 error=error,
                 parent_session=_session_var.get(),
                 result_validator=node.validate_fallback_success,
+                result_holder=fallback_result,
             )
-        ):
+        async for chunk in handler.fallback_stream(call):
+            if fallback_result is not None and isinstance(chunk, dict) and chunk.get('status') in {'ok', 'partial'}:
+                fallback_result.update(chunk)
             yield chunk
+        if self.segment_context is not None:
+            self.segment_context.capture_repair(node, fallback_result)
 
     async def _execute_node_stream(
         self,
@@ -2488,6 +2593,20 @@ class SkillTurboExecutor:
         session = _session_var.get()
 
         async def enqueue_chunk(chunk: Any) -> None:
+            if self.segment_context is not None and isinstance(chunk, dict):
+                if (not self.segment_context.spec.hitl.can_pause
+                        and chunk.get('event_type') in _SEGMENT_PAUSE_EVENT_TYPES):
+                    return
+                owner = chunk.get('node') or chunk.get('plan_name')
+                active_nodes = _segment_nodes_var.get()
+                active_node = active_nodes[-1] if active_nodes else node
+                owns_output = active_node is node and (not owner or owner == node.plan_name)
+                if owns_output and not chunk.get('event_type'):
+                    chunk = self.segment_context.capture_root(chunk)
+                else:
+                    chunk.pop('__segment_handoff__', None)
+                if '__artifact__' in chunk:
+                    self._collect_node_artifact(active_node, chunk, self._current_task_id() or '', time.time(), False)
             is_bubble = isinstance(chunk, dict) and bool(
                 chunk.get(_BUBBLE_PROGRESS_FIELD)
             )
@@ -2539,6 +2658,9 @@ class SkillTurboExecutor:
                     payload = parse_stream_chunk(stream_chunk)
                     if payload is None:
                         continue
+                    if self.segment_context is not None and not self.segment_context.spec.hitl.can_pause:
+                        if payload.get('event_type') in _SEGMENT_PAUSE_EVENT_TYPES:
+                            continue
                     await output_queue.put(
                         self._make_session_event_chunk(
                             request_id,
@@ -2553,8 +2675,12 @@ class SkillTurboExecutor:
                 await output_queue.put(self._make_node_started_chunk(
                     request_id, channel_id, node, self._current_task_id()
                 ))
+                if self.segment_context is not None:
+                    self.segment_context.executed = True
                 async for chunk in node.run_stream(inputs):
                     await enqueue_chunk(chunk)
+                if self.segment_context is not None:
+                    self.segment_context.completed = True
                 async with self._task_event_drain_lock:
                     self._flush_deferred_task_lifecycle_events()
                     async for task_chunk in self._drain_task_event_chunks():
@@ -2873,7 +2999,7 @@ class SkillTurboExecutor:
             # 的 data 全量透传下发前端。data_payload 是浅拷贝，此处剔除不影响
             # plan_node 侧对原 chunk 的标志检测（剥离与检测各管一个消费面）。
             data_payload.pop("_needs_fallback", None)
-        
+
         if isinstance(content, dict):
             # 从 chunk 中提取正确的 plan_name（如果存在），并转为显示名
             chunk_plan_name = content.get("node") or content.get("plan_name")
@@ -2897,7 +3023,7 @@ class SkillTurboExecutor:
             # 将 data_payload 中的 current_node 转为显示名（已浅拷贝，避免修改原始 chunk）
             if data_payload is not None and "current_node" in data_payload:
                 data_payload["current_node"] = self._display_name(data_payload["current_node"])
-        
+
         payload = {
             "event_type": "chat.delta",
             "content": actual_content,
@@ -3180,6 +3306,17 @@ class SkillTurboExecutor:
         _task_id, task_state = found
         if task_state.get("status") != "completed":
             return False
+        if self.segment_context is not None:
+            skipped_names = set()
+            pending_nodes = [subplan]
+            while pending_nodes:
+                skipped_node = pending_nodes.pop()
+                skipped_names.add(skipped_node.plan_name)
+                pending_nodes.extend(skipped_node.sub_plans)
+            # 跳过阶段也推进已回答 ask_user 的原序号，保持后续同参数 tcid 对齐。
+            for answered in self.segment_context.answered_tools:
+                if answered['node'] in skipped_names:
+                    self._next_tool_call_id('ask_user', answered['arguments'])
         logger.info(
             "[SkillTurboExecutor] resume skip execute completed stage plan_name=%s task_id=%s",
             subplan.plan_name,
@@ -3197,6 +3334,8 @@ class SkillTurboExecutor:
             subplan: 子节点（二层节点）
             inputs: 输入参数
         """
+        if self.segment_context is not None:
+            _segment_nodes_var.set((*_segment_nodes_var.get(), subplan))
         # 只有二层节点（depth=1）才发送 task 事件
         if subplan.depth != 1:
             logger.debug(
@@ -3205,13 +3344,13 @@ class SkillTurboExecutor:
                 subplan.plan_name
             )
             return
-        
+
         logger.debug(
             "[SkillTurboExecutor] _before_subplan_execute: plan_name=%s depth=%d",
             subplan.plan_name,
             subplan.depth,
         )
-        
+
         events_queue = _task_events_queue_var.get()
         task_states = self._live_task_states()
 
@@ -3285,6 +3424,15 @@ class SkillTurboExecutor:
             inputs: 输入参数
             result_or_error: 执行结果或异常对象
         """
+        if self.segment_context is not None:
+            self.segment_context.capture_child(subplan, result_or_error)
+            active_nodes = _segment_nodes_var.get()
+            if active_nodes and active_nodes[-1] is subplan:
+                _segment_nodes_var.set(active_nodes[:-1])
+            if subplan.depth != 1:
+                self._collect_node_artifact(
+                    subplan, result_or_error, '', time.time(), isinstance(result_or_error, BaseException),
+                )
         # 只有二层节点（depth=1）才发送 task 事件
         if subplan.depth != 1:
             logger.debug(
@@ -3293,13 +3441,13 @@ class SkillTurboExecutor:
                 subplan.plan_name
             )
             return
-        
+
         logger.debug(
             "[SkillTurboExecutor] _after_subplan_execute: plan_name=%s depth=%d",
             subplan.plan_name,
             subplan.depth,
         )
-        
+
         task_context = _current_task_context_var.get()
         events_queue = _task_events_queue_var.get()
         task_states = self._live_task_states()
@@ -3411,7 +3559,9 @@ class SkillTurboExecutor:
             if isinstance(result_or_error, dict):
                 artifact = result_or_error.pop("__artifact__", None)
             if not isinstance(artifact, dict):
-                return
+                if self.segment_context is None or subplan.plan_name in self._node_artifacts_holder:
+                    return
+                artifact = {}
             node_status = "completed"
             info = artifact.get("info") if isinstance(artifact.get("info"), dict) else {}
             files = artifact.get("files") if isinstance(artifact.get("files"), list) else []
@@ -3425,6 +3575,8 @@ class SkillTurboExecutor:
         delivery_summary = artifact.get("delivery_summary")
         if isinstance(delivery_summary, str) and delivery_summary.strip():
             artifact_entry["delivery_summary"] = delivery_summary.strip()
+        if isinstance(artifact.get('delivery_evidence'), dict):
+            artifact_entry['delivery_evidence'] = copy.deepcopy(artifact.get('delivery_evidence'))
         self._node_artifacts_holder[subplan.plan_name] = artifact_entry
         logger.debug(
             "[SkillTurboExecutor] node_artifact collected: plan_name=%s status=%s has_artifact=%s",
@@ -3663,7 +3815,7 @@ class SkillTurboExecutor:
         安全措施：
         1. 清空 __builtins__，只暴露白名单内置函数
         2. 移除 type, isinstance 等可能被滥用的函数
-        
+
         注意：
         - plan_code 定义 PlanNode 子类，在 _execute 中通过 self.xxx 调用方法
         - use_tool、call_llm、stream_llm、extract_json 都是 PlanNode 的方法
@@ -3756,7 +3908,7 @@ class SkillTurboExecutor:
             logger.debug("[SkillTurboExecutor] added to sys.path: %s", normalized)
 
     @staticmethod
-    def _hash_code(code: str) -> str:
+    def hash_plan_code(code: str) -> str:
         """计算代码哈希（用于追踪）。"""
         return hashlib.md5(code.encode()).hexdigest()[:8]
 

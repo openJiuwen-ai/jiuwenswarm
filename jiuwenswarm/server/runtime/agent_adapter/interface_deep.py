@@ -11806,6 +11806,15 @@ class JiuWenSwarmDeepAdapter:
                 meta.setdefault("request_id", runtime_config.request_id or "")
                 meta.setdefault("channel_id", runtime_config.channel_id or "")
                 meta.setdefault("session_id", runtime_config.session_id)
+                # 宿主project_dir是本次请求显式工作区；在工具跨任务转绑前统一输出字段。
+                output_dir = meta.get("output_dir")
+                request_project_dir = runtime_config.project_dir
+                if (
+                    output_dir is None or isinstance(output_dir, str) and not output_dir.strip()
+                ) and isinstance(request_project_dir, str):
+                    request_project_dir = request_project_dir.strip()
+                    if request_project_dir and Path(request_project_dir).is_absolute():
+                        meta["output_dir"] = request_project_dir
                 # language：skill_turbo 停止提示按语言切换的词源（与
                 # _resolve_prompt_language 同一配置，归一化 cn/en）。
                 # wire metadata 不携带该键，须显式补齐。
@@ -12401,8 +12410,8 @@ class JiuWenSwarmDeepAdapter:
                     exc,
                 )
 
-            from jiuwenswarm.server.runtime.skill_turbo.rails.skill_prompt_rail import SkillTurboPromptRail
-            rail = SkillTurboPromptRail(acceleration_disabled=acceleration_disabled)
+            from jiuwenswarm.server.runtime.skill_turbo.rails.accelerator_rail import SkillAcceleratorRail
+            rail = SkillAcceleratorRail(acceleration_disabled=acceleration_disabled, config=skill_turbo_config)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] SkillTurboPromptRail create success "
                 "(acceleration_disabled=%s)",
@@ -12447,6 +12456,8 @@ class JiuWenSwarmDeepAdapter:
 
     def build_skill_turbo_config(self) -> dict[str, Any]:
         """构建 SkillTurbo 配置."""
+        react_config = getattr(self, '_config_cache', {})
+        execution_config = react_config.get('skill_turbo', {}) if isinstance(react_config, dict) else {}
         tool_cards = []
         if self._instance is not None:
             ability_manager = getattr(self._instance, "ability_manager", None)
@@ -12456,6 +12467,7 @@ class JiuWenSwarmDeepAdapter:
         fallback_handler = self._create_skill_turbo_fallback_handler()
 
         cfg: dict[str, Any] = {
+            'skill_turbo': copy.deepcopy(execution_config),
             # skill_codes_dir 不再传入：外部 turbo 走
             # resolve_agent_registered_skill_dirs 标准链路发现（见
             # SkillTurboEnvironment._scan_external_turbo_skills）；
