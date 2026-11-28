@@ -57,6 +57,7 @@ from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelReques
 from openjiuwen.core.session.stream.base import OutputSchema
 
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+from jiuwenswarm.common.local_env_config import read_env
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
@@ -858,9 +859,11 @@ class AutoHarnessService:
     @staticmethod
     def _build_model_from_env() -> Optional[Model]:
         """Build Model from environment variables as fallback."""
-        api_key = os.getenv("API_KEY", "").strip()
-        base_url = os.getenv("API_BASE", os.getenv("BASE_URL", "")).strip()
-        model_name = os.getenv("MODEL_NAME", os.getenv("MODEL", "")).strip()
+        # Track B tip 是单一事实源（switch_model 写 tip 不驻留 os.environ），
+        # read_env 保持 tip 优先、os.environ 兜底。
+        api_key = read_env("API_KEY", "").strip()
+        base_url = read_env("API_BASE", read_env("BASE_URL", "")).strip()
+        model_name = read_env("MODEL_NAME", read_env("MODEL", "")).strip()
 
         if not api_key or not model_name:
             logger.warning(

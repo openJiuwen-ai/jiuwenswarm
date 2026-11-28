@@ -927,6 +927,10 @@ def export_agent_environ(
 ) -> dict[str, str]:
     """Tip (Track B, plaintext) ∪ Track A spawn keys ∪ Windows platform vars.
 
+    Empty-string tip values are dropped: readers already treat ``""`` as unset,
+    and exporting them would surface bare ``KEY=`` shells (e.g. an unconfigured
+    ``VISION_API_BASE=``) in child environments.
+
     Explicit child ``env=`` only — never a reason to leave Track B in the parent
     process environ.
     """
@@ -935,7 +939,10 @@ def export_agent_environ(
     for k, v in tip.items():
         if v is None or k in LINK_SERVICE_ENV_KEYS:
             continue
-        out[str(k)] = _stringify_env_value(v)
+        text = _stringify_env_value(v)
+        if not text.strip():
+            continue
+        out[str(k)] = text
     for k in SPAWN_ENV_KEYS:
         if k in os.environ and k not in LINK_SERVICE_ENV_KEYS:
             out[k] = os.environ[k]

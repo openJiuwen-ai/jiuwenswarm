@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -726,23 +727,47 @@ def _windows_not_found_hint(command: str, stderr: str, exit_code: int) -> str | 
     )
 
 
-def _build_subprocess_env(extra_env: dict[str, str] | None) -> dict[str, str] | None:
+@lru_cache(maxsize=1)
+def _track_b_child_env_blacklist() -> frozenset[str]:
+    """Track B 业务键黑名单全集（含 JIUWENCLAW_*/JIUWENSWARM_* 产品别名）。
+
+    惰性导入 local_env_config，避免 command_tools 在 agentserver 启动早期被
+    import 时拉起循环依赖。
+    """
+    from jiuwenswarm.common.local_env_config import (
+        BUSINESS_MIRROR_KEYS,
+        env_keys_with_product_aliases,
+    )
+
+    return env_keys_with_product_aliases(BUSINESS_MIRROR_KEYS)
+
+
+def _strip_track_b_keys(env: dict[str, str]) -> dict[str, str]:
+    """剔除 Track B 业务键：业务键只允许经 export_agent_environ / skill 凭证注入
+    （extra_env 显式传入）两条合法出口进入子进程，绝不随进程环境驻留外泄
+    （否则 ``bash -c printenv`` 即可看到黑名单键）。
+    """
+    blocked = _track_b_child_env_blacklist()
+    return {key: value for key, value in env.items() if key not in blocked}
+
+
+def _build_subprocess_env(extra_env: dict[str, str] | None) -> dict[str, str]:
     """Merge skill-injected env vars into a copy of os.environ.
+
+    ``os.environ`` 拷贝先按 Track B 黑名单过滤，再 merge ``extra_env``：skill
+    注入是工具调用显式传入（会话内可见）的合法出口，予以保留；驻留污染在
+    此处统一兜底。恒返回显式 env（POSIX 若传 None 给 Popen 即继承父进程
+    全量环境，泄露面失控）。sync/background 两条 spawn 路径共用本函数。
 
     On Windows, also prepend common tool directories to subprocess PATH
     to mitigate PATH inconsistencies between the agent process and the
     spawned shell (python, officecli, etc.).
     """
+    merged = _strip_track_b_keys(dict(os.environ))
     if os.name == "nt":
-        merged = dict(os.environ)
         _prepend_windows_tool_paths(merged)
-        if extra_env:
-            merged.update(extra_env)
-        return merged
-    if not extra_env:
-        return None
-    merged = dict(os.environ)
-    merged.update(extra_env)
+    if extra_env:
+        merged.update(extra_env)
     return merged
 
 
@@ -834,8 +859,7 @@ def _run_command_sync(
         if _jw_start_new_session not in ("0", "false", "no", "off"):
             popen_kw["start_new_session"] = True
     subprocess_env = _build_subprocess_env(extra_env)
-    if subprocess_env is not None:
-        popen_kw["env"] = subprocess_env
+    popen_kw["env"] = subprocess_env
     if use_byte_capture:
         proc = subprocess.Popen(
             plan,
@@ -936,8 +960,7 @@ def _run_command_background(
         if _jw_start_new_session not in ("0", "false", "no", "off"):
             popen_kw["start_new_session"] = True
     subprocess_env = _build_subprocess_env(extra_env)
-    if subprocess_env is not None:
-        popen_kw["env"] = subprocess_env
+    popen_kw["env"] = subprocess_env
     proc = subprocess.Popen(
         plan,
         shell=use_shell,

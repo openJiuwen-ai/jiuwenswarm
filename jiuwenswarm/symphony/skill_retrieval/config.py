@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.local_env_config import read_env
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.symphony.skill_retrieval.taxonomy_config import coerce_root_categories_value
 
@@ -100,16 +101,18 @@ def _load_llm(section: dict[str, Any], config: dict[str, Any]) -> LLMSettings:
         or override.get("model_name")
         or model_cfg.get("model")
         or model_cfg.get("model_name")
-        or os.getenv("MODEL_NAME")
+        # Track B tip 是单一事实源（switch_model 写 tip 不驻留 os.environ），
+        # read_env 保持 tip 优先、os.environ 兜底。
+        or read_env("MODEL_NAME")
         or ""
     ).strip()
-    api_key = str(override.get("api_key") or model_cfg.get("api_key") or os.getenv("API_KEY") or "").strip()
+    api_key = str(override.get("api_key") or model_cfg.get("api_key") or read_env("API_KEY") or "").strip()
     base_url = str(
         override.get("base_url")
         or override.get("api_base")
         or model_cfg.get("base_url")
         or model_cfg.get("api_base")
-        or os.getenv("API_BASE")
+        or read_env("API_BASE")
         or ""
     ).strip()
     seed = _as_optional_int(override.get("seed"))

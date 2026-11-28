@@ -30,7 +30,11 @@ adapter = (JiuwenSwarmFlashAdapter if mode == "flash" else JiuWenSwarmDeepAdapte
 from jiuwenswarm.agents.harness.common.tools import image_tools
 image_tools._ensure_image_dependencies()
 assert os.environ["IMAGE_IMPORT_ORDER_TEST"] == "runtime"
-assert os.environ["FREE_SEARCH_DDG_ENABLED"] == "false"
+# reset 不再回写 os.environ（no-op）：Track B 键的有效值由 tip 决定，
+# read_env_if_set 只读 tip/overlay，tip 未设置即走读取端默认
+# （web_search/free.py::_env_flag default=False），默认关闭语义不变。
+from jiuwenswarm.common.local_env_config import read_env_if_set
+assert read_env_if_set("FREE_SEARCH_DDG_ENABLED") is None
 """)
 
 

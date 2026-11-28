@@ -11,6 +11,7 @@ from jiuwenswarm.common.local_env_config import (
     SPAWN_ENV_KEYS,
     bind_task_env_overlay,
     read_env,
+    reset_local_env_state_for_tests,
     reset_task_env_overlay,
     set_os_environ,
 )
@@ -370,3 +371,38 @@ class TestLocalEnvConfig:
         finally:
             os.environ.pop("PETAL_SEARCH_HEADERS", None)
             reset_local_env_state_for_tests()
+
+
+class TestExportAgentEnvironEmptyValues:
+    """export_agent_environ 出口语义：空值业务键不导出，非空值照常。"""
+
+    def setup_method(self):
+        reset_local_env_state_for_tests()
+
+    def teardown_method(self):
+        reset_local_env_state_for_tests()
+
+    def _export_after_apply(self, overrides):
+        from jiuwenswarm.common.local_env_config import (
+            apply_env_overrides_to_active,
+            export_agent_environ,
+        )
+
+        apply_env_overrides_to_active(overrides, service_id="default", agent_id="office")
+        return export_agent_environ("default", "office")
+
+    def test_empty_tip_values_not_exported(self):
+        exported = self._export_after_apply(
+            {"VISION_API_BASE": "", "AUDIO_API_BASE": "", "EMAIL_TOKEN": ""}
+        )
+        assert "VISION_API_BASE" not in exported
+        assert "AUDIO_API_BASE" not in exported
+        assert "EMAIL_TOKEN" not in exported
+
+    def test_non_empty_tip_values_exported(self):
+        exported = self._export_after_apply({"MODEL_NAME": "export-model"})
+        assert exported["MODEL_NAME"] == "export-model"
+
+    def test_none_tip_values_not_exported(self):
+        exported = self._export_after_apply({"VISION_API_BASE": None})
+        assert "VISION_API_BASE" not in exported
