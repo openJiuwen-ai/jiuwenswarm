@@ -1524,6 +1524,7 @@ export function SkillPanel({
     [t],
   );
 
+  const graphRefreshDisabled = activeTab === 'graph' && (!isConnected || !symphonyEnabled || graphReading);
   const renderFixedHeader = () => (
     // 固定区（header/toolbar）：page-shell 限宽 1400px 居中，与下方滚动列共用内容线
     <div className="page-shell flex-none">
@@ -1552,11 +1553,9 @@ export function SkillPanel({
             }
           }}
           className={`flex items-center gap-2 py-1.5 rounded-lg text-sm text-text-weak ${
-            activeTab === 'graph' && graphReading
-              ? 'cursor-not-allowed opacity-70'
-              : 'hover:text-text'
+            graphRefreshDisabled ? 'cursor-not-allowed opacity-70' : 'hover:text-text'
           }`}
-          disabled={activeTab === 'graph' && graphReading}
+          disabled={graphRefreshDisabled}
           data-testid="skill-panel-refresh-btn"
         >
           <RefreshIcon className={`w-4 h-4 ${activeTab === 'graph' && graphReading ? 'animate-spin' : ''}`} />
@@ -1725,6 +1724,7 @@ export function SkillPanel({
     <SkillGraphTab
       isActive={isActive}
       isConnected={isConnected}
+      symphonyEnabled={symphonyEnabled}
       symphonySaving={symphonySaving}
       symphonyEnabledDraft={symphonyEnabledDraft}
       onUpdateSymphonyEnabled={(enabled) => void updateSymphonyEnabled(enabled)}

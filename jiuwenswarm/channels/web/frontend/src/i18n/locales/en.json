@@ -4422,6 +4422,7 @@
         "saving": "Saving…",
         "saveFailed": "Failed to save the skill orchestration setting. Please try again.",
         "toggleLabel": "Enable skill orchestration",
+        "disabledEmptyGraph": "Enable skill orchestration to build the graph.",
         "connectionRequired": "Connect to the server to change skill orchestration"
       },
       "stats": {
