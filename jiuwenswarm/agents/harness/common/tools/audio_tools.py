@@ -279,7 +279,6 @@ async def audio_metadata(audio_path_or_url: str) -> str:
         else:
             upload_fmt = "mp3"
 
-        files_payload = [("sample", (fname, open(local_path, "rb"), upload_fmt))]
         form_data = {
             "access_key": ACR_ACCESS_KEY,
             "sample_bytes": fsize,
@@ -289,13 +288,18 @@ async def audio_metadata(audio_path_or_url: str) -> str:
             "signature_version": "1",
         }
 
-        r = requests.post(
-            ACR_BASE_URL,
-            files=files_payload,
-            data=form_data,
-            timeout=HTTP_TIMEOUT,
-            verify=get_requests_verify(),
-        )
+        # requests does not close file objects owned by the caller. Keep the
+        # handle scoped to the upload so the following temp-file cleanup and
+        # repeated calls cannot leak file descriptors.
+        with open(local_path, "rb") as sample_file:
+            files_payload = [("sample", (fname, sample_file, upload_fmt))]
+            r = requests.post(
+                ACR_BASE_URL,
+                files=files_payload,
+                data=form_data,
+                timeout=HTTP_TIMEOUT,
+                verify=get_requests_verify(),
+            )
         r.encoding = "utf-8"
         parsed = json.loads(r.text)
 
