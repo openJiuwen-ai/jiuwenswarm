@@ -1149,6 +1149,7 @@ async def test_suggestion_reaches_the_pages_open_on_its_session_only(product) ->
     channel.on_message(lambda _msg: None)
     on_session, elsewhere = _Browser(), _Browser()
     async with contextlib.AsyncExitStack() as connections:
+        connections.push_async_callback(channel.stop)
         for browser, session_id in ((on_session, SESSION), (elsewhere, "web_other_session")):
             await channel.register_ws(browser, None)
             connections.push_async_callback(channel.unregister_ws, browser)
