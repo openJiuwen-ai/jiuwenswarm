@@ -452,6 +452,7 @@ generated: true
 | [B_20261126_2000_agent-mgmt-confirm-dialog-i18n](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_2000_agent-mgmt-confirm-dialog-i18n.md) | B | 专家团卸载与专家删除确认框原生 window.confirm 按钮文案无法随应用 i18n 切换 | whds5279 | 无独立 D：交互层缺陷修复，复用既有 ConfirmDialog 组件与 agentManagement.confirm / common.cancel\|confirm\|loading 文案契约，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [B_20261126_2208_application-menu-slot-flicker](bugfix/jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
 | [B_20261127_1547_webui-slot-capacity](bugfix/extensions/B_20261127_1547_webui-slot-capacity.md) | B | WebUI 槽位容量与投递回滚修复 | kusanagima | 无独立 D：基于现有 WebUI 槽位和投递契约的缺陷修复，无独立设计文档。 |
+| [B_20261128_0955_local-app-delete-safeguards](bugfix/jiuwenswarm/extensions/app_market/B_20261128_0955_local-app-delete-safeguards.md) | B | 本地应用删除确认、目录保护与清理反馈 | kdgmpw | 无独立 D：在允许删除本地应用目录之后收紧同一删除路径的确认与保护条件，沿用 S_03 契约，无独立设计。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
@@ -631,6 +632,7 @@ generated: true
 | [B_20261119_1416_builtin-extension-discovery](bugfix/jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 | [B_20261124_1429_local-app-removal-and-conversion](bugfix/jiuwenswarm/extensions/app_market/B_20261124_1429_local-app-removal-and-conversion.md) | B | 应用市场本地清理和 Hub 转换的一致性 | kdgmpw | 无独立 D：本次修正应用市场登记、目录归属与转换行为，沿用 S_03 契约和现有项目接口，无独立设计。 |
 | [B_20261126_2025_installed-app-icon-expiry](bugfix/jiuwenswarm/extensions/app_market/B_20261126_2025_installed-app-icon-expiry.md) | B | Hub 应用安装后的图标链接过期 | kdgmpw | 无独立 D：修复本地展示依赖临时链接的问题，沿用 S_03 的 Hub 应用包装和登记契约。 |
+| [B_20261128_0955_local-app-delete-safeguards](bugfix/jiuwenswarm/extensions/app_market/B_20261128_0955_local-app-delete-safeguards.md) | B | 本地应用删除确认、目录保护与清理反馈 | kdgmpw | 无独立 D：在允许删除本地应用目录之后收紧同一删除路径的确认与保护条件，沿用 S_03 契约，无独立设计。 |
 | [S_01_app-session-project](specs/jiuwenswarm/extensions/app_market/app-session-project.md) | S | 应用角色会话的项目归属 | kdgmpw | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
 | [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
