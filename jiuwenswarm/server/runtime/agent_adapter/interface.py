@@ -1218,11 +1218,12 @@ def _normalize_nested_stream_chunk(
     payload = chunk.payload
     if payload is None:
         return None
-    if isinstance(payload, dict):
-        is_complete = payload.get("is_complete") is True
-        has_event_type = bool(payload.get("event_type"))
-        if is_complete and not has_event_type:
-            return None
+    if (
+        isinstance(payload, dict)
+        and payload.get("is_complete") is True
+        and set(payload) == {"is_complete"}
+    ):
+        return None
     return replace(chunk, is_complete=False)
 
 
@@ -5604,6 +5605,11 @@ class JiuWenSwarm:
                     )
                 else:
                     if isinstance(data, AgentResponseChunk):
+                        # The facade owns transport completion, including
+                        # producer cleanup and post-processing after a nested stream.
+                        data = _normalize_nested_stream_chunk(data)
+                        if data is None:
+                            continue
                         phase_payload = data.payload if isinstance(data.payload, dict) else {}
                         phase_event = phase_payload.get("event_type")
                         if phase_event == "chat.input_received":
@@ -5635,10 +5641,6 @@ class JiuWenSwarm:
                                 key: phase_payload[key] for key in ("output_phase_id", "output_suppressed")
                                 if key in phase_payload
                             }
-                        if suppress_a2ui_stream:
-                            data = _normalize_nested_stream_chunk(data)
-                            if data is None:
-                                continue
                         if isinstance(data.payload, dict):
                             payload_event_type = data.payload.get("event_type")
                             enriched_payload = _with_web_agent_template_payload(
