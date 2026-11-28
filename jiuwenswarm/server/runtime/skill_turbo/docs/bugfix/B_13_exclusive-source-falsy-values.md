@@ -74,3 +74,15 @@ PR1 修复后完整模块与旧工具、禁用提示、中断及 HITL/恢复回�
 $env:PYTHONPATH=(Get-Location).Path+';E:/Jiuwenswarm-zqh/agent-core-pr1-sdk-20261127'
 & E:/Jiuwenswarm-zqh/jiuwenswarm/.venv/Scripts/python.exe -m pytest tests/unit_tests/server/runtime/skill_turbo/ tests/unit_tests/agentserver/test_skill_turbo_tools.py tests/unit_tests/agentserver/test_skill_turbo_prompt_disabled.py tests/unit_tests/agentserver/test_skill_turbo_interrupt_recovery.py tests/unit_tests/agentserver/test_skill_turbo_hitl_resume_react.py tests/unit_tests/agentserver/test_skill_turbo_hitl_tie_rewrite_repro.py tests/unit_tests/agentserver/test_skill_turbo_resume_usage.py -q -o addopts="--asyncio-mode=auto" -o log_cli=false --tb=short --show-capture=no
 ```
+
+
+## CodeCheck 条件数量修订（2026-11-28）
+
+PR11161 的后续检查报告 G.CTL.03：互斥来源继承判断有 4 个布尔条件，超过上限 3。
+将“键不存在或值为 None”合并为 inputs.get(selected) is None，来源类型和验证状态
+两项条件保持。普通 dict 的缺失键与 None 均满足该判断，0、False、空字符串均不满足，
+因此保留本次缺失判断和合法假值语义，未新增抽象或扩大允许值范围。
+
+修订基线 f2a496644；使用上文 PR1 命令及锁定 SDK 完整重跑，757 passed（20.83s）。
+包含新增的 17 项假值继承及负例回归。日志为本机临时目录
+pr11161-codecheck-bool-20261128-o1pvyen_/regression.log；远端 CodeCheck 结果另行确认。

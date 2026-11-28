@@ -162,7 +162,7 @@ def _assemble(ctx, spec, params, ledger, upstream_facts):
         if explicit:
             inputs[selected] = copy.deepcopy(params[selected])
             sources[selected] = "explicit"
-        elif (selected not in inputs or inputs[selected] is None
+        elif (inputs.get(selected) is None
                 or sources.get(selected) not in {"ledger", "upstream"}
                 or not provenance.get(selected, {}).get("verified")):
             raise SegmentInputError("blocked", "exclusive_source_missing_or_unverified", warnings)
