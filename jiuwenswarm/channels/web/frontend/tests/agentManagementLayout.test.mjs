@@ -800,13 +800,36 @@ test('management pickers expose source tabs and preserve install/connect actions
 });
 
 test('Expert Team chat creation uses the standard new-chat welcome in Agent mode', () => {
-  const groupCreateNavigation = appSource.match(
+  // AgentManagementPanel 有两个入口：JiuwenMate 版用 agent-group-creator，个人版走统一入口
+  // workswarm-builtin；两者都强制单 Agent 模式，且走标准新会话欢迎态（不传 welcomeVariant）。
+  const jiuwenmateGroupCreate = appSource.match(
+    /onCreateGroupViaChat=\{\(\) => \{\s*setIsJiuwenMate\(false\);[\s\S]*?initialSelectedSkills: \['agent-group-creator'\][\s\S]*?\}\}/,
+  )?.[0];
+  assert.ok(jiuwenmateGroupCreate);
+  assert.match(jiuwenmateGroupCreate, /forceMode: 'agent'/);
+  assert.doesNotMatch(jiuwenmateGroupCreate, /welcomeVariant/);
+
+  const personalGroupCreate = appSource.match(
     /onCreateGroupViaChat=\{\(\) => requestSessionNavigation\('new', \{[\s\S]*?\}\)\}/,
   )?.[0];
-  assert.ok(groupCreateNavigation);
-  assert.match(groupCreateNavigation, /initialSelectedSkills: \['agent-group-creator'\]/);
-  assert.match(groupCreateNavigation, /forceMode: 'agent'/);
-  assert.doesNotMatch(groupCreateNavigation, /welcomeVariant/);
+  assert.ok(personalGroupCreate);
+  assert.match(personalGroupCreate, /initialSelectedSkills: \['workswarm-builtin'\]/);
+  assert.match(personalGroupCreate, /forceMode: 'agent'/);
+  assert.doesNotMatch(personalGroupCreate, /welcomeVariant/);
+});
+
+test('Expert/Team chat creation seeds the skill chip before the prompt text', () => {
+  // 预填文案（"帮我创建一个xxx专家…"）与预选技能共用 initialInputValue + initialSelectedSkills，
+  // 必须把 skill chip 的位置记到 offset=0，让它排在文案前，与创建技能的样式一致（#7158）。
+  // 无预选技能时须传 undefined（而非 []），避免覆盖 store 里"文本未变则沿用旧位置"的分支。
+  assert.match(
+    appSource,
+    /const initialSkillPositions = options\.initialSelectedSkills\?\.length[\s\S]*?options\.initialSelectedSkills\.map\(\(name\) => \(\{ name, offset: 0 \}\)\)[\s\S]*?: undefined;/,
+  );
+  assert.match(
+    appSource,
+    /useChatStore\.getState\(\)\.setInputValue\(NEW_CONVERSATION_ID, options\.initialInputValue, initialSkillPositions\);/,
+  );
 });
 
 test('Expert and Expert Team content details use the same full-width markdown layout', () => {

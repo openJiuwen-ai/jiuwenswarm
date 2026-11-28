@@ -100,6 +100,7 @@ function createHarness(text = '请保留这段话', skill = 'agent-creator') {
   return {
     editor, chat, session,
     skills: () => Array.from(editor.querySelectorAll('[data-skill]'), (chip) => chip.dataset.skill),
+    insertSkillChip,
     trySkill: (name, type) => {
       goTry(name, type);
       while (scheduled.length) scheduled.shift()();
@@ -150,6 +151,28 @@ test('trying a skill preserves a text-only draft and its position after another 
     resetNewConversationRuntime({ mode: 'agent', selectedModelName: null });
     assert.deepEqual(harness.chat.getRuntime('new').inputSkillPositions, [{ name: 'demo-skill', offset: 6 }]);
     assert.equal(harness.chat.getRuntime('new').inputValue, '未发送的文字');
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('seeding a preselected skill at offset 0 restores its chip before the prompt text', () => {
+  // 行为级守护 #7158：App 的 enterNewConversation 为预选技能记录 offset=0，
+  // InputArea 的恢复 effect 用真实 insertSkillChip(name, offset) 重建 chip。
+  // 先按 enterNewConversation 的方式写入文案 + 位置，再走产品代码 insertSkillChip，
+  // 断言 chip 落在文案前、纯文本不被污染，且 store 的 offset 记录在插入后仍被保留。
+  const harness = createHarness('', null);
+  try {
+    const prompt = '帮我创建一个xxx专家，擅长xxx';
+    const positions = [{ name: 'workswarm-builtin', offset: 0 }];
+    harness.editor.textContent = prompt;
+    harness.chat.setInputValue('new', prompt, positions);
+    harness.insertSkillChip('workswarm-builtin', 0);
+    assert.equal(harness.editor.firstElementChild?.dataset.skill, 'workswarm-builtin');
+    assert.equal(readComposerText(harness.editor), prompt);
+    assert.deepEqual(readComposerSkillPositions(harness.editor), positions);
+    assert.deepEqual(harness.chat.getRuntime('new').inputSkillPositions, positions);
+    assert.equal(harness.chat.getRuntime('new').inputValue, prompt);
   } finally {
     harness.cleanup();
   }
