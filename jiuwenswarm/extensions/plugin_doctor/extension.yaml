@@ -1,0 +1,8 @@
+id: plugin-doctor
+name: Plugin Doctor
+version: 1.0.0
+description: 应用插件体检台：按宿主真实加载语义静态体检扩展目录，输出可复核结论与修复建议
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.5"
+package_type: application
+dependencies: {}
