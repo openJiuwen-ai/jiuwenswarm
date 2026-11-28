@@ -159,7 +159,7 @@ def test_desktop_drag_script_rejects_directories_before_dom_bridge():
     runtime.window = FakeWindow()
     runtime._mark_desktop_shell()
 
-    script = scripts[0]
+    script = "\n".join(scripts)
     assert "function hasDirectory(dt)" in script
     assert "item.webkitGetAsEntry" in script
     assert "e.stopImmediatePropagation()" in script
@@ -177,7 +177,7 @@ def test_desktop_drag_script_rejects_virtual_files_before_dom_bridge():
     runtime.window = FakeWindow()
     runtime._mark_desktop_shell()
 
-    script = scripts[0]
+    script = "\n".join(scripts)
     assert "function hasVirtualFiles(dt)" in script
     assert "item.webkitGetAsEntry() === null" in script
     assert "jiuwen-desktop-virtual-file-drop-rejected" in script

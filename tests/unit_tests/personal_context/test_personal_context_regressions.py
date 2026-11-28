@@ -26,6 +26,7 @@ async def test_real_host_core_and_rail_connection(tmp_path: Path, monkeypatch) -
     # This rules-only smoke must not select an ambient model from the user's config.
     monkeypatch.setattr(host_module, "get_default_models", lambda: [])
 
+    monkeypatch.setattr("jiuwenswarm.server.personal_context.host_api.get_default_models", lambda: [])
     home = tmp_path / ".jiuwenswarm" / ".personal_context"
     context_root = home / "workspace" / "context"
     context_root.mkdir(parents=True)

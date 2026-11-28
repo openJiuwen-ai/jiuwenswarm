@@ -30,6 +30,7 @@ from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AuthorizationExecutionContext,
     AuthorizerRoute,
 )
+from jiuwenswarm.agents.harness.common.a4p.runtime import unbind_session_a4p_config
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
 )
@@ -1430,6 +1431,7 @@ def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch, cha
             assert adapter._a4p_tools_registered
             assert [card.name for card in adapter._tool_cards] == ["request_a4p_intent_authorization"]
     finally:
+        unbind_session_a4p_config("session-1")
         AUTHORIZATION_EXECUTION_CONTEXTS.clear()
 
 

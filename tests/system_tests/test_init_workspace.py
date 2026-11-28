@@ -56,9 +56,9 @@ def clean_environment(temp_home: Path, monkeypatch: pytest.MonkeyPatch, interact
     monkeypatch.delenv("JIUWENSWARM_CONFIG_DIR", raising=False)
     monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
 
-    # Reset module-level caches in utils.py
-    import jiuwenswarm.common.paths as _paths_unused_marker
-import jiuwenswarm.common.utils as utils_module
+    # Reset module-level path caches.
+    import jiuwenswarm.common.paths as paths_module
+
     monkeypatch.setattr(paths_module, "_user_home", temp_home)
     monkeypatch.setattr(paths_module, "_workspace_base_dir", None)
     monkeypatch.setattr(paths_module, "_initialized", False)
@@ -254,7 +254,8 @@ async def test_memory_template_matches_builtin_provider(tmp_path, monkeypatch, c
 
     runtime_root = tmp_path / "runtime"
     workspace = JiuWenSwarmDeepAdapter._get_memory_workspace(
-        SimpleNamespace(_workspace_dir=str(runtime_root)), config=config
+        SimpleNamespace(_workspace_dir=str(runtime_root), _resolve_runtime_language=lambda: "zh"),
+        config=config,
     )
     operation = SysOperation(SysOperationCard(id="test-memory-workspace-seed"))
     await DirectoryBuilder(operation, str(runtime_root)).build(workspace.directories)
@@ -317,11 +318,19 @@ class TestInitWorkspaceMain:
         )
         # The root force init deletes, not just the home it is derived from: a stale
         # cache or a data-dir override would aim it elsewhere with the home still right.
-        assert get_user_workspace_dir() == temp_home / ".jiuwenswarm", (
+        workspace_dir = get_user_workspace_dir()
+        assert workspace_dir == temp_home / ".jiuwenswarm", (
             "force init 将要删除的工作区根不在临时目录下"
         )
 
+        workspace_dir.mkdir()
+        old_file = workspace_dir / "old-workspace.txt"
+        old_file.write_text("old workspace data", encoding="utf-8")
+
         from jiuwenswarm.init_workspace import run_init
+
+        # Keep locally running services from blocking this temporary workspace reset.
+        monkeypatch.setattr("jiuwenswarm.instance_manager.config.is_port_available", lambda *_: True)
 
         # Simulate user confirming force init and selecting Chinese
         def mock_input(prompt):
@@ -331,10 +340,8 @@ class TestInitWorkspaceMain:
 
         monkeypatch.setattr("builtins.input", mock_input)
 
-        exit_code = run_init(force=True)
-        if exit_code == 1:
-            pytest.skip("Init was cancelled - may occur in some test environments")
-        assert exit_code == 0
-        assert (temp_home / ".jiuwenswarm" / "config" / "config.yaml").is_file(), (
+        assert run_init(force=True) == 0
+        assert not old_file.exists()
+        assert (workspace_dir / "config" / "config.yaml").is_file(), (
             "工作区没有建在临时目录下"
         )
