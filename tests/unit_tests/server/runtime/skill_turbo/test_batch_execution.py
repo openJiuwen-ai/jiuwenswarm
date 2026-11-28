@@ -104,6 +104,32 @@ async def test_three_fresh_instances_commit_and_consume_actual_upstream(batch_fi
     assert all(frame.payload.get('batch_id') == result['batch_id'] for frame in frames if frame.payload)
 
 
+@pytest.mark.parametrize('value,schema', [
+    (0, {'type': 'integer', 'minimum': 0}),
+    (False, {'type': 'boolean'}),
+    ('', {'type': 'string'}),
+])
+async def test_batch_continues_after_inheriting_verified_falsy_exclusive_fact(batch_fixture, value, schema):
+    producer, consumer = batch_fixture.specs[:2]
+    producer['input_schema']['properties']['prep_fact'] = schema
+    consumer['input_schema']['properties'].update(prep_fact=schema, alternative={'type': 'string'})
+    consumer['input_schema']['required'] = []
+    consumer['input_schema']['oneOf'] = [{'required': ['prep_fact']}, {'required': ['alternative']}]
+    batch_fixture.control['prep'] = {'result': {'facts': {'prep_fact': value}}}
+    batch_fixture.save()
+    result, _ = await batch_fixture.run()
+    assert result['status'] == 'ok', result
+    assert result['ledger']['revision'] == 3 and result['metrics']['executed'] == 3
+    assert [step['accelerator'] for step in result['results']] == ['prep', 'outline', 'generate']
+    produced = result['results'][0]
+    assert produced['facts']['prep_fact'] == value
+    assert produced['facts_provenance']['prep_fact']['verified'] is True
+    received = next(inputs for stage, inputs in batch_fixture.inputs_seen if stage == 'outline')
+    assert received['prep_fact'] == value and type(received['prep_fact']) is type(value)
+    assert 'alternative' not in received
+    assert all(batch_fixture.calls[stage] == 1 for stage in ('prep', 'outline', 'generate'))
+
+
 @pytest.mark.parametrize('items', [[], [{'id':'prep'}] * 9, [{'id':'prep'}, {'id':'prep'}],
     [{'id':'outline'}, {'id':'prep'}], [{'id':'__full__'}], [{'id':'unknown'}],
     [{'id':'prep', 'force':'false'}], [{'id':'prep','skill':'other'}], [{'id':'prep','params':[]}], [None]])

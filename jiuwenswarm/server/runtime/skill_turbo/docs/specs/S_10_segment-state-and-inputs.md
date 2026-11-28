@@ -27,7 +27,7 @@
 8. N8 普通段结束 revision+1，保存失败只 warning/persisted=false，不改变真实业务结果、不回滚文件或单独禁止续接。latest_runs 保留每段当前结果，历史 runs 最多32条，覆盖仅从最新 ok 结果推导。
 9. N9 命名空间含 task_key/准确技能/段，隔离 legacy；新桶的读取必须匹配 namespace 和非空入口字符串 hash。旧缺 hash 兼容只属于 legacy。清桶不删文件/台账/其他桶。
 10. N10 装配顺序是上下文→全量台账facts→批内facts→defaults→非None显式params；保留上下文不被覆盖，未知显式键拒绝。schema 检查 properties 投影，required 可由可信台账满足。
-    对仅由多个单字段 required 分支组成的 oneOf，按显式键集合选择互斥来源：显式一个来源时先移除本次输入中其他分支来源，再校验其原值（包括 None/空值）；显式多个来源直接 invalid_args。无显式来源时仅继承声明顺序第一个来源的已验证台账/上游事实，无有效值 blocked，其他分支不作历史默认。此投影不改写台账和来源记录，发生在路径/前提/schema 检查前；恢复仍只校验原 inputs，不重新装配。
+    对仅由多个单字段 required 分支组成的 oneOf，按显式键集合选择互斥来源：显式一个来源时先移除本次输入中其他分支来源，再校验其原值（包括 None/空值）；显式多个来源直接 invalid_args。无显式来源时仅继承声明顺序第一个来源的已验证台账/上游事实；键缺失、值为 None 或来源未验证时 blocked，其他分支不作历史默认。0、False、空字符串等假值不因真假性被判为缺失，仍须通过原路径、前提和 schema 校验，空文件路径仍拒绝。此投影不改写台账和来源记录，发生在路径/前提/schema 检查前；恢复仍只校验原 inputs，不重新装配。
 11. N11 hard 前提不足 blocked，soft warning，参数/schema 错误 invalid_args；指定 producer 必须实际来源相符且 verified，显式路径不能冒充来源。合法手改文件告警并读取当前内容；文件删除使来源不再可信。
 12. N12 路径相对 run_dir，resolve 后须在工作区/技能根内；声明 glob 禁绝对/盘符/..。文件 stat/hash 和 schema 检查在有界线程 offload 中执行。
 13. N13 finalize 只提交声明事实，小于等于2048字节且为有限 JSON；路径存在并在边界内，handoff 产物必须匹配声明 glob。failed/blocked/not_applicable 不能因文件存在升级；ok 缺产物/后置条件降 partial。逐事实 verified，不按 partial 一刀切。
