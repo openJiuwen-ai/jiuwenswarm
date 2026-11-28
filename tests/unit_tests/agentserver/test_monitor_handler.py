@@ -339,6 +339,67 @@ async def test_get_team_snapshot_moves_shut_down_members_to_departed() -> None:
 
 
 @pytest.mark.anyio
+async def test_get_member_list_drops_shut_down_keeps_dormant() -> None:
+    """get_member_list (live) mirrors _split_roster (issue #181)."""
+    handler = TeamMonitorHandler(
+        _FakeMonitor(
+            members=[
+                _FakeMember("worker-1"),
+                _FakeMember("retired", display_name="Retired", status="shut_down"),
+                _FakeMember("sleeper", status="dormant"),
+                _FakeMember("leaving", status="shutdown_requested"),
+            ],
+            leader_member_name=None,
+        ),
+        "sess-ml",
+    )
+
+    listed = await handler.get_member_list()
+
+    assert listed is not None
+    assert [m["member_id"] for m in listed] == ["worker-1", "sleeper", "leaving"]
+
+
+@pytest.mark.anyio
+async def test_get_member_list_from_db_drops_shut_down_keeps_dormant() -> None:
+    """get_member_list_from_db drops shut_down, keeps dormant (issue #181)."""
+    from pathlib import Path
+    from unittest.mock import patch
+
+    members = [
+        _FakeMember("worker-1", display_name="Worker"),
+        _FakeMember("retired", display_name="Retired", status="shut_down"),
+        _FakeMember("sleeper", display_name="Sleeper", status="dormant"),
+        _FakeMember("leaving", display_name="Leaving", status="shutdown_requested"),
+    ]
+    shared = SimpleNamespace(
+        initialize=AsyncMock(),
+        member=SimpleNamespace(get_team_members=AsyncMock(return_value=members)),
+        team=SimpleNamespace(get_team=AsyncMock(return_value=None)),
+    )
+
+    with (
+        patch(
+            "jiuwenswarm.agents.harness.team.config_loader.resolve_team_sqlite_db_path",
+            return_value=Path("/tmp/team.db"),
+        ),
+        patch("jiuwenswarm.common.config.get_config", return_value={}),
+        patch(
+            "openjiuwen.agent_teams.spawn.shared_resources.get_shared_db",
+            return_value=shared,
+        ),
+        patch(
+            "openjiuwen.agent_teams.tools.database.config.DatabaseConfig",
+            return_value=SimpleNamespace(),
+        ),
+    ):
+        listed = await TeamMonitorHandler.get_member_list_from_db("team-1")
+
+    assert listed is not None
+    assert [m["member_id"] for m in listed] == ["worker-1", "sleeper", "leaving"]
+
+
+@pytest.mark.anyio
 async def test_get_team_snapshot_keeps_members_when_team_info_unavailable() -> None:
     handler = TeamMonitorHandler(
         _FakeMonitor(
