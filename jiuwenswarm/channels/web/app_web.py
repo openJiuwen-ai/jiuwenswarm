@@ -24,6 +24,7 @@ import select
 import signal
 import socket
 import ssl
+import stat
 import sys
 import threading
 import time
@@ -152,17 +153,83 @@ def _get_logs_dir() -> Path:
     return _get_agent_root_dir() / ".logs"
 
 
+def _get_log_bucket_dir() -> Path:
+    # 日志收敛迁移的落点：<数据根>/logs/agent（与 common.paths 的
+    # get_agent_logs_dir 对齐，本模块不导入 agent 运行时）。
+    return _get_user_workspace_dir() / "logs" / "agent"
+
+
+def _is_log_link(path: Path) -> bool:
+    """path 是否是软链或 Windows 目录联接（junction）。"""
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or (
+        os.name == "nt"
+        and getattr(info, "st_reparse_tag", None) == stat.IO_REPARSE_TAG_MOUNT_POINT
+    )
+
+
+def _resolve_log_link(path: Path) -> Path | None:
+    """path 是兼容链时返回链落点；不是链或落点不可用时返回 None。"""
+    if not _is_log_link(path):
+        return None
+    try:
+        target = path.resolve(strict=True)
+        if target.is_dir():
+            return target
+    except OSError:
+        pass
+    return None
+
+
+def _has_entries(path: Path) -> bool:
+    try:
+        return any(path.iterdir())
+    except OSError:
+        return False
+
+
+def _effective_logs_dir() -> Path:
+    """日志面板/文件 API 实际使用的日志目录，不依赖兼容链。
+
+    日志收敛迁移的正位置是 ``<数据根>/logs/agent``，老位置
+    ``profile/agent/.logs`` 只靠兼容链（软链/junction）指回新桶。链正常时
+    两个拼写等价；Windows 无软链特权且 junction 也失败时二者是两个真实
+    目录，写入侧（_setup_logger 等）按 logs_root 直接落盘——这里按
+    "有链跟随链、无链看哪边有数据"收敛出实际目录：
+    - ``profile/agent/.logs``/``logs/agent`` 任一是链 → 链落点；
+    - 都不是链（链建不出来）→ 有数据的一边，都有/都没有则用新桶。
+    """
+    dot_logs = _get_logs_dir()
+    bucket = _get_log_bucket_dir()
+    for candidate in (dot_logs, bucket):
+        target = _resolve_log_link(candidate)
+        if target is not None:
+            return target
+    if _has_entries(dot_logs) and not _has_entries(bucket):
+        return dot_logs
+    return bucket
+
+
 _LEGACY_PATH_REWRITES = (
     # (迁移前老布局前缀, 迁移后新布局前缀)，与 common.paths._LEGACY_COMPAT_LINKS
     # 及 _LOG_COMPAT_LINKS 对齐。老位置仍是真实目录时不改写，见
     # _resolve_project_path 的存在性判断。
     ("workspace", "profile"),
-    ("agent", "profile/agent"),
     ("application_plugins", "profile/application_plugins"),
     (".agent_teams", "profile/.agent_teams"),
     (".agent_history", "profile/.agent_history"),
     ("config/runtime_state", "profile/runtime_state"),
     ("logs/logs", "logs/core"),
+    # agent/.logs 必须排在 agent 之前（前缀匹配取第一个命中的表项）：
+    # 前端 LogsPanel 仍按 agent/.logs/... 请求，该路径已被日志吸收迁移
+    # 搬进 logs/agent，迁移后老位置不存在——改写目标不写死新桶拼写，由
+    # _canonicalize_legacy_path 按 _effective_logs_dir 的实际落点生成，
+    # 兼容"链指回 .logs"与"链建不出来、数据分叉"两种形态。
+    ("agent/.logs", "logs/agent"),
+    ("agent", "profile/agent"),
 )
 
 
@@ -186,7 +253,7 @@ def _match_legacy_prefix(parts: list[str]) -> tuple[list[str], list[str], list[s
     return None
 
 
-def _canonicalize_legacy_path(rel_path: str) -> str:
+def _canonicalize_legacy_path(rel_path: str, project_root: Path | None = None) -> str:
     """把 profile 迁移前的老布局路径重写到迁移后的新位置。
 
     迁移后业务数据落在 ``<数据根>/profile/...``，老位置 ``<数据根>/agent``
@@ -195,8 +262,10 @@ def _canonicalize_legacy_path(rel_path: str) -> str:
     等老路径请求文件 API——不能依赖兼容链才能工作。这里在服务端统一规范化，
     兼容链只服务回滚后的老版本。
 
-    绝对路径（``C:\\...``、UNC、``/...``）、含 ``..`` 的路径和其余相对路径
-    原样返回：``..`` 交给调用方按原路径解析，避免改写后落点变化。
+    ``agent/.logs/...`` 改写到 ``_effective_logs_dir()`` 的实际落点（传入
+    ``project_root`` 时），其余按改写表映射。绝对路径（``C:\...``、UNC、
+    ``/...``）、含 ``..`` 的路径和其余相对路径原样返回：``..`` 交给调用方按
+    原路径解析，避免改写后落点变化。
     """
     parts = _rel_parts(rel_path)
     if parts is None:
@@ -204,7 +273,11 @@ def _canonicalize_legacy_path(rel_path: str) -> str:
     matched = _match_legacy_prefix(parts)
     if matched is None:
         return rel_path
-    _, new_parts, rest = matched
+    old_parts, new_parts, rest = matched
+    if old_parts == ["agent", ".logs"] and project_root is not None:
+        rel_root = _path_rel_to_root(_effective_logs_dir(), project_root)
+        if rel_root is not None:
+            return "/".join((*rel_root.split("/"), *rest)) if rest else rel_root
     return "/".join((*new_parts, *rest))
 
 
@@ -222,6 +295,14 @@ def _legacy_root_exists(project_root: Path, rel_path: str) -> bool:
         return False
     old_parts, _, _ = matched
     return project_root.joinpath(*old_parts).exists()
+
+
+def _path_rel_to_root(path: Path, root: Path) -> str | None:
+    """path 转成相对 root 的 posix 路径；不在 root 下或异常时返回 None。"""
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
 
 
 def _get_ssl_verify() -> bool:
@@ -1840,7 +1921,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             raise _BadRequestError("invalid_path")
         # 老布局路径 → 新布局：不依赖兼容链是否建成功。老布局根仍是真实
         # 目录/文件时（迁移未完成或新旧版本并存）保持原路径，避免读错树。
-        canonical = _canonicalize_legacy_path(rel_path)
+        canonical = _canonicalize_legacy_path(rel_path, self.project_root)
         if canonical != rel_path and _legacy_root_exists(self.project_root, rel_path):
             canonical = rel_path
         try:
@@ -3814,7 +3895,7 @@ def main() -> None:
     project_root = _get_user_workspace_dir()
     workspace_root = (project_root / "profile" / "agent").resolve()
     agent_teams_root = _get_agent_teams_root(project_root)
-    logs_root = _get_logs_dir().resolve()
+    logs_root = _effective_logs_dir().resolve()
     # Start with the process logger.  The file handler and diagnostic hook are
     # installed in a post-listen worker below, so static HTML/CSS/JS can be
     # served without waiting for the agent-runtime logging module to import.
