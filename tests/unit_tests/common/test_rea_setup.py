@@ -10,6 +10,7 @@ import tarfile
 import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -207,6 +208,70 @@ def test_scan_requires_base_rea_mcp(tmp_path: Path, monkeypatch) -> None:
     assert scan["base"][1]["ok"] is True
     assert scan["base"][2]["ok"] is False
     assert scan["enhanced_blocked_by_base"] is True
+    assert scan["enhanced"] == []
+    assert scan["enhanced_plan"]
+
+
+def test_component_environment_ignores_unregistered_host_tool_paths(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ghidra = tmp_path / "ghidra_12.1.4_PUBLIC"
+    (ghidra / "Ghidra").mkdir(parents=True)
+    (ghidra / "Ghidra" / "application.properties").write_text(
+        "application.version=12.1.4\n",
+        encoding="utf-8",
+    )
+    (ghidra / "support").mkdir()
+    (ghidra / "support" / "analyzeHeadless.bat").write_text("", encoding="utf-8")
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", str(ghidra))
+
+    assert rea_setup._configured_component("ghidra", {})[0] is True
+
+    with rea_setup._component_env_scope(
+        rea_setup._record_process_env(None, {"PATH": os.environ.get("PATH", "")})
+    ):
+        assert rea_setup._configured_component("ghidra", {})[0] is False
+
+
+def test_capability_card_requires_live_mcp_tool_not_only_component_discovery() -> None:
+    from jiuwenswarm.common.rea_capability import build_capability_cards
+
+    scan = {
+        "platform_id": "windows-x64",
+        "enhanced": [
+            {"id": "java", "available": True},
+            {"id": "ghidra", "available": True},
+        ],
+    }
+    binary_session = {
+        "tool_availability": {
+            "groups": [
+                {
+                    "surface": "native-provider",
+                    "names": [
+                        "binary_overview",
+                        "decompile_all",
+                        "procedure_pseudo_code",
+                        "procedure_assembly",
+                        "analyze_function",
+                    ],
+                    "available": False,
+                    "reason": "provider_unavailable",
+                }
+            ]
+        }
+    }
+    tools = [
+        {"name": name}
+        for name in binary_session["tool_availability"]["groups"][0]["names"]
+    ]
+
+    cards, _diagnostics = build_capability_cards(scan, binary_session, tools)
+    ghidra = next(card for card in cards if card["id"] == "ghidra")
+
+    assert ghidra["state"] == "needs_action"
+    assert {member["state"] for member in ghidra["members"]} == {"needs_action"}
 
 
 def test_base_only_scan_skips_enhanced_probes(tmp_path: Path, monkeypatch) -> None:
@@ -1180,6 +1245,101 @@ def test_upgrade_backup_preserves_existing_provider_env(tmp_path: Path, monkeypa
     assert record["env"]["JAVA_HOME"] == "D:/existing/jdk"
     assert record["env"]["REA_PWNTOOLS_PYTHON"] == "/existing/python"
     assert list((workspace / "mcp").glob("state.json.rea-setup-*.bak"))
+
+
+def test_concurrent_env_updates_preserve_every_component(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "mcp" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "mcp": {
+                    "rea": {
+                        "transport": "stdio",
+                        "command": "node.exe",
+                        "args": ["rea-agents@6.8.0", "mcp"],
+                        "env": {"PATH": "node"},
+                        "state": "connected",
+                    }
+                },
+                "mounts": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_read = rea_setup._read_state_unlocked
+
+    def delayed_read(workspace_arg=None):
+        payload = original_read(workspace_arg)
+        time.sleep(0.02)
+        return payload
+
+    monkeypatch.setattr(rea_setup, "_read_state_unlocked", delayed_read)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(
+                rea_setup._persist_rea_env,
+                workspace,
+                {f"REA_COMPONENT_{index}": str(index)},
+            )
+            for index in range(16)
+        ]
+        for future in futures:
+            future.result()
+
+    record = json.loads(state_path.read_text(encoding="utf-8"))["mcp"]["rea"]
+    assert record["env"]["PATH"] == "node"
+    for index in range(16):
+        assert record["env"][f"REA_COMPONENT_{index}"] == str(index)
+
+
+def test_state_write_retries_permission_denied(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "mcp" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text('{"version":1,"mcp":{},"mounts":{}}', encoding="utf-8")
+    original_replace = rea_setup.os.replace
+    attempts = 0
+
+    def flaky_replace(source, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError(5, "Access denied", str(destination))
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(rea_setup.os, "replace", flaky_replace)
+
+    rea_setup._write_state(
+        {"version": 1, "mcp": {"test": {"state": "connected"}}, "mounts": {}},
+        workspace,
+    )
+
+    assert attempts == 2
+    updated = json.loads(state_path.read_text(encoding="utf-8"))
+    assert updated["mcp"]["test"]["state"] == "connected"
+
+
+def test_state_write_cleans_unique_temp_when_replace_fails(tmp_path: Path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "mcp" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text('{"version":1,"mcp":{},"mounts":{}}', encoding="utf-8")
+
+    def denied_replace(_source, destination):
+        raise PermissionError(5, "Access denied", str(destination))
+
+    monkeypatch.setattr(rea_setup.os, "replace", denied_replace)
+
+    with pytest.raises(PermissionError):
+        rea_setup._write_state(
+            {"version": 1, "mcp": {"test": {"state": "connected"}}, "mounts": {}},
+            workspace,
+        )
+
+    assert not list((workspace / "mcp").glob("*.tmp"))
 
 
 def test_reset_removes_only_workswarm_rea_configuration(tmp_path: Path) -> None:

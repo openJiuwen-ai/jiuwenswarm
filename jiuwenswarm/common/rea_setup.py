@@ -28,11 +28,15 @@ import threading
 import time
 import urllib.request
 import zipfile
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
+
+import portalocker
 
 from jiuwenswarm.common.utils import get_workspace_dir
 
@@ -286,7 +290,77 @@ def _candidate_node_paths() -> list[Path]:
 
 
 def _process_env(runtime: NodeRuntime | None = None) -> dict[str, str]:
-    env = os.environ.copy()
+    env = _base_process_env()
+    if runtime is not None:
+        old_path = env.get("PATH", "")
+        env["PATH"] = str(runtime.bin_dir) + (os.pathsep + old_path if old_path else "")
+    return env
+
+
+_COMPONENT_ENV_CONTEXT = threading.local()
+_SYSTEM_ENV_PASSTHROUGH = (
+    "COMSPEC",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LOCALAPPDATA",
+    "PATHEXT",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+)
+
+
+def _base_process_env() -> dict[str, str]:
+    """Return the active process environment, or the scoped MCP environment."""
+
+    scoped = getattr(_COMPONENT_ENV_CONTEXT, "base", None)
+    return dict(scoped) if isinstance(scoped, dict) else os.environ.copy()
+
+
+@contextmanager
+def _component_env_scope(env: dict[str, str]) -> Iterator[None]:
+    """Scope capability checks to the environment used by the REA MCP."""
+
+    previous = getattr(_COMPONENT_ENV_CONTEXT, "base", None)
+    _COMPONENT_ENV_CONTEXT.base = dict(env)
+    try:
+        yield
+    finally:
+        if previous is None:
+            try:
+                del _COMPONENT_ENV_CONTEXT.base
+            except AttributeError:
+                pass
+        else:
+            _COMPONENT_ENV_CONTEXT.base = previous
+
+
+def _record_process_env(
+    runtime: NodeRuntime | None,
+    record_env: dict[str, str] | None,
+) -> dict[str, str]:
+    """Build a launch-like environment without inheriting the Gateway host.
+
+    The registered REA MCP receives ``record.env`` from AgentServer, so setup
+    checks must not borrow unrelated variables from the Gateway process.
+    """
+
+    env = {
+        key: os.environ[key]
+        for key in _SYSTEM_ENV_PASSTHROUGH
+        if key in os.environ
+    }
+    env.update(record_env or {})
     if runtime is not None:
         old_path = env.get("PATH", "")
         env["PATH"] = str(runtime.bin_dir) + (os.pathsep + old_path if old_path else "")
@@ -486,7 +560,34 @@ def _state_file(workspace: str | Path | None = None) -> Path:
     return _workspace_path(workspace) / "mcp" / "state.json"
 
 
-def _read_state(workspace: str | Path | None = None) -> dict[str, Any]:
+_STATE_THREAD_LOCKS: dict[Path, threading.RLock] = {}
+_STATE_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_state_lock(path: Path) -> threading.RLock:
+    key = path.resolve()
+    with _STATE_THREAD_LOCKS_GUARD:
+        lock = _STATE_THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _STATE_THREAD_LOCKS[key] = lock
+        return lock
+
+
+@contextmanager
+def _state_lock(workspace: str | Path | None = None) -> Iterator[None]:
+    path = _state_file(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    thread_lock = _thread_state_lock(path)
+    with thread_lock, portalocker.Lock(
+        path.with_name(f"{path.name}.lock"),
+        mode="a+",
+        timeout=30,
+    ):
+        yield
+
+
+def _read_state_unlocked(workspace: str | Path | None = None) -> dict[str, Any]:
     path = _state_file(workspace)
     if not path.is_file():
         return {"version": 1, "mcp": {}, "mounts": {}}
@@ -502,18 +603,62 @@ def _read_state(workspace: str | Path | None = None) -> dict[str, Any]:
     return payload
 
 
-def _write_state(state: dict[str, Any], workspace: str | Path | None = None) -> None:
+def _read_state(workspace: str | Path | None = None) -> dict[str, Any]:
+    with _state_lock(workspace):
+        return _read_state_unlocked(workspace)
+
+
+def _write_state_unlocked(
+    state: dict[str, Any],
+    workspace: str | Path | None = None,
+) -> None:
     path = _state_file(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         backup = path.with_name(f"state.json.rea-setup-{int(time.time())}.bak")
         shutil.copy2(path, backup)
-    temp = path.with_suffix(".tmp")
-    temp.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
     )
-    temp.replace(path)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(
+                json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n"
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        last_error: PermissionError | None = None
+        for attempt in range(5):
+            try:
+                os.replace(temp, path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.05 * (2**attempt))
+        if last_error is not None:
+            raise last_error
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _write_state(state: dict[str, Any], workspace: str | Path | None = None) -> None:
+    with _state_lock(workspace):
+        _write_state_unlocked(state, workspace)
+
+
+def _update_state(
+    workspace: str | Path | None,
+    updater: Callable[[dict[str, Any]], Any],
+) -> Any:
+    with _state_lock(workspace):
+        payload = _read_state_unlocked(workspace)
+        result = updater(payload)
+        _write_state_unlocked(payload, workspace)
+        return result
 
 
 def _rea_record(
@@ -1000,7 +1145,7 @@ def _java_full_jdk_home(
     *,
     minimum_major: int = 17,
 ) -> Path | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     java_home = str(runtime_env.get("JAVA_HOME") or "").strip()
     candidates: list[Path] = []
     if java_home:
@@ -1184,7 +1329,7 @@ def _apply_manifest_overlay(
 
 
 def _static_enhancements(extra_env: dict[str, str] | None = None) -> list[dict[str, Any]]:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     java_home = _java_full_jdk_home(extra_env, minimum_major=21)
     checks = (
         ("jadx", "JADX / Android", "REA_JADX_MCP_JAR", ()),
@@ -1259,14 +1404,15 @@ def mark_rea_mcp_state(
     *,
     tool_count: int | None = None,
 ) -> None:
-    payload = _read_state(workspace)
-    record = payload.get("mcp", {}).get(REA_MCP_NAME)
-    if not isinstance(record, dict):
-        return
-    record["state"] = state
-    if tool_count is not None:
-        record["tool_count"] = max(0, int(tool_count))
-    _write_state(payload, workspace)
+    def update(payload: dict[str, Any]) -> None:
+        record = payload.get("mcp", {}).get(REA_MCP_NAME)
+        if not isinstance(record, dict):
+            return
+        record["state"] = state
+        if tool_count is not None:
+            record["tool_count"] = max(0, int(tool_count))
+
+    _update_state(workspace, update)
 
 
 def _mcp_registration_check(
@@ -2168,7 +2314,7 @@ def _install_python_component(
 
 
 def _java_executable(extra_env: dict[str, str] | None = None) -> Path | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     java_home = str(runtime_env.get("JAVA_HOME") or "").strip()
     if java_home:
         candidate = Path(java_home) / "bin" / ("java.exe" if os.name == "nt" else "java")
@@ -2381,7 +2527,7 @@ def _ghidra_version(install_dir: Path) -> str | None:
 
 
 def _find_ghidra_install(extra_env: dict[str, str] | None = None) -> tuple[Path, str] | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     candidates: list[Path] = []
     configured = str(runtime_env.get("GHIDRA_INSTALL_DIR") or "").strip()
     if configured:
@@ -2433,7 +2579,7 @@ def _find_ghidra_install(extra_env: dict[str, str] | None = None) -> tuple[Path,
 
 
 def _find_hopper_launcher(extra_env: dict[str, str] | None = None) -> Path | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     configured = str(runtime_env.get("HOPPER_LAUNCHER_PATH") or "").strip()
     candidates: list[Path] = [Path(configured)] if configured else []
     home = Path.home()
@@ -2466,7 +2612,7 @@ def _find_hopper_launcher(extra_env: dict[str, str] | None = None) -> Path | Non
 def _find_pcap_tools(
     extra_env: dict[str, str] | None = None,
 ) -> tuple[Path, Path] | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     candidates = [
         Path("C:/Program Files/Wireshark"),
         Path("C:/Program Files (x86)/Wireshark"),
@@ -2496,7 +2642,7 @@ def _find_pcap_tools(
 def _find_pcap_partial(
     extra_env: dict[str, str] | None = None,
 ) -> tuple[Path | None, Path | None]:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     tshark = str(runtime_env.get("REA_TSHARK_COMMAND") or "").strip()
     capinfos = str(runtime_env.get("REA_CAPINFOS_COMMAND") or "").strip()
     tshark_path = Path(tshark).expanduser() if tshark else None
@@ -2511,7 +2657,7 @@ def _find_pcap_partial(
 
 
 def _find_browser_executable(extra_env: dict[str, str] | None = None) -> Path | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     configured = str(runtime_env.get("REA_BROWSER_EXECUTABLE") or "").strip()
     if configured:
         candidate = Path(configured).expanduser()
@@ -2569,7 +2715,7 @@ def _configured_component(
     component = _manifest_components().get(component_id)
     if component is None:
         return False, {}, None
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     values = {
         key: str(runtime_env.get(key) or "").strip()
         for key in _component_env_keys(component)
@@ -2769,7 +2915,7 @@ def _reuse_existing_component(
                     "REA_CAPINFOS_COMMAND": str(capinfos),
                 }, "installed"
     if component_id == "jadx":
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get("REA_JADX_MCP_JAR") or "").strip()
         if not candidate:
             cached = Path.home() / ".rea" / "tools" / "jadx-headless-mcp-0.7.1-all.jar"
@@ -2804,7 +2950,7 @@ def _reuse_existing_component(
             return {"REA_JADX_MCP_JAR": str(Path(candidate).expanduser().resolve())}, "0.7.1"
     if component_id in {"adb", "apktool"}:
         env_key = "REA_ADB_PATH" if component_id == "adb" else "REA_APKTOOL_COMMAND"
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get(env_key) or "").strip()
         names = ("adb", "adb.exe") if component_id == "adb" else ("apktool", "apktool.bat", "apktool.cmd")
         if not candidate:
@@ -2869,7 +3015,7 @@ def _reuse_existing_component(
             return {env_key: str(resolved)}, "installed"
     if component_id in {"pwntools", "mitmproxy"}:
         env_key = "REA_PWNTOOLS_PYTHON" if component_id == "pwntools" else "REA_MITMDUMP_COMMAND"
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get(env_key) or "").strip()
         candidates = [Path(candidate).expanduser()] if candidate else []
         if component_id == "pwntools":
@@ -2896,7 +3042,7 @@ def _reuse_existing_component(
             ):
                 return {env_key: str(executable.resolve())}, "installed"
     if component_id == "wabt":
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get("REA_WABT_BIN_DIRECTORY") or "").strip()
         if candidate and (Path(candidate) / ("wasm-validate.exe" if os.name == "nt" else "wasm-validate")).is_file():
             return {"REA_WABT_BIN_DIRECTORY": str(Path(candidate).expanduser().resolve())}, "1.0.42"
@@ -2924,7 +3070,7 @@ def _reuse_existing_component(
             "cutter": "REA_CUTTER_COMMAND",
             "wakaru": "REA_WAKARU_COMMAND",
         }[component_id]
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get(env_key) or "").strip()
         names = {
             "kuna": ("kuna", "kuna.exe"),
@@ -3002,7 +3148,7 @@ def _reuse_existing_component(
             "objdump": "REA_OBJDUMP_COMMAND",
             "sigrok": "REA_SIGROK_COMMAND",
         }[component_id]
-        runtime_env = os.environ | (extra_env or {})
+        runtime_env = _base_process_env() | (extra_env or {})
         candidate = str(runtime_env.get(env_key) or "").strip()
         names = {
             "gdb": ("gdb", "gdb.exe"),
@@ -3058,7 +3204,7 @@ def _partial_component_path(
     component_id: str,
     extra_env: dict[str, str] | None,
 ) -> tuple[str, str] | None:
-    runtime_env = os.environ | (extra_env or {})
+    runtime_env = _base_process_env() | (extra_env or {})
     if component_id == "pcap":
         tshark, capinfos = _find_pcap_partial(extra_env)
         if tshark is not None or capinfos is not None:
@@ -4367,13 +4513,14 @@ def _persist_rea_env(
 
     if not component_env:
         return
-    record = rea_mcp_record(workspace_path)
-    if not record:
-        return
-    record["env"] = _record_env(record) | component_env
-    payload = _read_state(workspace_path)
-    payload.setdefault("mcp", {})[REA_MCP_NAME] = record
-    _write_state(payload, workspace_path)
+
+    def update(payload: dict[str, Any]) -> None:
+        record = payload.get("mcp", {}).get(REA_MCP_NAME)
+        if not isinstance(record, dict):
+            return
+        record["env"] = _record_env(record) | component_env
+
+    _update_state(workspace_path, update)
 
 
 def install_enhanced_components(
@@ -4810,7 +4957,7 @@ def scan_rea_setup(
             if ready and include_enhanced
             else []
         ),
-        "enhanced_plan": enhanced_component_plan() if ready and include_enhanced else [],
+        "enhanced_plan": enhanced_component_plan() if include_enhanced else [],
         "enhanced_blocked_by_base": not ready,
         "rea_skill": rea_skill,
         "generated_at": time.time(),
@@ -4836,7 +4983,7 @@ def configure_component(
     record = rea_mcp_record(workspace)
     if not record:
         raise ValueError("请先安装并验证基础 REA MCP")
-    env = _record_env(record)
+    configured_env: dict[str, str] = {}
     workspace_path = _workspace_path(workspace)
     provided = {
         str(field.get("id") or ""): str(values.get(str(field.get("id") or "")) or "").strip()
@@ -4891,7 +5038,7 @@ def configure_component(
                     raise ValueError(
                         f"{field_id} 不像是正确的安装目录，未找到 {', '.join(map(str, probes))}"
                     )
-            env[env_key] = str(selected)
+            configured_env[env_key] = str(selected)
             continue
         if field_type == "json":
             try:
@@ -4908,18 +5055,22 @@ def configure_component(
                 raise ValueError(f"{field_id} 必须是 http:// 或 https:// URL")
             content = value + ("" if value.endswith("\n") else "\n")
         if not target_rel:
-            env[env_key] = value
+            configured_env[env_key] = value
             continue
         target = (workspace_path / target_rel).resolve()
         if workspace_path.resolve() not in target.parents:
             raise ValueError("组件配置目标路径越界")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        env[env_key] = str(target)
-    record["env"] = env
-    payload = _read_state(workspace)
-    payload.setdefault("mcp", {})[REA_MCP_NAME] = record
-    _write_state(payload, workspace)
+        configured_env[env_key] = str(target)
+
+    def update(payload: dict[str, Any]) -> None:
+        current = payload.get("mcp", {}).get(REA_MCP_NAME)
+        if not isinstance(current, dict):
+            raise ValueError("请先安装并验证基础 REA MCP")
+        current["env"] = _record_env(current) | configured_env
+
+    _update_state(workspace, update)
     return scan_rea_setup(workspace)
 
 
@@ -4994,15 +5145,17 @@ def install_rea_base(
     _raise_if_cancelled(cancel_check)
 
     _report_progress(progress_callback, "write_config", 72, "写入固定版本 REA MCP 配置")
-    existing_env = _record_env(record)
     record = _rea_record(runtime, state="registered")
-    if isinstance(record.get("env"), dict):
-        for key, value in existing_env.items():
-            if key != "PATH":
-                record["env"][key] = value
-    payload = _read_state(workspace_path)
-    payload.setdefault("mcp", {})[REA_MCP_NAME] = record
-    _write_state(payload, workspace_path)
+
+    def update(payload: dict[str, Any]) -> None:
+        current = payload.get("mcp", {}).get(REA_MCP_NAME)
+        if isinstance(current, dict) and isinstance(record.get("env"), dict):
+            for key, value in _record_env(current).items():
+                if key != "PATH":
+                    record["env"][key] = value
+        payload.setdefault("mcp", {})[REA_MCP_NAME] = record
+
+    _update_state(workspace_path, update)
     _raise_if_cancelled(cancel_check)
     _report_progress(progress_callback, "base_snapshot", 84, "正在生成基础环境快照")
     scan = scan_rea_setup(workspace_path)
@@ -5014,9 +5167,11 @@ def reset_rea_setup(workspace: str | Path | None = None) -> dict[str, Any]:
     """Remove Workswarm-owned REA config and managed components."""
 
     workspace_path = _workspace_path(workspace)
-    payload = _read_state(workspace_path)
-    removed_record = payload.get("mcp", {}).pop(REA_MCP_NAME, None)
-    _write_state(payload, workspace_path)
+
+    def update(payload: dict[str, Any]) -> Any:
+        return payload.get("mcp", {}).pop(REA_MCP_NAME, None)
+
+    removed_record = _update_state(workspace_path, update)
 
     for backup in (workspace_path / "mcp").glob("state.json.rea-setup-*.bak"):
         backup.unlink(missing_ok=True)

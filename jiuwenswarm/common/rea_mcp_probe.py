@@ -85,6 +85,31 @@ def validate_tool_inventory(
     }
 
 
+def binary_session_from_call_result(call_result: dict[str, Any]) -> dict[str, Any]:
+    """Extract ``binary_session`` from a raw MCP ``tools/call`` result."""
+
+    if not isinstance(call_result, dict):
+        raise RuntimeError("binary_session returned no structured result")
+    structured = call_result.get("structuredContent")
+    binary_session = structured.get("result") if isinstance(structured, dict) else None
+    if isinstance(binary_session, dict):
+        return binary_session
+    content = call_result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            text = item.get("text") if isinstance(item, dict) else None
+            if not isinstance(text, str):
+                continue
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            candidate = parsed.get("result") if isinstance(parsed, dict) else None
+            if isinstance(candidate, dict):
+                return candidate
+    raise RuntimeError("binary_session returned no structured result")
+
+
 def probe_rea_mcp_inventory(
     record: dict[str, Any],
     *,
@@ -170,17 +195,7 @@ def probe_rea_mcp_inventory(
         if called.get("error"):
             raise RuntimeError(str(called["error"]))
         result = called.get("result") if isinstance(called.get("result"), dict) else {}
-        structured = result.get("structuredContent")
-        binary_session = structured.get("result") if isinstance(structured, dict) else None
-        if not isinstance(binary_session, dict):
-            content = result.get("content")
-            if isinstance(content, list) and content:
-                text = content[0].get("text") if isinstance(content[0], dict) else None
-                if isinstance(text, str):
-                    parsed = json.loads(text)
-                    binary_session = parsed.get("result") if isinstance(parsed, dict) else None
-        if not isinstance(binary_session, dict):
-            raise RuntimeError("binary_session returned no structured result")
+        binary_session = binary_session_from_call_result(result)
         tools = listed.get("result", {}).get("tools")
         if not isinstance(tools, list):
             raise RuntimeError("tools/list returned no tools")

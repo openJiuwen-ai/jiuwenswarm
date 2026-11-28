@@ -5,16 +5,18 @@ import {
   ACTIVE_INSTALL_JOB_STORAGE_KEY,
   aggregateCapabilityVisualState,
   cancelReaSetupJob,
+  classifyCompletedReaSetupJob,
   classifyReaSetupRequestError,
   estimatePaceRemainingSeconds,
   estimateRemainingSeconds,
   formatProgressDuration,
   messageWithoutEta,
+  mergeReaSetupScan,
   persistActiveJob,
   pollReaSetupJob,
   readPersistedActiveJob,
+  resolveEnhancedVisualState,
   selectDisplayedRemainingSeconds,
-  shouldDeferEnhancedDetection,
   stabilizeRemainingSeconds,
 } from '../jiuwenswarm/channels/web/frontend/node_modules/.cache/rea-setup-progress/reaSetupProgress.mjs';
 
@@ -47,6 +49,25 @@ function createJob(overrides = {}) {
     ...overrides,
   };
 }
+
+test('classifies cancellation separately from installation failure', () => {
+  assert.equal(
+    classifyCompletedReaSetupJob({ status: 'cancelled', error: 'ignored cancellation detail' }),
+    'cancelled',
+  );
+  assert.equal(
+    classifyCompletedReaSetupJob({ status: 'failed', error: 'install failed' }),
+    'error',
+  );
+  assert.equal(
+    classifyCompletedReaSetupJob({ status: 'failed', error: '' }),
+    null,
+  );
+  assert.equal(
+    classifyCompletedReaSetupJob({ status: 'succeeded', error: null }),
+    null,
+  );
+});
 
 test('uses aggregate download bytes for a coherent remaining estimate', () => {
   const job = createJob({
@@ -91,13 +112,90 @@ test('never reports zero while an install is running', () => {
   assert.equal(stabilizeRemainingSeconds(createJob({ status: 'succeeded' }), 0, 300), null);
 });
 
-test('defers enhanced capability status until base detection is available', () => {
-  assert.equal(shouldDeferEnhancedDetection(createJob({ kind: 'base' }), 0), true);
-  assert.equal(shouldDeferEnhancedDetection(createJob({ kind: 'base' }), 10), false);
-  assert.equal(shouldDeferEnhancedDetection(createJob({ kind: 'enhanced' }), 0), false);
+test('base detection keeps the cached enhanced capability snapshot', () => {
+  const previous = {
+    ready: true,
+    base: [{ id: 'rea_mcp', ok: true }],
+    enhanced: [{ id: 'ghidra', state: 'installed' }],
+    enhanced_plan: [{ id: 'ghidra', state: 'planned' }],
+    capability_cards: [{ id: 'ghidra', state: 'available' }],
+    rea_inventory_diagnostics: { mcp_verified: true },
+  };
+  const next = {
+    ready: false,
+    base: [{ id: 'rea_mcp', ok: false }],
+    enhanced: [],
+    enhanced_plan: [],
+    capability_cards: [],
+    rea_inventory_diagnostics: {},
+  };
+
+  const merged = mergeReaSetupScan(previous, next, 'base');
+
+  assert.equal(merged.ready, false);
+  assert.deepEqual(merged.base, next.base);
+  assert.deepEqual(merged.enhanced, previous.enhanced);
+  assert.deepEqual(merged.enhanced_plan, previous.enhanced_plan);
+  assert.deepEqual(merged.capability_cards, previous.capability_cards);
+  assert.deepEqual(merged.rea_inventory_diagnostics, previous.rea_inventory_diagnostics);
+});
+
+test('full and enhanced detection replace the cached enhanced snapshot', () => {
+  const previous = {
+    ready: true,
+    base: [],
+    enhanced: [{ id: 'ghidra', state: 'not_installed' }],
+    enhanced_plan: [],
+    capability_cards: [],
+    rea_inventory_diagnostics: {},
+  };
+  const next = {
+    ready: true,
+    base: [],
+    enhanced: [{ id: 'ghidra', state: 'installed' }],
+    enhanced_plan: [{ id: 'ghidra', state: 'ready' }],
+    capability_cards: [{ id: 'ghidra', state: 'available' }],
+    rea_inventory_diagnostics: { mcp_verified: true },
+  };
+
+  assert.deepEqual(mergeReaSetupScan(previous, next, 'all'), next);
+  assert.deepEqual(mergeReaSetupScan(previous, next, 'enhanced'), next);
+});
+
+test('base detection without a previous snapshot does not import enhanced evidence', () => {
+  const next = {
+    ready: false,
+    base: [{ id: 'rea_mcp', ok: false }],
+    enhanced: [{ id: 'ghidra', state: 'discovered' }],
+    enhanced_plan: [{ id: 'ghidra', state: 'planned' }],
+    capability_cards: [{ id: 'ghidra', state: 'not_installed' }],
+    rea_inventory_diagnostics: { mcp_verified: false },
+  };
+
+  const merged = mergeReaSetupScan(null, next, 'base');
+
+  assert.deepEqual(merged.base, next.base);
+  assert.deepEqual(merged.enhanced, []);
+  assert.deepEqual(merged.enhanced_plan, []);
+  assert.deepEqual(merged.capability_cards, []);
+  assert.deepEqual(merged.rea_inventory_diagnostics, {});
+});
+
+test('enhanced state requires direct availability while preserving manifest states', () => {
+  assert.equal(resolveEnhancedVisualState({ available: true, planState: 'planned' }), 'available');
+  assert.equal(resolveEnhancedVisualState({ available: null, planState: 'needs_action' }), 'needsAction');
+  assert.equal(resolveEnhancedVisualState({ available: null, planState: 'unsupported' }), 'unsupported');
   assert.equal(
-    shouldDeferEnhancedDetection(createJob({ kind: 'base', status: 'succeeded' }), 0),
-    false,
+    resolveEnhancedVisualState({ available: false, planState: 'planned', inventoryState: 'configured' }),
+    'notInstalled',
+  );
+  assert.equal(
+    resolveEnhancedVisualState({ available: null, planState: 'planned', inventoryState: 'discovered' }),
+    'notInstalled',
+  );
+  assert.equal(
+    resolveEnhancedVisualState({ available: null, planState: 'planned', inventoryState: 'partial' }),
+    'partial',
   );
 });
 
