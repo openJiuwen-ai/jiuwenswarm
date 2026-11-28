@@ -208,6 +208,7 @@ class RuntimeSupervisor:
         self._ipc_ready = asyncio.Event()
         self._stopping = False
         self._terminating = False
+        self._busy_grace_noted = False
         self._stop_deadline: float | None = None
         self._fatal = False
         self._fatal_reason = ""
@@ -1910,6 +1911,10 @@ class RuntimeSupervisor:
                     if probe.frame is not None:
                         logger.info("[Supervisor] worker recovery round trip confirmed generation=%s evidence=%s",
                                     generation, evidence)
+                        # Recovery ends the busy-grace window as well: reset the
+                        # transition flag here too, else a later second grace
+                        # degrades to DEBUG (AIReview 9706 P3).
+                        self._busy_grace_noted = False
                         last_local_stall = 0.0
                         # The I/O reader confirmed the peer even if the pump is still busy.
                         if self._last_rx < probe.received_at:
@@ -1922,8 +1927,29 @@ class RuntimeSupervisor:
                     if self._stopping or generation != self._generation or conn is not self._conn:
                         return
                     if time.monotonic() - self._last_rx <= _HEARTBEAT_TIMEOUT:
+                        # Same as the probe-recovery exit: the grace window is
+                        # over, so the next grace must log INFO again
+                        # (AIReview 9706 P3).
+                        self._busy_grace_noted = False
                         continue
                 now = time.monotonic()
+                # P3-fix: transport silence with in-flight dispatches may be the
+                # worker busy on a large-context call, not dead (2026-11-06
+                # 15:04 false kill, llm.log in-flight at input=201814). Defer
+                # the verdict to the 180s stall window while pending>0.
+                if self._pending and (now - self._last_rx) <= _WORKER_STALL_RESTART:
+                    # The transition into the grace window is logged at INFO
+                    # once; later ticks of the same grace stay at DEBUG so a
+                    # busy worker cannot emit one line per watchdog tick.
+                    first_grace = not self._busy_grace_noted
+                    self._busy_grace_noted = True
+                    logger.log(
+                        logging.INFO if first_grace else logging.DEBUG,
+                        "[Supervisor] heartbeat busy-grace: pending=%d last_rx_age=%.1fs"
+                        " <= %.0fs busy window; defer verdict",
+                        len(self._pending), now - self._last_rx, _WORKER_STALL_RESTART,
+                    )
+                    continue
                 reason = {
                     "write_timeout": "runtime worker IPC probe write timed out",
                     "write_failed": "runtime worker IPC probe write failed",
@@ -1941,6 +1967,13 @@ class RuntimeSupervisor:
                 self._unhealthy_reason = reason
                 await conn.close()
                 return
+            else:
+                # Healthy tick: the busy-grace window ended with the heartbeat.
+                # Reset the transition flag here (not only in the post-timeout
+                # re-check branch) so a later second grace logs INFO again --
+                # otherwise the flag stays True forever and every subsequent
+                # grace degrades to DEBUG (openjiuwen-AIReview 9706 id=200410191).
+                self._busy_grace_noted = False
             if self._worker_last_beat and await self._classify_worker_stall(now):
                 return
             continue
