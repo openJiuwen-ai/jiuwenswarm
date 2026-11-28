@@ -2,7 +2,7 @@ import { ChevronRight } from 'lucide-react';
 import { conversationKey } from '../../stores/chatStore';
 import { selectedExpertTeamId } from '../../features/teamOrganization/conversation';
 import i18n from '../../i18n';
-import { ParsedTeamEvent, parseTeamEventMessage } from '../ChatPanel/teamEventUtils';
+import { ParsedTeamEvent, parseTeamEventMessage, mergeUniqueMessages } from '../ChatPanel/teamEventUtils';
 import type { Message, TodoItem } from '../../types';
 import type { ReactNode } from 'react';
 import { useChatStore } from '../../stores/chatStore';
@@ -546,10 +546,11 @@ export function buildProcessItems(
       };
     });
 
-  const messageItems = messages
+  const messageItems = mergeUniqueMessages(messages)
     .map((message): ProcessItem | null => {
       const event = parseTeamEventMessage(message);
-      if (!event) return null;
+      // Main-chat delivery copies are presentation only, not new team messages.
+      if (!event || event.isDisplayProjection) return null;
       if (event.fromMember !== memberId && event.toMember !== memberId) return null;
       const timestamp = event.timestamp || Date.parse(message.timestamp) || Date.now();
       const target = event.isBroadcast

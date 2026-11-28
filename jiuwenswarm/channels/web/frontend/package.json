@@ -312,7 +312,10 @@
     "test:moa-progress": "node --test tests/moaProgress.test.mjs",
     "test:duplex-subagent-panel": "node --test ../../../extensions/video_duplex/tests/frontend/duplexSubagentPanel.test.mjs",
     "test:video-frame-encoding": "node --test ../../../extensions/video_duplex/tests/frontend/frameEncoding.test.mjs",
-    "test:team-leader-messages": "esbuild src/features/teamLeaderMessages.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/team-leader-messages/teamLeaderMessages.mjs --define:import.meta.env.DEV=false && node --test tests/teamLeaderMessages.test.mjs"
+    "test:team-leader-messages": "esbuild src/features/teamLeaderMessages.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/team-leader-messages/teamLeaderMessages.mjs --define:import.meta.env.DEV=false && node --test tests/teamLeaderMessages.test.mjs",
+    "test:member-process-dedup": "node tests/fixtures/buildMemberProcess.mjs && node --import ./tests/fixtures/browserGlobals.mjs --test tests/memberProcessMessageDedup.test.mjs",
+    "test:team-sidebar-presentation": "node tests/fixtures/buildTeamSidebar.mjs && node --import ./tests/fixtures/browserGlobals.mjs --test tests/teamSidebarPresentation.test.mjs",
+    "test:human-member-deliveries": "esbuild src/features/humanMemberDeliveries.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/human-deliveries.mjs && node --test tests/humanMemberDeliveries.test.mjs"
   },
   "dependencies": {
     "@a2ui/react": "0.8.0",

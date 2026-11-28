@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.agent_teams.runtime.pool import RuntimeState
+from openjiuwen.agent_teams.workflow.concurrency import ConcurrencyLimits
 from openjiuwen.harness_protocol.state import HarnessState
 
 from jiuwenswarm.agents.harness.team.team_manager import (
@@ -2387,6 +2388,55 @@ async def test_get_swarm_enriched_team_spec_keeps_legacy_session_scoped_team_nam
     )
 
     assert spec.team_name == "template_team_sess-legacy"
+
+
+@pytest.mark.asyncio
+async def test_get_swarm_enriched_team_spec_clamps_concurrency_down_to_enterprise_l3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业只下发 max_agents_total 时它是硬上限：L1 向下收敛，L3 绝不被 spec 底座抬高。"""
+    manager = _TeamManagerHarness()
+
+    class _Spec:
+        team_name = "template_team"
+        bootstrap_mode = "leader"
+        dispatch_mode = "scheduled"
+        swarmflow_concurrency = ConcurrencyLimits(
+            max_workflows=16, agents_per_run=None, max_agents_total=64
+        )
+
+    async def fake_ensure_postgresql(self, config_base: dict) -> None:
+        _ = self, config_base
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_config",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False: {},
+    )
+    monkeypatch.setattr(TeamManager, "_ensure_postgresql_for_leader", fake_ensure_postgresql)
+    monkeypatch.setattr(
+        TeamManager,
+        "_load_team_spec",
+        staticmethod(lambda _session_id, **_kwargs: _Spec()),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm",
+        lambda spec, **kwargs: None,
+    )
+
+    spec = await manager.get_swarm_enriched_team_spec(
+        "sess-l3-ceiling",
+        mode="team",
+        request_metadata={"mode": "team"},
+        swarmflow_config={"enable_swarmflow": True, "swarmflow_max_agents_total": 4},
+    )
+
+    assert spec.swarmflow_concurrency == ConcurrencyLimits(
+        max_workflows=4, agents_per_run=None, max_agents_total=4
+    )
 
 
 def test_register_workflow_handler() -> None:

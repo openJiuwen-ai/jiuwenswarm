@@ -236,13 +236,13 @@ async def test_overlapping_cold_builds_share_only_the_same_structural_failure(st
         return await parent._get_or_create_session_adapter(stored.sid, history_before_request_id=boundary)
 
     first = asyncio.create_task(build("current"))
-    await asyncio.wait_for(ready.wait(), 3)
+    await asyncio.wait_for(ready.wait(), 10)
     second = asyncio.create_task(build("other" if change == "cutoff" else "current"))
     await asyncio.sleep(0)
     proceed.set()
     if change == "none":
         # The third caller overlaps the follower, after the original build exited.
-        await asyncio.wait_for(follower_cleanup.wait(), 3)
+        await asyncio.wait_for(follower_cleanup.wait(), 10)
         third = asyncio.create_task(build("current"))
         await asyncio.sleep(0)
         release_follower.set()

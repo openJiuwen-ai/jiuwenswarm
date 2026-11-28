@@ -7,8 +7,9 @@ import { IconAvatar } from './Buttons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DefinitionFilePreview, findDefaultDefinitionFile } from '../AgentManagementPanel/DefinitionFilePreview';
 import type { AgentFileContent, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
-import { systemPluginApi } from '../../services/extensionsV2Api';
+import { EXTENSION_PACKAGE_BUSY, systemPluginApi } from '../../services/extensionsV2Api';
 import { useSystemPluginStore } from '../../stores/systemPluginStore';
+import { toast } from '../ui/Toast/toastStore';
 import { localizedText } from '../../types/localized';
 import type { SystemPluginMember } from '../../types/systemPlugin';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
@@ -216,6 +217,12 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   // 与 agent 插件详情页一致：安装（含冲突预检）期间按钮显示“安装中…”。
   const installing = installCheckPending || !!installingIds[packageId] || !!installingIds[id];
   const versions = detail.versions ?? [];
+  // 加载失败的版本留在存储里以便重装，但不能再次切换到它。
+  const failedVersions = new Set(
+    (detail.versionStates ?? [])
+      .filter((state) => state.status === 'failed')
+      .map((state) => state.version),
+  );
   const installedVersion = detail.installedVersion || (detail.installed ? detail.version : '');
   const initialVersion = installedVersion && versions.includes(installedVersion)
     ? installedVersion
@@ -226,10 +233,21 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const uninstallTarget = isBundle ? currentVersion : (installedVersion || currentVersion);
   const versionOptions = [...versions]
     .reverse()
-    .map((version) => ({ value: version, label: version }));
+    .map((version) => ({
+      value: version,
+      label: version,
+      ...(failedVersions.has(version)
+        ? { disabled: true, disabledReason: t('connectorMarket.systemPlugin.versionUnavailable') }
+        : {}),
+    }));
+
+  const failureText = (failure: { error?: string; code?: string }) =>
+    failure.code === EXTENSION_PACKAGE_BUSY
+      ? t('connectorMarket.systemPlugin.busyMessage')
+      : failure.error ?? t('connectorMarket.common.loadFailed');
 
   async function runAction(
-    action: () => Promise<{ ok: boolean; error?: string }>,
+    action: () => Promise<{ ok: boolean; error?: string; code?: string }>,
     onDone?: () => void,
   ): Promise<boolean> {
     setActionError(null);
@@ -238,7 +256,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
       onDone?.();
       return true;
     }
-    setActionError(result.error ?? t('connectorMarket.common.loadFailed'));
+    setActionError(failureText(result));
     return false;
   }
 
@@ -281,7 +299,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
     setActionError(null);
     const result = await uninstall(packageId, version, id);
     if (!result.ok) {
-      setActionError(result.error);
+      setActionError(failureText(result));
       return;
     }
     if (result.detail === 'removed') {
@@ -309,7 +327,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   }
 
   function handleVersionSelect(version: string) {
-    if (!version || version === currentVersion) return;
+    if (!version || version === currentVersion || failedVersions.has(version)) return;
     if (detail.installed && installedVersion && version !== installedVersion) {
       setPendingVersion(version);
       return;
@@ -320,15 +338,33 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   async function handleSwitchVersion() {
     const version = pendingVersion;
     if (!version) return;
-    const previous = versionRef.current || currentVersion;
+    const previous = installedVersion || versionRef.current || currentVersion;
     setPendingVersion(null);
     setSelectedVersion(version);
     versionRef.current = version;
     resetPanes();
-    if (await handleInstall(version)) return;
+    setActionError(null);
+    // 失败由下面的专用提示统一说明，不再让全局错误 Toast 重复弹一次。
+    const result = await install(id, version, { reportError: false });
+    if (result.ok) {
+      await loadDetail(id, version);
+      return;
+    }
+    // 切换失败时后端仍停留在原版本：回到原版本内容并用提示说明失败原因。
     setSelectedVersion(previous);
     versionRef.current = previous;
     await loadDetail(id, previous);
+    toast.open({
+      id: 'system-plugin-version-switch-failed',
+      content: t('connectorMarket.systemPlugin.versionLoadFailed', {
+        version,
+        previous,
+        error: result.error || t('connectorMarket.common.loadFailed'),
+      }),
+      variant: 'error',
+      duration: 6,
+      testId: 'connector-market-system-plugin-version-toast',
+    });
   }
 
   async function handleEnabledChange(enable: boolean) {

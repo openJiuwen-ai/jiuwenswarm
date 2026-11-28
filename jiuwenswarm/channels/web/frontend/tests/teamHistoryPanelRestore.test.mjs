@@ -15,6 +15,22 @@ function spawnRecord() {
   };
 }
 
+test('historical send_message retains arguments and confirmed partial multicast recipients', () => {
+  const output = { success: false, data: { type: 'multicast', delivered: ['reader'], failed: [{ to: 'designer' }] } };
+  const common = { mode: 'team', role: 'teammate', session_id: 'session-1', member_name: 'writer' };
+  const args = { targets: ['reader', 'designer'], content: 'Review report' };
+  const state = parseTeamHistoryPanelRecords([
+    { ...common, event_type: 'chat.tool_call', timestamp: 1_700_000_000_000,
+      tool_call: { name: 'send_message', id: 'delivery', arguments: args } },
+    { ...common, event_type: 'chat.tool_result', timestamp: 1_700_000_001_000,
+      tool_result: { tool_name: 'send_message', tool_call_id: 'delivery', success: false, result: 'partial failure', raw_output: output } },
+  ], 'session-1');
+  assert.deepEqual(state.executionEvents.find(event => event.kind === 'tool_call').tool_arguments, args);
+  const result = state.executionEvents.find(event => event.kind === 'tool_result');
+  assert.equal(result.tool_success, false);
+  assert.deepEqual(result.tool_output, output);
+});
+
 function shutdownResultRecord(fields) {
   return {
     mode: 'team',

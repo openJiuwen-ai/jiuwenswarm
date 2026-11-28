@@ -7,11 +7,14 @@ import {
 } from '../services/extensionsV2Api';
 import type { SystemPluginDetail, SystemPluginSummary } from '../types/systemPlugin';
 
-type MutationFailure = { ok: false; error: string };
+type MutationFailure = { ok: false; error: string; code?: string };
 type MutationResult = { ok: true } | MutationFailure;
 type UninstallSuccess = { ok: true; detail: 'removed' | 'updated' | 'unavailable' };
 type UninstallResult = UninstallSuccess | MutationFailure;
 type SystemPluginLoadOptions = { refresh?: boolean; silent?: boolean };
+/** ``reportError: false`` keeps the failure out of the global error toast;
+ *  the caller shows its own, more specific prompt. */
+type MutationOptions = { reportError?: boolean };
 type ListLoadResult = { ok: true; packages?: SystemPluginSummary[] } | { ok: false };
 
 // Hub preview links are short-lived presigned URLs that change on every request.
@@ -46,10 +49,12 @@ interface SystemPluginState {
   installingIds: Record<string, boolean>;
   loading: boolean;
   error: string | null;
+  /** Stable report code of the last failure, e.g. ``EXTENSION_PACKAGE_BUSY``. */
+  errorCode: string | null;
   loadCatalog: (options?: SystemPluginLoadOptions) => Promise<boolean>;
   loadMine: (options?: SystemPluginLoadOptions) => Promise<boolean>;
   loadDetail: (id: string, version?: string, cacheId?: string) => Promise<boolean>;
-  install: (id: string, version?: string) => Promise<MutationResult>;
+  install: (id: string, version?: string, options?: MutationOptions) => Promise<MutationResult>;
   importPath: (path: string) => Promise<MutationResult>;
   uninstall: (id: string, version?: string, detailId?: string) => Promise<UninstallResult>;
   reload: (id: string, version?: string) => Promise<MutationResult>;
@@ -68,6 +73,12 @@ function uniqueById<T extends { id: string }>(items: T[]): T[] {
 
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
+}
+
+function errorCodeOf(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
 }
 
 export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
@@ -121,7 +132,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       return { ok: true, packages };
     } catch (error) {
       if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return { ok: true };
-      if (!silent && !isTransientManagementError(error)) set({ error: messageOf(error) });
+      if (!silent && !isTransientManagementError(error)) set({ error: messageOf(error), errorCode: null });
       return { ok: false };
     } finally {
       if (!silent) {
@@ -147,14 +158,19 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       };
     });
 
-  const mutate = async <T extends { ok: true }>(id: string, action: () => Promise<T>): Promise<T | MutationFailure> => {
+  const mutate = async <T extends { ok: true }>(
+    id: string,
+    action: () => Promise<T>,
+    options?: MutationOptions,
+  ): Promise<T | MutationFailure> => {
     setBusy(id, true);
     try {
       return await action();
     } catch (error) {
       const message = messageOf(error);
-      set({ error: message });
-      return { ok: false, error: message };
+      const code = errorCodeOf(error);
+      if (options?.reportError !== false) set({ error: message, errorCode: code ?? null });
+      return { ok: false, error: message, code };
     } finally {
       setBusy(id, false);
     }
@@ -163,7 +179,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
   const mutateAndSync = (
     id: string,
     action: () => Promise<void>,
-    options?: { tolerateTransient?: boolean; confirmed?: () => void },
+    options?: { tolerateTransient?: boolean; confirmed?: () => void } & MutationOptions,
   ): Promise<MutationResult> =>
     mutate(id, async () => {
       let handled = false;
@@ -182,7 +198,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       await syncDetail(id);
       if (handled) options?.confirmed?.();
       return { ok: true };
-    });
+    }, options);
 
   return {
     catalog: [],
@@ -192,8 +208,9 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
     installingIds: {},
     loading: false,
     error: null,
+    errorCode: null,
 
-    clearError: () => set({ error: null }),
+    clearError: () => set({ error: null, errorCode: null }),
 
     loadCatalog: async (options) => (await load('catalog', options)).ok,
 
@@ -207,15 +224,15 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
         set((state) => ({ detailCache: { ...state.detailCache, [id]: next, [cacheId]: next } }));
         return true;
       } catch (error) {
-        if (!isTransientManagementError(error)) set({ error: messageOf(error) });
+        if (!isTransientManagementError(error)) set({ error: messageOf(error), errorCode: null });
         return false;
       }
     },
 
-    install: async (id, version) => {
+    install: async (id, version, options) => {
       set((state) => ({ installingIds: { ...state.installingIds, [id]: true } }));
       try {
-        return await mutateAndSync(id, () => systemPluginApi.install(id, version));
+        return await mutateAndSync(id, () => systemPluginApi.install(id, version), options);
       } finally {
         set((state) => {
           const installingIds = { ...state.installingIds };

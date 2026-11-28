@@ -4918,10 +4918,8 @@ async def test_agent_server_stop_joins_startup_before_closing_preparation(
 ) -> None:
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime import managed_memory_http
-
-    # Memory HTTP startup is independent of the Runtime stop-order contract.
+    # Only the stop ordering matters here; skip the real bundled memory HTTP startup.
     monkeypatch.setattr(managed_memory_http, "start_bundled_memory_http", lambda: None)
-
     server = AgentWebSocketServer()
     runtime = server.get_runtime()
     entered = asyncio.Event()

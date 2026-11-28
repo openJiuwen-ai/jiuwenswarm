@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / extension-management-facade` |
 | 关联特性 | [F_03](../features/F_03_registry-facade.md)、[F_34](../features/F_34_system-plugin-enable.md) |
 | 所属模块 | `jiuwenswarm/extensions_v2/management/registry.py` |
-| 最近一次修订日期 | 2026-11-08 |
+| 最近一次修订日期 | 2026-11-28 |
 | 方案状态 | 当前实现契约 |
 
 ## 1. 范围与责任
@@ -239,7 +239,7 @@ store 宿主集成说明与验证见 [F_03](../features/F_03_registry-facade.md#
 - Core 报告登记包操作及目标依赖，重复操作返回忙碌；实际文件提交和发现共用短期报告锁。包退出通知在门面锁外。
 - 一个 EventBus 只能绑定一个 Registry；同一进程可以有多个独立 EventBus。
 - 安装目录不提供跨进程锁，多 AgentServer 部署需外部串行化。
-- agent-core 的 `begin_calls/end_calls` 尚未接入事件调用路径，`inflight` 当前恒为 0。
+- agent-core 的 `begin_calls/end_calls` 已接入：每次 handler 调用（`_tracked_handler`）与嵌套的 state/store ops 调用都成对计数（`try/finally`），宿主 session.start 同样成对保护；在途期间禁用/卸载返回 `EXTENSION_PACKAGE_BUSY`（包状态不变、可重试）。
 
 ## 8. 验证索引
 

@@ -547,6 +547,30 @@ async def load_effective_enterprise_config(
         )
         result.advanced_config = None
 
+    # Swarmflow 企业策略：来自 agent_template 的 expert_package 槽引用的
+    # expert_package_template.swarmflow JSON 列（企业最小接入设计方案 §4.2）。
+    expert_package_ids = [
+        str(tid or "").strip()
+        for tid in (merged_refs.get("expert_package") or [])
+        if str(tid or "").strip()
+    ]
+    try:
+        result.swarmflow = await db_queries.fetch_expert_package_swarmflow(
+            expert_package_ids
+        )
+    except Exception:
+        logger.warning(
+            "[enterprise_config] swarmflow load failed: resource_id=%r "
+            "expert_package_ids=%s",
+            rid,
+            expert_package_ids,
+            exc_info=True,
+        )
+        result.swarmflow = None
+        # 加载失败 ≠ 策略缺省：置位标记，解析侧按 fail-closed 关门，避免
+        # 瞬时故障把管理员可能已禁止的 Swarmflow 门禁静默放开。
+        result.swarmflow_load_failed = True
+
     if not _any_requested_slot_loaded(result, load_slots):
         logger.warning(
             "[enterprise_config] no template entities loaded for resource_id=%r "
