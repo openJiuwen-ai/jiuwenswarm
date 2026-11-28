@@ -5207,10 +5207,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // An accepted foreground start can replace a still-busy turn. The
         // local send has already advanced its own revision.
         const marker = payload.runtime_event;
+        const replayed = isRecord(marker) && marker.replayed === true;
         const newTurn = isProcessingNow && !localSendPending && recoveryRevision === undefined &&
-          (!isRecord(marker) || marker.replayed !== true) && processingRequestId !== undefined &&
+          !replayed && processingRequestId !== undefined &&
           processingRequestId !== processingRequestIdsRef.current.get(sessionId);
-        useChatStore.getState().setProcessing(sessionId, isProcessingNow, { newTurn });
+        // Replay restores the UI, but its idle event can belong to an earlier turn.
+        useChatStore.getState().setProcessing(sessionId, isProcessingNow, { newTurn, fromLiveStatus: !replayed });
         if (isProcessingNow && processingRequestId) {
           processingRequestIdsRef.current.set(sessionId, processingRequestId);
         }

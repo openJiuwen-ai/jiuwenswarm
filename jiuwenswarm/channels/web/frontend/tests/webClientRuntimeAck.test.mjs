@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadCallback } from './loadProductionCallback.mjs';
 
-globalThis.window = globalThis;
-globalThis.window.location = { protocol: 'http:', host: 'localhost:18180' };
+globalThis.window = Object.assign(new EventTarget(), {
+  location: { protocol: 'http:', host: 'localhost:18180' },
+  setTimeout,
+  clearTimeout,
+});
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -587,7 +590,10 @@ test('busy sessions keep their original cursor after the fast retry budget and r
   const offHistory = fresh.on('runtime.history_required', ({ payload }) => history.push(payload.session_id));
   const recovered = new Promise((resolve) => {
     fresh.on('chat.processing_status', ({ payload }) => {
-      if (payload.is_processing === false && payload.session_id === sessionId) resolve(payload);
+      if (payload.is_processing === false && payload.session_id === sessionId) {
+        store.setProcessing(sessionId, false, { fromLiveStatus: true });
+        resolve(payload);
+      }
     });
   });
   const originalSend = FakeWebSocket.prototype.send;
@@ -628,6 +634,7 @@ test('busy sessions keep their original cursor after the fast retry budget and r
     const status = await recovered;
     assert.equal(status.is_processing, false);
     assert.equal(status.timestamp, lastReasoning.updatedAt);
+    assert.equal(store.getRuntime(sessionId).processingEndRevision, 1);
     assert.equal(store.getRuntime(sessionId).turnRevision, turnRevision);
     assert.deepEqual(history, [sessionId]);
     assert.deepEqual(sent.map(({ method, params }) => ({ method, params })), Array.from({ length: 4 }, () => ({

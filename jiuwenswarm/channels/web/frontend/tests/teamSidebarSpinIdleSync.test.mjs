@@ -32,6 +32,7 @@ function createRefresh({
   assert.equal(useChatStore.getState().getRuntime(SESSION_ID).foregroundIsProcessing, true);
 
   const chat = useChatStore.getState();
+  const listProcessing = {};
   const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
     browserClientCapabilities: { getEpoch: () => 0 },
     organizationOwnerStateRevision: () => 0,
@@ -42,7 +43,7 @@ function createRefresh({
     useCronStore: { getState: () => ({ lastRunSessionId: cronLastRunSessionId, jobs: [] }) },
     useWorkspaceStore: {
       getState: () => ({
-        upsertSession() {},
+        upsertSession(session) { listProcessing.workspace = session.is_processing; },
         patchSession(id, patch) {
           patches.push({ id, patch });
         },
@@ -56,7 +57,7 @@ function createRefresh({
     maySnapshotRelightProcessing,
     shouldKeepLocalCronProcessing,
     isTeamAgentMode,
-    upsertSessionMetadata() {},
+    upsertSessionMetadata(session) { listProcessing.sessions = session.is_processing; },
     restoreSessionEquipment() {},
     restoreSessionModelSelection() {},
     parseModelSelection: () => null,
@@ -74,7 +75,7 @@ function createRefresh({
     console: { warn() {} },
   });
 
-  return { refresh, patches, chat };
+  return { refresh, patches, chat, listProcessing };
 }
 
 function cleanup() {
@@ -161,6 +162,53 @@ test('team forced-idle is skipped when turnRevision advances during metadata fet
     cleanup();
   }
 });
+
+test('a busy snapshot cannot relight a session that received idle while the read was in flight', async () => {
+  const snapshot = { session_id: SESSION_ID, is_processing: true, status: 'processing', title: 'Updated' };
+  const { refresh, chat, listProcessing } = createRefresh({ mode: 'agent', metadata: snapshot });
+  try {
+    chat.setProcessing(SESSION_ID, false); // The final segment triggers the metadata read.
+    const pending = refresh(SESSION_ID);
+    chat.setProcessing(SESSION_ID, false, { fromLiveStatus: true });
+    const session = await pending;
+    assert.equal(chat.getRuntime(SESSION_ID).isProcessing, false);
+    assert.equal(session.is_processing, false);
+    assert.equal(session.status, 'idle');
+    assert.equal(session.title, 'Updated');
+    assert.deepEqual(listProcessing, { sessions: false, workspace: false });
+
+    // A later independent read can still restore an active session.
+    await refresh(SESSION_ID);
+    assert.equal(chat.getRuntime(SESSION_ID).isProcessing, true);
+  } finally {
+    cleanup();
+  }
+});
+
+for (const scenario of [
+  { name: 'cursor replay is still in progress', recoveringExecution: true },
+  { name: 'the recovery request returned a pending snapshot', runtime: { recovery_pending: true } },
+  { name: 'a new turn started during the metadata read', newTurn: true },
+]) {
+  test(`an idle event does not override busy metadata when ${scenario.name}`, async () => {
+    const { refresh, chat, listProcessing } = createRefresh({
+      mode: 'agent',
+      recoveringExecution: scenario.recoveringExecution,
+      metadata: { session_id: SESSION_ID, is_processing: true, status: 'processing', runtime: scenario.runtime },
+    });
+    try {
+      const pending = refresh(SESSION_ID);
+      if (scenario.newTurn) chat.setProcessing(SESSION_ID, true, { newTurn: true });
+      chat.setProcessing(SESSION_ID, false, { fromLiveStatus: true });
+      const session = await pending;
+      assert.equal(session.is_processing, true);
+      assert.equal(session.status, 'processing');
+      assert.deepEqual(listProcessing, { sessions: true, workspace: true });
+    } finally {
+      cleanup();
+    }
+  });
+}
 
 test('team forced-idle respects cron optimistic processing grace', async () => {
   const patches = [];

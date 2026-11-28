@@ -262,6 +262,23 @@ test('terminal forwarding error settles the current stream without sending queue
   }
 });
 
+test('a replayed idle restores the UI without marking an in-flight metadata snapshot stale', async (context) => {
+  const c = await mount(context);
+  try {
+    const before = c.runtime().processingEndRevision;
+    c.receive('chat.processing_status', {
+      request_id: 'previous', is_processing: false,
+      runtime_event: { worker_instance: 'worker', sequence: 18, replayed: true },
+    });
+    assert.equal(c.runtime().isProcessing, false);
+    assert.equal(c.runtime().processingEndRevision, before);
+    c.receive('chat.processing_status', { request_id: 'original', is_processing: false });
+    assert.equal(c.runtime().processingEndRevision, before + 1);
+  } finally {
+    await c.dispose();
+  }
+});
+
 test('late forwarding error cannot stop a newer request', async (context) => {
   const c = await mount(context);
   try {
