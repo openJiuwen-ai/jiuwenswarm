@@ -245,9 +245,9 @@ generated: true
 | [F_20261121_0906_swarmchat-auto-reply](F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](../designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [F_20261124_1556_app-market-ai-roles](F_20261124_1556_app-market-ai-roles.md) | F | 应用市场 AI 角色清单与接入指引 | kdgmpw | 无独立 D：依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。 |
 | [F_20261125_1245_memory-portal-team-migration](F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
+| [F_20261126_1110_presentation-team-companion](F_20261126_1110_presentation-team-companion.md) | F | 应用形态支持 Team 会话与成员窗口 | zhanglongmin | 无独立 D：为应用形态增加 Team 会话创建、成员子窗口与队长公开回复；在既有 in-app overlay 双源架构上设计 Host/Frame 管线与成员子窗口协议，无独立设计。 |
 | [F_20261126_2117_enterprise-eml](F_20261126_2117_enterprise-eml.md) | F | Web 会话上传和读取 EML 邮件 | linda | 无独立 D：在需求会话中确认企业版和个人版共用实现，无独立设计文档。 |
 | [F_20261127_1459_outlook-msg](F_20261127_1459_outlook-msg.md) | F | Web 会话读取 Outlook MSG 邮件 | linda | 无独立 D：本次在已有会话邮件工具中增加一种文件格式，范围在需求会话中确认。 |
-| [F_20261126_1110_presentation-team-companion](F_20261126_1110_presentation-team-companion.md) | F | 应用形态支持 Team 会话与成员窗口 | zhanglongmin | 无独立 D：为应用形态增加 Team 会话创建、成员子窗口与队长公开回复；在既有 in-app overlay 双源架构上设计 Host/Frame 管线与成员子窗口协议，无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
 

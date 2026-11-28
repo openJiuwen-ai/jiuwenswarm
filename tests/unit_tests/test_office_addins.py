@@ -10,6 +10,8 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from functools import partial
 from http.server import SimpleHTTPRequestHandler
@@ -24,6 +26,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 from jiuwenswarm.channels.desktop import office_addins
 from jiuwenswarm.channels.desktop.office_addins import OfficeAddins, SuiteStatus, certificate
 from jiuwenswarm.channels.desktop.office_addins.certificate import MacTrustStore, Runner, TlsFiles, WindowsTrustStore
+from jiuwenswarm.channels.desktop.office_addins.files import write_atomic
 from jiuwenswarm.channels.desktop.office_addins.listener import TlsListener
 from jiuwenswarm.channels.desktop.office_addins.registration import (
     HOSTS,
@@ -745,3 +748,72 @@ def test_windows_offers_wps_and_installs_repairs_and_uninstalls_through_its_list
 
     assert office_addins.remove_all(workspace) is True
     assert publish.read_text(encoding="utf-8") == WPS_LIST
+
+def test_write_atomic_replaces_content_and_leaves_no_temp_files(tmp_path: Path) -> None:
+    target = tmp_path / "manifest.xml"
+
+    write_atomic(target, b"first")
+    write_atomic(target, b"second")
+
+    assert target.read_bytes() == b"second"
+    assert [path.name for path in tmp_path.iterdir()] == ["manifest.xml"]
+
+
+def test_write_atomic_retries_while_a_reader_holds_the_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "manifest.xml"
+    target.write_bytes(b"old")
+    real_replace = os.replace
+    attempts = []
+
+    def flaky_replace(source: Path, destination: Path) -> None:
+        attempts.append(source)
+        if len(attempts) < 3:
+            raise PermissionError(13, "the manifest is open in Word")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+
+    write_atomic(target, b"new")
+
+    assert target.read_bytes() == b"new"
+    assert len(attempts) == 3
+
+
+def test_write_atomic_cleans_up_the_temp_file_when_the_replace_never_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "manifest.xml"
+    target.write_bytes(b"old")
+
+    def busy_replace(source: Path, destination: Path) -> None:
+        raise PermissionError(13, "the manifest is open in Word")
+
+    monkeypatch.setattr(os, "replace", busy_replace)
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+
+    with pytest.raises(PermissionError):
+        write_atomic(target, b"new")
+
+    assert target.read_bytes() == b"old"
+    assert [path.name for path in tmp_path.iterdir()] == ["manifest.xml"]
+
+
+def test_write_atomic_keeps_concurrent_writes_intact(tmp_path: Path) -> None:
+    target = tmp_path / "manifest.xml"
+    payloads = [f"payload-{index}".encode() for index in range(20)]
+
+    def write_repeatedly(payload: bytes) -> None:
+        for _ in range(20):
+            write_atomic(target, payload)
+
+    threads = [threading.Thread(target=write_repeatedly, args=(payload,)) for payload in payloads]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert target.read_bytes() in payloads
+    assert [path.name for path in tmp_path.iterdir()] == ["manifest.xml"]
