@@ -35,7 +35,14 @@ UNRESTRICTED_READ_TOOLS = (
     "search",
 )
 
-# Bash commands that are read-only (allowed)
+# Bash commands that are read-only (allowed).
+#
+# Admission rule: a command may be added here only after every write-capable
+# form of it has been enumerated -- flags as well as subcommands -- and each
+# form is either rejected by the unsafe-token checks, covered by one of the
+# ``_*_WRITE_ARGS`` sets below, or the command stays out of this list entirely
+# (``file`` is excluded because ``file -C`` writes ``magic.mgc``). A command
+# whose write forms cannot be pinned down this way must not be added.
 READ_ONLY_BASH_COMMANDS = (
     "ls",
     "cat",
@@ -64,6 +71,9 @@ _SHELL_UNSAFE_TOKENS = (">", "<", "`", "$", "&", "\n", "\r")
 _FIND_WRITE_ARGS = frozenset(
     {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
 )
+# `git` is read-only only for the allowlisted subcommands, and ``--output``
+# (also spelled ``--output=<path>``) sends their output to a file.
+_GIT_WRITE_ARGS = frozenset({"--output"})
 
 
 def _is_read_only_shell_segment(segment: str) -> bool:
@@ -74,7 +84,7 @@ def _is_read_only_shell_segment(segment: str) -> bool:
 
     Returns:
         True only if the segment neither redirects nor runs a non-allowlisted
-        command (and, for ``find``, carries no write flag).
+        command (and, for ``find`` / ``git``, carries no write flag).
     """
     if any(token in segment for token in _SHELL_UNSAFE_TOKENS):
         return False
@@ -88,7 +98,7 @@ def _is_read_only_shell_segment(segment: str) -> bool:
     if command == "git":
         if " ".join(words[:2]).lower() not in READ_ONLY_BASH_COMMANDS:
             return False
-        return not any(word == "--output" or word.startswith("--output=") for word in words)
+        return _GIT_WRITE_ARGS.isdisjoint(word.split("=", 1)[0] for word in words)
     if command not in READ_ONLY_BASH_COMMANDS:
         return False
     return command != "find" or _FIND_WRITE_ARGS.isdisjoint(words)
