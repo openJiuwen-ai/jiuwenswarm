@@ -308,6 +308,9 @@ test('file sizes use compact units', () => {
   assert.equal(formatFileSize(512), '512B');
   assert.equal(formatFileSize(231546), '226.12K');
   assert.equal(formatFileSize(5 * 1024 * 1024), '5M');
+  // 边界前 1 字节取整后必须进位，不能显示成 1024K / 1024M
+  assert.equal(formatFileSize(1024 * 1024 - 1), '1M');
+  assert.equal(formatFileSize(1024 * 1024 * 1024 - 1), '1G');
 });
 
 test('question answers resume through the owning group without exposing private sessions', async () => {

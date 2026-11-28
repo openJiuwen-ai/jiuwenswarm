@@ -34,9 +34,12 @@ generated: true
 | [jiuwenswarm/channels/tui](#module-jiuwenswarm-channels-tui) |
 | [jiuwenswarm/channels/web](#module-jiuwenswarm-channels-web) |
 | [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
+| [jiuwenswarm/channels/web/frontend/src/components/AgentManagementPanel](#module-jiuwenswarm-channels-web-frontend-src-components-AgentManagementPanel) |
+| [jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket](#module-jiuwenswarm-channels-web-frontend-src-components-ConnectorMarket) |
 | [jiuwenswarm/channels/web/frontend/src/components/SkillPanel](#module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel) |
 | [jiuwenswarm/channels/web/frontend/src/components/ui/EntityHeader](#module-jiuwenswarm-channels-web-frontend-src-components-ui-EntityHeader) |
 | [jiuwenswarm/channels/web/frontend/src/features/reaSetup](#module-jiuwenswarm-channels-web-frontend-src-features-reaSetup) |
+| [jiuwenswarm/channels/web/frontend/src/features/groupChat](#module-jiuwenswarm-channels-web-frontend-src-features-groupChat) |
 | [jiuwenswarm/channels/web/frontend/src/features/rsi](#module-jiuwenswarm-channels-web-frontend-src-features-rsi) |
 | [jiuwenswarm/channels/web/frontend/src/features/sessionAssets](#module-jiuwenswarm-channels-web-frontend-src-features-sessionAssets) |
 | [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
@@ -284,6 +287,22 @@ generated: true
 | [B_20261127_1547_webui-slot-capacity](extensions/B_20261127_1547_webui-slot-capacity.md) | B | WebUI 槽位容量与投递回滚修复 | kusanagima | 无独立 D：基于现有 WebUI 槽位和投递契约的缺陷修复，无独立设计文档。 |
 | [B_20261128_0922_external-cli-switch-save-loading](jiuwenswarm/channels/web/frontend/B_20261128_0922_external-cli-switch-save-loading.md) | B | 三方 CLI agent 开关保存往返期间仅置灰无处理中反馈，被读成状态延迟 | yuhaiquan | 无独立 D：由 GitCode issue |
 
+<a id="module-jiuwenswarm-channels-web-frontend-src-components-AgentManagementPanel"></a>
+
+## jiuwenswarm/channels/web/frontend/src/components/AgentManagementPanel
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261126_1055_file-size-unit-rounding](jiuwenswarm/channels/web/B_20261126_1055_file-size-unit-rounding.md) | B | 文件大小在单位边界显示为 1024K/1024M | openjiuwen_ai | 无独立 D：前端展示层单位进位缺陷，无独立设计方案，按 Issue |
+
+<a id="module-jiuwenswarm-channels-web-frontend-src-components-ConnectorMarket"></a>
+
+## jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261126_1055_file-size-unit-rounding](jiuwenswarm/channels/web/B_20261126_1055_file-size-unit-rounding.md) | B | 文件大小在单位边界显示为 1024K/1024M | openjiuwen_ai | 无独立 D：前端展示层单位进位缺陷，无独立设计方案，按 Issue |
+
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 
 ## jiuwenswarm/channels/web/frontend/src/components/SkillPanel
@@ -307,6 +326,13 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261127_1021_rea-offline-cancel-recovery](jiuwenswarm/channels/web/B_20261127_1021_rea-offline-cancel-recovery.md) | B | REA 断网取消后卡死且重装不可恢复 | zhongxiaotian | 无独立 D：修复现有 REA 安装作业的前端恢复语义，不改变后端安装协议或状态机。 |
+<a id="module-jiuwenswarm-channels-web-frontend-src-features-groupChat"></a>
+
+## jiuwenswarm/channels/web/frontend/src/features/groupChat
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261126_1055_file-size-unit-rounding](jiuwenswarm/channels/web/B_20261126_1055_file-size-unit-rounding.md) | B | 文件大小在单位边界显示为 1024K/1024M | openjiuwen_ai | 无独立 D：前端展示层单位进位缺陷，无独立设计方案，按 Issue |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-rsi"></a>
 

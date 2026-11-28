@@ -372,7 +372,8 @@ export function formatFileSize(bytes: number): string {
   const units = ['K', 'M', 'G'];
   let value = bytes / 1024;
   let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+  // 按取整后的数值判断进位：1023.999K 会显示成 1024K，取整后进一级才是 1M。
+  while (unit < units.length - 1 && Number(value.toFixed(2)) >= 1024) { value /= 1024; unit += 1; }
   return `${Number(value.toFixed(2))}${units[unit]}`;
 }
 

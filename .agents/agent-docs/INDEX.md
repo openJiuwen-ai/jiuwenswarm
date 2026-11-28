@@ -45,10 +45,13 @@ generated: true
 | [jiuwenswarm/channels/tui/frontend](#module-jiuwenswarm-channels-tui-frontend) |
 | [jiuwenswarm/channels/web](#module-jiuwenswarm-channels-web) |
 | [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
+| [jiuwenswarm/channels/web/frontend/src/components/AgentManagementPanel](#module-jiuwenswarm-channels-web-frontend-src-components-AgentManagementPanel) |
 | [jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel](#module-jiuwenswarm-channels-web-frontend-src-components-AppMarketPanel) |
+| [jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket](#module-jiuwenswarm-channels-web-frontend-src-components-ConnectorMarket) |
 | [jiuwenswarm/channels/web/frontend/src/components/SkillPanel](#module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel) |
 | [jiuwenswarm/channels/web/frontend/src/components/ui/EntityHeader](#module-jiuwenswarm-channels-web-frontend-src-components-ui-EntityHeader) |
 | [jiuwenswarm/channels/web/frontend/src/features/reaSetup](#module-jiuwenswarm-channels-web-frontend-src-features-reaSetup) |
+| [jiuwenswarm/channels/web/frontend/src/features/groupChat](#module-jiuwenswarm-channels-web-frontend-src-features-groupChat) |
 | [jiuwenswarm/channels/web/frontend/src/features/rsi](#module-jiuwenswarm-channels-web-frontend-src-features-rsi) |
 | [jiuwenswarm/channels/web/frontend/src/features/sessionAssets](#module-jiuwenswarm-channels-web-frontend-src-features-sessionAssets) |
 | [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
@@ -477,6 +480,14 @@ generated: true
 | [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
 | [S_03_memory-portal](specs/jiuwenswarm/server/runtime/S_03_memory-portal.md) | S | 记忆 Portal 页面开关契约 | Wang Tao | — |
 
+<a id="module-jiuwenswarm-channels-web-frontend-src-components-AgentManagementPanel"></a>
+
+## jiuwenswarm/channels/web/frontend/src/components/AgentManagementPanel
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261126_1055_file-size-unit-rounding](bugfix/jiuwenswarm/channels/web/B_20261126_1055_file-size-unit-rounding.md) | B | 文件大小在单位边界显示为 1024K/1024M | openjiuwen_ai | 无独立 D：前端展示层单位进位缺陷，无独立设计方案，按 Issue |
+
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-AppMarketPanel"></a>
 
 ## jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel
@@ -484,6 +495,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_01_app-market-browser-containers](specs/jiuwenswarm/channels/desktop/app-market-browser-containers.md) | S | 应用市场分端展示契约 | default | — |
+
+<a id="module-jiuwenswarm-channels-web-frontend-src-components-ConnectorMarket"></a>
+
+## jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261126_1055_file-size-unit-rounding](bugfix/jiuwenswarm/channels/web/B_20261126_1055_file-size-unit-rounding.md) | B | 文件大小在单位边界显示为 1024K/1024M | openjiuwen_ai | 无独立 D：前端展示层单位进位缺陷，无独立设计方案，按 Issue |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 
@@ -508,6 +527,13 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261127_1021_rea-offline-cancel-recovery](bugfix/jiuwenswarm/channels/web/B_20261127_1021_rea-offline-cancel-recovery.md) | B | REA 断网取消后卡死且重装不可恢复 | zhongxiaotian | 无独立 D：修复现有 REA 安装作业的前端恢复语义，不改变后端安装协议或状态机。 |
+<a id="module-jiuwenswarm-channels-web-frontend-src-features-groupChat"></a>
+
+## jiuwenswarm/channels/web/frontend/src/features/groupChat
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261126_1055_file-size-unit-rounding](bugfix/jiuwenswarm/channels/web/B_20261126_1055_file-size-unit-rounding.md) | B | 文件大小在单位边界显示为 1024K/1024M | openjiuwen_ai | 无独立 D：前端展示层单位进位缺陷，无独立设计方案，按 Issue |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-rsi"></a>
 
