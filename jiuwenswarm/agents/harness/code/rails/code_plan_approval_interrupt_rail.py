@@ -218,6 +218,9 @@ class PlanApprovalInterruptRail(ConfirmInterruptRail):
             user_input: User response from resume (None on first call).
             auto_confirm_config: Current auto-confirm settings.
         """
+        from jiuwenswarm.runtime.client_tools import supports_host_approval
+        if not supports_host_approval(ctx, self):
+            return self.reject(tool_result="[INTERACTION_UNAVAILABLE] Plan approval is unavailable on this channel.")
         # First call — show plan content in the interrupt message
         if user_input is None and tool_call is not None:
             plan_content = self._read_plan_content(ctx)

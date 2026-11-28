@@ -13,6 +13,7 @@ SDK dispatch, and failure releases both the reservation and output lease.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, Callable
@@ -183,6 +184,12 @@ class SDKExecutionDriver:
                     mode=mode,
                 )
             )
+            if request.channel_id == "ag-ui":
+                from jiuwenswarm.runtime.client_tools import APPLICATION_RUN_REF, _APPLICATION_RUNS
+                reference = inputs.get("run", {}).get("context", {}).get("extra", {}).get(APPLICATION_RUN_REF)
+                data = _APPLICATION_RUNS.get(reference)
+                if data is not None:
+                    data["submitted"] = True
             return stream, dispatched
         except BaseException:
             owner._permission_dispatch.release(inputs)
@@ -259,6 +266,11 @@ class SDKExecutionDriver:
                 # 拿不到 cached adapter 即"无运行中任务"，直接 fallthrough 到主 adapter 的
                 # cancel 逻辑（下方 `not _session_is_active` 分支会跑 per-session teardown 并返回 success）。
                 cached = owner._get_cached_session_adapter(request.session_id)
+                if cached is None and request.channel_id == "ag-ui":
+                    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+                    fact = get_session_metadata(request.session_id, enable_writeback=False).get("application_execution", {})
+                    if fact.get("request_id") == request.params.get("target_request_id") and fact.get("state") == "waiting_client_tools":
+                        cached = await owner._get_or_create_session_adapter(request.session_id, retain_moa_snapshot=True)
                 if cached is None:
                     logger.info(
                         "[JiuWenSwarmDeepAdapter] interrupt(%s): no cached session adapter for "
@@ -543,6 +555,18 @@ class SDKExecutionDriver:
         """
         owner = self._owner
         root_session_id = owner._resolve_interrupt_session_id(request.session_id)
+        application_cancel = request.channel_id == "ag-ui"
+        if application_cancel:
+            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+            target = str((request.params or {}).get("target_request_id") or "")
+            fact = get_session_metadata(root_session_id, enable_writeback=False).get("application_execution", {})
+            preparing_active = fact.get("state") == "preparing" and owner._instance.active_round is not None
+            if (not target or fact.get("request_id") != target
+                    or (fact.get("state") not in {"accepted", "waiting_client_tools"} and not preparing_active)):
+                return AgentResponse(
+                    request_id=request.request_id, channel_id=request.channel_id, ok=True,
+                    payload={"event_type": "chat.interrupt_result", "success": False, "target_request_id": target},
+                )
         managed_task_request = str(
             (request.params or {}).get("managed_task_request") or ""
         ).strip() if request.channel_id == "video_tool" else ""
@@ -629,7 +653,7 @@ class SDKExecutionDriver:
                        cancel_request_id=request.request_id, core_session_id=request.session_id,
                        cua_active=True, execution_count=len(executions),
                        cua_cancel_requested=cua_cancel_requested)
-        owner._cancel_scheduler_running_tasks()
+        stopping_tasks = owner._cancel_scheduler_running_tasks()
         # Collect in-flight tools without cancelling the stream producer task —
         # interaction cancel must keep round ownership in cancel_round().
         cancelled_tool_results = owner._collect_cancelled_tools_for_session(
@@ -662,6 +686,34 @@ class SDKExecutionDriver:
             # unwinding; repeat the targeted cancellation as a safety net.
             owner._cancel_scheduler_running_tasks()
         continuation_discarded = True
+        if application_cancel:
+            stopping_tasks.update(owner._cancel_scheduler_running_tasks())
+            if stopping_tasks:
+                _, remaining = await asyncio.wait(stopping_tasks, timeout=10)
+                cancel_call_completed = cancel_call_completed and not remaining
+            if await owner.pending_interactions(root_session_id):
+                from .permission_continuation import discard_pending_permission_interrupt_for_target
+
+                # A reopened loop restores interruption state before ReAct has
+                # loaded its model context. Hydrate it before matching and
+                # balancing the cancelled calls; never discard unproven state.
+                session = owner._active_loop_session()
+                engine = owner._instance.react_agent.context_engine
+                if engine.get_context(session_id=root_session_id) is None and session is not None:
+                    await engine.create_context(session=session)
+                cleared = await discard_pending_permission_interrupt_for_target(
+                    owner._instance, root_session_id, owner._deep_agent_loop_session_id(),
+                    cancel_reason="application_target_cancel",
+                )
+                cancel_call_completed = cancel_call_completed and cleared
+            if cancel_call_completed:
+                session = owner._active_loop_session()
+                if session is not None:
+                    await session.commit()
+                from jiuwenswarm.server.runtime.session.session_metadata import patch_session_metadata
+                patch_session_metadata(root_session_id, {"application_execution": {
+                    "request_id": target, "state": "cancelled",
+                }})
         if cutover_handoff is not None:
             try:
                 continuation_discarded = (
@@ -687,8 +739,9 @@ class SDKExecutionDriver:
         payload: dict[str, Any] = {
             "event_type": "chat.interrupt_result",
             "intent": intent,
-            "success": continuation_discarded,
+            "success": continuation_discarded and (not application_cancel or cancel_call_completed),
             "message": message,
+            **({"target_request_id": target} if application_cancel else {}),
         }
         if cua_cancel_requested:
             payload["cua_cancel_requested"] = True

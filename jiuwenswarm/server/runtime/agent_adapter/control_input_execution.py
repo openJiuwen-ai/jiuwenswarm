@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -56,6 +57,7 @@ class ControlInputExecutionService:
         self._runner = asyncio.current_task()
         self._running = True
         request, ports, facade = self.request, self._ports, self._facade
+        application_terminal = None
         try:
             if not ports.is_interrupt_resume_payload(request.params):
                 raise ValueError("control input must answer an active interaction")
@@ -94,6 +96,20 @@ class ControlInputExecutionService:
             async for chunk in self._stream:
                 payload = getattr(chunk, "payload", None)
                 if isinstance(payload, dict):
+                    if request.channel_id == "ag-ui" and payload.get("event_type") == "execution.status":
+                        if payload.get("state") != "accepted":
+                            self.completion.observe(chunk)
+                            application_terminal = chunk
+                            continue
+                        from jiuwenswarm.runtime.client_tools import client_tool_answers
+
+                        for answer in client_tool_answers(params.get("answers", [])):
+                            await write_record(
+                                session_id=self.session_id, request_id=request.request_id,
+                                channel_id=request.channel_id, role="tool",
+                                content=answer.result.model_dump_json(), timestamp=time.time(),
+                                extra={"tool_call_id": answer.request_id, "interrupt_id": answer.interrupt_id},
+                            )
                     await self.history.commit_assistant_event(payload)
                 # A failed final/tool/question write propagates before this
                 # boundary can be acknowledged to the caller.
@@ -113,6 +129,8 @@ class ControlInputExecutionService:
                 await self.aclose()
             finally:
                 self._running = False
+        if application_terminal is not None:
+            yield application_terminal
 
     async def aclose(self):
         if self.closed:

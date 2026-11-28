@@ -290,9 +290,13 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
                 return outcome if outcome is not None and outcome[0] == "reject" else None
             self._host.permission_scene_hook = preserve_scene_rejection
         try:
-            return await self._resolve_interrupt_with_run_policy(
+            decision = await self._resolve_interrupt_with_run_policy(
                 ctx, tool_call, user_input, auto_confirm_config
             )
+            from jiuwenswarm.runtime.client_tools import supports_host_approval
+            if not supports_host_approval(ctx, self) and getattr(decision, "request", None) is not None:
+                return self.reject(tool_result="[PERMISSION_DENIED] This channel has no human approval interface.")
+            return decision
         finally:
             RUN_PERMISSIONS.reset(run_token)
             if original_hook is not None:

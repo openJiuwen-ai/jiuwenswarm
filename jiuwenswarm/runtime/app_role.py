@@ -35,16 +35,18 @@ for questions you can answer yourself. After consulting, answer in your own char
 """
 
 
-def normalize_execution_profile(profile: Any, instructions: Any) -> tuple[str, str]:
+def normalize_execution_profile(
+    profile: Any, instructions: Any, *, channel_id: str = "",
+) -> tuple[str, str]:
     """Validate creation data without silently falling back to a full agent."""
     if not isinstance(profile, str) or profile not in (DEFAULT_EXECUTION_PROFILE, APP_ROLE_PROFILE):
         raise ValueError("execution_profile must be 'default' or 'app_role'")
     if not isinstance(instructions, str):
         raise ValueError("role_instructions must be a string")
     if profile == DEFAULT_EXECUTION_PROFILE:
-        if instructions:
+        if instructions and channel_id != "ag-ui":
             raise ValueError("role_instructions requires execution_profile='app_role'")
-        return profile, ""
+        return profile, instructions
     instructions = instructions.strip()
     if not instructions or len(instructions) > MAX_ROLE_INSTRUCTIONS_CHARS:
         raise ValueError("role_instructions must contain 1 to 12000 characters")
@@ -106,6 +108,7 @@ def app_role_instructions(metadata: dict[str, Any]) -> str | None:
     profile, instructions = normalize_execution_profile(
         metadata.get("execution_profile", DEFAULT_EXECUTION_PROFILE),
         metadata.get("role_instructions", ""),
+        channel_id=metadata.get("channel_id", ""),
     )
     return instructions if profile == APP_ROLE_PROFILE else None
 

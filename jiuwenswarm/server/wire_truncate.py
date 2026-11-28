@@ -76,6 +76,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.reasoning",
         "chat.final",
         "chat.tool_call",
+        "chat.client_tool_request",
         "chat.tool_result",
         "chat.subtask_update",
         "chat.subagent_activity",
@@ -115,6 +116,7 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "id",
     "role",
     "request_id",
+    "tool_call_id",
     "channel_id",
     "session_id",
     "timestamp",
@@ -302,6 +304,8 @@ def is_restorable_history_record(record: Any) -> bool:
             if channel_id not in ("web", "tui"):
                 return False
         return has_content or has_media
+    if role == "tool":
+        return bool(record.get("tool_call_id"))
     event_type = record.get("event_type")
     if not event_type:
         return has_content

@@ -209,10 +209,16 @@ class StreamResponsePipeline:
 
     async def run(self) -> AsyncIterator[AgentResponseChunk]:
         self.driver.start()
+        application_terminal = None
         try:
             async with aclosing(self._consume()) as stream:
                 async for chunk in stream:
                     self.completion.observe(chunk)
+                    payload = chunk.payload or {}
+                    if (self.cid == "ag-ui" and payload.get("event_type") == "execution.status"
+                            and payload.get("state") != "accepted"):
+                        application_terminal = chunk
+                        continue
                     yield chunk
         finally:
             try:
@@ -256,7 +262,7 @@ class StreamResponsePipeline:
                 await self.driver.close()
 
         self.driver.raise_if_cancelled()
-        async with aclosing(self._finish()) as stream:
+        async with aclosing(self._finish(application_terminal)) as stream:
             async for chunk in stream:
                 yield chunk
 
@@ -645,6 +651,8 @@ class StreamResponsePipeline:
                     for k, v in payload_dict.items()
                     if k not in ("event_type", "content")
                 }
+                if et == "chat.client_tool_request":
+                    extra_fields["tool_call_id"] = extra_fields.pop("request_id", "")
                 if payload_dict.get("output_phase_id"):
                     # The stream clock is milliseconds. History owns its
                     # seconds timestamp and first-delta position below.
@@ -909,6 +917,8 @@ class StreamResponsePipeline:
             extra_fields = {
                 k: v for k, v in data.items() if k not in ("event_type", "content")
             }
+            if et == "chat.client_tool_request":
+                extra_fields["tool_call_id"] = extra_fields.pop("request_id", "")
             if et == EventType.TEAM_MESSAGE.value and "event" in data:
                 event_data = data.get("event", {})
                 if isinstance(event_data, dict):
@@ -981,7 +991,9 @@ class StreamResponsePipeline:
             is_complete=False,
         )
 
-    async def _finish(self) -> AsyncIterator[AgentResponseChunk]:
+    async def _finish(
+        self, application_terminal: AgentResponseChunk | None = None,
+    ) -> AsyncIterator[AgentResponseChunk]:
         assistant_message = self.projector.assistant_message
         finalized_assistant_message = (
             await self.ports.finalize_assistant_response_if_a2ui(
@@ -1071,6 +1083,9 @@ class StreamResponsePipeline:
             )
 
         await self.completion.wait()
+        if application_terminal is not None:
+            yield application_terminal
+            return
         yield AgentResponseChunk(
             request_id=self.rid,
             channel_id=self.cid,

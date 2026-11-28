@@ -154,6 +154,12 @@ class RequestCompletion:
         event = payload.get("event_type")
         if event == "chat.error":
             self.status = "error"
+        if event == "execution.status" and getattr(self.request, "channel_id", None) == "ag-ui":
+            state = payload.get("state")
+            if state == "cancelled":
+                self.status = "cancelled"
+            elif state in {"failed", "rejected"}:
+                self.status = "error"
         self.waiting_for_user = self.waiting_for_user or event in USER_INTERACTION_EVENTS
         if event == "chat.final" and (not self.is_team_mode or payload.get("role") != "teammate"):
             self.terminal_final_persisted = True
@@ -176,5 +182,12 @@ class RequestCompletion:
         )
 
     async def wait(self):
-        if self.receipt is not None:
+        if self.receipt is None:
+            return
+        if getattr(self.request, "channel_id", None) == "ag-ui":
+            await asyncio.wait_for(
+                asyncio.shield(asyncio.wrap_future(self.receipt)),
+                timeout=_HISTORY_RECEIPT_WAIT_SECONDS,
+            )
+        else:
             await self.ports.await_history_receipt(self.receipt)

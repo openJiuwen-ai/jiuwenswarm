@@ -137,6 +137,12 @@ class AutoPermissionRuntimeBridgeMixin:
         result: Any,
     ) -> Any:
         result_class = classify_permission_result(result)
+        from jiuwenswarm.runtime.client_tools import supports_host_approval
+        if result_class == "interrupt" and not supports_host_approval(invocation.ctx, self.base_rail):
+            from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract import build_denied_permission_response
+            result = build_denied_permission_response("This channel has no human approval interface.")
+            self._skip_runtime_tool(invocation, result)
+            return result
         is_runtime_context = _is_openjiuwen_runtime_context(invocation.ctx)
         if (
             is_runtime_context

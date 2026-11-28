@@ -479,6 +479,8 @@ def _has_persistable_assistant_payload(
     payload = extra if isinstance(extra, dict) else {}
     if et == "chat.tool_result":
         return _is_structurally_valid_tool_result(payload)
+    if et == "chat.client_tool_request":
+        return bool(payload.get("tool_call_id") and payload.get("interrupt_id") and payload.get("tool_name"))
     if content:
         return True
     if str(payload.get("reasoning_content") or "").strip():
@@ -1648,7 +1650,7 @@ def prepare_history_record(
         return None
     rid = str(request_id or "").strip()
     cid = str(channel_id or "").strip()
-    role_norm = "assistant" if role == "assistant" else "user"
+    role_norm = role if role in {"assistant", "tool"} else "user"
     content_text = content if isinstance(content, str) else str(content)
     if role_norm == "assistant" and not _has_persistable_assistant_payload(
         content_text=content_text,

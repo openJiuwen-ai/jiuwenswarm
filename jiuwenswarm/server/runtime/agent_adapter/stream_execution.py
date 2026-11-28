@@ -259,24 +259,31 @@ class StreamExecutionService:
                     None,
                 )
             await ports.reload_workspace_quota_policies_if_enabled()
-            if (
+            application = request.channel_id == "ag-ui"
+            record_user_history = (
                 request.req_method != ReqMethod.COMMAND_GOAL
                 and ports.should_record_user_history(params_for_history)
-            ):
+            )
+
+            async def persist_user_history():
+                await ports.run_history_io(
+                    ports.append_history_record,
+                    session_id=session_id,
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    role="user",
+                    content=ports.history_user_content(params_for_history, query),
+                    timestamp=time.time(),
+                    extra=ports.history_user_extra(params_for_history),
+                    channel_metadata=history_channel_metadata,
+                    mode=params_for_history.get("mode", "unknown"),
+                )
+
+            if record_user_history:
                 try:
                     await ports.check_user_input_guard(adapter, request, query)
-                    await ports.run_history_io(
-                        ports.append_history_record,
-                        session_id=session_id,
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        role="user",
-                        content=ports.history_user_content(params_for_history, query),
-                        timestamp=time.time(),
-                        extra=ports.history_user_extra(params_for_history),
-                        channel_metadata=history_channel_metadata,
-                        mode=params_for_history.get("mode", "unknown"),
-                    )
+                    if not application:
+                        await persist_user_history()
                 except Exception as exc:
                     from jiuwenswarm.enterprise.capabilities.workspace.quota import WorkspaceQuotaExceeded
 
@@ -395,6 +402,11 @@ class StreamExecutionService:
             )
             async with aclosing(pipeline.run()) as stream:
                 async for chunk in stream:
+                    payload = chunk.payload or {}
+                    if (application and record_user_history
+                            and payload.get("event_type") == "execution.status"
+                            and payload.get("state") == "accepted"):
+                        await persist_user_history()
                     yield chunk
         except (asyncio.CancelledError, GeneratorExit):
             completion.complete("cancelled")
