@@ -423,7 +423,7 @@ not affect isolation and are returned for display only.
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `idle_timeout` | `null` (disabled) | Maximum idle duration in seconds. `null` / `0` / negative disables reaping. Idle means time since the last exec / file IO / list-dir API call; `get_sandbox` / `list_sandboxes` / `get_logs` do not refresh the timer. |
+| `idle_timeout` | `null` (disabled) | Maximum idle duration in seconds. `null` / `0` / negative disables reaping. A sandbox is considered idle only when no operation (exec / background exec / background job query, list, or kill / file IO / list-dir / search) is in flight, no background job is running, and the last activity (including operation or background job completion) is older than `idle_timeout`; `get_sandbox` / `list_sandboxes` / `get_logs` do not refresh the timer. |
 | `idle_check_interval` | `60` | Reaper poll interval in seconds. Must be `> 0`. |
 
 #### `inference_privacy_proxies`

@@ -19,6 +19,7 @@ generated: true
 | [agent_gateway/channel_manager/im_platforms/xiaoyi](#module-agent_gateway-channel_manager-im_platforms-xiaoyi) |
 | [agent_gateway/message_handler](#module-agent_gateway-message_handler) |
 | [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
+| [jiuwenbox/src/jiuwenbox/server](#module-jiuwenbox-src-jiuwenbox-server) |
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness](#module-jiuwenswarm-agents-harness) |
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-jiuwenswarm-agents-harness-code-rails-heartbeat) |
@@ -122,6 +123,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261102_1644_cron-web-default-project-id](gateway/channel_manager/B_20261102_1644_cron-web-default-project-id.md) | B | 前端未选项目创建定时任务落库 project_id 回退为空串 | kdgmpw | 无独立 D：恢复 4b00671f6（#5713）已实现的行为，属于对该修复在企业版合入后被回退的局部回归修复，无独立设计。 |
+
+<a id="module-jiuwenbox-src-jiuwenbox-server"></a>
+
+## jiuwenbox/src/jiuwenbox/server
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_2040_sandbox-idle-reaper-busy-guard](jiuwenbox/server/B_20261124_2040_sandbox-idle-reaper-busy-guard.md) | B | 沙箱空闲回收补齐忙状态判定与在途操作保护 | Xiangju Zhu | 无独立 D：针对 jiuwenbox SandboxManager 空闲回收判定与活跃时间戳更新的最小修复，不修改对外 HTTP 协议与默认 TTL 配置，无独立设计文档。 |
 
 <a id="module-jiuwenswarm"></a>
 

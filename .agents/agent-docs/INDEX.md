@@ -25,6 +25,7 @@ generated: true
 | [deploy/yuanrong](#module-deploy-yuanrong) |
 | [docs](#module-docs) |
 | [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
+| [jiuwenbox/src/jiuwenbox/server](#module-jiuwenbox-src-jiuwenbox-server) |
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness](#module-jiuwenswarm-agents-harness) |
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-jiuwenswarm-agents-harness-code-rails-heartbeat) |
@@ -200,6 +201,14 @@ generated: true
 | [F_20261031_1139_gateway-session-e2a](features/F_20261031_1139_gateway-session-e2a.md) | F | Web 会话管理统一经 E2A 交由 Server 执行 | ruiqiang2 | 无独立 D：用户确认的 Gateway 解耦任务 4.1，沿用 develop 个人版现有链路，无独立设计编号。 |
 | [B_20261102_1644_cron-web-default-project-id](bugfix/gateway/channel_manager/B_20261102_1644_cron-web-default-project-id.md) | B | 前端未选项目创建定时任务落库 project_id 回退为空串 | kdgmpw | 无独立 D：恢复 4b00671f6（#5713）已实现的行为，属于对该修复在企业版合入后被回退的局部回归修复，无独立设计。 |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
+
+<a id="module-jiuwenbox-src-jiuwenbox-server"></a>
+
+## jiuwenbox/src/jiuwenbox/server
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261124_2040_sandbox-idle-reaper-busy-guard](bugfix/jiuwenbox/server/B_20261124_2040_sandbox-idle-reaper-busy-guard.md) | B | 沙箱空闲回收补齐忙状态判定与在途操作保护 | Xiangju Zhu | 无独立 D：针对 jiuwenbox SandboxManager 空闲回收判定与活跃时间戳更新的最小修复，不修改对外 HTTP 协议与默认 TTL 配置，无独立设计文档。 |
 
 <a id="module-jiuwenswarm"></a>
 
