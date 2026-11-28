@@ -3320,11 +3320,25 @@ class JiuWenSwarm:
                 for name in sorted(after_names - before_names)
                 if name not in skip_names
             ]
-            result = self._skill_manager.finalize_create_from_knowledge(
-                output_dir,
-                workspace_candidates=workspace_candidates,
-                existing_skill_names=before_names,
+            finalize_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self._skill_manager.finalize_create_from_knowledge,
+                    output_dir,
+                    workspace_candidates=workspace_candidates,
+                    existing_skill_names=before_names,
+                )
             )
+            try:
+                result = await asyncio.shield(finalize_task)
+            except asyncio.CancelledError:
+                try:
+                    await finalize_task
+                except Exception as exc:
+                    logger.warning(
+                        "skills.create_from_knowledge finalize failed during cancellation: %s",
+                        exc,
+                    )
+                raise
             if result.get("success"):
                 await self._refresh_skill_rails_after_change()
             return result

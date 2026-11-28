@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -384,44 +385,72 @@ class SkillPackInstaller:
                     validate_ordinary_skill(source, record["name"])
                 record["content_sha256"] = compute_content_checksum(source)
                 _archive_install(source, staging / record["name"], record)
-            with self.mutex:
-                for record in records:
-                    if self._local_action(record)[0] != record["action"]:
-                        raise SkillPackValidationError(
-                            "Local inventory changed; prepare installation again", code="SKILLPACK_PLAN_CHANGED",
-                        )
-                transaction = self.work_dir / "transactions" / uuid.uuid4().hex
-                transaction.mkdir(parents=True)
-                journal = {
-                    "state": "committing",
-                    # Publish the root last so file-only readers cannot see a
-                    # Pack before all of its independent members are present.
-                    "new_names": [
-                        record["name"] for record in [*records[1:], records[0]]
-                        if record["action"] == "download"
-                    ],
-                    "state_existed": [path.exists() for path in self.state_files],
-                }
-                for index, path in enumerate(self.state_files):
-                    if path.exists():
-                        shutil.copyfile(path, transaction / f"state-{index}")
-                atomic_write_json(transaction / "journal.json", journal)
+            commit_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self._commit_staged_records,
+                    records,
+                    staging,
+                    on_committed,
+                )
+            )
+            try:
+                await asyncio.shield(commit_task)
+            except asyncio.CancelledError:
                 try:
-                    for name in journal["new_names"]:
-                        (staging / name / ".archive/install-transaction").write_text(transaction.name)
-                        (staging / name).replace(self.skills_dir / name)
-                    on_committed(records)
-                    journal["state"] = "committed"
-                    atomic_write_json(transaction / "journal.json", journal)
-                except BaseException as install_error:
-                    try:
-                        self._rollback(transaction, journal)
-                    except Exception as recovery_error:
-                        logger.error("skillpack.install.rollback_failed retained_transaction=%s", transaction)
-                        raise install_error from recovery_error
-                    shutil.rmtree(transaction)
-                    raise
-                shutil.rmtree(transaction)
+                    await commit_task
+                except Exception as exc:
+                    logger.warning(
+                        "skillpack.install.commit failed during cancellation: %s",
+                        exc,
+                    )
+                raise
         shutil.rmtree(directory)
         logger.info("skillpack.install.committed plan=%s member_count=%d", token, len(records) - 1)
         return {"success": True, "skill": {"name": pack["name"], "skill_type": "skillpack"}}
+
+    def _commit_staged_records(
+        self,
+        records: list[dict[str, Any]],
+        staging: Path,
+        on_committed: Callable[[list[dict[str, Any]]], None],
+    ) -> None:
+        """Atomically publish staged SkillPack members and invoke on_committed inside the mutex."""
+        with self.mutex:
+            for record in records:
+                if self._local_action(record)[0] != record["action"]:
+                    raise SkillPackValidationError(
+                        "Local inventory changed; prepare installation again",
+                        code="SKILLPACK_PLAN_CHANGED",
+                    )
+            transaction = self.work_dir / "transactions" / uuid.uuid4().hex
+            transaction.mkdir(parents=True)
+            journal = {
+                "state": "committing",
+                # Publish the root last so file-only readers cannot see a
+                # Pack before all of its independent members are present.
+                "new_names": [
+                    record["name"] for record in [*records[1:], records[0]]
+                    if record["action"] == "download"
+                ],
+                "state_existed": [path.exists() for path in self.state_files],
+            }
+            for index, path in enumerate(self.state_files):
+                if path.exists():
+                    shutil.copyfile(path, transaction / f"state-{index}")
+            atomic_write_json(transaction / "journal.json", journal)
+            try:
+                for name in journal["new_names"]:
+                    (staging / name / ".archive/install-transaction").write_text(transaction.name)
+                    (staging / name).replace(self.skills_dir / name)
+                on_committed(records)
+                journal["state"] = "committed"
+                atomic_write_json(transaction / "journal.json", journal)
+            except BaseException as install_error:
+                try:
+                    self._rollback(transaction, journal)
+                except Exception as recovery_error:
+                    logger.error("skillpack.install.rollback_failed retained_transaction=%s", transaction)
+                    raise install_error from recovery_error
+                shutil.rmtree(transaction)
+                raise
+            shutil.rmtree(transaction)

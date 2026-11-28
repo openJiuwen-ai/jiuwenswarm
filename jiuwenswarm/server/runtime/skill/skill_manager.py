@@ -347,6 +347,8 @@ def _inventory_busy_result() -> dict[str, Any]:
 # skills.toggle 在工作线程里等待这把锁。连续拨开关或与安装/卸载重叠时
 # 排队完成，而不是 timeout=0 立刻失败。事件循环上的其他调用仍用 timeout=0。
 _SKILL_TOGGLE_LOCK_TIMEOUT_SECONDS = 5.0
+# skills.import_* / create_from_knowledge 在工作线程里等待这把锁，避免并发导入立刻撞锁失败。
+_SKILL_IMPORT_LOCK_TIMEOUT_SECONDS = 5.0
 
 # skills.rebuild 的静默改写可能超过 Gateway 的 600 秒非流式上限。任务状态写在
 # 技能目录里。进程内集合只说明本进程还有任务；多 pod 共享 workspace 时，
@@ -360,6 +362,20 @@ _LIVE_REBUILD_IDS: set[str] = set()
 _REBUILD_JOBS_BY_ID: dict[str, dict[str, Any]] = {}
 _REBUILD_TASKS: dict[str, asyncio.Task[None]] = {}
 _REBUILD_FILE_LOCK = threading.Lock()
+_AGENT_DATA_WRITE_LOCK = threading.Lock()
+_LOCAL_STATE_LOCKS_GUARD = threading.Lock()
+_LOCAL_STATE_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _get_local_state_lock(state_file: Path) -> threading.RLock:
+    """Return a per-state-file reentrant lock for in-process SkillManager state mutations."""
+    key = str(state_file.resolve())
+    with _LOCAL_STATE_LOCKS_GUARD:
+        lock = _LOCAL_STATE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _LOCAL_STATE_LOCKS[key] = lock
+        return lock
 
 
 def note_rebuild_live(rebuild_id: str, live: bool) -> None:
@@ -1620,11 +1636,8 @@ class SkillManager:
                 self.reload_state()
         # 每次列举前，把手动拷入 skills 目录、尚未登记的本地技能补登记为 local，
         # 使其无需重启 server、刷新"我的技能"即可显示（与导入本地技能一致）。
-        # 企业路径把登记放到线程里，workspace 文件锁不会占住事件循环。
-        if is_enterprise():
-            await asyncio.to_thread(self._register_unmanaged_local_skills)
-        else:
-            self._register_unmanaged_local_skills()
+        # 始终放到后台线程，避免文件锁或索引扫描阻塞事件循环。
+        await asyncio.to_thread(self._register_unmanaged_local_skills)
         language = _knowledge_skill_language()
         local = self._scan_local_skills(language=language)
         # 企业版：白名单内置已在启动时装进租户工作区，由 local 扫描带出；
@@ -3261,7 +3274,7 @@ class SkillManager:
                 "installed_at": datetime.now(timezone.utc).isoformat(),
             }
         )
-        self._refresh_agent_data_indexes()
+        await self._refresh_agent_data_indexes_async()
 
         return {"success": True}
 
@@ -4047,94 +4060,98 @@ class SkillManager:
                 )
                 response.raise_for_status()
 
-                # 解压下载的内容
-                with tempfile.TemporaryDirectory(prefix="jiuwenclari_clawhub_") as tmpdir:
-                    tmp_path = Path(tmpdir)
+                # 解压并安装下载的内容（后台线程执行，避免阻塞事件循环）
+                def _extract_and_install_clawhub() -> dict[str, Any]:
+                    with tempfile.TemporaryDirectory(prefix="jiuwenclari_clawhub_") as tmpdir:
+                        tmp_path = Path(tmpdir)
 
-                    self._safe_extract_zip_bytes_to_dir(response.content, tmp_path)
+                        self._safe_extract_zip_bytes_to_dir(response.content, tmp_path)
 
-                    # 查找 skill 目录
-                    skill_dir = self._locate_skill_dir(tmp_path)
-                    if skill_dir is None:
-                        return {
-                            "success": False,
-                            "detail": "下载内容不完整，未找到 SKILL.md",
-                            "detail_key": "skills.clawhub.errors.skillMdNotFound",
-                        }
-
-                    # 安装前校验原始元数据，不使用展示兜底。
-                    md = self._try_find_skill_file(skill_dir)
-                    meta = self._assert_skill_package_safe(skill_dir)
-
-                    # 删除已存在的
-                    if _exists_long(dest):
-                        if not force:
+                        # 查找 skill 目录
+                        skill_dir = self._locate_skill_dir(tmp_path)
+                        if skill_dir is None:
                             return {
                                 "success": False,
-                                "detail": f"技能 {slug} 已安装",
-                                "detail_key": "skills.clawhub.errors.skillAlreadyInstalled",
+                                "detail": "下载内容不完整，未找到 SKILL.md",
+                                "detail_key": "skills.clawhub.errors.skillMdNotFound",
                             }
-                        _safe_rmtree(dest)
 
-                    # 复制到 skills 目录
-                    _copytree_long(skill_dir, dest)
-                    for mirror_root in self._get_mirror_skills_dirs():
-                        mirror_dest = _safe_child_path(mirror_root, slug, "skill")
-                        if _exists_long(mirror_dest):
+                        # 安装前校验原始元数据，不使用展示兜底。
+                        md = self._try_find_skill_file(skill_dir)
+                        meta = self._assert_skill_package_safe(skill_dir)
+
+                        # 删除已存在的
+                        if _exists_long(dest):
                             if not force:
-                                continue
-                            _safe_rmtree(mirror_dest)
-                        _mkdir_long(mirror_root)
-                        _copytree_long(skill_dir, mirror_dest)
+                                return {
+                                    "success": False,
+                                    "detail": f"技能 {slug} 已安装",
+                                    "detail_key": "skills.clawhub.errors.skillAlreadyInstalled",
+                                }
+                            _safe_rmtree(dest)
 
-                    # ClawHub 登记名必须与磁盘目录名（slug）一致：多个包常共用 SKILL.md
-                    # frontmatter name（如都叫 weather），若按 parsed name 登记会互相覆盖
-                    # local_skills / installed_plugins，导致广场 origin 错绑。
-                    # 展示名仍用市场 display_name（或 SKILL.md name）承载。
-                    parsed_name = str(meta.get("name") or "").strip()
-                    stem = md.stem if md else ""
-                    skill_name = slug
-                    if display_name:
-                        resolved_display_name = display_name
-                    elif parsed_name and parsed_name != stem:
-                        resolved_display_name = parsed_name
-                    else:
-                        resolved_display_name = slug
+                        # 复制到 skills 目录
+                        _copytree_long(skill_dir, dest)
+                        for mirror_root in self._get_mirror_skills_dirs():
+                            mirror_dest = _safe_child_path(mirror_root, slug, "skill")
+                            if _exists_long(mirror_dest):
+                                if not force:
+                                    continue
+                                _safe_rmtree(mirror_dest)
+                            _mkdir_long(mirror_root)
+                            _copytree_long(skill_dir, mirror_dest)
 
-                    self._add_local_skill(
-                        {
-                            "name": skill_name,
-                            "display_name": resolved_display_name,
-                            "origin": (
-                                f"clawhub:{owner_handle}/{slug}"
-                                if owner_handle
-                                else f"clawhub:{slug}"
-                            ),
-                            "source": "clawhub",
-                            "installed_at": datetime.now(timezone.utc).isoformat(),
+                        # ClawHub 登记名必须与磁盘目录名（slug）一致：多个包常共用 SKILL.md
+                        # frontmatter name（如都叫 weather），若按 parsed name 登记会互相覆盖
+                        # local_skills / installed_plugins，导致广场 origin 错绑。
+                        # 展示名仍用市场 display_name（或 SKILL.md name）承载。
+                        parsed_name = str(meta.get("name") or "").strip()
+                        stem = md.stem if md else ""
+                        skill_name = slug
+                        if display_name:
+                            resolved_display_name = display_name
+                        elif parsed_name and parsed_name != stem:
+                            resolved_display_name = parsed_name
+                        else:
+                            resolved_display_name = slug
+
+                        with self.state_transaction():
+                            self._add_local_skill(
+                                {
+                                    "name": skill_name,
+                                    "display_name": resolved_display_name,
+                                    "origin": (
+                                        f"clawhub:{owner_handle}/{slug}"
+                                        if owner_handle
+                                        else f"clawhub:{slug}"
+                                    ),
+                                    "source": "clawhub",
+                                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
+                            self._add_installed_plugin(
+                                {
+                                    "name": skill_name,
+                                    "display_name": resolved_display_name,
+                                    "marketplace": "clawhub",
+                                    "version": meta.get("version", ""),
+                                    "commit": "",
+                                    "source": "clawhub",
+                                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
+                        self._refresh_agent_data_indexes()
+                        _safe_rmtree(skill_dir)
+                        return {
+                            "success": True,
+                            "skill": {
+                                "name": skill_name,
+                                "display_name": resolved_display_name,
+                                "source": "clawhub",
+                            },
                         }
-                    )
-                    self._add_installed_plugin(
-                        {
-                            "name": skill_name,
-                            "display_name": resolved_display_name,
-                            "marketplace": "clawhub",
-                            "version": meta.get("version", ""),
-                            "commit": "",
-                            "source": "clawhub",
-                            "installed_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                    self._refresh_agent_data_indexes()
-                    _safe_rmtree(skill_dir)
-                    return {
-                        "success": True,
-                        "skill": {
-                            "name": skill_name,
-                            "display_name": resolved_display_name,
-                            "source": "clawhub",
-                        },
-                    }
+
+                return await asyncio.to_thread(_extract_and_install_clawhub)
 
         except SkillRpcError as exc:
             return {"success": False, "detail": str(exc), "code": exc.code}
@@ -4248,7 +4265,7 @@ class SkillManager:
                 )
 
             _write_text_long(skill_file, content)
-            self._refresh_agent_data_indexes()
+            await self._refresh_agent_data_indexes_async()
             return {"success": True, "path": str(target_dir)}
         except Exception as exc:
             logger.error("Team Skills Hub init 失败: %s", exc)
@@ -4801,23 +4818,26 @@ class SkillManager:
 
             with tempfile.TemporaryDirectory(prefix="jiuwenswarm_team_skills_hub_") as tmpdir:
                 tmp_path = Path(tmpdir)
-                self._safe_extract_zip_bytes_to_dir(artifact_bytes, tmp_path)
 
-                skill_dir = self._locate_skill_dir(tmp_path)
-                if skill_dir is None:
-                    raise SkillRpcError(
-                        ERROR_SKILL_INVALID_PACKAGE,
-                        "下载内容不完整，未找到 SKILL.md",
-                    )
+                def _extract_and_detect_pack() -> tuple[Path, bool]:
+                    self._safe_extract_zip_bytes_to_dir(artifact_bytes, tmp_path)
+                    located = self._locate_skill_dir(tmp_path)
+                    if located is None:
+                        raise SkillRpcError(
+                            ERROR_SKILL_INVALID_PACKAGE,
+                            "下载内容不完整，未找到 SKILL.md",
+                        )
+                    from jiuwenswarm.server.runtime.skill.skillpack_lock import has_skillpack_wrapper_tag
 
-                from jiuwenswarm.server.runtime.skill.skillpack_lock import has_skillpack_wrapper_tag
+                    detected = is_skillpack(located) or _exists_long(located / "skillpack.lock.json")
+                    if not detected:
+                        detected = (
+                            has_skillpack_wrapper_tag(tmp_path)
+                            or artifact_data.get("plugin_type") == "skillpack"
+                        )
+                    return located, detected
 
-                pack_detected = is_skillpack(skill_dir) or _exists_long(skill_dir / "skillpack.lock.json")
-                if not pack_detected:
-                    pack_detected = (
-                        has_skillpack_wrapper_tag(tmp_path)
-                        or artifact_data.get("plugin_type") == "skillpack"
-                    )
+                skill_dir, pack_detected = await asyncio.to_thread(_extract_and_detect_pack)
                 if pack_detected:
                     if not skillpack_productization_enabled():
                         raise SkillRpcError(ERROR_SKILL_OPERATION_UNSUPPORTED, "SkillPack 安装尚未启用")
@@ -4854,67 +4874,113 @@ class SkillManager:
                     if use_custom_output
                     else self._skills_dir
                 )
-                with inventory_mutex(install_root):
-                    self.reload_state()
-                    _mkdir_long(install_root)
-                    dest = install_root / skill_name
 
-                    if _exists_long(dest):
-                        # 即使 force=true 也不得覆盖同名本地 Skill
-                        installed_same = get_installed_asset_id(dest) == asset_id
-                        if installed_same:
-                            try:
-                                installed_version = get_current_version(dest) or ""
-                            except SkillArchiveError:
-                                installed_version = ""
-                            if installed_version == product_version:
-                                return {
-                                    "success": True,
-                                    "skill": {
-                                        "name": skill_name,
-                                        "source": "teamskillshub",
-                                        "asset_id": asset_id,
-                                        "path": str(dest),
-                                    },
-                                }
-                            # 同一资产的新版本：不覆盖落盘，明确告知版本差
-                            # 并引导先卸载，替代原先"下载完也不装还报成功"。
-                            version_note = (
-                                f"本地版本 v{installed_version}"
-                                if installed_version
-                                else "本地版本未知"
-                            )
+                def _commit_install() -> dict[str, Any]:
+                    with inventory_mutex(install_root):
+                        self.reload_state()
+                        _mkdir_long(install_root)
+                        dest = install_root / skill_name
+
+                        if _exists_long(dest):
+                            # 即使 force=true 也不得覆盖同名本地 Skill
+                            installed_same = get_installed_asset_id(dest) == asset_id
+                            if installed_same:
+                                try:
+                                    installed_version = get_current_version(dest) or ""
+                                except SkillArchiveError:
+                                    installed_version = ""
+                                if installed_version == product_version:
+                                    return {
+                                        "success": True,
+                                        "skill": {
+                                            "name": skill_name,
+                                            "source": "teamskillshub",
+                                            "asset_id": asset_id,
+                                            "path": str(dest),
+                                        },
+                                    }
+                                # 同一资产的新版本：不覆盖落盘，明确告知版本差
+                                # 并引导先卸载，替代原先"下载完也不装还报成功"。
+                                version_note = (
+                                    f"本地版本 v{installed_version}"
+                                    if installed_version
+                                    else "本地版本未知"
+                                )
+                                raise SkillRpcError(
+                                    ERROR_SKILL_NAME_CONFLICT,
+                                    f"本地已安装同名 Skill: {skill_name}（{version_note}，"
+                                    f"市场版本 v{product_version}），请先卸载后重新安装以升级",
+                                )
                             raise SkillRpcError(
                                 ERROR_SKILL_NAME_CONFLICT,
-                                f"本地已安装同名 Skill: {skill_name}（{version_note}，"
-                                f"市场版本 v{product_version}），请先卸载后重新安装以升级",
+                                f"本地已存在同名 Skill: {skill_name}",
                             )
-                        raise SkillRpcError(
-                            ERROR_SKILL_NAME_CONFLICT,
-                            f"本地已存在同名 Skill: {skill_name}",
+                        # force 仅保留兼容字段，本期禁止用于删除覆盖
+                        _ = force
+
+                        self._install_teamskills_hub_first_copy(
+                            skill_dir=skill_dir,
+                            dest=dest,
+                            asset_id=asset_id,
+                            product_version=product_version,
                         )
-                    # force 仅保留兼容字段，本期禁止用于删除覆盖
-                    _ = force
 
-                    self._install_teamskills_hub_first_copy(
-                        skill_dir=skill_dir,
-                        dest=dest,
-                        asset_id=asset_id,
-                        product_version=product_version,
-                    )
+                        from jiuwenswarm.server.runtime.skill.archive_store import atomic_write_json
+                        from jiuwenswarm.server.runtime.skill.skillpack_install import PROVENANCE_PATH
 
-                    from jiuwenswarm.server.runtime.skill.archive_store import atomic_write_json
-                    from jiuwenswarm.server.runtime.skill.skillpack_install import PROVENANCE_PATH
+                        atomic_write_json(dest / PROVENANCE_PATH, {
+                            "hub_url": base_url.rstrip("/"), "asset_id": asset_id,
+                            "version": product_version, "artifact_sha256": checksum_sha256,
+                            "content_sha256": compute_content_checksum(dest), "kind": "skill",
+                        })
 
-                    atomic_write_json(dest / PROVENANCE_PATH, {
-                        "hub_url": base_url.rstrip("/"), "asset_id": asset_id,
-                        "version": product_version, "artifact_sha256": checksum_sha256,
-                        "content_sha256": compute_content_checksum(dest), "kind": "skill",
-                    })
+                        resolved_display_name = requested_display_name or skill_name
 
-                    resolved_display_name = requested_display_name or skill_name
+                        if use_custom_output:
+                            return {
+                                "success": True,
+                                "skill": {
+                                    "name": skill_name,
+                                    "display_name": resolved_display_name,
+                                    "source": "teamskillshub",
+                                    "asset_id": asset_id,
+                                    "path": str(dest),
+                                },
+                            }
 
-                    if use_custom_output:
+                        for mirror_root in self._get_mirror_skills_dirs():
+                            mirror_dest = mirror_root / skill_name
+                            if _exists_long(mirror_dest):
+                                continue
+                            _mkdir_long(mirror_root)
+                            _copytree_long(
+                                skill_dir,
+                                mirror_dest,
+                                ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
+                            )
+
+                        installed_at = datetime.now(timezone.utc).isoformat()
+                        with self.state_transaction():
+                            self._add_local_skill(
+                                {
+                                    "name": skill_name,
+                                    "display_name": resolved_display_name,
+                                    "origin": f"teamskillshub:{asset_id}",
+                                    "source": "teamskillshub",
+                                    "installed_at": installed_at,
+                                }
+                            )
+                            self._add_installed_plugin(
+                                {
+                                    "name": skill_name,
+                                    "display_name": resolved_display_name,
+                                    "marketplace": "teamskillshub",
+                                    "commit": "",
+                                    "source": "teamskillshub",
+                                    "installed_at": installed_at,
+                                }
+                            )
+                        self._refresh_agent_data_indexes()
                         return {
                             "success": True,
                             "skill": {
@@ -4926,48 +4992,7 @@ class SkillManager:
                             },
                         }
 
-                    for mirror_root in self._get_mirror_skills_dirs():
-                        mirror_dest = mirror_root / skill_name
-                        if _exists_long(mirror_dest):
-                            continue
-                        _mkdir_long(mirror_root)
-                        _copytree_long(
-                            skill_dir,
-                            mirror_dest,
-                            ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
-                        )
-
-                    installed_at = datetime.now(timezone.utc).isoformat()
-                    self._add_local_skill(
-                        {
-                            "name": skill_name,
-                            "display_name": resolved_display_name,
-                            "origin": f"teamskillshub:{asset_id}",
-                            "source": "teamskillshub",
-                            "installed_at": installed_at,
-                        }
-                    )
-                    self._add_installed_plugin(
-                        {
-                            "name": skill_name,
-                            "display_name": resolved_display_name,
-                            "marketplace": "teamskillshub",
-                            "commit": "",
-                            "source": "teamskillshub",
-                            "installed_at": installed_at,
-                        }
-                    )
-                    self._refresh_agent_data_indexes()
-                    return {
-                        "success": True,
-                        "skill": {
-                            "name": skill_name,
-                            "display_name": resolved_display_name,
-                            "source": "teamskillshub",
-                            "asset_id": asset_id,
-                            "path": str(dest),
-                        },
-                    }
+                return await asyncio.to_thread(_commit_install)
         except SkillPackValidationError as exc:
             return _skillpack_validation_result(exc)
         except InventoryLockTimeout:
@@ -5008,25 +5033,26 @@ class SkillManager:
         """Register a transaction without hiding index generation failures."""
         from jiuwenswarm.server.runtime.skill.archive_store import atomic_write_json
 
-        self.reload_state()
-        new_names = {record["name"] for record in records if record["action"] == "download"}
-        local = [item for item in self._state.get("local_skills", []) if item.get("name") not in new_names]
-        plugins = [item for item in self._state.get("installed_plugins", []) if item.get("name") not in new_names]
-        for record in records:
-            if record["action"] != "download":
-                continue
-            local.append({
-                "name": record["name"], "source": "teamskillshub",
-                "origin": f"teamskillshub:{record['asset_id']}",
-                "installed_at": datetime.now(timezone.utc).isoformat(),
-            })
-            plugins.append({
-                "name": record["name"], "source": "teamskillshub",
-                "marketplace": "teamskillshub", "commit": "", "enabled": True,
-            })
-        self._state["local_skills"] = local
-        self._state["installed_plugins"] = plugins
-        atomic_write_json(self._state_file, self._state)
+        with _get_local_state_lock(self._state_file):
+            self.reload_state()
+            new_names = {record["name"] for record in records if record["action"] == "download"}
+            local = [item for item in self._state.get("local_skills", []) if item.get("name") not in new_names]
+            plugins = [item for item in self._state.get("installed_plugins", []) if item.get("name") not in new_names]
+            for record in records:
+                if record["action"] != "download":
+                    continue
+                local.append({
+                    "name": record["name"], "source": "teamskillshub",
+                    "origin": f"teamskillshub:{record['asset_id']}",
+                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                })
+                plugins.append({
+                    "name": record["name"], "source": "teamskillshub",
+                    "marketplace": "teamskillshub", "commit": "", "enabled": True,
+                })
+            self._state["local_skills"] = local
+            self._state["installed_plugins"] = plugins
+            atomic_write_json(self._state_file, self._state)
         self._generate_agent_data_for_workspace(self._agent_root)
 
     async def handle_skills_team_skills_hub_publish(self, params: dict) -> dict:
@@ -5805,22 +5831,29 @@ class SkillManager:
             return {"success": False, "detail": f"未找到技能 {member_name} 的本地备份"}
 
         dest = pack_dir / member_name if is_skillpack(pack_dir) else container_members_root(pack_dir) / member_name
-        try:
-            if _exists_long(dest):
-                _safe_rmtree(dest)
-            _copytree_long(backup_src, dest)
-        except OSError as exc:
-            logger.warning(
-                "[SkillPack] member restore failed: member=%s pack=%s error=%s",
-                member_name,
-                pack_name,
-                exc,
-            )
-            return {"success": False, "detail": f"恢复失败: {exc}"}
 
-        # 恢复后自动登记（若未登记），使「我的技能」立即可见。
-        self._register_unmanaged_local_skills()
-        self._refresh_agent_data_indexes()
+        def _restore_member_and_refresh() -> dict[str, Any] | None:
+            try:
+                if _exists_long(dest):
+                    _safe_rmtree(dest)
+                _copytree_long(backup_src, dest)
+            except OSError as exc:
+                logger.warning(
+                    "[SkillPack] member restore failed: member=%s pack=%s error=%s",
+                    member_name,
+                    pack_name,
+                    exc,
+                )
+                return {"success": False, "detail": f"恢复失败: {exc}"}
+
+            # 恢复后自动登记（若未登记），使「我的技能」立即可见。
+            self._register_unmanaged_local_skills()
+            self._refresh_agent_data_indexes()
+            return None
+
+        failure = await asyncio.to_thread(_restore_member_and_refresh)
+        if failure is not None:
+            return failure
         logger.info(
             "[SkillPack] member restored: member=%s pack=%s",
             member_name,
@@ -5879,9 +5912,15 @@ class SkillManager:
                 logger.error("remote archive import failed: %s", exc)
                 return {"success": False, "detail": str(exc)[:500]}
 
-        return self._import_local_from_path(
-            Path(path_str).expanduser(), force=force, origin=path_str
-        )
+        try:
+            return await asyncio.to_thread(
+                self._import_local_from_path,
+                Path(path_str).expanduser(),
+                force=force,
+                origin=path_str,
+            )
+        except InventoryLockTimeout:
+            return _inventory_busy_result()
 
     async def _import_local_from_download_token(
         self,
@@ -5944,21 +5983,28 @@ class SkillManager:
                     ) from exc
             if not self._is_skill_package_file(src):
                 raise SkillRpcError(ERROR_SKILL_DOWNLOAD_TOKEN_INVALID, "令牌文件不是可识别的 .skill 或 Skill zip 包")
+
+            def _extract_and_install_token() -> dict[str, Any]:
+                try:
+                    skill_dir = self._extract_skill_package_file(src, tmp_path)
+                except SkillRpcError:
+                    raise
+                except Exception as exc:
+                    logger.warning("[SkillManager] token package extract failed: %s", exc)
+                    raise SkillRpcError(
+                        ERROR_SKILL_INVALID_PACKAGE,
+                        f"无法解包 Skill 文件: {exc}",
+                    ) from exc
+                return self._install_imported_skill_dir(
+                    skill_dir,
+                    force=force,
+                    origin=f"download_token:{src.name}",
+                )
+
             try:
-                skill_dir = self._extract_skill_package_file(src, tmp_path)
-            except SkillRpcError:
-                raise
-            except Exception as exc:
-                logger.warning("[SkillManager] token package extract failed: %s", exc)
-                raise SkillRpcError(
-                    ERROR_SKILL_INVALID_PACKAGE,
-                    f"无法解包 Skill 文件: {exc}",
-                ) from exc
-            return self._install_imported_skill_dir(
-                skill_dir,
-                force=force,
-                origin=f"download_token:{src.name}",
-            )
+                return await asyncio.to_thread(_extract_and_install_token)
+            except InventoryLockTimeout:
+                return _inventory_busy_result()
 
     @staticmethod
     def _is_skill_package_file(path: Path) -> bool:
@@ -6067,14 +6113,20 @@ class SkillManager:
                     },
                 )
 
-            with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_upload_") as tmpdir:
-                skill_dir = self._extract_skill_package_file(src, Path(tmpdir))
-                result = self._install_imported_skill_dir(
-                    skill_dir,
-                    force=overwrite,
-                    origin="file-api:upload",
-                    conflict_code=ERROR_SKILL_ALREADY_EXISTS,
-                )
+            def _extract_and_install() -> dict[str, Any]:
+                with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_upload_") as tmpdir:
+                    skill_dir = self._extract_skill_package_file(src, Path(tmpdir))
+                    return self._install_imported_skill_dir(
+                        skill_dir,
+                        force=overwrite,
+                        origin="file-api:upload",
+                        conflict_code=ERROR_SKILL_ALREADY_EXISTS,
+                    )
+
+            result = await asyncio.to_thread(_extract_and_install)
+        except InventoryLockTimeout:
+            # 技能目录锁超时：保留上传文件并返回结构化忙碌错误，允许用户重试。
+            return _inventory_busy_result()
         except SkillRpcError as exc:
             # 同名冲突时保留上传文件，等待前端覆盖确认后的二次导入。
             if exc.code not in (
@@ -6415,12 +6467,15 @@ class SkillManager:
                 origin="file-api:create-from-knowledge",
             )
         else:
-            installed = self._install_imported_skill_dir(
-                skill_dir,
-                force=False,
-                origin="file-api:create-from-knowledge",
-                conflict_code=ERROR_SKILL_ALREADY_EXISTS,
-            )
+            try:
+                installed = self._install_imported_skill_dir(
+                    skill_dir,
+                    force=False,
+                    origin="file-api:create-from-knowledge",
+                    conflict_code=ERROR_SKILL_ALREADY_EXISTS,
+                )
+            except InventoryLockTimeout:
+                return _inventory_busy_result()
         if not installed.get("success"):
             return installed
         skill = dict(installed.get("skill") or {})
@@ -6599,7 +6654,9 @@ class SkillManager:
         allow_skillpack: bool = False,
     ) -> dict[str, Any]:
         """把已校验的 Skill 目录安装到 workspace，并返回约定的 skill 字段."""
-        with inventory_mutex(self._skills_dir):
+        with inventory_mutex(self._skills_dir).acquire(
+            timeout=_SKILL_IMPORT_LOCK_TIMEOUT_SECONDS,
+        ):
             self.reload_state()
             return self._install_imported_skill_dir_locked(
                 src, force=force, origin=origin,
@@ -6735,18 +6792,27 @@ class SkillManager:
             # 清掉同名 local_skills，避免与安装账本双口径残留。
             self._remove_local_skill(skill_name)
         else:
-            record = {
-                "name": skill_name,
-                "origin": origin,
-                "source": (
-                    existing_record.get("source")
-                    if isinstance(existing_record, dict) and existing_record.get("source")
-                    else preserved_source
-                ),
-            }
-            if isinstance(existing_record, dict) and existing_record.get("display_name"):
-                record["display_name"] = existing_record.get("display_name")
-            self._add_local_skill(record)
+            with self.state_transaction():
+                existing_record = next(
+                    (
+                        s
+                        for s in self._state.get("local_skills", [])
+                        if isinstance(s, dict) and s.get("name") == skill_name
+                    ),
+                    None,
+                )
+                record = {
+                    "name": skill_name,
+                    "origin": origin,
+                    "source": (
+                        existing_record.get("source")
+                        if isinstance(existing_record, dict) and existing_record.get("source")
+                        else preserved_source
+                    ),
+                }
+                if isinstance(existing_record, dict) and existing_record.get("display_name"):
+                    record["display_name"] = existing_record.get("display_name")
+                self._add_local_skill(record)
         self._refresh_agent_data_indexes()
 
         skill_type = detect_skill_type(dest)
@@ -7167,22 +7233,28 @@ class SkillManager:
                     raise RuntimeError("下载文件校验失败（SHA256 不匹配）")
             return body
 
-        artifact_bytes = _download_with_requests()
+        def _run_remote_import() -> dict[str, Any]:
+            artifact_bytes = _download_with_requests()
 
-        with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_local_") as tmpdir:
-            tmp_path = Path(tmpdir)
-            logger.info("[SkillManager] remote import extracting: url=%s tmpdir=%s", download_url, tmp_path)
-            self._extract_archive_bytes_to_dir(artifact_bytes, tmp_path)
-            skill_dir = self._locate_skill_dir(tmp_path)
-            if skill_dir is None:
-                return {"success": False, "detail": "下载内容不完整，未找到 SKILL.md"}
-            logger.info("[SkillManager] remote import extracted: url=%s skill_dir=%s", download_url, skill_dir)
-            return self._import_local_from_path(
-                skill_dir,
-                force=force,
-                origin=download_url,
-                source_trusted=True,
-            )
+            with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_local_") as tmpdir:
+                tmp_path = Path(tmpdir)
+                logger.info("[SkillManager] remote import extracting: url=%s tmpdir=%s", download_url, tmp_path)
+                self._extract_archive_bytes_to_dir(artifact_bytes, tmp_path)
+                skill_dir = self._locate_skill_dir(tmp_path)
+                if skill_dir is None:
+                    return {"success": False, "detail": "下载内容不完整，未找到 SKILL.md"}
+                logger.info("[SkillManager] remote import extracted: url=%s skill_dir=%s", download_url, skill_dir)
+                return self._import_local_from_path(
+                    skill_dir,
+                    force=force,
+                    origin=download_url,
+                    source_trusted=True,
+                )
+
+        try:
+            return await asyncio.to_thread(_run_remote_import)
+        except InventoryLockTimeout:
+            return _inventory_busy_result()
 
 
     async def handle_skills_marketplace_add(self, params: dict) -> dict:
@@ -8532,44 +8604,73 @@ class SkillManager:
 
         folder_data: dict[str, list[dict[str, str | bool]]] = {}
         seen_paths: dict[str, set[str]] = {}
-        for entry in sorted(agent_root.rglob("*")):
-            if not _is_file_long(entry) or entry.name.startswith("."):
+        walk_root = _long_path(agent_root)
+        for dirpath, dirnames, filenames in os.walk(
+            walk_root,
+            topdown=True,
+            followlinks=False,
+        ):
+            # Prune hidden directories (e.g., .archive, .agent_history, .git)
+            # in place so os.walk never descends into them.
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+            if not filenames:
                 continue
-            # Skip files in hidden directories (e.g., .agent_history)
-            if any(part.startswith(".") for part in entry.relative_to(agent_root).parts):
-                continue
-            relative_folder_path = entry.parent.relative_to(agent_root.parent).as_posix()
+            rel_dir = Path(dirpath).relative_to(walk_root)
+            current_dir = agent_root if rel_dir == Path(".") else agent_root / rel_dir
+            relative_folder_path = current_dir.relative_to(agent_root.parent).as_posix()
             folder_key = root_folder_key if relative_folder_path == "." else relative_folder_path
-
-            display_name = SkillManager._normalize_lang_suffix(entry.name)
-            display_path = (
-                f"agent/{relative_folder_path}/{display_name}".replace("/.", "/").replace("//", "/")
-                if relative_folder_path != "."
-                else f"agent/{display_name}"
-            )
-
             seen = seen_paths.setdefault(folder_key, set())
-            if display_path in seen:
-                continue
-            seen.add(display_path)
 
-            folder_data.setdefault(folder_key, []).append(
-                {
-                    "name": display_name,
-                    "path": display_path,
-                    "isMarkdown": entry.suffix.lower() in {".md", ".mdx"},
-                }
-            )
+            for filename in sorted(filenames):
+                if filename.startswith("."):
+                    continue
+                entry = current_dir / filename
+                if not _is_file_long(entry):
+                    continue
+                display_name = SkillManager._normalize_lang_suffix(filename)
+                display_path = (
+                    f"agent/{relative_folder_path}/{display_name}".replace("/.", "/").replace("//", "/")
+                    if relative_folder_path != "."
+                    else f"agent/{display_name}"
+                )
+                if display_path in seen:
+                    continue
+                seen.add(display_path)
+
+                folder_data.setdefault(folder_key, []).append(
+                    {
+                        "name": display_name,
+                        "path": display_path,
+                        "isMarkdown": entry.suffix.lower() in {".md", ".mdx"},
+                    }
+                )
 
         sorted_folder_data = {
             folder_key: sorted(files, key=lambda item: item["path"])
             for folder_key, files in sorted(folder_data.items(), key=lambda item: item[0])
         }
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(sorted_folder_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        payload = json.dumps(sorted_folder_data, ensure_ascii=False, indent=2)
+        _mkdir_long(output_path.parent)
+        # Write to a hidden unique temp file so concurrent scans ignore it,
+        # then serialize atomic replace for cross-platform (Windows) safety.
+        tmp_path = (
+            output_path.parent
+            / f".agent-data.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
         )
+        try:
+            _long_path(tmp_path).write_text(payload, encoding="utf-8")
+            with _AGENT_DATA_WRITE_LOCK:
+                os.replace(_long_path(tmp_path), _long_path(output_path))
+        except Exception:
+            try:
+                _long_path(tmp_path).unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                logger.debug(
+                    "清理临时 agent-data 文件失败: path=%s error=%s",
+                    tmp_path,
+                    cleanup_exc,
+                )
+            raise
 
     def _refresh_agent_data_indexes(self) -> None:
         """Refresh agent-data.json for runtime and mirror workspaces."""
@@ -8585,6 +8686,10 @@ class SkillManager:
                 self._generate_agent_data_for_workspace(workspace_root)
             except Exception as exc:
                 logger.warning("重建 agent-data.json 失败: agent_root=%s error=%s", workspace_root, exc)
+
+    async def _refresh_agent_data_indexes_async(self) -> None:
+        """Offload workspace agent-data.json index refresh off the asyncio event loop."""
+        await asyncio.to_thread(self._refresh_agent_data_indexes)
 
     @staticmethod
     def _locate_skill_dir(path: Path) -> Path | None:
@@ -10078,14 +10183,15 @@ class SkillManager:
 
     async def handle_plugins_reload(self, params: dict) -> dict:
         """重载插件：根据 enabled 状态物理移动技能目录，然后统计摘要."""
-        # 规范化所有插件记录
-        for p in self._get_installed_plugins():
-            self._normalize_plugin(p)
-        self._save_state()
+        # 规范化所有插件记录并在锁内快照，避免与工作线程状态写竞争
+        with _get_local_state_lock(self._state_file):
+            for p in self._get_installed_plugins():
+                self._normalize_plugin(p)
+            self._save_state()
+            all_plugins = [dict(p) for p in self._get_installed_plugins()]
 
         # 根据 enabled 状态物理移动技能目录
         disabled_cache = self._skills_dir / "_disabled_plugins"
-        all_plugins = self._get_installed_plugins()
 
         for p in all_plugins:
             name = p.get("name", "")
@@ -10173,16 +10279,17 @@ class SkillManager:
             return
         tmp: Path | None = None
         try:
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._state_file.with_name(
-                f".{self._state_file.name}.{uuid.uuid4().hex[:8]}.tmp"
-            )
-            tmp.write_text(
-                json.dumps(self._state, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            os.replace(tmp, self._state_file)
-            tmp = None
+            with _get_local_state_lock(self._state_file):
+                self._state_file.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self._state_file.with_name(
+                    f".{self._state_file.name}.{uuid.uuid4().hex[:8]}.tmp"
+                )
+                tmp.write_text(
+                    json.dumps(self._state, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                os.replace(tmp, self._state_file)
+                tmp = None
         except Exception:
             logger.error("保存 skills_state.json 失败")
         finally:
@@ -10193,53 +10300,58 @@ class SkillManager:
                     pass
 
     def _get_marketplaces(self) -> list[dict]:
-        marketplaces = self._state.get("marketplaces", [])
-        normalized = self.normalize_marketplaces(marketplaces)
-        # 仅当结构发生变化时写回，避免每次读取都触盘。
-        if normalized != marketplaces:
-            self._state["marketplaces"] = normalized
-            self._save_state()
-        return normalized
+        with _get_local_state_lock(self._state_file):
+            marketplaces = self._state.get("marketplaces", [])
+            normalized = self.normalize_marketplaces(marketplaces)
+            # 仅当结构发生变化时写回，避免每次读取都触盘。
+            if normalized != marketplaces:
+                self._state["marketplaces"] = normalized
+                self._save_state()
+            return normalized
 
     def _add_marketplace(self, marketplace: dict) -> None:
-        self._state.setdefault("marketplaces", []).append(marketplace)
-        self._state["marketplaces"] = self.normalize_marketplaces(self._state.get("marketplaces", []))
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            self._state.setdefault("marketplaces", []).append(marketplace)
+            self._state["marketplaces"] = self.normalize_marketplaces(self._state.get("marketplaces", []))
+            self._save_state()
 
     def _remove_marketplace(self, name: str) -> bool:
-        marketplaces = self._state.get("marketplaces", [])
-        kept = [m for m in marketplaces if m.get("name") != name]
-        if len(kept) == len(marketplaces):
-            return False
-        self._state["marketplaces"] = self.normalize_marketplaces(kept)
-        self._save_state()
-        return True
+        with _get_local_state_lock(self._state_file):
+            marketplaces = self._state.get("marketplaces", [])
+            kept = [m for m in marketplaces if m.get("name") != name]
+            if len(kept) == len(marketplaces):
+                return False
+            self._state["marketplaces"] = self.normalize_marketplaces(kept)
+            self._save_state()
+            return True
 
     def _set_marketplace_enabled(self, name: str, enabled: bool) -> bool:
-        marketplaces = self.normalize_marketplaces(self._state.get("marketplaces", []))
-        updated = False
-        for marketplace in marketplaces:
-            if marketplace.get("name") == name:
-                marketplace["enabled"] = bool(enabled)
-                updated = True
-                break
-        if updated:
-            self._state["marketplaces"] = marketplaces
-            self._save_state()
-        return updated
+        with _get_local_state_lock(self._state_file):
+            marketplaces = self.normalize_marketplaces(self._state.get("marketplaces", []))
+            updated = False
+            for marketplace in marketplaces:
+                if marketplace.get("name") == name:
+                    marketplace["enabled"] = bool(enabled)
+                    updated = True
+                    break
+            if updated:
+                self._state["marketplaces"] = marketplaces
+                self._save_state()
+            return updated
 
     def _set_marketplace_last_updated(self, name: str) -> bool:
-        marketplaces = self.normalize_marketplaces(self._state.get("marketplaces", []))
-        updated = False
-        for marketplace in marketplaces:
-            if marketplace.get("name") == name:
-                marketplace["last_updated"] = datetime.now(timezone.utc).isoformat()
-                updated = True
-                break
-        if updated:
-            self._state["marketplaces"] = marketplaces
-            self._save_state()
-        return updated
+        with _get_local_state_lock(self._state_file):
+            marketplaces = self.normalize_marketplaces(self._state.get("marketplaces", []))
+            updated = False
+            for marketplace in marketplaces:
+                if marketplace.get("name") == name:
+                    marketplace["last_updated"] = datetime.now(timezone.utc).isoformat()
+                    updated = True
+                    break
+            if updated:
+                self._state["marketplaces"] = marketplaces
+                self._save_state()
+            return updated
 
     @staticmethod
     def normalize_marketplaces(raw_marketplaces: Any) -> list[dict]:
@@ -10504,12 +10616,14 @@ class SkillManager:
         return get_skill_enabled(self._state, skill_name)
 
     def set_skill_enabled(self, skill_name: str, enabled: bool) -> None:
-        set_skill_enabled(self._state, skill_name, enabled)
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            set_skill_enabled(self._state, skill_name, enabled)
+            self._save_state()
 
     def remove_skill_config(self, skill_name: str) -> None:
-        if remove_skill_config(self._state, skill_name):
-            self._save_state()
+        with _get_local_state_lock(self._state_file):
+            if remove_skill_config(self._state, skill_name):
+                self._save_state()
 
     def reload_state(self) -> None:
         """重新从 skills_state.json 加载状态。
@@ -10520,7 +10634,8 @@ class SkillManager:
         refresh_skill_rails 调用本方法先重载再算 disabled_skills，确保磁盘最新值
         生效。
         """
-        self._state = self._load_state()
+        with _get_local_state_lock(self._state_file):
+            self._state = self._load_state()
 
     def skillpack_inventory_snapshot(self, *, lock_timeout: float = 0) -> dict[str, Any]:
         """Return current typed inventory for confirmed SkillPack routing."""
@@ -10584,47 +10699,50 @@ class SkillManager:
         return _is_dir_long(dest) and dest.resolve() == builtin_skill_path.resolve()
 
     def _add_installed_plugin(self, plugin: dict) -> None:
-        plugins = self._state.setdefault("installed_plugins", [])
-        plugin = self._normalize_plugin(plugin)
-        key = self._record_identity_key(plugin)
-        for i, p in enumerate(plugins):
-            if self._record_identity_key(p) == key:
-                plugins[i] = plugin
-                self._save_state()
-                return
-        plugins.append(plugin)
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            plugins = self._state.setdefault("installed_plugins", [])
+            plugin = self._normalize_plugin(plugin)
+            key = self._record_identity_key(plugin)
+            for i, p in enumerate(plugins):
+                if self._record_identity_key(p) == key:
+                    plugins[i] = plugin
+                    self._save_state()
+                    return
+            plugins.append(plugin)
+            self._save_state()
 
     def _remove_installed_plugin(self, name: str, origin: str | None = None) -> None:
-        plugins = self._state.get("installed_plugins", [])
-        if origin is not None:
-            self._state["installed_plugins"] = [
-                p for p in plugins
-                if not self._record_matches(p, name=name, origin=origin)
-            ]
-        else:
-            self._state["installed_plugins"] = [p for p in plugins if p.get("name") != name]
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            plugins = self._state.get("installed_plugins", [])
+            if origin is not None:
+                self._state["installed_plugins"] = [
+                    p for p in plugins
+                    if not self._record_matches(p, name=name, origin=origin)
+                ]
+            else:
+                self._state["installed_plugins"] = [p for p in plugins if p.get("name") != name]
+            self._save_state()
 
     def _set_plugin_enabled(self, name: str, enabled: bool, origin: str | None = None) -> bool:
         """设置插件的启用/禁用状态。传入 origin 时按来源精确匹配。"""
-        plugins = self._state.get("installed_plugins", [])
-        updated = False
-        for p in plugins:
-            if origin is not None:
-                rec_origin = str(p.get("origin") or "").strip()
-                if rec_origin and rec_origin == origin and p.get("name") == name:
+        with _get_local_state_lock(self._state_file):
+            plugins = self._state.get("installed_plugins", [])
+            updated = False
+            for p in plugins:
+                if origin is not None:
+                    rec_origin = str(p.get("origin") or "").strip()
+                    if rec_origin and rec_origin == origin and p.get("name") == name:
+                        p["enabled"] = bool(enabled)
+                        updated = True
+                        break
+                elif p.get("name") == name:
                     p["enabled"] = bool(enabled)
                     updated = True
                     break
-            elif p.get("name") == name:
-                p["enabled"] = bool(enabled)
-                updated = True
-                break
-        if not updated:
-            return False
-        self._save_state()
-        return True
+            if not updated:
+                return False
+            self._save_state()
+            return True
 
     @staticmethod
     def _normalize_plugin(p: dict) -> dict:
@@ -10635,26 +10753,28 @@ class SkillManager:
         return p
 
     def _add_local_skill(self, skill: dict) -> None:
-        local = self._state.setdefault("local_skills", [])
-        key = self._record_identity_key(skill)
-        for i, s in enumerate(local):
-            if self._record_identity_key(s) == key:
-                local[i] = skill
-                self._save_state()
-                return
-        local.append(skill)
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            local = self._state.setdefault("local_skills", [])
+            key = self._record_identity_key(skill)
+            for i, s in enumerate(local):
+                if self._record_identity_key(s) == key:
+                    local[i] = skill
+                    self._save_state()
+                    return
+            local.append(skill)
+            self._save_state()
 
     def _remove_local_skill(self, name: str, origin: str | None = None) -> None:
-        local = self._state.get("local_skills", [])
-        if origin is not None:
-            self._state["local_skills"] = [
-                s for s in local
-                if not self._record_matches(s, name=name, origin=origin)
-            ]
-        else:
-            self._state["local_skills"] = [s for s in local if s.get("name") != name]
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            local = self._state.get("local_skills", [])
+            if origin is not None:
+                self._state["local_skills"] = [
+                    s for s in local
+                    if not self._record_matches(s, name=name, origin=origin)
+                ]
+            else:
+                self._state["local_skills"] = [s for s in local if s.get("name") != name]
+            self._save_state()
 
     # -----------------------------------------------------------------------
     # ClawHub 相关方法
@@ -10666,8 +10786,9 @@ class SkillManager:
 
     def _set_clawhub_token(self, token: str) -> None:
         """设置 ClawHub CLI token（掩码处理）。"""
-        self._state.setdefault("clawhub", {})["token"] = token.strip() if token.strip() else ""
-        self._save_state()
+        with _get_local_state_lock(self._state_file):
+            self._state.setdefault("clawhub", {})["token"] = token.strip() if token.strip() else ""
+            self._save_state()
 
     @staticmethod
     def _mask_clawhub_token(token: str) -> str:
@@ -12872,15 +12993,19 @@ class SkillManager:
         ``skills_state.json``. Holds a cross-pod file lock (portalocker) on the
         workspace ledger so concurrent AgentServer pods sharing one workspace
         never lose each other's writes. Non-enterprise or non-persistent
-        instances yield immediately (no lock, no reload).
+        instances acquire the per-state-file RLock without reloading from disk;
+        enterprise transactions also acquire that RLock inside ``skill_state_lock``
+        so every in-process state writer serializes on one lock hierarchy.
         """
         if not is_enterprise() or not self._persist_skills_state:
-            yield
+            with _get_local_state_lock(self._state_file):
+                yield
             return
         with skill_state_lock(self._state_file) as outermost:
-            if outermost:
-                self._state = self._load_state()
-            yield
+            with _get_local_state_lock(self._state_file):
+                if outermost:
+                    self._state = self._load_state()
+                yield
 
     def _download_http_archive_bytes_sync(self, download_url: str) -> bytes:
         """同步下载 HTTPS 直链 zip/tar 归档（预置 URL 路径）。"""
