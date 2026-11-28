@@ -71,3 +71,29 @@ def test_adx_tool_endpoint_preserves_runtime_settings(monkeypatch):
     assert endpoint['runtime'] == 'conch'
     assert endpoint['idle_timeout'] == 60
     assert endpoint['user'] == endpoint['group'] == 1000
+
+
+def test_adx_tool_endpoint_preserves_idle_lifecycle(monkeypatch, tmp_path):
+    """Idle pause, its checkpoint policy and failover must reach create params."""
+    from jiuwenswarm.common import config
+    from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
+
+    lifecycle = {
+        'idle_action': 'pause',
+        'pause_policy': {'retention': {'kind': 'ttl', 'ttlSeconds': 86400},
+                         'timeoutSeconds': 300, 'storage': 'configured'},
+        'failover': True,
+    }
+    source = {'type': 'adx-environment', 'url': 'https://adx.example', 'runtime': 'runsc',
+              'idle_timeout': 900, **lifecycle}
+    monkeypatch.setattr(config, 'get_config', lambda: {'sandbox': source})
+    endpoint = config.get_sandbox_endpoint()
+    assert endpoint['idle_timeout'] == 900
+    for key, value in lifecycle.items():
+        assert endpoint[key] == value
+    monkeypatch.setattr(builder, 'get_sandbox_endpoint', lambda: endpoint)
+    monkeypatch.setattr(builder, '_resolve_workspace_dir', lambda: tmp_path / 'workspace')
+    monkeypatch.delenv('JIUWENSWARM_RUNTIME_PROFILE', raising=False)
+    extra = builder._build_adx_extra_params()
+    for key, value in lifecycle.items():
+        assert extra[key] == value
