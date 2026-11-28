@@ -52,6 +52,10 @@ import { formatModeForDisplay, normalizeToClientMode } from "../dist/core/modes.
 import { createInitCommand } from "../dist/core/commands/builtins/init.js";
 import { createSimplifyCommand } from "../dist/core/commands/builtins/simplify.js";
 import {
+  createSandboxCommand,
+  refreshSandboxCommandPresentation,
+} from "../dist/core/commands/builtins/sandbox.js";
+import {
   bindPermissionCardAnswer,
   handleIncomingFrame,
 } from "../dist/core/event-handlers.js";
@@ -2068,6 +2072,49 @@ assert.equal(
   false,
 );
 assert.match(cancelledDevInitEntries.at(-1).content, /cancelled.*not installed/i);
+
+{
+  const command = createSandboxCommand();
+  const items = [];
+  const requests = [];
+  let payload = {
+    type: "adx-environment",
+    enabled: true,
+    runtime: "runsc",
+    mounts: [{ host_path: "/shared/data", target: "/data", options: ["ro"] }],
+  };
+  const ctx = {
+    sessionId: "sandbox-status",
+    addItem: (item) => items.push(item),
+    request: async (method, params) => {
+      assert.equal(method, "command.sandbox");
+      requests.push(params);
+      return payload;
+    },
+  };
+  assert.equal(await refreshSandboxCommandPresentation(ctx), "adx-environment");
+  assert.equal(command.takesArgs, false);
+  assert.deepEqual(await command.completion(), []);
+  await command.action(ctx, "");
+  assert.deepEqual(items.at(-1).meta.items, [
+    { label: "enabled", value: "on" },
+    { label: "runtime", value: "runsc" },
+    { label: "mounts", value: "/shared/data -> /data (ro)" },
+  ]);
+  await command.action(ctx, "enable");
+  assert.equal(items.at(-1).kind, "error");
+  assert.deepEqual(requests, [{ sub: "status" }, { sub: "status" }]);
+
+  payload = { type: "yuanrong", enabled: true, executor: "conch" };
+  assert.equal(await refreshSandboxCommandPresentation(ctx), "yuanrong");
+  await command.action(ctx, "");
+  assert.deepEqual(items.at(-1).meta.items[1], { label: "executor", value: "conch" });
+
+  payload = { type: "jiuwenbox", runtime: { enabled: false } };
+  assert.equal(await refreshSandboxCommandPresentation(ctx), "jiuwenbox");
+  assert.equal(command.takesArgs, true);
+  assert.ok((await command.completion()).includes("enable"));
+}
 
 console.log("frontend tests passed");
 

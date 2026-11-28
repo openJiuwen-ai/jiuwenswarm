@@ -117,7 +117,7 @@ class ObjectClient:
 
     def signed_request(self, method, url, *, headers=None, redirect, preload_content):
         headers = headers or {}
-        from agent_gateway.channel_manager.web.container_file_http import _parse_single_byte_range
+        from agent_gateway.routing.container_files import parse_single_byte_range
 
         assert method == "GET" and not redirect and not preload_content
         status, response_headers = 200, {}
@@ -134,7 +134,7 @@ class ObjectClient:
             return response
         bucket, key = location
         data, metadata, etag = self.objects[location]
-        byte_range = _parse_single_byte_range(headers["Range"], len(data)) if headers.get("Range") else None
+        byte_range = parse_single_byte_range(headers["Range"], len(data)) if headers.get("Range") else None
         if headers.get("Range") and byte_range is None:
             response = io.BytesIO()
             response.status, response.headers = 416, {}

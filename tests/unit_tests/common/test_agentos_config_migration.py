@@ -9,6 +9,9 @@ import pytest
 import portalocker
 from ruamel.yaml import YAML
 
+from jiuwenswarm.agentos_migration import migrate, refresh_deploy_owned
+from tests.unit_tests.test_agentos_migration import _legacy_config, _read, _rendered_template, _write
+
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common import utils as common_utils
 
@@ -54,8 +57,8 @@ def test_agentos_runtime_preserves_yuanrong_config(
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
     deployment_template = (
-        PACKAGE_ROOT.parent / "deploy" / "yuanrong" / "conf"
-        / "gateway-config-yuanrong.template.yaml"
+        PACKAGE_ROOT.parent / "deploy" / "adx" / "conf"
+        / "gateway-config.template.yaml"
     )
     deployed = YAML().load(deployment_template.read_text(encoding="utf-8"))
     deployed["gateway"]["cron"]["store_backend"] = "etcd"
@@ -150,3 +153,81 @@ def test_runtime_workspace_retries_migration_after_mcp_repair_lock_error(
     migrated = config_module.load_yaml_round_trip(config_path)
     assert migrated["operator_extra"] == "keep"
     assert migrated["config_version"] == "0.2.8b1 · 2026-10-26"
+
+
+def test_model_custom_header_named_image_env_is_preserved(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "models:\n"
+        "  example:\n"
+        "    model_client_config:\n"
+        "      custom_headers:\n"
+        "        image_env: ${TEST_MODEL_HEADER}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "get_config_file", lambda: config_path)
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "")
+    monkeypatch.setenv("TEST_MODEL_HEADER", "preview")
+
+    headers = config_module.get_config()["models"]["example"]["model_client_config"]["custom_headers"]
+
+    assert headers == {"image_env": "preview"}
+
+
+@pytest.mark.parametrize('mode', [0o600, 0o640])
+def test_agentos_config_updates_keep_the_prepared_mode(tmp_path, monkeypatch, mode):
+    from jiuwenswarm.common.config import dump_yaml_round_trip
+
+    monkeypatch.setenv('JIUWENSWARM_RUNTIME_PROFILE', 'agentos')
+    path = tmp_path / 'config.yaml'
+    path.write_text('models: {}\n')
+    path.chmod(mode)
+    dump_yaml_round_trip(path, {'models': {'defaults': []}})
+    assert path.stat().st_mode & 0o777 == mode
+
+
+def test_refresh_deploy_owned_updates_adx_connection(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    gateway_dir = workspace / "config"
+    config = _legacy_config()
+    config["gateway"]["adx"] = {"ingress_url": "https://old.example", "http_timeout": 7}
+    target = _write(gateway_dir / "config-gateway.yaml", config)
+    template = _rendered_template()
+    template["gateway"]["adx"] = {
+        "ingress_url": "https://new.example",
+        "tenant": "agentos",
+        "token_env": "ADX_TOKEN",
+        "builtin_image": "agentos-supervisor:v1",
+        "runtime_class": "supervisor",
+        "http_timeout": 60,
+    }
+    rendered = _write(tmp_path / "rendered.yaml", template)
+
+    report = refresh_deploy_owned(workspace=workspace, rendered_template=rendered)
+
+    assert report["status"] == "refreshed"
+    assert _read(target)["gateway"]["adx"] == {**template["gateway"]["adx"], "http_timeout": 7}
+
+
+def test_migrate_preserves_previous_gateway_config(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    shared_config = _write(workspace / "config" / "config.yaml", _legacy_config())
+    previous = _legacy_config()
+    previous["channels"]["feishu"]["apps"][0]["app_id"] = "cli_gateway"
+    previous_config = _write(workspace / "infra" / "config" / "config.yaml", previous)
+    rendered = _write(tmp_path / "rendered.yaml", _rendered_template())
+
+    user_env = shared_config.with_name('.env')
+    user_env.write_text('MODEL_NAME=prepared\n')
+    shared_config.chmod(0o600)
+    report = migrate(workspace=workspace, rendered_template=rendered)
+
+    assert report["status"] == "migrated"
+    assert report["legacy"] == str(previous_config)
+    migrated = _read(workspace / "config" / "config-gateway.yaml")
+    assert migrated["channels"]["feishu"]["apps"][0]["app_id"] == "cli_gateway"
+    assert migrated["gateway"]["agentos"]["registry"]["endpoint"] == "http://new-vip:4003"
+    assert _read(shared_config) == _legacy_config()
+    assert _read(previous_config) == previous
+    assert shared_config.stat().st_mode & 0o777 == 0o600
+    assert user_env.read_text() == 'MODEL_NAME=prepared\n'

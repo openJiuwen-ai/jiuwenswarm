@@ -25,6 +25,7 @@ IMPORTANT: This ensures module-level code uses correct workspace path.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -116,6 +117,29 @@ def _should_preserve_session_ports() -> bool:
     )
 
 
+RUNTIME_SETTINGS_ENV = "JIUWENSWARM_RUNTIME_SETTINGS"
+
+
+def runtime_settings() -> dict:
+    if os.getenv("JIUWENSWARM_RUNTIME_PROFILE", "").strip().lower() != "agentos":
+        return {}
+    value = json.loads(os.getenv(RUNTIME_SETTINGS_ENV, "{}"))
+    if not isinstance(value, dict):
+        raise ValueError("Runtime settings must be a mapping")
+    return value
+
+
+def prepare_runtime_environment() -> None:
+    """Consume launch credentials before loading the user's shared dotenv."""
+    for source, target in runtime_settings().get("credentials", {}).items():
+        value = os.environ.pop(source, None)
+        if value is None:
+            raise ValueError(f"AgentOS launch credential {source} is missing for {target}")
+        if not value.strip():
+            raise ValueError(f"AgentOS launch credential {source} is empty for {target}")
+        os.environ[target] = value
+
+
 def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True) -> bool:
     """load_dotenv wrapper that keeps session-injected port env vars.
 
@@ -126,6 +150,7 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     ``override=True`` (avoids banner vs Gateway bind mismatch, issue #2749).
     Electron launches additionally restore ``DESKTOP_BROWSER_PRESERVED_ENV_KEYS``
     so dotenv cannot replace the exact sideview target binding.
+    AgentOS preserves the runtime environment declared by its launcher.
 
     Also drops ``AGENT_SERVER_URL`` in those modes: Gateway prefers that URL
     over ``AGENT_SERVER_PORT``, so a stale value from .env/shell would bypass
@@ -139,23 +164,25 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     from dotenv import load_dotenv
 
     preserve = _should_preserve_session_ports()
-    preserved_keys = DESKTOP_PRESERVED_ENV_KEYS
-    if os.environ.get(ELECTRON_ENV_FLAG) == "1":
+    preserved_keys = DEPLOY_PRESERVED_ENV_KEYS
+    if preserve:
+        preserved_keys += DESKTOP_PRESERVED_ENV_KEYS
+    if preserve and os.environ.get(ELECTRON_ENV_FLAG) == "1":
         preserved_keys += DESKTOP_BROWSER_PRESERVED_ENV_KEYS
-    saved = (
-        {k: os.environ[k] for k in preserved_keys if k in os.environ}
-        if preserve
-        else {}
-    )
-    # Prefer deploy-injected feature flags over .env defaults when already set.
-    deploy_saved = {
-        k: os.environ[k] for k in DEPLOY_PRESERVED_ENV_KEYS if k in os.environ
-    }
+    if os.getenv("JIUWENSWARM_RUNTIME_PROFILE", "").strip().lower() == "agentos":
+        preserved_keys += (
+            "JIUWENSWARM_RUNTIME_PROFILE", "JIUWENSWARM_RUNTIME_SETTINGS",
+            "JIUWENSWARM_AGENTOS_SANDBOX_CONFIG", "JIUWENSWARM_USER_DIRECTORY",
+            "JIUWENSWARM_AGENTOS_CONFIG_TEMPLATE",
+            "SSL_CERT_FILE",
+            "GATEWAY_HOST", "GATEWAY_PORT", "WEB_HOST", "WEB_PORT",
+            "FRONTEND_HOST", "FRONTEND_PORT",
+        )
+        preserved_keys += tuple(runtime_settings().get("preserve_env") or [])
+    saved = {k: os.environ[k] for k in preserved_keys if k in os.environ}
     loaded = load_dotenv(dotenv_path=dotenv_path, override=override)
     if saved:
         os.environ.update(saved)
-    if deploy_saved:
-        os.environ.update(deploy_saved)
     if preserve:
         # Prefer remapped AGENT_SERVER_PORT over any URL from .env/parent env.
         os.environ.pop("AGENT_SERVER_URL", None)
@@ -191,6 +218,8 @@ def parse_dotenv_early(component_name: str = "jiuwenswarm") -> Path | None:
     """
     global _parsed_dotenv, _component_name
     _component_name = component_name
+    if component_name == "jiuwenswarm-agentserver":
+        prepare_runtime_environment()
     dotenv_path = None
     name_value = None
 

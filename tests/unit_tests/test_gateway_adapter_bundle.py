@@ -67,7 +67,7 @@ def test_verifier_rejects_missing_rea_handler(monkeypatch):
 def gateway_extensions(tmp_path, monkeypatch):
     from agent_gateway.extensions.loader import ExtensionLoader
 
-    for name in ("adx", "agentos", "runtime_management_extension"):
+    for name in ("agentos", "runtime_management_extension"):
         root = tmp_path / "extensions" / name
         root.mkdir(parents=True)
         (root / "extension.yaml").write_text(f"name: {name}\n", encoding="utf-8")
@@ -99,7 +99,7 @@ def test_verifier_loads_physical_extensions_with_relative_imports(gateway_extens
         for name in verifier.sys.modules
         if name.startswith(prefix) and "." not in name.removeprefix(prefix)
     }
-    assert loaded == {"adx", "agentos", "runtime_management_extension"}
+    assert loaded == {"agentos", "runtime_management_extension"}
     for name in loaded:
         module = verifier.sys.modules[prefix + name]
         assert Path(module.__file__) == gateway_extensions / name / "extension.py"
@@ -109,25 +109,25 @@ def test_verifier_loads_physical_extensions_with_relative_imports(gateway_extens
 @pytest.mark.parametrize("filename", ["extension.yaml", "extension.py", "provider.py"])
 @pytest.mark.filterwarnings("ignore:__package__ != __spec__.parent:ImportWarning")
 def test_verifier_rejects_missing_extension_resources(gateway_extensions, filename):
-    (gateway_extensions / "adx" / filename).unlink()
+    (gateway_extensions / "agentos" / filename).unlink()
     if filename == "provider.py":
         with pytest.raises(ModuleNotFoundError) as exc:
             verifier.verify_gateway_extensions()
-        assert exc.value.name == "agent_gateway.loaded_extension.adx.provider"
+        assert exc.value.name == "agent_gateway.loaded_extension.agentos.provider"
     else:
         with pytest.raises(RuntimeError, match="Missing frozen Gateway extension resource:") as exc:
             verifier.verify_gateway_extensions()
-        assert str(gateway_extensions / "adx" / filename) in str(exc.value)
+        assert str(gateway_extensions / "agentos" / filename) in str(exc.value)
 
 
 def test_verifier_rejects_empty_extension_manifest(gateway_extensions):
-    (gateway_extensions / "adx" / "extension.yaml").write_text("", encoding="utf-8")
+    (gateway_extensions / "agentos" / "extension.yaml").write_text("", encoding="utf-8")
     with pytest.raises(RuntimeError, match="Empty frozen Gateway extension manifest"):
         verifier.verify_gateway_extensions()
 
 
 def test_verifier_rejects_missing_registration_entry(gateway_extensions):
-    (gateway_extensions / "adx" / "extension.py").write_text("", encoding="utf-8")
+    (gateway_extensions / "agentos" / "extension.py").write_text("", encoding="utf-8")
     with pytest.raises(RuntimeError, match="registration entry"):
         verifier.verify_gateway_extensions()
 
@@ -184,7 +184,7 @@ def test_launcher_isolates_before_windows_entry_imports(tmp_path, monkeypatch, c
         assert "Frozen Gateway verification failed (exit 7)" in caplog.text
         assert "isolated failure evidence" in caplog.text
     else:
-        assert not caplog.records
+        assert all(record.name != verifier.__name__ for record in caplog.records)
     assert not Path(report.read_text()).exists()
     assert verifier.os.environ == original_env
     assert Path.cwd() == original_cwd

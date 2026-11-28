@@ -22,7 +22,7 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
 )
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
-    build_yuanrong_sandbox_status_view,
+    build_adx_sandbox_status_view,
 )
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     effective_files_from_policy,
@@ -175,8 +175,8 @@ class SandboxManagement:
         其他写动作通过 ``adapter.apply_sandbox_runtime_patch()`` 立即热更,
         不重建 agent.
 
-        当 ``sandbox.type=yuanrong`` 时仅允许 ``status`` (裸 ``/sandbox`` 查看
-        enabled/executor/mounts); 任意子指令一律拒绝。
+        当 ``sandbox.type=adx-environment`` 时仅允许 ``status`` (裸 ``/sandbox`` 查看
+        enabled/runtime/mounts); 任意子指令一律拒绝。
         """
         host = self.host
         params = request.params or {}
@@ -186,12 +186,13 @@ class SandboxManagement:
             _require_sandbox_supported()
             endpoint = get_sandbox_endpoint()
             sandbox_type = str(endpoint.get("type") or "").strip().lower()
-            if sandbox_type == "yuanrong":
+            if sandbox_type == "adx-environment":
                 if sub != "status":
                     raise ValueError(
-                        "sandbox.type=yuanrong: only /sandbox (view config) is supported; subcommands are disabled"
+                        "sandbox.type=adx-environment: only /sandbox (view config) is supported; "
+                        "subcommands are disabled"
                     )
-                payload = build_yuanrong_sandbox_status_view()
+                payload = build_adx_sandbox_status_view()
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,

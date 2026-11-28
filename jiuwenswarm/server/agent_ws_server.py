@@ -785,9 +785,9 @@ _COMPAT_EXPORTS = {
         "jiuwenswarm.server.runtime.agent_adapter.sysop_builder",
         "build_filesystem_policy",
     ),
-    "build_yuanrong_sandbox_status_view": (
+    "build_adx_sandbox_status_view": (
         "jiuwenswarm.server.runtime.agent_adapter.sysop_builder",
-        "build_yuanrong_sandbox_status_view",
+        "build_adx_sandbox_status_view",
     ),
     "effective_files_from_policy": (
         "jiuwenswarm.server.runtime.agent_adapter.sysop_builder",

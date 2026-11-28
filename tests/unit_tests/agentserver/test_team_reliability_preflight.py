@@ -369,17 +369,14 @@ async def test_partial_answer_is_not_the_team_completion_predicate(task_status: 
     assert rail._goal_manager is None
     assert rail.build_evaluators() == []
 
-    backend = SimpleNamespace(
-        team_name="isolated-preflight",
-        task_manager=SimpleNamespace(list_tasks=AsyncMock(return_value=[
-            SimpleNamespace(status=task_status),
-        ])),
-        db=SimpleNamespace(member=SimpleNamespace(get_team_members=AsyncMock(return_value=[
-            SimpleNamespace(status="ready"),
-        ]))),
-        message_manager=SimpleNamespace(has_unread_messages=AsyncMock(return_value=False)),
-    )
-    result = await TeamBackend.is_team_completed(backend)
+    db = SimpleNamespace(member=SimpleNamespace(get_team_members=AsyncMock(return_value=[
+        SimpleNamespace(status="ready"),
+    ])))
+    backend = TeamBackend(team_name="isolated-preflight", member_name="lead", is_leader=True,
+                          db=db, messager=AsyncMock())
+    backend.task_manager.list_tasks = AsyncMock(return_value=[SimpleNamespace(status=task_status)])
+    backend.message_manager.has_unread_messages = AsyncMock(return_value=False)
+    result = await backend.is_team_completed()
     if task_status in {"pending", "in_progress"}:
         assert result is None
     else:
