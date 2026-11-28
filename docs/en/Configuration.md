@@ -468,6 +468,10 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.dialogue_compressor_config.tokens_threshold` | Dialogue compression token threshold | `100000` |
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.9` |
 
+**Main agent round time limit.** Code’s default limit increases from one hour to six hours, matching Deep.
+To cap each round at two hours, set `completion_timeout: 7200` in the main configuration’s `react` section.
+Set it to `null` to disable the limit, or omit the key to use the six-hour default.
+
 <a id="dotenv-configuration"></a>
 
 ### 10.2 Runtime parameters outside the Configuration page

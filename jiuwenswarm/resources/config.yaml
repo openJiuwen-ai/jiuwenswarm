@@ -441,7 +441,7 @@ acp_agents:
 #   workspace:              # 默认 {"stable_base": true}
 #     stable_base: true
 #   max_iterations: 200     # 默认 200
-#   completion_timeout: 600.0  # 默认 600.0
+#   completion_timeout: 600.0  # 团队成员默认 600 秒。Code / Deep 主智能体使用 react.completion_timeout。
 #
 # 示例：给不同 agent 配置不同模型和技能
 #   agent_coder:
@@ -651,6 +651,8 @@ debug_trace:
 react:
   agent_name: main_agent
   enable_task_loop: true
+  # 主智能体单轮任务循环的总时限（秒），默认 6 小时，null 表示不限时。
+  completion_timeout: 21600.0
   # TaskExecutionRail: 发送 task.start/task.complete/task.update 生命周期事件。
   enable_task_execution_rail: true
   max_iterations: 100

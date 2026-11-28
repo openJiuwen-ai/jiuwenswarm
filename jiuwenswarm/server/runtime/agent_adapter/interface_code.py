@@ -94,6 +94,7 @@ from jiuwenswarm.agents.harness.common.tools.harness_named_web_tools import (
     JiuwenHarnessWebSearchTool,
 )
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.task_loop_config import resolve_task_loop_completion_timeout
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool
 from jiuwenswarm.common.coding_memory_paths import (
     prepare_project_coding_memory_dir,
@@ -557,7 +558,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         统一使用 create_deep_agent()，不传 vision_model_config /
         audio_model_config / context_engine_config。
-        completion_timeout 从配置读取，可在 react / modes.code 中自定义。
+        单轮任务循环时限由 react.completion_timeout 指定。
         """
         # Propagate create params to per-session child adapters (see
         # JiuWenSwarmDeepAdapter._get_or_create_session_adapter).  The parent
@@ -576,10 +577,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
         config_base = _resolve_instance_config_base(config_base)
+        config = config_base.get('react', {}).copy()
+        completion_timeout = resolve_task_loop_completion_timeout(config)
         self._config_base_cache = config_base.copy()
         self._startup_config_base = config_base.copy()
         self._refresh_multimodal_configs(config_base)
-        config = config_base.get('react', {}).copy()
         self._config_cache = config.copy()
         self._agent_name = self._instance_overrides.get(
             "agent_name", config.get("agent_name", "main_agent")
@@ -652,7 +654,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config, model),
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             auto_create_workspace=is_enterprise(),
-            completion_timeout=config.get("completion_timeout", 3600.0),
+            completion_timeout=completion_timeout,
             **_optional_enable_subagent_runtime(
                 self._resolve_enable_subagent_runtime(config_base),
             ),
