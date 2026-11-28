@@ -155,8 +155,66 @@ _SERVER_MESSAGE = (
     "模型服务商暂时不可用，请稍后重试；若持续失败，请查看服务商的状态页。"
 )
 _INTERNAL_MESSAGE = (
-    "模型调用失败，请检查 API 地址、API Key 与模型名称是否正确；详细原因已写入日志。"
+    "模型调用失败，请检查 API 地址、API Key 与模型名称是否正确"
 )
+
+# Internal transport wrappers prepend a numeric code and a generic phrase before
+# the real provider cause (e.g. "[181001] model call failed: ..." or
+# "[181001] internal wrapper: ..."). The code and phrase carry no actionable
+# information, so strip that leading prefix but keep the cause that follows it.
+_INTERNAL_WRAPPER_PREFIX = re.compile(
+    r"^\s*\[\d+\]\s*(?:model\s+call\s+failed|internal\s+wrapper|model\s+invoke\s+failed)"
+    r"(?:\s*,\s*reason)?\s*:\s*",
+    re.IGNORECASE,
+)
+
+
+def _redact_secrets(text: str) -> str:
+    """Mask credentials echoed by SDKs inside error text.
+
+    Delegate to the repo's single stable desensitization entry point
+    (``jiuwenswarm.common.utils.mask_sensitive``) instead of maintaining a
+    second, narrower set of patterns here.  That helper already covers sk-/JWT/
+    ghp_ tokens, Bearer values, dict-repr and CLI-flag forms, and 15+ sensitive
+    key names (including prefixed variants such as ``OPENAI_API_KEY``), so any
+    credential that reaches the user-facing excerpt is masked consistently.
+    Import is deferred to keep this lightweight error-formatting module from
+    pulling in the heavier logging/utility dependency graph at import time.
+    """
+    from jiuwenswarm.common.utils import mask_sensitive
+
+    return mask_sensitive(text)
+
+
+def _strip_internal_wrapper(text: str) -> str:
+    """Drop a leading ``[181001] model call failed:``-style wrapper if present.
+
+    Used only by the long/multiline-error excerpt path: that excerpt is appended
+    to a generic hint, so removing the internal numeric code / generic phrase
+    keeps it actionable.  Short errors intentionally keep their full original
+    text (callers such as Symphony preflight surface it verbatim).  If stripping
+    would leave nothing, keep the original.
+    """
+    stripped = _INTERNAL_WRAPPER_PREFIX.sub("", text, count=1)
+    return stripped if stripped.strip() else text
+
+
+def _error_cause_excerpt(error: Any, limit: int = _MAX_RAW_ERROR_CHARS) -> str:
+    """Return a single-line, length-bounded, credential-redacted cause summary.
+
+    Long/multiline provider errors used to be replaced entirely by a generic hint,
+    hiding the real reason (quota, 429, connection refused, wrong model name...).
+    This keeps the actionable hint while still surfacing the underlying cause.
+    """
+    raw = "" if error is None else str(error).strip()
+    if not raw:
+        return ""
+    flat = " ".join(raw.split())
+    flat = _strip_internal_wrapper(flat)
+    flat = _redact_secrets(flat)
+    if len(flat) > limit:
+        flat = flat[:limit].rstrip() + "..."
+    return flat
 
 
 def _flatten_error(error: Any) -> str:
@@ -267,8 +325,16 @@ def user_facing_model_error(
     if not raw:
         return fallback
     if len(raw) > _MAX_RAW_ERROR_CHARS or "\n" in raw:
-        return _INTERNAL_MESSAGE
-    return raw
+        excerpt = _error_cause_excerpt(raw)
+        return f"{_INTERNAL_MESSAGE}：{excerpt}" if excerpt else _INTERNAL_MESSAGE
+    # Short errors keep their original wording.  Callers such as the Symphony
+    # model preflight deliberately surface the complete provider error (including
+    # its ``[181001] model call failed, reason: ...`` prefix) in status/graph
+    # fields, so the wrapper must NOT be stripped here; only credentials echoed
+    # by some SDKs are masked before the text reaches the user.  The long/multiline
+    # path above is different: there the raw text is a diagnostic excerpt, and
+    # stripping the internal wrapper there keeps the excerpt actionable.
+    return _redact_secrets(raw)
 
 
 def is_non_retryable_model_error(error: Any) -> bool:
