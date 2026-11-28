@@ -14,7 +14,7 @@ from e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
-from jiuwenswarm.runtime.interaction import interaction_ids
+from jiuwenswarm.runtime.interaction import interaction_ids, team_control_outcome
 from jiuwenswarm.runtime.session.coordinator import RuntimeSessionCoordinator
 from jiuwenswarm.runtime.session.model import (
     SessionExecutionHandle,
@@ -131,7 +131,8 @@ async def test_completed_team_submission_clears_busy_after_execution_is_no_longe
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("idle_before_answer", [False, True])
-async def test_completed_team_question_round_recovers_idle_with_live_observer(idle_before_answer: bool):
+@pytest.mark.parametrize("rejection", [None, "chat.error", "runtime.error"])
+async def test_completed_team_question_round_recovers_idle_with_live_observer(idle_before_answer: bool, rejection):
     coordinator = RuntimeSessionCoordinator()
     request = team_request()
     session = await coordinator.register_session(request.session_id, "web")
@@ -189,10 +190,39 @@ async def test_completed_team_question_round_recovers_idle_with_live_observer(id
         )
         if idle_before_answer:
             report_round(request.session_id, session.generation, False)
+        if rejection is not None:
+            async def rejected_answer(_context):
+                report_round(request.session_id, session.generation, True)
+                report_round(request.session_id, session.generation, False)
+                yield RuntimeEvent(
+                    request_id="rejected-answer", channel_id="web", session_id=request.session_id,
+                    payload={"event_type": rejection, "error": "delivery rejected"},
+                    ok=rejection != "runtime.error",
+                )
+                yield RuntimeEvent(
+                    request_id="rejected-answer", channel_id="web", session_id=request.session_id,
+                    payload=None, is_complete=True,
+                )
+
+            rejected_stream = coordinator.run_team_stream(
+                request.session_id, "rejected-answer", SessionWorkKind.TEAM_CONTROL, rejected_answer,
+                details=TeamExecutionDetails(waiter_kind=TeamWaiterKind.NONE, control_id="question-id"),
+                interaction_ids=interaction_ids, control_outcome=team_control_outcome, channel_id="web",
+            )
+            async with aclosing(rejected_stream):
+                async for _ in rejected_stream:
+                    pass
+            rejected_snapshot = await recovery_snapshot(dispatcher, request)
+            pending = [
+                item for dispatch in rejected_snapshot["dispatches"]
+                for item in dispatch["pending_interactions"]
+            ]
+            assert [item["request_id"] for item in pending] == ["question-id"]
+            assert observer_record.active is True
         answer_stream = coordinator.run_team_stream(
             request.session_id, "answer", SessionWorkKind.TEAM_CONTROL, answer,
             details=TeamExecutionDetails(waiter_kind=TeamWaiterKind.NONE, control_id="question-id"),
-            interaction_ids=interaction_ids, channel_id="web",
+            interaction_ids=interaction_ids, control_outcome=team_control_outcome, channel_id="web",
         )
         async with aclosing(answer_stream):
             async for _ in answer_stream:

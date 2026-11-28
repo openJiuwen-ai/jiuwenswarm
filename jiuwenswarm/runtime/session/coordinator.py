@@ -130,7 +130,9 @@ class RuntimeSessionCoordinator:
         timeout_scope: asyncio.Timeout | None = None,
         timeout_error: str = "execution deadline exceeded",
         team: TeamExecutionDetails | None = None,
+        control_outcome: Callable[[T], bool | None] | None = None,
     ) -> T:
+        """Run owned work, retaining a Team question when its delivery is rejected."""
         record = self._require_open_session(session_id)
         team_target = None
         if work_kind is SessionWorkKind.TEAM_CONTROL and team is not None and team.control_id:
@@ -145,8 +147,11 @@ class RuntimeSessionCoordinator:
             wait_for_terminal=wait_for_terminal,
             timeout_scope=timeout_scope,
             timeout_error=timeout_error,
+            control_outcome=control_outcome,
         )
-        if team_target is not None:
+        if team_target is not None and handle.state not in {
+            SessionExecutionState.FAILED, SessionExecutionState.CANCELLED,
+        }:
             parent, control_id = team_target
             if parent.team is not None:
                 self._answered(parent, frozenset({control_id}), was_waiting=False)
@@ -197,6 +202,7 @@ class RuntimeSessionCoordinator:
         wait_for_terminal: bool = False,
         timeout_scope: asyncio.Timeout | None = None,
         timeout_error: str = "execution deadline exceeded",
+        control_outcome: Callable[[T], bool | None] | None = None,
     ) -> T:
         async def tracked() -> T:
             self._registry.mark_running(handle)
@@ -228,6 +234,16 @@ class RuntimeSessionCoordinator:
                         error=timeout_error,
                     )
                     raise TimeoutError(timeout_error)
+                if (
+                    handle.work_kind is SessionWorkKind.TEAM_CONTROL
+                    and control_outcome is not None
+                    and control_outcome(value) is False
+                ):
+                    self._registry.mark_terminal(
+                        handle, SessionExecutionState.FAILED,
+                        error="Team control delivery was rejected",
+                    )
+                    return value
                 if interaction_ids is not None:
                     self._registry.mark_awaiting_control(handle, interaction_ids(value))
                 if handle.waiting_control_ids:
@@ -685,9 +701,16 @@ class RuntimeSessionCoordinator:
         *,
         details: TeamExecutionDetails,
         interaction_ids: Callable[[T], frozenset[str]] | None = None,
+        control_outcome: Callable[[T], bool | None] | None = None,
         channel_id: str = "default",
     ) -> AsyncIterator[T]:
-        """Run a Team stream with explicit Team execution ownership."""
+        """Run a Team stream with explicit Team execution ownership.
+
+        Args:
+            control_outcome: Classifies a Team control's delivery receipt.
+                True retires its question immediately; False retains it.
+                None uses normal completion when no receipt was observed.
+        """
         if work_kind not in _TEAM_WORK_KINDS:
             raise ValueError("non-Team work must use run_stream")
 
@@ -715,6 +738,7 @@ class RuntimeSessionCoordinator:
             interaction_ids=interaction_ids,
             channel_id=channel_id,
             team=details,
+            control_outcome=control_outcome,
         )
         async with aclosing(stream):
             async for item in stream:
@@ -734,6 +758,7 @@ class RuntimeSessionCoordinator:
         parent_execution_id: str | None = None,
         channel_id: str = "default",
         team: TeamExecutionDetails | None = None,
+        control_outcome: Callable[[T], bool | None] | None = None,
     ) -> AsyncIterator[T]:
         """Run the shared stream lifecycle for generic and Team entry points."""
         record = self._require_open_session(session_id)
@@ -755,10 +780,23 @@ class RuntimeSessionCoordinator:
             record.state = RuntimeSessionState.ACTIVE
             stream: AsyncIterator[T] | None = None
             terminal_item: _StreamItem | None = None
+            delivery_outcome: bool | None = None
+            target_answered = False
             try:
                 candidate = operation(handle)
                 stream = await candidate if inspect.isawaitable(candidate) else candidate
                 async for item in stream:
+                    if work_kind is SessionWorkKind.TEAM_CONTROL and control_outcome is not None:
+                        outcome = control_outcome(item)
+                        # An accepted answer stays delivered even if later work fails.
+                        if delivery_outcome is not True and outcome is not None:
+                            delivery_outcome = outcome
+                        if delivery_outcome is True and team_target is not None and not target_answered:
+                            parent, control_id = team_target
+                            if parent.team is not None:
+                                self._answered(parent, frozenset({control_id}), was_waiting=False)
+                                self._refresh_session_state(record)
+                            target_answered = True
                     control_ids = (
                         interaction_ids(item) if interaction_ids is not None else frozenset()
                     )
@@ -778,11 +816,16 @@ class RuntimeSessionCoordinator:
                 )
                 terminal_item = _StreamItem(error=exc, done=True)
             else:
-                if team_target is not None:
+                if team_target is not None and not target_answered and delivery_outcome is not False:
                     parent, control_id = team_target
                     if parent.team is not None:
                         self._answered(parent, frozenset({control_id}), was_waiting=False)
-                if handle.waiting_control_ids:
+                if delivery_outcome is False:
+                    self._registry.mark_terminal(
+                        handle, SessionExecutionState.FAILED,
+                        error="Team control delivery was rejected",
+                    )
+                elif handle.waiting_control_ids:
                     self._registry.mark_waiting(handle)
                 else:
                     self._registry.mark_terminal(
