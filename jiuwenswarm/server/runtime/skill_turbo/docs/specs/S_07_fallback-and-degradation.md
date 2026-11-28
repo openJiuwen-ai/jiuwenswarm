@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_07 / fallback-and-degradation |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`：fallback_handler.py、executor.py、plan_node.py、agent.py、skill_turbo_tools.py；外层装配 interface_deep.py（`spawn_fallback` / `DeepAgentFallbackHandler` 构建） |
-| 最近一次修订日期 | 2026-10-20 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联 feature | [[F_02]]（`_needs_fallback` 标志触发通道 + 停止提示 todo 感知拆分）；关联 bugfix [[B_02]]（异常通道 guard 置位 + 标志剥离解耦） |
 
 ## 范围 / 边界
@@ -37,6 +37,10 @@ skill_turbo 从"节点失败"到"交还外层 LLM"的**降级体系全景**：
 | 工具失败双轨契约（success=False vs 抛异常）、瞬态错误节点内自愈 | [[S_05]] |
 
 ## 降级体系总览
+
+下述整流程收尾适用于 legacy / __full__。普通段按 [[S_11]] 返回结构化结果，校验/加载异常为 failed 且零业务、零 run，不统一包装 SkillTurboNotHandled。AbortError 在 can_pause=false 的段门面收口为 failed，不触发 fallback。
+
+FallbackCall 增加可选 result_holder；DeepAgentFallbackHandler 契约和节点级验收均通过后，将实际 completed 结果交给 holder。段 executor 据此解除已修复子树的旧失败标记，将 completed 归一为 ok 候选，再由 [[S_10]] 验收事实与产物；缺失产物仍 partial。原流事件、inputs 回写和 legacy 返回不变。
 
 ### 4 层降级决策表
 

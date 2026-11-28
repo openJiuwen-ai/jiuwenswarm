@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_05 / dynamic-package-and-facade |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：turbo_package_loader.py / runtime/__init__.py / runtime/tool_utils.py / skill_meta.py 发现侧；environment.py 注册调用侧） |
-| 最近一次修订日期 | 2026-10-13 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联 feature | 暂无（首批 specs，由现状代码逆向固化） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
@@ -93,7 +93,7 @@
 2. **技能目录候选枚举**：每个 root 经 `_iter_skill_dir_candidates` 枚举——**root 本身**（`root/turbo` 是目录时）+ **一层子目录**（`child/turbo` 是目录者，sorted）。即 root 可以是"技能目录的父目录"（共享目录形态）或"技能目录本身"。
 3. **skill_name 枚举**：`turbo/turbo_codes/` 下每个子目录 = skill_name——跳过 `_` / `.` 开头（`__pycache__` 等）；`find_skill_root_file`（skill_meta.py，5 级优先级链：`{skill_name}_gen_root.py` → `{skill_name}_root.py` → 任意 `*_gen_root.py`（sorted）→ 任意 `*_root.py`（sorted）→ `plan_code.py`；规范与三消费方收口归 [[S_02]]）必须命中，否则跳过。
 4. **多源去重**：同 skill_name 多源时按 roots 顺序**取第一个**（seen 集合去重），后续源静默忽略。
-5. **产出**：`ExternalTurboSkill(skill_name, external_name, turbo_codes_dir, meta)`；meta 来自 `load_skill_meta`（external_name 优先 meta.json 值，缺省用技能目录名；字段规范归 [[S_02]]）。
+5. **产出**：`ExternalTurboSkill` 保留原四字段及位置参数；末尾携带同来源的阶段声明、指纹、来源、有效性和诊断。meta 来自 `load_skill_meta`（external_name 优先 meta.json 值，缺省用技能目录名；字段规范归 [[S_02]]）。
 
 约定即协议：`{skill_root}/{external_name}/turbo/turbo_codes/{skill_name}/` 存在入口文件即视为加速面——无技能清单、无注册表硬编码。新增技能零引擎改动。
 
@@ -316,6 +316,11 @@ for name, kwargs in tool_attempts:
 | `external_name` | str | 技能目录名（如 "pptx-craft"，meta.json external_name 优先） |
 | `turbo_codes_dir` | str | turbo_codes 目录绝对路径（动态包 `__path__`） |
 | `meta` | dict | turbo/meta.json 内容（路由元数据，规范归 [[S_02]]） |
+| `accelerators` | tuple[AcceleratorSpec, ...] | 默认空；独立清单优先于内联 |
+| `manifest_fingerprint` | str | 规范声明指纹，默认空 |
+| `manifest_source` | str | 清单文件或内联 meta 路径 |
+| `manifest_valid` | bool | 整份声明校验状态，默认 true |
+| `manifest_errors` | tuple[str, ...] | 校验诊断，默认空 |
 
 ### 进程级两张注册表
 
@@ -326,7 +331,7 @@ for name, kwargs in tool_attempts:
 
 两者均在 `_REGISTRY_LOCK` 内读写；生命周期 = 进程（N17 单进程假设）。
 
-### Skill 记录关联字段（注册产物，完整 8 字段模型归 [[S_02]]）
+### Skill 记录关联字段（注册产物，完整 14 字段模型归 [[S_02]]）
 
 - `package_name: str`（如 "skill_turbo_codes_ppt"）：planner 组装 plan_code 时派生模块名 `{package_name}.{skill_name}.{root_stem}`。
 - `turbo_codes_dir: str`：外部技能入口定位 `{turbo_codes_dir}/{skill_name}/`。
@@ -356,7 +361,7 @@ for name, kwargs in tool_attempts:
 - **P1 技能到达运行时**：技能侧仓的技能目录 → 部署侧注入 `JIUWENSWARM_SHARED_SKILLS_DIRS`（[[S_09]]）→ `resolve_agent_registered_skill_dirs()` 解析 roots（请求级绑定 > 共享目录 > 工作区）。root 形态两种：共享目录（其子目录是技能目录）或技能目录本身（`_iter_skill_dir_candidates` 两者都兼容）。
 - **P2 发现**：`discover_external_turbo_skills`（roots → `_iter_skill_dir_candidates` → `turbo/turbo_codes/{skill_name}` → 入口命中 → `ExternalTurboSkill` 列表）。纯发现：不注册包、不校验代码、无副作用；结果只被 P3 与 P5 自愈消费。
 - **P3 注册**：environment `_scan_external_turbo_skills` 四步：
-  1. 缓存判定（roots frozenset key + 各 turbo_codes 目录 max .py mtime 快照；命中 → 跳过扫盘+校验，但仍幂等重做包注册与 skill 注册，边界 case 18）；
+  1. 缓存判定（有序规范 roots tuple + 元数据/入口文件集合及逐文件 stat + 60s TTL；命中 → 跳过内容读取和校验，但仍幂等重做包注册与 skill 注册，边界 case 18）；
   2. `_validate_skill_code_dir`（[[S_03]] builtin profile + 该技能专属动态包前缀，`_validator_for_external_skill` 构造；逐 .py 校验，任一失败 → 跳过该 skill）；
   3. `ensure_turbo_package`（七步，四结局；None → 跳过注册）；
   4. `register_skill`（Skill 记录含 package_name / turbo_codes_dir；外部覆盖内置，[[S_02]]）。
@@ -416,3 +421,14 @@ for name, kwargs in tool_attempts:
 | [[S_07]] | 本 spec 的碰撞拒绝 / 自愈未命中 / PlanCodeLoadError 都汇入 S_07 的降级链路（用户视角"无匹配 skill"或加速降级标准流）。 |
 | [[S_08]] | run_bash / call_tool_with_retry 触发的工具事件（chat.tool_call / tool_update）由 rail 层补发，协议归 S_08。 |
 | [[S_09]] | `JIUWENSWARM_SHARED_SKILLS_DIRS` 的注入方（部署侧 / sidecar 形态）与请求级绑定目录的上游语义归 S_09。 |
+
+## 阶段清单发现边界
+
+外部扫描及执行前复核共用 Environment.validate_external_skill_code，统一构建技能专属 validator
+并委托已有目录校验；调用方不直接操作 Environment 的私有校验方法。
+
+发现仍要求旧根入口，按有序roots同内部名first-wins，enable_turbo=false仍是整个外部技能的跳过点。发现结果携带同源accelerators、声明来源、读取/校验状态和规范JSON SHA-256指纹；加载不import业务入口。入口限制为安全模块stem及root属性，resolve后不得越出本技能代码目录；运行时前置文件不在声明期检查存在性。
+
+仅独立坏项逐项丢弃，全局身份/唯一性/覆盖/owner/producer冲突整份拒绝。门面和CONTRACT_VERSION不变。动态包碰撞与目录全量安全校验不被清单绕过。规范JSON指纹不包含Python源码，不能作为恢复凭证。
+
+普通段执行经 ensure_execution_package 按当前源码内容指纹失效本技能模块；源码加载器直接编译原始字节，避免同大小/mtime 的旧 pyc 冒充当前源码。首次执行与恢复均重新采集技能根中除缓存、依赖目录和 skill_runs 工作目录外的文件集合及原始内容；无法读取、越界文件链接或目录链接拒绝执行。指纹是实例恢复控制状态，不是展示缓存或业务状态，详见 [[S_11]]。

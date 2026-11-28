@@ -50,6 +50,8 @@ def _isolated_entries_cache(monkeypatch):
     import jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools as stt
 
     monkeypatch.setattr(stt, "_entries_cache", {})
+    monkeypatch.setattr(stt, "_last_good_catalogs", {})
+    monkeypatch.setattr(stt, "_catalog_failed_roots", set())
 
 
 def test_description_includes_external_skills(tmp_path, monkeypatch):
