@@ -206,6 +206,7 @@ def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
         "swarmflow.pause": "/api/v1/sessions/sess-1/swarmflow/actions/pause",
         "swarmflow.resume": "/api/v1/sessions/sess-1/swarmflow/actions/resume",
         "swarmflow.stop": "/api/v1/sessions/sess-1/swarmflow/actions/stop",
+        "chat.swarmflow_reply": "/api/v1/chat/sess-1/actions/swarmflow-reply",
         "proactive.feedback": "/api/v1/proactive/actions/feedback",
     }
     for method, suffix in expected.items():
@@ -216,6 +217,29 @@ def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
         assert sent.verb == "POST"
         assert sent.url == "http://10.0.0.8:8766" + suffix
         assert sent.used_rpc_fallback is False
+
+
+def test_swarmflow_reply_route_and_http_chat_handler_are_wired() -> None:
+    """chat.swarmflow_reply 走聊天适配（同 user_answer）：路由行与处理门禁两端放行。
+
+    企业版人工轮回复经 Gateway 南向 POST /chat/{session_id}/actions/swarmflow-reply
+    到达 Pod；缺路由行或缺 http_chat 登记都会让回复停在网关（空壳应答 +
+    HttpMethodNotHandled），工作流节点的人工轮 future 等不到投递。
+    """
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.http_chat import is_http_chat_method
+    from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
+        method_has_http_handler,
+    )
+
+    assert is_http_chat_method(ReqMethod.CHAT_SWARMFLOW_REPLY) is True
+    assert method_has_http_handler("chat.swarmflow_reply") is True
+    sent = assemble_rest_request(
+        _envelope("chat.swarmflow_reply"),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert sent.verb == "POST"
+    assert sent.url == "http://10.0.0.8:8766/api/v1/chat/sess-1/actions/swarmflow-reply"
 
 
 def test_personal_agent_templates_list_has_no_dedicated_url(

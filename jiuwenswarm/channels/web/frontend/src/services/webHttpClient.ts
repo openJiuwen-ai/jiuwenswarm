@@ -166,6 +166,9 @@ const ROUTES: Record<string, RouteRow> = {
   'chat.send': { verb: 'POST', path: '/chat/completions', kind: 'sse' },
   'chat.interrupt': { verb: 'POST', path: '/chat/{session_id}/actions/interrupt', kind: 'unary' },
   'chat.user_answer': { verb: 'POST', path: '/chat/{session_id}/actions/answer', kind: 'unary' },
+  // SwarmFlow 人工轮回复：企业 HTTP 传输层的北向路由，缺行会在客户端直接抛
+  // METHOD_NOT_FOUND（兜底文案"请求失败"），请求根本到不了网关。
+  'chat.swarmflow_reply': { verb: 'POST', path: '/chat/{session_id}/actions/swarmflow-reply', kind: 'unary' },
   'config.get': { verb: 'GET', path: '/config', kind: 'unary' },
   'models.list': { verb: 'GET', path: '/models', kind: 'unary' },
   'a2a.outbound.list': { verb: 'GET', path: '/a2a/outbound/agents', kind: 'unary' },

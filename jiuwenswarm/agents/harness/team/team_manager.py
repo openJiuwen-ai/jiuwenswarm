@@ -2412,6 +2412,64 @@ class TeamManager:
                 spec.swarmflow_budget = budget
             else:
                 spec.swarmflow_budget = None
+            # Enterprise Swarmflow concurrency policy → engine ConcurrencyLimits
+            # (L1 max_workflows / L2 agents_per_run / L3 max_agents_total). The
+            # resolver only carries keys the enterprise policy explicitly set,
+            # so missing keys keep the spec's own limits (config.yaml
+            # ``swarmflow_concurrency`` assembled by config_loader) instead of
+            # silently resetting a deployment-tuned cap to engine defaults. The
+            # isinstance guards keep a partial config dict (tests, recovery)
+            # from tripping the engine's validate_swarmflow_concurrency
+            # invariant checks.
+            from openjiuwen.agent_teams.workflow.concurrency import ConcurrencyLimits
+
+            base_limits = (
+                spec.swarmflow_concurrency
+                if isinstance(spec.swarmflow_concurrency, ConcurrencyLimits)
+                else ConcurrencyLimits()
+            )
+            max_workflows = swarmflow_config.get("swarmflow_max_workflows")
+            if not (isinstance(max_workflows, int) and max_workflows > 0):
+                max_workflows = base_limits.max_workflows
+            agents_per_run = swarmflow_config.get("swarmflow_agents_per_run")
+            if not (isinstance(agents_per_run, int) and agents_per_run > 0):
+                agents_per_run = base_limits.agents_per_run
+            max_agents_total = swarmflow_config.get("swarmflow_max_agents_total")
+            if not (isinstance(max_agents_total, int) and max_agents_total > 0):
+                max_agents_total = base_limits.max_agents_total
+            # Enforce the engine invariants by clamping DOWN to the tighter
+            # cap, so an enterprise max_agents_total is never widened by the
+            # spec base; L1 must stay <= L3 for validate_swarmflow_concurrency
+            # during assembly or recovery. A None cap (partial swarmflow
+            # block in config.yaml / hand-built recovery spec) reads as
+            # "unset": fall back to the other side so min() never sees None
+            # and never raises TypeError during team assembly.
+            if max_agents_total is None:
+                max_agents_total = max_workflows
+            if max_workflows is None:
+                max_workflows = max_agents_total
+            if max_workflows is not None and max_agents_total is not None:
+                max_workflows = min(max_workflows, max_agents_total)
+            if agents_per_run is not None and max_agents_total is not None:
+                agents_per_run = max(1, min(agents_per_run, max_agents_total))
+            spec.swarmflow_concurrency = ConcurrencyLimits(
+                max_workflows=max_workflows,
+                agents_per_run=agents_per_run,
+                max_agents_total=max_agents_total,
+            )
+            logger.debug(
+                "[TeamManager] swarmflow config consumed (team=%s, session=%s): "
+                "enable_swarmflow=%s, swarmflow_budget=%s, max_workflows=%s, "
+                "agents_per_run=%s, max_agents_total=%s, raw_config=%s",
+                spec.team_name,
+                session_id,
+                spec.enable_swarmflow,
+                spec.swarmflow_budget,
+                max_workflows,
+                agents_per_run,
+                max_agents_total,
+                swarmflow_config,
+            )
             # Session-level worktree gate: True arms the manager, False withholds
             # it, None (not specified) keeps the team config's worktree section.
             worktree_flag = swarmflow_config.get("swarmflow_worktree")

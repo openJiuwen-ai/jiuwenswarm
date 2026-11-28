@@ -1512,6 +1512,9 @@ export function ExternalCliAgentsSection({
                     <Switch
                       checked={enabled && installed}
                       disabled={disabled || !installed || committing[cliAgent] || agentInstalling || editing[cliAgent]}
+                      // 保存往返（含启用前的探测校验）期间开关显示 loading（#6823）：
+                      // "短暂置灰"让用户读成延迟/卡顿，转圈明确表达处理中。
+                      loading={committing[cliAgent]}
                       onChange={(next) => void toggleAgentEnabled(cliAgent, next, useBuiltin, cliPath)}
                       aria-label={t('config.externalCli.toggleEnable', { agent: label })}
                       data-testid="settings-panel-external-cli-agent-enable-switch"

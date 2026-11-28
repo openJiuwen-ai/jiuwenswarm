@@ -1228,6 +1228,15 @@ def _coerce_budget(value) -> int | None:
     return n if n > 0 else None
 
 
+def _cap_budget(user_budget, enterprise_budget) -> int | None:
+    """Cap a user budget by an enterprise upper bound (None = unbounded)."""
+    if user_budget is None:
+        return enterprise_budget
+    if enterprise_budget is None:
+        return user_budget
+    return min(user_budget, enterprise_budget)
+
+
 def _resolve_session_swarmflow_config(
     params: dict | None,
     config_base: dict,
@@ -1235,57 +1244,110 @@ def _resolve_session_swarmflow_config(
     session_id: str,
     project_dir: str | None = None,
 ) -> dict:
-    """Resolve session-level swarmflow config by priority:
+    """Resolve session-level swarmflow config.
 
-    request params > metadata persisted > config.yaml.
+    Priority for the user/session preference: request params > metadata
+    persisted > default (enterprise ``swarmflow.default_enabled``, else
+    ``config.yaml`` ``enable_swarmflow``). The enterprise policy is then
+    applied on top:
+
+    * ``swarmflow.allowed`` — capability gate; when forbidden the final
+      ``enable_swarmflow`` is forced off.
+    * ``swarmflow.swarmflow_budget`` — upper bound; the effective budget is
+      ``min(user, enterprise)``.
+    * ``swarmflow.max_workflows`` / ``agents_per_run`` / ``max_agents_total`` —
+      carried into ``spec.swarmflow_concurrency`` (engine-level L1/L2/L3);
+      keys absent from the policy are absent from the result, so team_manager
+      keeps the spec's own limits for them.
+
+    The result carries both the effective values (``enable_swarmflow`` /
+    ``swarmflow_budget`` — gate and cap applied) and the user intent
+    (``swarmflow_user_enable`` / ``swarmflow_user_budget`` — before the
+    policy), so persistence stores what the user chose and the enterprise
+    policy keeps being re-read on every resolution.
 
     ``swarmflow_worktree`` is not a client choice: it follows the project
     directory (selected → isolation armed, absent → withheld), so the
     worktree capability and the work context can never disagree.
     """
     team_cfg = ((config_base.get("modes") or {}).get("team") or {}).get("jiuwen_team") or {}
-    config_enabled = bool(team_cfg.get("enable_swarmflow", False))
-    config_budget_raw = team_cfg.get("swarmflow_budget")
-    config_budget = (
-        int(config_budget_raw)
-        if isinstance(config_budget_raw, (int, float)) and config_budget_raw > 0
-        else None
+    policy = team_cfg.get("swarmflow")
+    policy = policy if isinstance(policy, dict) else {}
+    allowed = bool(policy.get("allowed", True))
+    # Only an explicitly delivered ``default_enabled`` overrides config.yaml;
+    # a legacy advanced_config row (no swarmflow columns) leaves it unset.
+    default_enabled = (
+        bool(policy["default_enabled"]) if "default_enabled" in policy else None
     )
+    # Concurrency caps are carried through ONLY when the enterprise policy
+    # explicitly provides them: team_manager then keeps the spec's own limits
+    # (config.yaml ``swarmflow_concurrency`` assembled by config_loader) as the
+    # base instead of silently resetting a deployment-tuned cap to the engine
+    # defaults. A cap present but invalid (<= 0) reads as absent.
+    max_workflows = _coerce_budget(policy.get("max_workflows"))
+    agents_per_run = _coerce_budget(policy.get("agents_per_run"))
+    max_agents_total = _coerce_budget(policy.get("max_agents_total"))
+    enterprise_budget = _coerce_budget(policy.get("swarmflow_budget"))
+    # Clamp engine invariants among the provided caps; team_manager re-clamps
+    # the merged result against the spec's base limits. Clamp DOWN to the
+    # tighter cap: an enterprise max_agents_total is a hard ceiling (L1 must
+    # stay <= L3 for the engine invariant) and is never widened by a
+    # co-provided max_workflows.
+    if max_agents_total is not None:
+        if max_workflows is not None:
+            max_workflows = min(max_workflows, max_agents_total)
+        if agents_per_run is not None:
+            agents_per_run = max(1, min(agents_per_run, max_agents_total))
+
+    config_enabled = bool(team_cfg.get("enable_swarmflow", False))
+    config_budget = _coerce_budget(team_cfg.get("swarmflow_budget"))
     worktree_flag = bool(str(project_dir or "").strip())
 
     if params and params.get("enable_swarmflow") is not None:
-        result = {
-            "enable_swarmflow": bool(params.get("enable_swarmflow")),
-            "swarmflow_budget": _coerce_budget(params.get("swarmflow_budget")),
-            "swarmflow_worktree": worktree_flag,
-        }
-        logger.info(
-            "[TeamHelpers] swarmflow config (source=request params, session=%s): %s",
-            session_id, result,
-        )
-        return result
+        enable = bool(params.get("enable_swarmflow"))
+        budget = _coerce_budget(params.get("swarmflow_budget"))
+        source = "request params"
+    else:
+        persisted = restore_session_swarmflow_config(session_id)
+        if persisted is not None:
+            enable = bool(persisted.get("enable_swarmflow", False))
+            budget = _coerce_budget(persisted.get("swarmflow_budget"))
+            source = "metadata"
+        else:
+            enable = default_enabled if default_enabled is not None else config_enabled
+            budget = config_budget
+            source = "config.yaml"
 
-    persisted = restore_session_swarmflow_config(session_id)
-    if persisted is not None:
-        result = {
-            "enable_swarmflow": bool(persisted.get("enable_swarmflow", False)),
-            "swarmflow_budget": _coerce_budget(persisted.get("swarmflow_budget")),
-            "swarmflow_worktree": worktree_flag,
-        }
-        logger.info(
-            "[TeamHelpers] swarmflow config (source=metadata, session=%s): %s",
-            session_id, result,
-        )
-        return result
+    # User intent BEFORE enterprise policy: the persisted preference keeps what
+    # the user chose, so a later policy change (gate re-opened, cap raised or
+    # removed) re-resolves freely instead of staying pinned to the forced
+    # values of the round that happened to persist them.
+    user_enable = enable
+    user_budget = budget
+    # Enterprise capability gate: forbidden → force off.
+    if not allowed:
+        enable = False
+    # Enterprise budget upper bound.
+    budget = _cap_budget(budget, enterprise_budget)
 
     result = {
-        "enable_swarmflow": config_enabled,
-        "swarmflow_budget": config_budget,
+        "enable_swarmflow": enable,
+        "swarmflow_user_enable": user_enable,
+        "swarmflow_budget": budget,
+        "swarmflow_user_budget": user_budget,
+        "swarmflow_budget_cap": enterprise_budget,
         "swarmflow_worktree": worktree_flag,
+        "swarmflow_allowed": allowed,
     }
+    if max_workflows is not None:
+        result["swarmflow_max_workflows"] = max_workflows
+    if agents_per_run is not None:
+        result["swarmflow_agents_per_run"] = agents_per_run
+    if max_agents_total is not None:
+        result["swarmflow_max_agents_total"] = max_agents_total
     logger.info(
-        "[TeamHelpers] swarmflow config (source=config.yaml, session=%s): %s",
-        session_id, result,
+        "[TeamHelpers] swarmflow config (source=%s, session=%s): %s",
+        source, session_id, result,
     )
     return result
 
@@ -4790,7 +4852,18 @@ async def _process_team_message_stream(
             isinstance(params_obj, dict)
             and params_obj.get("enable_swarmflow") is not None
         ):
-            persist_session_swarmflow_config(session_id, swarmflow_config)
+            # 只落盘用户偏好（门禁/封顶之前的意图）+ 本次生效的门禁/上限快照；
+            # 并发等企业策略每次解析时从 advanced_config 重新读取，不作为会话
+            # 偏好持久化。enable_swarmflow / swarmflow_budget 存的是用户意图，
+            # 企业放开门禁或调高上限后旧会话重新解析即可跟随，不会被上一轮
+            # 强制出来的值钉死。swarmflow_allowed / swarmflow_budget_cap 是给
+            # 前端恢复路径展示/禁用入口、收紧预算用的快照。
+            persist_session_swarmflow_config(session_id, {
+                "enable_swarmflow": bool(swarmflow_config.get("swarmflow_user_enable", False)),
+                "swarmflow_budget": swarmflow_config.get("swarmflow_user_budget"),
+                "swarmflow_budget_cap": swarmflow_config.get("swarmflow_budget_cap"),
+                "swarmflow_allowed": bool(swarmflow_config.get("swarmflow_allowed", True)),
+            })
         if (
             isinstance(params_obj, dict)
             and _coerce_team_dispatch_mode(params_obj.get("team_dispatch_mode")) is not None
