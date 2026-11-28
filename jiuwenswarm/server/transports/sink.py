@@ -64,11 +64,19 @@ class ResponseSink(Protocol):
         """
         ...
 
+    async def send_raw(self, data: Any) -> bool:
+        """发送原始帧：**不按 E2A 编码**，直接把 ``data`` 交给传输层。
 
-def _chunk_event_type(chunk: AgentResponseChunk) -> str:
-    payload = chunk.payload
-    if isinstance(payload, dict):
-        return str(payload.get("event_type") or "")
+        供出站事件流扩展输出自定义协议（如 AG-UI）使用。返回是否支持：
+        WS / SSE 返回 ``True``；一元 HTTP 无"流"语义，返回 ``False``。
+        """
+        ...
+
+
+def _wire_event_type(wire: dict[str, Any]) -> str:
+    body = wire.get("body")
+    if isinstance(body, dict):
+        return str(body.get("event_type") or "")
     return ""
 
 
@@ -132,8 +140,6 @@ class WSSink:
         wire = encode_agent_chunk_for_wire(
             chunk, response_id=response_id or chunk.request_id or "", sequence=sequence
         )
-        if _chunk_event_type(chunk) in _DELTA_EVENT_TYPES:
-            await _wait_for_delta_room(self._ws)
         return await self.send_wire(wire)
 
     async def send_error(
@@ -142,8 +148,25 @@ class WSSink:
         return await self.send_unary(_error_response(request_id, message, code, channel_id))
 
     async def send_wire(self, wire: dict[str, Any]) -> bool:
+        # 增量帧的背压在写出路径统一做：send_chunk 与扩展改写后的 send_wire 都经过这里，
+        # 否则扩展一启用，chat.delta 就会绕过积压闸门（慢读客户端掉线）。
+        if _wire_event_type(wire) in _DELTA_EVENT_TYPES:
+            await _wait_for_delta_room(self._ws)
         async with self._send_lock:
             return await send_wire_payload(self._ws, wire)
+
+    async def send_raw(self, data: Any) -> bool:
+        """发送原始帧：不装 E2A 信封，直接写 JSON 文本。
+
+        不走 ``enforce_send_budget``：raw 是扩展自定义协议，预算口径由扩展负责。
+        raw 无法判别事件语义，因此**无条件**先过一次增量背压闸门（仅在积压 >32KiB
+        时最多阻塞 2s），避免逐 delta 的 raw 映射把连接写缓冲打爆。
+        """
+        await _wait_for_delta_room(self._ws)
+        payload = json.dumps(data, ensure_ascii=False)
+        async with self._send_lock:
+            await self._ws.send(payload)
+        return True
 
 
 class UnaryHTTPSink:
@@ -267,6 +290,13 @@ class UnaryHTTPSink:
         self.frames.append(recorded)
         return sent_original
 
+    async def send_raw(self, data: Any) -> bool:
+        """一元 HTTP 没有"流"，无法发送 raw 帧：明确返回 ``False``。"""
+        logger.warning(
+            "[UnaryHTTPSink] raw frame is not supported on unary HTTP; frame dropped"
+        )
+        return False
+
 
 class SSESink:
     """SSE 流式实现：把业务对象编码成 wire 帧后入队，由 SSE 生成器消费。
@@ -311,6 +341,11 @@ class SSESink:
         payload, sent_original = enforce_send_budget(wire)
         await self.queue.put(wire if sent_original else json.loads(payload))
         return sent_original
+
+    async def send_raw(self, data: Any) -> bool:
+        """入队一条 raw 帧；SSE 泵识别后只发 ``data:`` 行（不带 ``event:``）。"""
+        await self.queue.put({"type": "raw", "data": data})
+        return True
 
     async def offer(self, item: Any) -> bool:
         """**有界**入队，供收尾路径使用；返回是否投递成功。

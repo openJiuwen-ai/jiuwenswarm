@@ -369,6 +369,9 @@ class _GatewayWSPushSink:
     ) -> bool:
         return await self._inner.send_error(request_id, message, code=code, channel_id=channel_id)
 
+    async def send_raw(self, data: Any) -> bool:
+        return await self._inner.send_raw(data)
+
 
 def _snapshot_value(read) -> Any:
     """单项采集失败记 unavailable，不让快照本身打断连接关闭。"""

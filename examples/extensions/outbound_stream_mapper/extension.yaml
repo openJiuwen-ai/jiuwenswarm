@@ -1,0 +1,9 @@
+id: outbound_stream_mapper
+name: Outbound Stream Mapper (AG-UI example)
+version: 0.1.0
+description: 示例：把 JiuwenSwarm 的 E2A 事件映射成 AG-UI 事件（用户自定义映射的起点）
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.3"
+dependencies: {}
+config_schema:
+  type: object

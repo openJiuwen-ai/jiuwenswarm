@@ -79,3 +79,45 @@ async def test_unimplemented_write_buffer_still_sends_delta():
     elapsed = asyncio.get_running_loop().time() - started
     assert ws.sent
     assert elapsed < 0.05
+
+
+def _wire(event_type: str) -> dict:
+    return {
+        "protocol_version": "1.0",
+        "request_id": "r1",
+        "sequence": 1,
+        "response_kind": "e2a.chunk",
+        "body": {"event_type": event_type, "delta": "x"},
+    }
+
+
+async def test_send_wire_waits_for_delta_backlog():
+    """扩展改写后的 chat.delta 走 send_wire，也必须过同一道背压闸门。"""
+    ws = _Ws([64 * 1024, 64 * 1024, 1024])
+    sink = WSSink(ws, asyncio.Lock())
+    started = asyncio.get_running_loop().time()
+    await sink.send_wire(_wire("chat.delta"))
+    elapsed = asyncio.get_running_loop().time() - started
+    assert ws.sent
+    assert elapsed >= 0.05
+
+
+async def test_send_wire_tool_result_does_not_wait():
+    ws = _Ws([64 * 1024])
+    sink = WSSink(ws, asyncio.Lock())
+    started = asyncio.get_running_loop().time()
+    await sink.send_wire(_wire("chat.tool_result"))
+    elapsed = asyncio.get_running_loop().time() - started
+    assert ws.sent
+    assert elapsed < 0.05
+
+
+async def test_send_raw_waits_for_backlog_unconditionally():
+    """raw 无法判别事件语义，按约定无条件过闸门，避免逐 delta 的 raw 映射打爆写缓冲。"""
+    ws = _Ws([64 * 1024, 64 * 1024, 1024])
+    sink = WSSink(ws, asyncio.Lock())
+    started = asyncio.get_running_loop().time()
+    await sink.send_raw({"type": "TEXT_MESSAGE_CONTENT", "delta": "x"})
+    elapsed = asyncio.get_running_loop().time() - started
+    assert ws.sent
+    assert elapsed >= 0.05
