@@ -31,6 +31,10 @@ from jiuwenswarm.server.ws_send import send_wire_payload
 logger = logging.getLogger(__name__)
 
 CONTROL_METHODS = ALL_CONTROL_METHODS
+# The TUI has its own config contract (schema plus TUI-only switches) that only
+# the execution plane can build; the control plane answers with the Web panel.
+_TUI_CHANNEL_ID = "tui"
+_TUI_EXECUTION_PLANE_METHODS = frozenset({ReqMethod.CONFIG_GET.value})
 
 
 _HANDLE_SESSION = None
@@ -119,6 +123,8 @@ def _load_control_services() -> None:
 
 def is_control_method(request: AgentRequest) -> bool:
     method = request.req_method.value if request.req_method is not None else ""
+    if request.channel_id == _TUI_CHANNEL_ID and method in _TUI_EXECUTION_PLANE_METHODS:
+        return False
     return method in ALL_CONTROL_METHODS
 
 

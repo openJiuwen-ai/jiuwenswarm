@@ -233,6 +233,65 @@ async def test_handle_message_dispatches_registered_gateway_adapter() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "allowed"),
+    [(ReqMethod.CONFIG_GET, True), (ReqMethod.CONFIG_SET, False)],
+)
+async def test_application_config_read_ignores_archived_session(
+    monkeypatch, method, allowed
+) -> None:
+    from jiuwenswarm.server.runtime.session import lifecycle
+
+    handled = []
+
+    class ConfigAdapter:
+        methods = frozenset(
+            {ReqMethod.CONFIG_GET.value, ReqMethod.CONFIG_SET.value}
+        )
+
+        async def handle(self, request):
+            handled.append(request)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"schema": []},
+            )
+
+    def reject_archived(_session_id, _project_id):
+        raise lifecycle.LifecycleError("SESSION_ARCHIVED", "session is archived")
+
+    monkeypatch.setattr(lifecycle, "guard", reject_archived)
+    registry = AdapterRegistry()
+    registry.register(ConfigAdapter())
+    server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    server._adapter_registry = registry
+    monkeypatch.setattr(
+        server, "_skips_session_lifecycle_guard", lambda _request: False
+    )
+    ws = FakeWebSocket()
+    env = e2a_from_agent_fields(
+        request_id=f"req-{method.value}",
+        channel_id="tui",
+        session_id="archived-session",
+        req_method=method,
+        params={"session_id": "archived-session"},
+        is_stream=False,
+        timestamp=0.0,
+    )
+
+    await server.handle_message_for_test(
+        ws, json.dumps(env.to_dict(), ensure_ascii=False), asyncio.Lock()
+    )
+
+    response = parse_agent_server_wire_unary(ws.sent[0])
+    assert response.ok is allowed
+    assert len(handled) == int(allowed)
+    if not allowed:
+        assert response.payload["code"] == "SESSION_ARCHIVED"
+
+
+@pytest.mark.asyncio
 async def test_handle_message_allows_health_check_without_req_method(monkeypatch) -> None:
     """Health checks omit method and must not hit the RSI prefix guard."""
     handled = []

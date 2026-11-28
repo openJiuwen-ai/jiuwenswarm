@@ -172,6 +172,153 @@ async def test_register_cli_handlers_registers_local_methods():
 
 
 @pytest.mark.asyncio
+async def test_tui_config_get_preserves_malformed_auto_harness_config(
+    tmp_path, monkeypatch
+):
+    config_file = tmp_path / "auto-harness" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    original = b"gitcode: [unterminated\n"
+    config_file.write_bytes(original)
+    monkeypatch.setattr(
+        _server_tui_models_handlers, "_AUTO_HARNESS_CONFIG_FILE", config_file
+    )
+    server = FakeGatewayServer()
+
+    await _server_tui_models_handlers.config_get_handler(
+        server, object(), "req-malformed-get", {}, "session-1"
+    )
+
+    assert config_file.read_bytes() == original
+    assert server.responses[-1]["ok"] is True
+    assert (
+        server.responses[-1]["payload"]["auto_harness_gitcode_access_token"] == ""
+    )
+
+
+@pytest.mark.asyncio
+async def test_tui_config_set_preserves_malformed_auto_harness_config(
+    tmp_path, monkeypatch
+):
+    config_file = tmp_path / "auto-harness" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    original = b"gitcode: [unterminated\n"
+    config_file.write_bytes(original)
+    monkeypatch.setattr(
+        _server_tui_models_handlers, "_AUTO_HARNESS_CONFIG_FILE", config_file
+    )
+    server = FakeGatewayServer()
+
+    await _server_tui_models_handlers.config_set_handler(
+        server,
+        object(),
+        "req-malformed-set",
+        {"auto_harness_git_user_name": "new-user"},
+        "session-1",
+    )
+
+    assert config_file.read_bytes() == original
+    response = server.responses[-1]
+    assert response["ok"] is False
+    assert response["code"] == "CONFIG_WRITE_FAILED"
+    assert response["payload"] == {
+        "updated": [],
+        "failed": ["auto_harness_git_user_name"],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token_source", ["yaml", "environment", "empty"])
+async def test_tui_config_get_masks_gitcode_access_token(
+    tmp_path, monkeypatch, token_source
+):
+    token = "test-only-gitcode-token"
+    configured_token = token if token_source == "yaml" else ""
+    config_file = tmp_path / "auto-harness" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(
+        f"gitcode:\n  access_token: {configured_token}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        _server_tui_models_handlers, "_AUTO_HARNESS_CONFIG_FILE", config_file
+    )
+    monkeypatch.setenv(
+        "GITCODE_ACCESS_TOKEN", token if token_source == "environment" else ""
+    )
+    server = FakeGatewayServer()
+
+    await _server_tui_models_handlers.config_get_handler(
+        server, object(), "req-token-get", {}, "session-1"
+    )
+
+    payload = server.responses[-1]["payload"]
+    expected = "" if token_source == "empty" else "******"
+    assert payload["auto_harness_gitcode_access_token"] == expected
+    assert token not in repr(payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["******", "", "replacement-token"])
+async def test_tui_config_set_handles_gitcode_access_token_mask(
+    monkeypatch, value
+):
+    key = "auto_harness_gitcode_access_token"
+    written = []
+    encrypted = []
+    saved = []
+
+    class FakeCryptoProvider:
+        def encrypt(self, raw):
+            encrypted.append(raw)
+            return f"encrypted:{raw}"
+
+    async def clear_cache(*_args, **_kwargs):
+        return None
+
+    async def on_config_saved(*_args, **_kwargs):
+        saved.append(True)
+
+    monkeypatch.setattr(
+        _server_tui_models_handlers,
+        "_get_crypto_provider",
+        lambda: FakeCryptoProvider(),
+    )
+    monkeypatch.setattr(
+        _server_tui_models_handlers, "clear_agent_config_cache", clear_cache
+    )
+    monkeypatch.setitem(
+        _server_tui_models_handlers.CLI_CONFIG_YAML_SETTERS,
+        key,
+        lambda raw: written.append(raw),
+    )
+    server = FakeGatewayServer()
+
+    await _server_tui_models_handlers.config_set_handler(
+        server,
+        object(),
+        "req-token-set",
+        {key: value},
+        "session-1",
+        on_config_saved=on_config_saved,
+    )
+    await asyncio.sleep(0)
+
+    if value == "******":
+        assert written == []
+        assert encrypted == []
+        assert saved == []
+        assert server.responses[-1]["ok"] is True
+        assert server.responses[-1]["payload"] == {
+            "updated": [],
+            "applied_without_restart": True,
+        }
+    else:
+        assert written == [f"encrypted:{value}"]
+        assert encrypted == [value]
+        assert saved == [True]
+        assert server.responses[-1]["payload"]["updated"] == [key]
+
+
+@pytest.mark.asyncio
 async def test_memory_list_forwards_to_agentserver_with_routing_user(monkeypatch):
     server = FakeGatewayServer()
     calls = []

@@ -147,7 +147,8 @@ def get_auto_harness_config() -> dict[str, Any]:
         config = yaml.safe_load(_AUTO_HARNESS_CONFIG_FILE.read_text(encoding="utf-8")) or {}
     except Exception as e:
         logger.warning("[auto-harness config] Failed to load: %s", e)
-        config = {}
+        # A read failure must never turn a recoverable file into default values.
+        raise
 
     # Auto-fill ci_gate defaults if missing
     ci_gate = config.get("ci_gate") or {}
@@ -605,7 +606,7 @@ async def config_get_handler(
         payload["auto_harness_git_user_email"] = git_cfg.get("user_email") or ""
         # Check env var first for access_token
         ah_token = os.getenv("GITCODE_ACCESS_TOKEN") or gitcode_cfg.get("access_token") or ""
-        payload["auto_harness_gitcode_access_token"] = ah_token
+        payload["auto_harness_gitcode_access_token"] = "******" if ah_token else ""
     except Exception:
         payload.setdefault("auto_harness_git_user_name", "")
         payload.setdefault("auto_harness_git_user_email", "")
@@ -631,6 +632,9 @@ async def config_set_handler(
             ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
         )
         return
+    # Treat the read-back mask as unchanged, before the generic token encryption.
+    if params.get("auto_harness_gitcode_access_token") == "******":
+        params.pop("auto_harness_gitcode_access_token")
     crypto_provider = _get_crypto_provider()
     if crypto_provider is not None:
         for key, val in list(params.items()):
@@ -639,6 +643,7 @@ async def config_set_handler(
 
     env_updates: dict[str, str] = {}
     yaml_updated: list[str] = []
+    yaml_failed: list[str] = []
     available_model_providers = [provider.value for provider in ProviderType]
 
     for param_key, env_key in CLI_CONFIG_SET_ENV_MAP.items():
@@ -698,6 +703,7 @@ async def config_set_handler(
             logger.warning(
                 "[cli config.set] 写回 config.yaml 失败 %s: %s", param_key, e
             )
+            yaml_failed.append(param_key)
 
     for env_key, value in env_updates.items():
         os.environ[env_key] = value
@@ -890,15 +896,25 @@ async def config_set_handler(
 
     # 先回包再执行 on_config_saved（含 Agent 热重载），
     # 避免 WebSocket 长时间无响应、CLI 误以为无反馈。
-    await channel.send_response(
-        ws,
-        req_id,
-        ok=True,
-        payload={
-            "updated": updated_param_keys,
-            "applied_without_restart": applied_without_restart,
-        },
-    )
+    if yaml_failed:
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=False,
+            payload={"updated": updated_param_keys, "failed": yaml_failed},
+            error=f"Failed to write config keys: {', '.join(yaml_failed)}",
+            code="CONFIG_WRITE_FAILED",
+        )
+    else:
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=True,
+            payload={
+                "updated": updated_param_keys,
+                "applied_without_restart": applied_without_restart,
+            },
+        )
 
     if env_updates or yaml_updated:
         if on_config_saved:
