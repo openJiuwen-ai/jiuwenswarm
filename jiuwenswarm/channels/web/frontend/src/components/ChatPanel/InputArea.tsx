@@ -467,8 +467,6 @@ const ATTACHMENT_ACCEPT = [
   '.pdf',
   '.eml',
   'message/rfc822',
-  '.msg',
-  'application/vnd.ms-outlook',
   '.doc',
   '.docx',
   '.xls',
