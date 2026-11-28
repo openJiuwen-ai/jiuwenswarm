@@ -1,0 +1,45 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+
+ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
+# 以下跨仓 ARG（AGENT_PROTOCOL_*）企业版由流水线 --build-arg 显式指定，
+# 改这里对企业版构建无效，勿改（发版值以流水线参数为准）。
+ARG AGENT_PROTOCOL_REPOS=https://gitcode.com/openJiuwen/agent-protocol.git
+ARG AGENT_PROTOCOL_COMMIT
+
+# Match the OpenShift Python images: SCC may assign the runtime UID.
+RUN groupadd --gid 1000 app \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash app \
+    && mkdir -p /app/jiuwenswarm \
+    && chown 1000:0 /app/jiuwenswarm /home/app \
+    && chmod -R g+rwX /app/jiuwenswarm /home/app
+
+WORKDIR /app/jiuwenswarm
+
+# Keep dependencies outside the source mount and do not install the Swarm project.
+COPY docker/jiuwenswarm-ee/requirements-web-server.txt /tmp/requirements-web-server.txt
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install --no-cache-dir \
+        -r /tmp/requirements-web-server.txt ${PIP_EXTRA_ARGS} \
+    && /opt/venv/bin/python -m pip install --no-cache-dir --no-deps \
+        "openjiuwen-e2a @ git+${AGENT_PROTOCOL_REPOS}@${AGENT_PROTOCOL_COMMIT}#subdirectory=openjiuwen-e2a" ${PIP_EXTRA_ARGS} \
+    && rm /tmp/requirements-web-server.txt
+
+COPY --chown=1000:0 LICENSE OPEN_SOURCE_SOFTWARE_NOTICE.md ./
+COPY --chown=1000:0 jiuwenswarm/__init__.py ./jiuwenswarm/
+COPY --chown=1000:0 jiuwenswarm/channels/__init__.py ./jiuwenswarm/channels/
+COPY --chown=1000:0 jiuwenswarm/channels/web/__init__.py \
+    jiuwenswarm/channels/web/enterprise_backend.py jiuwenswarm/channels/web/enterprise_catalog.py \
+    ./jiuwenswarm/channels/web/
+RUN chgrp -R 0 /app/jiuwenswarm && chmod -R g+rwX /app/jiuwenswarm
+
+ENV HOME=/home/app \
+    PATH=/opt/venv/bin:/usr/local/bin:$PATH:/home/app/.local/bin \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    JIUWENSWARM_EDITION=enterprise
+
+EXPOSE 8780
+CMD ["/opt/venv/bin/python", "-m", "uvicorn", "jiuwenswarm.channels.web.enterprise_backend:create_app", "--factory", "--host", "0.0.0.0", "--port", "8780", "--no-access-log"]

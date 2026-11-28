@@ -38,6 +38,21 @@ function withStorage(run) {
   }
 }
 
+test('agent display identity uses X-Agent-Identity-Id', () => {
+  withStorage(() => {
+    const headers = runtime.buildRuntimeIdentityHeaders('req', {}, {
+      userId: 'user-a',
+      agentName: 'agent_svc_agent',
+      agentId: 'svc_agent',
+      runtimeTemplateId: 'svc',
+      agentTemplateId: 'agent',
+    });
+    assert.equal(headers['X-Agent-Name'], 'agent_svc_agent');
+    assert.equal(headers['X-Agent-Identity-Id'], 'svc_agent');
+    assert.equal(headers['X-Agent-Id'], undefined);
+  });
+});
+
 test('chat carries customer identity separately from platform authorization', () => {
   withStorage(() => {
     const headers = runtime.buildRuntimeIdentityHeaders('req', {}, { userId: 'user-a' });

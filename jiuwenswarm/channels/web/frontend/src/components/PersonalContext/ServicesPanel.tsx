@@ -629,11 +629,21 @@ const ServiceCard = memo(function ServiceCard({
             : null,
         ].filter(Boolean).join(' · ')
     : '';
+  const usage = terminalRun && lastRunCompleted && resultRun.no_new_content !== true ? resultRun.token_usage : undefined;
+  let usageText = '';
+  if (usage?.total_tokens === null || (usage?.total_tokens === 0 && usage.incomplete)) {
+    usageText = t('personalContext.services.tokenUsageUnavailable');
+  } else if (usage && Number.isSafeInteger(usage.total_tokens) && usage.total_tokens >= 0) {
+    const total = usage.total_tokens;
+    const amount = total >= 1000 ? `${Number((total / 1000).toFixed(1))}K` : String(total);
+    usageText = t('personalContext.services.tokenUsage', { amount });
+  }
   const capacity = terminalRun ? resultRun.capacity_maintenance : undefined;
   const resultText = [
     collectionResultText,
     capacity?.removed_count ? t('personalContext.services.capacityRemoved', { count: capacity.removed_count }) : '',
     capacity && capacity.status !== 'succeeded' ? t('personalContext.services.capacityIncomplete') : '',
+    usageText,
   ].filter(Boolean).join(' · ');
 
   const percent = progress?.progress_percent;

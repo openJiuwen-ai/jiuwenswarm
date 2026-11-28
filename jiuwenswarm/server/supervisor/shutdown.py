@@ -14,15 +14,17 @@ import time
 
 import psutil
 
+from jiuwenswarm.common.process_identity import ProcessIdentity, process_identity_matches, read_process_identity
 
-def _pending_workers(paths: list[str]) -> dict[str, list[tuple[psutil.Process, float]]]:
+
+def _pending_workers(paths: list[str]) -> dict[str, list[tuple[psutil.Process, ProcessIdentity | None]]]:
     """Observe booting processes, without granting them lifecycle authority."""
     matches = {path: [] for path in paths}
     executables = {os.path.normcase(str(Path(sys.executable).resolve()))}
     if not getattr(sys, "frozen", False):
         executables.add(os.path.normcase(str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())))
     username = psutil.Process().username()
-    for process in psutil.process_iter(["cmdline", "exe", "username", "create_time"]):
+    for process in psutil.process_iter(["cmdline", "exe", "username"]):
         try:
             info = process.info
             argv = info.get("cmdline") or []
@@ -34,16 +36,27 @@ def _pending_workers(paths: list[str]) -> dict[str, list[tuple[psutil.Process, f
                 continue
             socket = argv[argv.index("--socket") + 1]
             if socket in matches:
-                matches[socket].append((process, process.create_time()))
+                try:
+                    created = read_process_identity(process.pid, process=process)
+                except psutil.NoSuchProcess:
+                    continue
+                except (psutil.Error, OSError):
+                    # This observation authorizes waiting, never termination.
+                    created = None
+                matches[socket].append((process, created))
         except (psutil.Error, OSError, IndexError):
             continue
     return matches
 
 
-def _pending_worker_alive(workers: list[tuple[psutil.Process, float]]) -> bool:
+def _pending_worker_alive(workers: list[tuple[psutil.Process, ProcessIdentity | None]]) -> bool:
     for process, created in workers:
         try:
-            if process.is_running() and process.create_time() == created and process.status() != psutil.STATUS_ZOMBIE:
+            if not process.is_running():
+                continue
+            if created is not None and not process_identity_matches(process.pid, created, process=process):
+                continue
+            if process.status() != psutil.STATUS_ZOMBIE:
                 return True
         except psutil.NoSuchProcess:
             continue

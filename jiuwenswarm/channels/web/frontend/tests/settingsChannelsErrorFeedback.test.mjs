@@ -37,20 +37,41 @@ const telegramConfig = {
   enabled: true, bot_token: '123456:ABC-token', allow_from: [], parse_mode: 'Markdown', group_chat_mode: 'mention',
 };
 
+const slackConfig = {
+  enabled: true, bot_token: '654321:XYZ-slack-token', app_token: 'xapp-1-ABC-slack', allow_from: [], parse_mode: 'Markdown', group_chat_mode: 'mention',
+};
+
 function createHarness() {
-  const state = { telegramConfFail: false, telegramConfFailEmpty: false, telegramSaveFail: false };
+  const state = {
+    telegramConfFail: false, telegramConfFailEmpty: false, telegramSaveFail: false,
+    telegramConfScript: [], telegramConfReject: null,
+    slackConfFail: false,
+    slackSaveFail: false,
+  };
   const calls = [];
   const request = async (method) => {
     calls.push(method);
     switch (method) {
       case 'channel.get': return { channels: [] };
-      case 'channel.telegram.get_conf':
+      case 'channel.telegram.get_conf': {
+        const step = state.telegramConfScript.shift();
+        if (step === 'hold') {
+          return new Promise((_resolve, reject) => { state.telegramConfReject = reject; });
+        }
+        if (step === 'fail') throw new Error('backend unavailable');
         if (state.telegramConfFail) throw new Error('backend unavailable');
         if (state.telegramConfFailEmpty) throw new Error('');
         return { config: telegramConfig };
+      }
       case 'channel.telegram.set_conf':
         if (state.telegramSaveFail) throw new Error('save rejected');
         return { config: telegramConfig };
+      case 'channel.slack.get_conf':
+        if (state.slackConfFail) throw new Error('slack unavailable');
+        return { config: slackConfig };
+      case 'channel.slack.set_conf':
+        if (state.slackSaveFail) throw new Error('save rejected');
+        return { config: slackConfig };
       default: return {};
     }
   };
@@ -184,6 +205,87 @@ test('a failed enable toggle keeps the page toast transient instead of permanent
       'the toast should disappear after two seconds instead of staying forever');
     assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-config-error"]'), null,
       'a toggle failure on a loaded channel should not raise the configuration banner');
+  } finally {
+    await page.unmount();
+  }
+});
+
+test('a stale failing load must not overwrite the state of a newer successful load', async () => {
+  const { state, render } = createHarness();
+  // Mount: telegram load #1 is held in flight; slack fails so the banner (and its retry) shows.
+  state.telegramConfScript = ['hold'];
+  state.slackConfFail = true;
+  const page = await render();
+  try {
+    await page.settle();
+    assert.ok(page.container.querySelector('[data-testid="settings-channels-panel-config-error"]'),
+      'the slack failure should raise the banner while the telegram load is in flight');
+
+    // Retry: telegram load #2 lands successfully (configured=true); slack fails again.
+    await page.click('[data-testid="settings-channels-panel-config-retry-btn"]');
+    await page.settle();
+
+    // Now the stale load #1 lands as a failure: it must not surface anywhere.
+    await act(async () => { state.telegramConfReject(new Error('stale failure')); await new Promise((r) => setTimeout(r, 0)); });
+    await page.settle();
+    assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'), null,
+      'a stale failing load must not raise the toast');
+    assert.match(page.container.querySelector('[data-testid="settings-channels-panel-config-error"]')?.textContent ?? '',
+      /slack unavailable/,
+      'the banner should only reflect the current slack failure, not the stale telegram failure');
+  } finally {
+    await page.unmount();
+  }
+});
+
+test('a second failure with the same message on another channel must raise the toast again', async () => {
+  const { state, render } = createHarness();
+  const page = await render();
+  try {
+    await page.settle();
+
+    // First failure: telegram toggle fails -> toast shows.
+    state.telegramSaveFail = true;
+    await page.click('[data-testid="settings-channels-panel-account-toggle-btn"]');
+    assert.ok(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'),
+      'the first toggle failure should show the toast');
+
+    // Wait for the transient toast to clear, then fail slack the same way with the same message.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2300)); });
+    assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'), null);
+    state.slackSaveFail = true;
+    const toggleButtons = page.container.querySelectorAll('[data-testid="settings-channels-panel-account-toggle-btn"]');
+    assert.ok(toggleButtons.length >= 2, 'both configured channels should expose a toggle');
+    await act(async () => toggleButtons[1].click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const toast = page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]');
+    assert.ok(toast, 'the second failure with the same message must not be swallowed by deduplication');
+    assert.equal(toast.textContent, 'save rejected',
+      'the toast must show the latest failure alone, not the joined accumulation of persistent errors');
+  } finally {
+    await page.unmount();
+  }
+});
+
+test('a repeat failure with the same message on the same channel must raise the toast again', async () => {
+  const { state, render } = createHarness();
+  const page = await render();
+  try {
+    await page.settle();
+
+    // First failure: telegram toggle fails -> toast shows.
+    state.telegramSaveFail = true;
+    await page.click('[data-testid="settings-channels-panel-account-toggle-btn"]');
+    assert.ok(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'),
+      'the first toggle failure should show the toast');
+
+    // Wait for the transient toast to clear, then fail the same channel the same way again.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2300)); });
+    assert.equal(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'), null);
+    await page.click('[data-testid="settings-channels-panel-account-toggle-btn"]');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.ok(page.container.querySelector('[data-testid="settings-channels-panel-error-toast"]'),
+      'a repeat failure on the same channel has no other surface, so the toast must re-raise');
   } finally {
     await page.unmount();
   }

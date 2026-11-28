@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { webRequest } from '../../services/webClient';
 import type { HubSkillDetail, LoadState, MarketplacePluginItem } from './types';
 import { groupMarketplaceSkills } from './skillPanelUtils';
+import { SequenceGuard } from './skillPanelGuards';
 
 /** 技能广场首页：团队 / 普通技能各拉取条数 */
 export const HUB_HOME_TOP_K = 6;
@@ -134,6 +135,8 @@ export function useHubMarketplace({
   const [selectedHubSkill, setSelectedHubSkill] = useState<MarketplacePluginItem | null>(null);
   const [hubDetail, setHubDetail] = useState<HubSkillDetail | null>(null);
   const [hubDetailState, setHubDetailState] = useState<LoadState>('idle');
+  /** 广场详情请求序号：hubFetchSeqRef 只护列表，详情晚到同样会覆盖后选技能 */
+  const hubDetailGuardRef = useRef(new SequenceGuard());
 
   const fetchHubRecommendByType = useCallback(
     async (
@@ -498,6 +501,7 @@ export function useHubMarketplace({
 
   const fetchHubSkillDetail = useCallback(
     async (skill: MarketplacePluginItem) => {
+      const seq = hubDetailGuardRef.current.begin();
       setHubDetailState('loading');
       setMarketplaceSubView('detail');
       // 每次进入详情 / 切换技能时重置回"内容详情"页签
@@ -522,9 +526,12 @@ export function useHubMarketplace({
           { asset_id: skill.asset_id },
           { timeoutMs: 30000 },
         );
+        // 序号已过期：期间用户切换到了别的广场技能，晚到的详情不再回写
+        if (!hubDetailGuardRef.current.isCurrent(seq)) return;
         setHubDetail(data);
         setHubDetailState('success');
       } catch (error) {
+        if (!hubDetailGuardRef.current.isCurrent(seq)) return;
         console.error(error);
         setHubDetailState('error');
       }
@@ -557,6 +564,11 @@ export function useHubMarketplace({
     setHubSkills([]);
   }, []);
 
+  /** 作废在途的广场详情请求（退出详情视图时调用），晚到的响应不再回写。 */
+  const invalidateHubDetail = useCallback(() => {
+    hubDetailGuardRef.current.invalidate();
+  }, []);
+
   return {
     hubSkills,
     hubLoading,
@@ -578,6 +590,7 @@ export function useHubMarketplace({
     setHubDetail,
     setHubDetailState,
     fetchHubSkillDetail,
+    invalidateHubDetail,
     openHubMore,
     invalidateHubFetch,
     pauseHubFetching,

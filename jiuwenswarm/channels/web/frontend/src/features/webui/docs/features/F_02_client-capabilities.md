@@ -1,6 +1,6 @@
 # Web 浏览器能力与组件扩展实现记录
 
-建档日期：2026-11-03。最近修订：2026-11-07。
+建档日期：2026-11-03。最近修订：2026-11-27。
 
 关联规约：[客户端能力](../specs/S_02_client-capabilities.md)、[页面布局](../specs/S_03_page-composition.md)。
 
@@ -11,7 +11,7 @@ Box 页面布局、受保护资源读取、entry 全视口重入和 sidebar.foot
 Gateway 接入与登录示例分别提交，配套契约见 [Gateway 浏览器桥接](../../../../../../../../gateway/extensions_v2/docs/specs/S_06_local-browser-bridge.md)和[示例联调](../../../../../../../../gateway/extensions_v2/docs/features/F_07_local-login-integration.md)。
 宿主不解释 auth、accessToken、username 或 logout 等业务字段。
 
-宿主负责插槽位置及基础留白，包括 sidebar.footer 的底部 12px；页面尺寸、间距、图片、背景和菜单位置由插件声明。
+宿主负责插槽位置、基础留白和实例宽度边界，包括 sidebar.footer 的底部 12px 与每个实例的最大宽度（与侧栏一致）、最大高度 48px（超出内容由实例自身裁剪）；导航区高度不足时独立滚动，footer 位于滚动区之外并始终完整显示。页面尺寸、间距、图片、背景和菜单位置由插件声明。
 表单字段、规则、双语文案与业务动作属于插件。内置控件和宿主错误提示跟随前端中英文资源。
 
 ## 采用方案

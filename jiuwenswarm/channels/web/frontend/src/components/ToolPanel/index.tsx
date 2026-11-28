@@ -475,9 +475,7 @@ export function ToolPanel({
         const executionEventKey = (event: TeamMemberExecutionEvent) =>
           event.tool_call_id ? `${event.member_id}:${event.kind}:${event.tool_call_id}` : event.id;
         const mergedExecutionEvents = mergeById(historyState.executionEvents, current?.teamMemberExecutionEvents ?? [], executionEventKey);
-        if (mergedExecutionEvents.length > 0) {
-          setTeamMemberExecutionEvents(sessionId, mergedExecutionEvents);
-        }
+        setTeamMemberExecutionEvents(sessionId, mergedExecutionEvents);
         for (const [teamId, events] of Object.entries(historyState.organizationExecutionEvents ?? {})) {
           const key = conversationKey(sessionId, teamId);
           const store = useSessionStore.getState();

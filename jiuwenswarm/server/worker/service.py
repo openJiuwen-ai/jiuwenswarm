@@ -87,7 +87,11 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
                     instance=instance,
                     code_identity_value=worker_code_identity,
                 )
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError) as exc:
+                from jiuwenswarm.server.worker.diagnostics import write_worker_failure
+
+                write_worker_failure(exc, stage="HELLO")
+                logger.exception("[Worker] HELLO handshake failed pid=%s", os.getpid())
                 await _retire_session(holder, dispatcher)
                 await conn.close()
                 if session_source is not None and not session_source.reconnectable:
@@ -349,13 +353,15 @@ async def _send_hello(
     instance: str,
     code_identity_value: str | None = None,
 ) -> None:
-    from jiuwenswarm.server.supervisor.identity import (
-        code_identity,
-        data_scope,
-        deployment_scope,
-        process_start_marker,
-    )
+    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+    from jiuwenswarm.common.process_identity import process_identity_fields
     import psutil
+
+    try:
+        process_fields = process_identity_fields(os.getpid())
+    except (psutil.Error, OSError) as exc:
+        logger.exception("[Worker] HELLO pid=%s process identity failed: %s", os.getpid(), exc)
+        raise RuntimeError(f"Worker HELLO pid={os.getpid()} process identity failed: {exc}") from exc
     identity = code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
     await conn.send(
         {
@@ -370,8 +376,7 @@ async def _send_hello(
             "deployment_scope": deployment_scope(),
             "shutdown_ack": True,
             "heartbeat_probe": True,
-            "process_created": psutil.Process().create_time(),
-            "process_started": process_start_marker(psutil.Process()),
+            **process_fields,
             "code_identity": identity,
         }
     )

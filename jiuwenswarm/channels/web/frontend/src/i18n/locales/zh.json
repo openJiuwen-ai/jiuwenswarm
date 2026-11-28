@@ -25,6 +25,8 @@
     "backToLogin": "返回登录页",
     "language": "界面语言",
     "noContext": "当前账号没有可用的Agent，请先在管理面完成授权。",
+    "emptyTitleNoTemplate": "暂无可用 Agent",
+    "noContextNoTemplate": "当前账号没有可用的 Agent，请联系管理员在管理面新增 Agent 模板。",
     "loadFailed": "加载 Agent 上下文失败。",
     "switchFailed": "切换身份失败。",
     "errorTitle": "无法进入工作空间",
@@ -206,7 +208,6 @@
       "title": "AI 角色",
       "empty": "尚未声明 AI 角色",
       "loadFailed": "加载 AI 角色失败",
-      "agent": "单角色会话",
       "team": "团队会话",
       "teamBadge": "团队",
       "leader": "队长"
@@ -291,7 +292,7 @@
     "editSessionTitle": "编辑 {{name}}",
     "reloadPreview": "重新加载应用预览",
     "reloadFailed": "重新加载应用预览失败",
-    "editPrompt": "帮我修改应用“{{name}}”（v{{version}}）。\n应用简介：{{description}}\n源码入口：{{entryPath}}\n\n请先阅读现有代码和数据，保留已有的数据与存档。建议按以下步骤进行：\n1. 说明当前实现、入口文件和关键数据；\n2. 按我的需求做最小修改并自测；\n3. 需要发布新版本时提醒我。\n我要修改的内容是：",
+    "editPrompt": "帮我修改应用“{{name}}”（v{{version}}）。\n应用简介：{{description}}\n源码入口：{{entryPath}}\n\n请先参考 WorkSwarm 内置能力目录中的应用开发技能 workswarm-app-builder，再阅读现有代码和数据，保留已有的数据与存档。建议按以下步骤进行：\n1. 说明当前实现、入口文件和关键数据；\n2. 按我的需求做最小修改并自测；\n3. 需要发布新版本时提醒我。\n我要修改的内容是：",
     "noDescription": "暂无简介",
     "expandPane": "展开应用面板",
     "restorePane": "恢复分栏",
@@ -1119,9 +1120,9 @@
       "contextWindowPresets": "常用上下文窗口",
       "outputTokens": "模型单次最大输出",
       "outputTokensPlaceholder": "例如 32K 或 32768",
-      "outputTokensHint": "限制模型单次请求可生成的最大 Token 数，包含推理 Token。OpenAI 协议可选择不限，由服务商或模型自身限制。",
+      "outputTokensHint": "限制模型单次请求可生成的最大 Token 数，包含推理 Token。OpenAI 协议可选择“模型默认值”，由服务商或模型自身限制。",
       "outputTokensPresets": "常用最大输出",
-      "outputTokensUnlimited": "不限",
+      "outputTokensUnlimited": "模型默认值",
       "vendorPlaceholder": "请选择",
       "selectVendor": "选择模型提供商",
       "searchVendor": "搜索模型提供商",
@@ -2110,6 +2111,7 @@
     },
     "errors": {
       "loadTeams": "团队列表加载失败",
+      "partialLoad": "部分团队数据加载失败，已显示可获取的数据",
       "deleteTeam": "删除团队失败：{{team}}",
       "stopTeam": "停止团队失败"
     }
@@ -3047,6 +3049,8 @@
     "enterpriseContext": {
       "user": "用户",
       "userContext": "用户上下文",
+      "agentNameLabel": "Agent 名称",
+      "agentNameHint": "Agent名称",
       "modeAria": "上下文设定方式",
       "selectAgent": "选择 Agent",
       "custom": "自定义",
@@ -3894,6 +3898,8 @@
       "noNewContent": "无新增内容",
       "capacityRemoved": "容量维护已回收 {{count}} 个正文文件",
       "capacityIncomplete": "容量维护未完成，知识库可能仍超出上限",
+      "tokenUsage": "消耗约 {{amount}} token",
+      "tokenUsageUnavailable": "本次 token 消耗未正常统计",
       "collectionDisabledHint": "请先在上下文设置中开启总开关和内容采集，再立即采集。",
       "collectionStoppingHint": "正在停止采集，请等待停止完成后重试。",
       "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
@@ -4762,6 +4768,28 @@
       "uploadFailed": "文件上传失败，请重试",
       "uploadUnsafePath": "文件名包含不允许的字符或使用了系统保留名称，请重命名后上传",
       "uploadInvalidRequest": "上传请求无效或缺少文件，请重新选择文件后上传",
+      "uploadMissingPath": "缺少上传文件路径",
+      "uploadFileMissing": "上传文件不存在: {{path}}",
+      "uploadMustBeFile": "上传内容必须是普通文件",
+      "uploadZipOnly": "仅支持上传 .zip 技能包",
+      "uploadSkillZipRejected": "不支持 .skill.zip 技能包，请使用普通 .zip 技能包",
+      "uploadUnpackFailed": "无法解包 Skill 文件: {{error}}",
+      "uploadZipDepthExceeded": "技能包目录深度超过上限（{{limit}}）",
+      "uploadZipFileCountExceeded": "技能包文件数量超过上限（{{limit}}）",
+      "uploadMissingSkillMd": "包内未找到 SKILL.md，不是有效 Skill 包",
+      "uploadMissingFileField": "缺少 file 字段，请重新选择文件后上传",
+      "importOverwriteRequired": "技能「{{name}}」已存在，需确认覆盖",
+      "builtinReadOnly": "内置技能「{{name}}」不可覆盖",
+      "prebuiltReadOnly": "预置技能「{{name}}」不可覆盖",
+      "invalidMetadataName": "SKILL.md YAML 须明确包含非空字符串 name",
+      "invalidMetadataDescription": "SKILL.md YAML 须明确包含非空字符串 description",
+      "invalidMetadata": "技能元数据无效: {{error}}",
+      "invalidMetadataUnparsable": "无法解析 SKILL.md",
+      "reservedArchivePath": "Skill 包不得包含根级 .archive/",
+      "skillPackageTooLarge": "技能包为 {{sizeMB}}MB，超过 {{limitMB}}MB 上限。请压缩文件体积后重新上传。",
+      "skillPackageSingleFileTooLarge": "技能包内单个文件「{{fileName}}」解压后为 {{sizeMB}}MB，超过 {{limitMB}}MB 上限。请从技能包中移除或拆分该文件后重新上传。",
+      "skillPackageSingleFileTooLargeStreaming": "技能包内单个文件「{{fileName}}」解压后超过 {{limitMB}}MB 上限。请从技能包中移除或拆分该文件后重新上传。",
+      "skillPackageUncompressedTooLarge": "技能包解压后总大小超过 {{limitMB}}MB 上限。请减少文件数量或压缩文件体积后重新上传。",
       "uninstallFailed": "卸载失败",
       "uninstallFailedHint": "卸载失败，请稍后重试"
     }
@@ -4923,7 +4951,9 @@
       "updating": "保存中…"
     },
     "confirm": {
+      "deleteTitle": "删除专家「{{name}}」？",
       "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。",
+      "uninstallGroupTitle": "卸载专家团「{{name}}」？",
       "uninstallGroupMessage": "确定要卸载专家团「{{name}}」吗？"
     },
     "card": {
@@ -5239,6 +5269,7 @@
     "paused": "已暂停",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
+    "queuedUploadDocument": "上传文档",
     "crossSessionMessageQueue": "跨会话消息",
     "localMessageQueue": "本地消息",
     "turnStarting": "正在启动…",
@@ -6154,6 +6185,17 @@
     "detail": {
       "breadcrumbMy": "我的扩展",
       "breadcrumbPlugin": "插件详情",
+      "memoryConnection": {
+        "edit": "编辑连接配置",
+        "hint": "填写完整的 MCP 服务 URL 和 API Key，保存后重新连接记忆服务。",
+        "url": "MCP 服务 URL",
+        "key": "API Key"
+      },
+      "memoryAccess": {
+        "managedHttp": "内置 HTTP 服务",
+        "serviceRunning": "服务运行中",
+        "serviceStopped": "服务未启动"
+      },
       "breadcrumbMcp": "连接器详情",
       "mcpDisconnectedBanner": "当前插件依赖的连接器未连接，无法正常使用",
       "mcpDisconnectedBannerSelf": "尚未连接，连接后即可使用",
@@ -6270,7 +6312,8 @@
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
       "missingReadme": "插件包缺少 README.md 文件",
-      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径"
+      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径",
+      "alreadyInstalled": "该插件包（相同 ID 和版本）已安装，请勿重复上传"
     },
     "systemPlugin": {
       "badge": "系统插件",
@@ -6324,6 +6367,7 @@
       "switchVersionConfirm": "将「{{name}}」从 v{{installed}} 切换到 v{{target}}？切换后当前版本将停止生效，但文件会保留在工作区（不会删除），之后可随时切回。",
       "publish": "发布",
       "uninstallConfirm": "请选择卸载方式：「仅卸载 v{{version}}」只删除该版本，其他已安装版本会保留但不再生效；「全部卸载」会删除「{{name}}」留在工作区的所有版本文件，不可恢复。",
+      "uninstallSingleConfirm": "确认卸载「{{name}}」？工作区只保留 v{{version}} 一个版本，卸载会删除其全部文件，不可恢复。",
       "uninstallVersion": "仅卸载 v{{version}}",
       "uninstallAll": "全部卸载"
     },
@@ -6853,6 +6897,7 @@
     "enhancedProgressHint": "增强能力配置预计需要 {{range}}，完成后可随时查看详情。",
     "enhancedEstimateFallback": "30–40 分钟",
     "cancelInstall": "取消安装",
+    "cancelling": "正在取消…",
     "installingComponents": "正在安装工具链组件",
     "componentCountHint": "共 {{count}} 个组件，可执行组件会按依赖关系并行安装。",
     "completedCount": "已完成 {{completed}} / {{total}} 项",
@@ -7569,7 +7614,9 @@
         "failures": {
           "org_access_denied": "钉钉账号已确认，但所选组织未授权此账号通过 CLI 访问数据。请联系组织主管理员开通权限后重新授权，或选择已有权限的组织。",
           "authorization_expired": "本次设备授权已过期，请重新点击“授权钉钉账号”获取新链接和设备码。",
-          "authorization_failed": "本次授权未完成或授权进程已结束，请重新授权，勿重复使用旧设备码。"
+          "authorization_failed": "本次授权未完成或授权进程已结束，请重新授权，勿重复使用旧设备码。",
+          "authorization_process_unverified": "暂时无法确认钉钉授权状态，已保留授权记录。请稍后重试。",
+          "authorization_cleanup_failed": "授权已超时，但清理尚未完成，已保留授权记录。请稍后重试。"
         },
         "status": {
           "loading": "正在检查授权状态…",
@@ -8057,6 +8104,11 @@
     "name": "群名称",
     "description": "群介绍",
     "addMembers": "添加成员",
+    "removeMember": "移除成员",
+    "removeMemberConfirm": "移除",
+    "removingMember": "正在移除…",
+    "removeMemberWarning": "移除后该成员将无法再接收本群消息，历史消息记录仍会保留。后续可随时重新添加。",
+    "removeMemberActiveWarning": "该成员当前有正在进行的任务或协作，移除将立即中止其运行中的任务并取消待处理提问。历史消息记录仍会保留。",
     "experts": "专家",
     "teams": "专家团",
     "team": "专家团",

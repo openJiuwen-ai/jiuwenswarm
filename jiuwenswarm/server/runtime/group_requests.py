@@ -134,6 +134,17 @@ async def dispatch_group_request(server, ws, request, send_lock) -> bool:
                     channel_id=channel_id,
                     request_id=request.request_id,
                 )
+            elif method == "group.member.remove":
+                jiuwenmate_web = getattr(server, "_jiuwenmate_web", None)
+                canceller = getattr(jiuwenmate_web, "cancel_swarmchat_member", None)
+                payload = await service.remove_member(
+                    group_id,
+                    params,
+                    user_id=user_id,
+                    channel_id=channel_id,
+                    request_id=request.request_id,
+                    colleague_canceller=canceller,
+                )
             elif method == "group.file.rename":
                 payload = await service.file_rename(
                     group_id, params, user_id=user_id, channel_id=channel_id

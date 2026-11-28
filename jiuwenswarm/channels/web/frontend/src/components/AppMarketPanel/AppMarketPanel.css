@@ -131,6 +131,11 @@
   cursor: default;
 }
 
+.app-market-ai-role-grid--agent > .app-market-ai-role-card {
+  gap: 12px;
+  padding: 18px;
+}
+
 .app-market-ai-role-card .page-card__body {
   display: block;
   white-space: pre-wrap;
@@ -220,3 +225,18 @@
 .app-market-usage-medium { color: var(--color-feedback-warning); }
 .app-market-usage-high { color: var(--color-feedback-danger); }
 .app-market-usage-unknown { color: var(--color-text-muted); }
+
+/* The editor session header shares its row with the right panel's tab bar. Once
+   the panel is widened the chat column can no longer fit the labelled action, so
+   collapse it to its icon instead of letting it spill over the tabs. The width
+   container is owned by `.chat-panel-shell`, not by this component. */
+@container (max-width: 360px) {
+  .app-market-editor-open-preview .ui-button__label {
+    display: none;
+  }
+
+  .app-market-editor-open-preview {
+    width: 32px;
+    padding-inline: 0;
+  }
+}

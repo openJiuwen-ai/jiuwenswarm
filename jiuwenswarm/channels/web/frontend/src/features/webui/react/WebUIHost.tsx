@@ -133,8 +133,10 @@ export function WebUIHost({
       (runtime.getInstance(right)?.localFrameId ?? 0) - (runtime.getInstance(left)?.localFrameId ?? 0),
     ).slice(0, 1);
   } else if (slotRule?.maxVisible !== undefined && instanceKeys.length > slotRule.maxVisible) {
-    // list 槽位超出 maxVisible 时保留先挂载的实例，后到的贡献不挤占输入区。
-    instanceKeys = instanceKeys.slice(0, slotRule.maxVisible);
+    // Error-only records do not consume capacity reserved for delivered frames.
+    const active = instanceKeys.filter((key) => runtime.getInstance(key)?.frame);
+    const errors = instanceKeys.filter((key) => !runtime.getInstance(key)?.frame);
+    instanceKeys = [...active, ...errors].slice(0, slotRule.maxVisible);
   }
 
   if (instanceKeys.length === 0) {

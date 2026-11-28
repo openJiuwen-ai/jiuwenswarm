@@ -161,6 +161,14 @@ class ColleagueGroupBridge:
         if roots:
             self._consumption.stop(group["group_id"], roots[-1])
 
+    async def detach_member(self, group_id: str, member_name: str) -> None:
+        """Detach host-managed inbound callback state after a colleague leaves a group."""
+        entry = self._attached.pop((group_id, member_name), None)
+        if entry is not None:
+            backend, name = entry
+            with suppress(Exception):
+                await backend.register_host_managed_inbound(name, None)
+
     async def submit(
         self, group_id: str, member_name: str, message: ConversationMessage,
         *, history: list[ConversationMessage] | None = None, notified: bool = False,

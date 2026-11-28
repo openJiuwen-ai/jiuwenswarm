@@ -238,6 +238,7 @@ class SessionCreateResult:
     moa_enabled: bool = False
     execution_profile: str = "default"
     npc_session: bool = False
+    session_equipment: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         _require_bool("persist_session", self.persist_session)
@@ -684,6 +685,7 @@ class RuntimeSessionProvisioner:
                 is_valid_session_id,
             )
             from jiuwenswarm.server.runtime.session.session_metadata import (
+                get_session_equipment,
                 get_session_metadata,
                 init_session_metadata,
             )
@@ -953,6 +955,7 @@ class RuntimeSessionProvisioner:
                     moa_enabled=stored.get("moa_enabled") is True,
                     execution_profile=execution_profile,
                     npc_session=npc_session,
+                    session_equipment=get_session_equipment(session_id) or None,
                 )
                 return self._stage_create_result(
                     result,
@@ -962,6 +965,17 @@ class RuntimeSessionProvisioner:
 
             session_created = not metadata_exists
             if session_created:
+                from jiuwenswarm.agents.harness.common.memory.plugin import (
+                    MEMORY_PLUGIN_ID,
+                    memory_plugin_selected_by_default,
+                )
+
+                memory_params = {**params, "mode": canonical_mode}
+                initial_equipment = (
+                    {"session_equipment": {"plugin_names": [MEMORY_PLUGIN_ID]}}
+                    if execution_profile == "default" and (not is_swarm or resolved.is_team)
+                    and memory_plugin_selected_by_default(memory_params) else {}
+                )
                 channel_metadata = None
                 if channel_id.lower() == "tui":
                     workspace = str(provision_input.cwd or project_dir or "").strip()
@@ -1009,6 +1023,7 @@ class RuntimeSessionProvisioner:
                         npc_team=npc_team,
                         npc_member_sessions=member_sessions,
                         npc_session=npc_session,
+                        **initial_equipment,
                     )
                     if member_sessions:
                         leader_user_id = str(provision_input.user_id or "").strip()
@@ -1070,6 +1085,7 @@ class RuntimeSessionProvisioner:
                 moa_enabled=moa_enabled,
                 execution_profile=execution_profile,
                 npc_session=npc_session,
+                session_equipment=get_session_equipment(session_id) or None,
             )
             return self._stage_create_result(
                 result,
@@ -1522,9 +1538,27 @@ class RuntimeSessionProvisioner:
                 )
             if provision_input.session_equipment_override is not None:
                 fork_kwargs["session_equipment_override"] = provision_input.session_equipment_override
+            from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
+                fork_external_harness_session,
+            )
+
             fork_result = fork_session(
                 **fork_kwargs,
             )
+            try:
+                # A copy of an External Harness session resumes from a fork
+                # of the source's CLI session, bound to the same expert.
+                await fork_external_harness_session(
+                    source_session_id,
+                    target_session_id,
+                    at_message=has_message_cutoff,
+                    session_equipment_override=provision_input.session_equipment_override,
+                )
+            except BaseException:
+                from jiuwenswarm.common.utils import get_agent_sessions_dir
+
+                shutil.rmtree(get_agent_sessions_dir() / target_session_id, ignore_errors=True)
+                raise
 
             agent = self._agent_manager.get_agent_nowait(channel_id)
             deep_agent = None

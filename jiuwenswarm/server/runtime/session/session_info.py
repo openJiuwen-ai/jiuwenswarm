@@ -63,4 +63,7 @@ def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
         "lifecycle_operation": meta.get("lifecycle_operation"),
         "execution_blocked": bool(meta.get("execution_blocked", False)),
         "stop_pending": bool(meta.get("stop_pending", False)),
+        # 损坏 metadata 的会话在列表层被打标（见 get_all_sessions_metadata），
+        # 投影必须透传，否则 Web/网关消费方永远拿不到，标记只在后端日志生效。
+        "metadata_corrupted": bool(meta.get("metadata_corrupted", False)),
     }

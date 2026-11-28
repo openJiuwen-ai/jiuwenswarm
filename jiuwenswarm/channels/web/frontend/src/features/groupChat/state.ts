@@ -168,6 +168,20 @@ export function mentionExecutionPhase(execution: GroupExecution | undefined, org
 
 export const FINISHED_EXECUTIONS = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'timed_out', 'stopped']);
 
+/** 判断成员当前是否仍有未结束的执行任务或组织协作，供移除成员弹窗提示。 */
+export function memberHasActiveWork(
+  memberName: string,
+  executions: GroupExecution[],
+  routes: GroupRoute[] = [],
+): boolean {
+  if (executions.some((item) => !FINISHED_EXECUTIONS.has(item.status)
+    && (item.member_name === memberName || item.owner_member === memberName))) {
+    return true;
+  }
+  return routes.some((route) => !['completed', 'failed'].includes(route.status)
+    && (route.owner_member === memberName || route.members.includes(memberName)));
+}
+
 /** 一条 @ 消息下尚未回音的成员，及其当前执行快照（尚未创建执行时为 undefined）。 */
 export interface PendingMentionReply {
   memberName: string;
@@ -254,6 +268,7 @@ export function pendingMentionReplies(
       if (!hasResult) pending.set(message.message_id, [{ memberName, execution: organization, organization: true, route }]);
       continue;
     }
+    const activeMemberNames = new Set(members.map((member) => member.member_name));
     const waiting = mentioned.flatMap<PendingMentionReply>((memberName) => {
       // executions 已按 created_at 升序（mergeExecutions），pop 取该成员消息之后最新一次执行。
       const execution = executions.filter((item) =>
@@ -261,6 +276,7 @@ export function pendingMentionReplies(
           || (item.execution_kind === 'organization' && organizationTrigger(item) === message.message_id))
         && item.created_at * 1000 >= message.timestamp).pop();
       if (execution && FINISHED_EXECUTIONS.has(execution.status)) return [];
+      if (!execution && !activeMemberNames.has(memberName)) return [];
       if (!execution && messages.some((item) => item.timestamp > message.timestamp && item.sender === memberName)) {
         return [];
       }

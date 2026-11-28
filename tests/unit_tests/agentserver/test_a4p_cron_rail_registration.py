@@ -1,4 +1,4 @@
-"""Cron installs ordinary permission rules only for the A4P experiment."""
+"""Cron mounts the permission rail from permissions config; A4P is optional."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -17,6 +17,8 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 
 @pytest.fixture
 def config(monkeypatch):
+    # These cases describe enterprise cron: guardrail independent of A4P.
+    monkeypatch.setattr("jiuwenswarm.enterprise.is_enterprise", lambda: True)
     value = {"a4p": {"enabled": True}, "permissions": {"enabled": True, "tools": {"bash": "ask"}}}
     monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: value)
     layers = "jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers"
@@ -53,16 +55,22 @@ def _build(config, variant):
 
 @pytest.mark.parametrize("variant", ["single", "team-channel", "team-metadata"])
 @pytest.mark.parametrize("a4p_enabled,permissions_enabled", [(False, True), (True, False), (True, True)])
-def test_cron_rail_registration(config, variant, a4p_enabled, permissions_enabled):
+def test_enterprise_cron_rail_registration(config, variant, a4p_enabled, permissions_enabled):
+    """Enterprise: rail follows permissions.enabled only; A4P must not gate it."""
     config["a4p"]["enabled"] = a4p_enabled
     config["permissions"]["enabled"] = permissions_enabled
-    assert (_build(config, variant) is not None) == (a4p_enabled and permissions_enabled)
+    assert (_build(config, variant) is not None) is permissions_enabled
 
 
 @pytest.mark.parametrize("variant", ["single", "team-channel", "team-metadata"])
-def test_cron_smart_approval_does_not_install_a4p_rail(config, variant):
-    config["permissions"]["mode"] = "auto"
+def test_personal_cron_rail_still_gated_by_a4p(config, monkeypatch, variant):
+    """Personal: cron keeps the default skip unless A4P is active."""
+    monkeypatch.setattr("jiuwenswarm.enterprise.is_enterprise", lambda: False)
+    config["a4p"]["enabled"] = False
+    config["permissions"]["enabled"] = True
     assert _build(config, variant) is None
+    config["a4p"]["enabled"] = True
+    assert _build(config, variant) is not None
 
 
 @pytest.mark.asyncio
@@ -106,14 +114,13 @@ async def test_cron_permission_reload_creates_updates_registers_and_removes_rail
     result = await rail._engine.check_permission(tool_name="bash", tool_args={"command": "date"})
     assert result.permission.value == "deny"
 
+    # Turning A4P off must keep the guardrail; only permissions.enabled drops it.
     config["a4p"]["enabled"] = False
     adapter._update_permission_rail(config)
-    assert adapter._permission_rail is None
-    await adapter._unregister_permission_rail_if_disabled(config, detached_rail=rail)
-    adapter._instance.unregister_rail.assert_awaited_once_with(rail)
+    assert adapter._permission_rail is rail
     await adapter._ensure_permission_rail_live_registered()
-    assert adapter._instance.register_rail.await_count == 1
-
+    assert adapter._instance.register_rail.await_count >= 1
+    assert adapter._instance.unregister_rail.await_count == 0
 
 @pytest.mark.asyncio
 async def test_cron_permissions_switch_off_unregisters_live_rail(config):
@@ -146,6 +153,34 @@ async def test_assembled_cron_ask_failure_never_interrupts(config, monkeypatch, 
     )
     assert isinstance(decision, RejectResult)
     assert "A4P_CRON_SCOPE_DENIED" in str(decision.tool_result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variant", ["single", "team-channel", "team-metadata"])
+@pytest.mark.parametrize("rule", ["allow", "deny", "ask"])
+async def test_cron_rail_without_a4p_enforces_rules_and_fail_closes_ask(
+    config, monkeypatch, variant, rule,
+):
+    """Guardrail alone is enough on cron; ask never waits for a human."""
+    config["a4p"]["enabled"] = False
+    config["permissions"]["tools"]["bash"] = rule
+    runtime = SimpleNamespace(find_valid_cron_intent_token=AsyncMock(return_value={"tokenId": "ok"}))
+    monkeypatch.setattr(a4p_runtime, "get_a4p_runtime", lambda: runtime)
+    AUTHORIZATION_EXECUTION_CONTEXTS.activate(AuthorizationExecutionContext(
+        request_id="cron-request", session_id="cron-test", agent_id="agent-1",
+        channel_id="web" if variant == "team-metadata" else "__cron__",
+        metadata={"cron": {"job_id": "job-1"}},
+    ))
+    rail = _build(config, variant)
+    assert rail is not None
+    decision = await rail.resolve_interrupt(
+        ctx=SimpleNamespace(session=SimpleNamespace(get_session_id=lambda: "cron-test"), extra={}),
+        tool_call=SimpleNamespace(name="bash", arguments={"command": "date"}, id="call-1"),
+        user_input=None,
+    )
+    expected = ApproveResult if rule == "allow" else RejectResult
+    assert isinstance(decision, expected)
+    assert runtime.find_valid_cron_intent_token.await_count == 0
 
 
 @pytest.mark.asyncio

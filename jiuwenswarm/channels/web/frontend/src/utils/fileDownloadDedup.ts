@@ -61,7 +61,13 @@ export function resolveFilePath(source: FileIdentitySource): string | undefined 
   return typeof path === 'string' && path.trim() ? normalizeFsPath(path) : undefined;
 }
 
-/** 稳定身份：优先绝对路径；无路径时退回 name + size（不含 downloadUrl）。 */
+/**
+ * 稳定身份：优先绝对路径；无路径时退回 name + size（不含 downloadUrl）。
+ *
+ * 注意：无 path 时按 name + size 比对，同名同大小但内容不同的文件会判为同一身份
+ * 而被合并成一张卡片。该场景概率极低（同一轮内推送两个同名同大小不同内容的文件
+ * 且都不带 path），此处接受该取舍以避免依赖 downloadUrl 中的 exp token。
+ */
 export function getFileIdentityKey(source: FileIdentitySource): string {
   const path = resolveFilePath(source);
   if (path) return `path:${path}`;

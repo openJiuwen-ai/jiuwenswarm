@@ -66,6 +66,38 @@
   padding: 0 24px;
 }
 
+/* The header shares its row with the neighbour panel's tab bar. When the chat
+   column gets narrow, wrap the meta and action groups onto extra rows instead
+   of letting them spill over the tabs. Wrapping (rather than clipping) keeps
+   every control reachable, including inline plugin popovers. Surfaces that pin
+   the header to 48px (navigation, trajectory, diagnosis) keep their own
+   single-row layout. */
+.single-agent-surface--chat:not(.single-agent-surface--navigation) .chat-panel-header {
+  height: auto;
+  min-height: 68px;
+  padding-block: 8px;
+  flex-wrap: wrap;
+}
+
+/* Zero flex-basis keeps the meta from triggering a wrap before the actions
+   themselves are too wide: it yields space to them on the shared row. */
+.single-agent-surface--chat:not(.single-agent-surface--navigation) .chat-panel-header__meta {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.single-agent-surface--chat:not(.single-agent-surface--navigation) .chat-panel-header__actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
+  margin-left: auto;
+}
+
+/* Fixed-size controls stay whole and move to the next row instead of shrinking. */
+.single-agent-surface--chat:not(.single-agent-surface--navigation) .chat-panel-header__actions > * {
+  flex: 0 0 auto;
+}
+
 .chat-panel-header__title {
   min-width: 0;
   max-width: 350px;
@@ -82,6 +114,7 @@
 
 .chat-panel-header__meta {
   min-width: 0;
+  flex: 1 1 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -119,8 +152,31 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  min-width: 0;
+  max-height: 100%;
+  flex: 0 1 auto;
   cursor: pointer;
+}
+
+.chat-panel-header__actions > :not(.chat-panel-header__plugin-actions) {
+  flex-shrink: 0;
+}
+
+.chat-panel-header__plugin-title,
+.chat-panel-header__plugin-actions {
+  min-width: 0;
+  max-width: 320px;
+  max-height: 68px;
+  flex: 0 1 auto;
+  align-items: flex-start;
+  /* Keep the full controls available for native focus scrolling. */
+  overflow: auto;
+  padding: 3px;
+}
+
+.chat-panel-header__plugin-title > .webui-host-instance,
+.chat-panel-header__plugin-actions > .webui-host-instance {
+  flex: 0 0 auto;
 }
 
 .chat-header-icon-btn {
@@ -3674,6 +3730,7 @@
   grid-template-columns: repeat(auto-fill, 178px);
   gap: 8px;
   flex: 1 1 auto;
+  max-height: min(240px, 30vh);
   overflow-y: auto;
   overflow-x: visible;
   padding: 5px 5px 5px 0;
@@ -3681,7 +3738,7 @@
 }
 
 .chat-input-attachment-grid--menu-open {
-  overflow: visible;
+  overflow: auto;
 }
 
 .chat-input-attachment-card {

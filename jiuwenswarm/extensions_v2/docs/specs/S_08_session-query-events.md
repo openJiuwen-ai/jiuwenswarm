@@ -1,6 +1,6 @@
 # 会话七项查询事件公共协议
 
-最近修订 2026-11-02；本分支已实现。主责模块为 event_types/session_queries.py、query_dispatch.py、handler_ops/session_queries.py、event_handlers/session_queries.py。本次仅归整编号、引用及文档归属，运行契约不变；逐项特性与历史验证入口见第 7 节。
+最近修订 2026-11-27。主责模块为 event_types/session_queries.py、query_dispatch.py、handler_ops/session_queries.py、event_handlers/session_queries.py。逐项特性与历史验证入口见第 7 节。
 
 ## 1. 能力、粒度与调用位置
 
@@ -56,7 +56,7 @@ USER 可在 next 前后增加操作、返回合法替代值或明确拒绝；BUI
 - messages：[S_06](S_06_session-history-ops.md)，无参数数组；产品分页服务保留在内部
 - turns/usage：[S_07](S_07_session-usage-ops.md)，usage 对齐 context/rateLimits/可选 cost
 
-不改变 append、files/read_file，也不扩展到 Team 或新的公共网络入口。原 Token Weather 渲染代码不改；验证只复用它订阅的 context.usage.updated 作为后端入口，收集七项返回参数。
+Team 会话的主 Agent 窗口用量通过现有 `session.usage` 查询提供，口径见 [S_07](S_07_session-usage-ops.md)。其他查询、`append` 和 `files/read_file` 沿用其现有宿主范围。
 
 
 ### 5.1 既有调用迁移

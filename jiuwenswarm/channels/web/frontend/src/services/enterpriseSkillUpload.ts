@@ -21,6 +21,21 @@ export interface StagedSkillZip {
   cleanup: () => Promise<void>;
 }
 
+function formatSizeMb(numBytes: number): string {
+  return (Math.max(0, numBytes) / (1024 * 1024)).toFixed(1);
+}
+
+function localizedUploadError(
+  fallbackMessage: string,
+  detailKey: string,
+  detailParams?: Record<string, unknown>,
+): Error {
+  return Object.assign(new Error(fallbackMessage), {
+    detailKey,
+    detailParams,
+  });
+}
+
 export function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -58,10 +73,20 @@ export async function stageSkillZip(
   sessionId: string,
 ): Promise<StagedSkillZip> {
   if (!file.name.toLowerCase().endsWith('.zip')) {
-    throw new Error('Only .zip skill packages are supported');
+    throw localizedUploadError(
+      'Only .zip skill packages are supported',
+      'skills.errors.uploadZipOnly',
+    );
   }
   if (file.size > SKILL_ZIP_MAX_BYTES) {
-    throw new Error('Skill package exceeds 50 MiB');
+    throw localizedUploadError(
+      'Skill package exceeds 50 MiB',
+      'skills.errors.skillPackageTooLarge',
+      {
+        sizeMB: formatSizeMb(file.size),
+        limitMB: formatSizeMb(SKILL_ZIP_MAX_BYTES),
+      },
+    );
   }
   const contentBase64 = await readFileAsBase64(file);
   const scope = getRuntimeScope();
@@ -76,7 +101,10 @@ export async function stageSkillZip(
     | { ok?: boolean; url?: string; name?: string; error?: string }
     | null;
   if (!uploadResponse.ok || !uploaded?.ok || !uploaded.url) {
-    throw new Error(uploaded?.error || `Upload failed (HTTP ${uploadResponse.status})`);
+    throw localizedUploadError(
+      uploaded?.error || `Upload failed (HTTP ${uploadResponse.status})`,
+      'skills.errors.uploadFailed',
+    );
   }
   const objectUrl = uploaded.url;
   const cleanup = () => deleteTempObject(objectUrl, headers);
@@ -91,7 +119,12 @@ export async function stageSkillZip(
       { timeoutMs: 120_000 },
     );
     const path = imported.files?.[0]?.path;
-    if (!path) throw new Error('Server did not return a staged path');
+    if (!path) {
+      throw localizedUploadError(
+        'Server did not return a staged path',
+        'skills.errors.uploadFailed',
+      );
+    }
     return { path, cleanup };
   } catch (error) {
     await cleanup();

@@ -439,8 +439,8 @@ _RAIL_BUILD_NAMES: dict[str, str] = {
     "ContextProcessorRail": "_build_context_processor_rail",
     "SkillEvolutionRail": "_build_skill_evolution_rail_via_config",
     "ProjectMemoryRail": "_build_project_memory_rail",
-    "CodingMemoryRail": "_build_coding_memory_rail",
-    "JiuwenMemoryCodingRail": "_build_coding_memory_rail",
+    "CodingMemoryRail": "_build_legacy_coding_memory_rail",
+    "JiuwenMemoryCodingRail": "_build_legacy_coding_memory_rail",
     "WorktreeRail": "_build_worktree_rail_via_config",
     "CodeAgentRail": "_build_code_agent_rail",
     "PlanApprovalInterruptRail": "_build_plan_approval_rail",
@@ -1960,7 +1960,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
               if group is not None else self._permission_interrupt_rail_infos(config_base)),
             _RailBuildInfo("_code_filesystem_rail", self._build_filesystem_rail),
             _RailBuildInfo("_agent_md_prompt_rail", self._build_agent_md_prompt_rail),
-            _RailBuildInfo("_coding_memory_rail", self._build_coding_memory_rail),
+            _RailBuildInfo("_coding_memory_rail", self._build_legacy_coding_memory_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
             _RailBuildInfo(
                 "_code_agent_mode_rail",
@@ -2302,7 +2302,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 and is_jiuwen_builtin_memory(self._active_code_config()))
 
     def _build_coding_memory_rail(self) -> Any | None:
-        """Select one Coding memory implementation for the main agent and code_agent."""
+        """Construct a Coding Rail without mounting it."""
         config_base = self._active_code_config()
         jiuwen = self.uses_jiuwen_coding_memory()
         enabled = is_memory_enabled("code", config_base)
@@ -2367,6 +2367,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._coding_memory_config_fingerprint = fingerprint if rail is not None else None
         return rail
 
+    def _build_legacy_coding_memory_rail(self) -> Any | None:
+        if getattr(self, "_code_team_member", False):
+            return self._build_coding_memory_rail()
+        self._coding_memory_rail = None
+        self._coding_memory_config_fingerprint = None
+        self._coding_memory_binding = None
+        return None
+
     async def _handle_memory_rail_by_config(self, mode: str):
         """Code hot reload must never mount the Work memory rail."""
         self._memory_entry_mode = mode
@@ -2394,7 +2402,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     async def _reconcile_coding_memory(self) -> None:
         previous = self._coding_memory_rail
-        candidate = self._build_coding_memory_rail()
+        candidate = self._build_legacy_coding_memory_rail()
         if previous is candidate:
             await self._prepare_coding_project_memory()
             return

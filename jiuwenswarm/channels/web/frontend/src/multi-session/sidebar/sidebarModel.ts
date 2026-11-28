@@ -1,3 +1,5 @@
+import type { Message } from '../../types/message';
+
 export type SessionIndicator = 'waiting' | 'processing' | 'unread' | 'error' | 'time';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
@@ -6,6 +8,8 @@ type RuntimeLike = {
   pendingQuestions?: readonly unknown[];
   isProcessing?: boolean;
   executionError?: string | null;
+  error?: string | null;
+  messages?: readonly Message[];
 };
 
 type SessionLike = {
@@ -69,6 +73,22 @@ export function formatSessionTime(
   return activityDate.toLocaleDateString(language, sameYear
     ? { month: 'short', day: 'numeric' }
     : { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+export function getSessionErrorMessage(runtime: RuntimeLike | undefined, sessionProcessing = false): string | null {
+  const liveError = runtime?.error || runtime?.executionError;
+  if (liveError) return liveError;
+  if (sessionProcessing || runtime?.isProcessing || runtime?.pendingQuestions?.length || !runtime?.messages) return null;
+
+  const { messages } = runtime;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.forkedFromSessionId || message.teamId || message.sourceTeamId || message.automation) continue;
+    if (message.turnError) return message.turnError;
+    if (message.role === 'user' && !message.supplementalInput) break;
+    if (message.role === 'assistant' && message.content && !message.unansweredQuestion) break;
+  }
+  return null;
 }
 
 export function getSessionIndicator(

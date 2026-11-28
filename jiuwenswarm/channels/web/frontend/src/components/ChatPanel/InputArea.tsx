@@ -465,6 +465,10 @@ const ATTACHMENT_ACCEPT = [
   '.svg',
   '.ico',
   '.pdf',
+  '.eml',
+  'message/rfc822',
+  '.msg',
+  'application/vnd.ms-outlook',
   '.doc',
   '.docx',
   '.xls',
@@ -5025,7 +5029,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           )}
                         </div>
-                        {!isTeamMode && (
+                        {(!isTeamMode || (workMode !== 'design' && !enterprise)) && (
                           <div className="chat-attach-menu-item-anchor">
                             <button
                               type="button"
@@ -5056,6 +5060,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             </button>
                             {extensionPanelOpen && (
                               <ExtensionPickerPanel
+                                teamMemoryOnly={isTeamMode}
                                 panelRef={extensionPanelRef}
                                 direction={attachMenuDirection}
                                 onClose={() => setExtensionPanelOpen(false)}

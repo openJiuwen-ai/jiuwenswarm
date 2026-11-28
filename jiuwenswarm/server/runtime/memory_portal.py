@@ -6,12 +6,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
 
 from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import (
     build_jiuwen_memory_provider,
+    get_jiuwen_builtin_config,
     get_jiuwen_builtin_mode,
     is_jiuwen_builtin_memory,
     memory_portal_configuration,
@@ -24,8 +25,11 @@ from jiuwenswarm.agents.harness.common.memory.portal_registry import (
 )
 
 from jiuwenswarm.common.memory_config import is_memory_portal_enabled
+from jiuwenswarm.enterprise import is_enterprise
 
 logger = logging.getLogger(__name__)
+
+_CONFIGURE_LOCK_WAIT_SECONDS = 1.0
 
 
 def portal_enabled(config: dict[str, Any]) -> bool:
@@ -45,9 +49,11 @@ class MemoryPortalService:
     def __init__(
         self, registry: ProviderRegistry = provider_registry,
         factory: Callable[[dict[str, Any], str], Any] | None = None,
+        *, managed_open: Callable[[dict[str, Any]], Awaitable[tuple[str, str]]] | None = None,
     ) -> None:
         self._registry = registry
         self._factory = factory or build_jiuwen_memory_provider
+        self._managed_open = managed_open
         self._lock = asyncio.Lock()
         self._binding: ProviderRecord | None = None
         self._owned: Any = None
@@ -61,14 +67,26 @@ class MemoryPortalService:
             self._owned = None
 
     async def configure(self, config: dict[str, Any]) -> None:
-        async with self._lock:
+        if memory_portal_configuration(config) == self._configuration:
+            return
+        # A slow Portal open must not hold configuration saves behind initialization.
+        # If admission times out, the next open reconciles the latest saved config.
+        await asyncio.wait_for(self._lock.acquire(), timeout=_CONFIGURE_LOCK_WAIT_SECONDS)
+        try:
             await self._configure(config)
+        finally:
+            self._lock.release()
 
     async def _configure(self, config: dict[str, Any]) -> None:
-        configuration = memory_portal_configuration(config)
+        configuration = "managed-http" if self._uses_managed_http(config) else memory_portal_configuration(config)
         if configuration != self._configuration:
             await self._release_owned()
             self._configuration = configuration
+
+    def _uses_managed_http(self, config: dict[str, Any]) -> bool:
+        return self._managed_open is not None and not (
+            get_jiuwen_builtin_mode(config) == "http" and get_jiuwen_builtin_config(config).get("base_url")
+        )
 
     async def close(self) -> None:
         async with self._lock:
@@ -95,16 +113,20 @@ class MemoryPortalService:
             raise
 
     async def open(self, config: dict[str, Any]) -> dict[str, Any]:
-        result: dict[str, Any] = {"mode": get_jiuwen_builtin_mode(config)}
+        managed_open = self._managed_open if self._uses_managed_http(config) else None
+        result: dict[str, Any] = {"mode": "http" if managed_open else get_jiuwen_builtin_mode(config)}
         try:
             async with asyncio.timeout(30):
                 async with self._lock:
                     await self._configure(config)
                     if not portal_enabled(config):
                         return {**result, "status": "disabled", "code": "not_enabled"}
-                    record = await self._select(config)
-                    result["agent"] = record.agent
-                    url = await record.open_portal()
+                    if managed_open is not None:
+                        result["agent"], url = await managed_open(config)
+                    else:
+                        record = await self._select(config)
+                        result["agent"] = record.agent
+                        url = await record.open_portal()
                     if not url:
                         return {**result, "status": "unavailable", "code": "portal_unavailable"}
                     parsed = urlsplit(url)
@@ -127,10 +149,11 @@ _services: dict[str, MemoryPortalService] = {}
 
 def get_memory_portal_service() -> MemoryPortalService:
     from jiuwenswarm.common.utils import get_user_workspace_dir
+    from jiuwenswarm.server.runtime.managed_memory_http import open_bundled_memory_portal
 
     home = str(get_user_workspace_dir())
     if home not in _services:
-        _services[home] = MemoryPortalService()
+        _services[home] = MemoryPortalService(managed_open=None if is_enterprise() else open_bundled_memory_portal)
     return _services[home]
 
 

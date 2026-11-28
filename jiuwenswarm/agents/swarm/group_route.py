@@ -15,6 +15,7 @@ import psutil
 from openjiuwen.agent_teams.team_workspace.frontmatter import atomic_write
 from openjiuwen.core.foundation.tool import ToolOutput
 
+from jiuwenswarm.common.process_identity import process_identity_matches, read_process_identity
 from jiuwenswarm.server.runtime import group_service
 from jiuwenswarm.server.runtime.session import lifecycle
 
@@ -23,9 +24,11 @@ logger = logging.getLogger(__name__)
 
 
 def owner_process_fields() -> dict:
-    """Persist psutil's PID-reuse-safe identity, independent of wall-clock updates."""
+    """Persist a PID-reuse-safe identity, including restricted HarmonyOS hosts."""
     process = psutil.Process()
-    created = process.create_time()
+    created = read_process_identity(process.pid, process=process)
+    if isinstance(created, str):
+        return {"owner_process": [process.pid, created]}
     # Process hashing uses the same stable identity as Process equality. Store
     # it as text so JSON consumers cannot round a 64-bit integer.
     return {"owner_process": [process.pid, created], "owner_process_identity": str(hash(process))}
@@ -36,7 +39,12 @@ def _owner_process_alive(item: dict) -> bool | None:
     pid, created = item["owner_process"]
     try:
         process = psutil.Process(pid)
-        observed = process.create_time()
+        if isinstance(created, str):
+            return (process_identity_matches(pid, created, process=process)
+                    and process.status() != psutil.STATUS_ZOMBIE)
+        observed = read_process_identity(pid, process=process)
+        if isinstance(observed, str):
+            raise psutil.AccessDenied(pid, msg="cannot compare a legacy owner timestamp with proc start ticks")
         if process.status() == psutil.STATUS_ZOMBIE:
             return False
         identity = item.get("owner_process_identity")

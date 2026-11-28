@@ -210,69 +210,70 @@ export function SessionSidebar({
       <div className="icon-rail-logo" data-testid="session-sidebar-logo">
         <SidebarBrandLogo />
       </div>
-
-      {showNewSession && (
-        <button
-          className="icon-rail-nav-item"
-          onClick={handleNewSession}
-          data-testid="session-sidebar-new-session-button"
-        >
-          <span className="icon-rail-nav-item__icon">
-            <PlusIcon aria-hidden width="16" height="16" />
-          </span>
-          <span className="icon-rail-nav-item__label">{t('chat.newSession')}</span>
-        </button>
-      )}
-
-      {visibleMainNavItems.map((item) => (
-        <button
-          key={item.key}
-          className={`icon-rail-nav-item${isNavItemActive(item) ? ' icon-rail-nav-item--active' : ''}`}
-          onClick={() => handleNavClick(item.key)}
-          onPointerDownCapture={() => onNavItemPointerDownCapture?.(item.key)}
-          onMouseEnter={() => onNavItemHover?.(item.key)}
-          onMouseLeave={() => onNavItemHover?.(null)}
-          data-testid="session-sidebar-nav-item"
-          data-variant={item.key}
-          data-model-setup-guide-target={item.key === 'settings' ? 'settings' : undefined}
-        >
-          <span className="icon-rail-nav-item__icon">{item.icon}</span>
-          <span
-            className={`icon-rail-nav-item__label${item.key === 'personalContext' ? ' icon-rail-nav-item__label--multiline' : ''}`}
+      <div className="icon-rail-scroll">
+        {showNewSession && (
+          <button
+            className="icon-rail-nav-item"
+            onClick={handleNewSession}
+            data-testid="session-sidebar-new-session-button"
           >
-            {getNavItemLabel(item)}
-          </span>
-        </button>
-      ))}
+            <span className="icon-rail-nav-item__icon">
+              <PlusIcon aria-hidden width="16" height="16" />
+            </span>
+            <span className="icon-rail-nav-item__label">{t('chat.newSession')}</span>
+          </button>
+        )}
 
-      <WebUINavigationHost
-        slotId="application.menu"
-        className="min-w-0 w-full items-center"
-        style={{ gap: 0 }}
-        instanceClassName="flex min-w-0 w-full flex-col items-center"
-        styles={pluginNavigationStyles}
-      />
-      <div className="icon-rail-spacer" />
+        {visibleMainNavItems.map((item) => (
+          <button
+            key={item.key}
+            className={`icon-rail-nav-item${isNavItemActive(item) ? ' icon-rail-nav-item--active' : ''}`}
+            onClick={() => handleNavClick(item.key)}
+            onPointerDownCapture={() => onNavItemPointerDownCapture?.(item.key)}
+            onMouseEnter={() => onNavItemHover?.(item.key)}
+            onMouseLeave={() => onNavItemHover?.(null)}
+            data-testid="session-sidebar-nav-item"
+            data-variant={item.key}
+            data-model-setup-guide-target={item.key === 'settings' ? 'settings' : undefined}
+          >
+            <span className="icon-rail-nav-item__icon">{item.icon}</span>
+            <span
+              className={`icon-rail-nav-item__label${item.key === 'personalContext' ? ' icon-rail-nav-item__label--multiline' : ''}`}
+            >
+              {getNavItemLabel(item)}
+            </span>
+          </button>
+        ))}
 
-      {/* 与 7519 一致：申请入口在底部，文档图标，与上方主导航/工作空间分离 */}
-      {!hiddenNavItems.includes('approvals') && (
-        <button
-          type="button"
-          className={`icon-rail-nav-item${activeNav === 'approvals' ? ' icon-rail-nav-item--active' : ''}`}
-          onClick={() => handleNavClick('approvals')}
-          onPointerDownCapture={() => onNavItemPointerDownCapture?.('approvals')}
-          onMouseEnter={() => onNavItemHover?.('approvals')}
-          onMouseLeave={() => onNavItemHover?.(null)}
-          aria-label={t('nav.approvals')}
-          title={t('nav.approvals')}
-          data-testid="session-sidebar-nav-item"
-          data-variant="approvals"
-        >
-          <span className="icon-rail-nav-item__icon">{approvalsNavIcon}</span>
-          <span className="icon-rail-nav-item__label">{t('nav.approvals')}</span>
-        </button>
-      )}
+        <WebUINavigationHost
+          slotId="application.menu"
+          className="min-w-0 w-full items-center"
+          style={{ gap: 0 }}
+          instanceClassName="flex min-w-0 w-full flex-col items-center"
+          styles={pluginNavigationStyles}
+        />
+        <div className="icon-rail-spacer" />
 
+        {/* 与 7519 一致：申请入口在底部，文档图标，与上方主导航/工作空间分离 */}
+        {!hiddenNavItems.includes('approvals') && (
+          <button
+            type="button"
+            className={`icon-rail-nav-item${activeNav === 'approvals' ? ' icon-rail-nav-item--active' : ''}`}
+            onClick={() => handleNavClick('approvals')}
+            onPointerDownCapture={() => onNavItemPointerDownCapture?.('approvals')}
+            onMouseEnter={() => onNavItemHover?.('approvals')}
+            onMouseLeave={() => onNavItemHover?.(null)}
+            aria-label={t('nav.approvals')}
+            title={t('nav.approvals')}
+            data-testid="session-sidebar-nav-item"
+            data-variant="approvals"
+          >
+            <span className="icon-rail-nav-item__icon">{approvalsNavIcon}</span>
+            <span className="icon-rail-nav-item__label">{t('nav.approvals')}</span>
+          </button>
+        )}
+
+      </div>
       {onToggleJiuwenMate ? (
         <JiuwenMateModeSwitch
           active={false}
@@ -283,7 +284,7 @@ export function SessionSidebar({
       <EnterpriseContextSwitcher />
       <WebUIHost slotId="application.sidebar.footer" sessionId=""
         mountOptions={footerMountOptions}
-        className="w-full shrink-0 items-center pb-3" instanceClassName="flex justify-center"
+        className="icon-rail-user-slot" instanceClassName="flex justify-center"
       />
     </aside>
   );
