@@ -99,9 +99,9 @@ _err_handler.setFormatter(_BARE)
 _ERR.addHandler(_err_handler)
 
 
-def emit(message, *, err=False):
+def emit(message, *, to_stderr=False):
     """Write one protocol line to stdout (or stderr) without a log prefix."""
-    (_ERR if err else _OUT).info(message)
+    (_ERR if to_stderr else _OUT).info(message)
 
 BASE = os.environ.get("E2E_BASE", "http://127.0.0.1:8323")
 RESULTS: list[tuple[str, str, str]] = []
@@ -1528,15 +1528,15 @@ def main(argv):
     flags = ("--engine-only", "--http-only", "--container")
     unknown = [a for a in argv if a not in flags]
     if unknown:
-        emit(f"unknown arguments: {unknown}", err=True)
+        emit(f"unknown arguments: {unknown}", to_stderr=True)
         return 2
     picked = [flag for flag in flags if flag in argv]
     layer = picked[0][2:].replace("-only", "") if picked else "all"
     if len(picked) > 1:
-        emit(f"only one layer flag is allowed, got {picked}", err=True)
+        emit(f"only one layer flag is allowed, got {picked}", to_stderr=True)
         return 2
     if dry_run and layer != "container":
-        emit("--dry-run only applies to the container layer", err=True)
+        emit("--dry-run only applies to the container layer", to_stderr=True)
         return 2
     emit(f"LAYER {layer}" + (f" BASE {BASE}" if layer != "container" else ""))
     if layer in ("all", "engine"):
