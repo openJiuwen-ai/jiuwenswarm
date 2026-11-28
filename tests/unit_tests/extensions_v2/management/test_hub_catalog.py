@@ -23,6 +23,7 @@ from jiuwenswarm.extensions_v2.management.hub_catalog import (
     hub_file_tree,
 )
 from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
+    ExtensionBundleRecord,
     ExtensionInstallRecord,
     ExtensionInstallState,
 )
@@ -458,3 +459,49 @@ def test_project_detail_marks_a_version_that_failed_to_load(tmp_path: Path) -> N
     assert states["2.0.0"]["status"] == "failed"
     assert states["2.0.0"]["error"] == "No module named 'demo'"
     assert states["2.2.2"]["status"] == "active"
+
+
+def test_hub_cards_follow_a_disabled_bundle_container(tmp_path: Path) -> None:
+    install_dir = tmp_path / "installed"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    store.upsert_bundle(ExtensionBundleRecord(
+        bundle_id="harness.switch", version="1.0.0", origin="hub",
+        asset_id="asset-bundle", status="disabled", active=False,
+    ))
+    state = SimpleNamespace(active=[], installed=[])
+
+    card = hub_card(
+        HubAssetSummary(
+            kind="system_plugin",
+            asset_id="asset-bundle",
+            display_name="Harness",
+            short_description="",
+            public_latest_version="1.0.0",
+            icon_uri="",
+            tags=(),
+            package_name="harness.switch",
+        ),
+        build_state_index(state, store),
+        store,
+    )
+    detail = hub_detail(
+        HubAssetDetail(
+            kind="system_plugin",
+            asset_id="asset-bundle",
+            version="1.0.0",
+            display_name="Harness",
+            short_description="",
+            detail_description="",
+            icon_uri="",
+            tags=(),
+            package_name="harness.switch",
+        ),
+        state,
+        store,
+    )
+
+    for result in (card, detail):
+        assert result["installed"] is True
+        assert result["active"] is False
+        assert result["enabled"] is False
+        assert result["overallStatus"] == "disabled"
