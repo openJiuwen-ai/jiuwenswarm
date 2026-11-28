@@ -109,13 +109,17 @@ def migrate_legacy_symphony_config(
         equivalent; the file migration retains the original YAML in a backup.
         Old artifacts stay untouched; custom roots use a fresh runtime child.
     """
-    from jiuwenswarm.common.config import resolve_env_vars
+    from jiuwenswarm.common.config import (
+        _LEGACY_SYMPHONY_ORCHESTRATION_FIELDS,
+        _LEGACY_SYMPHONY_SECTIONS,
+        resolve_env_vars,
+    )
 
     explicit = deepcopy(raw)
-    legacy = _pop_legacy_fields(explicit, ("enabled", "paths", "fingerprint", "build", "evolution", "skill_retrieval"))
+    legacy = _pop_legacy_fields(explicit, _LEGACY_SYMPHONY_SECTIONS)
     orchestration = explicit.get("orchestration")
     if isinstance(orchestration, dict):
-        legacy["orchestration"] = _pop_legacy_fields(orchestration, ("mode", "top_k", "max_depth"))
+        legacy["orchestration"] = _pop_legacy_fields(orchestration, _LEGACY_SYMPHONY_ORCHESTRATION_FIELDS)
     converted: dict[str, Any] = {}
     for old_path, new_path in _LEGACY_SYMPHONY_FIELDS.items():
         value = legacy
@@ -237,6 +241,7 @@ def symphony_config_from_dict(
     defaults = {
         "capability": {
             "sources": [{"type": "skill", "root": str(workspace / "skills")}],
+            "scan": {"max_depth": 1},
             "fingerprint": {"extraction": {
                 "llm_enabled": True, "max_concurrency": 1, "batch_size": 1,
                 "max_output_tokens": None,

@@ -528,6 +528,7 @@ generated: true
 
 ## jiuwenswarm/channels/web/frontend/src/features/trajectory
 
+| [B_20261128_0953_symphony-init-logs](bugfix/jiuwenswarm/common/B_20261128_0953_symphony-init-logs.md) | B | 全新初始化在 wheel 所在目录生成 logs | lin-xiaoyu | 无独立 D：修复配置迁移的导入时机，沿用现有的迁移和校验契约。 |
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261112_1120_goal-assessment-view](features/F_20261112_1120_goal-assessment-view.md) | F | Goal 评估轨迹独立展示与回放隔离 | alan_cheng | agent-core:D-20261112-1120-goal-assessment-isolation（非本仓或待定位） |
