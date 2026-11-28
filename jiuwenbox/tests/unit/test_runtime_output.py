@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -11,7 +13,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from jiuwenbox.models.policy import SecurityPolicy
-from jiuwenbox.supervisor import sandbox_daemon
+from jiuwenbox.supervisor import daemon_ipc
 from jiuwenbox.server.runtime.output import RuntimeOutput
 
 
@@ -42,7 +44,7 @@ def test_parent_close_does_not_stop_background_output(tmp_path):
     path = tmp_path / "agent.out"
     output = RuntimeOutput(str(path), None)
     child = subprocess.Popen(
-        ["cat"], stdin=subprocess.PIPE, stdout=output.stdout, stderr=output.stderr,
+        ["/bin/cat"], stdin=subprocess.PIPE, stdout=output.stdout, stderr=output.stderr,
         **({"user": 65534, "group": 65534, "extra_groups": []} if os.geteuid() == 0 else {}),
     )
     output.close()
@@ -113,18 +115,37 @@ async def test_redirected_create_bypasses_parked_warm_slot(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("inherit_stdout,inherit_stderr", [(True, True), (True, False), (False, True), (False, False)])
-def test_background_spawn_inherits_selected_streams(capfdbinary, monkeypatch, inherit_stdout, inherit_stderr):
-    sandbox_daemon._load_deferred_modules()
-    jobs, reply = {}, {}
-    monkeypatch.setattr(sandbox_daemon, "_bg_jobs", jobs)
-    monkeypatch.setattr(sandbox_daemon, "_send_response", lambda _, payload: reply.update(payload))
-    sandbox_daemon._handle_exec_background(None, {
-        "job_id": "output", "command": ["/bin/sh", "-c", "printf out; printf err >&2"],
-        "inherit_stdout": inherit_stdout, "inherit_stderr": inherit_stderr,
-    })
-    assert reply["ok"], reply
-    assert (reply["stdout_redirected"], reply["stderr_redirected"]) == (inherit_stdout, inherit_stderr)
-    assert jobs["output"].proc.wait(timeout=5) == 0
-    stdout, stderr = capfdbinary.readouterr()
-    assert stdout == (b"out" if inherit_stdout else b"")
-    assert stderr == (b"err" if inherit_stderr else b"")
+def test_background_spawn_inherits_selected_streams(tmp_path, monkeypatch, inherit_stdout, inherit_stderr):
+    monkeypatch.chdir(tmp_path)
+
+    def request(operation, params=None):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5)
+            client.connect("control.sock")
+            daemon_ipc.send_frame(client, daemon_ipc.encode_request(request_type=operation, payload=params))
+            return json.loads(daemon_ipc.recv_frame(client, daemon_ipc.MAX_HEADER_BYTES))
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind("control.sock")
+        listener.listen()
+        env = {**os.environ, daemon_ipc.LISTENER_FD_ENV: str(listener.fileno())}
+        with subprocess.Popen(
+            [sys.executable, "-m", "jiuwenbox.supervisor.sandbox_daemon"], env=env,
+            pass_fds=(listener.fileno(),), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ) as daemon:
+            try:
+                reply = request("exec_background", {
+                    "job_id": "output", "command": ["/bin/sh", "-c", "echo child-out; echo child-err >&2"],
+                    "inherit_stdout": inherit_stdout, "inherit_stderr": inherit_stderr,
+                })
+                assert reply.get("ok"), reply
+                assert reply.get("stdout_redirected") is inherit_stdout
+                assert reply.get("stderr_redirected") is inherit_stderr
+                assert request("shutdown").get("ok")
+                stdout, stderr = daemon.communicate(timeout=5)
+            finally:
+                if daemon.poll() is None:
+                    daemon.kill()
+    assert daemon.returncode == 0, stderr
+    assert (b"child-out" in stdout.splitlines()) == inherit_stdout
+    assert (b"child-err" in stderr.splitlines()) == inherit_stderr
