@@ -34,6 +34,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
 from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import (
     NativePathGuardProjection, current_native_path_access,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.shell_path_context import shell_path_digest
 from jiuwenswarm.common.utils import logger
 
 ExactPermissionPersistCallback = Callable[..., bool]
@@ -237,6 +238,9 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
                 name, args, permissions,
             ),
         }
+        shell_digest = shell_path_digest(name, args)
+        if shell_digest is not None:
+            request.metadata["permission_shell_path_sha256"] = shell_digest
         request.auto_confirm_key = ""
 
     def _invoke_permissions_hook(
@@ -333,6 +337,11 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
                 metadata = getattr(request, "metadata", {}) or {}
                 args = self.parse_tool_args(tool_call)
                 if metadata.get("permission_arguments_sha256") != self._approval_arguments_digest(args):
+                    self._remove_exact_auto_confirm(ctx, tool_call)
+                    return self.reject(tool_result="[PERMISSION_DENIED] approval_context_changed")
+                expected_shell = metadata.get("permission_shell_path_sha256")
+                name = self._normalize_tool_name(tool_call.name)
+                if expected_shell is not None and expected_shell != shell_path_digest(name, args):
                     self._remove_exact_auto_confirm(ctx, tool_call)
                     return self.reject(tool_result="[PERMISSION_DENIED] approval_context_changed")
                 attempt.accesses = tuple(tuple(item) for item in metadata.get("permission_ask_accesses", ()))

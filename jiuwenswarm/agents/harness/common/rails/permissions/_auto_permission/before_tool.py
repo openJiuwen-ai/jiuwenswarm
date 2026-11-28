@@ -51,6 +51,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models
     ToolInvocation,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import NATIVE_PATH_ACCESS
+from jiuwenswarm.agents.harness.common.rails.permissions.shell_path_context import ShellPathScope, shell_path_call
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
     peek_reviewer_tool_result_metadata,
 )
@@ -195,8 +196,8 @@ class AutoPermissionBeforeToolMixin:
                 capture(_resolve_session_id(invocation.ctx, kwargs))
                 if callable(capture) else nullcontext()
             )
-            with context:
-                return await self._before_tool_call_impl(*args, **kwargs)
+            with shell_path_call() as scope, context:
+                return await self._before_tool_call_impl(*args, shell_path_scope=scope, **kwargs)
         except asyncio.CancelledError:
             invocation = _extract_invocation(args, kwargs)
             key = tool_invocation_key_from_context(invocation.ctx)
@@ -233,7 +234,9 @@ class AutoPermissionBeforeToolMixin:
         """Let a host adapter supply an SDK-attributed answer for this exact call."""
         return None
 
-    async def _before_tool_call_impl(self, *args: Any, **kwargs: Any) -> Any:
+    async def _before_tool_call_impl(
+        self, *args: Any, shell_path_scope: ShellPathScope | None = None, **kwargs: Any,
+    ) -> Any:
         """Evaluate auto-permission guards before delegating to the base rail."""
         clear_no_host_fallback()
         clear_send_file_execution_grant()
@@ -275,7 +278,7 @@ class AutoPermissionBeforeToolMixin:
         )
         invocation = _repair_invocation_args_for_execution(invocation)
         invocation, command_contract_error = (
-            _normalize_command_invocation_for_execution(invocation, kwargs)
+            _normalize_command_invocation_for_execution(invocation, kwargs, shell_path_scope=shell_path_scope)
         )
         invocation, native_contract_error = _normalize_native_path_invocation_for_execution(
             invocation, kwargs, workspace_root=self.workspace_root,

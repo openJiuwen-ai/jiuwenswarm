@@ -233,7 +233,7 @@ async def test_auto_callback_restores_adapter_permissions(current, fallback, exp
 
     installed = {"tools": {"get_current_goal": "allow", "locked": "deny"}}
 
-    async def evaluate():
+    async def evaluate(*, shell_path_scope=None):
         assert RUN_PERMISSIONS.get() == (fallback if current is None else current)
         return overlay_run_permissions(installed)
 
@@ -257,7 +257,7 @@ async def test_auto_callback_cleans_request_permissions_on_failure(error):
         AutoPermissionBeforeToolMixin,
     )
 
-    async def fail():
+    async def fail(*, shell_path_scope=None):
         assert RUN_PERMISSIONS.get() == {"get_current_goal": "deny"}
         raise error()
 
@@ -280,7 +280,7 @@ async def test_auto_callback_keeps_existing_workers_and_next_requests_isolated()
 
     release = asyncio.Event()
 
-    async def evaluate():
+    async def evaluate(*, shell_path_scope=None):
         await release.wait()
         return overlay_run_permissions({"tools": {"get_current_goal": "ask"}})["tools"]["get_current_goal"]
 

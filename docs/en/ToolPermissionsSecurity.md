@@ -108,6 +108,12 @@ When a tool call involves **paths outside the agent workspace**, `ExternalDirect
   - **Shell**: `bash`, `mcp_exec_command`, `create_terminal` (path extraction from command strings per rules).
   - **Path tools**: same set as in tiered path-tool matching (`read_file`, `write_file`, `list_dir`, `grep`, etc. — paths collected from arguments).
 
+With a Core version that provides POSIX path analysis, Smart approval can show explicit
+path candidates for a local shell, including targets reachable only after a prior
+directory change fails. Native FileGuard checks confirmed candidates. When structured
+analysis is unavailable, Smart approval marks the compatibility evidence incomplete.
+
+
 Configuring `approval_overrides` without `external_directory` may still result in `ask` on the external-directory dimension; they are commonly used together.
 
 ---

@@ -8,7 +8,7 @@ import asyncio
 import inspect
 import json
 from copy import deepcopy
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -51,6 +51,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.url_safety import (
 AUTO_REVIEW_REASON_SUMMARY_LIMIT = 1024
 AUTO_REVIEW_REASON_CODE_LIMIT = 80
 AUTO_REVIEW_PATH_TARGET_LIMIT = 8
+AUTO_REVIEW_SHELL_PATH_TARGET_LIMIT = 16
 AUTO_REVIEW_PATH_LABEL_LIMIT = 80
 AUTO_REVIEW_PAYLOAD_MAX_BYTES = 65536
 REQUIRED_REVIEWER_FIELDS = frozenset(
@@ -336,12 +337,17 @@ def build_reviewer_action_view(
     """Project one bounded current-call view without Host identity or raw args."""
 
     network = inspect_network_scope(facts)
+    shell_paths = facts.shell_path_analysis
+    reads, writes = facts.read_paths, facts.write_paths
+    if shell_paths is not None:
+        reads = tuple({entry.path.as_posix() for entry in shell_paths.accesses if entry.action == "read"})
+        writes = tuple({entry.path.as_posix() for entry in shell_paths.accesses if entry.action != "read"})
     summary: dict[str, Any] = {
         "accesses_known": facts.accesses_known,
         "path_counts": {
             "external": len(facts.external_paths),
-            "read": len(facts.read_paths),
-            "write": len(facts.write_paths),
+            "read": len(reads),
+            "write": len(writes),
         },
         "risk_tier": facts.capability.risk_tier,
         "side_effects": sorted(facts.capability.static_side_effects),
@@ -436,50 +442,76 @@ def _path_target_view(
 ) -> tuple[list[dict[str, Any]], bool]:
     """Expose bounded labels for Core-extracted accesses, never raw paths."""
 
+    analysis = facts.shell_path_analysis
+    if analysis is not None:
+        entries = (
+            (
+                entry.action, entry.path.as_posix(),
+                {
+                    "access_kind": entry.kind,
+                    "requires_prior_directory_change_failure": entry.requires_prior_directory_change_failure,
+                },
+            )
+            for entry in analysis.accesses
+        )
+        return _render_path_targets(
+            facts, entries, policy_level,
+            incomplete=analysis.coverage != "complete",
+            limit=AUTO_REVIEW_SHELL_PATH_TARGET_LIMIT,
+        )
     if not facts.accesses_known:
         return [], True
+    entries = (
+        (operation, raw_path, {})
+        for operation, paths in (("read", facts.read_paths), ("write", facts.write_paths))
+        for raw_path in paths
+    )
+    return _render_path_targets(facts, entries, policy_level, incomplete=facts.tool_name == "bash")
+
+
+def _render_path_targets(
+    facts: ToolDecisionFacts,
+    entries: Iterable[tuple[str, str, dict[str, Any]]],
+    policy_level: str,
+    *,
+    incomplete: bool = False,
+    limit: int = AUTO_REVIEW_PATH_TARGET_LIMIT,
+) -> tuple[list[dict[str, Any]], bool]:
     targets: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for operation, paths in (
-        ("read", facts.read_paths),
-        ("write", facts.write_paths),
-    ):
-        for raw_path in paths:
+    seen: set[tuple[str, str, str]] = set()
+    for operation, raw_path, details in entries:
+        if details:
+            identity = raw_path
+        else:
             try:
                 path = Path(raw_path).expanduser()
                 identity = str(path.resolve(strict=False)) if path.is_absolute() else raw_path
             except (OSError, RuntimeError, TypeError, ValueError):
                 identity = raw_path
-            key = (operation, identity)
-            if key in seen:
-                continue
-            seen.add(key)
-            if len(targets) >= AUTO_REVIEW_PATH_TARGET_LIMIT:
-                return targets, True
-            scope = _path_scope(
-                raw_path,
-                facts.workspace_root,
-                facts.platform_trusted_root,
-                facts.external_paths,
-                policy_level,
-            )
-            label = _path_label(raw_path)
-            location, status = reviewer_path_location(
-                raw_path, workspace_root=facts.workspace_root,
-                platform_trusted_root=facts.platform_trusted_root,
-            )
-            if location is not None:
-                label = location["relative_path"].rsplit("/", 1)[-1][:AUTO_REVIEW_PATH_LABEL_LIMIT]
-            elif status == "redacted":
-                label = "[redacted_target]"
-            item: dict[str, Any] = {
-                "operation": operation, "target": label, "scope": scope,
-                "location_status": status,
-            }
-            if location is not None:
-                item["location"] = location
-            targets.append(item)
-    return targets, False
+        key = (operation, identity, details.get("access_kind", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(targets) >= limit:
+            return targets, True
+        scope = _path_scope(
+            raw_path, facts.workspace_root, facts.platform_trusted_root, facts.external_paths, policy_level,
+        )
+        label = _path_label(raw_path)
+        location, status = reviewer_path_location(
+            raw_path, workspace_root=facts.workspace_root, platform_trusted_root=facts.platform_trusted_root,
+        )
+        if location is not None:
+            label = location["relative_path"].rsplit("/", 1)[-1][:AUTO_REVIEW_PATH_LABEL_LIMIT]
+        elif status == "redacted":
+            label = "[redacted_target]"
+        item: dict[str, Any] = {
+            "operation": operation, "target": label, "scope": scope, "location_status": status, **details,
+        }
+        if location is not None:
+            item["location"] = location
+        targets.append(item)
+    return targets, incomplete
 
 
 def _path_scope(

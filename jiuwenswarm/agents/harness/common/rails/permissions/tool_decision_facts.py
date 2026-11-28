@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openjiuwen.harness.security.permission_engine.fileguard.path_extract import (
     extract_accesses_native,
@@ -18,6 +18,11 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities impor
     ToolCapability,
     classify_tool,
 )
+
+from jiuwenswarm.agents.harness.common.rails.permissions.shell_path_context import current_shell_paths
+
+if TYPE_CHECKING:
+    from openjiuwen.harness.security.permission_engine.fileguard.shell_paths import ShellPathAnalysis
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +39,7 @@ class ToolDecisionFacts:
     command: str
     workspace_root: str
     platform_trusted_root: str
+    shell_path_analysis: ShellPathAnalysis | None = None
 
     @property
     def tool_name(self) -> str:
@@ -128,6 +134,7 @@ def build_tool_decision_facts(
         platform_trusted_root=(
             platform_root.as_posix() if platform_root is not None else ""
         ),
+        shell_path_analysis=current_shell_paths(capability.tool_name, args),
     )
 
 

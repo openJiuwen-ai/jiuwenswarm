@@ -1,13 +1,16 @@
 """Smart native paths use real SDK bindings, policy and execution targets."""
 
 import asyncio
+import base64
 import json
+import shutil
 import subprocess
 import sys
 import textwrap
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from openjiuwen.core.foundation.llm import ToolCall
@@ -610,10 +613,37 @@ def test_native_bash_failed_partial_workdir_writeback_still_blocks(native):
             return inputs.tool_args
 
     invocation.ctx.inputs = ReadOnlyInputs()
-    result, error = inv._normalize_command_invocation_for_execution(invocation, {})
+    scope = Mock()
+    result, error = inv._normalize_command_invocation_for_execution(invocation, {}, shell_path_scope=scope)
     assert error == "command_workdir_writeback_failed"
+    scope.bind.assert_not_called()
     assert result is invocation
     assert json.loads(invocation.tool_call.arguments)["workdir"] == str(native.work)
+
+
+def test_native_bash_freezes_workdir_with_or_without_scope(native):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    tool = BashTool(native.operation)
+    native.manager.add_ability(tool.card, tool)
+    for scope in (None, Mock()):
+        invocation = _invocation(native, "bash", {"command": "pwd"})
+
+        def check_writeback(bound_tool, args):
+            assert bound_tool is tool
+            assert args == json.loads(invocation.tool_call.arguments)
+            assert args["workdir"] == str(native.work)
+
+        if scope is not None:
+            scope.bind.side_effect = check_writeback
+        forwarded = {}
+        result, error = inv._normalize_command_invocation_for_execution(
+            invocation, forwarded, shell_path_scope=scope,
+        )
+        assert not error and result.tool_args["workdir"] == str(native.work)
+        assert "shell_path_scope" not in forwarded
+        if scope is not None:
+            scope.bind.assert_called_once()
 
 
 def test_native_bash_preserves_explicit_relative_workdir(native):
@@ -625,3 +655,325 @@ def test_native_bash_preserves_explicit_relative_workdir(native):
     result, error = inv._normalize_command_invocation_for_execution(invocation, {})
     assert not error
     assert result is invocation
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="Verified local POSIX executor only")
+@pytest.mark.parametrize("sub_exists", [True, False])
+async def test_a44_native_bash_reviewer_paths_match_execution(native_history, monkeypatch, sub_exists):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+    from jiuwenswarm.agents.harness.common.rails.permissions.shell_path_context import current_shell_paths
+
+    pytest.importorskip("openjiuwen.harness.security.permission_engine.fileguard.shell_paths")
+    for name in ("CDPATH", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS"):
+        monkeypatch.delenv(name, raising=False)
+    h = native_history
+    tool = BashTool(h.operation)
+    h.manager.add_ability(tool.card, tool)
+    configured = deepcopy(h.permissions)
+    configured["tools"] = {"bash": "ask"}
+    configured["file_guard"]["paths"] = [
+        {"path": (h.work / "output.txt").as_posix(), "read": "allow", "write": "deny"},
+    ]
+    h.rail.policy_evaluator = OpenJiuwenPolicyEvaluator(
+        h.rail.base_rail, permission_config_getter=lambda: configured,
+    )
+    if sub_exists:
+        (h.work / "sub").mkdir()
+    (h.work / "output.txt").write_bytes(b"ROOT_INPUT")
+    (h.root / "output.txt").write_bytes(b"PARENT_INPUT")
+    command = (
+        "cd sub && printf '%s' 'SUB_OUTPUT' > output.txt; echo \"exit=$?\"; "
+        "echo \"--- sub/output.txt ---\"; ls -l output.txt; echo \"[content]\"; cat output.txt; echo; "
+        "echo \"--- root output.txt (after) ---\"; cd .. && ls -l output.txt && md5sum output.txt "
+        "&& echo \"[content]\"; cat output.txt; echo"
+    )
+    await h.execute("bash", {"command": command})
+    wire = h.client.requests[0].to_json_dict()
+    evidence = wire["review_evidence"]
+    assert evidence["reviewable_payload"]["command"] == command
+    assert evidence["path_targets_incomplete"] is False
+    targets = evidence["path_targets"]
+    writes = [target for target in targets if target["operation"] == "write"]
+    assert len(writes) == 1
+    assert writes[0]["location"]["relative_path"] == "work/sub/output.txt"
+    parent_reads = [
+        target for target in targets if target["location"]["relative_path"] == "output.txt"
+    ]
+    assert len(parent_reads) == 1
+    assert parent_reads[0]["requires_prior_directory_change_failure"] is True
+    assert wire["descriptor_summary"]["path_counts"]["write"] == 1
+    assert (h.work / "output.txt").read_bytes() == b"ROOT_INPUT"
+    assert (h.root / "output.txt").read_bytes() == b"PARENT_INPUT"
+    child = h.work / "sub" / "output.txt"
+    if sub_exists:
+        assert child.read_bytes() == b"SUB_OUTPUT"
+    else:
+        assert not child.exists()
+    assert current_shell_paths("bash", evidence["reviewable_payload"]) is None
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="Verified local POSIX executor only")
+async def test_posix_reviewer_marks_partial_targets_incomplete(native_history, monkeypatch):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    pytest.importorskip("openjiuwen.harness.security.permission_engine.fileguard.shell_paths")
+    for name in ("CDPATH", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "A44_VALUE"):
+        monkeypatch.delenv(name, raising=False)
+    h = native_history
+    tool = BashTool(h.operation)
+    h.manager.add_ability(tool.card, tool)
+    (h.work / "local file").write_text("CONFIRMED")
+    (h.work / "legacy.txt").write_text("AFTER_DYNAMIC_WORD")
+
+    await h.execute("bash", {"command": 'cat "local file"; echo "$A44_VALUE"; cat ./legacy.txt'})
+
+    evidence = h.client.requests[0].to_json_dict()["review_evidence"]
+    assert evidence["path_targets_incomplete"] is True
+    targets = evidence["path_targets"]
+    assert len(targets) == 1
+    assert targets[0]["location"]["relative_path"] == "work/local file"
+    assert targets[0]["operation"] == "read"
+    assert targets[0]["requires_prior_directory_change_failure"] is False
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="Verified local POSIX executor only")
+@pytest.mark.parametrize("layout", ["normal", "outer_logs", "deny_parent", "deny_log"])
+async def test_compound_build_reviewer_tracks_second_workdir(native_history, monkeypatch, layout):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    pytest.importorskip("openjiuwen.harness.security.permission_engine.shell_path_context")
+    for name in ("CDPATH", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS"):
+        monkeypatch.delenv(name, raising=False)
+    h = native_history
+    tool = BashTool(h.operation)
+    h.manager.add_ability(tool.card, tool)
+    configured = deepcopy(h.permissions)
+    configured["tools"] = {"bash": "ask"}
+    configured["file_guard"]["paths"] = [
+        {"path": str(h.work / misleading), "read": "allow", "write": "deny"}
+        for misleading in ("app.c", "build.log")
+    ]
+    if layout in {"deny_parent", "deny_log"}:
+        protected = "project" if layout == "deny_parent" else "project/logs/build.log"
+        configured["file_guard"]["paths"].append(
+            {"path": str(h.work / protected), "read": "allow", "write": "deny"},
+        )
+    h.rail.policy_evaluator = OpenJiuwenPolicyEvaluator(
+        h.rail.base_rail, permission_config_getter=lambda: configured,
+    )
+    if layout == "outer_logs":
+        (h.work / "project").mkdir()
+        (h.work / "project/src").write_text("blocker")
+        (h.root / "logs").mkdir()
+        (h.root / "logs/build.log").write_text("BEFORE\n")
+    command = (
+        'mkdir -p ./project/src ./project/logs && cd ./project/src && echo "main() {}" > ./app.c '
+        '&& ls -la ../non_existent_dir >> ../logs/build.log 2>&1 ; cd ../logs '
+        '&& echo "--- Build Check ---" >> ./build.log && cat ./build.log && cd - && pwd'
+    )
+    results = await h.execute("bash", {"command": command})
+    if layout.startswith("deny_"):
+        assert not h.client.requests
+        assert not (h.work / "project").exists()
+        return
+    assert results[0][0].success
+    evidence = h.client.requests[0].to_json_dict()["review_evidence"]
+    assert evidence["path_targets_incomplete"] is False
+    paths = {(entry["location"]["relative_path"], entry["operation"], entry["access_kind"])
+             for entry in evidence["path_targets"]}
+    expected_writes = {
+        "work/project/src", "work/project/logs", "work/project/src/app.c",
+        "work/project/logs/build.log", "logs/build.log",
+    }
+    if layout == "normal":
+        expected_writes.add("work/project")
+    assert {path for path, action, _ in paths if action == "write"} == expected_writes
+    assert ("work/project/logs", "read", "directory_change") in paths
+    if layout == "outer_logs":
+        assert (h.root / "logs/build.log").read_text() == "BEFORE\n--- Build Check ---\n"
+        assert not (h.work / "project/logs/build.log").exists()
+    else:
+        assert (h.work / "project/src/app.c").read_text() == "main() {}\n"
+        log = (h.work / "project/logs/build.log").read_text()
+        assert "non_existent_dir" in log and log.endswith("--- Build Check ---\n")
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="Verified local POSIX executor only")
+async def test_complete_shell_paths_still_obey_reviewer_projection_limit(native_history, monkeypatch):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    pytest.importorskip("openjiuwen.harness.security.permission_engine.shell_path_context")
+    for name in ("CDPATH", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS"):
+        monkeypatch.delenv(name, raising=False)
+    h = native_history
+    tool = BashTool(h.operation)
+    h.manager.add_ability(tool.card, tool)
+    files = [f"file-{index}.txt" for index in range(17)]
+    for name in files:
+        (h.work / name).touch()
+    results = await h.execute("bash", {"command": "cat " + " ".join(files)})
+    assert results[0][0].success
+    evidence = h.client.requests[0].to_json_dict()["review_evidence"]
+    assert evidence["path_targets_incomplete"] is True
+    assert [entry["location"]["relative_path"] for entry in evidence["path_targets"]] == [
+        f"work/{name}" for name in files[:16]
+    ]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Requires native Windows PowerShell")
+@pytest.mark.parametrize(("executable", "expected"), [("powershell.exe", "rejected"), ("pwsh.exe", "parsed")])
+def test_compound_powershell_is_parsed_by_the_engine_version(executable, expected, tmp_path):
+    path = shutil.which(executable)
+    if path is None:
+        pytest.skip(f"{executable} is unavailable")
+    command = (
+        r'md -Force ".\Proj Folder\Src", "..\Logs" | Out-Null && sl .\Proj\` Folder/Src '
+        r'&& New-Item -Path .\app.cs -Value "test" -Force > ..\Logs\build.log 2>&1 '
+        r'&& pushd $env:TEMP && gci .\\\*.tmp >> $HOME\Desktop\temp_list.txt && popd && cd - '
+        r'&& gc .\app.cs | Out-File -FilePath ..\Logs/final.txt -Append'
+    )
+    payload = base64.b64encode(command.encode()).decode()
+    probe = f"""
+        $src = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}'))
+        $tokens = $null
+        $errors = $null
+        $null = [System.Management.Automation.Language.Parser]::ParseInput($src,[ref]$tokens,[ref]$errors)
+        if ($errors) {{
+            'rejected'
+            $errors | ForEach-Object {{ $_.Extent.Text }}
+        }} else {{ 'parsed' }}
+    """
+    encoded = base64.b64encode(probe.encode("utf-16-le")).decode()
+    result = subprocess.run(
+        [path, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        cwd=tmp_path, capture_output=True, text=True, timeout=15, check=True,
+    )
+    assert result.stdout.splitlines()[0] == expected
+    if expected == "rejected":
+        assert "&&" in result.stdout.splitlines()
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="Requires a local POSIX shell")
+@pytest.mark.parametrize(
+    "source", ["none", "code", "unmanaged_team", "managed_team", "custom", "parse_failure", "base_changes"],
+)
+async def test_posix_path_evidence_uses_available_environment(native_history, monkeypatch, source):
+    from openjiuwen.agent_teams.rails import team_context
+    from openjiuwen.core.sys_operation.execution_environment import ExecutionEnvironment, execution_environment_scope
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+    from jiuwenswarm.agents.harness.code.spec import CodeBuildContext
+    from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+
+    pytest.importorskip("openjiuwen.harness.security.permission_engine.fileguard.shell_paths")
+    for name in ("CDPATH", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS"):
+        monkeypatch.delenv(name, raising=False)
+    h = native_history
+    tool = BashTool(h.operation)
+    h.manager.add_ability(tool.card, tool)
+    local = h.work / "sub"
+    alternate = h.root / "alternate" / "sub"
+    local.mkdir()
+    alternate.mkdir(parents=True)
+    environment = {"CDPATH": str(alternate.parent)}
+
+    async def env_at_dispatch():
+        return ExecutionEnvironment(values=environment)
+
+    async def stored_settings(_):
+        return {"settings": {"environment": environment}}
+
+    if source == "code":
+        h.manager.execution_environment_resolver = CodeBuildContext().resolve_execution_environment
+    elif source in {"unmanaged_team", "managed_team"}:
+        backend = SimpleNamespace(db=SimpleNamespace(session_settings=SimpleNamespace(get=stored_settings)))
+        monkeypatch.setattr(team_context, "get_team_backend", lambda _: backend)
+        context = SwarmBuildContext(mode="team", execution_settings_managed=source == "managed_team")
+        h.manager.execution_environment_resolver = context.resolve_execution_environment
+    elif source == "custom":
+        h.manager.execution_environment_resolver = env_at_dispatch
+    elif source == "base_changes":
+        assess = h.client.assess
+
+        async def assess_and_change_base(request):
+            monkeypatch.setenv("CDPATH", str(alternate.parent))
+            return await assess(request)
+
+        monkeypatch.setattr(h.client, "assess", assess_and_change_base)
+
+    analyze = Mock(wraps=tool.analyze_local_paths)
+    if source == "parse_failure":
+        analyze.side_effect = RuntimeError("parser unavailable")
+    monkeypatch.setattr(tool, "analyze_local_paths", analyze)
+
+    with execution_environment_scope(ExecutionEnvironment(values=environment)):
+        await h.execute("bash", {"command": "cd sub && printf '%s' DATA > output.txt"})
+
+    late_overlay = source in {"managed_team", "custom"}
+    assert analyze.call_count == (0 if late_overlay else 1)
+    evidence = h.client.requests[0].review_evidence
+    assert evidence["path_targets_incomplete"] is (late_overlay or source == "parse_failure")
+    if not evidence["path_targets_incomplete"]:
+        assert any(
+            entry["operation"] == "write" and entry["location"]["relative_path"] == "work/sub/output.txt"
+            for entry in evidence["path_targets"]
+        )
+    if late_overlay or source == "base_changes":
+        assert (alternate / "output.txt").read_bytes() == b"DATA"
+        assert not (local / "output.txt").exists()
+    else:
+        assert (local / "output.txt").read_bytes() == b"DATA"
+        assert not (alternate / "output.txt").exists()
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="Requires a local POSIX shell")
+async def test_posix_late_environment_keeps_legacy_file_guard_deny(native_history):
+    from openjiuwen.core.sys_operation.execution_environment import ExecutionEnvironment
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    h = native_history
+    tool = BashTool(h.operation)
+    h.manager.add_ability(tool.card, tool)
+    async def env_at_dispatch():
+        return ExecutionEnvironment()
+
+    h.manager.execution_environment_resolver = env_at_dispatch
+    blocked = h.work / "blocked.txt"
+    config = deepcopy(h.permissions)
+    config["file_guard"]["paths"] = [{"path": str(blocked), "write": "deny"}]
+    h.rail.policy_evaluator = OpenJiuwenPolicyEvaluator(h.rail.base_rail, permission_config_getter=lambda: config)
+
+    result = await h.execute("bash", {"command": "echo DATA > ./blocked.txt"})
+
+    assert "PERMISSION_DENIED" in str(result)
+    assert not h.client.requests
+    assert not blocked.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Requires a native Windows shell")
+@pytest.mark.parametrize("shell_type", ["auto", "cmd", "powershell"])
+async def test_windows_bash_uses_native_compatibility_path(native_history, shell_type):
+    from openjiuwen.harness.security.permission_engine.fileguard.path_extract import extract_accesses_native
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    h = native_history
+    tool = BashTool(h.operation)
+    h.manager.add_ability(tool.card, tool)
+    (h.root / "output.txt").write_bytes(b"ROOT_INPUT")
+    command = "echo WIN_OUTPUT > output.txt"
+    await h.execute("bash", {"command": command, "shell_type": shell_type})
+    evidence = h.client.requests[0].to_json_dict()["review_evidence"]
+    args = evidence["reviewable_payload"]
+    assert Path(args["workdir"]) == h.work
+    assert args["shell_type"] == shell_type
+    assert evidence["path_targets_incomplete"] is True
+    legacy = extract_accesses_native("bash", args, h.root)
+    output = (h.work / "output.txt").read_bytes()
+    encoding = "utf-16" if output.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+    assert output.decode(encoding).strip() == "WIN_OUTPUT"
+    assert (h.root / "output.txt").read_bytes() == b"ROOT_INPUT"
+    assert (h.work / "output.txt", "write", "shlex") in legacy
+    writes = [entry for entry in evidence["path_targets"] if entry["operation"] == "write"]
+    assert [entry["location"]["relative_path"] for entry in writes] == ["work/output.txt"]
+    assert all("access_kind" not in entry for entry in writes)
+    assert all("requires_prior_directory_change_failure" not in entry for entry in writes)
