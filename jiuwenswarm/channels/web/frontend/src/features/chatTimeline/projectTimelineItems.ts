@@ -20,7 +20,7 @@ export function projectTimelineItems(
 
   // Window only rows with visible content. Hidden work must not consume the
   // viewport's range, or separate a collapsed turn's header from its answer.
-  return items.flatMap((item) => {
+  const rows = items.flatMap((item) => {
     const meta = turnWorkMeta.get(item.turnId);
     const turnKey = turnKeys.get(item.turnId) ?? item.key;
     const turnFoldable = Boolean(meta?.completed && meta.hasWork);
@@ -51,9 +51,31 @@ export function projectTimelineItems(
         contentOpen,
         isTurnAnchor,
         deliverables,
+        stoppedTurnEnd: false,
       },
     ];
   });
+
+  // A turn the user stopped keeps its partial output; flag its last visible row
+  // so the list can close it with a stopped marker. Turns end where
+  // buildRenderItems ends them: at a user message or at slash-command output,
+  // which stands alone and belongs to no turn.
+  let stopped = false;
+  rows.forEach((row, index) => {
+    if (isUserMessage(row.item)) stopped = row.item.message.inputOutcome === 'stopped';
+    else if (isCommandOutput(row.item)) stopped = false;
+    const next = rows[index + 1];
+    row.stoppedTurnEnd = stopped && (!next || isUserMessage(next.item) || isCommandOutput(next.item));
+  });
+  return rows;
+}
+
+function isUserMessage(item: RenderItem): item is Extract<RenderItem, { type: 'message' }> {
+  return item.type === 'message' && item.message.role === 'user';
+}
+
+function isCommandOutput(item: RenderItem): boolean {
+  return item.type === 'message' && Boolean(item.message.isCommandOutput);
 }
 
 export type TimelineDisplayItem = ReturnType<typeof projectTimelineItems>[number];

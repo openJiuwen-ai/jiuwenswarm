@@ -5285,6 +5285,7 @@
     "turnStarting": "Starting…",
     "turnRunning": "Running",
     "turnElapsed": "Took",
+    "turnStopped": "Stopped",
     "workCompleted": "Completed {{duration}}",
     "workCompletedFallback": "Completed",
     "workCompletedBoth": "Completed {{thinking}} thoughts, {{tools}} tool calls · {{duration}}",

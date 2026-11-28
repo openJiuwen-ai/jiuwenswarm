@@ -2065,6 +2065,11 @@ body.workspace-resize-active iframe {
     color: var(--color-text-secondary);
   }
 
+  /* 用户停止的轮次末尾的标记行：复用 chip 样式，不可点击。 */
+  .turn-stopped-marker {
+    cursor: default;
+  }
+
   .completed-work-chip .tool-tree-item__disclosure {
     opacity: 0.7;
     transition:

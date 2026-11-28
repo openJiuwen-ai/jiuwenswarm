@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
 import { yieldBrowserTask } from '../../utils/yieldBrowserTask';
-import { LoaderCircle } from 'lucide-react';
+import { LoaderCircle, Square } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Message, ToolExecution } from '../../types';
 import { MessageItem } from './MessageItem';
@@ -277,6 +277,22 @@ export function TurnElapsed({
         )}
       </div>
       {timeLine}
+    </div>
+  );
+}
+
+/** Closes a turn the user stopped, so its partial output does not read as a finished reply. */
+function TurnStoppedMarker({ teamLayout }: { teamLayout: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <div
+      className={clsx('completed-work-chip', 'turn-stopped-marker', teamLayout && 'turn-elapsed--team')}
+      data-testid="chat-panel-turn-stopped"
+    >
+      <span className="completed-work-chip__icon" aria-hidden="true">
+        <Square fill="currentColor" strokeWidth={1.8} />
+      </span>
+      <span className="completed-work-chip__label">{t('chatUi.turnStopped')}</span>
     </div>
   );
 }
@@ -934,6 +950,19 @@ export function ChatTimelineList({
     return null;
   };
 
+  const renderDisplayRow = (displayItem: TimelineDisplayItem) => {
+    const row = renderDisplayItem(displayItem);
+    if (!displayItem.stoppedTurnEnd) {
+      return row;
+    }
+    return (
+      <Fragment key={`${timelineScope}/${displayItem.key}-stopped`}>
+        {row}
+        <TurnStoppedMarker teamLayout={isTeamMode} />
+      </Fragment>
+    );
+  };
+
   if (virtualized) {
     return (
       <VirtualTimeline
@@ -941,7 +970,7 @@ export function ChatTimelineList({
         items={displayItems}
         renderItem={(item) => (
           <TimelineRowStateProvider values={rowStateRef.current} prefix={`${timelineScope}/${item.item.key}`}>
-            {renderDisplayItem(item)}
+            {renderDisplayRow(item)}
           </TimelineRowStateProvider>
         )}
         initialState={viewportByScopeRef.current.get(timelineScope)}
@@ -961,7 +990,7 @@ export function ChatTimelineList({
       }
     >
       {visibleRenderItems.map((item) => (
-        <Fragment key={`${timelineScope}/${item.key}`}>{renderDisplayItem(item)}</Fragment>
+        <Fragment key={`${timelineScope}/${item.key}`}>{renderDisplayRow(item)}</Fragment>
       ))}
     </div>
   );
