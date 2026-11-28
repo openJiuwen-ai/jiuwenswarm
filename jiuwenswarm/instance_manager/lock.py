@@ -210,7 +210,10 @@ def write_pid_file(
         "name": <instance_name>
     }
 
-    Uses atomic write: write to temp file then rename.
+    The write is atomic: the record goes to a unique temp file beside the target
+    and ``os.replace`` swaps it in, so a reader always sees a complete file. The
+    replace is retried for a short window while another process still holds the
+    old file open on Windows.
 
     Args:
         config: InstanceConfig for the instance
