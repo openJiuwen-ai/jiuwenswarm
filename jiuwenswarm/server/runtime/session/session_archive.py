@@ -1744,12 +1744,51 @@ class SessionArchiveService:
                             results[sid] = dict(
                                 session_id=sid, ok=False, code=exc.code, error=str(exc)
                             )
+                        except PermissionError as exc:
+                            # A transient filesystem failure (e.g. a Windows
+                            # sharing violation during a lifecycle write) must
+                            # not fail the whole batch RPC.  Record the single
+                            # session as failed and let the operator/consumer
+                            # decide: once mark_finalizing has persisted the
+                            # intent the background finalizer retries cleanup;
+                            # failures before that point need a re-click, same
+                            # as any LifecycleError above.  Other OSErrors
+                            # (disk full, etc.) still fail the batch loudly.
+                            logger.warning(
+                                "cron batch delete: filesystem error on "
+                                "session %s: %s",
+                                sid,
+                                exc,
+                                exc_info=True,
+                            )
+                            results[sid] = dict(
+                                session_id=sid,
+                                ok=False,
+                                code="INTERNAL_ERROR",
+                                error=str(exc),
+                            )
             except lc.LifecycleError as exc:
                 # Lock entry or the parent-operation check failed for the
                 # group; mirror the former per-session failure entries.
                 for sid, _ in group[index:]:
                     results[sid] = dict(
                         session_id=sid, ok=False, code=exc.code, error=str(exc)
+                    )
+            except PermissionError as exc:
+                # Same transient class as the per-session fallback, raised by
+                # lock entry or the project state read instead of _session.
+                logger.warning(
+                    "cron batch delete: filesystem error on project %s: %s",
+                    pid,
+                    exc,
+                    exc_info=True,
+                )
+                for sid, _ in group[index:]:
+                    results[sid] = dict(
+                        session_id=sid,
+                        ok=False,
+                        code="INTERNAL_ERROR",
+                        error=str(exc),
                     )
         ordered = [results[sid] for sid in sorted(results, key=order.__getitem__)]
         return dict(
@@ -1825,6 +1864,24 @@ class SessionArchiveService:
                             code=exc.code,
                             error=str(exc),
                             **exc.details,
+                        )
+                    )
+                except PermissionError as exc:
+                    # Keep one transient filesystem failure from failing the
+                    # whole batch RPC, matching delete_cron_sessions.
+                    logger.warning(
+                        "project batch %s: filesystem error on session %s: %s",
+                        action,
+                        sid,
+                        exc,
+                        exc_info=True,
+                    )
+                    results.append(
+                        dict(
+                            session_id=sid,
+                            ok=False,
+                            code="INTERNAL_ERROR",
+                            error=str(exc),
                         )
                     )
             succeeded = sum(item["ok"] for item in results)

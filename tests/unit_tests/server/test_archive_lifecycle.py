@@ -780,6 +780,35 @@ async def test_delete_cron_sessions_locks_each_project_once(archive, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_delete_cron_sessions_degrades_permission_error(archive, monkeypatch):
+    """One session's sharing violation must not fail the whole cron batch."""
+    service, create, _, _ = archive
+    create("cron_job_a")  # matched by naming convention
+    create("cron_child", cron_id="job_a")  # matched by metadata
+    original = service._session
+
+    async def flaky_session(
+        session_id, action, channel_id, project_id, *, preloaded_meta=None
+    ):
+        if session_id == "cron_child":
+            raise PermissionError(13, "sharing violation")
+        return await original(
+            session_id,
+            action,
+            channel_id,
+            project_id,
+            preloaded_meta=preloaded_meta,
+        )
+
+    monkeypatch.setattr(service, "_session", flaky_session)
+    result = await service.delete_cron_sessions("job_a", "web")
+    assert (result["succeeded_count"], result["failed_count"]) == (1, 1)
+    failed = [item for item in result["results"] if not item["ok"]]
+    assert [item["session_id"] for item in failed] == ["cron_child"]
+    assert failed[0]["code"] == "INTERNAL_ERROR"
+
+
+@pytest.mark.asyncio
 async def test_project_batch_archive_partial_and_delete_only_archived(archive):
     import shutil
 
@@ -823,6 +852,35 @@ async def test_project_batch_archive_partial_and_delete_only_archived(archive):
     assert (await service.project_batch(project.project_id, "delete_archived", "web"))[
         "results"
     ] == []
+
+
+@pytest.mark.asyncio
+async def test_project_batch_degrades_permission_error(archive, monkeypatch):
+    """A single session's sharing violation must not fail the whole batch RPC."""
+    service, create, _, _ = archive
+    create("sess_ok")
+    create("sess_locked")
+    original = service._session
+
+    async def flaky_session(
+        session_id, action, channel_id, project_id, *, preloaded_meta=None
+    ):
+        if session_id == "sess_locked":
+            raise PermissionError(13, "sharing violation")
+        return await original(
+            session_id,
+            action,
+            channel_id,
+            project_id,
+            preloaded_meta=preloaded_meta,
+        )
+
+    monkeypatch.setattr(service, "_session", flaky_session)
+    result = await service.project_batch("default", "archive", "web")
+    assert (result["succeeded_count"], result["failed_count"]) == (1, 1)
+    failed = [item for item in result["results"] if not item["ok"]]
+    assert [item["session_id"] for item in failed] == ["sess_locked"]
+    assert failed[0]["code"] == "INTERNAL_ERROR"
 
 
 @pytest.mark.asyncio
