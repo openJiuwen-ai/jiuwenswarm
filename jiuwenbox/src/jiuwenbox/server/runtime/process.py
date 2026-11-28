@@ -48,6 +48,7 @@ from jiuwenbox.models.sandbox import (
     ExecResult,
     KillBackgroundJobResult,
 )
+from jiuwenbox.server.runtime import errors as runtime_errors
 from jiuwenbox.server.runtime.base import (
     RuntimeAdapter,
     RuntimeBackgroundExecRequest,
@@ -2687,9 +2688,8 @@ class ProcessRuntime(RuntimeAdapter):
                 _close_identity_map_pipes(
                     info_r, info_w, block_r, block_w, install=False,
                 )
-                raise RuntimeError(
-                    f"Failed to apply cgroup limits for warm slot {slot_id}: {exc}"
-                ) from exc
+                public_message = "Failed to apply Supervisor cgroup limits"
+                raise runtime_errors.SandboxCreateError(public_message, diagnostic=str(exc)) from exc
             cgroup_procs_paths = [
                 str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
             ]
@@ -2928,10 +2928,8 @@ class ProcessRuntime(RuntimeAdapter):
                     info_r, info_w, block_r, block_w, install=False,
                 )
                 self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
-                raise RuntimeError(
-                    f"Failed to apply cgroup limits for sandbox "
-                    f"{sandbox_id}: {exc}"
-                ) from exc
+                public_message = "Failed to apply Supervisor cgroup limits"
+                raise runtime_errors.SandboxCreateError(public_message, diagnostic=str(exc)) from exc
             cgroup_procs_paths = [
                 str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
             ]
@@ -3056,9 +3054,10 @@ class ProcessRuntime(RuntimeAdapter):
                     break
                 if time.monotonic() >= deadline:
                     self._abandon_unready_daemon(sandbox_id, proc, netns_name)
-                    raise RuntimeError(
-                        f"Sandbox daemon for {sandbox_id} did not become ready "
-                        f"within {DAEMON_READY_TIMEOUT_SECONDS}s."
+                    raise runtime_errors.SandboxCreateError(
+                        "Sandbox daemon did not become ready in time",
+                        diagnostic=f"Sandbox daemon for {sandbox_id} did not become ready "
+                                   f"within {DAEMON_READY_TIMEOUT_SECONDS}s.",
                     )
                 await asyncio.sleep(DAEMON_READY_POLL_SECONDS)
         with perf_trace.span("daemon.join_firewall", sandbox_id):
@@ -3126,7 +3125,10 @@ class ProcessRuntime(RuntimeAdapter):
                 f"{message} No stdout/stderr was captured before the "
                 f"daemon exited."
             )
-        raise RuntimeError(message)
+        public_message = f"Sandbox daemon exited during startup with code {proc.returncode}."
+        if proc.returncode == 126 and "landlock" in log_excerpt.lower():
+            public_message = "Sandbox daemon could not enforce the required Landlock policy."
+        raise runtime_errors.SandboxCreateError(public_message, diagnostic=message)
 
     @staticmethod
     def _read_daemon_startup_log(startup_log_file: Any | None) -> str:
