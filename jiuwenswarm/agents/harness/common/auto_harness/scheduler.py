@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -255,7 +256,7 @@ class Scheduler:
         # Spawn execution immediately
         logger.info("[Scheduler] Spawning execution task for: %s", task_id)
         exec_task = asyncio.create_task(
-            self._execute_scheduled_task(task)
+            self._run_scheduled_task(task)
         )
         self._running_executions[task_id] = exec_task
         logger.info("[Scheduler] Triggered immediate execution for task: %s", task_id)
@@ -272,7 +273,7 @@ class Scheduler:
                     if task_id and task_id not in self._running_executions:
                         # Spawn execution
                         exec_task = asyncio.create_task(
-                            self._execute_scheduled_task(task)
+                            self._run_scheduled_task(task)
                         )
                         self._running_executions[task_id] = exec_task
 
@@ -283,6 +284,33 @@ class Scheduler:
             except Exception as e:
                 logger.exception("[Scheduler] Loop error: %s", e)
                 await asyncio.sleep(60)
+
+    async def _run_scheduled_task(self, task: dict[str, Any]) -> None:
+        """Run one scheduled task, recording only slow or failed runs."""
+        start_ns = time.monotonic_ns()
+        try:
+            await self._execute_scheduled_task(task)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._record_task(start_ns, failed=True)
+            raise
+        else:
+            self._record_task(start_ns, failed=False)
+
+    @staticmethod
+    def _record_task(start_ns: int, *, failed: bool) -> None:
+        try:
+            from jiuwenswarm.runtime_trace.tasks import record_task
+
+            record_task(
+                "task.auto_harness_execute",
+                start_ns,
+                time.monotonic_ns(),
+                failed=failed,
+            )
+        except Exception:  # noqa: BLE001 - tracing never changes scheduling
+            return
 
     async def _execute_scheduled_task(self, task: dict[str, Any]) -> None:
         """Execute a single scheduled task run.

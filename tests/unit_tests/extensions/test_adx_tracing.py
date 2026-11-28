@@ -108,3 +108,102 @@ async def test_explicit_trace_id_wins_over_bound_context(monkeypatch, tmp_path):
     finally:
         operation.finish('success')
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_builtin_create_injects_gateway_traceparent(monkeypatch, tmp_path):
+    posts = []
+
+    def handle(request):
+        if request.method == 'GET':
+            rows = [{'id': 'test-alice', 'tenant_id': 'tenant', 'status': 'running'}] if posts else []
+            return httpx.Response(200, json=rows)
+        posts.append(request)
+        return httpx.Response(200, json=envelope({'environmentId': 'test-alice'}))
+
+    client = AdxControlClient(config(monkeypatch, tmp_path), transport=httpx.MockTransport(handle))
+    telemetry.configure_gateway_telemetry({'telemetry': {'enabled': True, 'exporter': 'none'}})
+    operation = telemetry.start_request_trace('request', 'gw.agent.create', channel='web', connection_id='connection')
+    try:
+        with telemetry.bind_request_trace(operation):
+            await client.create_sandbox(
+                namespace='test', name='alice', workspace='/mnt/alice',
+                runtime_spec={}, env_vars={}, builtin=True,
+            )
+        assert len(posts) == 1
+        env = json.loads(posts[0].content)['env']
+        traceparent = env['TRACEPARENT'].split('-')
+        assert traceparent[1] == operation.trace_id
+        assert traceparent[2] == format(operation.span.get_span_context().span_id, '016x')
+    finally:
+        operation.finish('success')
+        telemetry.configure_gateway_telemetry({'telemetry': {'enabled': False}})
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_custom_agent_create_keeps_no_gateway_traceparent(monkeypatch, tmp_path):
+    posts = []
+
+    def handle(request):
+        if request.method == 'GET':
+            rows = [{'id': 'test-third', 'tenant_id': 'tenant', 'status': 'running'}] if posts else []
+            return httpx.Response(200, json=rows)
+        posts.append(request)
+        return httpx.Response(200, json=envelope({'environmentId': 'test-third'}))
+
+    client = AdxControlClient(config(monkeypatch, tmp_path), transport=httpx.MockTransport(handle))
+    telemetry.configure_gateway_telemetry({'telemetry': {'enabled': True, 'exporter': 'none'}})
+    operation = telemetry.start_request_trace('request', 'gw.agent.create', channel='web', connection_id='connection')
+    try:
+        with telemetry.bind_request_trace(operation):
+            await client.create_sandbox(
+                namespace='test', name='third', workspace='/mnt/third',
+                runtime_spec={'rootfs': {'imageurl': 'third:1'}}, env_vars={}, builtin=False,
+            )
+        assert len(posts) == 1
+        assert 'TRACEPARENT' not in json.loads(posts[0].content)['env']
+    finally:
+        operation.finish('success')
+        telemetry.configure_gateway_telemetry({'telemetry': {'enabled': False}})
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_replay_tolerates_changed_trace_context(monkeypatch, tmp_path):
+    posts = []
+    exists = False
+
+    def handle(request):
+        nonlocal exists
+        if request.method == 'GET':
+            rows = [{'id': 'test-alice', 'tenant_id': 'tenant', 'status': 'running'}]
+            return httpx.Response(200, json=rows if exists else [])
+        posts.append(request)
+        if len(posts) == 1:
+            return httpx.Response(503, json={'error': {'code': 'SERVICE_UNAVAILABLE'}})
+        exists = True
+        return httpx.Response(200, json=envelope({'environmentId': 'test-alice'}))
+
+    client = AdxControlClient(config(monkeypatch, tmp_path), transport=httpx.MockTransport(handle))
+    telemetry.configure_gateway_telemetry({'telemetry': {'enabled': True, 'exporter': 'none'}})
+    first = telemetry.start_request_trace('first', 'gw.agent.create', channel='web', connection_id='connection')
+    second = telemetry.start_request_trace('second', 'gw.agent.create', channel='web', connection_id='connection')
+    args = dict(namespace='test', name='alice', workspace='/mnt/alice',
+                runtime_spec={}, env_vars={}, builtin=True)
+    try:
+        with telemetry.bind_request_trace(first):
+            with pytest.raises(AdxCreateUncertain):
+                await client.create_sandbox(**args)
+        with telemetry.bind_request_trace(second):
+            result = await client.create_sandbox(**args)
+        assert result.sandbox_id == 'test-alice'
+        bodies = [json.loads(post.content) for post in posts]
+        assert bodies[0]['env']['TRACEPARENT'].split('-')[1] == first.trace_id
+        assert bodies[1]['env']['TRACEPARENT'].split('-')[1] == second.trace_id
+        assert first.trace_id != second.trace_id
+    finally:
+        first.finish('success')
+        second.finish('success')
+        telemetry.configure_gateway_telemetry({'telemetry': {'enabled': False}})
+        await client.close()

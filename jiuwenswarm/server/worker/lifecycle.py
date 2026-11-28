@@ -26,6 +26,32 @@ logger = logging.getLogger(__name__)
 
 _STARTUP_FAILURE_CLEANUP_TIMEOUT = 5.0
 
+_STAGE_SPAN_NAMES = {
+    "runtime_imports_ready": "startup.phase.runtime_imports_ready",
+    "extension_manager_created": "startup.phase.extension_manager_created",
+    "extensions_loaded": "startup.phase.extensions_loaded",
+    "runtime_constructed": "startup.phase.runtime_constructed",
+    "runtime_started": "startup.phase.runtime_started",
+    "observability_installed": "startup.phase.observability_installed",
+    "proactive_engine_initialized": "startup.post.proactive_engine",
+    "ready": "startup.post.ready",
+}
+
+
+def _trace_recorder(trace_state: dict[str, Any] | None) -> Any:
+    """Return the active recorder without importing lifecycle while disabled."""
+    if not trace_state:
+        return None
+    settings = trace_state.get("settings")
+    if settings is None or not getattr(settings, "enabled", False):
+        return None
+    try:
+        from jiuwenswarm.runtime_trace.lifecycle import current_recorder
+
+        return current_recorder()
+    except Exception:  # noqa: BLE001 - tracing must not affect startup
+        return None
+
 
 def _configure_openjiuwen_logging() -> None:
     """Install OpenJiuwen logging after the Worker IPC socket is listening."""
@@ -281,10 +307,44 @@ async def start_worker_runtime(
     signals: RuntimeSignalSink,
     *,
     on_constructed: Any = None,
+    trace_state: dict[str, Any] | None = None,
 ) -> WorkerRuntime:
     """Load Agent Runtime. Chat readiness is signaled through ``signals``."""
     startup_t0 = time.monotonic()
-    await asyncio.to_thread(_preload_runtime_backend)
+    clock = (trace_state or {}).get("clock")
+    if clock is not None:
+        clock.mark("preload_begin")
+    try:
+        await asyncio.to_thread(_preload_runtime_backend)
+    except BaseException:
+        # The phase never completed. Record its end mark and the failure so a
+        # later failure attach can show where the startup time went instead of
+        # leaving one unexplained multi-second gap under the startup root.
+        if clock is not None:
+            clock.failed_phase = "preload"
+        raise
+    finally:
+        if clock is not None:
+            clock.mark("preload")
+    if trace_state is not None and clock is not None:
+        settings = trace_state.get("settings")
+        if settings is not None and getattr(settings, "enabled", False):
+            try:
+                from jiuwenswarm.runtime_trace.lifecycle import (
+                    attach_runtime_trace,
+                )
+
+                attach_runtime_trace(
+                    role="worker",
+                    settings=settings,
+                    clock=clock,
+                    worker_instance=trace_state.get("instance"),
+                    generation=trace_state.get("generation"),
+                )
+            except Exception:  # noqa: BLE001 - trace must not block startup
+                logger.warning(
+                    "[Worker] runtime trace attach failed", exc_info=True
+                )
     await asyncio.sleep(0)
 
     from openjiuwen.core.runner import Runner
@@ -299,6 +359,7 @@ async def start_worker_runtime(
         await _start_worker_runtime(
             host, port, signals, runtime=runtime,
             on_constructed=on_constructed, startup_t0=startup_t0,
+            trace_state=trace_state,
         )
     except BaseException:
         try:
@@ -352,15 +413,42 @@ async def _start_worker_runtime(
     runtime: WorkerRuntime,
     on_constructed: Any,
     startup_t0: float,
+    trace_state: dict[str, Any] | None = None,
 ) -> None:
     """Keep registry ownership alive through partial startup and cleanup."""
 
+    last_stage_mono = time.monotonic_ns()
+
     def log_startup_stage(stage: str) -> None:
+        nonlocal last_stage_mono
         logger.info(
             "[Worker] startup stage=%s run_elapsed=%.2fs",
             stage,
             time.monotonic() - startup_t0,
         )
+        recorder = _trace_recorder(trace_state)
+        name = _STAGE_SPAN_NAMES.get(stage)
+        if recorder is None or name is None:
+            return
+        now_mono = time.monotonic_ns()
+        parent = recorder.startup_handle
+        if parent is not None and parent.ended:
+            parent = None
+        handle = recorder.start(
+            name,
+            parent=parent,
+            level="normal",
+            mono_start=last_stage_mono,
+            attributes={"runtime.stage": stage},
+        )
+        recorder.end(
+            handle,
+            "success",
+            mono_end=now_mono,
+            attributes={"runtime.stage": stage},
+        )
+        recorder.last_stage_mono = now_mono
+        last_stage_mono = now_mono
 
     log_startup_stage("runtime_imports_ready")
 

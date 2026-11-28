@@ -219,6 +219,55 @@ def test_keyboard_interrupt_returns_130_and_terminates_children(monkeypatch, clo
     assert all(proc.terminated for _, proc in spawned)
 
 
+class _OnceClock(_Clock):
+    """Raise KeyboardInterrupt once, then behave like a normal clock."""
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+        if self.interrupt_at is not None:
+            self.interrupt_at = None
+            raise KeyboardInterrupt
+
+
+def _windows_keyboard_interrupt(monkeypatch, clock: _Clock) -> None:
+    monkeypatch.setattr(
+        process_supervision,
+        "time",
+        SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep, time=time.time),
+    )
+    monkeypatch.setattr(process_supervision, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(process_supervision, "_upgrade_pending_for", lambda pid: False)
+
+
+def test_windows_keyboard_interrupt_waits_for_children(monkeypatch):
+    clock = _OnceClock()
+    clock.interrupt_at = 5.0
+    _windows_keyboard_interrupt(monkeypatch, clock)
+    spawned = _script_children(
+        monkeypatch,
+        clock,
+        {"agentserver": [(8.0, 0)], "gateway": [(8.0, 0)]},
+    )
+
+    assert supervise(_COMMANDS, {}) == 130
+    assert all(proc.returncode == 0 for _, proc in spawned)
+    assert not any(proc.terminated for _, proc in spawned)
+
+
+def test_windows_keyboard_interrupt_terminates_after_grace(monkeypatch):
+    clock = _OnceClock()
+    clock.interrupt_at = 5.0
+    _windows_keyboard_interrupt(monkeypatch, clock)
+    spawned = _script_children(
+        monkeypatch,
+        clock,
+        {"agentserver": [(None, 0)], "gateway": [(None, 0)]},
+    )
+
+    assert supervise(_COMMANDS, {}) == 130
+    assert all(proc.terminated for _, proc in spawned)
+
+
 @pytest.mark.parametrize(
     ("platform", "returncode", "expected"),
     [

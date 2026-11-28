@@ -227,8 +227,17 @@ class HeartbeatSchedulerService:
 
     async def _loop(self) -> None:
         while self._running:
+            tick_start_ns = time.monotonic_ns()
             try:
-                await self._tick_once()
+                try:
+                    await self._tick_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self._record_tick(tick_start_ns, failed=True)
+                    raise
+                else:
+                    self._record_tick(tick_start_ns, failed=False)
                 self._reload_event.clear()
                 try:
                     await asyncio.wait_for(
@@ -242,6 +251,21 @@ class HeartbeatSchedulerService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[HeartbeatScheduler] loop error: %s", exc, exc_info=True)
                 await asyncio.sleep(0.5)
+
+    @staticmethod
+    def _record_tick(start_ns: int, *, failed: bool) -> None:
+        """Record one tick span only when it was slow or failed."""
+        try:
+            from jiuwenswarm.runtime_trace.tasks import record_task
+
+            record_task(
+                "task.heartbeat_tick",
+                start_ns,
+                time.monotonic_ns(),
+                failed=failed,
+            )
+        except Exception:  # noqa: BLE001 - tracing never changes scheduling
+            return
 
     async def _tick_once(self) -> None:
         """扫描到期任务并逐个执行调度判断。"""

@@ -18,6 +18,10 @@ from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
 
 logger = logging.getLogger(__name__)
 
+# After ``kill`` the process is gone on every supported platform; this cap
+# only stops a stuck handle from holding Front's shutdown past its budget.
+_KILL_WAIT_SECONDS = 1.0
+
 
 def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
@@ -105,6 +109,7 @@ class WorkerProcess:
         stub: bool = False,
         stub_ready_delay: float = 0.0,
         stub_exit_on_request: bool = False,
+        recorder: object = None,
     ) -> None:
         self.socket_path = socket_path
         self._host = host
@@ -112,12 +117,19 @@ class WorkerProcess:
         self._stub = stub
         self._stub_ready_delay = stub_ready_delay
         self._stub_exit_on_request = stub_exit_on_request
+        self._recorder = recorder
+        self._launch = uuid.uuid4().hex
         self._proc: subprocess.Popen[bytes] | None = None
         self._stderr_path = (
             Path(socket_path).parent
             / "worker-logs"
             / f"runtime-worker-{uuid.uuid4().hex}.stderr.log"
         )
+
+    @property
+    def launch(self) -> str:
+        """This run's opaque launch id (not the Worker instance id)."""
+        return self._launch
 
     @property
     def stderr_path(self) -> Path:
@@ -148,13 +160,50 @@ class WorkerProcess:
         # Popen, not asyncio's subprocess transport: that transport kills the
         # child when the Front event loop closes. A new session keeps the
         # Worker alive across Front restarts.
-        self._stderr_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._stderr_path.open("ab") as stderr:
-            self._proc = subprocess.Popen(
-                command,
-                env=os.environ.copy(),
-                start_new_session=True,
-                stderr=stderr,
+        env = os.environ.copy()
+        handle = None
+        if self._recorder is not None:
+            handle = self._recorder.start(
+                "worker.spawn",
+                level="event",
+                mono_start=time.monotonic_ns(),
+                attributes={"runtime.launch": self._launch},
+            )
+            span = getattr(handle, "span", None)
+            if span is not None:
+                from jiuwenswarm.runtime_trace.recorder import (
+                    format_traceparent,
+                )
+
+                traceparent = format_traceparent(span.get_span_context())
+                if traceparent:
+                    # The Worker's startup root becomes a child of this spawn.
+                    env["TRACEPARENT"] = traceparent
+        try:
+            self._stderr_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._stderr_path.open("ab") as stderr:
+                self._proc = subprocess.Popen(
+                    command,
+                    env=env,
+                    start_new_session=True,
+                    stderr=stderr,
+                )
+        except Exception:
+            if handle is not None:
+                self._recorder.end(
+                    handle,
+                    "error",
+                    attributes={"runtime.reason_code": "bring_up_failed"},
+                )
+            raise
+        if handle is not None:
+            self._recorder.end(
+                handle,
+                "success",
+                attributes={
+                    "runtime.launch": self._launch,
+                    "runtime.worker_pid": self.pid,
+                },
             )
         logger.info("[Supervisor] worker pid=%s stderr=%s", self.pid, self._stderr_path)
 
@@ -180,9 +229,21 @@ class WorkerProcess:
         proc = self._proc
         if proc is None or proc.poll() is not None:
             return
+        deadline = time.monotonic() + max(0.0, timeout)
         proc.terminate()
-        code = await self.wait(timeout=timeout)
+        code = await self.wait(timeout=max(0.0, deadline - time.monotonic()))
         if code is None:
             logger.warning("[Supervisor] worker did not exit after SIGTERM; killing")
             proc.kill()
-            await self.wait()
+            code = await self.wait(
+                timeout=min(
+                    _KILL_WAIT_SECONDS,
+                    max(0.1, deadline - time.monotonic()),
+                )
+            )
+            if code is None:
+                logger.error(
+                    "[Supervisor] worker pid=%s did not exit after kill; "
+                    "abandoning wait",
+                    proc.pid,
+                )

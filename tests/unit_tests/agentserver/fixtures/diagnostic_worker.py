@@ -181,7 +181,7 @@ def run() -> None:
     )
     args, remaining = parser.parse_known_args()
 
-    async def load_runtime(host, port, signals, dispatcher, loaded):
+    async def load_runtime(host, port, signals, dispatcher, loaded, trace_state=None):
         runtime = TrafficRuntime(args.mode)
         await dispatcher.bind_runtime(runtime)
         loaded["runtime"] = runtime

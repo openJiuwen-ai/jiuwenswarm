@@ -221,6 +221,18 @@ class _Child:
         return False
 
 
+def _wait_for_children_exit(children: Sequence[_Child], timeout: float) -> None:
+    """Wait until every spawned child exits or ``timeout`` elapses."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if all(
+            child.proc is None or child.proc.poll() is not None
+            for child in children
+        ):
+            return
+        time.sleep(0.1)
+
+
 def _terminate_all(procs: list[subprocess.Popen]) -> None:
     for proc in procs:
         if proc.poll() is None:
@@ -318,6 +330,12 @@ def supervise(commands: Mapping[str, Sequence[str]], popen_kwargs: Mapping[str, 
                 )
             time.sleep(_POLL_INTERVAL)
     except KeyboardInterrupt:
+        if sys.platform == "win32":
+            # The children share this console, so Ctrl+C already reached
+            # their shutdown handlers. Windows ``terminate()`` is an
+            # immediate TerminateProcess in ``_terminate_all``; waiting here
+            # lets AgentServer finish its trace drain first.
+            _wait_for_children_exit(children, _TERMINATE_GRACE)
         return 130
     finally:
         _terminate_all([child.proc for child in children if child.proc is not None])

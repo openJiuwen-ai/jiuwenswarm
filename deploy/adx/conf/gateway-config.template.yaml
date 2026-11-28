@@ -378,6 +378,32 @@ agent_observability:
   traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
   file_retention_days: 7            # file exporter 文件保留天数
 
+# ============================================================
+# AgentServer 运行时轨迹（Front / Worker 进程生命周期）
+# ============================================================
+# 默认关闭；使用 YAML 布尔值 true 显式开启。开关在进程启动时读取一次，
+# 启用或停用整个 AgentServer 时需重启 Front 与常驻 Worker。
+#
+# 独立顶层块，命名与 team_observability / agent_observability 一致。
+# 不要收敛成顶层 observability: 块：部署脚本 agentos_trace.py 一旦检测到
+# 该键，就只改写 observability.team/agent 而跳过 team_observability /
+# agent_observability，trace_otlp_endpoints 对真正生效的开关会失效。
+#
+# AgentOS 运行期跳过包内 config.yaml 的模板迁移，本块由本模板下发，
+# 已有用户需执行 refresh-user-config.sh 才会补齐。
+#
+# 外部导出的 collector 与 team_observability / agent_observability 相同，
+# 因此鉴权复用同一对 Langfuse key：两者都填才发送 Authorization: Basic。
+# ============================================================
+runtime_observability:
+  enabled: true                    # 仅接受 YAML 布尔 true
+  slow_task_ms: 1000                # 周期任务慢执行阈值，超过才落 span
+  retention_days: 7                 # 运行库保留天数
+  exporter: ""                      # otlp_grpc / otlp_http / console / none；空 = 继承 telemetry（要求 endpoint 非空）
+  endpoint: ""                      # 空 = 继承 telemetry.endpoint
+  langfuse_public_key: ""           # 与同 collector 的 team/agent observability 共用（可选）
+  langfuse_secret_key: ""           # 两个字段都填才生成 Basic Auth 头；只填一个则不加鉴权并告警
+
 react:
   agent_name: main_agent
   enable_task_loop: false

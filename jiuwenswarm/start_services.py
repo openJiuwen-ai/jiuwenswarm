@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -612,21 +613,89 @@ def _start_process(
             }
         )
         env.pop("AGENT_SERVER_URL", None)
-    return subprocess.Popen(cmd, cwd=str(cwd), env=env)
+    creationflags = 0
+    if _is_batch_service(name):
+        # Keep the console Ctrl+C away from ``cmd /c npm run dev``: cmd.exe
+        # answers it with a "Terminate batch job (Y/N)?" prompt and then sits
+        # on that prompt instead of exiting.
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    return subprocess.Popen(
+        cmd, cwd=str(cwd), env=env, creationflags=creationflags
+    )
+
+
+# ``cmd /c`` wraps a Windows batch file (npm.cmd): Ctrl+C never terminates it
+# cleanly, and its process tree needs taskkill rather than a single kill.
+_WINDOWS_BATCH_SERVICES = frozenset({"web-dev"})
+
+
+def _is_batch_service(name: str) -> bool:
+    return sys.platform == "win32" and name in _WINDOWS_BATCH_SERVICES
+
+
+# Ctrl+C already reaches every process sharing the console, so first give the
+# shutdown handlers time to finish. Escalating to terminate/kill immediately
+# would cut Front's trace drain and the Worker's graceful Runtime shutdown.
+# This must outlast ``process_supervision._TERMINATE_GRACE`` (12s), which the
+# ``jiuwenswarm.app`` supervisor spends waiting for its own children.
+_GRACEFUL_STOP_SECONDS = 15.0
+_TERMINATE_WAIT_SECONDS = 8.0
+
+
+def _all_exited(processes: dict[str, subprocess.Popen[bytes]]) -> bool:
+    return all(proc.poll() is not None for proc in processes.values())
+
+
+def _wait_for_exit(
+    processes: dict[str, subprocess.Popen[bytes]], timeout: float
+) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _all_exited(processes):
+            return True
+        time.sleep(0.2)
+    return _all_exited(processes)
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Terminate a Windows batch service and the Node process it started."""
+    taskkill = shutil.which("taskkill")
+    if taskkill is None:
+        return
+    try:
+        subprocess.run(
+            [taskkill, "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        logging.warning(f"[start_services] taskkill failed for pid={pid}")
 
 
 def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
-    """Terminate all running processes gracefully."""
+    """Stop children gracefully, then escalate to terminate and kill."""
+    # A batch service was deliberately kept out of the console Ctrl+C group,
+    # so waiting for it would always burn the full grace period.
+    graceful = {
+        name: proc
+        for name, proc in processes.items()
+        if not _is_batch_service(name)
+    }
+    if _wait_for_exit(graceful, _GRACEFUL_STOP_SECONDS) and _all_exited(processes):
+        return
+
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] terminating {name} (pid={proc.pid})")
-            proc.terminate()
+            if _is_batch_service(name):
+                _kill_process_tree(proc.pid)
+            else:
+                proc.terminate()
 
-    deadline = time.time() + 8
-    while time.time() < deadline:
-        if all(proc.poll() is not None for proc in processes.values()):
-            return
-        time.sleep(0.2)
+    if _wait_for_exit(processes, _TERMINATE_WAIT_SECONDS):
+        return
 
     for name, proc in processes.items():
         if proc.poll() is None:
