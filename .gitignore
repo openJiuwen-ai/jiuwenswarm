@@ -90,6 +90,10 @@ workspace/agent/memory/*.db-shm
 workspace/agent/memory/*.db-wal
 
 jiuwenswarm/workspace/.whatsapp-auth/
+# Work files that the packaged config directory collects. A checkout without a
+# user data directory resolves its config here, so these files land in the tree.
+jiuwenswarm/resources/*.lock
+jiuwenswarm/resources/*.pending
 jiuwenswarm/resources/agent/workspace/*
 # Ship the builtin catalog while keeping runtime workspace data ignored.
 !jiuwenswarm/resources/agent/workspace/skills/
@@ -138,5 +142,4 @@ report/index.html
 # Local testing handoff documents are not versioned.
 /.agents/agent-docs/designs/testing/
 .test-temp/
-jiuwenswarm/resources/.env.media-capability.lock
 /webui_workbench_v2.zip
