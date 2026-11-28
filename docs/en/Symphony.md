@@ -182,6 +182,8 @@ Open:
 Left sidebar -> Skills -> Skill Graph
 ```
 
+On startup after an upgrade, the application imports the last published legacy Skill Graph. It compares application versions and build dates and checks the source graph and target storage formats. The import preserves skill nodes, relationships, and build metadata in the graph and requires no model call. If you already copied the old graph directory to `runtime/graph`, the import first saves that copy beside the Runtime root. A graph already published by the new Runtime takes precedence. The imported graph may still need a refresh under the current skill inventory and build settings.
+
 #### How to read the skill graph
 
 | Element | Description |
