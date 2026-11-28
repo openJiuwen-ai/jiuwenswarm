@@ -4586,10 +4586,14 @@ function AppContent({
   const preparePresentationConversation = useCallback(async (conversation: PresentationConversation | null) => {
     if (!conversation) return;
     if (conversation.sessionId === NEW_CONVERSATION_ID) {
+      const targetMode = conversation.mode === 'team' ? 'team' : 'agent';
+      if (targetMode === 'team' && useWorkspaceStore.getState().workMode === 'design') {
+        await useWorkspaceStore.getState().setWorkMode('work');
+      }
       await handleNewSession({
         initialInputValue: useChatStore.getState().getRuntime(NEW_CONVERSATION_ID)?.inputValue ?? '',
         preserveProject: true,
-        forceMode: 'agent',
+        forceMode: targetMode,
       });
       return;
     }

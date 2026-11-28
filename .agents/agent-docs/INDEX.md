@@ -389,6 +389,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261103_1106_app-market-containers-and-editing](features/app-market-implementation.md) | F | 应用市场浏览器容器与编辑会话 | default | 无独立 D：用户明确授权初步本地实现，无独立设计文档。 |
 | [B_20261126_1634_desktop-app-permissions](bugfix/jiuwenswarm/channels/desktop/electron/B_20261126_1634_desktop-app-permissions.md) | B | 桌面应用鼠标锁定与全屏权限 | kdgmpw | 无独立 D：局部修复以应用市场分端展示契约和网页版已有权限为依据。 |
+| [F_20261126_1110_presentation-team-companion](features/F_20261126_1110_presentation-team-companion.md) | F | 应用形态支持 Team 会话与成员窗口 | zhanglongmin | 无独立 D：为应用形态增加 Team 会话创建、成员子窗口与队长公开回复；在既有 in-app overlay 双源架构上设计 Host/Frame 管线与成员子窗口协议，无独立设计。 |
 | [S_01_app-market-browser-containers](specs/jiuwenswarm/channels/desktop/app-market-browser-containers.md) | S | 应用市场分端展示契约 | default | — |
 
 <a id="module-jiuwenswarm-channels-tui"></a>
@@ -444,6 +445,7 @@ generated: true
 | [F_20261125_1245_memory-portal-team-migration](features/F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
 | [F_20261126_2117_enterprise-eml](features/F_20261126_2117_enterprise-eml.md) | F | Web 会话上传和读取 EML 邮件 | linda | 无独立 D：在需求会话中确认企业版和个人版共用实现，无独立设计文档。 |
 | [F_20261127_1459_outlook-msg](features/F_20261127_1459_outlook-msg.md) | F | Web 会话读取 Outlook MSG 邮件 | linda | 无独立 D：本次在已有会话邮件工具中增加一种文件格式，范围在需求会话中确认。 |
+| [F_20261126_1110_presentation-team-companion](features/F_20261126_1110_presentation-team-companion.md) | F | 应用形态支持 Team 会话与成员窗口 | zhanglongmin | 无独立 D：为应用形态增加 Team 会话创建、成员子窗口与队长公开回复；在既有 in-app overlay 双源架构上设计 Host/Frame 管线与成员子窗口协议，无独立设计。 |
 | [B_20261030_1250_org-snapshot-removes-mirrored-workers](bugfix/jiuwenswarm/channels/web/frontend/B_20261030_1250_org-snapshot-removes-mirrored-workers.md) | B | 组织 UI 快照投影整表覆盖导致镜像 workflow worker 从成员面板消失 | xiajing | 无独立 D：对既有"快照完整替换"契约（跨 Team 切换不串数据）的成员级例外修复，属 F_20261027_1026 特性线的验证期 bugfix，无独立设计文档。 |
 | [B_20261103_1112_raw-file-range-seek](bugfix/jiuwenswarm/channels/web/B_20261103_1112_raw-file-range-seek.md) | B | /file-api/raw-file 不支持 Range 请求导致 design 模式视频预览进度条不可快进 | openjiuwen_ai | 无独立 D：根因与修法均为标准 HTTP 单区间 Range 语义（对齐 gateway 既有 serve_file_chunks 实现），无独立设计。 |
 | [B_20261105_0941_app-stop-graceful-and-page-close](bugfix/jiuwenswarm/extensions/app_market/app-stop-graceful-and-page-close.md) | B | 应用市场停止强杀跳过应用清理与页面关闭无感知 | kdgmpw | 无独立 D：修复依据既有契约（app-builder SKILL.md 的"应用负责优雅退出和会话清理、市场只终止进程"与扩展 README 的运行描述），无独立 D；新增契约已固化为 specs/jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md。 |

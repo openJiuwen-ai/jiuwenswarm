@@ -8253,7 +8253,8 @@
       "STALE_REQUEST": "This request expired. The action was not repeated.",
       "MODEL_UNAVAILABLE": "This model is unavailable. Choose another model.",
       "REPLY_CHANGED": "The reply changed. Collapse and expand to read it again.",
-      "REQUEST_BUSY": "Actions are still in progress. Try again shortly."
+      "REQUEST_BUSY": "Actions are still in progress. Try again shortly.",
+      "WINDOWS_UNSUPPORTED": "Update the desktop client to use multiple floating windows."
     },
     "choose": "Switch application form"
   },

@@ -1,8 +1,93 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { createApplicationPresentation, clampBounds } = require('../../jiuwenswarm/channels/desktop/electron/application_presentation.cjs');
 const { createWindowTransitions, transitionBounds } = require('../../jiuwenswarm/channels/desktop/electron/application_transition.cjs');
+const { validChildren } = require('../../jiuwenswarm/channels/desktop/electron/application_presentation_children.cjs');
+
+test('child declarations are bounded and cannot supply a resource URL', () => {
+  const child = { id: 'member-1', title: 'Member', width: 180, height: 180, config: { member: 'one' }, x: -1800, y: 600 };
+  assert.equal(validChildren([child]), true);
+  for (const list of [[child, child], [{ ...child, src: 'https://foreign/' }], [{ ...child, x: undefined }],
+    [{ ...child, config: { text: '中'.repeat(6000) } }], Array.from({ length: 25 }, (_, index) => ({ ...child, id: String(index) }))]) {
+    assert.equal(validChildren(list), false);
+  }
+});
+
+test('independent child windows preserve movement, isolate replies and close with their parent', async () => {
+  const f = fixture();
+  const opened = f.invoke('open', f.owner, { ...f.config, config: { endpoint: 'local-capability' } });
+  const root = f.windows[1]; f.invoke('ready', root);
+  let parentRaised = 0;
+  root.moveTop = () => { parentRaised += 1; };
+  const { generation } = await opened;
+  const descriptors = [
+    { id: 'one', title: 'One', width: 180, height: 180, config: { member: 'one' }, x: 100, y: 500 },
+    { id: 'two', title: 'Two', width: 180, height: 180, config: { member: 'two' }, x: 400, y: 500 },
+  ];
+  try {
+    const result = f.invoke('children', f.owner, f.config.key, generation, descriptors);
+    const [one, two] = f.windows.slice(2);
+    const bootstrap = f.invoke('bootstrap', one);
+    assert.equal(bootstrap.isChild, true);
+    assert.equal(bootstrap.config.endpoint, 'local-capability');
+    assert.equal(bootstrap.config.member, 'one');
+    assert.equal(bootstrap.resourceUrl, f.config.resourceUrl);
+    assert.throws(() => f.invoke('ready', one, { durationMs: 1120 }), /Child transitions are not supported/);
+    f.invoke('ready', one); f.invoke('ready', two);
+    assert.equal(parentRaised, 2);
+    assert.equal(one.visible, true); assert.equal(two.visible, true); assert.equal(f.owner.visible, false);
+    const first = result.windows[0], second = result.windows[1];
+    f.invoke('move', f.owner, first.key, 100, -100);
+    assert.equal(one.bounds.x, 200); assert.equal(two.bounds.x, 400);
+    f.screen.getCursorScreenPoint = () => ({ x: -1000, y: 400 });
+    f.screen.getDisplayNearestPoint = () => ({ workArea: { x: -1440, y: 0, width: 1440, height: 900 } });
+    f.invoke('move', f.owner, first.key, -20, 0);
+    assert.equal(one.bounds.x, 180);
+    f.invoke('move', f.owner, first.key, -1180, 0);
+    assert.equal(one.bounds.x, -1000);
+    delete f.screen.getCursorScreenPoint;
+    f.invoke('move', f.owner, first.key, 1200, 0);
+    f.invoke('hit-test', f.owner, first.key, true);
+    assert.equal(one.mouse.ignore, false); assert.equal(two.mouse.ignore, true);
+    f.invoke('request', one, { id: 1 });
+    const envelope = f.owner.messages.at(-1).value;
+    assert.equal(envelope.generation, first.generation); assert.equal(envelope.parentGeneration, generation);
+    f.invoke('respond', f.owner, first.generation, { id: 1, value: 'only one' });
+    assert.equal(one.messages.at(-1).value.value, 'only one'); assert.equal(two.messages.length, 0);
+    f.invoke('children', f.owner, f.config.key, generation, [{ ...descriptors[0], x: 0, config: { member: 'one', status: 'busy' } }, descriptors[1]]);
+    assert.equal(one.bounds.x, 200);
+    assert.equal(f.invoke('bootstrap', one).config.status, 'busy');
+    f.invoke('update', f.owner, f.config.key, { state: { connected: false } });
+    assert.equal(two.messages.at(-1).value.state.connected, false);
+    f.invoke('update', f.owner, f.config.key, { config: { endpoint: 'local-capability-2', shared: true } });
+    assert.equal(one.messages.at(-1).value.config.endpoint, 'local-capability-2');
+    const refreshed = f.invoke('bootstrap', one);
+    assert.equal(refreshed.config.endpoint, 'local-capability-2');
+    assert.equal(refreshed.config.shared, true);
+    assert.equal(refreshed.config.member, 'one');
+    assert.throws(() => f.invoke('children', one, f.config.key, generation, []), /Untrusted/);
+    assert.throws(() => f.invoke('children', f.owner, f.config.key, 'old', []), /STALE/);
+    f.invoke('children', f.owner, f.config.key, generation, [descriptors[1]]);
+    assert.equal(one.destroyed, true); assert.equal(two.destroyed, false);
+    assert.equal(f.invoke('respond', f.owner, first.generation, {}), false);
+    assert.equal(second.generation, f.invoke('bootstrap', two).generation);
+    await f.invoke('close', f.owner, f.config.key);
+    assert.equal(two.destroyed, true); assert.equal(root.destroyed, true); assert.equal(f.owner.visible, true);
+  } finally { f.controller.dispose(); }
+});
+
+test('a failed child does not restore or close the rest of the group', async () => {
+  const f = fixture(); const opened = f.invoke('open', f.owner, f.config); f.invoke('ready', f.windows[1]);
+  const { generation } = await opened;
+  try {
+    f.invoke('children', f.owner, f.config.key, generation, [{ id: 'one', title: 'One', width: 180, height: 180, config: {} }]);
+    const child = f.windows[2];
+    child.webContents.emit('did-fail-load', {}, -105, 'failed', 'http://test/', true);
+    assert.equal(child.destroyed, true); assert.equal(f.windows[1].destroyed, false); assert.equal(f.owner.visible, false);
+  } finally { f.controller.dispose(); }
+});
 
 function fixture(readyTimeoutMs = 1000, ownerUrl = 'http://127.0.0.1:5173/chat/session/example?dt=secret') {
   const handlers = new Map();
