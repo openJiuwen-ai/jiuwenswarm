@@ -72,6 +72,7 @@ generated: true
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-workswarm-app-builder) |
 | [jiuwenswarm/resources/plugins/ttse](#module-jiuwenswarm-resources-plugins-ttse) |
 | [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
+| [jiuwenswarm/runtime/session](#module-jiuwenswarm-runtime-session) |
 | [jiuwenswarm/server](#module-jiuwenswarm-server) |
 | [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
 | [jiuwenswarm/server/ipc](#module-jiuwenswarm-server-ipc) |
@@ -779,6 +780,14 @@ generated: true
 | [B_20261128_1105_npc-team-attachment-mode](bugfix/jiuwenswarm/runtime/B_20261128_1105_npc-team-attachment-mode.md) | B | 原生 NPC Team 只读订阅模式错配 | kdgmpw | 无独立 D：修复现有原生 NPC Team 的只读观察契约。 |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 
+<a id="module-jiuwenswarm-runtime-session"></a>
+
+## jiuwenswarm/runtime/session
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261128_1549_team-idle-question-recovery](bugfix/jiuwenswarm/B_20261128_1549_team-idle-question-recovery.md) | B | Team 空闲后回答澄清问题仍残留处理中状态 | 刘瑜 | 无独立 D：日常缺陷修复，依据当前 Session 类型、Team 生命周期和恢复接口测试；未新建独立设计。 |
+
 <a id="module-jiuwenswarm-server"></a>
 
 ## jiuwenswarm/server
@@ -945,6 +954,7 @@ generated: true
 |---|---|---|---|---|
 | [B_20261105_1518_worker-dispatch-slot-accounting](bugfix/jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
 | [B_20261123_1757_harmony-process-identity](bugfix/jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
+| [B_20261128_1549_team-idle-question-recovery](bugfix/jiuwenswarm/B_20261128_1549_team-idle-question-recovery.md) | B | Team 空闲后回答澄清问题仍残留处理中状态 | 刘瑜 | 无独立 D：日常缺陷修复，依据当前 Session 类型、Team 生命周期和恢复接口测试；未新建独立设计。 |
 | [S_01_process-identity](specs/jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 
 <a id="module-openjiuwen-agent_teams"></a>
