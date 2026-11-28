@@ -801,8 +801,9 @@ def update_config(mutator, *, lock_timeout: float = 10.0) -> Any:
     portalocker 文件锁防跨进程并发（AgentServer+Gateway 两个 PID 同时写），
     threading.Lock 防同进程多线程。整个 load→mutate→dump 在锁内为原子临界区。
 
-    警告：双层锁均不可重入。mutator 内不得调用任何会再次进入 update_config
-    的函数（ensure_defaults_list_in_config、update_default_models_in_config 等），
+    警告：双层锁均不可重入。mutator 内不得调用任何会再次进入 config_write_lock
+    的函数（ensure_defaults_list_in_config、update_default_models_in_config、
+    prune/update_external_cli_path_histories_in_config 等），
     否则同进程二次获取锁将死锁。如需在写盘后读取展示数据，请在 update_config
     返回后另起一次独立调用（此时锁已释放，安全）。
     """
@@ -3204,33 +3205,37 @@ def prune_external_cli_path_histories_in_config(cli_agent: str, remove_paths: li
     if not name or not remove_set:
         return surviving
 
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    current = data
-    path_so_far: list[str] = []
-    for segment in EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[:-1]:
-        path_so_far.append(segment)
-        current = _ensure_config_object(current, segment, ".".join(path_so_far))
-    key = EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]
-    histories = current.get(key)
-    if not isinstance(histories, dict) or not isinstance(histories.get(name), list):
-        return surviving
-    seen: set[str] = set()
-    for path in histories[name]:
-        value = str(path or "").strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        if value not in remove_set:
-            surviving.append(value)
-    if surviving == [str(path or "").strip() for path in histories[name] if str(path or "").strip()]:
-        return surviving  # Nothing to drop: leave the file untouched.
-    if surviving:
-        histories[name] = surviving
-    else:
-        histories.pop(name, None)
-    if not histories:
-        current.pop(key, None)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    # Cross-process read-modify-write: the gateway process runs the sibling
+    # prune against the same config.yaml, so hold the shared write boundary
+    # (threading lock + portalocker) across load and dump.
+    with config_write_lock():
+        data = load_yaml_round_trip(CONFIG_YAML_PATH)
+        current = data
+        path_so_far: list[str] = []
+        for segment in EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[:-1]:
+            path_so_far.append(segment)
+            current = _ensure_config_object(current, segment, ".".join(path_so_far))
+        key = EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]
+        histories = current.get(key)
+        if not isinstance(histories, dict) or not isinstance(histories.get(name), list):
+            return surviving
+        seen: set[str] = set()
+        for path in histories[name]:
+            value = str(path or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            if value not in remove_set:
+                surviving.append(value)
+        if surviving == [str(path or "").strip() for path in histories[name] if str(path or "").strip()]:
+            return surviving  # Nothing to drop: leave the file untouched.
+        if surviving:
+            histories[name] = surviving
+        else:
+            histories.pop(name, None)
+        if not histories:
+            current.pop(key, None)
+        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
     return surviving
 
 
@@ -3444,47 +3449,51 @@ def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> N
 
 def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], publish_url: str | None = None) -> None:
     """Update the external CLI agent switches for the default team."""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    current = data
-    path_so_far: list[str] = []
-    for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
-        path_so_far.append(segment)
-        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    # Same cross-process write boundary as the sibling history functions:
+    # one config panel save calls this, then the history update, then the
+    # builtin-models refresh — each must serialize against the gateway prune.
+    with config_write_lock():
+        data = load_yaml_round_trip(CONFIG_YAML_PATH)
+        current = data
+        path_so_far: list[str] = []
+        for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
+            path_so_far.append(segment)
+            current = _ensure_config_object(current, segment, ".".join(path_so_far))
 
-    normalized_agents = _normalize_external_cli_agents(agents, "external_cli_agents")
-    # The switch payload only names the CLI kinds, so the built-in model
-    # catalog already configured for a kind must survive the rewrite.
-    _carry_over_builtin_models(normalized_agents, current.get(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1]))
-    if normalized_agents:
-        current[EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1]] = normalized_agents
-    else:
-        current.pop(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1], None)
-
-    if _requires_external_transport(normalized_agents):
-        external_transport = current.get(EXTERNAL_TRANSPORT_CONFIG_PATH[-1])
-        if isinstance(external_transport, dict):
-            transport_type = str(external_transport.get("type") or "").strip()
-            params = external_transport.get("params")
-            params = dict(params) if isinstance(params, dict) else {}
+        normalized_agents = _normalize_external_cli_agents(agents, "external_cli_agents")
+        # The switch payload only names the CLI kinds, so the built-in model
+        # catalog already configured for a kind must survive the rewrite.
+        _carry_over_builtin_models(normalized_agents, current.get(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1]))
+        if normalized_agents:
+            current[EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1]] = normalized_agents
         else:
-            transport_type = ""
-            params = {}
-        if transport_type and transport_type != "hybrid":
-            raise ValueError(
-                "external_cli_agents needs a cross-process agent but external_transport.type must be hybrid"
-            )
-        if not params.get("external_publish_url"):
-            url = str(publish_url or "").strip()
-            if not url:
-                raise ValueError(
-                    "external_cli_agents needs a cross-process agent but external_cli_publish_url is empty"
-                )
-            params["external_publish_url"] = url
-        current[EXTERNAL_TRANSPORT_CONFIG_PATH[-1]] = {"type": "hybrid", "params": params}
-    else:
-        current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None)
+            current.pop(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1], None)
 
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+        if _requires_external_transport(normalized_agents):
+            external_transport = current.get(EXTERNAL_TRANSPORT_CONFIG_PATH[-1])
+            if isinstance(external_transport, dict):
+                transport_type = str(external_transport.get("type") or "").strip()
+                params = external_transport.get("params")
+                params = dict(params) if isinstance(params, dict) else {}
+            else:
+                transport_type = ""
+                params = {}
+            if transport_type and transport_type != "hybrid":
+                raise ValueError(
+                    "external_cli_agents needs a cross-process agent but external_transport.type must be hybrid"
+                )
+            if not params.get("external_publish_url"):
+                url = str(publish_url or "").strip()
+                if not url:
+                    raise ValueError(
+                        "external_cli_agents needs a cross-process agent but external_cli_publish_url is empty"
+                    )
+                params["external_publish_url"] = url
+            current[EXTERNAL_TRANSPORT_CONFIG_PATH[-1]] = {"type": "hybrid", "params": params}
+        else:
+            current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None)
+
+        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_external_cli_path_histories_in_config(histories: dict[str, list[str]]) -> None:
@@ -3510,17 +3519,21 @@ def update_external_cli_path_histories_in_config(histories: dict[str, list[str]]
             # was replaced last, the one the dropdown most needs to keep.
             normalized[name] = deduped[-EXTERNAL_CLI_PATH_HISTORY_LIMIT:]
 
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    current = data
-    path_so_far: list[str] = []
-    for segment in EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[:-1]:
-        path_so_far.append(segment)
-        current = _ensure_config_object(current, segment, ".".join(path_so_far))
-    if normalized:
-        current[EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]] = normalized
-    else:
-        current.pop(EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1], None)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    # Cross-process read-modify-write: the gateway process runs the sibling
+    # prune against the same config.yaml, so hold the shared write boundary
+    # (threading lock + portalocker) across load and dump.
+    with config_write_lock():
+        data = load_yaml_round_trip(CONFIG_YAML_PATH)
+        current = data
+        path_so_far: list[str] = []
+        for segment in EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[:-1]:
+            path_so_far.append(segment)
+            current = _ensure_config_object(current, segment, ".".join(path_so_far))
+        if normalized:
+            current[EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]] = normalized
+        else:
+            current.pop(EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1], None)
+        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_external_cli_builtin_models_in_config(catalogs: dict[str, list[dict[str, Any]]]) -> None:
@@ -3532,31 +3545,35 @@ def update_external_cli_builtin_models_in_config(catalogs: dict[str, list[dict[s
     """
     if not catalogs:
         return
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    current = data
-    for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
-        nested = current.get(segment) if isinstance(current, dict) else None
-        if not isinstance(nested, dict):
+    # Same cross-process write boundary as the sibling history functions:
+    # one config panel save triggers this right after the history update,
+    # so its load-dump must serialize against the gateway prune too.
+    with config_write_lock():
+        data = load_yaml_round_trip(CONFIG_YAML_PATH)
+        current = data
+        for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
+            nested = current.get(segment) if isinstance(current, dict) else None
+            if not isinstance(nested, dict):
+                return
+            current = nested
+        entries = current.get(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1])
+        if not isinstance(entries, list):
             return
-        current = nested
-    entries = current.get(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1])
-    if not isinstance(entries, list):
-        return
 
-    changed = False
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        catalog = catalogs.get(str(entry.get("cli_agent") or "").strip())
-        if catalog is None:
-            continue
-        if catalog:
-            entry["builtin_models"] = catalog
-        else:
-            entry.pop("builtin_models", None)
-        changed = True
-    if changed:
-        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+        changed = False
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            catalog = catalogs.get(str(entry.get("cli_agent") or "").strip())
+            if catalog is None:
+                continue
+            if catalog:
+                entry["builtin_models"] = catalog
+            else:
+                entry.pop("builtin_models", None)
+            changed = True
+        if changed:
+            dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def reset_external_cli_agents_in_config() -> None:
