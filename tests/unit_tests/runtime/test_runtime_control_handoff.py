@@ -1,11 +1,12 @@
 """Continuation handoff retains one owner for every still-pending control."""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.runtime.session import RuntimeSessionCoordinator, SessionWorkKind
-from jiuwenswarm.runtime.session.model import SessionExecutionState
+from jiuwenswarm.runtime.session.model import SessionExecutionHandle, SessionExecutionState
 from tests.unit_tests.runtime.test_runtime_session_coordinator import _register, _park_on_cards
 from tests.unit_tests.runtime.test_stream_interaction_answer import (
     SESSION_ID, _answer, _chunk, _collect, _request, harness, isolated_agent_dirs,
@@ -24,6 +25,32 @@ async def _respond(coordinator, card, *reissued, streaming=True):
         "session-a", (card,), lambda: asyncio.sleep(0, result=list(reissued)),
         interaction_ids=frozenset,
     )
+
+
+@pytest.mark.parametrize("child_first", [False, True])
+def test_reissued_control_targets_child_when_execution_clocks_tie(monkeypatch, child_first):
+    coordinator = RuntimeSessionCoordinator()
+    record = SimpleNamespace(session_id="session-a", generation=1)
+    parent = SessionExecutionHandle(
+        execution_id="parent", session_id="session-a", request_id="original",
+        generation=1, work_kind=SessionWorkKind.CHAT_STREAM,
+        waiting_control_ids=frozenset({"card-b"}), state=SessionExecutionState.RUNNING,
+        created_at=10.0, started_at=10.0,
+    )
+    child = SessionExecutionHandle(
+        execution_id="child", session_id="session-a", request_id="answer-a",
+        generation=1, work_kind=SessionWorkKind.CONTROL_INPUT,
+        parent_execution_id=parent.execution_id,
+        waiting_control_ids=frozenset({"card-b"}), state=SessionExecutionState.RUNNING,
+        created_at=10.0, started_at=10.0,
+    )
+    coordinator._registry.register(parent)
+    coordinator._registry.register(child)
+    # The registry's set index permits either order at the same clock tick.
+    order = [child, parent] if child_first else [parent, child]
+    monkeypatch.setattr(coordinator._registry, "select", lambda **_kwargs: order)
+
+    assert coordinator._control_parent(record, "card-b") is child
 
 
 @pytest.mark.asyncio
@@ -118,7 +145,7 @@ async def test_answer_before_previous_control_eof_releases_original_owner(second
             "session-a", ("card-a",), first, interaction_ids=lambda item: frozenset({item}),
         )
         assert await anext(continuation) == "card-b"
-        await _respond(coordinator, "card-b", streaming=second_streaming)
+        await asyncio.wait_for(_respond(coordinator, "card-b", streaming=second_streaming), 5)
         finish_first.set()
         assert [item async for item in continuation] == []
         assert not coordinator.has_control_target("session-a", "card-b")

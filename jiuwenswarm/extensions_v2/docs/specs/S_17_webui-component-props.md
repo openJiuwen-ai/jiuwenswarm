@@ -3,7 +3,7 @@
 | 项目 | 约定 |
 | --- | --- |
 | 维护范围 | 插件侧声明、AgentServer / Gateway 后端校验、Web 前端校验与渲染 |
-| 最近修订 | 2026-11-24 |
+| 最近修订 | 2026-11-26 |
 | 适用协议 | `webui-tree`，`schema_version=1`；本文件修订不等于自动升级 wire 版本 |
 | 相关设计与验证记录 | [F_01 组件目录与渲染适配](../../../channels/web/frontend/src/features/webui/docs/features/F_01_antd-components.md) |
 | 相邻行为契约 | [S_01 组件运行与交互](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md) |
@@ -104,9 +104,10 @@ Tabs 隐藏页签的节点也计入整树预算。更小的组件字段限制优
 Panel / Iframe 只能作为允许其使用的槽位的树根。
 `conversation.panel.right` 的根白名单为 Panel / Iframe，二者的 title 同时作为右侧页签名称，可选的 icon 作为页签图标。
 `application.menu.main` 和 `task.function.main` 允许 Iframe 专用根，也允许普通组件树。
-`task.function` 与 `task.function.main` 使用应用作用域，按当前 Web 连接隔离，不携带 `session_id`；
-空对话也可挂载，切换会话不改变实例归属或关闭已打开的任务页面。入口与页面共享包和实例标识。
-切到聊天时，当前应用范围任务页面仅隐藏、保留 iframe；返回同一任务入口不重建页面。
+`application.menu`、`application.menu.main`、`task.function` 与 `task.function.main` 使用应用作用域，按当前 Web 连接隔离，不携带 `session_id`；
+空对话也可挂载，切换会话不重新挂载入口、不改变实例归属或关闭已打开的页面。入口与页面共享包和实例标识。
+在应用作用域槽位的 Handler 中 `ops.session_context` 为 `None`，插件构造 `RenderTarget` 时应传 `session_id=""`（或直接复用 `request.target.session_id`）且不得声明 `scope="session"`；此前按会话作用域编写并强依赖 `ops.session_context` 或显式 `scope="session"` 的 `application.menu` 插件需移除会话依赖并重载/重装。
+切到聊天时，当前应用范围页面仅隐藏、保留实例与 iframe；返回同一入口不重建页面。
 MediaSurface 只能作为 Gateway 槽位 `application.background`、`application.splash` 的树根，这两个槽位也只接受 MediaSurface 根。
 其他挂载位置和作用域见 [catalog/slots.ts](../../../channels/web/frontend/src/features/webui/catalog/slots.ts)、[后端 constants.py](../../webui/constants.py) 与 [F_07 槽位与交互](../features/F_07_ui-contributions.md)。
 槽位容量、页面导航和插件启停由宿主控制。Button.openPanel 仅表达显式点击后的同包、同会话面板打开意图，不绕过槽位声明、实例存在和生命周期校验。
@@ -775,7 +776,7 @@ desktop 页面可通过形态协议申请通用窗口过渡。宿主仅提供当
 | 功能 / 槽位 | 页面与宿主入口 | props 变化时关注 |
 | --- | --- | --- |
 | 首次欢迎页：application.entry | [WebUIAppRoot.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIAppRoot.tsx)、[WebUIEntryHost.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIEntryHost.tsx) | Avatar、Card、Button、首次显示与关闭 |
-| 侧栏菜单与用户入口：application.menu、application.sidebar.footer | [SessionSidebar/index.tsx](../../../channels/web/frontend/src/components/SessionSidebar/index.tsx) | 按钮、头像、Dropdown 触发区与菜单 |
+| 侧栏菜单与用户入口：application.menu、application.sidebar.footer | [SessionSidebar/index.tsx](../../../channels/web/frontend/src/components/SessionSidebar/index.tsx) | 应用作用域、按钮、头像、Dropdown 触发区与菜单 |
 | 任务功能入口：task.function | [ConversationSidebar.tsx](../../../channels/web/frontend/src/multi-session/sidebar/ConversationSidebar.tsx) | 入口组件、导航及应用作用域 |
 | 菜单 / 任务主页面：application.menu.main、task.function.main | [App.tsx](../../../channels/web/frontend/src/App.tsx)、[WebUINavigation.tsx](../../../channels/web/frontend/src/features/webui/react/WebUINavigation.tsx)：WebUINavigationHost / WebUIPageHost | 普通树与 Iframe 专用根、页面切换 |
 | 右侧页签：conversation.panel.right | [ToolPanel/index.tsx](../../../channels/web/frontend/src/components/ToolPanel/index.tsx)、[ExpandedPanel.tsx](../../../channels/web/frontend/src/components/teamArea/ExpandedPanel.tsx)、[useWebUIPanels.tsx](../../../channels/web/frontend/src/features/webui/react/useWebUIPanels.tsx)、[useWebUIPluginPanelTabs.tsx](../../../channels/web/frontend/src/features/webui/react/useWebUIPluginPanelTabs.tsx)、[WebUIPluginPanelHome.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIPluginPanelHome.tsx) | Panel / Iframe 的 title 与 icon、加号空白页签、选择后原地转插件页、页签关闭与相邻回退、空态、贡献消失裁剪、滚动与隐藏生命周期 |

@@ -74,6 +74,7 @@ def test_normalize_llm_analysis_carries_blocking_into_clips() -> None:
             {"id": "char_2", "name": "Squire Zhao", "description": "dark gown"},
         ],
         "target_clip_count": 2,
+        "scenes": [{"id": "set_1", "name": "courtyard", "description": "A stone table in the courtyard."}],
         "clips": [
             {
                 "clip_index": i,

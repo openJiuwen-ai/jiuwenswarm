@@ -265,6 +265,159 @@ async def test_shutdown_releases_teammate_lease(monkeypatch):
     assert svc.teammates_released == [("tid-1", "a")]
 
 
+def test_swarmflow_worker_slots_include_leader(monkeypatch):
+    """Swarmflow workers are capped at N-1 so leader + workers <= N."""
+
+    class _Backend:
+        _session_id = "sess-swarmflow"
+        _team_name = "team-swarmflow"
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("TEAM_QUOTA_ENABLED", "1")
+    backend = _Backend()
+    member_limits.register_swarmflow_worker_quota(
+        session_id=backend._session_id,
+        team_name=backend._team_name,
+        max_teammates=3,
+    )
+    try:
+        assert member_limits.claim_swarmflow_worker_slot(backend, "work-1") == (True, 1, 3)
+        assert member_limits.claim_swarmflow_worker_slot(backend, "work-2") == (True, 2, 3)
+        # A retried call reuses its deterministic key and does not consume a slot.
+        assert member_limits.claim_swarmflow_worker_slot(backend, "work-2") == (True, 2, 3)
+        assert member_limits.claim_swarmflow_worker_slot(backend, "work-3") == (False, 3, 3)
+    finally:
+        member_limits.clear_swarmflow_worker_quota(
+            session_id=backend._session_id,
+            team_name=backend._team_name,
+        )
+
+
+def test_swarmflow_worker_slots_use_quota_notice(monkeypatch):
+    notices: list[dict] = []
+
+    class _Backend:
+        _session_id = "sess-swarmflow-notice"
+        _team_name = "team-swarmflow-notice"
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("TEAM_QUOTA_ENABLED", "1")
+    backend = _Backend()
+    member_limits.register_swarmflow_worker_quota(
+        session_id=backend._session_id,
+        team_name=backend._team_name,
+        max_teammates=2,
+        on_quota_exceeded=lambda **kwargs: notices.append(kwargs),
+    )
+    try:
+        assert member_limits.claim_swarmflow_worker_slot(backend, "only-worker")[0]
+        assert not member_limits.claim_swarmflow_worker_slot(backend, "extra-worker")[0]
+    finally:
+        member_limits.clear_swarmflow_worker_quota(
+            session_id=backend._session_id,
+            team_name=backend._team_name,
+        )
+    assert notices == [{"used": 2, "limit": 2, "member_name": "extra-worker"}]
+
+
+def test_predefined_team_size_message_is_not_user_request_wording():
+    from jiuwenswarm.common.i18n import t
+
+    assert member_limits.predefined_team_size_user_message(7, 5, language="zh") == t(
+        "enterprise.team.predefined_size_over",
+        language="zh",
+        team_size=7,
+        limit=5,
+    )
+    assert member_limits.predefined_team_size_user_message(7, 5, language="en") == t(
+        "enterprise.team.predefined_size_over",
+        language="en",
+        team_size=7,
+        limit=5,
+    )
+    assert "asked for" not in member_limits.predefined_team_size_user_message(
+        7, 5, language="en"
+    ).lower()
+    assert "你要求" not in member_limits.predefined_team_size_user_message(
+        7, 5, language="zh"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_member_limit_uses_owner(monkeypatch):
+    owner = object()
+
+    class _Limits:
+        max_teammates_per_team = 7
+
+    class _Quota:
+        def resolve_limits(self, identity):
+            assert identity is owner
+            return _Limits()
+
+    async def _run(fn, *args):
+        return fn(*args)
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("TEAM_QUOTA_ENABLED", "1")
+    monkeypatch.setattr(member_limits, "session_owner_identity", lambda _sid: owner)
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.quota.get_team_quota_service",
+        lambda: _Quota(),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.infrastructure.db.team_store_actor.run_team_store",
+        _run,
+    )
+
+    assert await member_limits.resolve_session_member_limit("sess") == (7, owner)
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_member_limit_zero_policy_uses_default(monkeypatch):
+    owner = object()
+
+    class _Limits:
+        max_teammates_per_team = 0
+
+    class _Quota:
+        def resolve_limits(self, identity):
+            assert identity is owner
+            return _Limits()
+
+    async def _run(fn, *args):
+        return fn(*args)
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("TEAM_QUOTA_ENABLED", "1")
+    monkeypatch.setattr(member_limits, "session_owner_identity", lambda _sid: owner)
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.quota.get_team_quota_service",
+        lambda: _Quota(),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.infrastructure.db.team_store_actor.run_team_store",
+        _run,
+    )
+
+    assert await member_limits.resolve_session_member_limit("sess") == (
+        member_limits.DEFAULT_MAX_TEAMMATES,
+        owner,
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_member_limit_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("TEAM_QUOTA_ENABLED", "1")
+    monkeypatch.setattr(member_limits, "session_owner_identity", lambda _sid: None)
+
+    assert await member_limits.resolve_session_member_limit("sess") == (
+        member_limits.DEFAULT_MAX_TEAMMATES,
+        None,
+    )
+
+
 def test_explicit_team_size_blocks_only_a_single_over_limit_reading():
     assert member_limits.requested_team_size_over_limit("请你帮我创建一个四人团队", 3) == 4
     assert member_limits.requested_team_size_over_limit("三人团队", 3) is None
@@ -281,6 +434,15 @@ def test_explicit_team_size_blocks_only_a_single_over_limit_reading():
     assert member_limits.requested_team_size_over_limit("包含三个成员", 3) is None
     assert member_limits.requested_team_size_over_limit("九十九人团队", 5) == 99
     assert member_limits.explicit_whole_team_size("两个人的团队") == 2
+    assert member_limits.explicit_whole_team_size("创建一个七人的旅行规划团队") == 7
+    assert member_limits.explicit_whole_team_size("创建一个3人的开发团队") == 3
+    assert member_limits.explicit_whole_team_size("组建一个三人跨职能团队") == 3
+    assert member_limits.requested_team_size_over_limit("创建一个7人的旅行规划团队", 5) == 7
+    assert member_limits.requested_team_size_over_limit("创建一个7人的旅行规划团队", 7) is None
+    assert member_limits.enterprise_recruit_constraint("创建一个七人的旅行规划团队") == (
+        "[Team size constraint] This run has 7 members including the leader; recruit 6 more teammates. "
+        "The sidebar list omits the leader — do not recruit an extra person because the leader is missing from that list."
+    )
     assert member_limits.explicit_whole_team_size("再加 4 人") is None
     assert member_limits.explicit_whole_team_size("除我以外 3 人") is None
     assert member_limits.explicit_whole_team_size("再加 4 人", enterprise=True) == 5
@@ -401,3 +563,207 @@ async def test_real_group_roster_can_register_experts_above_team_limit():
     finally:
         await database.close()
         reset_session_id(token)
+
+
+
+
+class _LockConflict(Exception):
+    """Stand-in for pymysql OperationalError(1213/1205)."""
+
+
+def test_db_error_codes_walk_wrapped_causes():
+    root = _LockConflict(1213, "Deadlock found")
+    wrapped = RuntimeError("sqlalchemy wrapper")
+    wrapped.__cause__ = root
+    assert member_limits._db_error_codes(wrapped) == {1213}
+    assert member_limits._is_retryable_db_error(wrapped)
+    assert not member_limits._is_retryable_db_error(_LockConflict(1062, "duplicate key"))
+
+
+@pytest.mark.asyncio
+async def test_reserve_retries_deadlock_then_succeeds(monkeypatch):
+    from jiuwenswarm.infrastructure.db import team_store_actor
+
+    attempts = {"n": 0}
+    lease = object()
+
+    def _reserve(**_kwargs):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise _LockConflict(1213, "Deadlock found")
+        return lease
+
+    async def _run(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(team_store_actor, "run_team_store", _run)
+    monkeypatch.setattr(member_limits, "_RESERVE_RETRY_BASE_DELAY", 0.0)
+
+    got = await member_limits._reserve_teammate_spawn_with_retry(
+        SimpleNamespace(reserve_teammate_spawn=_reserve),
+        team_id="team-1",
+        member_name="a",
+    )
+    assert got is lease
+    assert attempts["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_reserve_does_not_retry_non_lock_errors(monkeypatch):
+    from jiuwenswarm.infrastructure.db import team_store_actor
+
+    attempts = {"n": 0}
+
+    def _reserve(**_kwargs):
+        attempts["n"] += 1
+        raise _LockConflict(1062, "duplicate key")
+
+    async def _run(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(team_store_actor, "run_team_store", _run)
+
+    with pytest.raises(_LockConflict):
+        await member_limits._reserve_teammate_spawn_with_retry(
+            SimpleNamespace(reserve_teammate_spawn=_reserve),
+            team_id="team-1",
+            member_name="a",
+        )
+    assert attempts["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_guard_fails_closed_when_quota_check_unavailable(monkeypatch):
+    rows = [("team-leader", "Leader", "ready")]
+    agent, backend = _leader(rows)
+
+    async def _raise(**_kwargs):
+        raise _LockConflict(1213, "Deadlock found")
+
+    monkeypatch.setattr(member_limits, "_reserve_teammate_spawn_with_retry", _raise)
+    monkeypatch.setattr(member_limits, "_teammate_quota_fails_closed", lambda _svc: True)
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.quota.get_team_quota_service",
+        lambda: SimpleNamespace(),
+    )
+
+    assert member_limits.attach_teammate_limit_guard(
+        agent, max_teammates=5, team_id="team-1"
+    )
+    result = await backend.spawn_member("a", "A", object())
+    assert not result.ok
+    assert result.reason.startswith(member_limits.TEAM_MEMBER_QUOTA_UNAVAILABLE)
+    assert backend.calls == []
+
+
+@pytest.mark.asyncio
+async def test_guard_keeps_roster_fallback_when_not_fail_closed(monkeypatch):
+    rows = [("team-leader", "Leader", "ready"), ("a", "A", "ready")]
+    agent, backend = _leader(rows)
+
+    async def _raise(**_kwargs):
+        raise _LockConflict(1213, "Deadlock found")
+
+    monkeypatch.setattr(member_limits, "_reserve_teammate_spawn_with_retry", _raise)
+    monkeypatch.setattr(member_limits, "_teammate_quota_fails_closed", lambda _svc: False)
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.quota.get_team_quota_service",
+        lambda: SimpleNamespace(),
+    )
+
+    assert member_limits.attach_teammate_limit_guard(
+        agent, max_teammates=3, team_id="team-1"
+    )
+    result = await backend.spawn_member("b", "B", object())
+    assert result.ok
+    assert backend.calls == ["b"]
+
+
+def test_fail_closed_only_for_enterprise_shared_store(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("TEAM_QUOTA_ENABLED", "1")
+    assert member_limits._teammate_quota_fails_closed(
+        SimpleNamespace(use_shared_store=lambda: True)
+    )
+    assert not member_limits._teammate_quota_fails_closed(
+        SimpleNamespace(use_shared_store=lambda: False)
+    )
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    assert not member_limits._teammate_quota_fails_closed(
+        SimpleNamespace(use_shared_store=lambda: True)
+    )
+
+
+def test_count_predefined_quota_members_skips_leader():
+    members = [
+        SimpleNamespace(member_name="team-leader", role_type=TeamRole.LEADER),
+        SimpleNamespace(member_name="a", role_type=TeamRole.TEAMMATE),
+        {"member_name": "b", "role_type": "teammate"},
+        {"member_name": "", "role_type": "teammate"},
+    ]
+    assert member_limits.count_predefined_quota_members(members) == 2
+    assert member_limits.count_predefined_quota_members([]) == 0
+
+
+def test_whole_team_member_limit_enterprise_default_not_widened(monkeypatch):
+    config = {"team": {"max_teammates": 7}}
+    request = SimpleNamespace(metadata={}, params={})
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    assert member_limits.whole_team_member_limit(request, config) == (
+        member_limits.DEFAULT_MAX_TEAMMATES,
+        member_limits.DEFAULT_MAX_TEAMMATES,
+    )
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    assert member_limits.whole_team_member_limit(request, config) == (7, 7)
+
+
+@pytest.mark.asyncio
+async def test_swarmflow_guard_releases_slot_on_completion_and_failure(monkeypatch):
+    from openjiuwen.agent_teams.workflow.backends.team_worker_backend import TeamWorkerBackend
+    from jiuwenswarm.enterprise.team import member_limits
+
+    monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: True)
+    monkeypatch.setattr("jiuwenswarm.enterprise.team.quota.team_quota_enabled", lambda: True)
+
+    import asyncio
+    started = asyncio.Event()
+
+    async def run(self, prompt, opts, schema_json, *, call_key=None):
+        if prompt == "wait":
+            started.set()
+            await asyncio.Event().wait()
+        if prompt == "fail":
+            raise ValueError("worker failed")
+        return prompt
+
+    monkeypatch.setattr(TeamWorkerBackend, "run", run)
+    assert member_limits.install_swarmflow_worker_quota_guard()
+    backend = object.__new__(TeamWorkerBackend)
+    backend._session_id = "slot-release-test"
+    backend._team_name = "slot-release-team"
+    member_limits.register_swarmflow_worker_quota(
+        session_id=backend._session_id, team_name=backend._team_name, max_teammates=2,
+    )
+    try:
+        for key in ("first", "second", "third"):
+            assert await backend.run(key, {}, None, call_key=key) == key
+        with pytest.raises(ValueError):
+            await backend.run("fail", {}, None, call_key="failure")
+        assert await backend.run("after-failure", {}, None, call_key="last") == "after-failure"
+        task = asyncio.create_task(backend.run("wait", {}, None, call_key="waiting"))
+        await started.wait()
+        from openjiuwen.agent_teams.workflow.engine.errors import BackendError
+        with pytest.raises(BackendError):
+            await backend.run("blocked", {}, None, call_key="extra")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await backend.run("after-cancel", {}, None, call_key="retry") == "after-cancel"
+        assert backend._jiuwen_swarmflow_quota_seen == set()
+    finally:
+        member_limits.clear_swarmflow_worker_quota(
+            session_id=backend._session_id, team_name=backend._team_name,
+        )

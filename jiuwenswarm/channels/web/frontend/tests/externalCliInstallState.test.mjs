@@ -236,6 +236,13 @@ test('toggling off keeps the agent choice and toggling on resolves an empty choi
   // Empty choices go through PATH resolution before the built-in fallback.
   assert.match(sectionSource, /if \(useBuiltin \|\| !requestedPath\.trim\(\)\) \{/);
   assert.match(sectionSource, /await resolveEnabledChoice\(cliAgent, useBuiltin, requestedPath\)/);
+  // Selecting the managed built-in path switches back to built-in mode
+  // (use_builtin=true, no custom path) instead of pinning the installer-
+  // managed path as a custom cli_path, and mirrors the post-commit echo
+  // bookkeeping so the config echo never flashes "not installed" (!10307).
+  assert.match(sectionSource, /next === builtinPaths\[cliAgent\]/);
+  assert.match(sectionSource, /toggleAgentEnabled\(cliAgent, true, true, ''\)/);
+  assert.match(sectionSource, /observedCliPathsRef\.current\[cliAgent\] = ''/);
 });
 
 test('re-detecting keeps the card layout stable instead of unmounting the path block', () => {
@@ -301,13 +308,6 @@ test('installed cards keep the detect+install pair and not-installed ones show t
   // Built-in paths come from the detection payload (builtin_path), tracked
   // per agent; no localStorage history may reappear here.
   assert.match(sectionSource, /builtin_path \|\| prev\[cliAgent\]/);
-  // Selecting the managed built-in path switches back to built-in mode
-  // (use_builtin=true, no custom path) instead of pinning the installer-
-  // managed path as a custom cli_path, and mirrors the post-commit echo
-  // bookkeeping so the config echo never flashes "not installed" (!10307).
-  assert.match(sectionSource, /next === builtinPaths\[cliAgent\]/);
-  assert.match(sectionSource, /toggleAgentEnabled\(cliAgent, true, true, ''\)/);
-  assert.match(sectionSource, /observedCliPathsRef\.current\[cliAgent\] = ''/);
   assert.doesNotMatch(sectionSource, /rememberBuiltinPath|removePathHistory|PATH_HISTORY/);
   assert.doesNotMatch(sectionSource, /config\.externalCli\.removePath/);
 });
@@ -415,7 +415,10 @@ test('install-now bypasses the no-change short circuit so a deleted built-in CLI
   );
 });
 
-test('Codex installation falls back to built-in only when PATH has no usable executable', async () => {
+test('installation with an empty path commits the built-in CLI regardless of PATH discovery', async () => {
+  // !10678：检测语义改为"内置 SDK+CLI 是否可用"——PATH 上的第三方 CLI 不再
+  // 被自动提交为自定义路径，空路径的一键安装一律落内置（SDK+CLI 由一键安装
+  // 流程安装）。available 翻转模拟"机器上有/没有可用 PATH CLI"，结果不变。
   const initial = {
     external_cli_agent_codex_enabled: 'true',
     external_cli_agent_codex_use_builtin: 'false',
@@ -431,7 +434,7 @@ test('Codex installation falls back to built-in only when PATH has no usable exe
     const install = '[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="codex"]';
     await env.click(install);
     assert.deepEqual(env.commits.at(-1), ['codex', {
-      enabled: true, useBuiltin: false, cliPath: '/local/codex', force: true,
+      enabled: true, useBuiltin: true, cliPath: '', force: true,
     }]);
     available = false;
     await env.click(install);
@@ -463,6 +466,8 @@ async function mountCliSection(draftValues, onDetect, sectionProps = {}) {
   const commits = [];
   const props = {
     draftValues,
+    // 自动落闸依据持久化快照决策；未显式传入时与草稿一致，保持既有用例行为
+    persistedValues: sectionProps.persistedValues ?? draftValues,
     onDetect,
     onChange: () => {},
     onCommitAgent: async (agent, choice) => { commits.push([agent, choice]); },
@@ -593,7 +598,9 @@ test('PATH remains selectable with a saved built-in choice and after changing ex
   }
 });
 
-test('enabling and installing prefer PATH while explicit executable choices survive repair', async () => {
+test('enabling with an empty path falls back to the built-in CLI; explicit choices survive repair', async () => {
+  // !10678：空路径的启用/安装不再探测 PATH 候选（PATH 上的裸 CLI 不能满足
+  // 集群模式的 SDK 需求），历史为空时一律落内置；显式路径的修复保存不变。
   const initial = {
     external_cli_agent_claude_enabled: 'false',
     external_cli_agent_claude_use_builtin: 'false',
@@ -605,11 +612,12 @@ test('enabling and installing prefer PATH while explicit executable choices surv
   }));
   try {
     await env.click('[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]');
-    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: true, useBuiltin: false, cliPath: '/local/claude' }]);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: true, useBuiltin: true, cliPath: '' }]);
     const install = '[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]';
     await env.render({ ...initial, external_cli_agent_claude_enabled: 'true' });
     await env.click(install);
-    assert.deepEqual(env.commits.at(-1)[1], { enabled: true, useBuiltin: false, cliPath: '/local/claude', force: true });
+    assert.deepEqual(env.commits.at(-1)[1], { enabled: true, useBuiltin: true, cliPath: '', force: true });
+    // 显式自定义路径的修复保存保持不变
     await env.render({ ...initial, external_cli_agent_claude_enabled: 'true', external_cli_agent_claude_cli_path: '/custom/claude' });
     await env.click(install);
     assert.equal(env.commits.at(-1)[1].cliPath, '/custom/claude');
@@ -658,11 +666,14 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   // already-installed agent toggles the switch, not a re-install (#6620).
   assert.match(section, /!onCommitAgent \|\| committing\[cliAgent\] \|\| installInFlight\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
   assert.match(section, /loading=\{installInFlight\[cliAgent\]\}/);
-  assert.doesNotMatch(section, /loading=\{committing\[cliAgent\]\}/);
-  // The enable switch stays operable so the user can always disable a broken
-  // agent — 检测确认地址缺失时由手动检测的自动落闸把开关置回禁用，而不是
-  // 冻结开关堵死关闭入口；刷新窗口（尚无探测结果）也不锁。
-  assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  // 卡片开关的 spinner 是保存在途反馈本身（#6823）：有意跟随卡片级 commit，
+  // 与一键安装按钮"只认 installInFlight"（上一行正向断言钉死）相区分。
+  assert.match(section, /loading=\{committing\[cliAgent\]\}/);
+  // 未安装（探测缺失/无结果）时开关只能是禁用：显示 OFF 并锁死，启用必须先
+  // 经一键安装就绪 SDK（!10678 检视）。已启用但 SDK 消失的 agent 同样锁定
+  // 显示为禁用；持久化仍由手动检测的自动落闸或显式保存负责，自动探测不改写配置。
+  assert.match(section, /disabled=\{disabled \|\| !installed \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  assert.match(section, /checked=\{enabled && installed\}/);
   assert.match(section, /检测确认当前配置的可执行文件不存在/);
   // 自动落闸只认 missing/unsupported（地址不存在/不可执行）；unavailable
   // （可执行文件在、版本命令失败）不落闸，保留手动关闭的能力。
@@ -670,6 +681,340 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   // 自动落闸只依据持久化快照决策与提交，不持久化未保存的草稿路径（!10406）。
   assert.match(section, /probedPersistedChoice/);
   assert.match(section, /await commit\(cliAgent, \{\s+enabled: false,\s+useBuiltin: persistedValues\[useBuiltinKey\] === 'true',/);
+});
+
+test('a confirmed miss on the persisted path auto-disables the agent', async () => {
+  // 手动检测确认持久化路径缺失 → 自动落闸：提交 enabled=false 且保留
+  // 持久化的模式/路径，未安装徽标与开关状态保持一致（!10406 检视）。
+  // 检测按钮仅在 installed && enabled 的路径行上渲染，桩需先返回可用
+  // 状态让按钮挂载，点击时再返回缺失。
+  const initial = {
+    external_cli_agent_codex_enabled: 'true',
+    external_cli_agent_codex_use_builtin: 'false',
+    external_cli_agent_codex_cli_path: '/local/codex',
+  };
+  let available = true;
+  const env = await mountCliSection(initial, async (agent, cliPath) => ({
+    cli_agent: agent,
+    status: available ? 'warning' : 'missing',
+    path: available ? (cliPath || '/local/codex') : '',
+    version: available ? '0.163.0' : '',
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: available ? '0.163.0' : '',
+  }), { persistedValues: initial });
+  try {
+    await env.click('[data-testid="settings-panel-external-cli-agent-detect-btn"][data-variant="codex"]');
+    available = false;
+    await env.click('[data-testid="settings-panel-external-cli-agent-detect-btn"][data-variant="codex"]');
+    assert.deepEqual(env.commits.at(-1), ['codex', {
+      enabled: false, useBuiltin: false, cliPath: '/local/codex',
+    }]);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('switching to a local path keeps the built-in CLI path in the dropdown', async () => {
+  // 场景：内置已安装（内置模式），切换/保存为本地可用地址后，下拉框里的
+  // 内置路径应仍然保留（#6647 修复的行为不回归）。
+  const initial = {
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_claude_use_builtin: 'true',
+    external_cli_agent_claude_cli_path: '',
+  };
+  const BUILTIN = '/bundled/claude';
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: 'ok',
+    path: path || BUILTIN,
+    builtin_path: BUILTIN,
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: '0.171.0',
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    // 切到本地路径草稿并点开关启用 → 提交本地路径
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '/local/claude',
+    });
+    await env.click('[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]');
+    assert.deepEqual(env.commits.at(-1), ['claude', {
+      enabled: true, useBuiltin: false, cliPath: '/local/claude',
+    }]);
+    // 配置回显（真实流程由 persistUpdates + 配置刷新同步草稿）
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'true',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '/local/claude',
+    });
+    // 保存后打开下拉：内置路径应仍在选项中
+    const select = '[data-testid="settings-panel-external-cli-agent-cli-path-select"][data-variant="claude"]';
+    await env.click(select);
+    const optionTexts = [...document.querySelectorAll('[role="option"]')].map((item) => item.textContent);
+    assert.ok(optionTexts.some((t) => t.includes(BUILTIN)), '内置路径应仍在下拉选项中（#6647）');
+    assert.ok(optionTexts.some((t) => t.includes('/local/claude')), '本地路径也应在选项中');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('DIAG1: initial state shows the one-click install entry', async () => {
+  // #6753 问题一：三方 agent 初始化状态应有一键安装入口
+  const initial = {
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '',
+  };
+  const env = await mountCliSection(initial, async (agent, path) => ({
+    cli_agent: agent,
+    status: 'missing',
+    path: '',
+    message: 'not found',
+  }));
+  try {
+    // 初始状态（探测尚未落结果）：一键安装横幅应可见
+    let banner = document.querySelector('[data-testid="settings-panel-external-cli-agent-install-hint"][data-variant="claude"]');
+    console.error('[DIAG-A1] initial banner:', !!banner);
+    assert.ok(banner, '初始状态应有一键安装入口');
+    // 探测确认缺失后：横幅仍应可见（未安装 → 禁用）
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 500)));
+    banner = document.querySelector('[data-testid="settings-panel-external-cli-agent-install-hint"][data-variant="claude"]');
+    console.error('[DIAG-A2] after-missing-probe banner:', !!banner);
+    assert.ok(banner, '探测确认缺失后一键安装入口应保留');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('DIAG2: disable then re-enable keeps the local path', async () => {
+  // #6753 问题二：本地路径配置后，关闭开关再打开，路径不得变回内置 CLI
+  const initial = {
+    external_cli_agent_claude_enabled: 'true',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+    // 持久化的路径历史：真实流程由关闭时的历史捕获写入，harness 直接预置
+    external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
+  };
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: 'ok',
+    path: path || '/managed/claude',
+    message: '',
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: '0.171.0',
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    // 关闭开关
+    await env.click(toggle);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: false, useBuiltin: false, cliPath: '/local/claude' }]);
+    // 重新打开：应恢复本地路径，而不是回退内置 CLI
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'false',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '',
+    });
+    // 重新打开：SDK 已安装（探测 ok）→ 开关解锁，点击重开；历史回退恢复
+    // 本地路径而不是回退内置 CLI（#6753）
+    await env.click(toggle);
+    const last = env.commits.at(-1);
+    assert.equal(last[1].enabled, true, '重开应恢复启用');
+    assert.equal(last[1].useBuiltin, false, '重开不应回退内置 CLI');
+    assert.equal(last[1].cliPath, '/local/claude', '重开应恢复本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('DIAG3: disable then re-enable keeps the local path (full cycle)', async () => {
+  // #6753 问题二完整链路：本地路径 → 关闭 → 重开，路径不得回退内置 CLI
+  const initial = {
+    external_cli_agent_claude_enabled: 'true',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+    external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
+  };
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: 'ok',
+    path: path || '/managed/claude',
+    message: '',
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: '0.171.0',
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    // 1) 关闭开关（禁用保留路径）
+    await env.click(toggle);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: false, useBuiltin: false, cliPath: '/local/claude' }]);
+    // 2) 配置回显：禁用态（cli_path 清空，历史保留本地路径）
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'false',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '',
+      external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
+    });
+    // 3) 重新打开：SDK 已安装（探测 ok）→ 开关解锁，点击重开；
+    // resolveEnabledChoice 探测路径历史 → 恢复本地路径
+    await env.click(toggle);
+    const last = env.commits.at(-1);
+    console.error('[DIAG3] re-enable commit:', JSON.stringify(last));
+    assert.equal(last[1].enabled, true, '重开应恢复启用');
+    assert.equal(last[1].useBuiltin, false, '重开不应回退内置 CLI');
+    assert.equal(last[1].cliPath, '/local/claude', '重开应恢复本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('re-enable restores the local path from histories written in the same session', async () => {
+  // 检视回归（!10548）：path_histories 由关闭开关的同会话写入，挂载快照里没有。
+  // resolveEnabledChoice 若缺 draftValues 依赖，会持挂载时快照跳过历史回退而
+  // 回退内置 CLI——本用例挂载不带历史、仅在关闭回显中携带历史，可暴露该问题。
+  const initial = {
+    external_cli_agent_claude_enabled: 'true',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+  };
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: 'ok',
+    path: path || '/managed/claude',
+    message: '',
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: '0.171.0',
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    // 关闭开关：保留路径由上层写入 path_histories
+    await env.click(toggle);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: false, useBuiltin: false, cliPath: '/local/claude' }]);
+    // 配置回显：禁用态 cli_path 清空，同会话写入的 path_histories 随之到达（非挂载预置）
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'false',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '',
+      external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
+    });
+    // 重开：SDK 已安装（探测 ok）→ 开关解锁，点击重开走历史回退
+    await env.click(toggle);
+    const last = env.commits.at(-1);
+    assert.equal(last[1].enabled, true, '重开应恢复启用');
+    assert.equal(last[1].useBuiltin, false, '过期闭包会把重开回退成内置 CLI');
+    assert.equal(last[1].cliPath, '/local/claude', '重开应恢复本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('history fallback never promotes the builtin managed path into cli_path', async () => {
+  // !10678 检视：旧版本配置可能把内置托管路径写进 path_histories。托管路径由
+  // 安装器管理（升级/重装会挪位置），经历史回退固化成自定义 cli_path 与内置
+  // 语义相悖（!10307 同款约束）——回退必须跳过它，落到真正的本地路径。
+  const initial = {
+    external_cli_agent_claude_enabled: 'true',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+    // 历史按写入顺序：托管路径是最新一条（回退时最先被探测到）
+    external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude', '/bundled/claude']),
+  };
+  const BUILTIN = '/bundled/claude';
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: path === '/local/claude' || path === BUILTIN ? 'ok' : 'missing',
+    path: path === '/local/claude' || path === BUILTIN ? path : '',
+    builtin_path: BUILTIN,
+    message: path === '/local/claude' || path === BUILTIN ? '' : 'not found',
+    // installed 判定要求探测结果携带 reference_version（SDK 门控的前端映射）
+    reference_version: path === '/local/claude' || path === BUILTIN ? '0.171.0' : '',
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    await env.click(toggle);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: false, useBuiltin: false, cliPath: '/local/claude' }]);
+    // 配置回显：禁用态 cli_path 清空（一键安装曾翻内置的典型现场），历史保留
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'false',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '',
+    });
+    await env.click('[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]');
+    const last = env.commits.at(-1);
+    assert.equal(last[1].enabled, true, '重开应恢复启用');
+    assert.equal(last[1].useBuiltin, false, '历史里仍有可用本地路径，不应回退内置 CLI');
+    assert.equal(last[1].cliPath, '/local/claude', '托管路径必须被跳过，恢复真正的本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('the enable switch shows a loading spinner while the save is in flight (#6823)', async () => {
+  // #6823：保存往返（含启用前的探测校验）期间开关进入 loading 态，把"短暂
+  // 置灰"变成明确的"处理中"反馈；保存落定后 spinner 退场、开关恢复可点。
+  const saved = {
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+  };
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: 'ok',
+    path: path || '/local/claude',
+    reference_version: '0.171.0',
+  });
+  let releaseCommit;
+  const env = await mountCliSection(saved, onDetect, {
+    persistedValues: saved,
+    onCommitAgent: (agent, choice) => new Promise((resolve, reject) => {
+      releaseCommit = { resolve, reject };
+    }),
+  });
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    await env.click(toggle);
+    // 保存挂起期间：loading 类与 spinner 在位，开关锁定交互
+    const busy = document.querySelector(toggle);
+    assert.ok(busy, '开关应存在');
+    assert.ok(busy.className.includes('ui-switch--loading'), '保存期间应带 loading 类');
+    assert.ok(busy.querySelector('.ui-switch__spinner'), 'loading 期间应渲染 spinner');
+    assert.equal(busy.getAttribute('aria-busy'), 'true');
+    assert.equal(busy.disabled, true, '保存期间开关应锁定');
+    // 保存成功：loading 退场
+    await act(async () => { releaseCommit.resolve(); });
+    const settled = document.querySelector(toggle);
+    assert.ok(!settled.className.includes('ui-switch--loading'), '保存落定后 loading 类应移除');
+    assert.equal(settled.querySelector('.ui-switch__spinner'), null, '保存落定后 spinner 应卸载');
+    assert.equal(settled.getAttribute('aria-busy'), null);
+    // CSS 契约钉住（JSDOM 环境 esbuild 的 css loader 为 empty，真实可见性无法在
+    // DOM 层断言，只能以源码正则钉住 atomgit 检视的可见性修复）：spinner 颜色按
+    // 轨道状态分档——OFF 灰轨道用深色 text-strong（启用是主场景），checked 蓝轨道
+    // 用 inverse；loading 抵消 disabled 的整块减淡。
+    const switchCss = readFileSync(
+      new URL('../src/components/ui/Switch/Switch.css', import.meta.url),
+      'utf8',
+    );
+    assert.match(switchCss, /\.ui-switch__spinner \{[^}]*color: var\(--color-text-strong\)/);
+    assert.match(switchCss, /\.ui-switch--checked \.ui-switch__spinner \{[^}]*color: var\(--color-text-inverse\)/);
+    assert.match(switchCss, /\.ui-switch--loading:disabled \{\s*opacity: 1;\s*\}/);
+    // 抵消规则与 .ui-switch:disabled 同特异性 (0,2,0)，必须位于其后靠源码顺序取胜
+    assert.ok(
+      switchCss.indexOf('.ui-switch--loading:disabled') > switchCss.indexOf('.ui-switch:disabled'),
+      'loading:disabled 抵消规则必须在 :disabled 之后',
+    );
+  } finally {
+    env.cleanup();
+  }
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {

@@ -533,6 +533,32 @@ class TestSessionAdapter:
         assert resp.ok is True
         assert resp.payload == {"pinned": True, "pin_order": 3}
 
+    async def test_pin_rejection_maps_to_forbidden(self, monkeypatch) -> None:
+        """置顶被服务端拒绝时必须映射为 FORBIDDEN，而不是 INTERNAL_ERROR。
+
+        走 ``SessionAdapter.handle`` 的真实分发（委托
+        ``session_repository.handle_pin``），确认前端能按错误码展示专门提示，
+        而不是退化成通用失败文案。
+        """
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            SessionPinRejection,
+        )
+
+        def reject(sid, pinned):
+            raise SessionPinRejection(
+                "cron execution session without cron_id cannot be pinned"
+            )
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.control.repositories.session_repository.set_session_pinned",
+            reject,
+        )
+        resp = await SessionAdapter().handle(
+            _request(ReqMethod.SESSION_PIN, {"session_id": "sess-1", "pinned": True})
+        )
+        assert resp.ok is False
+        assert resp.payload["code"] == "FORBIDDEN"
+
     async def test_color_set(self, monkeypatch) -> None:
         """查询模式返回当前色值；非法色值拒绝（白名单与 TUI 一致）。"""
         monkeypatch.setattr(

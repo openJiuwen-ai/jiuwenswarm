@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | spec / S_02 |
-| 最近修订 | 2026-11-10 |
+| 最近修订 | 2026-11-28 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
 | 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md)、[F_35](../features/F_35_system-plugin-recovery.md) |
 
@@ -20,14 +20,14 @@
 | `extensions.v2.query` | 可选 `package_id: str` | 查询全部或一个包 |
 | `extensions.v2.catalog` | `scope: "catalog" \| "mine"` | 列出预设包或已生效包 |
 | `extensions.v2.show` | `package_id: str`，可选 `version: str` | 返回一个包的详情投影；指定版本时优先返回该版本的 Hub 详情 |
-| `extensions.v2.install` | `paths: list[str]`，非空，每项为现有 ZIP 文件的绝对路径 | 安装 ZIP 扩展包，拒绝目录；同标识的新版本保留旧版本并切换生效，已存在的同版本返回 `PACKAGE_EXISTS` |
-| `extensions.v2.install` | `package_ids: list[str]`，可选 `version: str` | 按包 ID 从本地预设或 Hub 安装；目标版本已生效时幂等，换版本时保留旧副本并切换生效 |
-| `extensions.v2.import` | `path: str`，现有目录或归档的绝对路径 | 按 `package.domain` 分流安装（Gateway 入口） |
-| `extensions.v2.uninstall` | `package_id: str`，可选 `version: str` | 不带 `version` 时卸载所有版本；带 `version` 时只删除该版本副本，其他版本保留 |
-| `extensions.v2.reload` | `package_id: str` | 从安装副本热重载，不先卸载 |
-| `extensions.v2.set_enabled` | `package_id: str`、`enable: bool` | 保留安装副本，启用或禁用系统插件 |
-| `extensions.v2.file.list` | `package_id: str`，可选 `version: str` | 列出包内可预览文件树；已安装版本读本地副本 |
-| `extensions.v2.file.read` | `package_id: str`、`path: str`，可选 `version: str` | 读取一个可预览文件；已安装版本读本地副本 |
+| `extensions.v2.install` | `paths: list[str]`，非空，每项为现有 ZIP 文件的绝对路径 | 安装 ZIP 扩展包，拒绝目录；同标识的新版本保留旧版本并切换生效，已存在的同版本（含组合包）以 FAILED Report 返回 `PACKAGE_EXISTS` |
+| `extensions.v2.install` | `package_ids: list[str]`，可选 `version: str` | 按包 ID 从本地预设或 Hub 安装；目标版本已生效时幂等，换版本时保留旧副本并切换生效；Gateway 域包等待宿主加载结果，加载失败以 FAILED Report 返回并保持原版本生效 |
+| `extensions.v2.import` | `path: str`，现有 ZIP 归档的绝对路径 | 与 `extensions.v2.install` 的单 `paths` 形态等价：由 AgentServer 安装；拒绝目录与非 `.zip`；同版本已安装返回 FAILED `PACKAGE_EXISTS` |
+| `extensions.v2.uninstall` | `package_id: str`，可选 `version: str` | 不带 `version` 时卸载所有版本；带 `version` 时只删除该独立副本，其他版本与同名同版本的组合包成员不受影响 |
+| `extensions.v2.reload` | `package_id: str`，可选 `version: str`（仅组合包） | 从安装副本热重载，不先卸载；指定版本时只处理该版本，未生效版本为空操作；独立插件携带 `version` 返回 `INVALID_PARAMS` |
+| `extensions.v2.set_enabled` | `package_id: str`、`enable: bool`，可选 `version: str`（仅组合包） | 保留安装副本，启用或禁用系统插件；指定版本时作用于该版本（启用未生效版本会加载该副本），省略时作用于当前生效版本，无生效版本时作用于最新安装版本；独立插件携带 `version` 返回 `INVALID_PARAMS` |
+| `extensions.v2.file.list` | `package_id: str`，可选 `version: str` | 列出包内可预览文件树；已安装版本读本地副本，指定版本时读该版本副本 |
+| `extensions.v2.file.read` | `package_id: str`、`path: str`，可选 `version: str` | 读取一个可预览文件；已安装版本读本地副本，指定版本时读该版本副本 |
 
 包标识沿用 Core 约束：1～128 个字符，首位为英文字母或数字，其余可包含英文字母、数字、点、
 下划线和连字符；不含空格与 `..`，不以点结尾，也不使用 Windows 保留名。未知参数拒绝，不接受自建
@@ -35,10 +35,14 @@ Plan 或修改安装目录的参数。
 外部安装请求先校验绝对路径、`.zip` 后缀和文件类型，再交给 Core 校验归档、manifest 与依赖。
 此限制只在外部请求入口生效；启动通过 `load_installed()` 加载安装目录内的解压副本，不受影响。
 
-`extensions.v2.import` 面向未定域的上传入口，由 Gateway 读取包根 `manifest.json` 后分流：
-`package_type` 为 `extension` 的包按 `package.domain` 归属，`gateway` 在 Gateway 安装，`agentserver` 转为
-`extensions.v2.install`；其余包（如 `package_type: plugin`）转为 `plugin_packages.import_local`。
-响应附 `kind`（`extension` 或 `plugin`）供前端区分刷新目标。
+选择已安装版本时，直接重新启用该版本目录，不重新导入文件。启停操作会改写 `manifest.json.enable`，
+不会因此拒绝切回旧版本。安装记录保留原内容摘要；从外部导入相同 ID、相同版本但内容不同的系统插件时，仍拒绝安装。
+禁用或卸载会等包内数据调用结束：仍有在途调用时返回 FAILED Report，`error.code` 为
+`EXTENSION_PACKAGE_BUSY`，包状态不变、可重试；界面按该 code 展示运行中任务的提示，不直接显示 Core 的英文模板。
+旧记录没有原内容摘要时，切换版本不会将安装副本当前内容记作原摘要；外部导入仍与现有安装副本比较，不能据此确认原始 ZIP 的内容。
+
+`extensions.v2.import` 是用户上传 ZIP 的入口，Gateway 仅透传，由 AgentServer 按
+`extensions.v2.install` 的单路径形态处理；只接受已存在的绝对 ZIP 文件，不接受目录，不返回 `kind`。
 
 ### 1.1 详情与文件投影
 
@@ -97,6 +101,7 @@ Core 解析并校验 `package.domain`；`expose`、`display`、`ui`、`client` �
 | 文件内容 | true | `{path, content, download_url?}` |
 | 取得写操作结果 | true | `reports`：Core ActivationReport 数组 |
 | 方法或参数错误 | false | `code=INVALID_PARAMS`、`error` |
+| 详情查询在本地及 SkillHub 查无该包或版本 | false | `code=PACKAGE_NOT_FOUND`、`error` |
 | 门面尚不可用 | false | `code=EXTENSION_MANAGER_NOT_INITIALIZED`、`error` |
 | 调用抛错 | false | `code`、`error`，不得伪造成功 Report |
 
@@ -139,9 +144,20 @@ generation 保留为内部校验字段，不出现在命令结果中。目录和
 快照中不存在但当前仍安装的包展示为禁用。每条记录左侧是单选还原目标；页面右上角的还原入口在未选择时禁用，选择后启用。
 预览状态与实际还原结果一致。
 
-还原页不使用扩展管理 RPC。主应用通过受保护的本机静态服务取得带随机令牌的回环地址，并在
-`/system-plugin-recovery` 路由嵌入独立页面；令牌不出现在主应用地址。独立页读取记录并执行还原。还原只更新当前
-仍在受管安装目录内、且 `package_type: extension` 的 manifest：记录中存在的包版本按记录写入 `enable`，记录中
+设置内的恢复页保留当前聊天 URL。直接访问 `/system-plugin-recovery` 时，Web 服务通过同源反向代理返回独立恢复页。
+恢复页、存档列表、预览和执行还原均可独立于聊天前端、扩展管理 RPC、AgentServer 和 Gateway 工作。
+代理只能连接启动器登记的 `127.0.0.1` 随机端口，并由 Web 服务控制上游路径和回环 Host。子进程令牌只用于内部转发，
+不出现在远程浏览器的 URL 和 HTML 中。
+
+个人版 Web 未设置 `JIUWENSWARM_REMOTE_RECOVERY_PASSWORD` 时，远程同源 `GET` 和 `HEAD` 可读取恢复页、恢复入口、存档列表和预览。
+通过 IP 地址或域名访问时，远程同源 `POST /system-plugin-recovery/api/restore` 均可执行还原。能访问恢复入口的客户端可发起还原并请求重启，
+部署应限制入口的网络可达范围，或设置恢复密码。设置密码后，远程读写均须由同机 HTTPS 代理接入，并通过独立的 HTTP Basic 校验。
+代理保留公网 `Host`，覆盖 `X-Forwarded-Proto` 为 `https`。用户名为 `recovery`，密码来自 Web 服务的该环境变量。
+通过该 HTTPS 入口但凭证缺失或无效的请求返回 `401`，独立页在此响应中发出 HTTP Basic 认证挑战。
+本机直连校验回环连接及实际服务端口。写操作还须与恢复入口同源，并使用 `application/json`。
+Web 服务故障时，持有启动器登记的本机恢复地址的管理员可直连仍在运行的子进程。
+
+还原只更新当前仍在受管安装目录内、且 `package_type: extension` 的 manifest：记录中存在的包版本按记录写入 `enable`，记录中
 不存在但当前仍安装的包写入 `false`。已经删除的安装目录不会重新下载或恢复。还原本身会追加一条 `restore` 记录。
 
 还原不回滚插件已经执行过的外部副作用。恢复进程不导入插件模块，只读写受管 `manifest.json`，并且只监听
@@ -163,11 +179,18 @@ generation 保留为内部校验字段，不出现在命令结果中。目录和
 | `assetId` | Hub 资源 ID；本地上传与预设为空 |
 | `installedVersion` | 当前安装版本；未安装为空 |
 | `versions` | Hub 已发布版本；本地包只有自身版本 |
+| `versionStates` | 详情投影中各已安装版本的存储状态 `{version, status, error}`；`failed` 表示该副本加载失败，界面禁用对应版本 |
 | `origin` / `source` | 安装来源，`source` 为界面使用的 `hub` / `local` 二分 |
 
 按包 ID 安装时：目标版本已生效直接返回成功；目标版本尚未安装时从 Hub 下载或使用本地副本，
 先停用当前版本再启用目标版本，旧版本文件保留在工作区。用户上传与预设包记录 `origin=user` / `origin=preset`，
 Hub 下载记录 `origin=hub` 与 `asset_id`。用户上传的包可在详情页发布，发布类型为 `system_plugin`。
+
+Gateway 域的独立包由 Gateway 进程加载，AgentServer 在界面请求（带 `extensions_v2_require_all_members`）
+下等待该副本的加载结果，最多 30 秒：加载失败返回 FAILED Report，切换前生效的版本恢复生效；
+失败报告仍向浏览器重发 `extensions.v2.installed`，让已恢复版本重新发送 `ui.ready`，界面不停在清除状态。
+没有其他已安装版本时删除失败副本与记录，避免留下无法重载的已安装插件；已有其他版本时保留失败副本并记为 `failed`。
+超时仍按 `pending` 返回，由 Gateway 的重试与后续同步收敛。
 
 ## 3. Web 命令
 

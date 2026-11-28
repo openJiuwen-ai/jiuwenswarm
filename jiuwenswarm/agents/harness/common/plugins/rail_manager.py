@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.util
 import json
@@ -84,6 +85,7 @@ class RailManager:
         self._agent_rail_states: dict[int, dict[str, Any]] = {}
         # DeepAgent 实例引用，用于 register/unregister
         self._agent_instance: Any = None
+        self._reload_lock = asyncio.Lock()
 
         self._initialized = True
         logger.info("[RailManager] 初始化完成，扩展目录: %s", self._extensions_dir)
@@ -358,6 +360,8 @@ class RailManager:
     def set_agent_instance(self, agent_instance: Any) -> None:
         """设置 DeepAgent 实例，用于热更新 rail."""
         self._agent_instance = agent_instance
+        if agent_instance is not None:
+            self._get_agent_state(agent_instance)
         logger.info("[RailManager] DeepAgent 实例已设置")
 
     def _get_agent_state(self, agent: Any) -> dict[str, Any]:
@@ -366,7 +370,10 @@ class RailManager:
         state = self._agent_rail_states.get(key)
         if state is None:
             # 持有 agent 强引用，保证 id 在被跟踪期间不会被复用
-            state = {"agent": agent, "registered": set(), "instances": {}}
+            state = {
+                "agent": agent, "registered": set(), "instances": {},
+                "lock": asyncio.Lock(), "released": False,
+            }
             self._agent_rail_states[key] = state
         return state
 
@@ -386,10 +393,44 @@ class RailManager:
         Args:
             agent: 要释放状态的 DeepAgent 实例
         """
-        if self._agent_rail_states.pop(id(agent), None) is not None:
+        state = self._agent_rail_states.pop(id(agent), None)
+        if state is not None:
+            state["released"] = True
             logger.debug("[RailManager] 已释放 agent 的 rail 注册状态: %s", id(agent))
         if self._agent_instance is agent:
             self._agent_instance = None
+
+    async def load_rails_for_agent(self, agent: Any) -> None:
+        """Track the actual SDK instance and apply the current extension configuration."""
+        if agent is None:
+            return
+        async with self._reload_lock:
+            self.set_agent_instance(agent)
+            state = self._get_agent_state(agent)
+            for extension in list(self._extensions.values()):
+                if not extension.enabled:
+                    continue
+                try:
+                    await self._reload_agent_rail(extension.name, True, state)
+                except Exception:
+                    logger.exception("[RailManager] 用户 Rail 扩展加载失败: %s", extension.name)
+
+    async def toggle_and_reload_rail(self, name: str, enabled: bool) -> dict:
+        """Persist a global toggle and await every live SDK instance before acknowledging."""
+        async with self._reload_lock:
+            extension = self.toggle_extension(name, enabled)
+            failures = []
+            for state in list(self._agent_rail_states.values()):
+                if state["agent"] is None or state.get("released", False):
+                    continue
+                try:
+                    await self._reload_agent_rail(name, enabled, state)
+                except Exception:
+                    failures.append(id(state["agent"]))
+                    logger.exception("[RailManager] 扩展热更新失败: %s agent=%s", name, id(state["agent"]))
+            if failures:
+                raise RuntimeError(f"Extension '{name}' failed to update {len(failures)} active Agent instance(s)")
+            return extension
 
     async def hot_reload_rail(self, name: str, enabled: bool) -> None:
         """热更新 rail：在当前 agent 实例上注册或注销 rail 实例.
@@ -412,35 +453,32 @@ class RailManager:
 
         agent = self._agent_instance
         state = self._get_agent_state(agent)
+        await self._reload_agent_rail(name, enabled, state)
 
-        if enabled:
-            # 开启：在当前 agent 上注册 rail
-            if name in state["registered"]:
-                logger.warning("[RailManager] 扩展 '%s' 已在当前 agent 注册，跳过", name)
+    async def _reload_agent_rail(self, name: str, enabled: bool, state: dict[str, Any]) -> None:
+        """Serialize one instance's registration without relying on the legacy current pointer."""
+        async with state["lock"]:
+            if state["released"]:
                 return
+            agent = state["agent"]
 
-            try:
+            if enabled:
+                if name in state["registered"]:
+                    return
                 rail_instance = self._load_rail_instance_impl(name, state)
                 await agent.register_rail(rail_instance)
+                if state["released"]:
+                    await agent.unregister_rail(rail_instance)
+                    return
                 state["registered"].add(name)
                 logger.info("[RailManager] 成功注册 rail 扩展: %s", name)
-            except Exception as e:
-                logger.error("[RailManager] 注册 rail 扩展失败: %s, 错误: %s", name, e)
-                raise
-        else:
-            # 关闭：从当前 agent 注销 rail
-            if name not in state["registered"]:
-                logger.warning("[RailManager] 扩展 %s 未在当前 agent 注册，跳过", name)
-                return
-
-            try:
+            else:
+                if name not in state["registered"]:
+                    return
                 rail_instance = self._load_rail_instance_impl(name, state)
                 await agent.unregister_rail(rail_instance)
                 state["registered"].discard(name)
                 logger.info("[RailManager] 成功注销 rail 扩展: %s", name)
-            except Exception as e:
-                logger.error("[RailManager] 注销 rail 扩展失败: %s, 错误: %s", name, e)
-                raise
 
     def is_rail_registered(self, name: str) -> bool:
         """检查 rail 是否已在任一 agent 上注册."""

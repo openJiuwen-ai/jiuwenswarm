@@ -13,6 +13,8 @@ await build({
     'src/features/teamOrganization/processing.ts',
     'src/features/teamOrganization/conversation.ts',
     'src/features/multiModelCollaboration/featureConfig.ts',
+    'src/features/interruptSettleGuard.ts',
+    'src/features/cron/cronProcessingGuard.ts',
     'src/services/webClient.ts',
     'src/services/obsUpload.ts',
     'src/features/sessionAssets/sessionAssets.ts',

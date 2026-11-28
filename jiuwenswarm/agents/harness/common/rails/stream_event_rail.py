@@ -76,6 +76,7 @@ from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
 from jiuwenswarm.common.tool_display import (
     extract_call_goal,
     inject_call_goal_schema,
+    is_our_call_goal_schema,
 )
 from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.utils import logger
@@ -1077,10 +1078,20 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         不可就地改 parameters / card.input_params：ToolInfo 与执行侧 schema 常共享
         内层 properties，注入后 SchemaUtils 会补上 call_goal=None，LocalFunction
         再 **kwargs 传给 send_file 等实现会直接 TypeError（表现为工具挂掉）。
+
+        call_goal 描述按当前 UI / preferred_language 写入，使副标题跟前端语言一致。
         """
         tools = getattr(ctx.inputs, "tools", None) or []
         if not tools:
             return
+        try:
+            from jiuwenswarm.enterprise.config.preferred_language import (
+                resolve_preferred_language,
+            )
+
+            language = resolve_preferred_language()
+        except Exception:  # noqa: BLE001 - schema 注入不得拖垮主链路
+            language = "en"
         next_tools: list[Any] = []
         changed = False
         for tool in tools:
@@ -1092,11 +1103,16 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 next_tools.append(tool)
                 continue
             props = params.get("properties")
-            if isinstance(props, dict) and "call_goal" in props:
+            # 工具自带 call_goal：不碰。我们注入过的则继续走注入以按 UI 语言刷新。
+            if (
+                isinstance(props, dict)
+                and "call_goal" in props
+                and not is_our_call_goal_schema(props.get("call_goal"))
+            ):
                 next_tools.append(tool)
                 continue
             cloned = copy.deepcopy(params)
-            inject_call_goal_schema(cloned)
+            inject_call_goal_schema(cloned, language=language)
             if cloned == params:
                 next_tools.append(tool)
                 continue
@@ -1173,6 +1189,22 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 response_text = self._extract_response_text(ctx)
                 if response_text:
                     payload["content"] = response_text
+                if self._role == "leader":
+                    # Load the host event and session-statistics dependencies only for team usage.
+                    from jiuwenswarm.extensions_v2.event_types.context_usage import (
+                        MODEL_USAGE_COUNTERS, TEAM_LEADER_MODEL_USAGE_FIELD,
+                    )
+
+                    inputs = getattr(ctx, "inputs", None)
+                    call_id = getattr(inputs, "context_usage_request_id", None) or getattr(
+                        ctx, "context_usage_request_id", None,
+                    )
+                    usage = getattr(getattr(inputs, "response", None), "usage_metadata", None)
+                    counts = {name: getattr(usage, name, None) for name in MODEL_USAGE_COUNTERS}
+                    if isinstance(call_id, str) and call_id.strip() and all(
+                        type(count) is int and count >= 0 for count in counts.values()
+                    ):
+                        payload[TEAM_LEADER_MODEL_USAGE_FIELD] = {"request_id": call_id, **counts}
             await session.write_stream(
                 OutputSchema(type=phase, index=0, payload=payload)
             )

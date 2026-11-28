@@ -8,8 +8,11 @@ import asyncio
 import json
 from typing import Any
 
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from agent_gateway.common.mode_matrix import is_team_mode
+
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.enterprise.edition import is_enterprise
+from jiuwenswarm.server.transports.sse_chat_deltas import ChatDeltaWindow, PendingDelta
 
 _PLAN_MODE_EXITED = "plan.mode_exited"
 # 客户端断开后没人再取帧。队列有上限，满了就等，避免一轮长聊天把内存堆满。
@@ -159,20 +162,41 @@ class SSESink:
     """把每一片放进队列，路由按 SSE 往外推。"""
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=_SSE_FRAME_QUEUE_LIMIT)
+        self._deltas: ChatDeltaWindow | None = None
+        self._queue: asyncio.Queue[str | dict[str, Any] | PendingDelta | None] = asyncio.Queue(
+            maxsize=_SSE_FRAME_QUEUE_LIMIT,
+        )
+        self._next_sequence = 0
         self._closed = False
 
     async def send_response(self, response: AgentResponse) -> None:
+        if self._deltas is not None:
+            self._deltas.finish()
         await self._emit(response_to_dict(response))
         await self.close()
 
     async def send_chunk(self, chunk: AgentResponseChunk, *, sequence: int) -> bool:
         if self._closed:
             return False
-        await self._emit(chunk_to_dict(chunk, sequence=sequence))
+        frame = chunk_to_dict(chunk, sequence=sequence)
+        if self._deltas is None:
+            await self._emit(frame)
+        else:
+            outgoing = self._deltas.push(frame)
+            if outgoing is not None:
+                await self._queue.put(outgoing)
         if chunk.is_complete:
             await self.close()
         return True
+
+    def configure_chat(self, request: AgentRequest) -> None:
+        """Select batching after HTTP chat middleware has resolved team binding."""
+        if not is_enterprise():
+            return
+        params = request.params if isinstance(request.params, dict) else {}
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        if not (params.get("team") or is_team_mode(params.get("mode")) or is_team_mode(metadata.get("mode"))):
+            self._deltas = ChatDeltaWindow()
 
     def open_stream_keepalive(self, request: Any) -> _QuietKeepalive:
         if not is_enterprise():
@@ -189,17 +213,29 @@ class SSESink:
             return
 
     async def frames(self):
-        while True:
+        """Number batched chat chunks in wire order, including control and file pushes."""
+        while not self._closed or not self._queue.empty():
             item = await self._queue.get()
             if item is None:
                 break
+            if isinstance(item, PendingDelta):
+                item = await item.read()
+            if isinstance(item, dict):
+                item["sequence"] = self._next_sequence
+                item = self._encode(item)
+            if item != _SSE_KEEPALIVE_COMMENT:
+                self._next_sequence += 1
             yield item
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        self._put_dropping_oldest(None)
+        if self._deltas is not None:
+            self._deltas.finish()
+        # A full queue already wakes the reader. Let it drain every data frame.
+        if self._queue.empty():
+            self._queue.put_nowait(None)
 
     def pending_frame_count(self) -> int:
         """还没被取走的帧数，含结束标记。"""
@@ -208,20 +244,12 @@ class SSESink:
     async def _emit(self, payload: dict[str, Any]) -> None:
         if self._closed:
             return
-        text = json.dumps(payload, ensure_ascii=False, default=str)
-        await self._queue.put(f"data: {text}\n\n")
+        await self._queue.put(self._encode(payload))
 
-    def _put_dropping_oldest(self, item: str | None) -> None:
-        """结束标记必须放进去。队列满时丢掉最旧的一帧，避免关流时卡死。"""
-        while True:
-            try:
-                self._queue.put_nowait(item)
-                return
-            except asyncio.QueueFull:
-                try:
-                    self._queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    continue
+    @staticmethod
+    def _encode(payload: dict[str, Any]) -> str:
+        text = json.dumps(payload, ensure_ascii=False, default=str)
+        return f"data: {text}\n\n"
 
 
 async def deliver_runtime_event(

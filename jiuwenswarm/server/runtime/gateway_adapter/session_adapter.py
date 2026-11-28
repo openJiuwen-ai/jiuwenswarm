@@ -46,6 +46,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
 from jiuwenswarm.server.runtime.session import session_metadata as session_metadata_store
 from jiuwenswarm.server.runtime.session.session_metadata import (
+    SessionPinRejection,
     _read_metadata,
     _write_metadata_sync,
     get_all_sessions_metadata,
@@ -375,6 +376,14 @@ class SessionAdapter(GatewayAdapter):
         started = time.perf_counter()
         try:
             result = await asyncio.to_thread(set_session_pinned, sid, raw_pinned)
+        except SessionPinRejection as exc:
+            # Pinning a cron session without job identity would make it vanish
+            # from every sidebar list; surface the refusal as a client error.
+            logger.info(
+                "[SessionAdapter] session.pin rejected request_id=%s session_id=%s",
+                request.request_id, sid,
+            )
+            return build_error_response(request, str(exc), code=exc.code)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "[SessionAdapter] session.pin failed request_id=%s session_id=%s elapsed_ms=%.1f",

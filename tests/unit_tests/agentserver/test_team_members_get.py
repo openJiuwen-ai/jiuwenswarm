@@ -18,6 +18,7 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server import agent_ws_server
 
 
 class _FakeWS:
@@ -66,10 +67,9 @@ async def _invoke(
         ".query_team_human_members_for_join",
         _stub,
     ):
-        from jiuwenswarm.server.context import build_ws_request_context
-        from jiuwenswarm.server.handlers.team import handle_team_members_get
-
-        await handle_team_members_get(build_ws_request_context(object(), ws, request, lock))
+        await agent_ws_server.AgentWebSocketServer._handle_team_members_get(
+            object.__new__(agent_ws_server.AgentWebSocketServer), ws, request, lock
+        )
     assert len(ws.sent) == 1
     return parse_agent_server_wire_unary(json.loads(ws.sent[0]))
 

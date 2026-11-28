@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -11,12 +13,10 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server.context import AgentServerServices, RequestContext
-from jiuwenswarm.server.handlers.session import (
-    _combine_session_in_plan,
-    _try_read_live_plan_mode,
-    handle_session_plan_status,
-)
+from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+from jiuwenswarm.server.worker import execution_requests
+from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
 
 
 def _request(session_id: str | None, *, params: dict | None = None) -> AgentRequest:
@@ -29,35 +29,73 @@ def _request(session_id: str | None, *, params: dict | None = None) -> AgentRequ
     )
 
 
+@pytest.mark.parametrize("mode", ["agent.work.normal", "team.work.normal", "team.work.plan"])
+@pytest.mark.parametrize("active", [False, True])
+async def test_production_host_plan_status_agrees_across_ws_and_shared_handler(monkeypatch, mode, active):
+    from jiuwenswarm.runtime.plan import PlanModeController
+    from jiuwenswarm.server.context import AgentServerServices
+    from jiuwenswarm.server.handlers import session
+
+    sid = "runtime-owned-plan"
+    host = WorkerExecutionHost()
+    controller = host._runtime.plan_controller
+    if active:
+        controller.active_sessions.add(sid)
+    compatibility_controller = PlanModeController()
+    if not active:
+        compatibility_controller.active_sessions.add(sid)
+    monkeypatch.setattr(agent_ws_server_module, "_SERVER_PLAN_CONTROLLER", compatibility_controller)
+    metadata = {"session_id": sid, "channel_id": "web", "mode": mode}
+    monkeypatch.setattr(session, "get_session_metadata", lambda *_args, **_kwargs: metadata)
+    monkeypatch.setattr(execution_requests, "get_session_metadata", lambda *_args, **_kwargs: metadata)
+    wire, replies = [], []
+
+    async def send_wire(value):
+        wire.append(json.loads(value))
+
+    async def send_response(value):
+        replies.append(value)
+
+    request = _request(sid)
+    await host._handle_session_plan_status(SimpleNamespace(send=send_wire), request, asyncio.Lock())
+    await session.handle_session_plan_status(SimpleNamespace(
+        request=request, services=AgentServerServices(host), sink=SimpleNamespace(send_response=send_response),
+    ))
+    expected = active or mode == "team.work.plan"
+    assert wire[0]["body"]["result"]["in_plan"] is expected
+    assert replies[0].ok is True
+    assert replies[0].payload["in_plan"] is expected
+    assert (sid in controller.active_sessions) is active
+
+
 def _server(*, agents: dict | None = None) -> SimpleNamespace:
-    return SimpleNamespace(_agent_manager=SimpleNamespace(agents=agents or {}))
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = SimpleNamespace(agents=agents or {})
+    server._execution_runtime = lambda: SimpleNamespace(
+        plan_controller=agent_ws_server_module._SERVER_PLAN_CONTROLLER,
+    )
+    return server
 
 
 async def _call_handler(server: SimpleNamespace, request: AgentRequest) -> AgentResponse:
     captured: dict[str, AgentResponse] = {}
 
-    class _Sink:
-        async def send_response(self, response: AgentResponse) -> None:
-            captured["resp"] = response
+    async def send(_sink, response):
+        captured["resp"] = response
+        return True
 
-        async def send_chunk(self, chunk, *, sequence: int) -> bool:
-            return True
-
-    await handle_session_plan_status(
-        RequestContext(
-            request=request,
-            sink=_Sink(),
-            connection_id="1",
-            services=AgentServerServices(server),
-        )
+    server._host_services = SimpleNamespace(
+        encode_response=lambda response, **kwargs: response,
+        send=send,
     )
+    await server._handle_session_plan_status(object(), request, asyncio.Lock())
     return captured["resp"]
 
 
 def test_combine_live_plan_mode_wins_over_metadata():
     """live plan_mode=normal 时，即使 metadata 仍是 *.plan 也算已退出。"""
     assert (
-        _combine_session_in_plan(
+        _server()._combine_session_in_plan(
             live_plan_mode="normal",
             session_id="s1",
             metadata_mode="agent.work.plan",
@@ -65,7 +103,7 @@ def test_combine_live_plan_mode_wins_over_metadata():
         is False
     )
     assert (
-        _combine_session_in_plan(
+        _server()._combine_session_in_plan(
             live_plan_mode="plan",
             session_id="s1",
             metadata_mode="agent.work.normal",
@@ -77,7 +115,7 @@ def test_combine_live_plan_mode_wins_over_metadata():
 def test_combine_team_metadata_ignores_live_plan_mode():
     """集群 plan 以 metadata.mode 为准，不被同 session 上 DeepAgent 的默认 normal 盖掉。"""
     assert (
-        _combine_session_in_plan(
+        _server()._combine_session_in_plan(
             live_plan_mode="normal",
             session_id="s-team",
             metadata_mode="team.work.plan",
@@ -85,7 +123,7 @@ def test_combine_team_metadata_ignores_live_plan_mode():
         is True
     )
     assert (
-        _combine_session_in_plan(
+        _server()._combine_session_in_plan(
             live_plan_mode="plan",
             session_id="s-team",
             metadata_mode="team.work.normal",
@@ -93,7 +131,7 @@ def test_combine_team_metadata_ignores_live_plan_mode():
         is False
     )
     assert (
-        _combine_session_in_plan(
+        _server()._combine_session_in_plan(
             live_plan_mode="normal",
             session_id="s-team",
             metadata_mode="team.code.plan",
@@ -104,7 +142,7 @@ def test_combine_team_metadata_ignores_live_plan_mode():
 
 def test_combine_falls_back_to_metadata_and_process_marker():
     assert (
-        _combine_session_in_plan(
+        _server()._combine_session_in_plan(
             live_plan_mode=None,
             session_id="s1",
             metadata_mode="team.work.plan",
@@ -112,7 +150,7 @@ def test_combine_falls_back_to_metadata_and_process_marker():
         is True
     )
     assert (
-        _combine_session_in_plan(
+        _server()._combine_session_in_plan(
             live_plan_mode=None,
             session_id="s1",
             metadata_mode="agent.work.normal",
@@ -124,7 +162,7 @@ def test_combine_falls_back_to_metadata_and_process_marker():
     agent_ws_server_module._plan_active_sessions.add("s-marked")
     try:
         assert (
-            _combine_session_in_plan(
+            _server()._combine_session_in_plan(
                 live_plan_mode=None,
                 session_id="s-marked",
                 metadata_mode="agent",
@@ -146,9 +184,8 @@ def test_try_read_live_plan_mode_from_cached_agent():
         "jiuwenswarm.agents.harness.common.session_ops_service.resolve_live_agent_session",
         return_value=object(),
     ):
-        manager = server._agent_manager
-        assert _try_read_live_plan_mode(manager, session_id) == "plan"
-        assert _try_read_live_plan_mode(manager, "other") is None
+        assert server._try_read_live_plan_mode(session_id) == "plan"
+        assert server._try_read_live_plan_mode("other") is None
 
 
 @pytest.mark.asyncio
@@ -160,8 +197,9 @@ async def test_handler_requires_session_id():
 
 @pytest.mark.asyncio
 async def test_handler_missing_session_is_not_found():
-    with patch(
-        "jiuwenswarm.server.handlers.session.get_session_metadata",
+    with patch.object(
+        execution_requests,
+        "get_session_metadata",
         return_value={},
     ) as get_meta:
         resp = await _call_handler(_server(), _request("missing"))
@@ -184,8 +222,9 @@ async def test_handler_missing_session_is_not_found():
 @pytest.mark.asyncio
 async def test_handler_uses_metadata_when_no_live_agent(mode, expected):
     original_meta = {"session_id": "s1", "mode": mode}
-    with patch(
-        "jiuwenswarm.server.handlers.session.get_session_metadata",
+    with patch.object(
+        execution_requests,
+        "get_session_metadata",
         return_value=dict(original_meta),
     ):
         resp = await _call_handler(_server(), _request("s1"))
@@ -197,17 +236,14 @@ async def test_handler_uses_metadata_when_no_live_agent(mode, expected):
 @pytest.mark.asyncio
 async def test_handler_live_plan_mode_overrides_stale_metadata():
     meta = {"session_id": "s1", "mode": "agent.work.plan"}
-    with (
-        patch(
-            "jiuwenswarm.server.handlers.session.get_session_metadata",
-            return_value=meta,
-        ),
-        patch(
-            "jiuwenswarm.server.handlers.session._try_read_live_plan_mode",
-            return_value="normal",
-        ) as live,
+    with patch.object(
+        execution_requests,
+        "get_session_metadata",
+        return_value=meta,
     ):
-        resp = await _call_handler(_server(), _request("s1"))
+        server = _server()
+        live = server._try_read_live_plan_mode = MagicMock(return_value="normal")
+        resp = await _call_handler(server, _request("s1"))
     assert resp.ok is True
     assert resp.payload["in_plan"] is False
     assert meta["mode"] == "agent.work.plan"
@@ -219,17 +255,14 @@ async def test_handler_live_plan_mode_overrides_stale_metadata():
 
 @pytest.mark.asyncio
 async def test_handler_team_plan_ignores_live_agent_plan_mode():
-    with (
-        patch(
-            "jiuwenswarm.server.handlers.session.get_session_metadata",
-            return_value={"session_id": "s-team", "mode": "team.work.plan"},
-        ),
-        patch(
-            "jiuwenswarm.server.handlers.session._try_read_live_plan_mode",
-            return_value="normal",
-        ) as live,
+    server = _server()
+    live = server._try_read_live_plan_mode = MagicMock(return_value="normal")
+    with patch.object(
+        execution_requests,
+        "get_session_metadata",
+        return_value={"session_id": "s-team", "mode": "team.work.plan"},
     ):
-        resp = await _call_handler(_server(), _request("s-team"))
+        resp = await _call_handler(server, _request("s-team"))
     assert resp.ok is True
     assert resp.payload == {"session_id": "s-team", "in_plan": True}
     live.assert_not_called()
@@ -242,8 +275,9 @@ async def test_handler_does_not_start_or_switch_plan_mode():
     agent.switch_mode = MagicMock()
     agent.ensure_live_session_instance = MagicMock()
     server = _server(agents={"web": {"k": agent}})
-    with patch(
-        "jiuwenswarm.server.handlers.session.get_session_metadata",
+    with patch.object(
+        execution_requests,
+        "get_session_metadata",
         return_value={"mode": "agent.work.plan"},
     ):
         await _call_handler(server, _request("s1"))

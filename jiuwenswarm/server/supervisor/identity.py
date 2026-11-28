@@ -10,6 +10,9 @@ import os
 import sys
 from pathlib import Path
 
+from jiuwenswarm.common.process_identity import process_start_marker as process_start_marker
+from jiuwenswarm.common.process_identity import validate_process_identity
+
 
 class WorkerIdentityError(RuntimeError):
     """Deployment identity needs correction before an explicit recovery."""
@@ -69,13 +72,17 @@ def _is_launch_parent(parent_pid: int) -> bool:
         return False
 
 
-def launch_identity_payload(fingerprint: str, *, runtime_ipc: dict | None = None) -> bytes:
+def launch_identity_payload(
+    fingerprint: str, *, source_observation: dict | None = None,
+    runtime_ipc: dict | None = None,
+) -> bytes:
     """Describe the parent's validated deployment on a private spawn pipe."""
-    observation = None
+    observation = source_observation
     if not getattr(sys, "frozen", False) and not _identity_path().is_file():
         from jiuwenswarm.server.supervisor.identity_cache import launch_source_observation
 
-        observation = launch_source_observation()
+        if observation is None:
+            observation = launch_source_observation()
     payload = {"schema": 1, "parent_pid": os.getpid(),
         "package": _deployment_path(),
         "data_scope": data_scope(), "deployment_scope": deployment_scope(),
@@ -150,6 +157,15 @@ def read_launch_payload() -> dict:
         return payload
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise RuntimeError("Invalid Worker parent identity") from exc
+
+
+def hello_matches_process(hello: dict, process) -> bool:
+    """Check HELLO using shared birth-identity rules, including protocol 2."""
+    try:
+        validate_process_identity(process.pid, hello, process=process)
+    except RuntimeError:
+        return False
+    return True
 
 
 def data_scope() -> str:

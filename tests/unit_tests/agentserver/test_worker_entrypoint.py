@@ -81,6 +81,29 @@ def test_worker_main_activates_external_cli_paths_before_runtime_load(
     assert signal.getsignal(signal.SIGINT) == previous_handler
 
 
+def test_worker_main_starts_output_rotation_before_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    restore_process_state: None,
+) -> None:
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.worker import output_logs
+    from jiuwenswarm.server.worker import service
+
+    order = []
+    _patch_scaffolding(monkeypatch)
+    monkeypatch.setattr(utils, "configure_openjiuwen_runtime_logging", lambda: order.append("runtime_logging"))
+    monkeypatch.setattr(utils, "configure_openjiuwen_core_logging", lambda: order.append("core_logging"))
+    monkeypatch.setattr(output_logs, "start_worker_log_rotation", lambda: order.append("rotation"))
+    monkeypatch.setattr(worker_main, "_activate_managed_external_cli_paths", lambda: None)
+
+    async def serve(*_args, **_kwargs):
+        order.append("runtime")
+
+    monkeypatch.setattr(service, "serve_worker", serve)
+    worker_main.main()
+    assert order == ["runtime_logging", "core_logging", "rotation", "runtime"]
+
+
 def test_worker_main_survives_activation_failure(
     monkeypatch: pytest.MonkeyPatch,
     restore_process_state: None,
@@ -207,6 +230,106 @@ def test_worker_stub_mode_skips_external_cli_activation(
     worker_main.main()
 
     assert order == ["stub"]
+
+
+def test_worker_stub_failure_keeps_exit_status_after_diagnostics_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    restore_process_state: None,
+) -> None:
+    """A stub failure must remain exit 1 after diagnostics and log cleanup."""
+    from jiuwenswarm.common import background_logging
+    from jiuwenswarm.server.worker import stub as worker_stub
+
+    _patch_scaffolding(monkeypatch)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["jiuwenswarm-runtime-worker", "--socket", "unused-ipc.sock", "--stub"],
+    )
+    target = tmp_path / "latest-worker-error.log"
+    monkeypatch.setenv("JIUWEN_WORKER_DIAGNOSTIC_PATH", str(target))
+    monkeypatch.setattr(worker_main, "_configure_worker_diagnostic_logging", lambda: None)
+    order: list[str] = []
+
+    async def fail_stub(*_args, **_kwargs):
+        try:
+            raise worker_stub.StubExit("stub exit status probe")
+        finally:
+            order.append("stub stopped")
+
+    def stop_logging(*_args, **_kwargs):
+        diagnostic = target.read_text(encoding="utf-8")
+        assert "StubExit: stub exit status probe" in diagnostic
+        assert "Traceback" in diagnostic
+        order.append("logging stopped")
+        return True
+
+    def unexpected_hard_exit(code):
+        pytest.fail(f"unexpected hard exit: {code}")
+
+    monkeypatch.setattr(worker_stub, "serve_stub", fail_stub)
+    monkeypatch.setattr(background_logging, "stop_background_logging", stop_logging)
+    monkeypatch.setattr(worker_main, "exit_process", unexpected_hard_exit)
+
+    with pytest.raises(SystemExit) as caught:
+        worker_main.main()
+
+    assert caught.value.code == 1
+    assert order == ["stub stopped", "logging stopped"]
+
+
+@pytest.mark.parametrize("stub", [False, True])
+@pytest.mark.parametrize("hard_exit", [False, True])
+def test_worker_failure_is_recorded_once_before_unwinding_or_hard_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    restore_process_state: None,
+    stub: bool,
+    hard_exit: bool,
+) -> None:
+    """Keep the original failure without duplicate records or relying on unwinding."""
+    from jiuwenswarm.common import background_logging
+    from jiuwenswarm.server.worker import service as worker_service
+    from jiuwenswarm.server.worker import stub as worker_stub
+
+    class HardExit(BaseException):
+        """Stand in for os._exit without letting main catch the sentinel."""
+
+    _patch_scaffolding(monkeypatch)
+    if stub:
+        monkeypatch.setattr(sys, "argv", [*sys.argv, "--stub"])
+    monkeypatch.setattr(worker_main, "_activate_managed_external_cli_paths", lambda: None)
+    monkeypatch.setattr(worker_main, "_configure_worker_diagnostic_logging", lambda: None)
+    target = tmp_path / "latest-worker-error.log"
+    monkeypatch.setenv("JIUWEN_WORKER_DIAGNOSTIC_PATH", str(target))
+    original = RuntimeError("worker failure propagation probe")
+    exit_codes = []
+
+    async def fail(*_args, **_kwargs):
+        raise original
+
+    def exit_without_unwinding(code):
+        assert "RuntimeError: worker failure propagation probe" in target.read_text(encoding="utf-8")
+        exit_codes.append(code)
+        raise HardExit()
+
+    monkeypatch.setattr(worker_service, "serve_worker", fail)
+    monkeypatch.setattr(worker_stub, "serve_stub", fail)
+    monkeypatch.setattr(background_logging, "stop_background_logging", lambda: not hard_exit)
+    monkeypatch.setattr(worker_main, "exit_process", exit_without_unwinding)
+
+    with pytest.raises(HardExit if hard_exit else RuntimeError) as caught:
+        worker_main.main()
+
+    if hard_exit:
+        assert exit_codes == [1]
+    else:
+        assert caught.value is original
+        assert exit_codes == []
+    text = target.read_text(encoding="utf-8")
+    assert text.count("stage=worker failure=RuntimeError: worker failure propagation probe") == 1
+    assert text.count("Traceback (most recent call last)") == 1
 
 
 def test_worker_entry_activation_appends_managed_site_packages_when_frozen(

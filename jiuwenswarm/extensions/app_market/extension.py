@@ -242,8 +242,12 @@ class AppMarketPlugin(ApplicationPluginExtension):
                 )
                 return
             try:
+                confirm_work_dir = params.get("confirm_work_dir")
                 result = await self._manager.delete_app(
-                    app_id, owner(ws), remove_files=params.get("remove_files") is True
+                    app_id,
+                    owner(ws),
+                    remove_files=params.get("remove_files") is True,
+                    confirm_work_dir=confirm_work_dir if isinstance(confirm_work_dir, str) else "",
                 )
             except AppMarketError as exc:
                 await send_market_error(ws, req_id, exc)

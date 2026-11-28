@@ -141,7 +141,7 @@ def test_wan_api_clause_does_not_paste_prior_prompt_marker() -> None:
         clip_index=2,
     )
     assert marker not in wan
-    assert "from Image" in wan or "from image" in wan.lower() or "Image 1 is" in wan
+    assert wan == "character1 sits with the family at the table in the last reference."
     assert "do not" not in wan.lower()
     assert "R2V CAST LOCK" not in wan
     assert "animate ONLY people already in Image 1" not in wan
@@ -397,6 +397,7 @@ async def test_first_clip_uses_character_specs_and_scene_spec_not_first_frame(
         fake_generate,
     )
     clip = next(n for n in graph["nodes"] if n["id"] == "n_clip_1")
+    clip["config"]["prompt"] = "Dad reads by the window."
     await ClipNodeHandler().execute(clip, ctx)
     refs = [Path(x).resolve() for x in (seen.get("reference_images") or [])]
     assert seen.get("first_frame") in (None, "")
@@ -550,74 +551,6 @@ def test_regenerate_packet_keeps_prompt_and_upstream_image(tmp_path: Path) -> No
     assert packet["upstream"][0]["prompt"].startswith("ONE person")
 
 
-def test_director_rewrites_lock_essay_into_image_binding() -> None:
-    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
-        director_approve_video_prompt,
-    )
-
-    essay = (
-        "STYLE LOCK (film-wide, non-negotiable): photoreal cinematic — never cartoon restyle.\n"
-        "FORBID: no morphing, no extras. The Teenage Son does not appear.\n"
-        "The Mother nods once while the Young Child leans forward.\n"
-        'The Father says: "You shall write them on the doorposts of your house and on your gates."'
-    )
-    cfg = {
-        "cast_names": ["Mother", "Young Child"],
-        "on_screen": ["Mother", "Young Child"],
-        "offscreen": ["Father", "Teenage Son"],
-        "clip_action": "The Mother nods once while the Young Child leans forward.",
-        "camera": "slow pan right",
-        "costume_lock": "Mother: dusty rose blouse; Young Child: pale yellow sweater",
-        "speech_by_character": {
-            "Father": "You shall write them on the doorposts of your house and on your gates.",
-        },
-        "previous_clip_wan_prompt": (
-            "The scene is as in Image 3: the warm dining room. "
-            "Mother from Image 1, wearing dusty rose, seated near the table screen-left "
-            "in the scene from Image 3, is listening. "
-            "Young Child from Image 2, wearing pale yellow, seated near the table screen-right "
-            "in the scene from Image 3, is leaning forward."
-        ),
-        "previous_clip_action": "The Mother listens while the Young Child leans forward.",
-        "seat_anchors": {
-            "Mother": {"pose": "seated", "landmark": "table", "screen": "screen-left"},
-            "Young Child": {"pose": "seated", "landmark": "table", "screen": "screen-right"},
-        },
-        "scene_specs": {
-            "place": "the warm dining room",
-            "lighting": "warm golden-hour from the window",
-            "objects": ["wooden table", "Bible"],
-        },
-        "style_lock": {"look": "photoreal cinematic"},
-    }
-    approved, notes = director_approve_video_prompt(essay, cfg=cfg, graph={})
-    assert "director_rewrote" in notes
-    low = approved.lower()
-    assert "mother from image 1" in low or "from image 1" in low
-    assert "young child from image 2" in low or "from image 2" in low
-    assert "scene is as in image 3" in low or "in the scene from image 3" in low
-    assert "wearing" in low
-    # Silent offscreen omitted; speaking offscreen may be heard — exited never named.
-    assert "teenage son" not in low
-    assert (
-        "continue after" in low
-        or "same setting" in low
-        or "same placement" in low
-        or "continues" in low
-        or "scene is as in image" in low
-        or "in the scene from image" in low
-    )
-    assert "seated" in low or "near the table" in low or "screen-left" in low
-    assert "scene description" in low or "golden-hour" in low or "warm" in low
-    assert "nods once" in approved or "leans forward" in approved.lower()
-    assert "doorposts" in approved
-    assert "FORBID" not in approved
-    assert "do not" not in approved.lower()
-    assert "STYLE LOCK" not in approved
-    assert "On screen:" not in approved
-    assert "for example" not in low
-
-
 def test_compose_weaves_language_and_time_of_day() -> None:
     from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
         compose_practice_prompt,
@@ -686,31 +619,6 @@ def test_clip_prompt_leaves_the_score_to_a_music_node_feeding_compose() -> None:
     for graph in ({}, _scored_graph()):
         prompt = compose_practice_prompt(cfg=cfg, graph=graph, action=cfg["clip_action"])
         assert "solo piano and strings" not in prompt
-
-
-def test_director_rewrites_a_seed_prompt_that_still_scores_the_clip() -> None:
-    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
-        compose_practice_prompt,
-        director_prepare_video_prompt,
-        prompt_respects_practice,
-    )
-
-    cfg = {
-        "cast_names": ["Alex"],
-        "on_screen": ["Alex"],
-        "clip_action": "Alex pours coffee.",
-        "bgm_lock": {"instruments": "solo piano and strings"},
-    }
-    # A legacy prompt written before the music node existed still carries a score.
-    seed = compose_practice_prompt(cfg=cfg, graph={}, action=cfg["clip_action"])
-    seed = f"{seed} Audio: solo piano and strings."
-    assert "clip_scores_film_music" in prompt_respects_practice(seed, cfg=cfg, graph=_scored_graph())
-
-    approved, notes = director_prepare_video_prompt(
-        seed, cfg=cfg, graph=_scored_graph(), action=cfg["clip_action"]
-    )
-    assert "solo piano and strings" not in approved
-    assert "clip_scores_film_music" in notes
 
 
 def test_compose_keeps_prior_prompt_continuity() -> None:

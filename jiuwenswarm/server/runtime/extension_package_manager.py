@@ -250,6 +250,20 @@ def read_package_manifest(pkg_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def read_plugin_package_config(pkg_dir: Path) -> dict[str, Any]:
+    """Read optional package-local YAML and reject paths outside the package."""
+    root = pkg_dir.resolve()
+    path = (root / "config.yaml").resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("Plugin config.yaml must stay inside the package")
+    if not path.is_file():
+        return {}
+    config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(config, dict):
+        raise ValueError("Plugin configuration must be a mapping")
+    return config
+
+
 def agent_template_runtime(
     manifest: AgentTemplateSpec | AgentTemplateCard | dict[str, Any],
 ) -> RuntimeSpec | None:
@@ -769,6 +783,21 @@ def resolve_package_avatar_thumbnail(pkg_dir: Path, reference: str) -> str:
         return ""
 
 
+def _resolve_plugin_card_avatar(pkg_dir: Path, manifest: dict, *, source: str) -> str:
+    avatar = _resolve_package_avatar(pkg_dir, manifest)
+    if avatar or source != "builtin" or manifest.get("package_type") != "plugin":
+        return avatar
+    # The copied package may predate the bundled icon. Keep installed files intact.
+    resources_root = _resources_root(_PLUGIN_PACKAGE_KIND)
+    if resources_root is None:
+        return ""
+    resource_dir = resources_root / pkg_dir.name
+    resource_manifest = read_package_manifest(resource_dir)
+    if resource_manifest is None or resource_manifest.get("package_type") != "plugin":
+        return ""
+    return _resolve_package_avatar(resource_dir, resource_manifest)
+
+
 def _build_list_card(
     pkg_dir: Path,
     *,
@@ -798,7 +827,7 @@ def _build_list_card(
         "category": category if isinstance(category, str) else "",
         "tags": manifest.get("tags") if isinstance(manifest.get("tags"), list) else [],
         "source": source,
-        "avatar": _resolve_package_avatar(pkg_dir, manifest),
+        "avatar": _resolve_plugin_card_avatar(pkg_dir, manifest, source=source),
     }
     if installed is not None:
         card["installed"] = installed
@@ -889,7 +918,7 @@ def _build_show_card(
         "displayName": manifest.get("display_name") or pkg_dir.name,
         "displayDescription": display_description,
         "source": resolved_source,
-        "avatar": _resolve_package_avatar(pkg_dir, manifest),
+        "avatar": _resolve_plugin_card_avatar(pkg_dir, manifest, source=resolved_source),
         "version": version if isinstance(version, str) else "",
         "details": details,
         "tags": tags if isinstance(tags, list) else [],
@@ -1705,6 +1734,15 @@ def _resolve_agent_template_definition_dir(name: Any) -> tuple[Path, str] | None
     )
 
 
+def _shipped_memory_plugin_dir(name: str) -> Path | None:
+    from jiuwenswarm.agents.harness.common.memory.plugin import MEMORY_PLUGIN_ID
+
+    if name != MEMORY_PLUGIN_ID:
+        return None
+    root = get_equipment_resources_plugin_packages_dir()
+    return _package_dir_if_present(root, name) if root is not None else None
+
+
 def resolve_plugin_dir(name: Any) -> Path:
     """Resolve an installed plugin package directory."""
     return _resolve_package_dir(
@@ -1713,6 +1751,17 @@ def resolve_plugin_dir(name: Any) -> Path:
         kind_label="plugin",
         package_type="plugin",
     )
+
+
+def resolve_plugin_runtime_dir(name: str) -> Path:
+    """Use shipped memory code for an installed built-in copy, even after upgrade."""
+    installed = resolve_plugin_dir(name)
+    shipped = _shipped_memory_plugin_dir(name)
+    if shipped is None:
+        return installed
+    if installed.parent.name != "built_in":
+        raise ValueError(f"plugin package conflict: {name} exists in both local and resources")
+    return _validate_package_manifest(shipped, "plugin", "plugin")
 
 
 def plugin_package_exists(name: Any) -> bool:
@@ -2052,6 +2101,55 @@ def _assert_agent_group_name_available(name: str) -> None:
                 f"agent_group display name already exists: {name} ({package_dir.name})",
                 "AGENT_GROUP_DUPLICATE",
             )
+
+
+def _assert_agent_template_name_available(
+    name: str, *, exclude_package_id: str = ""
+) -> None:
+    """Reject create/import/update when an installed expert shows the same display name.
+
+    Mirrors the agent_group rule above. Creation packages live under a
+    uuid-suffixed directory id that differs from the manifest name, so without
+    this check an exported package slips past the id-based conflict check on
+    reimport and installs a second expert under the same display name. The
+    message keeps the "already exists in ..." shape consumed by the frontend
+    duplicate-name mapping and by import error classification.
+
+    ``exclude_package_id`` skips the package being updated so keeping or
+    re-casing its own name never conflicts with itself.
+    """
+    normalized_name = name.strip().casefold()
+    if not normalized_name:
+        return
+    roots = (
+        ("resources", _iter_resource_package_dirs(_AGENT_TEMPLATE_KIND)),
+        ("built_in", _iter_local_package_dirs(_built_in_root(_AGENT_TEMPLATE_KIND))),
+        ("local", _iter_local_package_dirs(get_local_root(_AGENT_TEMPLATE_KIND))),
+    )
+    for label, package_dirs in roots:
+        for package_dir in package_dirs:
+            if exclude_package_id and package_dir.name == exclude_package_id:
+                continue
+            manifest = read_package_manifest(package_dir)
+            if manifest is None:
+                continue
+            # Expert directory ids may carry a uuid suffix, so a missing
+            # display_name falls back to the manifest name, not the directory.
+            raw_name = manifest.get("name")
+            fallback = (
+                raw_name
+                if isinstance(raw_name, str) and raw_name.strip()
+                else package_dir.name
+            )
+            display_names = _i18n(manifest.get("display_name"), fallback)
+            if any(
+                value.strip().casefold() == normalized_name
+                for value in display_names.values()
+            ):
+                raise ValueError(
+                    f"agent_template package already exists in {label}: "
+                    f"{name.strip()} (display name conflict with {package_dir.name})"
+                )
 
 
 def _package_id_claimed(kind: str, package_id: str) -> bool:
@@ -2940,6 +3038,14 @@ def list_plugin_packages(params: dict | None = None) -> list[dict]:
         built_in_root=_built_in_root(_PLUGIN_PACKAGE_KIND),
         marketplace_by_id=market,
     )
+    from jiuwenswarm.agents.harness.common.memory.plugin import (
+        MEMORY_PLUGIN_ID,
+        memory_plugin_default_enabled,
+    )
+
+    for card in cards:
+        if card["id"] == MEMORY_PLUGIN_ID and card["installed"]:
+            card["default_enabled"] = memory_plugin_default_enabled()
     return _apply_list_source_filter(cards, params, package_kind=_PLUGIN_PACKAGE_KIND)
 
 
@@ -2965,8 +3071,7 @@ def show_agent_template(name: str) -> dict | None:
     )
 
 
-def show_plugin_package(name: str) -> dict | None:
-    """Return one plugin detail card, or None if missing/bad."""
+def _resolve_plugin_show_dir(name: str) -> tuple[Path, str] | None:
     resolved = _resolve_show_package_dir(
         name,
         kind_label="plugin",
@@ -2974,17 +3079,42 @@ def show_plugin_package(name: str) -> dict | None:
         built_in_root=_built_in_root(_PLUGIN_PACKAGE_KIND),
         resources_root=_resources_root(_PLUGIN_PACKAGE_KIND),
     )
+    if resolved is not None and resolved[1] == "builtin":
+        return _shipped_memory_plugin_dir(name) or resolved[0], resolved[1]
+    return resolved
+
+
+def bundled_memory_plugin_dir() -> Path:
+    from jiuwenswarm.agents.harness.common.memory.plugin import MEMORY_PLUGIN_ID
+
+    resolved = _resolve_plugin_show_dir(MEMORY_PLUGIN_ID)
+    if resolved is None or resolved[1] != "builtin":
+        raise ValueError("Bundled memory plugin is unavailable")
+    return resolved[0]
+
+
+def show_plugin_package(name: str) -> dict | None:
+    """Return one plugin detail card, or None if missing/bad."""
+    resolved = _resolve_plugin_show_dir(name)
     if resolved is None:
         return None
     pkg_dir, source = resolved
     market = _marketplace_index(read_plugin_marketplace_entries())
     marketplace = market.get(pkg_dir.name)
-    return _build_show_card(
+    card = _build_show_card(
         pkg_dir,
         package_type="plugin",
         marketplace=marketplace,
         source=source,
     )
+    if card is not None and source == "builtin":
+        from jiuwenswarm.agents.harness.common.memory.plugin import MEMORY_PLUGIN_ID
+
+        if pkg_dir.name == MEMORY_PLUGIN_ID:
+            from jiuwenswarm.server.runtime.managed_memory_http import public_memory_plugin_settings
+
+            card["memory_access"] = public_memory_plugin_settings()
+    return card
 
 
 def _hub_detail_card(
@@ -4033,6 +4163,7 @@ def create_agent_template(params: dict) -> None:
         kind="agent_template",
         resources_root=_resources_root(_AGENT_TEMPLATE_KIND),
     )
+    _assert_agent_template_name_available(name)
 
     local_root = Path(extended_path(local_root))
     pkg_dir = local_root / package_id
@@ -4098,6 +4229,21 @@ def update_agent_template(params: dict) -> None:
         raise ValueError(
             f"only local packages can be edited: {package_id} (source={existing.get('source')!r})"
         )
+    # 判重只拦截改名：显示名与自身 manifest 现值一致（含仅大小写变化）时跳过
+    # 校验。存量同名数据（本判重不追溯）不应导致「仅改描述/技能」无法保存。
+    own_manifest = read_package_manifest(pkg_dir)
+    own_names: set[str] = set()
+    if own_manifest is not None:
+        raw_name = own_manifest.get("name")
+        fallback = (
+            raw_name if isinstance(raw_name, str) and raw_name.strip() else package_id
+        )
+        own_names = {
+            value.strip().casefold()
+            for value in _i18n(own_manifest.get("display_name"), fallback).values()
+        }
+    if name.strip().casefold() not in own_names:
+        _assert_agent_template_name_available(name, exclude_package_id=package_id)
 
     # Failures in the in-place rewrite propagate to the caller unchanged; there
     # is no partial state to clean up here (unlike create, which removes a
@@ -4586,6 +4732,13 @@ def _commit_imported_package(
         kind=kind_label,
         resources_root=_resources_root(kind),
     )
+    if kind == _AGENT_TEMPLATE_KIND:
+        # 显示名判重放在 id 判重之后：同 id 重导入应报 id 冲突，而不是
+        # 「显示名与自己冲突」；同名不同 id 的导出副本仍在此拦截。
+        for display_name in dict.fromkeys(
+            _i18n(manifest.get("display_name"), package_id).values()
+        ):
+            _assert_agent_template_name_available(display_name.strip())
     dest = local_root / package_id
     local_root.mkdir(parents=True, exist_ok=True)
     staging_parent = Path(

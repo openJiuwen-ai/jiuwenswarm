@@ -655,6 +655,9 @@ export interface TeamMemberExecutionEvent {
   content?: string;
   tool_name?: string;
   tool_call_id?: string;
+  tool_arguments?: unknown;
+  tool_success?: boolean;
+  tool_output?: unknown;
   files?: Array<{
     name: string;
     size?: number;
@@ -720,6 +723,7 @@ export interface SessionRuntime {
    * 面板里手动关闭开关。恢复历史会话时由后端 session_equipment 快照重新填充。
    */
   enabledPlugins: string[];
+  draftDisabledPlugins: string[];
   enabledMcps: string[];
   /** 是否已从后端快照恢复，或已由用户在本地明确修改。 */
   extensionsHydrated: boolean;
@@ -727,6 +731,10 @@ export interface SessionRuntime {
   enableSwarmflow: boolean;
   /** 本会话 swarmflow token 上限（留空=不限） */
   swarmflowBudget: number | null;
+  /** 企业 swarmflow token 上限（快照；用户预算只能在此范围内收紧，留空=不设上限） */
+  swarmflowBudgetCap: number | null;
+  /** 企业是否允许使用 swarmflow（门禁快照；false 时禁用启用入口） */
+  swarmflowAllowed: boolean;
   /**
    * 本会话 team 成员是否使用独立 Git 身份（会话级，code 模式随 chat.send 下发）。
    * undefined = 用户未拨过：不随请求发送，后端沿用已提交的会话设置。
@@ -805,10 +813,13 @@ function createEmptyRuntime(
     teamLeaderIdentity: null,
     teamGroupIdentity: null,
     enabledPlugins: [],
+    draftDisabledPlugins: [],
     enabledMcps: [],
     extensionsHydrated: false,
     enableSwarmflow: false,
     swarmflowBudget: null,
+    swarmflowBudgetCap: null,
+    swarmflowAllowed: true,
     workflowRuns: [],
     taskProgressEstimates: {},
   };
@@ -908,6 +919,7 @@ interface SessionState {
   removeEnabledPlugin: (sessionId: string, pluginId: string) => void;
   /** 本会话启用插件：清空 */
   clearEnabledPlugins: (sessionId: string) => void;
+  setDraftPluginEnabled: (pluginId: string, enabled: boolean) => void;
   /** 本会话启用MCP：追加（去重） */
   addEnabledMcp: (sessionId: string, mcpName: string) => void;
   /** 本会话启用MCP：移除指定项 */
@@ -946,6 +958,10 @@ interface SessionState {
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
   setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
+  /** 设置本会话的企业 swarmflow 门禁快照（false 时禁用启用入口） */
+  setSwarmflowAllowed: (sessionId: string, allowed: boolean) => void;
+  /** 设置本会话的企业 swarmflow 预算上限快照（null=不设上限） */
+  setSwarmflowBudgetCap: (sessionId: string, cap: number | null) => void;
   setIndependentGitIdentity: (sessionId: string, enabled: boolean) => void;
   /** 设置本会话团队的任务调度模式（显式值，随 chat.send 下发并持久化到会话 metadata） */
   setTeamDispatchMode: (sessionId: string, mode: TeamDispatchMode) => void;
@@ -1930,6 +1946,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  setDraftPluginEnabled: (pluginId, enabled) => {
+    const sessionId = TRANSIENT_NEW_CONVERSATION_ID;
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      const selected = runtime.enabledPlugins.filter((id) => id !== pluginId);
+      const disabled = runtime.draftDisabledPlugins.filter((id) => id !== pluginId);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            enabledPlugins: enabled ? [...selected, pluginId] : selected,
+            draftDisabledPlugins: enabled ? disabled : [...disabled, pluginId],
+          },
+        },
+      };
+    });
+  },
+
   clearEnabledPlugins: (sessionId) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -2365,11 +2400,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // budget === undefined → caller 不关心,保留旧值(仅切开关);
       // budget === null   → 显式设为无限制(覆盖旧值);
       // budget 为正整数   → 设置具体上限。
-      const nextBudget = !active
+      const rawBudget = !active
         ? null
         : budget !== undefined
           ? budget
           : (rt.swarmflowBudget ?? null);
+      // 企业上限封顶：正数预算超出企业上限时收紧到上限（后端同样封顶，这里只是
+      // 让前端立即反馈，避免用户看到会被后端截断的输入值）。
+      const cap = rt.swarmflowBudgetCap;
+      const nextBudget =
+        rawBudget != null && cap != null && rawBudget > cap ? cap : rawBudget;
       return {
         runtimes: {
           ...state.runtimes,
@@ -2378,6 +2418,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             enableSwarmflow: active,
             swarmflowBudget: nextBudget,
           },
+        },
+      };
+    });
+  },
+
+  setSwarmflowAllowed: (sessionId, allowed) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      if (rt.swarmflowAllowed === allowed) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...rt, swarmflowAllowed: allowed },
+        },
+      };
+    });
+  },
+
+  setSwarmflowBudgetCap: (sessionId, cap) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      if (rt.swarmflowBudgetCap === cap) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...rt, swarmflowBudgetCap: cap },
         },
       };
     });

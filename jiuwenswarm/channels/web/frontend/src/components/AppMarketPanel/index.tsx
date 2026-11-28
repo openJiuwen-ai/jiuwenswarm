@@ -4,10 +4,14 @@ import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import { webRequest } from '../../services/webClient';
 import { openAssetPublish } from '../../features/assetPublishEvents';
+import { matchesAssetName } from '../../features/assetNameSearch';
 import { Pagination } from '../common/Pagination';
-import { CategoryTabs } from '../ui/CategoryTabs/CategoryTabs';
 import { EntityHeader } from '../ui/EntityHeader/EntityHeader';
 import { PageCard } from '../ui/PageCard/PageCard';
+import { PageHeader } from '../ui/PageHeader/PageHeader';
+import { PageToolbar } from '../ui/PageToolbar/PageToolbar';
+import { PageToolbarSearch } from '../ui/PageToolbarSearch/PageToolbarSearch';
+import { Tabs } from '../ui/Tabs/Tabs';
 import { Button } from '../ui/Button/Button';
 import { toast, type ToastVariant } from '../ui/Toast/toastStore';
 import {
@@ -28,6 +32,9 @@ import { marketResources } from './marketResources';
 import './AppMarketPanel.css';
 
 const PANE_HINT_DISMISSED = 'app-market-pane-hint-dismissed';
+// The plaza search runs on the server; debounce keystrokes the same way the
+// skills page does so typing does not fire one Hub request per character.
+const MARKET_SEARCH_DEBOUNCE_MS = 300;
 
 function showNotice(content: string, variant: ToastVariant = 'success') {
   toast.open({
@@ -40,6 +47,13 @@ function showNotice(content: string, variant: ToastVariant = 'success') {
     dataVariant: variant,
   });
 }
+
+const CLEANUP_NOTICE_KEYS: Record<string, string> = {
+  unverified_directory: 'appMarket.cleanupKeptUnverified',
+  protected_directory: 'appMarket.cleanupKeptProtected',
+  directory_in_use: 'appMarket.cleanupKeptInUse',
+  filesystem_busy: 'appMarket.cleanupFilesystemBusy',
+};
 
 interface AppInfo {
   app_id: string;
@@ -112,7 +126,7 @@ type AppState = 'stopped' | 'starting' | 'running' | 'stopping';
 type PendingAction = 'starting' | 'stopping' | 'deleting' | 'converting' | 'pinning';
 type Tab = 'all' | 'market';
 type LoadState = 'loading' | 'success' | 'error';
-type MarketDetailState = { state: LoadState; detail?: MarketAppDetail };
+type MarketDetailState = { state: LoadState; detail?: MarketAppDetail; version?: string };
 type DetailTarget = { kind: 'installed'; id: string } | { kind: 'market'; id: string };
 
 function appState(state?: string): AppState {
@@ -272,7 +286,7 @@ function MarketAppDetailPage({ item, detailState, onBack }: {
           {detailState.detail.detail_desc || item.short_desc ? (
             <p className="app-market-detail__description">{detailState.detail.detail_desc || item.short_desc}</p>
           ) : null}
-          <dl className="app-market-detail__grid">
+          <dl className="app-market-detail__grid" data-testid="app-market-detail-grid">
             <DetailRow label={t('appMarket.detail.version')} value={`v${detailState.detail.version || item.public_latest_version}`} />
             <DetailRow label={t('appMarket.detail.packageSize')} value={formatBytes(detailState.detail.file_size)} />
             <DetailRow label={t('appMarket.detail.sourceSize')} value={formatBytes(detailState.detail.source_size)} />
@@ -293,10 +307,10 @@ function MarketAppDetailPage({ item, detailState, onBack }: {
 
 export function AppMarketPanel({
   onEdit,
-  onDetailChange,
+  showPageHeader = false,
 }: {
   onEdit?: AppMarketEditHandler;
-  onDetailChange?: (open: boolean) => void;
+  showPageHeader?: boolean;
 } = {}) {
   const { t } = useTranslation();
   const isElectron = !!window.jiuwenDesktop?.isElectron;
@@ -306,6 +320,11 @@ export function AppMarketPanel({
     try { return localStorage.getItem(hintKey) !== '1'; } catch { return true; }
   });
   const [activeTab, setActiveTab] = useState<Tab>('all');
+  // Shared between both tabs: My Apps filters the local list, the plaza sends
+  // the trimmed keyword to Hub as `query`.
+  const [search, setSearch] = useState('');
+  const [marketQuery, setMarketQuery] = useState('');
+  const appliedMarketQuery = useRef('');
   const [activeApp, setActiveApp] = useState<(AppInfo & { instanceId: string }) | null>(null);
   const [openMenuAppId, setOpenMenuAppId] = useState<string | null>(null);
   const [detailTarget, setDetailTarget] = useState<DetailTarget | null>(null);
@@ -345,6 +364,7 @@ export function AppMarketPanel({
     ? marketApps.find((app) => app.asset_id === detailTarget.id)
     : undefined;
   const detailOpen = Boolean(installedDetail || marketDetail);
+  const searchKeyword = search.trim();
 
   const resourceSnapshot = useSyncExternalStore(marketResources.subscribeCards, marketResources.getSnapshot);
   const appMemoryLabel = useCallback((appId: string) => {
@@ -405,7 +425,7 @@ export function AppMarketPanel({
     setMarketState('loading');
     try {
       const data = await webRequest<{ items?: MarketAppInfo[]; total: number }>('app_market.market_list', {
-        query: '',
+        query: marketQuery,
         page: marketPage,
         page_size: marketPageSize,
       });
@@ -423,22 +443,56 @@ export function AppMarketPanel({
       setMarketState('error');
       showError('appMarket.marketLoadFailed', error);
     }
-  }, [marketPage, marketPageSize, showError]);
+  }, [marketPage, marketPageSize, marketQuery, showError]);
 
-  const openMarketDetail = async (item: MarketAppInfo) => {
+  // Market details are cached per asset_id and only reused while the plaza list
+  // still reports the same version; installs, updates and Hub releases bump
+  // public_latest_version, so a mismatch forces a fresh market_detail request
+  // and the detail page never disagrees with the card label.
+  const openMarketDetail = useCallback(async (item: MarketAppInfo) => {
     setDetailTarget({ kind: 'market', id: item.asset_id });
     const known = marketDetails[item.asset_id];
-    if (known && known.state !== 'error') return;
-    setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'loading' } }));
+    // The version pin also covers in-flight loading entries, so a matching
+    // version never starts a duplicate request.
+    if (known && known.state !== 'error' && known.version === item.public_latest_version) return;
+    const requestedVersion = item.public_latest_version;
+    setMarketDetails((current) => ({
+      ...current,
+      [item.asset_id]: { state: 'loading', version: requestedVersion },
+    }));
     try {
       const detail = await webRequest<MarketAppDetail>('app_market.market_detail', {
         asset_id: item.asset_id,
-        version: item.public_latest_version,
+        version: requestedVersion,
       });
-      setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'success', detail } }));
+      setMarketDetails((current) => {
+        // A newer request or invalidation replaced this entry while the request
+        // was in flight; the stale response must not overwrite it.
+        const currentEntry = current[item.asset_id];
+        if (currentEntry && currentEntry.version !== requestedVersion) return current;
+        return {
+          ...current,
+          [item.asset_id]: { state: 'success', detail, version: requestedVersion },
+        };
+      });
     } catch {
-      setMarketDetails((current) => ({ ...current, [item.asset_id]: { state: 'error' } }));
+      setMarketDetails((current) => {
+        const currentEntry = current[item.asset_id];
+        if (currentEntry && currentEntry.version !== requestedVersion) return current;
+        // Keep the version pin on failed entries too, so a later response for
+        // the same request cannot overwrite a newer entry (mirrors success).
+        return { ...current, [item.asset_id]: { state: 'error', version: requestedVersion } };
+      });
     }
+  }, [marketDetails]);
+
+  const invalidateMarketDetail = (assetId: string) => {
+    setMarketDetails((current) => {
+      if (!(assetId in current)) return current;
+      const next = { ...current };
+      delete next[assetId];
+      return next;
+    });
   };
 
   const waitForInstallJob = useCallback(async (jobId: string, assetId: string) => {
@@ -482,7 +536,11 @@ export function AppMarketPanel({
       ? t('appMarket.updateBackupSuccess', { name: detail.display_name, path: backup })
       : t('appMarket.installSuccess', { name: detail.display_name });
     showNotice(text);
+    // Refresh the lists first, then drop the cached detail: a detail page that
+    // is open while the install finishes is re-requested against the refreshed
+    // list version instead of being left on the loading placeholder.
     await Promise.all([fetchApps(), fetchMarket()]);
+    invalidateMarketDetail(key);
     setActiveTab('all');
     window.dispatchEvent(new Event('app-market-apps-changed'));
   };
@@ -604,7 +662,12 @@ export function AppMarketPanel({
         ? t('appMarket.updateBackupSuccess', { name: app.name, path: backup })
         : t('appMarket.updateSuccess', { name: app.name });
       showNotice(text);
+      // Same contract as runInstall: refresh the lists first, then drop the
+      // cached detail, so a refetch while the update finished resolves against
+      // the refreshed list version. A failed or cancelled update keeps the
+      // cache intact instead of discarding still-valid entries.
       await Promise.all([fetchApps(), fetchInstances()]);
+      invalidateMarketDetail(app.hub_asset_id);
     } catch (error) {
       showError('appMarket.updateFailed', error);
     } finally {
@@ -697,12 +760,32 @@ export function AppMarketPanel({
   }, [detailTarget, detailOpen]);
 
   useEffect(() => {
-    onDetailChange?.(detailOpen);
-  }, [detailOpen, onDetailChange]);
-
-  useEffect(() => {
     if (activeTab === 'market') void fetchMarket();
   }, [activeTab, fetchMarket]);
+
+  // An invalidation can remove the cached entry while its detail page is open
+  // (for example an install finishing in the background). Re-request it so the
+  // page cannot stay on the loading placeholder forever. Entries that exist,
+  // including failed ones, are left untouched so errors are not retried in a loop.
+  useEffect(() => {
+    if (!marketDetail) return;
+    if (marketDetails[marketDetail.asset_id]) return;
+    void openMarketDetail(marketDetail);
+  }, [marketDetail, marketDetails, openMarketDetail]);
+
+  // The plaza is paginated by Hub, so filtering has to happen server-side.
+  // Debounce typing and return to the first page only when the keyword really
+  // changed; re-entering the tab with the same keyword keeps the current page.
+  useEffect(() => {
+    const keyword = search.trim();
+    const timer = window.setTimeout(() => {
+      if (appliedMarketQuery.current === keyword) return;
+      appliedMarketQuery.current = keyword;
+      setMarketPage(1);
+      setMarketQuery(keyword);
+    }, MARKET_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   const beginAction = (appId: string, action: PendingAction) => {
     if (actionLocks.current.has(appId)) return false;
@@ -796,18 +879,39 @@ export function AppMarketPanel({
     if (removeFiles && !window.confirm(t('appMarket.deleteCleanConfirm', { name: app.name }))) return;
     if (!beginAction(app.app_id, 'deleting')) return;
     try {
-      let messageKey = removeFiles ? 'appMarket.deleteCleanSuccess' : 'appMarket.removeKeepSuccess';
-      let directory = '';
-      const result = await webRequest<{ cleanup_warning?: string; work_dir?: string }>(
+      const result = await webRequest<{
+        cleanup_warning?: string;
+        cleanup_code?: string;
+        work_dir?: string;
+        preserved_dir?: string;
+      }>(
         app.source === 'hub' ? 'app_market.uninstall' : 'app_market.delete',
-        { app_id: app.app_id, remove_files: removeFiles },
+        {
+          app_id: app.app_id,
+          remove_files: removeFiles,
+          // A local app directory may be the user's project directory, so the
+          // server requires the caller to name it back before deleting files.
+          ...(removeFiles && app.source !== 'hub' ? { confirm_work_dir: appDirectory(app) } : {}),
+        },
+        // Large local trees (node_modules) can take minutes to remove.
+        removeFiles ? { timeoutMs: 180000 } : undefined,
       );
-      if (result?.cleanup_warning) {
-        messageKey = 'appMarket.uninstallCleanupWarning';
-        directory = result.work_dir || '';
-      }
+      const cleanupError = result?.cleanup_warning;
+      const cleanupKey = cleanupError ? CLEANUP_NOTICE_KEYS[result?.cleanup_code || ''] : '';
       removeInstalledApp(app.app_id);
-      showNotice(t(messageKey, { directory }), messageKey === 'appMarket.uninstallCleanupWarning' ? 'warning' : 'success');
+      if (app.source === 'hub' && app.hub_asset_id) invalidateMarketDetail(app.hub_asset_id);
+      if (cleanupError) {
+        const directory = result?.work_dir || appDirectory(app);
+        const message = cleanupKey
+          ? t(cleanupKey, { directory })
+          : t('appMarket.cleanupFailed', { directory, error: cleanupError });
+        const archive = result?.preserved_dir;
+        showNotice(archive ? t('appMarket.cleanupWithArchive', { message, directory: archive }) : message, 'error');
+      } else if (removeFiles && result?.preserved_dir) {
+        showNotice(t('appMarket.deleteCleanArchived', { directory: result.preserved_dir }), 'success');
+      } else {
+        showNotice(t(removeFiles ? 'appMarket.deleteCleanSuccess' : 'appMarket.removeKeepSuccess'), 'success');
+      }
       await closeApplication(app);
       window.dispatchEvent(new Event('app-market-apps-changed'));
     } catch (error) {
@@ -822,6 +926,7 @@ export function AppMarketPanel({
     if (!beginAction(app.app_id, 'converting')) return;
     try {
       await webRequest('app_market.convert_to_local', { app_id: app.app_id });
+      if (app.hub_asset_id) invalidateMarketDetail(app.hub_asset_id);
       await fetchApps();
       showNotice(t('appMarket.convertSuccess', { name: app.name }));
     } catch (error) {
@@ -849,6 +954,7 @@ export function AppMarketPanel({
     if (!beginAction(app.app_id, 'deleting')) return;
     try {
       await webRequest('app_market.delete', { app_id: app.app_id });
+      if (app.hub_asset_id) invalidateMarketDetail(app.hub_asset_id);
       removeInstalledApp(app.app_id);
       await fetchMarket();
       setActiveTab('market');
@@ -1032,6 +1138,7 @@ export function AppMarketPanel({
       return appState(instanceMap.get(appId)?.state);
     };
     return apps
+      .filter((app) => matchesAssetName(searchKeyword, [app.name, app.description || '']))
       .map((app, index) => ({ app, index, state: stateOf(app.app_id) }))
       .sort((left, right) => {
         const rankDelta = rank[left.state] - rank[right.state];
@@ -1047,70 +1154,104 @@ export function AppMarketPanel({
         return left.index - right.index;
       })
       .map(({ app }) => app);
-  }, [apps, instanceMap, pending]);
+  }, [apps, instanceMap, pending, searchKeyword]);
+
+  const showListHeader = showPageHeader && !activeApp;
+  const resourceActions = (
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2" data-testid="app-market-resource-actions">
+      <AppMarketResources />
+      <button
+        type="button"
+        className="page-card-action shrink-0"
+        title={t('common.refresh')}
+        aria-label={t('common.refresh')}
+        data-testid="app-market-refresh"
+        disabled={listState === 'loading'}
+        onClick={() => {
+          if (activeTab === 'market') void fetchMarket();
+          else void refresh();
+        }}
+      >
+        <RefreshCw size={16} aria-hidden="true" />
+      </button>
+    </div>
+  );
+  const selectTab = (value: Tab) => {
+    hideApplication();
+    setPaneExpanded(false);
+    setDetailTarget(null);
+    setActiveTab(value);
+  };
 
   return (
     <div className={`app-market-layout${useEmbeddedPane && activeApp && paneExpanded ? ' app-market-layout-expanded' : ''}`} data-testid="app-market-panel">
-      <div className="app-market-list flex min-h-0 flex-1 flex-col gap-5" data-testid="app-market-list">
+      <div className="app-market-list flex min-h-0 flex-1 flex-col" data-testid="app-market-list">
       {!detailOpen && (
-        <>
-      <div className="app-market-toolbar page-shell flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
-        <CategoryTabs<Tab>
-          items={[
-            { value: 'market', label: t('appMarket.market'), testId: 'app-market-tab-plaza' },
-            { value: 'all', label: t('appMarket.myApps'), testId: 'app-market-tab-my-apps' },
-          ]}
-          value={activeTab}
-          onChange={(value) => {
-            if (value === activeTab) return;
-            hideApplication();
-            setPaneExpanded(false);
-            setDetailTarget(null);
-            setActiveTab(value);
-          }}
-        />
-        <div className="flex min-w-0 flex-wrap items-center gap-2" data-testid="app-market-resource-actions">
-        <AppMarketResources />
-        <button
-          type="button"
-          className="page-card-action shrink-0"
-          title={t('common.refresh')}
-          aria-label={t('common.refresh')}
-          disabled={listState === 'loading'}
-          onClick={() => {
-            if (activeTab === 'market') void fetchMarket();
-            else void refresh();
-          }}
-        >
-          <RefreshCw size={16} aria-hidden="true" />
-        </button>
+        <div className="page-shell flex-none">
+          {showListHeader ? (
+            <PageHeader
+              title={t('appMarket.title')}
+              subtitle={t('appMarket.subtitle')}
+              titleTestId="app-market-page-title"
+              subtitleTestId="app-market-page-subtitle"
+            >
+              {resourceActions}
+            </PageHeader>
+          ) : resourceActions}
+          <PageToolbar className="flex-wrap" testId="app-market-toolbar">
+            <Tabs<Tab>
+              wrapperTestId="app-market-tabs"
+              className="page-tabs"
+              role="tablist"
+              items={[
+                { value: 'market', label: t('appMarket.market'), testId: 'app-market-tab-plaza' },
+                { value: 'all', label: t('appMarket.myApps'), testId: 'app-market-tab-my-apps' },
+              ]}
+              value={activeTab}
+              onChange={selectTab}
+              onReselect={activeApp ? selectTab : undefined}
+            />
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-3" data-testid="app-market-toolbar-actions">
+              <PageToolbarSearch
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onClear={() => setSearch('')}
+                placeholder={t('appMarket.searchPlaceholder')}
+                aria-label={t('appMarket.searchPlaceholder')}
+                inputTestId="app-market-search-input"
+                wrapperTestId="app-market-search"
+                measureSelector=".app-market-list"
+                className="focus-visible:border-[color:var(--color-control-emphasis)]"
+              />
+            </div>
+          </PageToolbar>
+          {windowHintVisible && (
+            <div
+              className="flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
+              data-testid="app-market-pane-hint"
+            >
+              <p data-testid="app-market-pane-hint-text">
+                {t(useEmbeddedPane ? 'appMarket.paneHint' : 'appMarket.desktopWindowHint')}
+              </p>
+              <Button
+                variant="quiet"
+                size="sm"
+                className="shrink-0"
+                data-testid="app-market-pane-hint-dismiss"
+                onClick={() => {
+                  setWindowHintVisible(false);
+                  try { localStorage.setItem(hintKey, '1'); } catch { /* The hint can still close for this visit. */ }
+                }}
+              >
+                {t('appMarket.gotIt')}
+              </Button>
+            </div>
+          )}
         </div>
-      </div>
-      {windowHintVisible && (
-        <div
-          className="page-shell flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
-          data-testid="app-market-pane-hint"
-        >
-            <p data-testid="app-market-pane-hint-text">{t(useEmbeddedPane ? 'appMarket.paneHint' : 'appMarket.desktopWindowHint')}</p>
-          <Button
-            variant="quiet"
-            size="sm"
-            className="shrink-0"
-            data-testid="app-market-pane-hint-dismiss"
-            onClick={() => {
-              setWindowHintVisible(false);
-              try { localStorage.setItem(hintKey, '1'); } catch { /* The hint can still close for this visit. */ }
-            }}
-          >
-            {t('appMarket.gotIt')}
-          </Button>
-        </div>
-      )}
-        </>
       )}
       {installJob && (
         <div
-          className="page-shell flex shrink-0 items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
+          className="page-shell mt-4 flex shrink-0 items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
           data-testid="app-market-install-progress"
         >
           <span role="status">
@@ -1125,7 +1266,7 @@ export function AppMarketPanel({
       )}
       {installDirDialog && (
         <div
-          className="page-shell shrink-0 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
+          className="page-shell mt-4 shrink-0 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
           data-testid="app-market-install-dir"
         >
           <label className="mb-1 block text-sm text-text-muted" htmlFor="app-market-install-dir-input">
@@ -1187,7 +1328,9 @@ export function AppMarketPanel({
           <p className="text-sm text-text-muted">{t('appMarket.marketLoadFailed')}</p>
         )}
         {activeTab === 'market' && marketState === 'success' && marketApps.length === 0 && (
-          <p className="text-sm text-text-muted">{t('appMarket.noMarketApps')}</p>
+          <p className="text-sm text-text-muted">
+            {t(searchKeyword ? 'common.noMatches' : 'appMarket.noMarketApps')}
+          </p>
         )}
         {activeTab === 'market' && marketState === 'success' && marketApps.length > 0 && (
           <div className="card-grid-auto">
@@ -1233,7 +1376,9 @@ export function AppMarketPanel({
         )}
         {activeTab !== 'market' && listState === 'loading' && <p className="text-sm text-text-muted">{t('appMarket.loading')}</p>}
         {activeTab !== 'market' && listState === 'success' && displayApps.length === 0 && (
-          <p className="text-sm text-text-muted">{t('appMarket.noApps')}</p>
+          <p className="text-sm text-text-muted">
+            {t(searchKeyword ? 'common.noMatches' : 'appMarket.noApps')}
+          </p>
         )}
         {activeTab !== 'market' && listState === 'success' && (
           <div className="card-grid-auto">

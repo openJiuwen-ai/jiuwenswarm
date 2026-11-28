@@ -138,7 +138,7 @@ async def test_trajectory_bridge_retries_through_front_after_reconnect() -> None
 def test_runtime_send_push_without_gateway_warning_is_rate_limited(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.server import agent_ws_server
+    from jiuwenswarm.server.worker import execution_host as agent_ws_server
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     now = [100.0]

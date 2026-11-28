@@ -10,7 +10,16 @@ export type EnterpriseAgentContext = {
   jiuwenclaw_id: string;
   /** 实例/集群展示名（对应 Manager instance_info.jiuwenclaw_name） */
   jiuwenclaw_name: string;
+  /** 平台展示名：agent_{runtime_template_id}_{agent_template_id}；旧 Manager 为 resource_name */
   agent_name: string;
+  /** "{runtime_template_id}_{agent_template_id}"；旧 Manager 缺省 */
+  agent_id?: string;
+  /** 运行时模板 id；无匹配运行时模板时缺省 */
+  runtime_template_id?: string;
+  /** Agent 模板 id；旧 Manager 缺省 */
+  agent_template_id?: string;
+  /** 当前 Agent 配置模板是否允许上传本地 Skill；旧 Manager 缺省按 false */
+  allow_local_skill_upload?: boolean;
   group_name: string;
 };
 
@@ -21,16 +30,9 @@ export type EnterpriseContextSnapshot = {
 };
 
 export type EnterpriseContextValue = EnterpriseContextSnapshot & {
-  /** 有管理面资格时展示「进入管理面」；普通用户为 false。 */
   contextError: string;
   contextSwitching: boolean;
   onContextChange: (key: string) => void;
-  onCustomContextApply: (input: {
-    botId: string;
-    groupId: string;
-    userId: string;
-    jiuwenclawId: string;
-  }) => void;
   onLogout: () => void;
 };
 
@@ -38,13 +40,6 @@ export function agentContextKey(
   item: Pick<EnterpriseAgentContext, 'bot_id' | 'group_id' | 'user_id' | 'jiuwenclaw_id'>,
 ): string {
   return `${item.bot_id}\u0001${item.group_id}\u0001${item.user_id}\u0001${item.jiuwenclaw_id}`;
-}
-
-export function formatAgentContextLabel(item: EnterpriseAgentContext): string {
-  const agentName = item.agent_name?.trim() || item.bot_id;
-  const groupName = item.group_name?.trim() || item.group_id;
-  const clusterName = item.jiuwenclaw_name?.trim() || item.jiuwenclaw_id;
-  return `${agentName} | ${groupName} | ${clusterName}`;
 }
 
 export const EnterpriseContext = createContext<EnterpriseContextValue | null>(null);

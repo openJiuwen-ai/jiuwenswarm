@@ -5,3 +5,4 @@ export { useSessionStore } from '../../src/stores/sessionStore';
 export { useTeamSelectorStore } from '../../src/stores/teamSelectorStore';
 export { applyTeamSnapshotToSession } from '../../src/stores/teamSliceApply';
 export { setTeamOrganizationUiEnabled } from '../../src/features/teamOrganization/featureConfig';
+export { humanMemberDeliveries, withArtifactReferences } from '../../src/features/humanMemberDeliveries';

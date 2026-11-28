@@ -32,6 +32,7 @@ export function mapLocalPackageImportError(
     manifest: string;
     persona?: string;
     skillPathNotRelative?: string;
+    alreadyInstalled?: string;
   },
 ): string {
   const text = message.trim();
@@ -50,6 +51,9 @@ export function mapLocalPackageImportError(
     && /(?:agent_template|agent_group|plugin) skill dir must be package-relative/i.test(text)
   ) {
     return translate(keys.skillPathNotRelative);
+  }
+  if (keys.alreadyInstalled && /already (?:installed|active)/i.test(text)) {
+    return translate(keys.alreadyInstalled);
   }
   return message;
 }

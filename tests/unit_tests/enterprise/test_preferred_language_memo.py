@@ -96,6 +96,17 @@ def test_personal_edition_reads_yaml(monkeypatch):
     assert pref.resolve_preferred_language() == "zh"
 
 
+def test_personal_edition_ignores_memo_and_keeps_yaml(monkeypatch):
+    """个人版语言以 yaml 为准；即使 bind 了 memo / ui_language 也不覆盖。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.edition.is_enterprise",
+        lambda: False,
+    )
+    monkeypatch.setattr(pref, "_yaml_or_en", lambda: "zh")
+    with pref.bind_preferred_language_memo(user_id="alice", language="en"):
+        assert pref.resolve_preferred_language() == "zh"
+
+
 def test_bind_memo_sync_helper(monkeypatch):
     monkeypatch.setattr(
         "jiuwenswarm.enterprise.edition.is_enterprise",
@@ -126,3 +137,14 @@ def test_framework_language_from_params_prefers_ui_language(monkeypatch):
 def test_framework_language_from_params_falls_back_to_preferred():
     assert pref.framework_language_from_params({}, "zh") == "zh"
     assert pref.framework_language_from_params(None, "en") == "en"
+
+
+def test_enterprise_memo_en_overrides_yaml_zh(monkeypatch):
+    """UI/user preference memo must win over AS template yaml zh."""
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.edition.is_enterprise",
+        lambda: True,
+    )
+    monkeypatch.setattr(pref, "_yaml_or_en", lambda: "zh")
+    with pref.bind_preferred_language_memo(user_id="alice", language="en"):
+        assert pref.resolve_preferred_language() == "en"

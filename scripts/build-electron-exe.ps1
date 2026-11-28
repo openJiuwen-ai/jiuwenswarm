@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # JiuwenSwarm Electron 打包脚本 (Windows)
 # 用法:
 #   正式版:  .\scripts\build-electron-exe.ps1
@@ -648,6 +649,12 @@ if ($FrontendOnly) {
         throw "Frozen Gateway adapter bundle verification failed. See verifier output above."
     }
 
+    $SwarmResourcesVerifier = Join-Path $ProjectRoot "scripts\verify_swarm_resources_bundle.py"
+    uv run --no-sync python $SwarmResourcesVerifier --executable $FrozenExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Frozen Swarm resources bundle verification failed. See verifier output above."
+    }
+
     $A2UIVerifier = Join-Path $ProjectRoot "scripts\verify_a2ui_bundle.py"
     $VerifyProcess = Start-Process `
         -FilePath $FrozenExe `
@@ -796,6 +803,7 @@ Copy-Item -Path (Join-Path $DesktopDir "display_media_picker.cjs") -Destination 
 Copy-Item -Path (Join-Path $DesktopDir "media_device_permissions.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "preload.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "application_presentation.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "application_presentation_children.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "application_transition.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "presentation_preload.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "target_mcp_wrapper.cjs") -Destination $AppDir -Force
@@ -907,6 +915,7 @@ $RequiredFiles = @(
     (Join-Path $AppDir "media_device_permissions.cjs"),
     (Join-Path $AppDir "preload.cjs"),
     (Join-Path $AppDir "application_presentation.cjs"),
+    (Join-Path $AppDir "application_presentation_children.cjs"),
     (Join-Path $AppDir "application_transition.cjs"),
     (Join-Path $AppDir "presentation_preload.cjs"),
     (Join-Path $AppDir "dist\index.html"),
@@ -991,7 +1000,8 @@ if (Test-Path -LiteralPath $OfficeSchemas -PathType Container) {
     [IO.Compression.ZipFile]::CreateFromDirectory($OfficeSchemas, "$OfficeSchemas.zip")
     Remove-Item -LiteralPath $OfficeSchemas -Recurse -Force
 }
-if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc)) {
+$InnoSupportsLongPaths = Test-InnoSetup7OrNewer -IsccPath $Iscc
+if (-not $InnoSupportsLongPaths) {
     # Inno Setup 6 fails late ("The system cannot find the path specified")
     # whenever a payload path exceeds MAX_PATH. The assembled app is final here,
     # so validate it before invoking the compiler and fail fast with an
@@ -1031,11 +1041,7 @@ if (Test-Path -LiteralPath $InstallerPath) {
     Remove-Item -LiteralPath $InstallerPath -Force
 }
 
-$LongestPayloadPath = Get-ChildItem -LiteralPath $PayloadRoot -File -Recurse |
-    ForEach-Object { $_.FullName.Length - $PayloadRoot.Length - 1 } |
-    Measure-Object -Maximum
 $IsccArguments = @(
-    "/DMaxPayloadRelativePath=$($LongestPayloadPath.Maximum)",
     "/DMyAppName=$BuildDisplayName",
     "/DMyAppExeName=$ShellExeName",
     "/DMyAppVersion=$BuildVersion",
@@ -1053,19 +1059,26 @@ if ($DoSign) {
 }
 $InnoRoot = $ProjectRoot
 $InnoDrive = $null
-if (($PayloadRoot.Length + 1 + $LongestPayloadPath.Maximum) -gt 249) {
-    $UsedDrives = [System.IO.DriveInfo]::GetDrives().Name
-    $DriveName = 90..68 | ForEach-Object { "$([char]$_):\" } |
-        Where-Object { $_ -notin $UsedDrives } | Select-Object -First 1
-    if (-not $DriveName) {
-        throw 'Inno Setup needs a shorter checkout path or a free drive letter.'
+if (-not $InnoSupportsLongPaths) {
+    $LongestSourcePath = Get-ChildItem -LiteralPath $PayloadRoot -File -Recurse |
+        ForEach-Object { $_.FullName.Length } |
+        Measure-Object -Maximum
+    $MaxPayloadRelativePath = $LongestSourcePath.Maximum - $PayloadRoot.TrimEnd('\').Length - 1
+    $IsccArguments += "/DMaxPayloadRelativePath=$MaxPayloadRelativePath"
+    if ($LongestSourcePath.Maximum -gt 249) {
+        $UsedDrives = [System.IO.DriveInfo]::GetDrives().Name
+        $DriveName = 90..68 | ForEach-Object { "$([char]$_):\" } |
+            Where-Object { $_ -notin $UsedDrives } | Select-Object -First 1
+        if (-not $DriveName) {
+            throw 'Inno Setup needs a shorter checkout path or a free drive letter.'
+        }
+        $InnoDrive = $DriveName.TrimEnd('\')
+        & subst.exe $InnoDrive $ProjectRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not map a short Inno Setup path for $ProjectRoot."
+        }
+        $InnoRoot = $DriveName
     }
-    $InnoDrive = $DriveName.TrimEnd('\')
-    & subst.exe $InnoDrive $ProjectRoot
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not map a short Inno Setup path for $ProjectRoot."
-    }
-    $InnoRoot = $DriveName
 }
 try {
     $IsccArguments += Join-Path $InnoRoot 'scripts\installer-electron.iss'

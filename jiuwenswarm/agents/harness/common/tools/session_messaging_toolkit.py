@@ -113,6 +113,8 @@ _SESSION_MESSAGING_TOOL_NAMES = frozenset(
         "session_message_resolve",
         "session_continue_queued",
         "session_read",
+        # Uploaded email reads use the same host-authenticated conversation.
+        "read_email",
         # Sedimentation uses the same Host-authenticated request ownership.
         "skillpack_distill",
     }

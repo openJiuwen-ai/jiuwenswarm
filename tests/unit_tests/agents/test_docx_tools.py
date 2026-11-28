@@ -143,6 +143,74 @@ async def test_read_docx_pagination(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_docx_start_element_on_non_readable_tail(tmp_path: Path) -> None:
+    """Starting at a non-readable body element must not claim the document is empty."""
+    doc = docx.Document()
+    for i in range(3):
+        doc.add_paragraph(f"Paragraph_{i}")
+    tail_file = tmp_path / "non_readable_tail.docx"
+    doc.save(str(tail_file))
+
+    total_elements = len(docx.Document(str(tail_file)).element.body)
+    result = await read_docx.invoke({
+        "docx_path": str(tail_file),
+        "start_element": total_elements,
+    })
+    assert "No readable text or tables at or after element" in result
+    assert "not empty" in result
+    assert "[Document is empty" not in result
+
+
+@pytest.mark.asyncio
+async def test_read_docx_start_element_past_document_end(tmp_path: Path) -> None:
+    """A start position beyond the last body element must report the real document size."""
+    doc = docx.Document()
+    doc.add_paragraph("OnlyParagraph")
+    past_end_file = tmp_path / "past_end.docx"
+    doc.save(str(past_end_file))
+
+    total_elements = len(docx.Document(str(past_end_file)).element.body)
+    result = await read_docx.invoke({
+        "docx_path": str(past_end_file),
+        "start_element": total_elements + 5,
+    })
+    assert "past the end of the document" in result
+    assert f"{total_elements} body elements" in result
+    assert "[Document is empty" not in result
+
+
+@pytest.mark.asyncio
+async def test_read_docx_empty_body_is_not_reported_as_out_of_range(tmp_path: Path) -> None:
+    """A document with an empty body must report emptiness instead of an out-of-range start."""
+    doc = docx.Document()
+    doc.element.body.clear_content()
+    empty_file = tmp_path / "empty_body.docx"
+    doc.save(str(empty_file))
+
+    result = await read_docx.invoke({"docx_path": str(empty_file)})
+
+    assert "[Document is empty" in result
+    assert "past the end of the document" not in result
+    assert "start_element<=" not in result
+
+
+@pytest.mark.asyncio
+async def test_read_docx_blank_paragraphs_report_empty(tmp_path: Path) -> None:
+    """Paragraphs without readable text must not be claimed as readable content."""
+    doc = docx.Document()
+    doc.add_paragraph("")
+    doc.add_paragraph("")
+    blank_file = tmp_path / "blank_paragraphs.docx"
+    doc.save(str(blank_file))
+
+    result = await read_docx.invoke({"docx_path": str(blank_file)})
+
+    assert "[Document is empty" in result
+    assert "not empty" not in result
+    assert "smaller `start_element`" not in result
+
+
+@pytest.mark.asyncio
 async def test_read_docx_non_existent(tmp_path: Path) -> None:
     """Verify error reporting on missing file."""
     fake_path = tmp_path / "does_not_exist.docx"

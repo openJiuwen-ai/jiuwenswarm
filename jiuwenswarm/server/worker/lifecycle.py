@@ -110,6 +110,12 @@ async def _start_worker_runtime(
     measurements: telemetry.StartupTelemetry | None = None,
 ) -> WorkerRuntime:
     measurements = measurements or telemetry.StartupTelemetry()
+    # The first config read imports openjiuwen.symphony (tens of seconds on a
+    # cold cache). Start it before Runtime construction so it overlaps startup
+    # instead of blocking the event loop on the first request.
+    from jiuwenswarm.common.config import start_config_warm_up
+
+    start_config_warm_up()
     await _cold_load_logging_levels()
     await asyncio.to_thread(runtime_backend.preload_runtime_backend)
     await asyncio.sleep(0)
@@ -142,7 +148,10 @@ async def _start_worker_runtime(
     from jiuwenswarm.common.config import get_config_raw
     from jiuwenswarm.common.credentials import prewarm_from_config
 
-    await asyncio.to_thread(prewarm_from_config, get_config_raw())
+    def _prewarm_credentials() -> None:
+        prewarm_from_config(get_config_raw())
+
+    await asyncio.to_thread(_prewarm_credentials)
     await server.start(bind_transport=False)
     measurements.stage("runtime_started")
     telemetry.install_runtime_observability(server)
@@ -153,6 +162,7 @@ async def _start_worker_runtime(
     install_session_token_usage_subagent_hook()
     measurements.stage("observability_installed")
     await capabilities.start_optional_preparation(runtime, signals, measurements)
+    _start_profile_prewarm(runtime)
     measurements.stage("runtime_host_installed")
     from jiuwenswarm.server.agent_http_server import start_http_if_enabled
 
@@ -166,3 +176,50 @@ async def _start_worker_runtime(
 
     runtime.spawn(recovery_loop(runtime.stop_event), name="group-organization-recovery")
     return runtime
+
+
+def _start_profile_prewarm(runtime: WorkerRuntime) -> None:
+    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.server.worker.profile_prewarm import ProfilePrewarmer
+
+    preparation = getattr(runtime.server, "_preparation_registry", None)
+    if preparation is None:
+        return
+    manager = runtime.server.get_agent_manager()
+
+    async def prepare(mode: str, channel_id: str, config: dict) -> Any:
+        import sys
+        from jiuwenswarm.server.worker.profile_prewarm import prewarm_checkpoint
+
+        await prewarm_checkpoint()
+        if getattr(sys, "frozen", False):
+            # Frozen uses idle preparation, never Source's parallel SDK strategy.
+            # The accepted import can finish; the next checkpoint yields to input.
+            from jiuwenswarm.server.worker.import_preparation import ModuleImportTask
+
+            if runtime.idle_import is None or runtime.idle_import.failed:
+                runtime.idle_import = ModuleImportTask(("trafilatura.settings",), name="idle-trafilatura")
+                runtime.idle_import.start()
+            await runtime.idle_import.wait()
+            await prewarm_checkpoint()
+        manager = runtime.server.get_agent_manager()
+        agent = await manager.get_agent(channel_id=channel_id, mode=mode,
+                                        sub_mode="normal" if mode == "code" else None)
+        if agent is None:
+            raise RuntimeError("profile does not support model preparation")
+        await prewarm_checkpoint()
+        return await agent.prepare_kernel(mode=mode, config_base=config)
+
+    runtime.profile_prewarmer = ProfilePrewarmer(
+        get_config=get_config, prepare=prepare, admission=preparation,
+        stop_event=runtime.stop_event,
+    )
+    # Runtime owns the full foreground turn. Pause this optional profile with
+    # a token distinct from startup priority released at the actual SDK entry.
+    manager.set_preparation_admission(runtime.profile_prewarmer)
+    # pylint: disable-next=protected-access
+    runtime.server._profile_prewarmer = runtime.profile_prewarmer
+    try:
+        runtime.profile_prewarmer.start()
+    except Exception as exc:  # noqa: BLE001 - optional preparation cannot fail required startup
+        logger.warning("[Worker] profile prewarm not started: %s", type(exc).__name__)

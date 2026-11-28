@@ -305,6 +305,7 @@ async def test_restart_direct_expert_chat_restores_backend_and_reuses_membership
     from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
     from jiuwenswarm.common.schema.message import Message, ReqMethod
     from agent_gateway.message_handler.message_handler import MessageHandler
+    from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
     server, _, runtime, _ = restarted_server
     db, organization = await server._load_persisted_organization("session", "tech")
@@ -357,7 +358,7 @@ async def test_restart_direct_expert_chat_restores_backend_and_reuses_membership
                 yield chunk
 
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(Client())
+    handler = MessageHandler(Client(), session_login_bindings=NullSessionLoginBindings())
     message = Message(
         id=direct_request.request_id, type="req", channel_id="web", session_id="session",
         params=direct_request.params, req_method=ReqMethod.CHAT_SEND, is_stream=True, timestamp=0, ok=True,

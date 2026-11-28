@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sys
 import threading
-import types
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,11 +21,20 @@ from jiuwenswarm.agents.harness.common.tools.web_file_download import (
     WebFileDownloadManager,
 )
 
-bootstrap_module = types.ModuleType("jiuwenswarm.agents.harness.team.bootstrap")
-bootstrap_module.configure_agent_teams_home = lambda: None
-sys.modules.setdefault(bootstrap_module.__name__, bootstrap_module)
+# Avoid Team bootstrap during this Web-only import without leaving an incomplete
+# module in sys.modules for later Team and visibility tests.
+with patch("jiuwenswarm.agents.harness.team.bootstrap.configure_agent_teams_home"):
+    from jiuwenswarm.channels.web.app_web import _SpaStaticHandler, _format_ws_diagnostics
 
-from jiuwenswarm.channels.web.app_web import _SpaStaticHandler, _format_ws_diagnostics
+_PERSONAL_HOST_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+
+
+@pytest.fixture(autouse=True)
+def _pin_personal_edition(monkeypatch: pytest.MonkeyPatch):
+    """CSP 沙箱头是个人版行为：企业版（JIUWENSWARM_EDITION=enterprise）不加
+    CSP。CI 环境可能携带企业版变量，这里固定为个人版语义以保证用例确定性
+    （!10678 UT FAILED 定位）。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "community")
 
 
 def test_format_ws_diagnostics_forwards_parts_and_fields():
@@ -352,6 +360,7 @@ def test_verified_download_get_and_head_use_conventional_staged_file_handler(
 def test_inline_verified_download_sandboxes_documents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
     source = tmp_path / "report.html"
     source.write_text("<script>alert(1)</script>", encoding="utf-8")
     owner = VerifiedDownloadAssetOwner(
@@ -399,8 +408,7 @@ def test_inline_verified_download_sandboxes_documents(
             response.read()
         finally:
             connection.close()
-        # An attachment is downloaded instead of rendered, so it keeps
-        # ``nosniff`` but does not need the sandbox CSP.
+        # Downloading an attachment adds no document-specific sandbox to the host policy.
         connection = HTTPConnection("127.0.0.1", server.server_port)
         connection.request("GET", f"/file-api/download?token={quote(token)}")
         response = connection.getresponse()
@@ -408,7 +416,7 @@ def test_inline_verified_download_sandboxes_documents(
             assert response.status == 200
             assert response.headers["Content-Disposition"].startswith("attachment;")
             assert response.headers["X-Content-Type-Options"] == "nosniff"
-            assert "Content-Security-Policy" not in response.headers
+            assert response.headers.get_all("Content-Security-Policy") == [_PERSONAL_HOST_CSP]
             response.read()
         finally:
             connection.close()
@@ -418,7 +426,8 @@ def test_inline_verified_download_sandboxes_documents(
         server.server_close()
 
 
-def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path):
+def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
     agent_root = tmp_path / "agent"
     uploads = agent_root / "sessions" / "session-1" / "uploads"
     uploads.mkdir(parents=True)
@@ -488,7 +497,8 @@ def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path):
         status, headers, _ = request("GET", png_path)
         assert status == 200
         assert headers["X-Content-Type-Options"] == "nosniff"
-        assert "Content-Security-Policy" not in headers
+        # The PNG receives only the host policy.
+        assert headers.get_all("Content-Security-Policy") == [_PERSONAL_HOST_CSP]
     finally:
         server.shutdown()
         thread.join()

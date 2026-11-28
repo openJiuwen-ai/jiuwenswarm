@@ -680,18 +680,63 @@ export function ExternalCliAgentsSection({
       useBuiltin: boolean,
       cliPath: string,
     ): Promise<ExternalCliAgentChoice> => {
-      if (useBuiltin || cliPath.trim()) {
-        return { enabled: true, useBuiltin, cliPath: useBuiltin ? '' : cliPath.trim() };
+      // 内置选择保持原样直接沿用：内置 CLI 是否可用由安装流程负责，不属于
+      // detect 的职责，探测异常也不应阻断启用（AI 检视 !10657）。
+      if (useBuiltin) {
+        return { enabled: true, useBuiltin: true, cliPath: '' };
       }
-      const probe = EXTERNAL_CLI_AGENT_KINDS.includes(cliAgent)
-        ? await onDetect?.(cliAgent, '', false)
-        : undefined;
-      if (probe?.path && isInstalledStatus(probe)) {
-        return { enabled: true, useBuiltin: false, cliPath: probe.path };
+      // 本地路径选择：先探测校验最近一次选择——仅确认失效（missing/
+      // unsupported，与本文件 confirmedMissing 判据一致）才落到下方 PATH
+      // 扫描；unavailable（可执行文件在、版本命令失败）不视为失效，保留原
+      // 选择（AI 检视 !10657）。探测异常按非确认失效处理，不阻断状态切换。
+      if (cliPath.trim()) {
+        let lastProbe;
+        try {
+          lastProbe = EXTERNAL_CLI_AGENT_KINDS.includes(cliAgent)
+            ? await onDetect?.(cliAgent, cliPath.trim(), false)
+            : undefined;
+        } catch {
+          // 探测失败按非确认失效处理：保留原选择。
+          lastProbe = undefined;
+        }
+        const confirmedMissing =
+          lastProbe && (lastProbe.status === 'missing' || lastProbe.status === 'unsupported');
+        if (!confirmedMissing) {
+          return { enabled: true, useBuiltin: false, cliPath: cliPath.trim() };
+        }
+        // 确认失效：落到下方历史回退，取第一个可用的本地路径
+      }
+      // 无显式路径：不再做 PATH 发现（!10678 讨论——集群拉成员依赖 SDK，
+      // PATH 上的裸 CLI 不算数，此探测的 ok 只代表内置 SDK+CLI 就绪），
+      // 历史回退（恢复最近一次本地路径，#6753 问题二）优先，全部失效才回
+      // 退内置；托管路径也不得固化成自定义 cli_path（!10307）。
+      const historyPaths = parseExternalCliPathHistories(
+        draftValues[externalCliKey(cliAgent, 'path_histories')],
+      ).slice().reverse();
+      const builtinPath = builtinPaths[cliAgent] || '';
+      for (const candidate of historyPaths) {
+        // 托管路径不得经历史回退固化成自定义 cli_path（!10307）：内置模式的
+        // cli_path 恒为空串，历史里的托管路径是旧版本残留，跳过它继续兜底。
+        if (builtinPath && candidate === builtinPath) {
+          continue;
+        }
+        // 单条历史探测失败（传输错误等）视为不可用，继续下一条，
+        // 不得中断整个启用流程丢掉内置兜底（!10678 第二轮检视）。
+        let historyProbe;
+        try {
+          historyProbe = await onDetect?.(cliAgent, candidate, false);
+        } catch {
+          continue;
+        }
+        if (historyProbe?.path && isInstalledStatus(historyProbe)) {
+          return { enabled: true, useBuiltin: false, cliPath: historyProbe.path };
+        }
       }
       return { enabled: true, useBuiltin: true, cliPath: '' };
+      // draftValues 必须入依赖：path_histories 在关闭开关时才写入草稿，缺失会让
+      // 本回调持有挂载时快照，同会话内关闭→重开读到空历史而回退内置（#6753）。
     },
-    [onDetect],
+    [builtinPaths, draftValues, onDetect],
   );
 
   // Force dependency repair even when the executable choice is unchanged.
@@ -1329,16 +1374,16 @@ export function ExternalCliAgentsSection({
                     <button
                       type="button"
                       role="switch"
-                      aria-checked={enabled}
+                      aria-checked={enabled && installed}
                       aria-label={toggleLabel(cliAgent)}
-                      onClick={() => onChange(enabledKey, enabled ? 'false' : 'true')}
-                      disabled={disabled || (!installed && !enabled)}
+                      onClick={() => onChange(enabledKey, enabled && installed ? 'false' : 'true')}
+                      disabled={disabled || !installed}
                       data-testid="settings-panel-external-cli-agent-toggle"
                       data-variant={cliAgent}
-                      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent focus:outline-none ${enabled ? 'bg-[var(--color-toggle-enabled)]' : 'bg-[var(--color-toggle-disabled)]'} disabled:cursor-not-allowed disabled:opacity-60`}
+                      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent focus:outline-none ${enabled && installed ? 'bg-[var(--color-toggle-enabled)]' : 'bg-[var(--color-toggle-disabled)]'} disabled:cursor-not-allowed disabled:opacity-60`}
                     >
                       <span
-                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-[var(--color-control-thumb)] shadow ${enabled ? 'translate-x-4' : 'translate-x-0'}`}
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-[var(--color-control-thumb)] shadow ${enabled && installed ? 'translate-x-4' : 'translate-x-0'}`}
                       />
                     </button>
                   </div>
@@ -1461,9 +1506,15 @@ export function ExternalCliAgentsSection({
                     {statusLine}
                   </div>
                   <div className="flex flex-shrink-0 items-center gap-2">
+                    {/* 未安装（含探测确认 missing）时开关只能是禁用：显示 OFF 并锁死，
+                        启用必须先经一键安装就绪 SDK；已启用但 SDK 消失的 agent 同样
+                        锁定显示为禁用，待 SDK 恢复后自动回到原状态。 */}
                     <Switch
-                      checked={enabled}
-                      disabled={disabled || (!installed && !enabled) || committing[cliAgent] || agentInstalling || editing[cliAgent]}
+                      checked={enabled && installed}
+                      disabled={disabled || !installed || committing[cliAgent] || agentInstalling || editing[cliAgent]}
+                      // 保存往返（含启用前的探测校验）期间开关显示 loading（#6823）：
+                      // "短暂置灰"让用户读成延迟/卡顿，转圈明确表达处理中。
+                      loading={committing[cliAgent]}
                       onChange={(next) => void toggleAgentEnabled(cliAgent, next, useBuiltin, cliPath)}
                       aria-label={t('config.externalCli.toggleEnable', { agent: label })}
                       data-testid="settings-panel-external-cli-agent-enable-switch"

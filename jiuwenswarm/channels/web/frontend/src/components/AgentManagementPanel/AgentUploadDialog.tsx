@@ -25,7 +25,10 @@ const DROP_ACCEPT_WINDOW_MS = 1200;
 function formatFileSize(bytes: number): string {
   if (bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
-  const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  let unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  // 取整后再判断是否进位：1048575B 按 KB 取一位小数是 1024.0，应显示为 1.0 MB。
+  const rounded = Number((bytes / Math.pow(1024, unitIndex)).toFixed(1));
+  if (unitIndex < units.length - 1 && rounded >= 1024) unitIndex += 1;
   const size = bytes / Math.pow(1024, unitIndex);
   return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }

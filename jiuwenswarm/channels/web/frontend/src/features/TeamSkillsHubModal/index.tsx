@@ -53,6 +53,8 @@ export function TeamSkillsHubModal({
   const [installedNames, setInstalledNames] = useState<Set<string>>(new Set());
   const [hubBaseUrl, setHubBaseUrl] = useState(DEFAULT_TEAMSKILLS_HUB_BASE_URL);
   const messageTimerRef = useRef<number | null>(null);
+  // Latest-wins sequence: responses from superseded searches must not write state.
+  const searchSeqRef = useRef(0);
 
   const withSession = useCallback(
     (params?: Record<string, unknown>) => ({
@@ -99,6 +101,8 @@ export function TeamSkillsHubModal({
   useEffect(() => {
     if (embedded && query.trim()) {
       const q = query.trim();
+      // Latest-wins sequence: responses from superseded searches must not write state.
+      const seq = ++searchSeqRef.current;
       setLoadState("loading");
       setMessage(null);
       void (async () => {
@@ -108,12 +112,14 @@ export function TeamSkillsHubModal({
             detail?: string;
             skills?: TeamSkillsHubSkillItem[];
           }>("skills.teamskillshub.search", withSession({ q, limit: 50 }));
+          if (seq !== searchSeqRef.current) return;
           if (!data.success) {
             throw new Error(data.detail || t("skills.teamskillshub.errors.searchFailed"));
           }
           setResults(data.skills || []);
           setLoadState("success");
         } catch (error) {
+          if (seq !== searchSeqRef.current) return;
           console.error(error);
           setResults([]);
           setLoadState("error");
@@ -166,6 +172,7 @@ export function TeamSkillsHubModal({
   const handleSearch = useCallback(async () => {
     const q = query.trim();
     if (!q) return;
+    const seq = ++searchSeqRef.current;
     setLoadState("loading");
     setMessage(null);
     try {
@@ -174,12 +181,14 @@ export function TeamSkillsHubModal({
         detail?: string;
         skills?: TeamSkillsHubSkillItem[];
       }>("skills.teamskillshub.search", withSession({ q, limit: 50 }));
+      if (seq !== searchSeqRef.current) return;
       if (!data.success) {
         throw new Error(data.detail || t("skills.teamskillshub.errors.searchFailed"));
       }
       setResults(data.skills || []);
       setLoadState("success");
     } catch (error) {
+      if (seq !== searchSeqRef.current) return;
       console.error(error);
       setResults([]);
       setLoadState("error");
@@ -445,7 +454,7 @@ export function TeamSkillsHubModal({
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              onKeyDown={(e) => e.key === "Enter" && loadState !== "loading" && handleSearch()}
               placeholder={t("skills.teamskillshub.searchPlaceholder")}
               className="flex-1 min-w-0 px-3 py-2 rounded-md bg-secondary border border-border text-sm text-text placeholder:text-text-muted"
               data-testid="team-skills-hub-modal-search-input"

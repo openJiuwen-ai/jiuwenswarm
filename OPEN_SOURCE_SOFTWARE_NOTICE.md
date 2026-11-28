@@ -156,6 +156,8 @@ You may add Your own copyright statement to Your modifications and may provide a
 
 ### License: MIT License
 
+**Outlook MSG reader dependency:** python-oxmsg 0.0.2. Copyright (c) 2024 Steve Canny, https://github.com/scanny.
+
 **Software:** fsevents, json_repair, rapidfuzz, markdown-it-py, beautifulsoup4, python-docx, fastapi, pydantic, pydantic-settings, sqlalchemy, pytest, pytest-cov, pytest-mock, PyYAML, charset-normalizer, exceptiongroup, h11, httpx-sse, iniconfig, jsonschema, mdurl, more-itertools, platformdirs, pluggy, pydantic-core, redis, referencing, rich, typing-inspection, urllib3, zipp, aioitertools, attrs, beartype, cacheout, cachetools, cffi, docstring-parser, filelock, greenlet, humanfriendly, jaraco.classes, jaraco.context, jaraco.functools, jiter, keyring, langchain-core, langgraph, langsmith, pysbd, pytz, rpds-py, shellingham, six, slack-bolt, slack-sdk, tomli, typer, typer-slim, watchfiles, wsproto
 
 **The MIT License**
@@ -182,6 +184,8 @@ THE SOFTWARE.
 
 ### License: BSD 2-Clause License
 
+**Outlook MSG reader dependency:** olefile 0.47 (formerly OleFileIO_PL). Copyright (c) 2005-2023 Philippe Lagadec (https://www.decalage.info). All rights reserved.
+
 **Software:** pycryptodome, xlsxwriter, lazy-object-proxy
 
 All direct contributions to PyCryptodome are released under the following license. The copyright of each piece belongs to the respective author.
@@ -191,6 +195,38 @@ Redistribution and use in source and binary forms, with or without modification,
 Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
 Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---
+
+### Python Imaging Library code in olefile
+
+olefile is based on source code from the OleFileIO module of the Python
+Imaging Library (PIL) published by Fredrik Lundh under the following license:
+
+The Python Imaging Library (PIL) is
+
+- Copyright (c) 1997-2009 by Secret Labs AB
+- Copyright (c) 1995-2009 by Fredrik Lundh
+
+By obtaining, using, and/or copying this software and/or its associated
+documentation, you agree that you have read, understood, and will comply with
+the following terms and conditions:
+
+Permission to use, copy, modify, and distribute this software and its
+associated documentation for any purpose and without fee is hereby granted,
+provided that the above copyright notice appears in all copies, and that both
+that copyright notice and this permission notice appear in supporting
+documentation, and that the name of Secret Labs AB or the author not be used
+in advertising or publicity pertaining to distribution of the software without
+specific, written prior permission.
+
+SECRET LABS AB AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS
+SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN
+NO EVENT SHALL SECRET LABS AB OR THE AUTHOR BE LIABLE FOR ANY SPECIAL,
+INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
 
 ---
 

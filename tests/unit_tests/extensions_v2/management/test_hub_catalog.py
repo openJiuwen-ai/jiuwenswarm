@@ -23,6 +23,7 @@ from jiuwenswarm.extensions_v2.management.hub_catalog import (
     hub_file_tree,
 )
 from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
+    ExtensionBundleRecord,
     ExtensionInstallRecord,
     ExtensionInstallState,
 )
@@ -427,3 +428,80 @@ def test_catalog_uses_restored_manifest_instead_of_install_record(
         assert result["enabled"] is target_enabled
         assert result["active"] is runtime_active
         assert result["origin"] == origin
+
+
+def test_project_detail_marks_a_version_that_failed_to_load(tmp_path: Path) -> None:
+    package_id = "theme.pkg"
+    install_dir = tmp_path / "installed"
+    roots: list[Path] = []
+    for version in ("2.0.0", "2.2.2"):
+        source = write_package(tmp_path / version, package_id=package_id, version=version)
+        root = install_dir / package_id / version
+        copytree(source, root)
+        roots.append(root)
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    store.upsert(ExtensionInstallRecord(
+        package_id=package_id, version="2.0.0", origin="hub",
+        active=False, enabled=False, status="failed", error="No module named 'demo'",
+    ))
+    store.upsert(ExtensionInstallRecord(
+        package_id=package_id, version="2.2.2", origin="hub",
+        active=True, enabled=True, status="active",
+    ))
+    entry = entry_from_root(roots[1])
+    assert entry is not None
+
+    detail = project_detail(
+        entry, SimpleNamespace(active=[], installed=roots), install_dir=install_dir,
+    )
+
+    states = {item["version"]: item for item in detail["versionStates"]}
+    assert states["2.0.0"]["status"] == "failed"
+    assert states["2.0.0"]["error"] == "No module named 'demo'"
+    assert states["2.2.2"]["status"] == "active"
+
+
+def test_hub_cards_follow_a_disabled_bundle_container(tmp_path: Path) -> None:
+    install_dir = tmp_path / "installed"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    store.upsert_bundle(ExtensionBundleRecord(
+        bundle_id="harness.switch", version="1.0.0", origin="hub",
+        asset_id="asset-bundle", status="disabled", active=False,
+    ))
+    state = SimpleNamespace(active=[], installed=[])
+
+    card = hub_card(
+        HubAssetSummary(
+            kind="system_plugin",
+            asset_id="asset-bundle",
+            display_name="Harness",
+            short_description="",
+            public_latest_version="1.0.0",
+            icon_uri="",
+            tags=(),
+            package_name="harness.switch",
+        ),
+        build_state_index(state, store),
+        store,
+    )
+    detail = hub_detail(
+        HubAssetDetail(
+            kind="system_plugin",
+            asset_id="asset-bundle",
+            version="1.0.0",
+            display_name="Harness",
+            short_description="",
+            detail_description="",
+            icon_uri="",
+            tags=(),
+            package_name="harness.switch",
+        ),
+        state,
+        store,
+    )
+
+    for result in (card, detail):
+        assert result["installed"] is True
+        assert result["active"] is False
+        assert result["enabled"] is False
+        assert result["overallStatus"] == "disabled"

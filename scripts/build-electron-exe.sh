@@ -1,4 +1,5 @@
 #!/bin/bash
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # WorkSwarm Electron macOS Build Script
 # Usage:
 #   Local:      NOSIGN=1 bash scripts/build-electron-exe.sh
@@ -258,6 +259,9 @@ if [ "$FRONTEND_ONLY" = false ]; then
     uv run --no-sync python "$PROJECT_ROOT/scripts/verify_gateway_adapter_bundle.py" \
         --executable "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME"
 
+    uv run --no-sync python "$PROJECT_ROOT/scripts/verify_swarm_resources_bundle.py" \
+        --executable "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME"
+
     # Same GitCode CLI self-check as build-macos.sh.
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gitcode_cli_bundle.py"
 else
@@ -295,6 +299,7 @@ cp "$DESKTOP_DIR/display_media_picker.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/media_device_permissions.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/preload.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/application_presentation.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/application_presentation_children.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/application_transition.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/presentation_preload.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/target_mcp_wrapper.cjs" "$APP_DIR/"
@@ -375,7 +380,7 @@ if [ ! -d "$APP_DIR/node_modules/@playwright/mcp" ]; then
     exit 1
 fi
 
-REQUIRED_FILES=(main.cjs update_shutdown.cjs cdp_port.cjs preload.cjs application_presentation.cjs application_transition.cjs presentation_preload.cjs browser_panels.cjs
+REQUIRED_FILES=(main.cjs update_shutdown.cjs cdp_port.cjs preload.cjs application_presentation.cjs application_presentation_children.cjs application_transition.cjs presentation_preload.cjs browser_panels.cjs
     app_market_windows.cjs app_market_resources.cjs share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
     media_device_permissions.cjs browser_downloads.cjs browser_download_bubble.cjs dist/bubble.html
     macos_update.cjs install_macos_update.sh package.json dist/index.html

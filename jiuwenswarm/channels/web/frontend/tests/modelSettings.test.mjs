@@ -1048,7 +1048,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(tabLayout, /const \[activeTab, setActiveTab\] = useState<TabId>\(\(\) =>[\s\S]*?\?\? defaultTab,/);
   assert.match(tabLayout, /value: tab\.id,[\s\S]*label: t\(tab\.labelKey\)/);
   assert.match(tabLayout, /suffix: tab\.helpKey \? <HelpTips content=\{t\(tab\.helpKey\)\} size="large" \/> : undefined/);
-  assert.match(page, /void loadCatalog\(\);[\s\S]{0,180}setDialog\(nextDialog\)/);
+  assert.match(page, /if \(modelDialogOpen\) void loadCatalog\(\)/);
   assert.match(page, /type SaveModelsOptions = \{ errorScope\?: SettingsSaveErrorScope \};/);
   assert.match(page, /saveQueue\.enqueue\([\s\S]{0,320}\{ errorScope \},/);
   assert.match(page, /if \(errorScope === 'page'\) setSaveError\(message\)/);
@@ -1093,7 +1093,8 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(provider, /useEffect\(\(\) => \{\s*if \(!open\) setQuery\(''\);\s*\}, \[open\]\)/);
   assert.doesNotMatch(provider, /useEffect\(\(\) => \{\s*if \(!open\) return;\s*setQuery\(''\)/);
   assert.match(dialog, /<OpenAIAccountSettings[\s\S]{0,260}onRequestLogout/);
-  assert.match(dialog, /confirmDisabled=\{[\s\S]{0,300}account && openAIAccount\.busy/);
+  assert.match(dialog, /const saveDisabled =[\s\S]{0,350}account && openAIAccount\.busy/);
+  assert.match(dialog, /confirmDisabled=\{saveDisabled\}/);
   assert.match(account, /OPENAI_ACCOUNT_RPC\.pendingLogin/);
   assert.match(account, /OPENAI_ACCOUNT_RPC\.startLogin/);
   assert.match(account, /OPENAI_ACCOUNT_RPC\.pollLogin/);
@@ -1256,7 +1257,7 @@ test('model dialog uses provider terminology and validates as part of confirmati
   assert.equal(zh.settingsPanel.models.vendorPlaceholder, '请选择');
   assert.equal(zh.settingsPanel.models.apiKeyLabel, 'API Key');
   assert.equal(zh.settingsPanel.models.outputTokens, '模型单次最大输出');
-  assert.equal(zh.settingsPanel.models.outputTokensUnlimited, '不限');
+  assert.equal(zh.settingsPanel.models.outputTokensUnlimited, '模型默认值');
   assert.equal(zh.settingsPanel.models.apiKeyTooLong, 'API Key 过长，请控制在 2048 字符以内');
   assert.equal(zh.settingsPanel.models.fetchModelsLoading, '获取中...');
   assert.equal(zh.settingsPanel.models.testingConnection, '正在测试连接…');
@@ -1264,7 +1265,7 @@ test('model dialog uses provider terminology and validates as part of confirmati
   assert.equal(zh.settingsPanel.models.continueSave, '忽略测试并保存');
   assert.equal(en.settingsPanel.models.vendor, 'Model provider');
   assert.equal(en.settingsPanel.models.outputTokens, 'Maximum output per request');
-  assert.equal(en.settingsPanel.models.outputTokensUnlimited, 'Unlimited');
+  assert.equal(en.settingsPanel.models.outputTokensUnlimited, 'Model default');
   assert.equal(en.settingsPanel.models.vendorPlaceholder, 'Select');
   assert.equal(en.settingsPanel.models.apiKeyTooLong, 'API key is too long. Use 2048 characters or fewer');
   assert.equal(en.settingsPanel.models.fetchModelsLoading, 'Fetching...');

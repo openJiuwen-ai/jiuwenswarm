@@ -48,7 +48,13 @@ from jiuwenswarm.common.paths import get_trace_dir
 
 configure_agent_teams_home()
 
-from jiuwenswarm.agents.harness.observability_runtime import build_observability_config
+from jiuwenswarm.agents.harness.observability_runtime import (
+    build_observability_config,
+    forget_observability_demand,
+    observability_state_lock,
+    remember_observability_demand,
+    sync_observability_export_policy,
+)
 from jiuwenswarm.agents.harness.team.config_loader import (
     get_effective_team_model_entries,
     load_team_spec_dict,
@@ -91,7 +97,7 @@ from jiuwenswarm.common.config import (
     get_symphony_evolution_enabled,
 )
 from jiuwenswarm.common.observability_config import (
-    is_observability_scope_enabled,
+    is_observability_enabled,
     observability_export_settings,
     resolve_observability_section,
 )
@@ -247,37 +253,40 @@ def sync_team_observability() -> None:
     """Synchronize observability state with current config.
 
     Called before each ``Runner.run_agent_team_streaming`` so that
-    hot-reloading the ``observability.team.enabled`` flag takes
-    effect immediately:
-
-    * disabled → enabled : ``init_observability()``
-    * enabled → disabled : ``shutdown_observability()``
-    * unchanged          : no-op
+    hot-reloading the ``observability.enabled`` flag takes
+    effect on the next request, including export demands held by an idle Agent.
 
     The Web trajectory store is an independent fan-out owned by
     ``sync_trajectory_runtime``; Team tracing keeps its own demand so
-    disabling Team observability never tears down a trajectory sink another
-    runtime still uses.
+    shutting down Team alone preserves another runtime's sink. Disabling the
+    global trajectory setting stops the shared sink regardless of its owners.
 
-    Evolution also requests the provider when the explicit switch is disabled.
+    Evolution also requests the provider when the explicit switch is
+    disabled, as a capture-only demand that never opens the export gate.
     """
+    with observability_state_lock:
+        _sync_team_observability_locked()
+
+
+def _sync_team_observability_locked() -> None:
+    """Refresh shared config and Team lifecycle under the platform lock."""
     global _observability_active
     config = get_config()
     section = resolve_observability_section(config)
+    sync_observability_export_policy(is_observability_enabled(section))
     cfg = observability_export_settings(section)
     trajectory_settings = load_trajectory_store_settings(config)
     evolution_requested = get_skill_evolution_enabled(
         config
     ) or get_symphony_evolution_enabled(config)
     # The Web trajectory store needs the provider exactly like single-Agent
-    # does: spans must be exported so the record processor can fan them out to
+    # does: spans must be captured so the record processor can fan them out to
     # the SQLite sink. ``trajectory_ui.enabled`` therefore also pulls the
-    # provider up, mirroring ``sync_agent_observability``.
-    want_enabled = (
-        is_observability_scope_enabled(section, "team")
-        or trajectory_settings.enabled
-        or evolution_requested
-    )
+    # provider up — but only as a capture demand. Evolution is a capture
+    # demand too: it reads spans through ``TrajectorySpanProcessor``, never
+    # the exporter. Only the explicit switch opens the export gate.
+    export_wanted = is_observability_enabled(section)
+    want_enabled = export_wanted or trajectory_settings.enabled or evolution_requested
 
     # Always synchronize the trajectory store first (start when its setting is
     # enabled, tear the sink down otherwise); the provider decision below only
@@ -299,7 +308,10 @@ def sync_team_observability() -> None:
             service_name="jiuwenswarm",
             traces_dir=traces_dir,
         )
-        provider_existed = team_observability.acquire_observability(obs_cfg)
+        provider_existed = team_observability.acquire_observability(
+            obs_cfg, export=export_wanted
+        )
+        remember_observability_demand("team")
         was_active = _observability_active
         _observability_active = True
         if not was_active and not provider_existed:
@@ -328,6 +340,12 @@ def sync_team_observability() -> None:
 
 def shutdown_team_observability() -> None:
     """Shutdown team observability (called on disable or process exit)."""
+    with observability_state_lock:
+        _shutdown_team_observability_locked()
+
+
+def _shutdown_team_observability_locked() -> None:
+    """Release Team resources under the shared platform lock."""
     global _observability_active
     try:
         if not shutdown_trajectory_runtime(demand="team"):
@@ -338,6 +356,7 @@ def shutdown_team_observability() -> None:
         return
     try:
         team_observability.release_observability()
+        forget_observability_demand("team")
         _observability_active = False
         logger.info("[TeamObservability] disabled")
     except Exception as exc:
@@ -1093,24 +1112,11 @@ class TeamManager:
         channel_id: str | None = None,
     ) -> None:
         """Deliver a waiter-less terminal event via gateway server push."""
-        try:
-            from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+        from jiuwenswarm.runtime.host_services import send_runtime_push
 
-            server = AgentWebSocketServer.get_instance()
-        except Exception:
-            logger.warning(
-                "[TeamManager] waiter-less push fallback: server unavailable: "
-                "session_id=%s event_type=%s is_processing=%s round_id=%s",
-                session_id,
-                event.get("event_type"),
-                event.get("is_processing"),
-                event.get("rid"),
-                exc_info=True,
-            )
-            return
         payload = dict(event)
         payload.setdefault("session_id", session_id)
-        pushed = await server.send_push(
+        pushed = await send_runtime_push(
             {
                 "request_id": "",
                 "channel_id": str(channel_id or "").strip() or "web",
@@ -2393,6 +2399,64 @@ class TeamManager:
                 spec.swarmflow_budget = budget
             else:
                 spec.swarmflow_budget = None
+            # Enterprise Swarmflow concurrency policy → engine ConcurrencyLimits
+            # (L1 max_workflows / L2 agents_per_run / L3 max_agents_total). The
+            # resolver only carries keys the enterprise policy explicitly set,
+            # so missing keys keep the spec's own limits (config.yaml
+            # ``swarmflow_concurrency`` assembled by config_loader) instead of
+            # silently resetting a deployment-tuned cap to engine defaults. The
+            # isinstance guards keep a partial config dict (tests, recovery)
+            # from tripping the engine's validate_swarmflow_concurrency
+            # invariant checks.
+            from openjiuwen.agent_teams.workflow.concurrency import ConcurrencyLimits
+
+            base_limits = (
+                spec.swarmflow_concurrency
+                if isinstance(spec.swarmflow_concurrency, ConcurrencyLimits)
+                else ConcurrencyLimits()
+            )
+            max_workflows = swarmflow_config.get("swarmflow_max_workflows")
+            if not (isinstance(max_workflows, int) and max_workflows > 0):
+                max_workflows = base_limits.max_workflows
+            agents_per_run = swarmflow_config.get("swarmflow_agents_per_run")
+            if not (isinstance(agents_per_run, int) and agents_per_run > 0):
+                agents_per_run = base_limits.agents_per_run
+            max_agents_total = swarmflow_config.get("swarmflow_max_agents_total")
+            if not (isinstance(max_agents_total, int) and max_agents_total > 0):
+                max_agents_total = base_limits.max_agents_total
+            # Enforce the engine invariants by clamping DOWN to the tighter
+            # cap, so an enterprise max_agents_total is never widened by the
+            # spec base; L1 must stay <= L3 for validate_swarmflow_concurrency
+            # during assembly or recovery. A None cap (partial swarmflow
+            # block in config.yaml / hand-built recovery spec) reads as
+            # "unset": fall back to the other side so min() never sees None
+            # and never raises TypeError during team assembly.
+            if max_agents_total is None:
+                max_agents_total = max_workflows
+            if max_workflows is None:
+                max_workflows = max_agents_total
+            if max_workflows is not None and max_agents_total is not None:
+                max_workflows = min(max_workflows, max_agents_total)
+            if agents_per_run is not None and max_agents_total is not None:
+                agents_per_run = max(1, min(agents_per_run, max_agents_total))
+            spec.swarmflow_concurrency = ConcurrencyLimits(
+                max_workflows=max_workflows,
+                agents_per_run=agents_per_run,
+                max_agents_total=max_agents_total,
+            )
+            logger.debug(
+                "[TeamManager] swarmflow config consumed (team=%s, session=%s): "
+                "enable_swarmflow=%s, swarmflow_budget=%s, max_workflows=%s, "
+                "agents_per_run=%s, max_agents_total=%s, raw_config=%s",
+                spec.team_name,
+                session_id,
+                spec.enable_swarmflow,
+                spec.swarmflow_budget,
+                max_workflows,
+                agents_per_run,
+                max_agents_total,
+                swarmflow_config,
+            )
             # Session-level worktree gate: True arms the manager, False withholds
             # it, None (not specified) keeps the team config's worktree section.
             worktree_flag = swarmflow_config.get("swarmflow_worktree")

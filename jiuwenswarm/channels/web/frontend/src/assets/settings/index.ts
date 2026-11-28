@@ -2,6 +2,7 @@ import type { FunctionComponent, SVGProps } from 'react';
 import GeneralIcon from './navigation/general.svg?react';
 import ModelsIcon from './navigation/models.svg?react';
 import AgentIcon from './navigation/agent.svg?react';
+import MemoryIcon from '../memory.svg?react';
 import BrowserIcon from './navigation/browser.svg?react';
 import ChannelsIcon from './navigation/channels.svg?react';
 import PersonalContextIcon from './navigation/personal-context.svg?react';
@@ -30,6 +31,7 @@ export const settingsNavigationIcons = {
   general: GeneralIcon,
   models: ModelsIcon,
   agent: AgentIcon,
+  memory: MemoryIcon,
   browser: BrowserIcon,
   channels: ChannelsIcon,
   personalContext: PersonalContextIcon,

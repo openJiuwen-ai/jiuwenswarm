@@ -943,11 +943,13 @@ def test_readiness_order_does_not_skip_warming() -> None:
 
 
 def test_runtime_start_defaults_to_no_transport_bind() -> None:
-    from pathlib import Path
+    import inspect
+    from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
 
-    root = Path(__file__).resolve().parents[3]
-    text = (root / "jiuwenswarm/server/agent_ws_server.py").read_text(encoding="utf-8")
-    assert "async def start(self, *, bind_transport: bool = False)" in text
+    # Runtime bootstrap constructs this execution owner; the legacy WebSocket
+    # adapter has its own transport override and is not the Worker entrypoint.
+    signature = inspect.signature(WorkerExecutionHost.start)
+    assert signature.parameters["bind_transport"].default is False
 
 
 @pytest.mark.asyncio
@@ -960,8 +962,8 @@ async def test_runtime_construct_is_off_front_process(
     from unittest.mock import AsyncMock
 
     from agent_gateway.extensions.manager import ExtensionManager
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-    from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
+    from agent_gateway.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.server.worker import execution_host, runtime_backend, runtime_bootstrap
     from jiuwenswarm.server.worker.telemetry import StartupTelemetry
 
     root = Path(__file__).resolve().parents[3]
@@ -975,7 +977,8 @@ async def test_runtime_construct_is_off_front_process(
         calls.append((threading.get_ident(), kwargs))
         return server
 
-    monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
+    monkeypatch.setattr(execution_host, "WorkerExecutionHost", construct)
+    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", AsyncMock())
     monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", lambda: None)
     owned = AsyncMock()

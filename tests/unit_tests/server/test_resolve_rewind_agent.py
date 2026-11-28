@@ -8,6 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from jiuwenswarm.server.management.sessions import SessionsManagement
+
 
 @pytest.fixture
 def server_cls():
@@ -67,7 +69,7 @@ def test_resolve_rewind_agent_prefers_session_scoped_instance(server_cls):
         _resolve_adapter=server_cls._resolve_adapter,
     )
 
-    pair = asyncio.run(_resolve(server, "tui", "sess-1"))
+    pair = asyncio.run(SessionsManagement(server)._resolve_rewind_agent("tui", session_id="sess-1"))
     assert pair is not None
     deep, react = pair
     assert deep is session_deep
@@ -97,7 +99,7 @@ def test_resolve_rewind_agent_falls_back_to_root_when_no_session_adapter(server_
         _resolve_adapter=server_cls._resolve_adapter,
     )
 
-    pair = asyncio.run(_resolve(server, "tui", "missing"))
+    pair = asyncio.run(SessionsManagement(server)._resolve_rewind_agent("tui", session_id="missing"))
     assert pair is not None
     deep, _react = pair
     assert deep is root_deep
@@ -149,7 +151,9 @@ def test_resolve_rewind_agent_finds_session_owner_across_cached_roots(server_cls
         _resolve_adapter=server_cls._resolve_adapter,
     )
 
-    pair = asyncio.run(_resolve(server, "tui", "sess-code"))
+    pair = asyncio.run(
+        SessionsManagement(server)._resolve_rewind_agent("tui", session_id="sess-code")
+    )
     assert pair is not None
     deep, react = pair
     assert deep is session_deep

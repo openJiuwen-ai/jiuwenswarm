@@ -28,6 +28,8 @@ from agent_gateway.common.mode_matrix import (
 from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
 from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.app_role import is_app_role_team, is_npc_session
+from jiuwenswarm.runtime.hooks import ExtensionRequestHooks, RequestHooks
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch, client_tool_answers
 from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS, asked_interaction_ids, interaction_ids
 from jiuwenswarm.runtime.session import (
@@ -358,6 +360,13 @@ def _awaits_answers(execution: SessionExecutionSnapshot) -> bool:
     return bool(execution.waiting_control_ids) and not execution.state.terminal
 
 
+def is_stateless_method_request(request: AgentRequest) -> bool:
+    """Return whether the RPC skips session adapter setup."""
+    return request.req_method is not None and request.req_method.value.startswith(
+        ("skills.", "skilldev.", "plugins.", "symphony.", "agent_groups.", "agent_templates.", "plugin_packages.")
+    )
+
+
 class AgentRuntime:
     """Own the existing ``AgentManager`` and its in-memory resources.
 
@@ -383,6 +392,7 @@ class AgentRuntime:
         resource_lease: RuntimeResourceLease | None = None,
         team_execution_controller: object | None = None,
         session_runtime_lifecycle: SessionRuntimeLifecyclePort | None = None,
+        hooks: RequestHooks | None = None,
     ) -> None:
         from jiuwenswarm.enterprise import resolve_tenant_strategy
 
@@ -394,6 +404,7 @@ class AgentRuntime:
         else:
             self._tenant = resolve_tenant_strategy(agent_manager=agent_manager)
         default_manager = self._tenant.get_default_manager()
+        self._hooks = hooks if hooks is not None else ExtensionRequestHooks()
         self._initializer = initializer or _initialize_runtime_dependencies
         self._initialize_extensions = initializer is None
         self._manage_runner = initializer is None
@@ -454,6 +465,7 @@ class AgentRuntime:
         self._pending_session_provisions: set[PreparedSessionProvision[Any]] = set()
         self._started = False
         self._closed = False
+        self._closing = False
         self.set_admission_controller(admission_controller)
 
     @property
@@ -700,6 +712,8 @@ class AgentRuntime:
         async with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeStateError("runtime is already closed")
+            if self._closing:
+                raise RuntimeStateError("runtime is closing")
             if self._started:
                 return
             try:
@@ -3914,6 +3928,7 @@ class AgentRuntime:
                     "runtime has unfinished session provisions; "
                     "commit or abort them before close"
                 )
+            self._closing = True
             cleanup_errors: list[BaseException] = []
             for snapshot in self._session_coordinator.snapshot_sessions():
                 quiesce_admission = getattr(
@@ -3970,6 +3985,28 @@ class AgentRuntime:
                 BaseException
             ) as exc:  # preserve cancellation until cleanup completes
                 cleanup_errors.append(exc)
+            owners_pending = False
+            for key, agent in list(self._stateless_agents.items()):
+                cleanup = getattr(agent, "cleanup", None)
+                if callable(cleanup):
+                    try:
+                        await cleanup()
+                    except BaseException as exc:
+                        cleanup_errors.append(exc)
+                        owners_pending = True
+                        continue
+                if self._stateless_agents.get(key) is agent:
+                    self._stateless_agents.pop(key, None)
+            try:
+                await self._tenant.cleanup()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+                owners_pending = True
+            if owners_pending:
+                # This same Runtime remains the cleanup owner. Dependencies,
+                # extensions and application leases cannot disappear beneath
+                # an adapter that still holds SDK work or Kernel references.
+                raise cleanup_errors[0]
             # All execution and manager-owned work has stopped, while extension
             # handlers and platform resources are still available. Share the
             # notification budget across sessions before releasing their targets.
@@ -3989,19 +4026,6 @@ class AgentRuntime:
                     cleanup_errors.append(exc)
                 finally:
                     self._resource_lease = None
-            for agent in self._stateless_agents.values():
-                cleanup = getattr(agent, "cleanup", None)
-                if callable(cleanup):
-                    try:
-                        await cleanup()
-                    except BaseException as exc:
-                        cleanup_errors.append(exc)
-            self._stateless_agents.clear()
-            # Manager 由 TenantStrategy 持有（Single 单例 / Multi 池）。
-            try:
-                await self._tenant.cleanup()
-            except BaseException as exc:
-                cleanup_errors.append(exc)
             async with self._agent_execution_owner_lock:
                 self._agent_execution_owners.clear()
             if self._shared_extensions_acquired:
@@ -4028,6 +4052,8 @@ class AgentRuntime:
     def _require_started(self) -> None:
         if self._closed:
             raise RuntimeStateError("runtime is already closed")
+        if self._closing:
+            raise RuntimeStateError("runtime is closing")
         if not self._started:
             raise RuntimeStateError("runtime is not started")
 
@@ -4264,17 +4290,23 @@ class AgentRuntime:
         )
         return is_team_mode(canonical)
 
-    @staticmethod
-    def _swarm_npc_chat_refusal(request: AgentRequest, metadata: dict[str, Any]) -> RuntimeEvent | None:
+    @classmethod
+    def _is_passive_chat_attachment(cls, request: AgentRequest) -> bool:
+        params = request.params if isinstance(request.params, dict) else {}
+        return (
+            request.req_method is ReqMethod.CHAT_SEND
+            and cls._is_attach_only_request(request)
+            and not any(params.get(field) for field in ("query", "content", "files", "media_items"))
+        )
+
+    @classmethod
+    def _swarm_npc_chat_refusal(cls, request: AgentRequest, metadata: dict[str, Any]) -> RuntimeEvent | None:
         """Keep the Swarm composer from changing app-owned conversation history."""
         params = request.params or {}
         if request.req_method != ReqMethod.CHAT_SEND or params.get("chat_surface") != "swarm":
             return None
-        if params.get(TEAM_ATTACH_ONLY_PARAM) is True and not any(
-            params.get(field) for field in ("query", "content", "files", "media_items")
-        ):
+        if cls._is_passive_chat_attachment(request):
             return None
-        from jiuwenswarm.runtime.app_role import is_npc_session
         from jiuwenswarm.runtime.events import RuntimeEvent
 
         if not is_npc_session(metadata):
@@ -4291,8 +4323,8 @@ class AgentRuntime:
         """Resolve the effective mode before Runtime classification and dispatch."""
         return cls._normalize_request_with_metadata(request)[0]
 
-    @staticmethod
-    def _normalize_request_with_metadata(request: AgentRequest) -> tuple[AgentRequest, dict[str, Any]]:
+    @classmethod
+    def _normalize_request_with_metadata(cls, request: AgentRequest) -> tuple[AgentRequest, dict[str, Any]]:
         params = request.params if isinstance(request.params, dict) else {}
         raw_mode = params.get("mode")
         session_id = str(request.session_id or "").strip()
@@ -4320,14 +4352,19 @@ class AgentRuntime:
         resolved_mode = metadata.get("mode")
         if not isinstance(resolved_mode, str) or not resolved_mode.strip():
             return request, metadata
+        work_mode = metadata.get("work_mode")
+        if not isinstance(work_mode, str) or work_mode.strip().lower() not in {"code", "work"}:
+            work_mode = "code" if is_code_profile_mode(resolved_mode) else "work"
+        if cls._is_passive_chat_attachment(request) and is_app_role_team(metadata):
+            # A passive observer inherits the NPC Team's locked mode. Composing
+            # the legacy Web mode "team" can otherwise select "code.team".
+            attachment_params = {**params, "mode": resolved_mode, "work_mode": work_mode}
+            return replace(request, params=attachment_params), metadata
         if isinstance(raw_mode, str) and raw_mode.strip():
             from jiuwenswarm.runtime.request import resolve_request_runtime_mode
 
             if not (is_single_agent_mode(deprecate_mode(resolved_mode)) or is_team_mode(resolved_mode)):
                 return request, metadata
-            work_mode = metadata.get("work_mode")
-            if not isinstance(work_mode, str) or work_mode.strip().lower() not in {"code", "work"}:
-                work_mode = "code" if is_code_profile_mode(resolved_mode) else "work"
             requested_mode = resolve_request_runtime_mode(request, work_mode=work_mode)
             if requested_mode.is_team == is_team_mode(resolved_mode):
                 return request, metadata
@@ -4407,6 +4444,10 @@ class AgentRuntime:
             return SessionWorkKind.CONTROL_INPUT
         if request.req_method is ReqMethod.COMMAND_GOAL:
             action = str(params.get("action") or "get").strip().lower()
+            # Reading a goal must not create a running execution: the UI uses
+            # its snapshot to decide whether the first input needs queueing.
+            if action == "get":
+                return None
             return (
                 SessionWorkKind.GOAL_STREAM
                 if action in {"set", "resume"}
@@ -4815,17 +4856,7 @@ class AgentRuntime:
 
     @staticmethod
     def _is_stateless_method_request(request: AgentRequest) -> bool:
-        return request.req_method is not None and request.req_method.value.startswith(
-            (
-                "skills.",
-                "skilldev.",
-                "plugins.",
-                "symphony.",
-                "agent_groups.",
-                "agent_templates.",
-                "plugin_packages.",
-            )
-        )
+        return is_stateless_method_request(request)
 
     @staticmethod
     def _is_readonly_goal_get_request(request: AgentRequest) -> bool:
@@ -4876,6 +4907,12 @@ class AgentRuntime:
             ensure_builtin_agent_groups_installed()
         except Exception as exc:  # noqa: BLE001
             logger.warning("builtin agent_group install skipped: %s", exc)
+        try:
+            from jiuwenswarm.agents.harness.common.memory.plugin import ensure_memory_plugin_installed
+
+            await asyncio.to_thread(ensure_memory_plugin_installed)
+        except (OSError, ValueError) as exc:
+            logger.warning("builtin Agent Memory plugin install skipped: %s", exc)
 
     async def _rollback_start(self) -> None:
         """Undo partially initialized owned dependencies after start failure."""
@@ -4954,9 +4991,10 @@ class AgentRuntime:
             ),
         )
 
-    @staticmethod
-    async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
-        await trigger_before_chat_request(request)
+    async def _trigger_before_chat_request_hook(self, request: AgentRequest) -> None:
+        if request.req_method not in AgentRuntime._chat_turn_methods():
+            return
+        await self._hooks.before_chat(request)
 
 
 __all__ = ["AgentRuntime", "RuntimeStateError"]

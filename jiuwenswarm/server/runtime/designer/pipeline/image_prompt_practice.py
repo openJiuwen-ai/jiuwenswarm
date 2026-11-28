@@ -27,7 +27,6 @@ _PHRASES: dict[str, dict[str, str]] = {
         "interior": "Interior of this place.",
         "tod_with_lighting": "It is {label}; {lighting}.",
         "tod": "It is {label}.",
-        "empty_setting": "One empty setting.",
         "setting_is_empty": "The setting is empty.",
         "visible_props": "Visible props: {props}.",
         "one_clear_image": "One clear image.",
@@ -55,7 +54,6 @@ _PHRASES: dict[str, dict[str, str]] = {
         "interior": "该地点的室内。",
         "tod_with_lighting": "时间是{label}；{lighting}。",
         "tod": "时间是{label}。",
-        "empty_setting": "一个空旷的场景。",
         "setting_is_empty": "场景中空无一人。",
         "visible_props": "可见道具：{props}。",
         "one_clear_image": "画面清晰，单张图像。",
@@ -241,14 +239,20 @@ def compose_scene_specs_prompt(
     graph: dict[str, Any] | None = None,
     seed: str = "",
 ) -> str:
-    """Positive empty-environment plate for the image model."""
+    """Positive empty-environment plate for the image model.
+
+    Raises:
+        ValueError: The scene has no place name or description to draw.
+    """
     cfg = _cfg(cfg)
     lang = current_content_language()
     place = _scene_phrase(cfg)
+    if not place:
+        raise ValueError("Scene has no place name or description; name the scene before drawing it.")
     tod = _tod_phrase(cfg, lang)
     props = _props_phrase(cfg, lang)
     look = _style_look(cfg)
-    bits = [sentence(place, lang) if place else phrase(_PHRASES, lang, "empty_setting")]
+    bits = [sentence(place, lang)]
     enclosure = _enclosure_phrase(place, lang)
     if enclosure:
         bits.append(enclosure)

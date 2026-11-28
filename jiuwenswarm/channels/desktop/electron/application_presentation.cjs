@@ -1,4 +1,6 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 const { randomUUID } = require('node:crypto');
+const { createChildPresentations } = require('./application_presentation_children.cjs');
 const { createWindowTransitions, transitionOptions } = require('./application_transition.cjs');
 
 const CHANNEL = 'desktop:presentation:';
@@ -28,7 +30,7 @@ function clampBounds(bounds, area) {
   };
 }
 
-/** Own one transparent presentation window; the original renderer owns all conversation work. */
+/** Own one presentation group; the original renderer owns all conversation work. */
 function createApplicationPresentation({ BrowserWindow, ipcMain, screen, getMainWindow, preload, readyTimeoutMs = 15000 }) {
   let current = null;
   const handlers = [];
@@ -50,10 +52,13 @@ function createApplicationPresentation({ BrowserWindow, ipcMain, screen, getMain
     entry.reject = null;
   }
   const transitions = createWindowTransitions({ BrowserWindow, screen, current: () => current, owner: main, activate, close, timeoutMs: readyTimeoutMs });
+  const children = createChildPresentations({ BrowserWindow, screen, parent: () => current, owner: main,
+    preload, send, clampBounds, timeoutMs: readyTimeoutMs });
 
   function close(reason = 'closed', restore = true) {
     const previous = current;
     if (!previous) return;
+    children.clear();
     current = null;
     clearTimeout(previous.timer);
     transitions.cancel(previous, reason);
@@ -76,6 +81,8 @@ function createApplicationPresentation({ BrowserWindow, ipcMain, screen, getMain
   function register(name, role, handler) {
     const channel = CHANNEL + name;
     ipcMain.handle(channel, (event, ...args) => {
+      const child = role === 'floating' ? children.fromSender(event) : null;
+      if (child) return children.floating(name, child, ...args);
       const window = role === 'main' ? main() : current?.window;
       if (!topFrame(event, window)) throw new Error('Untrusted presentation IPC sender');
       return handler(...args);
@@ -173,6 +180,8 @@ function createApplicationPresentation({ BrowserWindow, ipcMain, screen, getMain
     if (!boundedJSON(payload)) throw new Error('Presentation update is too large');
     current.config = { ...current.config, ...payload };
     send(current.window, 'update', payload);
+    if (payload.state) children.updateState(payload.state);
+    if (payload.config) children.updateConfig(current.config.config);
     return true;
   });
   register('request', 'floating', request => {
@@ -181,12 +190,14 @@ function createApplicationPresentation({ BrowserWindow, ipcMain, screen, getMain
     return true;
   });
   register('respond', 'main', (generation, result) => {
-    if (!current || current.generation !== generation) return false;
     if (!boundedJSON(result)) throw new Error('Presentation result is too large');
+    if (!current || current.generation !== generation) return children.respond(generation, result);
     send(current.window, 'result', result);
     return true;
   });
   register('resize', 'main', (key, width, height) => {
+    const child = children.get(key);
+    if (child) return children.resize(child, width, height);
     if (!current || current.config.key !== key) return false;
     if (!boundedInteger(width, 160, 960) || !boundedInteger(height, 120, 960)) throw new Error('Invalid presentation size');
     const entry = current;
@@ -200,6 +211,8 @@ function createApplicationPresentation({ BrowserWindow, ipcMain, screen, getMain
     });
   });
   register('move', 'main', (key, deltaX, deltaY) => {
+    const child = children.get(key);
+    if (child) return children.move(child, deltaX, deltaY);
     if (!current || current.config.key !== key) return false;
     if (!boundedInteger(deltaX, -4096, 4096) || !boundedInteger(deltaY, -4096, 4096)) throw new Error('Invalid presentation movement');
     const entry = current;
@@ -215,6 +228,13 @@ function createApplicationPresentation({ BrowserWindow, ipcMain, screen, getMain
     return transitions.workspace(current);
   });
   register('hit-test', 'main', (key, interactive) => {
+    const child = children.get(key);
+    if (child) {
+      if (typeof interactive !== 'boolean') throw new Error('Invalid presentation hit test');
+      child.interactive = interactive;
+      child.window.setIgnoreMouseEvents(!interactive, { forward: true });
+      return true;
+    }
     if (!current || current.config.key !== key) return false;
     if (typeof interactive !== 'boolean') throw new Error('Invalid presentation hit test');
     const entry = current;
@@ -224,6 +244,8 @@ function createApplicationPresentation({ BrowserWindow, ipcMain, screen, getMain
       return true;
     });
   });
+
+  register('children', 'main', (key, generation, windows) => children.sync(key, generation, windows));
 
   return {
     close,

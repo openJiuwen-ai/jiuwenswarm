@@ -137,6 +137,8 @@ Different modes are an important runtime policy layer in Harness. `AgentMode` cu
 
 JiuwenSwarm supports plan approval for both single agents and teams in the Work and Code profiles. Finishing plan generation preserves the pending approval. Execute leaves plan mode and starts implementation; Skip ends only the current turn and keeps plan mode active; revision feedback continues planning. Background queries, such as asset lists and authorization status, neither switch plan mode nor emit plan-exit notifications.
 
+Web teams leave plan mode and start implementation in the same approval resume. A successful plan exit saves the session in normal mode.
+
 ### 3.5 Context & Memory: Context Engineering and Memory System
 
 Context & Memory ensures the model sees the right information at the right time. Harness uses an extended `SystemPromptBuilder` to manage static prompt sections, such as `identity`, `safety`, `skills`, `tools`, `todo`, `task_tool`, `memory`, `workspace`, `context`, `completion_signal`, and `verification_contract`.

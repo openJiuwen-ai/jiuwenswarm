@@ -43,10 +43,9 @@ def model_headers_from_data(data: Any) -> dict[str, str] | None:
 def model_entity_to_config_entry(entity: dict[str, Any]) -> dict[str, Any]:
     """将 ``model_template`` 行转为 ``get_default_models`` 兼容的条目。
 
-    页面「重试次数」字段 ``retry_count`` 写入：
-    - ``transient_max_retries``：模型配置正式字段，供
-      ``execution_guard.model_anomaly_detection_rail.transient_max_retries`` 同步；
-    - ``model_client_config.max_retries``：兼容旧字段名（SDK 仍固定 0，不由此驱动）。
+    ``retry_count`` 只写入 ``model_client_config.max_retries`` 作为兼容字段
+    （SDK 仍固定 0，不由此驱动）。执行护栏的 ``transient_max_retries`` 与开关
+    由执行护栏模板持有，模型套用不再改 ``execution_guard``。
     """
     parameters = entity.get("parameters")
     if not isinstance(parameters, dict):
@@ -97,7 +96,6 @@ def model_entity_to_config_entry(entity: dict[str, Any]) -> dict[str, Any]:
         "template_id": str(entity.get("template_id") or "").strip(),
         "model_client_config": mcc,
         "model_config_obj": parameters,
-        "transient_max_retries": retry_count,
     }
 
 
@@ -108,41 +106,6 @@ def embedding_entity_to_config_section(entity: dict[str, Any]) -> dict[str, str]
         "embed_base_url": str(entity.get("api_base") or "").strip(),
         "embed_model": str(entity.get("model_id") or "").strip(),
     }
-
-
-def _sync_default_model_retry_to_anomaly_rail(
-    merged: dict[str, Any],
-    default_entry: dict[str, Any],
-) -> None:
-    """把默认模型的 ``transient_max_retries`` 写入 anomaly rail 配置段。
-
-    Rail 构建只读 ``execution_guard.model_anomaly_detection_rail``，与其它字段一致；
-    企业页 ``retry_count`` 在此落地，避免构建期再反查 models。
-
-    同时确保 ``enabled=True``：挂载入口以 ``enabled is True`` 为前提；若段缺失或
-    仍为 ``false``，只写 ``transient_max_retries`` 不会触发重试。
-    """
-    value = default_entry.get("transient_max_retries")
-    if value is None:
-        return
-    guard = merged.get("execution_guard")
-    if not isinstance(guard, dict):
-        guard = {}
-        merged["execution_guard"] = guard
-    rail = guard.get("model_anomaly_detection_rail")
-    if not isinstance(rail, dict):
-        rail = {}
-        guard["model_anomaly_detection_rail"] = rail
-    # Enterprise retry_count implies the rail must be mounted; builders skip
-    # when enabled is missing/false (default False in .get).
-    if rail.get("enabled") is not True:
-        logger.info(
-            "[enterprise] enabling model_anomaly_detection_rail so default-model "
-            "retry_count=%s can take effect",
-            value,
-        )
-        rail["enabled"] = True
-    rail["transient_max_retries"] = value
 
 
 def apply_enterprise_models_to_config(
@@ -195,10 +158,9 @@ def apply_enterprise_models_to_config(
 
         mcc = entry.get("model_client_config") or {}
         models_section[config_key] = {
-            "model_client_config": dict(mcc),
-            "model_config_obj": dict(entry.get("model_config_obj") or {}),
-            "transient_max_retries": entry.get("transient_max_retries"),
-        }
+        "model_client_config": dict(mcc),
+        "model_config_obj": dict(entry.get("model_config_obj") or {}),
+    }
         if config_key == "default":
             default_entry = entry
         applied = True
@@ -237,7 +199,6 @@ def apply_enterprise_models_to_config(
             mco = default_entry.get("model_config_obj")
             if isinstance(mco, dict) and mco:
                 react["model_config_obj"] = dict(mco)
-        _sync_default_model_retry_to_anomaly_rail(merged, default_entry)
 
     if isinstance(embedding_entities, dict):
         embedding_entities = [embedding_entities]

@@ -147,6 +147,8 @@ Built-in capabilities are discovered through `workswarm-builtin` (WorkSwarm Buil
 
 App Market / app-market is included in the unified catalog as `workswarm-app-builder`; open the WorkSwarm Built-in Capabilities details to find app development. Copies verified against historical releases are archived as well. Modified copies that cannot be verified remain available as local skills in the added-skills group rather than the built-in group.
 
+Choose **Edit** on an app card to start a conversation in the app's project. The draft points to the app's source entry and the `workswarm-app-builder` skill. The conversation sidebar expands the project and scrolls to the new conversation when the sidebar is visible.
+
 **Examples:**
 
 - `skill-creator` — skill creation assistant, helps generate new skills  

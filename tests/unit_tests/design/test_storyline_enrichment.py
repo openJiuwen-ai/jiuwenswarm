@@ -32,6 +32,13 @@ async def test_script_analysis_prompt_develops_sparse_requests(
                             ),
                         }
                     ],
+                    "scenes": [
+                        {
+                            "id": "set_1",
+                            "name": "cozy living room",
+                            "description": "a lit Christmas tree by the fireplace",
+                        }
+                    ],
                     "clips": [
                         {
                             "clip_index": 1,

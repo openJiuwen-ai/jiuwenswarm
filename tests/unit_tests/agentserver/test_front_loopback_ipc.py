@@ -285,6 +285,10 @@ async def test_auth_connection_limit_logs_once_and_preserves_credentials(monkeyp
 
 
 async def test_stopping_during_auth_reclaims_worker_and_listener(monkeypatch, harmony_runtime):
+    from jiuwenswarm.server.supervisor.identity import code_identity
+
+    # Observe authentication after computing the real dependency fingerprint.
+    await asyncio.to_thread(code_identity)
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
     monkeypatch.setattr(worker_process, "build_worker_command", lambda *args, **kwargs:
                         [sys.executable, "-c", "import time; time.sleep(20)"])
@@ -371,6 +375,9 @@ async def test_attached_service_drains_dispatch_before_runtime_shutdown(monkeypa
         await listener.close()
         hello = await conn.recv()
         assert hello["generation"] == parameters.generation
+        from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+        await conn.send(startup_acceptance(hello))
         while (await conn.recv())["kind"] != "readiness":
             pass
         accepted = AgentRequest(request_id="chat", channel_id="web", session_id="session",
@@ -536,8 +543,13 @@ async def test_failed_startup_reclaims_listener_stream_and_process(
     monkeypatch.setattr(FrontLoopbackListener, "launch_payload", record)
     monkeypatch.setattr(worker_process.WorkerProcess, "spawn", spawn)
     if failure == "spawn":
+        original_popen = worker_process.subprocess.Popen
+
         def fail_popen(*args, **kwargs):
-            raise OSError("injected spawn failure")
+            if "jiuwenswarm.server.worker.main" in args[0]:
+                raise OSError("injected spawn failure")
+            return original_popen(*args, **kwargs)
+
         monkeypatch.setattr(worker_process.subprocess, "Popen", fail_popen)
     elif failure == "exit-before-auth":
         monkeypatch.setattr(worker_process, "build_worker_command", lambda *args, **kwargs:
@@ -654,7 +666,11 @@ async def test_default_native_transport_survives_front_restart(monkeypatch, tmp_
         assert not second.owns_process
         await second.stop()
         conn = await connect_with_retry(path, timeout=5)
-        assert (await asyncio.wait_for(conn.recv(), 5))["kind"] == "hello"
+        hello = await asyncio.wait_for(conn.recv(), 5)
+        assert hello["kind"] == "hello"
+        from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+        await conn.send(startup_acceptance(hello))
         assert (await asyncio.wait_for(conn.recv(), 5))["kind"] == "readiness"
         await conn.send({"kind": "shutdown"})
         try:

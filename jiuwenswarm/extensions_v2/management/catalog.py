@@ -343,6 +343,15 @@ def find_entry(
             return entry
         raise PackageNotFound(package_id)
     if install_dir is not None:
+        # A bundle id resolves through its active version. Startup also accepts
+        # every installed bundle root, so the accepted-root scan below would
+        # otherwise return the newest copy even when an older version is loaded.
+        bundle_record = store.active_bundle(package_id)
+        if bundle_record is not None:
+            bundle_root = bundle_version_dir(install_dir, bundle_record.bundle_id, bundle_record.version)
+            resolved = entry_from_root(bundle_root) if bundle_root.is_dir() else None
+            if resolved is not None:
+                return resolved
         standalone = store.get(package_id)
         if standalone is not None:
             standalone_root = install_dir / package_id / standalone.version
@@ -444,9 +453,33 @@ def project_detail(
             "preview": _preview_image(entry.root),
             "events": [] if entry.is_bundle else _events(display),
             "systemPlugins": _system_plugins(entry, store, bundle_record),
+            "versionStates": _version_states(store, entry.package_id, entry.is_bundle),
         }
     )
     return detail
+
+
+def _version_states(
+    store: ExtensionInstallState | None,
+    package_id: str,
+    is_bundle: bool,
+) -> list[dict[str, str]]:
+    """Return the stored load state of every version the selector offers.
+
+    A version that failed to load stays marked so the detail page can disable
+    it instead of offering a switch this copy cannot honour.
+    """
+
+    if store is None:
+        return []
+    if is_bundle:
+        records = [record for record in store.bundles() if record.bundle_id == package_id]
+    else:
+        records = [record for record in store.packages() if record.package_id == package_id]
+    return [
+        {"version": record.version, "status": record.status, "error": record.error}
+        for record in records
+    ]
 
 
 def resolve_install_source(

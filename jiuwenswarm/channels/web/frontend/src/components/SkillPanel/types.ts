@@ -17,6 +17,8 @@ export type SkillItem = {
   name: string;
   /** 展示名（保留安装来源的原始大小写，如 ClawHub 的 Weather）；缺省回退到 name */
   display_name?: string;
+  /** 企业技能源安装时落账本的广场卡片名；列表展示以 display_name 为准 */
+  market_display_name?: string;
   description: string;
   source: string;
   version: string;

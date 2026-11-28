@@ -61,6 +61,10 @@ Choose **Convert to Local App** on an installed Hub app to edit, run, or publish
 
 The publish drawer previews the app icon, name, version, and description. App Market reports actions such as stopping or deleting an app in the upper-right corner, keeping the card list in place.
 
+从 Hub 安装或更新后，「我的应用」使用安装包里的图标，离线也能显示。旧应用的安装目录里已有可用图标时，刷新列表即可恢复。
+
+After installing or updating a Hub app, **My Apps** uses the packaged icon and can display it offline. Refreshing the list restores icons for older installations that already contain a usable image.
+
 应用市场默认打开「我的应用」。点击运行中的应用卡片可打开应用，从卡片菜单可查看详情。在详情页删除或卸载成功后会返回「我的应用」。从详情页选择重新安装会进入「应用广场」。详情页会显示更新进度，并提供取消入口。
 
 App Market opens to **My Apps** by default. Click a running app's card to open the app, or choose **View details** from the card menu. Deleting or uninstalling an app from its detail page returns you to **My Apps**. Choosing **Reinstall** opens **App Plaza**. The detail page shows update progress and lets you cancel the update.
@@ -69,9 +73,9 @@ App Market opens to **My Apps** by default. Click a running app's card to open t
 
 All editor sessions linked to the app must be idle before updating. Updates replace the program files and package metadata and retain the app ID, pin, creation time, project, and editor bindings. Updates back up the entire previous working directory and report its location. The installed `data/` directory and Git repository are copied to the new release. Bundled Hub servers inherit only the system environment needed to launch. Execution defaults to enabled for loopback WebChannel bindings. Set `APP_MARKET_ALLOW_HUB_CODE=0` on shared deployments or opt in with `1` on trusted deployments.
 
-**下架并保留文件**停止实例并移除市场登记，保留程序目录、数据、项目和编辑会话。**删除并清理文件**在登记移除成功后归档 `data/` 和 `.git` 到 `.app-archive/`，再清理程序目录。市场会保留安装根、其他应用使用的目录，以及位于安装根外且缺少可核验安装凭据的本地目录，并提示检查保留位置。
+**下架并保留文件**停止实例并移除市场登记，保留程序目录和数据。**删除并清理文件**先下架，再将 `data/` 和 `.git` 归档到 `.app-archive/`，随后尝试清理应用目录。本地应用的客户端须在 `confirm_work_dir` 中回显该目录。Project 和编辑会话记录保留。市场保留文件系统根、用户主目录、JiuwenSwarm 数据目录、当前工作目录、安装根及其上级、归档目录，以及其他应用登记正在使用的目录。目录被占用或清理失败时，应用保持下架，右上角提示显示目录和原因。已有归档时，提示也会显示归档位置。
 
-**Remove and keep files** stops the app and removes its market registration while keeping the program directory, data, project, and editor sessions. **Delete and clean files** removes the registration, archives `data/` and `.git` under `.app-archive/`, and then cleans up the program directory. The market keeps the installation root, directories in use by another app, and local directories outside the installation root whose ownership it cannot verify. It reports the directory to check when cleanup is incomplete.
+**Remove and keep files** stops the app and removes its market registration while keeping the program directory and data. **Delete and clean files** removes the registration, archives `data/` and `.git` under `.app-archive/`, and then attempts to remove the application directory. For local apps, the caller must echo the directory in `confirm_work_dir`. Project and editor session records are retained. The market keeps filesystem roots, the user's home, the JiuwenSwarm data directory, the current working directory, the installation root and its parents, archive directories, and directories still used by another registration. If the filesystem reports that the directory is in use or cleanup fails for another reason, the app stays unlisted. The top-right notification shows the directory, the reason, and the archive location when available.
 
 ## 打开应用：Web 与桌面分开
 
@@ -117,9 +121,9 @@ Closing an app page leaves its service running. The market removes the correspon
 - 上架提示针对具体应用，不将整个会话标记为“已上架”。
 - 同一会话可以开发和上架多个应用。
 
-本地应用和已安装的 Hub 应用可在详情页查看「AI 角色」。该栏目读取应用包的 `app-ai-roles.json`，按会话组展示角色名称、头像、简介与会话复用说明。省略头像时显示由角色名生成的占位头像。新开发的 AI 应用按[角色清单规范](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/references/ai-roles.md)随包提供清单，发布时据此声明 `ai`。
+本地应用和已安装的 Hub 应用可在详情页查看「AI 角色」。该栏目读取应用包的 `app-ai-roles.json`。独立角色并排展示，会话说明写入各自的卡片。同一团队的成员与共享会话说明集中展示。省略头像时显示由角色名生成的占位头像。新开发的 AI 应用按[角色清单规范](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/references/ai-roles.md)随包提供清单，发布时据此声明 `ai`。
 
-The **AI Roles** section on local and installed app details displays character cards and session behavior from the app's `app-ai-roles.json`. Roles without an image use a name-based avatar. New apps that call AI at runtime ship a role declaration, which App Market uses to mark `ai` capability when publishing.
+The **AI Roles** section on local and installed app details reads the app's `app-ai-roles.json`. Independent roles share a grid, with session notes inside each card. Team members appear together with their shared session notes. Roles without an image use a name-based avatar. New apps that call AI at runtime ship a role declaration, which App Market uses to mark `ai` capability when publishing.
 
 应用开发规范与接口用法见 [技能说明](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md)。
 

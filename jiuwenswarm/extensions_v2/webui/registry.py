@@ -45,6 +45,9 @@ class RenderClaim:
     instance: RenderInstance
     evicted: tuple[RenderInstance, ...] = field(default_factory=tuple)
     created: bool = False
+    # A new instance was refused because the slot's max_instances cap is full.
+    # Existing instances may still update while the cap is reached.
+    rejected: bool = False
 
 
 class ActiveRenderRegistry:
@@ -76,18 +79,32 @@ class ActiveRenderRegistry:
                 self._locks.pop(key, None)
 
     @asynccontextmanager
-    async def claim(self, target: RenderTarget) -> AsyncIterator[RenderClaim]:
+    async def claim(
+        self,
+        target: RenderTarget,
+        *,
+        max_instances: int | None = None,
+        create: bool = True,
+    ) -> AsyncIterator[RenderClaim]:
         """Claim one instance exclusively; independent instances may run concurrently."""
 
         async with self._lock_for(target.key):
-            evicted = self._evict_candidates(target)
-            instance = self._instances.get(target.key)
-            created = instance is None
-            if instance is None:
-                revision = self._revisions.get(target.key, (target, 0))[1] if _retains_revision(target) else 0
-                instance = RenderInstance(target=target, revision=revision)
-                self._instances[target.key] = instance
-            instance.updated_at = time.monotonic()
+            # Serialize the count-and-create step for one slot. The global
+            # capacity group is not enough here: two slots in one session
+            # must not share the per-slot cap.
+            async with self._lock_for(_slot_capacity_key(target)):
+                instance = self._instances.get(target.key)
+                created = create and instance is None
+                if created and max_instances is not None and self._count_slot(target) >= max_instances:
+                    yield RenderClaim(instance=RenderInstance(target=target), rejected=True)
+                    return
+                evicted = self._evict_candidates(target) if create else ()
+                if instance is None:
+                    revision = self._revisions.get(target.key, (target, 0))[1] if _retains_revision(target) else 0
+                    instance = RenderInstance(target=target, revision=revision)
+                    if created:
+                        self._instances[target.key] = instance
+                instance.updated_at = time.monotonic()
             yield RenderClaim(instance=instance, evicted=evicted, created=created)
 
     def commit(self, instance: RenderInstance, request: UiRenderInput) -> RenderFrame:
@@ -200,6 +217,15 @@ class ActiveRenderRegistry:
                 self._locks.pop(key, None)
         return tuple(dropped)
 
+    def _count_slot(self, target: RenderTarget) -> int:
+        """Count instances for one slot in the caller's capacity group."""
+
+        count = 0
+        for instance in self._instances.values():
+            if instance.target.slot_id == target.slot_id and _same_capacity_group(instance.target, target):
+                count += 1
+        return count
+
     def _evict_candidates(self, target: RenderTarget) -> tuple[RenderInstance, ...]:
         """Select the oldest instances in the capacity group for removal after delivery."""
 
@@ -215,6 +241,14 @@ class ActiveRenderRegistry:
         candidates.sort(key=lambda instance: instance.updated_at)
         excess = len(candidates) - self._max_per_session + 1
         return tuple(candidates[:excess])
+
+
+def _slot_capacity_key(target: RenderTarget) -> str:
+    """Lock key for one slot inside its session or application capacity group."""
+
+    if target.resolved_scope == SlotScope.APPLICATION.value:
+        return f"\x00slot\x00application\x00{target.connection_id}\x00{target.slot_id}"
+    return f"\x00slot\x00session\x00{target.session_id}\x00{target.slot_id}"
 
 
 def _same_capacity_group(left: RenderTarget, right: RenderTarget) -> bool:

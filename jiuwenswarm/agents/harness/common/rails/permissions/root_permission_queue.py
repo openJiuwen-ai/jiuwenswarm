@@ -68,7 +68,8 @@ class RootPermissionQueue:
     """Own pending-card order and one head answer in flight per root session."""
 
     def __init__(self, *, id_factory: Callable[[], str] | None = None) -> None:
-        self._id_factory = id_factory or (lambda: f"tiv_{secrets.token_urlsafe(18)}")
+        # Hex keeps generated IDs from matching the audit secret filter.
+        self._id_factory = id_factory or (lambda: f"tiv_{secrets.token_hex(18)}")
         self._cards: dict[str, RootPermissionCard] = {}
         self._active: dict[tuple[str, str, str, str], str] = {}
         self._pending: dict[tuple[str, str, str], str] = {}

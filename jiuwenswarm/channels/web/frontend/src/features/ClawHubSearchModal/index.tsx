@@ -2,7 +2,7 @@
  * ClawHub 在线搜索弹窗
  * �?ClawHub 检索并安装技�?
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { webRequest } from "../../services/webClient";
 import { getSkillAvatar } from "../../utils/skillAvatar";
@@ -59,6 +59,9 @@ export function ClawHubSearchModal({
   const [installedSlugs, setInstalledSlugs] = useState<Set<string>>(new Set());
   const [tokenLoading, setTokenLoading] = useState(true);
   const [showToken, setShowToken] = useState(false);
+  // Latest-wins sequence: responses from superseded searches must not write state.
+  const searchSeqRef = useRef(0);
+  const messageTimerRef = useRef<number | null>(null);
 
   const withSession = useCallback(
     (params?: Record<string, unknown>) => ({
@@ -70,8 +73,21 @@ export function ClawHubSearchModal({
 
   const showMessage = useCallback((type: "success" | "error", text: string) => {
     setMessage({ type, text });
-    setTimeout(() => setMessage(null), 3000);
+    // Re-arm a single slot: a slow older timer must not clear a newer message early.
+    if (messageTimerRef.current !== null) {
+      window.clearTimeout(messageTimerRef.current);
+    }
+    messageTimerRef.current = window.setTimeout(() => setMessage(null), 3000);
   }, []);
+
+  useEffect(
+    () => () => {
+      if (messageTimerRef.current !== null) {
+        window.clearTimeout(messageTimerRef.current);
+      }
+    },
+    []
+  );
 
   const fetchToken = useCallback(async () => {
     setTokenLoading(true);
@@ -119,6 +135,7 @@ export function ClawHubSearchModal({
   useEffect(() => {
     if (embedded && query.trim()) {
       const q = query.trim();
+      const seq = ++searchSeqRef.current;
       setLoadState("loading");
       setMessage(null);
       void (async () => {
@@ -129,6 +146,7 @@ export function ClawHubSearchModal({
             detail_key?: string;
             skills?: ClawHubSkillItem[];
           }>("skills.clawhub.search", withSession({ q, limit: 50 }));
+          if (seq !== searchSeqRef.current) return;
           if (!data.success) {
             const message = data.detail_key
               ? t(data.detail_key)
@@ -138,6 +156,7 @@ export function ClawHubSearchModal({
           setResults(data.skills || []);
           setLoadState("success");
         } catch (err) {
+          if (seq !== searchSeqRef.current) return;
           console.error(err);
           setResults([]);
           setLoadState("error");
@@ -165,7 +184,7 @@ export function ClawHubSearchModal({
   const handleSearch = useCallback(async () => {
     const q = query.trim();
     if (!q) return;
-
+    const seq = ++searchSeqRef.current;
     setLoadState("loading");
     setMessage(null);
     try {
@@ -175,6 +194,7 @@ export function ClawHubSearchModal({
         detail_key?: string;
         skills?: ClawHubSkillItem[];
       }>("skills.clawhub.search", withSession({ q, limit: 50 }));
+      if (seq !== searchSeqRef.current) return;
       if (!data.success) {
         const message = data.detail_key
           ? t(data.detail_key)
@@ -184,6 +204,7 @@ export function ClawHubSearchModal({
       setResults(data.skills || []);
       setLoadState("success");
     } catch (err) {
+      if (seq !== searchSeqRef.current) return;
       console.error(err);
       setResults([]);
       setLoadState("error");
@@ -639,7 +660,7 @@ export function ClawHubSearchModal({
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              onKeyDown={(e) => e.key === "Enter" && loadState !== "loading" && handleSearch()}
               data-testid="claw-hub-search-modal-search-input"
               placeholder={t("skills.clawhub.searchPlaceholder")}
               className="flex-1 min-w-0 px-3 py-2 rounded-md bg-secondary border border-border text-sm text-text placeholder:text-text-muted"

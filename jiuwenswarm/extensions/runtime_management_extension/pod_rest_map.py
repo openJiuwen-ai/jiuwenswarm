@@ -71,6 +71,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("chat.steer", "POST", "/chat/{session_id}/actions/steer"),
     ("chat.steer.status", "POST", "/chat/{session_id}/actions/steer/status"),
     ("chat.user_answer", "POST", "/chat/{session_id}/actions/answer"),
+    # SwarmFlow 人工轮回复：与 chat.user_answer 同平面进聊天适配（http_chat），
+    # 缺这条会让企业版回复停在网关（空壳应答后 HttpMethodNotHandled），
+    # 工作流节点的人工轮 future 等不到投递。
+    ("chat.swarmflow_reply", "POST", "/chat/{session_id}/actions/swarmflow-reply"),
     ("command.session", "POST", "/sessions/{session_id}/commands"),
     ("command.compact", "POST", "/sessions/{session_id}/commands/compact"),
     ("command.compact_partial", "POST", "/sessions/{session_id}/commands/compact-partial"),
@@ -151,6 +155,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("skills.marketplace.toggle", "POST", "/skills/marketplace/{name}/actions/toggle"),
     ("skills.install", "POST", "/skills/install"),
     ("skills.import_local", "POST", "/skills/import-local"),
+    ("skills.import_upload", "POST", "/skills/actions/import-upload"),
     ("skills.online.search", "POST", "/skills/online-search"),
     ("skills.online_search.search", "POST", "/skills/online-search"),
     ("skills.retrieval.status", "GET", "/skills/retrieval/status"),
@@ -388,6 +393,12 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     - ``channel_context.cron`` → ``X-Cron-Meta`` → ``metadata["cron"]``
     Agent 侧用同一套 ``metadata.get("cron")`` 识别无人值守执行（与个人版一致）。
 
+    平台展示身份 ``channel_context.agent_identity`` 中只透传 ``agent_id`` /
+    ``X-Agent-Identity-Id`` / ``X-Runtime-Template-Id`` / ``X-Agent-Template-Id``，
+    且仅企业版透传（个人版请求即使携带也不下发）；``agent_name`` 仅保留在
+    metadata，供 Gateway 本地展示/技能上传判定使用，不进入 AgentServer 的
+    HTTP 头（避免非 ASCII/控制字符导致请求失败）。
+
     企业版另附 ``X-Jiuwenswarm-Expert-Packages``。值按这只 bot 的专家包模板展开，
     不用 ``channel_context`` 里客户端自带的字段。
 
@@ -398,6 +409,7 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
         METADATA_KEY,
         encode_internal_header,
     )
+    from agent_gateway.common.request_identity import read_agent_identity
     from jiuwenswarm.common.request_identity import web_routing_identity
 
     headers = {
@@ -442,6 +454,22 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
         headers["X-Cron-Meta"] = json.dumps(
             cron_meta, ensure_ascii=True, separators=(",", ":"),
         )
+    # 展示身份只透传可用于跨进程的 id / 模板 id，且仅企业版透传：个人版请求
+    # 即使 channel_context 携带 agent_identity 也不下发。``X-Agent-Id`` 已被
+    # 路由层 Agent id 占用，展示 id 改用 ``X-Agent-Identity-Id``。``agent_name``
+    # 是人类可读展示名，可能含非 ASCII/控制字符，只保留在 metadata，不进入 HTTP 头。
+    from agent_gateway.enterprise.edition import is_enterprise
+
+    if is_enterprise():
+        display_identity = read_agent_identity(channel_context)
+        for field, header_name in (
+            ("agent_id", "X-Agent-Identity-Id"),
+            ("runtime_template_id", "X-Runtime-Template-Id"),
+            ("agent_template_id", "X-Agent-Template-Id"),
+        ):
+            value = display_identity.get(field)
+            if value:
+                headers[header_name] = value
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext
@@ -542,6 +570,22 @@ def _enterprise_pod_route(method: str) -> tuple[str, str] | None:
     return pod_http_routes().get(method)
 
 
+_PATH_SEGMENT_NON_SCALAR = (list, tuple, dict, set)
+
+
+def _normalize_path_segment(key: str, value: Any) -> str:
+    """路径占位符只接受标量；拒绝 list/dict 等，避免 ``[]`` 被编成 ``%5B%5D``（#169）。"""
+    if isinstance(value, _PATH_SEGMENT_NON_SCALAR) or isinstance(value, bool):
+        raise RestAssemblyError(
+            f"REST 路径占位符 '{key}' 类型非法: {type(value).__name__}"
+        )
+    raw = value if isinstance(value, str) else str(value)
+    if raw in (".", "..") or "/" in raw or "\\" in raw:
+        # 与 AgentServer ``_safe_path_name`` 对齐；含分隔符会破坏单段路径。
+        raise RestAssemblyError(f"REST 路径占位符 '{key}' 含非法路径片段: {raw!r}")
+    return raw
+
+
 def _fill_path(template: str, values: Mapping[str, Any]) -> tuple[str, set[str]]:
     used: set[str] = set()
     missing: list[str] = []
@@ -551,8 +595,9 @@ def _fill_path(template: str, values: Mapping[str, Any]) -> tuple[str, set[str]]
         if key not in values or values[key] is None or values[key] == "":
             missing.append(key)
             return match.group(0)
+        raw = _normalize_path_segment(key, values[key])
         used.add(key)
-        return quote(str(values[key]), safe="")
+        return quote(raw, safe="")
 
     filled = _PATH_PLACEHOLDER.sub(_replace, template)
     if missing:

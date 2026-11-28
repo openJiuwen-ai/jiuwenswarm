@@ -272,6 +272,12 @@ async def test_watchdog_still_closes_a_silent_worker(monkeypatch, caplog) -> Non
     monkeypatch.setattr(module, "_HEARTBEAT_TIMEOUT", 0.03)
     supervisor = RuntimeSupervisor(Readiness(), forwarder=EventForwarder())
     async with _running(supervisor) as (conn, _pump):
+        from unittest.mock import AsyncMock
+        from jiuwenswarm.server.ipc.stream import HeartbeatProbeResult
+
+        monkeypatch.setattr(conn, "probe_heartbeat", AsyncMock(
+            return_value=HeartbeatProbeResult("read_timeout"),
+        ), raising=False)
         await asyncio.wait_for(supervisor._watchdog(1), 0.5)
         assert conn.closed
         assert "heartbeat timed out" in caplog.text

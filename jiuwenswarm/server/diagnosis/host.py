@@ -264,10 +264,11 @@ def _fill_default_locale(body: Any) -> Any:
         return body
     payload = dict(body)
     if not str(payload.get("locale") or "").strip():
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
 
-        lang = str(get_config().get("preferred_language") or "zh").strip().lower()
-        payload["locale"] = lang if lang in ("zh", "en") else "zh"
+        payload["locale"] = resolve_preferred_language()
     return payload
 
 

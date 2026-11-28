@@ -8,9 +8,12 @@ export interface NamedAsset {
 }
 
 const WORD_CHAR = /[\p{L}\p{N}_]/u;
+/** 只在左侧边界用 ASCII 单词字符判断：@ 紧跟在字母/数字/下划线之后说明它嵌在邮箱地址里
+ *  （team@fox.com），不是独立引用。中日韩字符不受此限制——中文用户经常不加空格（用@狐狸）。 */
+const ASCII_WORD_CHAR = /[A-Za-z0-9_]/;
 
 /** 文本里被 @名称 引用到的素材。名称可以含空格/中文，所以按名称长度从长到短匹配，
- *  并要求 @名称 后面不是字母数字（避免 "@fox" 误匹配 "@foxes"）。 */
+ *  并要求 @名称 两侧都是独立边界（避免 "@foxes"、"team@fox.com" 这类误匹配）。 */
 export function findReferencedAssets<T extends NamedAsset>(text: string, assets: readonly T[]): T[] {
   if (!text.includes('@') || assets.length === 0) return [];
   const lowered = text.toLowerCase();
@@ -24,9 +27,10 @@ export function findReferencedAssets<T extends NamedAsset>(text: string, assets:
       const index = lowered.indexOf(token, from);
       if (index < 0) break;
       const end = index + token.length;
+      const prev = index > 0 ? lowered.charAt(index - 1) : '';
       const next = lowered.charAt(end);
       const overlaps = consumed.some(([s, e]) => index < e && end > s);
-      if (!overlaps && (next === '' || !WORD_CHAR.test(next))) {
+      if (!overlaps && !ASCII_WORD_CHAR.test(prev) && (next === '' || !WORD_CHAR.test(next))) {
         consumed.push([index, end]);
         if (!found.includes(asset)) found.push(asset);
       }

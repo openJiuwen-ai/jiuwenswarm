@@ -136,7 +136,7 @@ for (const code of ['WORKER_CLOSED', 'WORKER_UNSTABLE', 'RUNTIME_WARMING', 'RUNT
       if (fail) throw Object.assign(new Error('runtime worker closed: ipc connection is closed'), { code });
       return { models: [], model_groups: [] };
     } });
-    assert.equal(view.find('settings-models-add-btn').disabled, true);
+    assert.equal(view.find('settings-models-add-btn').disabled, false, 'the form remains fillable while the service recovers');
     const initialError = view.find('settings-models-error').textContent;
     assert.equal(view.find('settings-models-error').querySelectorAll('button').length, 0);
     fail = false;

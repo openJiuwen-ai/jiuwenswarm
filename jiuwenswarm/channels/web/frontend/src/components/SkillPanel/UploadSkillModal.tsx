@@ -15,12 +15,19 @@ interface UploadSkillModalProps {
   actionTarget: string | null;
   onUpload: (file: File) => void;
   onClose: () => void;
+  /** 拖入/选择了不支持的文件时回调 i18n key（如 skills.errors.uploadZipOnly）。 */
+  onRejectFile?: (reasonKey: string) => void;
 }
 
 const SKILL_UPLOAD_DROP_ZONE_CLASS = 'skill-panel-upload-skill-dropzone';
 const DUPLICATE_DROP_SUPPRESSION_MS = 1200;
 
-export function UploadSkillModal({ actionTarget, onUpload, onClose }: UploadSkillModalProps) {
+export function UploadSkillModal({
+  actionTarget,
+  onUpload,
+  onClose,
+  onRejectFile,
+}: UploadSkillModalProps) {
   const { t } = useTranslation();
   const [uploadSkillPath, setUploadSkillPath] = useState('');
   const [uploadSkillFile, setUploadSkillFile] = useState<File | null>(null);
@@ -95,11 +102,19 @@ export function UploadSkillModal({ actionTarget, onUpload, onClose }: UploadSkil
             onDrop={(e) => {
               e.preventDefault();
               const file = e.dataTransfer.files[0];
-              if (file && file.name.endsWith('.zip')) {
+              if (!file) return;
+              const lower = file.name.toLowerCase();
+              if (lower.endsWith('.skill.zip')) {
+                onRejectFile?.('skills.errors.uploadSkillZipRejected');
+                return;
+              }
+              if (lower.endsWith('.zip')) {
                 markDesktopDropHandled(file);
                 setUploadSkillPath(file.name);
                 setUploadSkillFile(file);
+                return;
               }
+              onRejectFile?.('skills.errors.uploadZipOnly');
             }}
             className={
               `${SKILL_UPLOAD_DROP_ZONE_CLASS} flex flex-col items-center justify-center gap-2 rounded-[12px] border border-dashed border-border cursor-pointer bg-[var(--color-skill-dropzone-surface)] hover:bg-[var(--color-skill-dropzone-hover-surface)]`
@@ -116,10 +131,20 @@ export function UploadSkillModal({ actionTarget, onUpload, onClose }: UploadSkil
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (file) {
+                if (!file) return;
+                const lower = file.name.toLowerCase();
+                if (lower.endsWith('.skill.zip')) {
+                  onRejectFile?.('skills.errors.uploadSkillZipRejected');
+                  e.target.value = '';
+                  return;
+                }
+                if (lower.endsWith('.zip')) {
                   setUploadSkillPath(file.name);
                   setUploadSkillFile(file);
+                  return;
                 }
+                onRejectFile?.('skills.errors.uploadZipOnly');
+                e.target.value = '';
               }}
             />
           </label>

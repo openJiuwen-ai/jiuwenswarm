@@ -21,9 +21,9 @@ from jiuwenbox.server.runtime.errors import BackgroundJobNotFoundError, PolicyVa
 
 
 def _load_manager(testcase):
-    # Production JiuwenBox runs on Linux. Inject only its OS-dependent imports
-    # on Windows so the same orchestration can be tested with fake runtimes.
-    if sys.platform != "win32":
+    # Production JiuwenBox runs on Linux. Stub its Linux-only imports elsewhere
+    # so the same orchestration can be tested with fake runtimes.
+    if sys.platform == "linux":
         from jiuwenbox.server.sandbox_manager import SandboxManager
         return SandboxManager
     workspace = ModuleType("jiuwenbox.server.workspace")

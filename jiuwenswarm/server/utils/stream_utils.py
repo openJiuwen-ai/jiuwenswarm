@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from jiuwenswarm.server.runtime.agent_adapter.subagent_projection import SubagentStreamEvent
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +49,7 @@ def _finite_number(value: Any) -> int | float | None:
         return None
 
 
-def _normalize_occupancy_rate(value: Any) -> float | None:
+def normalize_occupancy_rate(value: Any) -> float | None:
     """Normalize ratio or percentage values to a ``[0, 1]`` ratio."""
     numeric_value = _finite_number(value)
     if numeric_value is None:
@@ -80,7 +83,7 @@ def normalize_context_usage_payload(payload: Any) -> dict[str, Any] | None:
     if isinstance(context_window, dict):
         # Compatibility aliases: the frontend's summary card still reads
         # these names while the full category breakdown is carried in parts.
-        occupancy_rate = _normalize_occupancy_rate(
+        occupancy_rate = normalize_occupancy_rate(
             context_window.get("occupancy_rate")
         )
         if usage_payload.get("rate") is None:
@@ -107,7 +110,7 @@ def normalize_context_usage_payload(payload: Any) -> dict[str, Any] | None:
         limit_tokens = _finite_number(summary.get("limit_tokens"))
         if limit_tokens is None:
             limit_tokens = _finite_number(context_window.get("limit_tokens"))
-        summary_rate = _normalize_occupancy_rate(summary.get("occupancy_rate"))
+        summary_rate = normalize_occupancy_rate(summary.get("occupancy_rate"))
         if summary_rate is None:
             summary_rate = occupancy_rate
         if summary_rate is None and used_tokens is not None:
@@ -166,8 +169,27 @@ def normalize_moa_status_payload(payload: Any) -> dict[str, Any] | None:
     return result
 
 
-def parse_stream_chunk(chunk: Any, *, _has_streamed_content: bool = False) -> dict[str, Any] | None:
-    """Parse agent output chunk to frontend-consumable payload dict.
+def parse_stream_chunk(
+    chunk: Any, *, _has_streamed_content: bool = False,
+) -> dict[str, Any] | None:
+    """Synchronous compatibility API returning only client payloads or None.
+
+    Runtime consumers use ``decode_stream_chunk`` and an asynchronous projection
+    boundary. This shim preserves historical callers that also depend on the
+    subagent event's history side effect.
+    """
+    from jiuwenswarm.server.runtime.agent_adapter.subagent_projection import (
+        SUBAGENT_PROJECTION, SubagentStreamEvent,
+    )
+
+    parsed = decode_stream_chunk(chunk, _has_streamed_content=_has_streamed_content)
+    return SUBAGENT_PROJECTION.consume(parsed) if isinstance(parsed, SubagentStreamEvent) else parsed
+
+
+def decode_stream_chunk(
+    chunk: Any, *, _has_streamed_content: bool = False,
+) -> dict[str, Any] | SubagentStreamEvent | None:
+    """Purely decode agent output into payloads or neutral SDK events.
 
     统一处理所有 SDK 输出格式，包括：
     - OutputSchema (type + payload)
@@ -184,6 +206,14 @@ def parse_stream_chunk(chunk: Any, *, _has_streamed_content: bool = False) -> di
     """
     if chunk is None:
         return None
+
+    # Decode SDK subagent envelopes without importing DeepAdapter or committing
+    # history. Real consumers project the returned neutral event explicitly.
+    from jiuwenswarm.server.runtime.agent_adapter.subagent_projection import parse_subagent_event
+    from jiuwenswarm.server.runtime.session.history_io import stream_chunk_writes_history
+
+    if stream_chunk_writes_history(chunk):
+        return parse_subagent_event(chunk)
 
     if isinstance(chunk, dict):
         return _parse_dict_chunk(chunk, _has_streamed_content)
@@ -311,11 +341,6 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
 
     if chunk_type == "chat.ask_user_question":
         return parse_ask_user_question_payload(payload)
-
-    if chunk_type in ("subagent_updated", "subagent_activity", "subagent_message"):
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-
-        return JiuWenSwarmDeepAdapter.parse_stream_chunk(chunk)
 
     if isinstance(chunk_type, str) and "." in chunk_type:
         if chunk_type == "context.usage":

@@ -1,3 +1,4 @@
+requires_sdk: false
 id: rea-setup
 name: REA Setup
 version: 1.0.0

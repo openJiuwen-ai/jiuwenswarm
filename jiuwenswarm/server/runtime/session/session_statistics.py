@@ -10,9 +10,11 @@ import math
 
 from openjiuwen.core.context_engine.usage import ContextUsageSnapshot
 
+from agent_gateway.common.mode_matrix import is_team_mode
 from agent_gateway.common.protocol_ids import is_valid_session_id
 from agent_gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.server.runtime.session.session_history import read_committed_main_history
+from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
 SESSION_USAGE_INFO_KEY = "session_usage_info"
 logger = logging.getLogger(__name__)
@@ -73,14 +75,21 @@ def _number(value: object, field: str) -> int | float | None:
     return value
 
 
-def _context(session_id: str, raw: dict | None) -> dict | None:
+def _context(session_id: str, raw: dict | None, *, team_leader: bool = False) -> dict | None:
     if raw is None or not isinstance(raw.get("context_window"), dict):
         return None
-    # Child/member windows can share the product session; they are not the
-    # primary context and must not replace its most recent observation.
+    # Child windows can share the product session but cannot represent its main window.
     if raw.get("session_id") != session_id or raw.get("depth", 0) != 0:
         return None
-    if raw.get("parent_invocation_id") or raw.get("member_name") or raw.get("team_id"):
+    if raw.get("parent_invocation_id"):
+        return None
+    if team_leader:
+        role = raw.get("role")
+        if not isinstance(role, str) or role.strip().lower() != "leader":
+            return None
+        if raw.get("subagent_id") or raw.get("mode") == "subagent" or raw.get("delegation_id"):
+            return None
+    elif raw.get("member_name") or raw.get("team_id"):
         return None
     for key in ("limit_tokens", "input_tokens", "local_estimated_input_tokens", "occupancy_rate"):
         _number(raw["context_window"].get(key), key)
@@ -120,14 +129,15 @@ def build_usage_snapshot(
     context_usage: dict | None = None,
     turn_usage: dict | None = None,
     source: str = "host",
+    team_leader: bool = False,
 ) -> dict | None:
-    """Copy independent valid host components without consulting old history."""
+    """Copy valid host components; only a trusted Team caller selects its leader window."""
     if not is_valid_session_id(session_id):
         raise ValueError("invalid session_id")
     context = None
     turn = None
     try:
-        context = _context(session_id, context_usage)
+        context = _context(session_id, context_usage, team_leader=team_leader)
     except (TypeError, ValueError):
         logger.debug("[SessionStatistics] invalid host context component")
     try:
@@ -160,6 +170,14 @@ def select_usage_breakdown(snapshot: Mapping | None, breakdown: bool) -> dict | 
     return result
 
 
+def _uses_team_leader_context(session_id: str) -> bool:
+    try:
+        metadata = get_session_metadata(session_id, enable_writeback=False)
+    except (OSError, RuntimeError) as exc:
+        raise SessionStatisticsError("cannot read session metadata for usage") from exc
+    return isinstance(metadata, dict) and is_team_mode(metadata.get("mode"))
+
+
 def read_session_usage(session_id: str, breakdown: bool = False) -> dict | None:
     """Read the last committed primary window and per-turn consumption facts."""
     if not isinstance(breakdown, bool):
@@ -169,17 +187,25 @@ def read_session_usage(session_id: str, breakdown: bool = False) -> dict | None:
         return None
     context = None
     turn = None
+    team_leader = None
     try:
         for record in reversed(records):
             if record.get("subagent_id") or record.get("mode") == "subagent":
                 continue
             if record.get("session_id") not in (None, "", session_id) or record.get("depth", 0) != 0:
                 continue
-            if record.get("parent_invocation_id") or record.get("member_name") or record.get("team_id"):
+            if record.get("parent_invocation_id"):
                 continue
-            if context is None and record.get("event_type") == "context.usage":
-                context = _context(session_id, record)
-            if turn is None and record.get("event_type") == "chat.usage_summary":
+            event_type = record.get("event_type")
+            if context is None and event_type == "context.usage":
+                if team_leader is None:
+                    team_leader = _uses_team_leader_context(session_id)
+                context = _context(session_id, record, team_leader=team_leader)
+            if (
+                turn is None
+                and event_type == "chat.usage_summary"
+                and not (record.get("member_name") or record.get("team_id"))
+            ):
                 turn = _turn(record)
             if context is not None and turn is not None:
                 break

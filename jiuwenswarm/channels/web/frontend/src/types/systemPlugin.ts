@@ -53,6 +53,13 @@ export interface SystemPluginMember {
   installedVersion: string;
 }
 
+/** Stored load state of one installed version, used to disable unusable versions. */
+export interface SystemPluginVersionState {
+  version: string;
+  status?: 'pending' | 'active' | 'standby' | 'disabled' | 'failed' | 'uninstalling';
+  error?: string;
+}
+
 export interface SystemPluginDetail extends SystemPluginSummary {
   /** Published versions from the Hub, oldest first; local packages expose only their own. */
   versions?: string[];
@@ -62,4 +69,5 @@ export interface SystemPluginDetail extends SystemPluginSummary {
   /** Only standalone plugins declare events; a bundle uses ``systemPlugins`` instead. */
   events: SystemPluginEvent[];
   systemPlugins?: SystemPluginMember[];
+  versionStates?: SystemPluginVersionState[];
 }

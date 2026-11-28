@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -18,15 +19,20 @@ export function PresentationFrame({ api }: { api: PresentationWindowApi | undefi
     config: Record<string, unknown>;
     initialWorkArea: PresentationWorkArea;
     host?: PresentationGeometry;
+    isChild?: boolean;
   } | null>(null);
   const ready = useRef(false);
+  const compactPending = useRef(false);
   const transition = useRef<string | null>(null);
   useEffect(() => {
     if (error && api) void api.failed().catch((failure) => console.error('Presentation failure notification failed', failure));
   }, [error, api]);
   const postState = () => {
-    if (ready.current && current.current) frame.current?.contentWindow?.postMessage({
-      protocol: PRESENTATION_PROTOCOL, version: 1, type: 'state', ...current.current,
+    if (!ready.current || !current.current) return;
+    const { state, config, initialWorkArea, host } = current.current;
+    frame.current?.contentWindow?.postMessage({
+      protocol: PRESENTATION_PROTOCOL, version: 1, type: 'state', state, config, initialWorkArea,
+      ...(host ? { host } : {}), ...(compactPending.current ? { compactPending: true } : {}),
     }, '*');
   };
   useEffect(() => {
@@ -53,9 +59,16 @@ export function PresentationFrame({ api }: { api: PresentationWindowApi | undefi
         || (keys === 'protocol,transition,type,version' && isWindowTransitionOptions(event.data.transition)))) {
         if (ready.current) return;
         ready.current = true;
+        const options = current.current?.isChild ? undefined : event.data.transition;
+        compactPending.current = options !== undefined;
         postState();
-        void api.ready(event.data.transition).then((value) => {
+        void api.ready(options).then((value) => {
+          if (disposed) return;
           if (value !== true) prepare(value);
+          else if (compactPending.current) {
+            compactPending.current = false;
+            postState();
+          }
         }).catch(() => { if (!disposed) setError(true); });
         return;
       }
@@ -75,6 +88,7 @@ export function PresentationFrame({ api }: { api: PresentationWindowApi | undefi
           void api.finishTransition(id).then(() => {
             if (!disposed && transition.current === id) {
               transition.current = null;
+              compactPending.current = false;
               frame.current?.contentWindow?.postMessage({ protocol: PRESENTATION_PROTOCOL, version: 1,
                 type: 'transition-ended', id }, '*');
             }
@@ -92,7 +106,8 @@ export function PresentationFrame({ api }: { api: PresentationWindowApi | undefi
     window.addEventListener('message', onMessage);
     void api.bootstrap().then((config) => {
       if (disposed) return;
-      current.current = { state: config.state, config: config.config, initialWorkArea: config.initialWorkArea, host: config.host };
+      current.current = { state: config.state, config: config.config, initialWorkArea: config.initialWorkArea,
+        host: config.host, isChild: config.isChild };
       setInitial(config);
     }).catch(() => { if (!disposed) setError(true); });
     return () => { disposed = true; offUpdate(); offResult(); offTransition(); window.removeEventListener('message', onMessage); };

@@ -17,6 +17,12 @@ await build({
         contents: "export default 'svg';",
         loader: 'js',
       }));
+      // Raster artwork is referenced by URL only; keep the file name so tests can tell images apart.
+      builder.onResolve({ filter: /\.(png|webp)$/ }, ({ path }) => ({ path, namespace: 'image-stub' }));
+      builder.onLoad({ filter: /.*/, namespace: 'image-stub' }, ({ path }) => ({
+        contents: `export default ${JSON.stringify(`/assets/${path.split('/').pop()}`)};`,
+        loader: 'js',
+      }));
     },
   }],
 });

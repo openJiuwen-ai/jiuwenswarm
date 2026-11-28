@@ -27,6 +27,7 @@ import { registerApplicationQuestionController } from '../applicationPlugins/tas
 import { toast } from '../components/ui/Toast/toastStore';
 import { isSkillPackagePrompt } from '../components/InteractionSlot/promptRouting';
 import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
 import {
   ConnectionAckPayload,
   WebConnectOptions,
@@ -140,6 +141,7 @@ import {
 } from '../features/tool-events/toolEventNormalizer';
 import {
   findActiveTeamLeaderMessage as findActiveTeamLeaderMessageInTurn,
+  findTeamLeaderMessageWithFile,
 } from '../features/teamLeaderMessages';
 import { buildGoalCompletedContent } from '../components/GoalBar/goalCompletedMessage';
 import {
@@ -148,6 +150,7 @@ import {
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
 import { useSubagentStore } from '../stores/subagentStore';
+import { useTeamSelectorStore } from '../stores/teamSelectorStore';
 import { expertTeamId, organizationOwnerStopTarget, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
 import { isTeamOrganizationUiEnabled } from '../features/teamOrganization/featureConfig';
 import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
@@ -712,6 +715,17 @@ const HEARTBEAT_MUTATION_TOOL_NAMES = new Set([
   'heartbeat_toggle_job',
   'heartbeat_run_now',
   'heartbeat_cancel_run',
+]);
+
+/** 这些 Tool 成功后名册会新增成员（成员此时还没被启动）。后端会补发
+ * `team.member.registered`，但那一帧一旦丢掉，右侧团队栏会一直空着，直到
+ * 有人 @ 起某个成员或整页刷新。所以成功后主动对齐一次名册。 */
+const TEAM_ROSTER_TOOL_NAMES = new Set([
+  'build_team',
+  'spawn_teammate',
+  'spawn_human_agent',
+  'spawn_bridge_agent',
+  'spawn_expert',
 ]);
 
 // The task card's title/content are now sourced solely from the backend
@@ -1409,17 +1423,39 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const requestState = { revision: 0, changedMemberIds: new Set<string>() };
     teamMemberSnapshotRequestRef.current.set(sessionId, requestState);
     try {
-      const response = await request<{ members?: unknown; departed_members?: unknown; members_source?: string }>(
+      const sessionStore = useSessionStore.getState();
+      const session =
+        sessionStore.currentSession?.session_id === sessionId
+          ? sessionStore.currentSession
+          : sessionStore.sessions.find((item) => item.session_id === sessionId);
+      // 这个对账写的是主团队投影（裸 sessionId），所以 team_name 也要取主团队：
+      // 多团队会话里 selectedTeamId 可能是专家团，用它会把别队的库名册并进来。
+      // team.list 的 owner 项比可能过期的会话元数据更可靠。
+      const selectorRuntime = useTeamSelectorStore.getState().getRuntime(sessionId);
+      const ownerTeamName = selectorRuntime?.teams.find((team) => team.is_owner)?.team_id ?? '';
+      const teamName = (ownerTeamName || session?.team_name || '').trim();
+      const response = await request<{
+        members?: unknown;
+        departed_members?: unknown;
+        members_source?: string;
+        members_live?: boolean;
+      }>(
         'team.snapshot',
-        { session_id: sessionId },
+        { session_id: sessionId, ...(teamName ? { team_name: teamName } : {}) },
         { timeoutMs: 5000 },
       );
       if (
         teamMemberSnapshotRequestRef.current.get(sessionId) !== requestState ||
         requestState.revision !== 0
       ) return;
-      if (response?.members_source !== 'live') return;
+      // live / live-scoped / db / live+db 都是同一份名册，db 只是 monitor 不在时的直查。
+      // 空结果没有可用信息，保留现有成员。
+      const membersSource = response?.members_source ?? '';
+      if (!membersSource || membersSource === 'empty') return;
       if (!Array.isArray(response?.members)) return;
+      // 后端标记名册是否来自实时运行态；老后端没有该字段时按 live 兼容。
+      const membersLive =
+        typeof response?.members_live === 'boolean' ? response.members_live : membersSource === 'live';
       // 旧后端不带 departed_members；新后端在队友全部离队时 members 为空，靠它收敛。
       const rawDepartedMembers = Array.isArray(response.departed_members) ? response.departed_members : [];
       if (response.members.length === 0 && rawDepartedMembers.length === 0) return;
@@ -1437,16 +1473,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const status = typeof snapshotMember.status === 'string' ? snapshotMember.status : '';
         if (!memberId || !status) return [];
         const existing = knownMembers.find((member) => member.member_id === memberId);
+        // 非实时来源（db / live+db）的 status 可能是库里陈旧的行，不能覆盖本地
+        // 已经由实时事件收敛的运行态：只补身份，状态沿用本地值等实时事件纠正。
+        const useLocalState =
+          !membersLive && existing != null && !isDepartedTeamMemberStatus(status);
         return [{
           id: existing?.id ?? `team-snapshot-${memberId}`,
           member_id: memberId,
-          status,
+          status: useLocalState && existing ? existing.status : status,
           timestamp,
           name: typeof snapshotMember.name === 'string' ? snapshotMember.name : existing?.name,
-          execution_status:
-            snapshotMember.execution_status === null || typeof snapshotMember.execution_status === 'string'
-              ? snapshotMember.execution_status
-              : existing?.execution_status,
+          execution_status: useLocalState && existing
+            ? existing.execution_status
+            : (snapshotMember.execution_status === null || typeof snapshotMember.execution_status === 'string'
+                ? snapshotMember.execution_status
+                : existing?.execution_status),
           mode: typeof snapshotMember.mode === 'string' ? snapshotMember.mode : existing?.mode,
           role: typeof snapshotMember.role === 'string' ? snapshotMember.role : existing?.role,
           cli_agent:
@@ -1481,6 +1522,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         new Set(departedMembers.map((member) => member.member_id)),
         runtime.teamMembers,
         changedMemberIds,
+        // members_live（live / live-scoped）是权威名册，可以据此剔除已离队成员；
+        // db / live+db 只补不删。
+        { authoritative: membersLive },
       );
       if (!reconciled) return;
       const { members, reconciledMemberIds } = reconciled;
@@ -2989,8 +3033,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               plan_language: pendingQuestion.planLanguage ?? 'cn',
             }
           : {};
-        // 「执行」分两步：这次 resume 只让后端跑完 exit_plan_mode 退出计划模式，
-        // 本轮到此为止；真正的执行由紧接着补发的普通消息开启新一轮。
         const isPlanExecute =
           isPlanApproval && answers.some((a) => a.selected_options?.includes('plan_execute'));
         const approvalTransport =
@@ -3030,6 +3072,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // 当成普通模式请求，进而把会话踢出 Plan。
           const resumeMode = resolveInterruptResumeMode(sessionId);
           const resolvedResumeMode = resolveOutgoingMode(sessionId, resumeMode);
+          // Let Team continue within its approved resume. A session-wide idle
+          // event can belong to the planning round on the persistent stream.
+          const executeInTeamResume = isPlanExecute && isTeamAgentMode(resolvedResumeMode);
+          const resumeAnswers = executeInTeamResume
+            ? permissionAnswers.map((answer) => ({
+                ...answer,
+                selected_options: answer.selected_options?.map((option) =>
+                  option === 'plan_execute' ? 'approve' : option
+                ),
+              }))
+            : permissionAnswers;
           const agentSelectionIntent =
             useSessionStore.getState().getRuntime(sessionId)?.agentSelectionIntent ?? { kind: 'keep' as const };
           const agentSelectionPayload = buildDefinitionSelectionPayloadForMode(
@@ -3048,15 +3101,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           if (agentGroupSelectionPayload.agent_group_name) {
             markPendingAgentGroupBinding(sessionId, agentGroupSelectionPayload.agent_group_name);
           }
-          // 必须在请求发出**之前**登记：本次请求的 mode 已经定格在
-          // resolvedResumeMode 里，不再看 Plan 开关；而后端很可能在 await 挂起期间
-          // 就推完 processing_status=false，那一刻若 pendingPlanExecuteRef 里还没有
-          // 这个 session，补发执行消息的逻辑会被跳过——用户点了「执行」，计划批准了
-          // 却永远不会真正开始跑。
+          // Register the single-agent continuation before sending: it can
+          // finish the approval while the client is still awaiting the ACK.
           if (isPlanExecute) {
             planExecuteOptimistic = true;
             usePlanStore.getState().setActive(sessionId, false);
-            pendingPlanExecuteRef.current.add(sessionId);
+            if (!executeInTeamResume) pendingPlanExecuteRef.current.add(sessionId);
           }
           await request(
             'chat.send',
@@ -3067,7 +3117,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               ...useSessionStore.getState().getModelSelectionPayload(sessionId),
               ...getSessionWorkContext(sessionId),
               request_id: requestId,
-              answers: permissionAnswers,
+              answers: resumeAnswers,
               ...agentSelectionPayload,
               ...agentGroupSelectionPayload,
               ...sourcePayload,
@@ -3090,7 +3140,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             agentSelectionIntent,
           );
         } else if (effectiveSource === 'activate_confirm') {
-          const action = answers[0]?.selected_options[0] === '拒绝' ? 'reject' : 'accept';
+          // activate_confirm 卡片的选项带协议 value（accept/reject），按 value 匹配；
+          // 兼容旧记录里只有中文 label 的取值。
+          const selected = answers[0]?.selected_options[0];
+          const action = selected === 'reject' || selected === '拒绝' ? 'reject' : 'accept';
           const interactionId = requestId || useHarnessStore.getState().getRuntime(sessionId)?.activateInteraction?.interactionId || '';
           if (!interactionId) {
             throw new Error('missing activate interaction id');
@@ -4518,6 +4571,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (handleTaskInputReceipt('chat.file', payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        if (shouldDropDuplicatedEvent('chat.file', payload)) return;
         const files = (payload.files ?? []) as FileDownloadItem[];
         if (!files.length) return;
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
@@ -4576,15 +4630,26 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               fileItems: mergeFileDownloadItems(target.fileItems, files),
             });
           } else {
-            useChatStore.getState().addMessage(sessionId, {
-              id: prefixedMessageId('team-leader-'),
-              role: 'system',
-              content: '',
-              timestamp: new Date().toISOString(),
-              isStreaming: !useChatStore.getState().getRuntime(sessionId)?.isPaused,
-              teamStream: { requestId: getPayloadRequestId(payload) },
-              fileItems: files,
-            });
+            // chat.final 会清掉 teamStream 使 findActiveTeamLeaderMessage 命中不到；
+            // 若同一 chat.file 二次到达（team relay / fanout 延迟投递），按文件身份
+            // 兜底合并到当前轮内已带该文件的 team-leader 消息，避免重复渲染文件卡片。
+            const messages = useChatStore.getState().getRuntime(sessionId)?.messages ?? [];
+            const overlap = findTeamLeaderMessageWithFile(messages, files);
+            if (overlap) {
+              useChatStore.getState().updateMessage(sessionId, overlap.id, {
+                fileItems: mergeFileDownloadItems(overlap.fileItems, files),
+              });
+            } else {
+              useChatStore.getState().addMessage(sessionId, {
+                id: prefixedMessageId('team-leader-'),
+                role: 'system',
+                content: '',
+                timestamp: new Date().toISOString(),
+                isStreaming: !useChatStore.getState().getRuntime(sessionId)?.isPaused,
+                teamStream: { requestId: getPayloadRequestId(payload) },
+                fileItems: files,
+              });
+            }
           }
           return;
         }
@@ -4648,6 +4713,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               content: toolCall.description || toolCall.formatted_args || stringifyCompact(toolCall.arguments),
               tool_name: toolCall.name,
               tool_call_id: toolCall.id,
+              tool_arguments: toolCall.arguments,
             });
           }
           return;
@@ -4689,6 +4755,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('chat.tool_result', payload)) return;
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
         const toolResult = normalizeToolResultPayload(payload);
+        const toolResultPayload = isRecord(payload.tool_result) ? payload.tool_result : payload;
         const pendingSubagentQuery = toolResult.toolCallId
           ? pendingSubagentQueryRef.current.get(toolResult.toolCallId)
           : undefined;
@@ -4742,6 +4809,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (toolResult.success && HEARTBEAT_MUTATION_TOOL_NAMES.has(toolResult.toolName)) {
           window.dispatchEvent(new CustomEvent('heartbeat-list-refresh', { detail: { sessionId } }));
         }
+        // 名册类 Tool 成功后成员已落库但还没启动，后端补发的
+        // team.member.registered 一旦丢掉，右侧团队栏会一直是空的。
+        // 这里主动对齐一次名册；请求期间到达的成员事件优先。
+        if (toolResult.success && TEAM_ROSTER_TOOL_NAMES.has(toolResult.toolName)) {
+          void reconcileTeamMembersFromSnapshot(sessionId);
+        }
         if (isHiddenTeamTeammateMessagePayload(currentMode ?? 'agent', payload)) {
           const memberId =
             getTeamPayloadMemberName(payload) ||
@@ -4757,6 +4830,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               content: toolResult.summary || stringifyCompact(toolResult.result),
               tool_name: toolResult.toolName,
               tool_call_id: toolResult.toolCallId,
+              tool_success: toolResult.success,
+              ...(toolResult.toolName === 'send_message' ? {
+                tool_output: toolResultPayload.raw_output ?? toolResultPayload.rawOutput ?? toolResultPayload.result,
+              } : {}),
             });
           }
           if (shutdownMemberId) {
@@ -5411,6 +5488,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
+          turnError: errorMsg,
         });
       }),
       webClient.on('chat.message_updated', ({ payload }) => {
@@ -6266,10 +6344,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           request_id: interactionId,
           source: 'activate_confirm',
           questions: [{
-            header: '扩展激活确认',
-            question: `是否激活扩展 **${extensionName}**？`,
+            header: i18n.t('chatUi.activateConfirm.header'),
+            question: i18n.t('chatUi.activateConfirm.question', { extensionName }),
             options: options.map((opt: string) => ({
-              label: opt === 'accept' ? '激活' : opt === 'reject' ? '拒绝' : opt,
+              label: opt === 'accept'
+                ? i18n.t('chatUi.activateConfirm.accept')
+                : opt === 'reject'
+                  ? i18n.t('chatUi.activateConfirm.reject')
+                  : opt,
+              // 协议取值固定为后端语义值，答案消费（selected_options）按 value 匹配，
+              // 不随界面语言变化。
+              value: opt,
               description: '',
             })),
           }],
@@ -6318,6 +6403,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     findActiveTeamLeaderMessage,
     closeActiveTeamLeaderMessages,
     reconcileAgentGroupBinding,
+    reconcileTeamMembersFromSnapshot,
     updateSession,
     resolveEventSessionId,
     restoreForegroundProcessing,

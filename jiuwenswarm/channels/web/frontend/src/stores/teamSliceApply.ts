@@ -124,7 +124,12 @@ export function applyTeamSnapshotToSession(
     (member) => member.workflow_run_id && !snapshotAllIds.has(member.member_id)
   );
   const projectedMembers = [...mirroredMembers, ...members];
-  currentStore.setTeamMembers(sessionId, projectedMembers);
+  // 企业版只有在快照完全不含名册信息（members / departed 都为空）时才视为
+  // 「名册未知」，保留现有成员；全队已离队是明确的空名册，照常替换。
+  // 个人版仍按完整替换语义处理。
+  if (!isEnterprise() || allMembers.length > 0) {
+    currentStore.setTeamMembers(sessionId, projectedMembers);
+  }
   // teamDepartedMembers 同样不能全量替换：镜像 worker 离队后只活在这条投影里
   // （shutdown 事件写入，见 rememberDepartedTeamMember），快照不带它的身份记录，
   // 清掉后任务卡与 @ 提及会退化为裸 member_id。
@@ -137,7 +142,11 @@ export function applyTeamSnapshotToSession(
     return;
   }
   if (projectedMembers.length === 0) {
-    currentStore.setTeamTasks(sessionId, []);
+    // 空快照同时意味着「名单未知」，不能再据此清掉已有的任务板。
+    const knownMembers = currentStore.getRuntime(sessionId)?.teamMembers ?? [];
+    if (knownMembers.length === 0) {
+      currentStore.setTeamTasks(sessionId, []);
+    }
     return;
   }
   if (tasks.length === 0) {

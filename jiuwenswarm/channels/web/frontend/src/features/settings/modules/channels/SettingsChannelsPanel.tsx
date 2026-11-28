@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
-import { Button } from '../../../../components/ui';
 import { SettingsConfirmDialog } from '../../components';
 import { ChannelConfigDialog } from './components/ChannelConfigDialog';
+import { ChannelErrorBars } from './components/ChannelErrorBars';
 import { ChannelListSection } from './components/ChannelListSection';
 import { XiaoyiEnableConfirmDialog } from './components/XiaoyiEnableConfirmDialog';
 import { useSettingsChannelsController } from './useSettingsChannelsController';
@@ -23,22 +23,14 @@ export function SettingsChannelsPanel({
 
   return (
     <div className="settings-channels-panel" data-testid="settings-channels-panel">
-      {controller.errorNotice ? (
-        <div className="settings-channels-panel__error-toast" data-testid="settings-channels-panel-error-toast">
-          {controller.errorNotice}
-        </div>
-      ) : null}
+      <ChannelErrorBars
+        toastNotice={controller.toastNotice}
+        configurationsError={controller.configurationsError}
+        channelsError={controller.channelsError}
+        onRetry={() => void controller.reloadChannels()}
+      />
 
-      {controller.channelsError ? (
-        <div className="settings-channels-panel__fetch-error" data-testid="settings-channels-panel-fetch-error">
-          <span>
-            {t('channels.fetchFailed')}: {controller.channelsError}
-          </span>
-          <Button variant="quiet" size="sm" onClick={() => void controller.loadChannels()} data-testid="settings-channels-panel-retry-btn">
-            {t('channels.retry')}
-          </Button>
-        </div>
-      ) : (
+      {controller.channelsError ? null : (
         <ChannelListSection
           channels={controller.channels}
           feishuApps={controller.feishuApps}

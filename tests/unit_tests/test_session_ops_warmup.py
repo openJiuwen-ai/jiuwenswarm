@@ -41,6 +41,7 @@ async def test_cron_followup_refreshes_cached_context_and_keeps_completed_tail(m
     deep_agent, context_engine = _deep_agent_with_empty_context()
     existing_context = SimpleNamespace(
         context_id=lambda: "default_context_id", save_state=lambda: {}, load_state=MagicMock(),
+        get_messages=lambda: [UserMessage(content="Cached task")],
     )
     context_engine.get_context = lambda **_kwargs: existing_context
     context_engine.clear_context = AsyncMock()
@@ -70,6 +71,31 @@ async def test_cron_followup_refreshes_cached_context_and_keeps_completed_tail(m
         existing_context.load_state.assert_not_called()
         context_engine.create_context.assert_not_awaited()
     context_engine.clear_context.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_warmup_restores_history_into_existing_empty_sdk_context(monkeypatch):
+    from openjiuwen.core.context_engine import ContextEngine
+    from jiuwenswarm.agents.harness.common import session_ops_service
+
+    session_id = "empty-context-session"
+    session = SimpleNamespace(get_session_id=lambda: session_id, get_state=lambda _key: None)
+    context_engine = ContextEngine()
+    context = await context_engine.create_context(session=session)
+    assert not context.get_messages()
+    deep_agent = SimpleNamespace(react_agent=SimpleNamespace(context_engine=context_engine))
+    monkeypatch.setattr(session_ops_service, "history_exists", lambda _sid: True)
+    monkeypatch.setattr(session_ops_service, "load_history_records", lambda _sid: [
+        {"role": "user", "request_id": "previous", "content": "Saved question"},
+        {"role": "assistant", "request_id": "previous", "event_type": "chat.final", "content": "Saved answer"},
+    ])
+    monkeypatch.setattr(session_ops_service, "resolve_live_agent_session", lambda *_args: session)
+
+    assert await session_ops_service.warmup_session_context(
+        deep_agent=deep_agent, session_id=session_id,
+    )
+    assert context_engine.get_context(session_id=session_id) is context
+    assert [message.content for message in context.get_messages()] == ["Saved question", "Saved answer"]
 
 
 @pytest.mark.asyncio

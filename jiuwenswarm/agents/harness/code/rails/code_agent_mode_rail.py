@@ -109,6 +109,13 @@ def _derive_exit_plan_markers() -> tuple[tuple[str, ...], tuple[str, ...]]:
 _EXIT_PLAN_RESULT_OPENINGS, _EXIT_PLAN_BODY_HEADINGS = _derive_exit_plan_markers()
 
 
+def exit_plan_result_succeeded(result: object) -> bool:
+    """Recognize a completed exit tool result from the current SDK."""
+    if not isinstance(result, str):
+        return False
+    return result.lstrip().startswith(_EXIT_PLAN_RESULT_OPENINGS)
+
+
 class CodeAgentModeRail(AgentModeRail):
     """AgentModeRail variant for jiuwenswarm code mode.
 
@@ -193,7 +200,7 @@ class CodeAgentModeRail(AgentModeRail):
         # suspended the call for approval — the tool body has not run yet, so
         # tearing plan mode down here would drop the user out of plan mode
         # before they even answered (and "skip" is supposed to keep them in).
-        executed = self._exit_plan_tool_executed(ctx)
+        executed = exit_plan_result_succeeded(ctx.inputs.tool_result)
 
         # Segment 1: register / unregister task_tool (same as parent)
         if tool_name == "enter_plan_mode" and not rejected:
@@ -235,15 +242,6 @@ class CodeAgentModeRail(AgentModeRail):
                 "[CodeAgentModeRail] Plan approved for deferred execution; "
                 "exited plan mode and finished this turn"
             )
-
-    @staticmethod
-    def _exit_plan_tool_executed(ctx: AgentCallbackContext) -> bool:
-        """True when ``ExitPlanModeTool.invoke()`` actually produced a result."""
-        result = ctx.inputs.tool_result
-        if not isinstance(result, str):
-            return False
-        head = result.lstrip()
-        return any(head.startswith(opening) for opening in _EXIT_PLAN_RESULT_OPENINGS)
 
     @staticmethod
     def _compact_exit_plan_result(ctx: AgentCallbackContext) -> None:

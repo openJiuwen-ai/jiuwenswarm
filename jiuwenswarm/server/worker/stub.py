@@ -26,7 +26,12 @@ from jiuwenswarm.server.ipc.protocol import (
 )
 from jiuwenswarm.server.ipc.server import IpcServer
 from jiuwenswarm.server.ipc.session import IpcSessionSource
-from jiuwenswarm.server.worker.diagnostics import arm_stall_dump, cancel_stall_dump, heartbeat_reply
+from jiuwenswarm.server.worker.diagnostics import (
+    arm_stall_dump,
+    cancel_stall_dump,
+    heartbeat_reply,
+    write_worker_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +76,7 @@ async def serve_stub(
                     instance=instance,
                     code_identity_value=worker_code_identity,
                 )
-            except (OSError, asyncio.IncompleteReadError):
+            except (OSError, RuntimeError, asyncio.IncompleteReadError):
                 runtime_loaded = True
                 if session_source is not None and not session_source.reconnectable:
                     return
@@ -97,12 +102,19 @@ async def _serve_one(
     code_identity_value: str | None = None,
 ) -> bool:
     from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+    from jiuwenswarm.common.process_identity import process_identity_fields
     import psutil
+
+    try:
+        process_fields = process_identity_fields(os.getpid())
+    except (psutil.Error, OSError) as exc:
+        write_worker_failure(exc, stage="HELLO")
+        logger.exception("[Worker] stub HELLO pid=%s process identity failed: %s", os.getpid(), exc)
+        raise RuntimeError(f"Worker stub HELLO pid={os.getpid()} process identity failed: {exc}") from exc
 
     send = getattr(conn, "send")
     recv = getattr(conn, "recv")
-    await send(
-        {
+    hello = {
             "kind": KIND_HELLO,
             "protocol": PROTOCOL_VERSION,
             "pid": os.getpid(),
@@ -114,10 +126,13 @@ async def _serve_one(
             "deployment_scope": deployment_scope(),
             "shutdown_ack": True,
             "heartbeat_probe": True,
-            "process_created": psutil.Process().create_time(),
+            **process_fields,
             "code_identity": code_identity_value if code_identity_value is not None else code_identity(),
         }
-    )
+    await send(hello)
+    from jiuwenswarm.server.ipc.startup import await_startup_acceptance
+
+    await await_startup_acceptance(conn, hello)
     if ready_delay > 0:
         await asyncio.sleep(ready_delay)
     await send({"kind": KIND_READINESS, "state": "AGENT_READY", "reason": ""})

@@ -31,10 +31,6 @@ export function isSourceSkillInstalled(
   return loaded ? matched : matched || hasUpdateStatus;
 }
 
-export function skillPresentationName(item: { name: string; market_display_name?: string; display_name?: string }): string {
-  return item.market_display_name || item.display_name || item.name;
-}
-
 export function buildSourcePresentationParams(item: SourcePresentation, targetVersion?: string): Record<string, string> {
   const displayName = String(item.display_name || '').trim();
   const version = String(targetVersion || item.version || '').trim();

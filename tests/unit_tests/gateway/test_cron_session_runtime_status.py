@@ -22,6 +22,7 @@ from agent_gateway.cron.models import CronRunState
 from agent_gateway.cron.scheduler import CronSchedulerService
 from agent_gateway.cron.store import CronJobStore
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 
@@ -49,7 +50,7 @@ class _TestWebChannel(WebChannel):
 class _TestMessageHandler(MessageHandler):
     """Construct isolated production handlers without modifying its singleton."""
 
-    def __new__(cls, agent_client):
+    def __new__(cls, agent_client, **_kwargs):
         return object.__new__(cls)
 
     async def cancel_session(self, session_id, user_id, mode, agent_notify):
@@ -178,7 +179,7 @@ async def _harness_factory_fixture(tmp_path):
     async def create(mode="agent", user_id="alice", timeout_seconds=None, configured=True):
         store = CronJobStore(path=tmp_path / f"jobs-{len(harnesses)}.json")
         client = _AgentClient()
-        handler = _TestMessageHandler(client)
+        handler = _TestMessageHandler(client, session_login_bindings=NullSessionLoginBindings())
         scheduler = _TestScheduler(store=store, agent_client=client, message_handler=handler)
         controller = CronController(store=store, scheduler=scheduler)
         handler.set_cron_controller(controller)

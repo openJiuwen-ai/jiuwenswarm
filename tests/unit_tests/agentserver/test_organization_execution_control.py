@@ -18,6 +18,8 @@ from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeam
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server
+from jiuwenswarm.server.worker import execution_requests as requests_owner
+from jiuwenswarm.server.management import teams as teams_owner
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime.organization_execution import active_turns, is_stopping, stopping_teams
 
@@ -48,7 +50,8 @@ async def test_stop_cancels_running_turns_and_real_core_queued_wakes(
     )
     organization = runtime.organization_runtime_manager
     monkeypatch.setattr(GLOBAL_RUNNER, "_team_runtime_manager", runtime, raising=False)
-    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(teams_owner, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(requests_owner, "get_session_metadata", lambda _: {"team_name": "owner"})
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.team_organization_history.organization_enabled", lambda: True,
     )
@@ -194,7 +197,8 @@ async def test_explicit_owner_resume_clears_stop_before_execution_and_restores_o
 
     metadata = {"team_name": "owner", "organization_owner_stopped": True}
     monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *args, **kwargs: metadata)
-    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda *args, **kwargs: metadata)
+    monkeypatch.setattr(teams_owner, "get_session_metadata", lambda *args, **kwargs: metadata)
+    monkeypatch.setattr(requests_owner, "get_session_metadata", lambda *args, **kwargs: metadata)
     monkeypatch.setattr(session_metadata, "update_session_metadata", lambda **kwargs: metadata.update(kwargs))
     server = object.__new__(AgentWebSocketServer)
     monkeypatch.setattr(server, "_is_targeted_expert_cancel_request", lambda request: False)
@@ -234,7 +238,8 @@ async def test_only_fresh_owner_input_clears_stopped_owner(monkeypatch, target, 
     from jiuwenswarm.server.runtime.session import session_metadata
 
     metadata = {"mode": "team", "team_name": "owner", "organization_owner_stopped": True}
-    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda *args, **kwargs: metadata)
+    monkeypatch.setattr(teams_owner, "get_session_metadata", lambda *args, **kwargs: metadata)
+    monkeypatch.setattr(requests_owner, "get_session_metadata", lambda *args, **kwargs: metadata)
     monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *args, **kwargs: metadata)
     monkeypatch.setattr(session_metadata, "update_session_metadata", lambda **kwargs: metadata.update(kwargs))
     assert owner_inbox().enabled_at("session", "owner") is None
@@ -264,7 +269,8 @@ async def test_only_fresh_owner_input_clears_stopped_owner(monkeypatch, target, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode,target,intent", [("agent", "owner", "cancel"), ("team", "expert", "cancel"), ("team", "owner", "pause")])
 async def test_organization_stop_rejects_wrong_mode_target_or_intent(monkeypatch, mode, target, intent):
-    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(teams_owner, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(requests_owner, "get_session_metadata", lambda _: {"team_name": "owner"})
     monkeypatch.setattr("jiuwenswarm.server.runtime.team_organization_history.organization_enabled", lambda: True)
     server = object.__new__(AgentWebSocketServer)
     monkeypatch.setattr(server, "_resolve_team_backend", lambda sid, team: SimpleNamespace(org_task_manager=SimpleNamespace(organization_id="org")))
@@ -286,7 +292,8 @@ async def test_organization_stop_rejects_wrong_mode_target_or_intent(monkeypatch
 ])
 async def test_cold_expert_stop_compares_independent_bindings(monkeypatch, live_owner, persisted_owner, persisted_target, allowed):
     server = object.__new__(AgentWebSocketServer)
-    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(teams_owner, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(requests_owner, "get_session_metadata", lambda _: {"team_name": "owner"})
     monkeypatch.setattr(server, "_resolve_team_backend", lambda sid, team: SimpleNamespace(
         org_task_manager=SimpleNamespace(organization_id=live_owner)) if team == "owner" else None)
     async def lookup(sid, team):
@@ -305,7 +312,8 @@ async def test_cold_expert_stop_compares_independent_bindings(monkeypatch, live_
 @pytest.mark.asyncio
 async def test_owner_stop_reports_membership_lookup_failure(monkeypatch):
     server = object.__new__(AgentWebSocketServer)
-    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(teams_owner, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(requests_owner, "get_session_metadata", lambda _: {"team_name": "owner"})
     monkeypatch.setattr(server, "_resolve_team_backend", lambda *_: None)
     monkeypatch.setattr(server, "_load_persisted_organization", AsyncMock(side_effect=OSError("database unavailable")))
     stop = AsyncMock()
@@ -324,7 +332,8 @@ async def test_owner_stop_reports_membership_lookup_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_owner_stop_does_not_report_success_when_foreground_cancel_fails(monkeypatch):
     server = object.__new__(AgentWebSocketServer)
-    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(teams_owner, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(requests_owner, "get_session_metadata", lambda _: {"team_name": "owner"})
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.team_organization_history.organization_enabled", lambda: True,
     )

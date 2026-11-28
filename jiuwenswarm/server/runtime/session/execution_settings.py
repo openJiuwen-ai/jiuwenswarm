@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 from openjiuwen.agent_teams.tools.database import TeamDatabase
 from openjiuwen.core.sys_operation.execution_environment import ExecutionEnvironment
 
+from jiuwenswarm.runtime.app_role import is_app_role_team
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
     _enqueue_write,
@@ -128,6 +129,12 @@ async def prepare_session_execution(
     if requested is not None and not isinstance(requested, dict):
         raise ValueError("Invalid execution settings")
     metadata = get_session_metadata(session_id) or {}
+    if is_app_role_team(metadata):
+        # Native NPC teams have no Swarm build context or project tool execution.
+        settings = validate_settings(requested or {})
+        if settings["independent_git_identity"] or settings["environment"]:
+            raise ValueError("Session execution settings are not supported by app_role teams")
+        return
     if metadata.get("work_mode") != "code":
         if requested and requested.get("independent_git_identity"):
             raise ValueError("Independent Git identity requires a code team session")

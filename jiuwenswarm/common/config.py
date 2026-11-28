@@ -12,8 +12,9 @@ import time
 import uuid
 from copy import deepcopy
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
@@ -236,14 +237,94 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
 
 
 # Parsed YAML per file path, keyed on the file's identity so an edit — by this
-# process or any other — invalidates it. Only the parse is cached: reading and
-# parsing config.yaml costs ~11 ms while everything downstream of it (env
-# resolution, normalization) costs ~0.3 ms, and ``get_config`` sits on every
-# request path. Deliberately not caching past the parse keeps env var changes
-# (``load_dotenv_runtime`` runs with override=True before some reads) taking
-# effect immediately, so this needs no explicit invalidation hook.
+# process or any other — invalidates it. Resolved snapshots additionally carry
+# the values of referenced environment variables and crypto-provider identity.
+# Runtime model overrides and AgentOS deployment defaults are applied afresh
+# after that cache, and callers always receive independent mutable snapshots.
 _YAML_PARSE_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
 _YAML_PARSE_CACHE_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class _ResolvedConfig:
+    stamp: tuple[int, int]
+    names: tuple[str, ...]
+    values: tuple[str | None, ...]
+    crypto_provider: Any
+    reader: Any
+    config: dict[str, Any]
+
+
+_RESOLVED_CONFIG_CACHE: dict[str, _ResolvedConfig] = {}
+
+
+def _config_env_names(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {match.group(1) for match in re.finditer(r'\$\{([^:}]+)(?::-([^}]*))?\}', value)}
+    values: Iterable[Any]
+    if isinstance(value, dict):
+        values = value.values()
+    elif isinstance(value, list):
+        values = value
+    else:
+        return set()
+    names: set[str] = set()
+    for item in values:
+        names.update(_config_env_names(item))
+    return names
+
+
+def _contains_exec_reference(value: Any) -> bool:
+    """Keep asynchronously resolved credentials out of normalized snapshots."""
+    if isinstance(value, str):
+        return value.startswith(EXEC_PREFIX)
+    if isinstance(value, dict):
+        return any(_contains_exec_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_exec_reference(item) for item in value)
+    return False
+
+
+def _has_credential_env_refs(names: Iterable[str]) -> bool:
+    """Keep decryption live when a crypto extension changes behind its bridge."""
+    return any("api_key" in name.lower() or "token" in name.lower() for name in names)
+
+
+def _resolved_config() -> dict[str, Any]:
+    """Cache normalization, while every caller retains its own mutable snapshot."""
+    path = Path(get_config_file())
+    key, stamp = str(path), _yaml_file_stamp(path)
+    provider = get_crypto_provider()
+    reader = _read_with_retry
+    with _YAML_PARSE_CACHE_LOCK:
+        cached = _RESOLVED_CONFIG_CACHE.get(key)
+        parsed = _YAML_PARSE_CACHE.get(key)
+    if cached is not None and parsed is not None and stamp is not None:
+        current_file = cached.stamp == stamp == parsed[0]
+        current_readers = cached.crypto_provider is provider and cached.reader is reader
+        reusable_snapshot = (
+            current_file and current_readers and not _has_credential_env_refs(cached.names)
+        )
+        if reusable_snapshot and cached.values == tuple(os.getenv(name) for name in cached.names):
+            return deepcopy(cached.config)
+    base = reader(path)
+    names = tuple(sorted(_config_env_names(base)))
+    values = tuple(os.getenv(name) for name in names)
+    resolved = resolve_env_vars(base)
+    _normalize_config(resolved)
+    # Credential resolvers and crypto extensions can recover without any YAML,
+    # environment or bridge identity change. Reuse only their parsed YAML.
+    live_credentials = _contains_exec_reference(base) or _has_credential_env_refs(names)
+    if stamp is not None and not live_credentials and _yaml_file_stamp(path) == stamp:
+        if (values == tuple(os.getenv(name) for name in names)
+                and get_crypto_provider() is provider and _read_with_retry is reader):
+            with _YAML_PARSE_CACHE_LOCK:
+                # Bound snapshots when one process serves changing workspaces.
+                if key not in _RESOLVED_CONFIG_CACHE and len(_RESOLVED_CONFIG_CACHE) >= 16:
+                    _RESOLVED_CONFIG_CACHE.pop(next(iter(_RESOLVED_CONFIG_CACHE)))
+                _RESOLVED_CONFIG_CACHE[key] = _ResolvedConfig(
+                    stamp, names, values, provider, reader, deepcopy(resolved))
+    return resolved
 
 
 def _yaml_file_stamp(filepath: Path) -> tuple[int, int] | None:
@@ -288,7 +369,9 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     for attempt in range(max_attempts):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
-                parsed = yaml.safe_load(f) or {}
+                from jiuwenswarm.common.yaml_utils import safe_yaml_load
+
+                parsed = safe_yaml_load(f) or {}
             if stamp is not None:
                 with _YAML_PARSE_CACHE_LOCK:
                     _YAML_PARSE_CACHE[cache_key] = (stamp, deepcopy(parsed))
@@ -301,12 +384,39 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     return {}
 
 
+_CONFIG_WARMED = threading.Event()
+
+
+def warm_up_config() -> None:
+    """Import the Symphony layer and build the config once, off the request path.
+
+    The first ``get_config`` imports ``openjiuwen.symphony`` (tens of seconds on a
+    cold cache) and runs the Symphony validation. Startup calls this in a daemon
+    thread so the import overlaps service construction instead of blocking the
+    event loop when the first settings request arrives.
+    """
+    if _CONFIG_WARMED.is_set():
+        return
+    started = time.monotonic()
+    try:
+        from jiuwenswarm.common import symphony_config  # noqa: F401 - warm the heavy import
+
+        get_config()
+    except Exception:  # noqa: BLE001 - a broken config must not stop warm-up retries elsewhere
+        logger.warning("[Config] warm-up failed", exc_info=True)
+    finally:
+        _CONFIG_WARMED.set()
+        logger.info("[Config] warm-up finished in %.2fs", time.monotonic() - started)
+
+
+def start_config_warm_up() -> None:
+    """Start the one-shot config warm-up in a daemon thread."""
+    threading.Thread(target=warm_up_config, name="config-warmup", daemon=True).start()
+
+
 def get_config():
     """读取并解析 config.yaml（锁保护 + 跨进程降级重试）。"""
-    config_base = _read_with_retry(get_config_file())
-    # resolve_env_vars 和 _normalize_config 只操作内存数据，在锁外执行以缩短锁持有时间
-    config_base = resolve_env_vars(config_base)
-    _normalize_config(config_base)
+    config_base = _resolved_config()
 
     from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
     if is_agentos_runtime():
@@ -607,8 +717,10 @@ def load_yaml_round_trip(config_path: Path):
     """ruamel 加载 config，保留注释与格式。"""
     rt = YAML()
     rt.preserve_quotes = True
-    with open(config_path, "r", encoding="utf-8") as f:
-        return rt.load(f)
+    # Windows readers deny replacement while their file handle is open. Parsing
+    # ruamel's full document can outlive the writer's retry window, so release
+    # the handle after taking a complete snapshot, before constructing YAML nodes.
+    return rt.load(config_path.read_text(encoding="utf-8"))
 
 
 def dump_yaml_round_trip(config_path: Path, data: Any) -> None:
@@ -1003,6 +1115,8 @@ def set_preferred_language_in_config_file(config_path: Path, lang: str) -> None:
     if not config_path.exists():
         return
     data = load_yaml_round_trip(config_path)
+    if data.get("preferred_language") == normalized:
+        return
     data["preferred_language"] = normalized
     dump_yaml_round_trip(config_path, data)
 
@@ -1696,7 +1810,8 @@ def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """为模型条目列表推断 is_default 字段。
 
     规则：
-    - 同 model_name 组内仅一个条目 → is_default = True
+    - 同 model_name 组内仅一个条目 → 未显式声明 is_default 时推断为 True；
+      显式 false 原样保留，调用方可以新增模型而不把它设成该组的默认（#6853）
     - 同 model_name 组内多个条目 → 第一个为 True，其余为 False
     - 已有 is_default 字段且为 True 的条目保留，同组内其余置 False
     """
@@ -1717,7 +1832,12 @@ def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     for name, indices in groups.items():
         if len(indices) == 1:
-            result[indices[0]]["is_default"] = True
+            single = result[indices[0]]
+            # Explicit false is a caller decision, not something to normalise away:
+            # model selection falls back to the first usable entry when a group has
+            # no default (select_default_model_entry).
+            if "is_default" not in single:
+                single["is_default"] = True
             continue
 
         has_explicit = False
@@ -4071,7 +4191,8 @@ def migrate_config_from_template(
         _migrate_legacy_agent_submode_memory(user_data)
         _migrate_legacy_kv_cache_affinity_config(user_data)
         legacy_symphony_migrated = _migrate_legacy_symphony_config(user_data, template_data, user_config_path)
-        # team_observability / agent_observability -> observability.{team,agent}
+        # team_observability / agent_observability（以及旧的两个 team/agent 开关）
+        # -> observability.enabled
         # 必须在 _deep_merge 之前执行：合并会先按模板塞入默认的 observability 段，
         # 旧段里用户改过的 exporter / endpoint 等就会被模板默认值挡住。
         legacy_observability_migrated = migrate_legacy_observability_config(user_data)

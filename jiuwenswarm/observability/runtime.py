@@ -52,7 +52,9 @@ def sync_trajectory_runtime(
     resolved = settings or load_trajectory_store_settings()
     normalized_demand = str(demand or "").strip()
     if not resolved.enabled:
-        shutdown_trajectory_runtime(demand=normalized_demand or None)
+        # This is the process-wide config policy, not one owner's shutdown.
+        # An idle Agent/Team must not keep writing after the switch is off.
+        shutdown_trajectory_runtime()
         return None
     if normalized_demand:
         with _runtime_lock:

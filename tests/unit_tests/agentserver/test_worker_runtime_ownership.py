@@ -179,6 +179,9 @@ def shutdown_resources(monkeypatch):
         events.append("kernel.close")
 
     modules = {
+        "jiuwenswarm.server.runtime.agent_adapter.request_completion": SimpleNamespace(
+            drain_completion_announcements=AsyncMock(),
+        ),
         "jiuwenswarm.observability.gateway_hints": SimpleNamespace(
             trajectory_gateway_hint_bridge=SimpleNamespace(unbind=unbind),
         ),

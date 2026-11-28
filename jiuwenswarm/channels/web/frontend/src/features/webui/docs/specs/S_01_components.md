@@ -1,6 +1,6 @@
 # WebUI 组件规则规约
 
-最近修订：2026-11-24。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
+最近修订：2026-11-27。关联实现：[F_01](../features/F_01_antd-components.md)、[F_02](../features/F_02_client-capabilities.md)。
 
 ## 范围与适用条件
 
@@ -12,8 +12,8 @@
 Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Form、Form.Item、Dropdown、Icon、MediaSurface、FileImport。字段、默认值、必填与事件数据统一遵循
 [S_17 Props 权威规约](../../../../../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
 [`catalog/components/`](../../catalog/components/) 和后端规则是该规范的实现；本文维护运行与交互不变量，不复制完整属性表。
-槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`application.background`、`application.splash`、`task.function` 与 `task.function.main`；
-其余 11 个槽位默认使用会话范围，设置槽位也允许显式应用范围。
+槽位目录包含应用范围的 `application.entry`、`application.sidebar.footer`、`application.menu`、`application.menu.main`、`application.background`、`application.splash`、`application.appearance`、`task.function` 与 `task.function.main`；
+其余 9 个槽位默认使用会话范围，设置槽位也允许显式应用范围。
 
 ## 表单、菜单与应用插槽
 
@@ -37,9 +37,10 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   可选 placement 使用 AntD 的 12 种非 Center 方位；可选 align 复用其锚点对齐，points 为两个 tl/tc/tr/cl/cc/cr/bl/bc/br，依次指定菜单与触发器的锚点，offset 为可选的两个有界数值（-128 到 128px）。
   右上方示例为 placement=topLeft、align.points=[bl,tr]、align.offset=[0,0]，将菜单左下角对齐头像触发器右上角。上述字段直接传给 AntD，不增加位置别名或自定义定位算法。
 - application.entry 始终保留消费者，首次欢迎 ui.ready 仍只按首访触发。有效 render 可随时显示，clear 关闭当前视图后可重入，渲染失败保持全屏错误；原生 modal dialog 和 inert 阻止底层交互。内容区铺满视口，宽度、背景和留白由插件的 Box 控制。
-- application.sidebar.footer 是应用级 list 槽位，不依赖聊天 session；多个实例在左侧图标栏底部纵向排列，宿主为底部保留 12px 间距。
+- application.sidebar.footer 是应用级 list 槽位，不依赖聊天 session；最多显示 3 个实例，优先显示有效帧，在左侧图标栏底部排列，每个实例最大宽度与侧栏一致、最大高度为 48px，超出内容由实例自身裁剪，宿主为底部保留 12px 间距。侧栏导航区高度不足时独立滚动，footer 位于该滚动区之外，始终完整显示。
 - application.background 是 Gateway 应用级单实例槽位，只接受 MediaSurface 根（槽位规则 strictRoot）。WebUIBackgroundHost 在应用根部全窗口底层挂载该槽位，不接收输入与焦点；宿主策略与消息协议见 [Gateway S_07](../../../../../../../../gateway/extensions_v2/docs/specs/S_07_media-surface.md)。
 - application.splash 同样只接受 MediaSurface 根，由 WebUISplashGate 播放；门控开放前 application.entry 的对话框不弹出，见 [Gateway S_09](../../../../../../../../gateway/extensions_v2/docs/specs/S_09_startup-splash.md)。
+- application.appearance 只用于声明外观提供者，不渲染内容：WebUISplashGate 的外观准备挂载它并发送不指定包的 `ui.ready`，各包在回执前用 `ops.appearance.apply` 提交外观部件。快照格式、主页品牌位置与首帧记录见 agent-gateway 的 Extension V2 规约 S_08、S_09（EXTV2-GW-16，F_16）。
 - Gateway 包的设置与 AgentServer 包共用 application.settings 与设置目录（S_18、Gateway S_10 第 2 节），没有单独的设置槽位。FileImport 由宿主注入的导入服务（WebUIUploadContext）取得凭据并上传，完成后派发 `ui.change` 的 `upload_id`；没有导入服务时禁用。`webui.download` 由应用根交给桌面保存对话框或下载链接。见 [Gateway S_10](../../../../../../../../gateway/extensions_v2/docs/specs/S_10_application-settings.md)。
 
 ### English contract summary
@@ -52,7 +53,7 @@ Input.autoComplete is an optional string passed directly to AntD Input. Plugins 
 
 Dropdown menu entries support native AntD disabled and type=item properties; dividers use type=divider with an optional key. Explicit keys must be unique. Disabled entries and dividers cannot dispatch actions. A label is a nonempty string or an array of display nodes (Box, Text, Avatar, Image, Tag), using the same validation and tree limits as the trigger; interactive content and image previews are prohibited. Plugins can compose an avatar and regular theme-colored Text. Optional autoFocus follows AntD's false default and preserves native keyboard behavior. Optional destroyOnHidden maps directly to AntD; true destroys the menu on close so reopening does not retain its previous focus highlight. Optional styles.root.width passes a 0–4096 pixel number directly to AntD; plugins choose the actual width, such as 200.
 
-Form owns controlled string fields and local blur/confirmation validation. Retained hidden tabs and temporary content inactivity preserve field values; disconnection, replacement, clearing, instance disposal or destroyed tab content resets them. Its optional boolean requiredMark maps directly to AntD Form: false hides the required marker while preserving required validation. Button.form references a unique Form in the same rendering instance and sends its fields directly in ui.click.data. Ordinary buttons keep empty data. Dropdown declares key/label items, opens locally, and sends the selected key through ui.select. The trigger uses either icon or one display-only child subtree. Images in its trigger subtree must explicitly set preview=false. Optional placement and align use native AntD positioning, with two anchor points and optional offsets bounded to -128..128px. The entry consumer survives clear and uses native modal focus isolation. The sidebar footer is application scoped, accepts multiple vertically arranged contributions without a chat session, and leaves 12px at the bottom.
+Form owns controlled string fields and local blur/confirmation validation. Retained hidden tabs and temporary content inactivity preserve field values; disconnection, replacement, clearing, instance disposal or destroyed tab content resets them. Its optional boolean requiredMark maps directly to AntD Form: false hides the required marker while preserving required validation. Button.form references a unique Form in the same rendering instance and sends its fields directly in ui.click.data. Ordinary buttons keep empty data. Dropdown declares key/label items, opens locally, and sends the selected key through ui.select. The trigger uses either icon or one display-only child subtree. Images in its trigger subtree must explicitly set preview=false. Optional placement and align use native AntD positioning, with two anchor points and optional offsets bounded to -128..128px. The entry consumer survives clear and uses native modal focus isolation. The sidebar footer is application scoped, accepts at most three vertically arranged contributions without a chat session, prioritizes delivered frames over error-only records, caps each at the sidebar width and 48px high with its own clipping, and leaves 12px at the bottom. The rail navigation scrolls independently when vertical space is tight; the footer sits outside that scroll area and always renders in full.
 
 Box provides bounded dimensions, padding, background-image fitting and explicit minimum-width visibility at 576/768/992px. Its gap accepts none/sm/md/lg or a finite nonnegative number passed directly to AntD Flex.gap in pixels. marginInline accepts auto, bounded nonnegative numbers or px/% values and maps directly to native CSS. Image.fit supports contain/cover. Entry content fills the viewport; plugins compose split or centered pages without a login-specific layout component. See [page layout properties](S_03_page-composition.md).
 
@@ -184,7 +185,7 @@ Select 与 TreeSelect 的 ui.change 用于承载整体选择值，ui.select 仍�
 包含 action_id、args、data、node_key 和 revision 的完整 payload 序列化后按 maxFrameBytes 校验，默认上限为 256 KiB。
 前后端遍历全部 Tabs 内容，
 隐藏内容也计入 8 层、512 节点预算，Panel/Iframe/MediaSurface 不能嵌套为普通子节点。
-`application.entry`、`application.sidebar.footer`、`application.background` 与 `application.splash` 使用 application 范围，以当前 Web 连接为身份，不要求会话。
+`application.entry`、`application.sidebar.footer`、`application.menu`、`application.menu.main`、`application.background`、`application.splash`、`application.appearance`、`task.function` 与 `task.function.main` 使用 application 范围，以当前 Web 连接为身份，不要求会话。
 `application.settings` 默认 session，允许按声明显式使用 application；两种范围的实例和挂载所有权隔离，
 清理会话不清理应用范围设置。其他槽位使用 session 范围。设置菜单、分类、位置及实例准入见
 [设置 location 规约](../../../../../../../../extensions_v2/docs/specs/S_18_settings-location.md)。

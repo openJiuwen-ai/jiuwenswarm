@@ -21,7 +21,7 @@ from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.session import RuntimeSessionCoordinator, SessionPersistencePolicy, SessionWorkKind
 from jiuwenswarm.runtime.session.model import NoControlTargetError
-from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.server.worker import execution_requests as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime.session.session_message_service import SessionMessageService
 from jiuwenswarm.server.runtime.session.session_message_store import SessionMessageStore

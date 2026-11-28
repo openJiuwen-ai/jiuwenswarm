@@ -8,6 +8,11 @@ DeepAgent 实例。RailManager 作为全局单例，其"已注册"状态和 rail
 不生效（不注册、不 init）。
 """
 
+import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import Mock
+
 import pytest
 
 import jiuwenswarm.agents.harness.common.plugins.rail_manager as rail_manager_module
@@ -155,3 +160,152 @@ async def test_delete_extension_clears_all_agent_states(manager):
     manager.delete_extension("demo_ext")
 
     assert manager.get_registered_rail_names() == set()
+
+
+async def _load_disabled_extensions(manager, *agents):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    manager.toggle_extension("demo_ext", False)
+    for agent in agents:
+        adapter = object.__new__(JiuWenSwarmDeepAdapter)
+        adapter._instance = agent
+        await adapter.load_user_rails()
+
+
+async def _toggle_through_handler(enabled):
+    from e2a.wire_codec import (
+        encode_agent_response_for_wire,
+        parse_agent_server_wire_unary,
+    )
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.management.extensions import ExtensionsManagement
+    from jiuwenswarm.server.ws_send import send_wire_payload
+
+    frames = []
+
+    async def send(data):
+        frames.append(json.loads(data))
+
+    lookup = Mock(return_value=None)
+    host = SimpleNamespace(
+        _agent_manager=SimpleNamespace(get_agent_nowait=lookup),
+        services=SimpleNamespace(encode_response=encode_agent_response_for_wire, send=send_wire_payload),
+    )
+    request = AgentRequest(
+        request_id="toggle", channel_id="web", req_method=ReqMethod.EXTENSIONS_TOGGLE,
+        params={"name": "demo_ext", "enabled": enabled},
+    )
+    await ExtensionsManagement(host)._handle_extensions_toggle(
+        SimpleNamespace(send=send), request, asyncio.Lock(),
+    )
+    assert len(frames) == 1
+    return parse_agent_server_wire_unary(frames[0]), lookup
+
+
+async def test_toggle_before_first_agent_saves_config_without_constructing_agent(manager):
+    manager.toggle_extension("demo_ext", False)
+    result, lookup = await _toggle_through_handler(True)
+    assert result.ok is True, result
+    assert result.payload["enabled"] is True
+    lookup.assert_not_called()
+    assert json.loads(manager._config_file.read_text(encoding="utf-8"))["demo_ext"]["enabled"] is True
+
+
+async def test_toggle_updates_every_cached_session_and_profile_before_ack(manager):
+    work = FakeDeepAgent("web/work/project-a/session-1")
+    code = FakeDeepAgent("web/code/project-b/session-2")
+    await _load_disabled_extensions(manager, work, code)
+
+    enabled, lookup = await _toggle_through_handler(True)
+    assert enabled.ok is True, enabled
+    assert len(work.registered) == len(code.registered) == 1
+    assert work.registered[0] is not code.registered[0]
+    lookup.assert_not_called()
+
+    disabled, _ = await _toggle_through_handler(False)
+    assert disabled.ok is True, disabled
+    assert work.unregistered == work.registered
+    assert code.unregistered == code.registered
+
+
+async def test_global_toggle_is_idempotent_and_reports_partial_failure_for_retry(manager):
+    class FailingAgent(FakeDeepAgent):
+        fail = True
+
+        async def register_rail(self, rail):
+            if self.fail:
+                raise RuntimeError("plugin initialization failed")
+            await super().register_rail(rail)
+
+    failed = FailingAgent("session-failed")
+    healthy = FakeDeepAgent("session-healthy")
+    await _load_disabled_extensions(manager, failed, healthy)
+    result, _ = await _toggle_through_handler(True)
+    assert result.ok is False
+    assert len(healthy.registered) == 1
+
+    failed.fail = False
+    retried, _ = await _toggle_through_handler(True)
+    assert retried.ok is True, retried
+    assert len(failed.registered) == len(healthy.registered) == 1
+
+
+async def test_released_instance_is_not_retained_by_inflight_hot_reload(manager):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class ClosingAgent(FakeDeepAgent):
+        async def register_rail(self, rail):
+            entered.set()
+            await release.wait()
+            await super().register_rail(rail)
+
+    closing = ClosingAgent("closing-session")
+    healthy = FakeDeepAgent("live-session")
+    await _load_disabled_extensions(manager, closing, healthy)
+    task = asyncio.create_task(_toggle_through_handler(True))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        manager.release_agent_state(closing)
+        release.set()
+        result, _ = await asyncio.wait_for(task, 2)
+        assert result.ok is True, result
+        assert closing.unregistered == closing.registered
+        assert id(closing) not in manager._agent_rail_states
+        assert len(healthy.registered) == 1
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_new_instance_and_opposite_toggle_observe_latest_configuration(manager):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowAgent(FakeDeepAgent):
+        async def register_rail(self, rail):
+            entered.set()
+            await release.wait()
+            await super().register_rail(rail)
+
+    cached = SlowAgent("cached")
+    fresh = FakeDeepAgent("new-project")
+    await _load_disabled_extensions(manager, cached)
+    enable = asyncio.create_task(_toggle_through_handler(True))
+    tasks = [enable]
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        loading = asyncio.create_task(manager.load_rails_for_agent(fresh))
+        await asyncio.sleep(0)
+        disable = asyncio.create_task(_toggle_through_handler(False))
+        tasks.extend([loading, disable])
+        assert not enable.done()
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 3)
+        assert manager.list_extensions()[0]["enabled"] is False
+        for agent in (cached, fresh):
+            assert {id(rail) for rail in agent.registered} == {id(rail) for rail in agent.unregistered}
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)

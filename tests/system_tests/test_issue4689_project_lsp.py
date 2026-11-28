@@ -75,7 +75,8 @@ async def test_project_servers_reuse_within_project_and_close_at_worker_shutdown
         assert len(rows) == 2
         assert len({row["pid"] for row in rows}) == 2
         assert {Path(row["cwd"]).name for row in rows} == {"project-a", "project-b"}
-        assert owner.resource_count == 2
+        # Project metadata also uses this Kernel; count only LSP resources.
+        assert sum(key.kind == "lsp" for key in owner._entries) == 2
         children = [psutil.Process(row["pid"]) for row in rows]
     finally:
         await owner.close()

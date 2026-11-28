@@ -42,6 +42,7 @@ class ReqMethod(Enum):
     GROUP_GET = "group.get"
     GROUP_UPDATE = "group.update"
     GROUP_MEMBER_ADD = "group.member.add"
+    GROUP_MEMBER_REMOVE = "group.member.remove"
     GROUP_HISTORY_GET = "group.history.get"
     COMMAND_BTW = "command.btw"
     COMMAND_ADD_DIR = "command.add_dir"
@@ -135,6 +136,7 @@ class ReqMethod(Enum):
     # Gateway → AgentServer：登录模型凭据续期后的新 token / 会话注销后的撤销
     AUTH_CREDENTIALS_UPDATE = "auth.credentials.update"
 
+    MEMORY_PORTAL_OPEN = "memory.portal.open"
     MEMORY_COMPUTE = "memory.compute"
     # TUI memory management (Phase 3: execute in the target AgentServer's
     # injected user directory; Gateway only forwards the request).

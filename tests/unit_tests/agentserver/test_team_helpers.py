@@ -6496,6 +6496,129 @@ async def test_consume_stream_with_query_reports_team_idle_as_round_end(monkeypa
 
 
 @pytest.mark.anyio
+async def test_team_leader_usage_pairs_provider_calls_at_each_round_boundary(monkeypatch):
+    from openjiuwen.agent_teams.schema.stream import TeamOutputSchema
+    from openjiuwen.core.foundation.llm.schema.message import UsageMetadata
+
+    from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.extensions_v2.event_types.context_usage import TEAM_LEADER_MODEL_USAGE_FIELD
+    from jiuwenswarm.server.runtime.session import session_token_usage
+
+    session_id = "sess-team-leader-usage"
+    leader = "team-leader"
+    manager = TeamManager()
+    published = Mock()
+    broadcasted = []
+
+    def context(call_id, *, role=TeamRole.LEADER, member=leader, occupancy_rate=0.25, **changes):
+        return TeamOutputSchema(
+            type="context.usage", index=0, role=role, source_member=member,
+            payload={
+                "session_id": session_id, "member_name": member, "request_id": call_id,
+                "phase": "post_call", "depth": 0, "model": "test-model",
+                "context_window": {
+                    "input_tokens": 25, "limit_tokens": 100, "occupancy_rate": occupancy_rate,
+                },
+                **changes,
+            },
+        )
+
+    async def model_call(call_id, counts, *, role=TeamRole.LEADER, member=leader):
+        rail = JiuSwarmStreamEventRail(role=role.value, member_name=member)
+        write_stream = AsyncMock()
+        await rail._emit_llm_call_signal(SimpleNamespace(
+            session=SimpleNamespace(write_stream=write_stream),
+            inputs=SimpleNamespace(
+                context_usage_request_id=call_id,
+                response=SimpleNamespace(usage_metadata=UsageMetadata(
+                    input_tokens=counts[0], output_tokens=counts[1],
+                    total_tokens=counts[2], cache_tokens=counts[3],
+                )),
+            ),
+        ), "llm_call_end")
+        event = write_stream.await_args.args[0]
+        assert (TEAM_LEADER_MODEL_USAGE_FIELD in event.payload) is (role == TeamRole.LEADER)
+        return TeamOutputSchema.from_output(event, source_member=member, role=role)
+
+    def terminal(event_type):
+        return TeamOutputSchema(type="message", index=0, payload={"event_type": event_type})
+
+    async def fake_stream(**kwargs):
+        first = await model_call("first", (5, 2, 7, 1))
+        yield context("first").model_copy(update={"role": " LEADER "})
+        yield first.model_copy(update={"role": " LEADER "})
+        yield first
+        second = await model_call("second", (10, 3, 13, 2))
+        yield second.model_copy(update={"source_member": None})
+        yield context("second", occupancy_rate=23.5).model_copy(update={"source_member": None})
+
+        yield context("foreign", session_id="other-session")
+        yield await model_call("foreign", (100, 0, 100, 0))
+        yield context("wrong-source").model_copy(update={"source_member": "other-member"})
+        yield await model_call("wrong-source", (100, 0, 100, 0))
+        yield context("child", depth=1)
+        yield await model_call("child", (100, 0, 100, 0))
+        yield context("teammate", role=TeamRole.TEAMMATE, member="worker")
+        yield await model_call("teammate", (100, 0, 100, 0), role=TeamRole.TEAMMATE, member="worker")
+        yield context("context-only")
+        yield await model_call("counts-only", (100, 0, 100, 0))
+
+        contexts = team_helpers._ACTIVE_ROUND_HISTORY_CONTEXT
+        active_round = contexts.pop(session_id)
+        yield context("unknown-turn")
+        yield await model_call("unknown-turn", (100, 0, 100, 0))
+        yield terminal("team.idle")
+        published.assert_not_called()
+
+        contexts[session_id] = active_round
+        yield terminal("team.idle")
+        assert published.call_count == 1
+
+        yield context("first")
+        yield first
+        yield terminal("team.idle")
+        assert published.call_count == 1
+
+        team_helpers._ACTIVE_ROUND_HISTORY_CONTEXT[session_id] = team_helpers._RoundHistoryContext("turn-2", None)
+        yield context("counts-only")
+        yield context("zero")
+        yield await model_call("zero", (0, 0, 0, 0))
+        yield terminal("team.completed")
+
+    monkeypatch.setitem(
+        team_helpers._ACTIVE_ROUND_HISTORY_CONTEXT, session_id, team_helpers._RoundHistoryContext("turn-1", None),
+    )
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", fake_stream)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+    monkeypatch.setattr(team_helpers, "notify_context_usage", published)
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    monkeypatch.setattr(team_helpers, "_broadcast_team_state_snapshot", _noop_broadcast)
+    monkeypatch.setattr(team_helpers, "_finalize_org_bound_team_after_idle", _noop_broadcast)
+    monkeypatch.setattr(session_token_usage, "get_session_token_usage", lambda _session_id: {"revision": 0})
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web", session_id, SimpleNamespace(team_name="usage-team", leader=SimpleNamespace(member_name=leader)),
+        "hello", round_request_id="turn-1",
+    )
+
+    first, second = published.call_args_list
+    assert first.args[0] == team_helpers.ContextUsageUpdate(
+        session_id=session_id, request_id="turn-1", input_tokens=15, output_tokens=5,
+        total_tokens=20, cache_tokens=3, context_window_tokens=100, usage_percent=23.5, model="test-model",
+    )
+    assert first.kwargs["team_leader"] is True
+    assert first.kwargs["context_usage"]["request_id"] == "second"
+    assert first.kwargs["context_usage"]["role"] == TeamRole.LEADER.value
+    assert second.args[0].request_id == "turn-2"
+    assert second.args[0].total_tokens == 0
+    assert second.args[0].usage_percent == 25
+    assert second.kwargs["context_usage"]["request_id"] == "zero"
+    assert all(TEAM_LEADER_MODEL_USAGE_FIELD not in event for event in broadcasted)
+    assert not any(event["event_type"] == "chat.error" for event in broadcasted)
+
+
+@pytest.mark.anyio
 async def test_cancelled_stream_does_not_block_on_full_waiter_queue(monkeypatch):
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
 
@@ -9656,10 +9779,16 @@ def test_resolve_session_swarmflow_config_request_overrides_config() -> None:
     config_base = {
         "modes": {"team": {"jiuwen_team": {"enable_swarmflow": False, "swarmflow_budget": 200000}}}
     }
+    # 无企业策略：门禁放行（allowed 默认 True），并发键不注入（spec 沿用 yaml 底座），
+    # 生效值与用户意图一致（无门禁/封顶施加）。
     assert _resolve_session_swarmflow_config(params, config_base, session_id="s1") == {
         "enable_swarmflow": True,
+        "swarmflow_user_enable": True,
         "swarmflow_budget": 50000,
+        "swarmflow_user_budget": 50000,
+        "swarmflow_budget_cap": None,
         "swarmflow_worktree": False,
+        "swarmflow_allowed": True,
     }
 
 
@@ -9675,8 +9804,12 @@ def test_resolve_session_swarmflow_config_falls_back_to_config() -> None:
     }
     assert _resolve_session_swarmflow_config(params, config_base, session_id="s1") == {
         "enable_swarmflow": True,
+        "swarmflow_user_enable": True,
         "swarmflow_budget": 200000,
+        "swarmflow_user_budget": 200000,
+        "swarmflow_budget_cap": None,
         "swarmflow_worktree": False,
+        "swarmflow_allowed": True,
     }
 
 
@@ -9717,8 +9850,12 @@ def test_resolve_session_swarmflow_config_falls_back_to_metadata(
     config_base = {"modes": {"team": {"jiuwen_team": {"enable_swarmflow": False}}}}
     assert _resolve_session_swarmflow_config({}, config_base, session_id="sess-resolve-meta") == {
         "enable_swarmflow": True,
+        "swarmflow_user_enable": True,
         "swarmflow_budget": 30000,
+        "swarmflow_user_budget": 30000,
+        "swarmflow_budget_cap": None,
         "swarmflow_worktree": False,
+        "swarmflow_allowed": True,
     }
 
 
